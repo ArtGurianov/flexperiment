@@ -76,11 +76,9 @@ export function openReadOnlyDatabase(filename = process.env.COMMERCE_DATABASE_PA
  * procedure.
  *
  * `commerce/src/db.ts` is runtime-reachable from server.ts and is in no
- * boundary list of its own (see docs/release/DEPLOYMENT_INVARIANTS.md and
- * finding A4-3 in the Agent Referrals plan). The registry is therefore
- * inlined here rather than imported from a separate module, so adding an
- * entry never gives this file a new local import edge that would need its
- * own boundary classification.
+ * boundary list of its own. The registry is therefore inlined here rather
+ * than imported from a separate module, so adding an entry never gives this
+ * file a new local import edge that would need its own classification.
  */
 export const FK_OFF_MIGRATIONS: ReadonlyArray<{ readonly filename: string; readonly sha256: string }> = [
   { filename: "0042_agent_referrals_agents_rebuild.sql", sha256: "d9b5ecbf496993669201b45440ea5213ba0e52af778e2094d569f772adfee6ab" },

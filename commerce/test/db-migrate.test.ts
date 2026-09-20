@@ -6,10 +6,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { FK_OFF_MIGRATIONS, MigrationFatalError, applyFkOffMigration, applyOrdinaryMigration, isFkOffMigration, migrate } from "../src/db";
 
 /**
- * PR1 hardens migrate() per docs/release/DEPLOYMENT_INVARIANTS.md and the
- * Agent Referrals plan A4-1/Phase 1: BEGIN IMMEDIATE, ledger re-checked
- * inside the acquired transaction, and a local FK-off registry that ships
- * empty. 0042 (PR2) is the only migration ever meant to use the FK-off path,
+ * What migrate() has to hold: BEGIN IMMEDIATE, the ledger re-checked inside
+ * the acquired transaction, and a local FK-off registry that ships empty. 0042 (PR2) is the only migration ever meant to use the FK-off path,
  * so this suite exercises the mechanics with synthetic, test-only SQL.
  */
 

@@ -1,1133 +1,178 @@
 # Deployment invariants
 
-These invariants govern every production controlled deploy and recovery. They
-are intentionally independent of the current `HEAD`, `main`, and any one
-workflow implementation.
+What must be true for a deploy to be safe, and who enforces it. It describes
+the system as it is. Where an invariant is enforced by code, the code is named;
+where it is proved by a test, the test is named in
+[`docs/INVARIANT_REGISTRY.md`](../INVARIANT_REGISTRY.md).
 
-The operational helpers in `scripts/` are diagnostic and verifier tools only.
-They do not authorize a deployment, pointer update, release-control mutation,
-or reopen. They report facts and boolean invariants only; release-state
-classification and every next-action decision remain in the tested controller
-code and recovery runbooks. A helper must not emit a recommended action or a
-parallel controller state such as `RESUMING_POSTPUBLICATION_REPAIR`.
+This document is not a runbook and not a history. It replaced 1,133 lines that
+had become a record of controllers, epochs and generations that no longer
+exist - a document describing a mechanism is worse than no document once the
+mechanism is gone, because it is read as normative. The reasoning worth keeping
+is below; the incidents that produced it are in the git history.
 
-For the next major production feature after terminal Epoch B, see
-[`CONTROLLED_RELEASE_BOUNDARY.md`](CONTROLLED_RELEASE_BOUNDARY.md). It fixes
-the policy that a completed release is immutable history and that a new
-feature designs its own independent boundary only when that feature exists.
+## Authority and observation are different things
 
-
-## The dispatch fence is owned by an epoch, and must be released by it
-
-`outbox_authority.email_dispatch_paused` is held by the cutover that acquired it,
-not by whoever holds the release-control credential. Two consequences are
-load-bearing and neither is obvious:
-
-- A release must not be completed while dispatch is still fenced. Completing ends
-  the epoch's reason to exist, stranded-fence takeover is deliberately not built,
-  and the result would be production with mail stopped and nothing able to resume
-  it. `controlled-outbox-attempt-authority-cutover.yml` refuses with
-  `ATTEMPT_AUTHORITY_CUTOVER_DISPATCH_MUST_BE_RESUMED_BEFORE_COMPLETE`.
-- The dispatch epoch carries no generation. The fence is held across a whole
-  cutover, including a forward-only recovery that bumps the candidate generation;
-  a generation-bound epoch would stop owning its own fence at exactly the moment
-  recovery was needed.
-
-Aborting a cutover releases the release gate and does not lift the fence. That is
-deliberate — mail stays stopped until an operator decides the direction — and the
-way out is the recovery unfence documented in
-[`ATTEMPT_AUTHORITY_CUTOVER_RECOVERY.md`](../runbooks/ATTEMPT_AUTHORITY_CUTOVER_RECOVERY.md).
-
-## Attempt authority moves once, and never back
-
-`LEGACY -> ATTEMPT` is one-way by design. Every reversible proof therefore has to
-happen before it: the real 1-RUB certification runs against the candidate binary
-while `abort` is still available, and activation is admitted only for a candidate
-already `CERTIFIED`. A cutover that activates early has spent its only
-irreversible step on an unproven binary.
-
-## Runtime-readiness evidence
-
-The release ledger accepts five historical provider evidence classes for
-replay: `TLS_CERT_CHAIN_UNTRUSTED`, `PROVIDER_BAD_REQUEST`,
-`PROVIDER_HTTP_ERROR`, `PROVIDER_NETWORK`, and `PROVIDER_RESPONSE_INVALID`.
-New `PAUSED → RECOVERY_REQUIRED` classifications may use every class except
-`PROVIDER_HTTP_ERROR`: an upstream HTTP 5xx keeps the release paused for a
-later readiness retry; it is not evidence that superseding the candidate can
-repair the provider.
-
-## Durable release state is authoritative
-
-- A paused or owned release **MUST** be classified from durable
-  release-control state before any mutation.
-- `HEAD` and `main` **MUST NOT** replace a paused or owned release merely
-  because they are newer.
-- A matching durable owner **MUST** be resumed through its defined protocol;
-  a foreign owner **MUST** stop recovery.
-
-## Controller and deployment source are separate identities
-
-- The controller/workflow SHA and `TARGET_SHA` **MUST** be treated as distinct
-  values.
-- Newer controller code **MAY** recover an exact target already authorized by
-  durable state.
-- Controller code **MUST NOT** silently become the deployment source,
-  expected source, repair source, or promotion source.
-
-## `production-deploy` is a mutable deployment pointer
-
-`refs/heads/production-deploy` may move to an authorized exact source SHA even
-when that source has unrelated history relative to its old value. Lack of a
-fast-forward relationship to the old pointer is **not** an error.
-
-This does not authorize arbitrary rewriting:
-
-- The target **MUST** already be authorized by the controlled workflow and its
-  durable state.
-- The setter **MUST** observe one exact remote SHA, update with
-  `--force-with-lease` for that observed SHA, re-read the ref, and prove exact
-  equality with the requested target.
-- Plain `--force` **MUST NOT** be used.
-
-## `main` is never an implicit deploy target
-
-Three identities, kept structurally distinct:
+The single distinction everything else rests on:
 
 ```text
-main              = deployment-controller / integration history; CI only;
-                    NEVER implicitly means "deploy this SHA"
-runtime-candidate = the exact candidate authority pointer, moved by its own
-                    explicit CAS act (mirroring production-deploy's own
-                    discipline) — publishing a candidate is a pure
-                    declaration of intent and triggers nothing by itself
-production-deploy = the exact last successfully deployed runtime (see above)
+authority    what may change production, and what decides whether it may
+             -> ReleaseCandidate, DeploySessions, the certification authorities
+
+observation  what production currently says about itself
+             -> the three surfaces' source commits, /v1/admin/system/evidence,
+                public/release.json, the git refs the identity readout prints
 ```
 
-`runtime-candidate` is advanced only by
-`controlled-runtime-candidate-promotion.yml`; `production-deploy` is
-advanced only by `controlled-production-deploy.yml`. They are separate CAS
-authorities, serialized through `flexperiment-production-controlled-cutover`:
-an ordinary candidate promotion requires its target to descend from the
-current `production-deploy` — and deliberately **not** from the current
-`runtime-candidate`, which is a proposal register, not an authority (see
-"`runtime-candidate` is never an authority" below) — then advances only
-`runtime-candidate` with an exact lease. Candidate promotion never deploys
-production or mutates release-control state.
+A git ref that someone reads is an observed fact. `production-runtime-identity-
+readout.yml` fetches `production-deploy` and `runtime-candidate` and prints
+them; that is reporting, not authority, and no part of the deploy path moves
+them. The controllers that once treated those refs as authority are gone, and
+nothing should reintroduce a pointer as a decision-maker without saying so here
+first.
 
-An ordinary runtime target first receives a separate immutable provenance ref
-only through `controlled-generic-runtime-publication.yml`:
-`refs/heads/runtime/generic-<full target SHA>`. That publication controller
-has its own production-environment credential and may create or re-read only
-that ref. It MUST NOT move either mutable pointer, mutate release-control, or
-call Coolify; promotion may consume the ref only through its explicit
-`expected_published_ref` input. See
-[`GENERIC_RUNTIME_PUBLICATION.md`](GENERIC_RUNTIME_PUBLICATION.md).
-
-The candidate-promotion workflow binds the dedicated `production`
-environment secret `RUNTIME_CANDIDATE_REF_TOKEN` only to that lease-backed
-`runtime-candidate` CAS. It must not use or be replaced with
-`PRODUCTION_DEPLOY_REF_TOKEN`, and it is not a credential for deployment,
-recovery, release-control mutation, or any other ref.
-
-`controlled-production-deploy.yml` lives on `main` (the default branch, as
-`workflow_dispatch` requires) and triggers **only** on manual
-`workflow_dispatch` — never on any `push`, to `main` or to any other branch.
-Moving `runtime-candidate` does not, by itself, deploy anything: a GitHub
-Actions `push` event always runs the workflow version present at the pushed
-ref, so a workflow file living only on `main` could never reliably govern a
-`push`-triggered deploy off a separate `runtime-candidate` ref in the first
-place — this is why the workflow is dispatch-only rather than push-triggered
-against that ref.
-
-Inside the run, three identities are kept explicitly distinct end to end and
-never conflated:
+## Three identities, kept structurally distinct
 
 ```text
-CONTROLLER_SHA = github.sha            (this workflow's own commit)
-CANDIDATE_SHA  = git rev-parse origin/runtime-candidate,
-                 or the explicit recovery target_sha input
-PRODUCTION_SHA = scripts/read-production-deploy-ref.sh
+main              integration history, and CI. Never implicitly a deploy target.
+candidate         the exact commit a deploy is for, together with its release
+                  class and its readiness expectation - one fact, not three
+controller        the workflow and code performing the deploy
 ```
 
-`CONTROLLER_SHA` **MUST NOT** be used as the candidate SHA, `source_commit`,
-Coolify deploy target, `production-deploy` CAS target, or release-control
-acquire target. An ordinary (non-recovery) dispatch takes no candidate SHA
-input at all — only an optional `expected_candidate_sha`, a defensive check
-that must equal the exact SHA already at `runtime-candidate` or the run
-refuses; the actual candidate is always read fresh from the ref itself.
+The controller's own SHA and the candidate's SHA are distinct values. Newer
+controller code may recover a target that durable state already authorized; it
+must never silently become the deployment source, the expected source or the
+promotion source. A deploy is for a candidate, and an operator cannot name a
+commit instead - `deploy-production.yml` takes one input, and it is the
+candidate.
 
-Before any production mutation, the workflow proves, from that resolved
-candidate (never by inferring one from `main` or from its own commit):
+## A candidate is published only against its own green CI
 
-- the candidate is a descendant of the current `production-deploy`, with
-  **no merge commit anywhere in that exact range** — an ordinary runtime
-  candidate is a strictly linear chain, so a side lineage cannot enter
-  runtime history through a merge that itself carries no
-  `.release/maintenance-only` marker (`scripts/inspect-runtime-candidate-topology.sh`,
-  a pure read-only verifier that examines every commit's own tree along the
-  path, not just the candidate's tip or an aggregate diff — a later commit
-  deleting the marker file does not erase the historical fact that a
-  maintenance commit occurred, since the check walks the whole range);
-- no commit in that exact range carries `.release/maintenance-only`;
-- `production-deploy` still equals the value read at the start of the run
-  (`scripts/read-production-deploy-ref.sh`, read again immediately before
-  the CAS move);
-- `runtime-candidate` still equals the value resolved during preflight,
-  reread immediately before the first durable mutation (the "Acquire owner
-  and pause registrations" step) — but **only up to that point**. Once
-  acquire/pause has actually run, the durable owner (`deploy-<candidate>`)
-  is authoritative; `runtime-candidate` is free to move again afterward
-  without stranding the paused deployment already in flight, so this
-  freshness check does not repeat after the first mutation.
+`release-candidate.yml` verifies the exact commit: forty hex characters, an
+ancestor of `origin/main`, and `test` and `docker-build` both `success` **for
+that sha**. Being descended from a green commit is a different claim about a
+different tree.
 
-A recovery (`workflow_dispatch` with an explicit `target_sha`, resuming an
-already-owned, already-paused same-owner deployment) acts under its own
-separate authority and explicitly waives the descendant/linear/maintenance-
-lineage rule above — it is recovering a specific already-authorized SHA, not
-selecting a new one.
+A `LAUNCH_BASELINE` candidate must additionally be the current tip of `main`.
+It replaces the database, so publishing an ancestor would deploy a tree `main`
+has already moved past with no way back to the commits between.
 
-### Controller code never executes from the candidate's tree
+## The deploy mode is derived, never chosen
 
-The workflow performs exactly one checkout, at its own commit
-(`ref: ${{ github.sha }}`) — the candidate SHA is never checked out as the
-working tree. Every script invoked to reason about or gate the deployment
-(`scripts/read-production-deploy-ref.sh`, `scripts/inspect-runtime-candidate-topology.sh`,
-`scripts/set-production-deploy-ref.sh`, the `commerce:production-deploy:*`
-policy tooling) runs from that controller checkout, at controller-relative
-paths. The candidate SHA is touched only through read-only Git object reads
-(`git show`, `git cat-file`, `git diff`, `git ls-tree`) to compare specific
-file contents — never `git checkout`, and never executed. A candidate commit
-therefore cannot ship a same-named script that approves itself: the
-controller's own copy is what always runs, regardless of what the candidate
-contains at that path.
+`ROLLING_COMPATIBLE` earns a rolling deploy; everything else takes the
+maintenance path. The absence of a compatibility proof is not compatibility.
+An operator who could select the rolling path for a schema-incompatible release
+would skip the fence and the certification with it, so the choice belongs to
+whoever classified the candidate.
 
-## Runtime candidates and maintenance commits are different artifact classes
+## Webhook acceptance is not deployment convergence
 
-A commit that merges a runtime candidate with one-shot recovery/bridge
-tooling (for review or audit) is a **maintenance commit**, not a deploy
-target — even though the runtime candidate is its ancestor. Every recovery
-plan **MUST** name three SHAs separately: the runtime-candidate SHA, the
-maintenance/audit SHA, and the `production-deploy` SHA. A maintenance commit
-**MUST NEVER** become `production-deploy`'s target merely because it is
-newer or contains the candidate in its history.
+A 2xx from a deploy webhook is an enqueue acknowledgement. It is not evidence
+that a deployment started, and certainly not that it finished. Convergence is
+proved afterwards, independently, by observing what the frontend, admin,
+commerce and worker surfaces actually serve.
 
-A maintenance commit declares itself ineligible by committing a
-`.release/maintenance-only` file (content is irrelevant; its presence in the
-tree is the signal). `scripts/set-production-deploy-ref.sh` checks
-`<target_sha>:.release/maintenance-only` before every CAS move and refuses
-with `PRODUCTION_DEPLOY_TARGET_IS_MAINTENANCE_ONLY` if it exists. A runtime
-candidate branch must never carry this marker; the marker is added only when
-preparing the maintenance/audit merge, so it is never inherited by a clean
-runtime candidate built from the same ancestor.
+Nor does acceptance imply promptness: a deploy has been observed where the
+webhook call and the container `create` happened within seconds of each other
+and the container did not `start` for roughly ninety more. A controller that
+treats acceptance as progress will report a converged deploy that has not begun.
 
-## Paused and owned releases
+## Readiness separates "not yet" from "converged and inadmissible"
 
-While a release is paused or owned:
+A convergence loop is read-only, and the two failure classes it meets are not
+the same:
 
-- do not start a fresh release;
-- do not change target without an explicit durable transition protocol;
-- do not manually reopen sales;
-- do not deploy arbitrary `HEAD` or `main`;
-- classify durable state and resume the existing owner exactly.
+- **Observable rollout surfaces** - health, readiness, the surfaces' own
+  descriptors - may legitimately be absent, incomplete or briefly malformed
+  while a deploy is in flight. A truncated body from a restarting container is
+  expected transient behaviour, and a parse failure there is retryable exactly
+  like a connection timeout.
+- **Semantic and authority evidence** - the source commit, the schema
+  inventory, the legal version and manifest digest - does not become correct by
+  waiting. A mismatch or an unparseable value there is terminal.
 
-A same-owner recovery preserves the release ID, mode, target, legal
-expectations, and migration expectations unless its documented transition
-explicitly changes one of them.
+`evaluateReadiness` encodes this: malformed evidence is `REJECTED`, while a
+commit that has not converged, a stale heartbeat or a sweep that has not
+happened are `PENDING`. Collapsing the first into the second makes a loop wait
+forever on something no amount of waiting can fix.
 
-## Promo Codes v0 controlled epoch
-
-Promo Codes v0 is a separate controlled epoch. Its v2 event chain is ordered
-by `release_sales_gate_events.rowid`, never timestamps. While its owner is
-active, the projection and replayed generation head must agree or sales fail
-closed with `RELEASE_STATE_CORRUPT`. A completed head instead requires an empty
-owner and open sales. Recovery is forward-only and same-owner: it adopts a new
-generation while preserving the release ID and legal baseline; it never rolls
-back or silently reopens sales.
-
-## Replay compatibility barrier
-
-Before a new v2 ledger event kind is ever written to a durable release chain,
-every runtime that may still be running (or could be restarted) **MUST**
-already be able to replay it. A writer that doesn't understand an event kind
-fails closed with `RELEASE_STATE_CORRUPT` on replay — that is correct
-behavior, not a bug to route around.
-
-This means a code change that introduces a new event kind and the write of
-the first event of that kind **MUST NOT** leave a window where an
-old, non-understanding runtime could still be running or restarted:
-
-- Stop every writer/reader that depends on the ledger and is running code
-  that predates the new event kind.
-- Prove they are stopped before writing.
-- Perform the write offline, through a one-shot bridge (see below), not
-  through a live API a stale runtime could also call.
-- Never restart the old runtime after the write. If a bridge appends more
-  than one event (for example a defect event immediately followed by a
-  generation-superseding event), it **MUST** do so in the same transaction:
-  there must be no committed state in which an old runtime is asked to
-  replay only the new kind without also being superseded.
-
-`PUBLIC_FRONTEND_DEFECT` (added to unblock the gen4→gen5 recovery) is the
-concrete precedent: it and the immediately following `CANDIDATE_SUPERSEDED`
-are appended in one `BEGIN IMMEDIATE` transaction inside
-`bridgeGenerationFourToFive`, specifically so old gen4 code is never asked to
-replay an event kind it predates.
-
-## Offline reader/writer exclusion is an exceptional coexistence recovery
-
-**Offline exclusion is not normal deployment.** It is required whenever the
-currently deployed runtime cannot safely remain active after the durable
-transition. Backward replay compatibility is one reason, but not the only one:
-an old runtime may parse the new history correctly while its writer semantics,
-authority model, or other post-transition invariants still prohibit further
-reads or writes.
-
-The reusable invariant is:
-
-> Offline reader/writer exclusion is required whenever the current runtime
-> cannot safely coexist with the next durable state, because of replay
-> incompatibility or because authority or semantic invariants forbid its
-> continued reads or writes.
-
-Its converse matters equally: a normal rolling or controlled deployment is
-preferred only after proving that the old and new runtimes may coexist safely
-for the overlap. A compatible reader alone is insufficient; the old runtime
-must also have no prohibited writer behavior and no authority transition that
-makes its continued operation invalid.
-
-| Mode | Use when | Required sequence |
-| --- | --- | --- |
-| Normal deployment | Old and new runtimes can safely coexist for the overlap: durable replay, writer semantics, and authority rules all remain valid. | Use the normal rolling or controlled deployment protocol and prove convergence. |
-| Incompatible-runtime recovery | The current runtime would become unsafe after the durable transition. | Prove the exact old runtime and state; disable restart; stop and exclude every dependent reader/writer; atomically mutate offline; permanently forbid the old runtime; move the deployment pointer to the compatible runtime; deploy and prove convergence. |
-
-SSH and host control are reader/writer-exclusion mechanisms, not a default
-deployment transport. A Coolify webhook cannot prove exclusion. An
-incompatible-runtime recovery has a deliberate maintenance window from reader
-stop until compatible-runtime convergence; ordinary releases must not inherit
-that downtime by default.
-
-Preparation may reduce that window only when it is read-only with respect to
-production durable state. A prebuilt or pre-pulled image/artifact **MUST** be
-immutably bound to the exact authorized source SHA and image digest before the
-old runtime is excluded. Preparation **MUST NOT** start a compatible runtime
-against production storage, and it **MUST NOT** create source-identity drift
-between the prepared artifact, the deployment-pointer target, and the runtime
-proved after convergence.
-
-## One-shot recovery bridges are non-reusable by construction
-
-A historical repair utility (`commerce/src/gen2-bootstrap-adopt.ts`,
-`gen3-classify-readiness-defect.ts`, `gen4-to-gen5-public-frontend-bridge.ts`
-are the existing examples) exists to perform exactly one durable transition,
-once, for a specific incident. It **MUST NOT** become a generic
-`repair-release --from --to` tool. Every such utility:
-
-- hard-codes its release ID, from-generation, from-source-commit,
-  to-generation, and to-source-commit — the caller cannot redirect it to a
-  different transition;
-- accepts no caller-selected replacement SHA;
-- accepts only a fresh piece of state evidence that could not have been
-  known at build time (typically `expected_state_hash`, read live
-  immediately before the run);
-- requires an explicit offline sentinel env var affirming the dependent
-  services are stopped;
-- pins its target replay implementation by SHA-256 and verifies that pin
-  before opening the database;
-- performs its entire mutation (including any second ledger event required
-  by the replay compatibility barrier above) inside one `BEGIN IMMEDIATE`
-  transaction, replaying and reconciling before and after commit;
-- fails closed on a second invocation (`..._ALREADY_APPLIED`) without
-  changing state;
-- remains historical after use. Do not repurpose, parameterize, or extend an
-  existing bridge for a new incident — write a new one, following this same
-  shape, with its own hard-coded identities.
-
-A bridge's `target_replay_sha256` and any other frozen historical pin
-**MUST** be checked against the literal value recorded at the time the
-bridge was built, not against the live `HEAD` of the file it pins — the pinned
-file keeps evolving under later work, and the bridge's own provenance must
-stay an immutable historical fact once the bridge has been executed.
-
-## Legal cutovers
-
-Before legal publication, a validated repair may be adopted only through the
-pre-publication repair protocol. After publication, a new repair **MUST NOT**
-be adopted: recovery uses only the exact durable repair or promotion SHA.
-
-Promotion starts from the exact repair identity. A promotion commit is a direct
-child of that repair (`promotion^ == repair`), has an immutable promotion ref,
-and contains only the allowed canonical legal-promotion diff. Controller
-commits **MUST NOT** be in promotion ancestry. A controller ref may contain the
-repair in its history only when controller-only commits do not contaminate the
-promotion ancestry.
-
-See [generic recovery](../runbooks/GENERIC_DEPLOY_RECOVERY.md),
-[legal cutover recovery](../runbooks/LEGAL_CUTOVER_RECOVERY.md),
-[recovery branch topology](../runbooks/RECOVERY_BRANCH_TOPOLOGY.md), and
-[Promo Codes v0 cutover recovery](../runbooks/PROMO_CODES_CUTOVER_RECOVERY.md).
-
-## Coolify webhook acceptance is not deployment convergence
-
-`scripts/controlled-coolify-deploy.sh` treats an HTTP 2xx from a Coolify
-deploy webhook as only an enqueue acknowledgement, never as evidence that a
-deployment has started, let alone finished - every controller that calls it
-is expected to prove the deployed source independently afterward, from the
-Commerce/frontend/admin surfaces themselves.
-
-**Do not assume webhook acceptance implies deployment starts promptly.**
-During the 2026-08-27 R5 post-CAS recovery deploy, the webhook call and the
-subsequent container `create` both happened within seconds of each other (as
-expected), but the container did not actually `start` until roughly 90
-minutes later. A controller budgeting a short fixed settling delay plus a
-few minutes of bounded polling (as every controller in this repo did at the
-time) will time out and have to be cancelled even when the deployment
-eventually succeeds cleanly - this is a false failure of the *controller*,
-not evidence of a bad deployment, and must not be treated as one (do not
-roll back `production-deploy`, reopen, or otherwise react to it as a real
-production defect without first checking, read-only, whether the deployment
-actually converged after the controller gave up).
-
-This is an open, unresolved gap in controller design, not yet fixed: no
-controller in this repo currently has a reliable way to distinguish "still
-slowly progressing" from "genuinely stuck," because none of them inspect
-Coolify's own deployment status - they only guess a fixed delay/poll budget
-and then check the resulting runtime surfaces. Closing this gap requires
-first establishing, empirically, whether Coolify's webhook response body (or
-its own API) exposes a stable deployment identifier/status a controller
-could poll directly - this has never been verified in this repo, and no
-controller should assume its shape without checking. Until it is verified,
-prefer decoupling a deploy trigger from its convergence proof (a separate,
-purely read-only, freely re-dispatchable verification step/workflow with a
-realistic budget) over simply inflating a single job's poll-attempt count,
-since a combined submit+verify job that times out cannot be safely re-run
-without re-triggering the mutation it already performed.
-
-## Runtime-dependent parsers must be pinned to the exact runtime they judge
-
-A controller is authored and published from `main`, but `main` and the
-R-lineage (R3/R4/R5/R6/...) are deliberately separate identities - a
-runtime-candidate fix (like R4's migration-allowlist entry) lives only on
-that lineage and is never merged back into `main`. **A controller must
-never interpret runtime release evidence using runtime-semantic code
-checked out from `main` when the runtime artifact it is judging lives on
-a different immutable lineage.** `main`'s copy of that code reflects
-`main`'s own history, not the exact runtime commit whose evidence is being
-parsed - the two can and do disagree about what a valid migration, legal
-baseline, or readiness shape looks like.
-
-This bit on 2026-08-28: `controlled-r6-same-owner-submit.yml`'s first
-dispatch called `commerce/src/assert-generic-production-deploy-ready.ts`
-directly from the controller's own `main` checkout to evaluate R5's live
-readiness. That script imports `release-control.ts`'s
-`evaluateReopenGate()`, which rejects any migration absent from
-`requiredMigrationsByExpectedMigration` - and `main`'s own copy of that
-map has never received R4's fix (adding `0036_tochka_provider_error_evidence.sql`),
-because that fix lives only on the R-lineage. The run therefore failed
-with `UNKNOWN_EXPECTED_MIGRATION` for an entirely healthy R5, before any
-mutation. **This is also the corrected, more specific explanation for why
-the earlier R5 post-CAS recovery workflow's poll loop never had a single
-successful iteration**: on top of the genuine ~90-minute Coolify liveness
-gap documented above, its poll's own readiness check (the same
-main-checked-out parser) was a second, independent, always-failing
-blocker - that run's `UNKNOWN_EXPECTED_MIGRATION`-shaped symptoms must not
-be read as evidence of a bad R5 runtime.
-
-**Fix pattern**: materialize an isolated, detached `git worktree` at the
-exact runtime SHA being judged (e.g. `git worktree add --detach "$DIR"
-"$RUNTIME_SHA"`, then prove `git -C "$DIR" rev-parse HEAD` equals that
-exact SHA), install that worktree's own dependency graph from its own
-lockfile once - never inside a retry/poll loop - and run the readiness
-parser from inside that worktree (`cd "$DIR" && node --import tsx
-commerce/src/assert-generic-production-deploy-ready.ts
-<absolute-path-to-evidence-files> ...`), passing the controller's own
-evidence files by absolute path (e.g. `$GITHUB_WORKSPACE/status.json`)
-since the working directory has changed. **Dependency materialization
-must disable lifecycle scripts** (`pnpm install --frozen-lockfile
---ignore-scripts`): only the one explicitly named readiness parser is
-authorized to execute from the runtime tree - a plain install may run
-arbitrary package install/postinstall/build scripts from that tree, which
-is a materially broader trusted-execution surface than "run this one
-script," especially in a job that also holds production mutation
-credentials (Coolify's included). A submit-style one-shot controller pins
-to the runtime it is leaving; a verify-only controller pins to the runtime
-it is proving converged. This is a narrow, deliberate exception to
-"controller code never executes from the candidate's tree" above: here the
-controller is not executing untrusted candidate code as itself, but is
-deliberately invoking one specific, already-reviewed, already-deployed
-runtime's own semantics to judge evidence about that same
-runtime - the two are exact opposites, not the same mistake.
-
-## The release-semantic surface
-
-The question a generic deploy must answer is not *"did migration files
-change?"* but *"can this diff change how durable release state is interpreted
-or enforced?"*.
-
-R7 is why. `migrationApplied()` was a defect in `release-control.ts` with no
-migration file involved, and it silently changed which releases could reopen.
-A boundary asking only the first question waves that candidate through as an
-ordinary deploy.
-
-`releaseSemanticsPaths` in `commerce/src/generic-production-deploy-boundary.ts`
-is the explicit set, derived from the real import closure of
-`release-control`/`release-generation` rather than guessed by glob. It covers
-the state machine and its replay, gate enforcement, the expectation DTO,
-canonical serialization and hashing, timestamp parsing behind leases and
-freshness, legal manifest shape, the kopeck arithmetic certification evidence
-asserts, and the boundary classifier itself. It is deliberately conservative:
-it fails toward the controlled cutover, which is the safe direction.
-
-**Enforcement lives in `sales-gate.ts`, not `domain.ts`, so that this list can
-stay narrow.** `domain.ts` carries nearly all business logic and changes for
-ordinary work; if the gate composition lived there, every ordinary change would
-be release-sensitive and the controlled cutover - real money, a real pause -
-would become the only way to ship anything at all. That is a boundary nobody
-would keep. If enforcement ever moves back into `domain.ts`, the boundary
-silently stops covering it; a test asserts it has not.
-
-Call it the **release-semantic surface**, not "sensitive paths". A file is
-controlled not because it looks dangerous but because changing it can alter the
-interpretation of durable release state, migration state, certification
-evidence, state and inventory hashes, sales-gate enforcement, or the HTTP and
-domain release contracts.
-
-Two members make the distinction concrete, and both are worth remembering the
-next time someone proposes simplifying this back to `commerce/migrations/**`:
+## Sales are closed by a hierarchy, and only one level is bypassable
 
 ```text
-crypto.ts       -> state hash / inventory hash -> CAS + expectation equivalence
-promo-pricing.ts -> certification evidence arithmetic -> what counts as certified
+effective_sales_closed =
+      emergency gate        operator's own stop, absolute, fail-closed
+   OR business gates        ordinary product rules, absolute
+   OR deployment gate       held by one deploy session, bypassable
 ```
 
-`crypto.ts` is not a utility as far as this protocol is concerned; it is part of
-the wire and state format. And pricing maths can invalidate certification
-evidence that already exists, without touching release-control at all. Neither
-is anywhere near a migration file, and no directory-name heuristic would find
-either.
+The emergency gate reads a missing row as closed: losing the gate is not the
+same as clearing it. A certification capability may open the deployment fence
+and nothing above it.
 
-Because the set is derived from dependencies, it drifts the moment someone adds
-an import. `release-semantic-closure.test.ts` recomputes the runtime closure
-from the declared roots and fails with `NEW_RELEASE_SENSITIVE_DEPENDENCY` if
-anything reachable is unprotected. The assertion is containment, not equality:
-the protected set may reasonably be wider, since controllers and shell couple
-to files no import reaches. Type-only edges are excluded deliberately - they
-are erased before anything runs and cannot change interpretation.
+## A deploy session owns both its state and its fence
 
-## `runtime-candidate` is never an authority
-
-It is a **proposal register**. Before acquire it may propose a target; after
-acquire the generation's recorded `target_sha` is the sole epoch authority and
-the pointer is irrelevant. It is authority at no point in between.
-
-The only ancestry that decides whether a proposal may be adopted is:
+One authority owns the session and the deployment gate, because they are one
+operational fact. A `SUCCEEDED` session with sales still shut, or a rolling
+release that closed them, are both simply wrong, and no amount of caller
+discipline makes two independent writes safe.
 
 ```text
-production-deploy  ancestor-of  NEW target
+ACQUIRED -> FENCED -> DEPLOYING -> SAFE_ABORTED | SUCCEEDED | ROLLED_BACK
+                               \-> RECOVERY_REQUIRED (non-terminal)
 ```
 
-The previous proposal's value and its ancestry **MUST NOT** gate its own
-replacement. Two checks that did exactly that were removed on 2026-08-29:
+Only `SUCCEEDED` means the release is deployed. `ROLLED_BACK` permits sales to
+reopen while the release remains unsuccessful; collapsing the two would let a
+production that returned to the old revision be recorded as a successful
+release of the new one.
+
+Two orthogonal facts decide what is reachable:
 
 ```text
-production-deploy ancestor-of current runtime-candidate   (removed)
-current runtime-candidate ancestor-of new target          (removed)
+mutationObserved     has production been touched  -> is SAFE_ABORTED available
+rollbackAuthority    is the archived database still truthful
+                     OLD_LINEAGE_ALLOWED -> NEW_LINEAGE_ONLY, one way only
 ```
 
-They looked like safety and were not. A successful cutover advances
-`production-deploy` while the pointer stays put, so the pointer goes stale with
-no bug involved - and those checks then made the stale value unreplaceable by
-the ordinary path. That forced a break-glass repair twice in one day for a
-pointer that was never broken, only superseded.
-
-The pointer's value is still read, as a **CAS lease** rather than an authority:
-a concurrent writer must never be silently clobbered
-(`--force-with-lease=refs/heads/runtime-candidate:<observed>`). Those are
-different functions and only the first was wrong.
-
-For the same reason there is **no CI gate** on
-`production-deploy ancestor-of runtime-candidate`. Making ordinary staleness a
-CI failure would reintroduce the same dual authority through the test suite:
-the runtime treating a stale pointer as fine while CI called it illegal.
-`production-deploy ancestor-of main` remains a required invariant - that one
-guards against a semantic rollback and is not a proposal.
-
-### Why the break-glass repair controller was deleted
-
-`controlled-runtime-candidate-repair.yml` existed for one capability: relaxing
-the two current-pointer assertions above. With those gone it had no legitimate
-operation left - every other invariant it faced (descent from production,
-`runtime/*` provenance, the CAS lease, release-control state) is one it must
-never bypass. A second privileged implementation of an operation the ordinary
-path performs safely is attack surface, not resilience.
-
-It is kept in history (`903a6a7`) rather than maintained. It was not wasted:
-building it is what localised the invariant that turned out to be wrong. The
-root cause was eliminated rather than the recovery automated.
-
-## A generic deploy acquires with the inventory expectation, never a filename
-
-`ReleaseSalesGate.acquire()` validates `expected.migration` through
-`supportedMigrationExpectation()`, which is evaluated by the **currently
-deployed** runtime against a static allowlist compiled into that build. A
-migration filename is therefore only acquirable while the deployed runtime
-already knows it.
-
-A controlled cutover leaves its own expectation in durable state. On
-2026-08-29 the sales-availability cutover left
-`expected_migration = 0038_occurrence_availability_notifications.sql`, which
-the deployed runtime's allowlist (…0036) could not validate. Because
-`controlled-production-deploy.yml` reused that durable value verbatim, every
-subsequent generic deploy failed `acquire` with HTTP 409
-`UNKNOWN_EXPECTED_MIGRATION` - a permanent, self-inflicted block, not a
-transient fault.
-
-The generic controller therefore **MUST** acquire with the
-`inventory-sha256:` form derived from `.runtime.migration_versions` and
-cross-checked against the production source tree. This is still durable
-production evidence, never candidate helper code; it simply cannot go stale,
-because it describes the applied set rather than naming a file the runtime's
-allowlist may predate. It is sound specifically because the generic
-controller refuses any candidate touching `commerce/migrations`, so the
-applied set is identical before and after the deploy and still describes the
-post-deploy state that `reopen` re-verifies.
-
-The hash must be byte-identical across shell, `jq` and
-`migrationInventoryExpectation()` in TypeScript - sorted, joined with `\n`,
-no trailing newline. That three-way equivalence is pinned by a test; do not
-change one side without it.
-
-An earlier commit (`8831bfd`, 2026-08-26) removed this form in favour of the
-durable filename with no recorded rationale. That was safe only while durable
-expectations stayed inside the allowlist, and a cutover can always break that
-assumption. Do not reinstate the filename form here.
-
-**The DTO is the other half of this, and was the reason the escape hatch did
-not work.** `release-control.ts` has always understood `inventory-sha256:`
-expectations, but `releaseControlSchema` in `commerce/src/types.ts` accepted
-only the filename pattern, so any acquire carrying an inventory hash failed
-`422 VALIDATION_ERROR` before reaching the domain. Code support that the
-request schema rejects is not support. Both must accept a form for it to
-exist; when changing one, change and test the other.
-
-Widening that regex is itself a runtime change, so it must be deployed
-through a path that does not call `acquire` - the candidate machinery - before
-any generic deploy can use it. Sequencing matters: ship the DTO first, then
-the generic controller's inventory expectation becomes usable.
-
-## The migration-applied predicate: `required_migrations` is a hint, `migration_versions` is authoritative
-
-Runtime release evidence carries two independent views of what migrations
-are applied: `required_migrations` is a map that is only ever populated for
-the fixed `diagnosticCutoverMigrations` set (0031-0034) - it never gains
-keys for later migrations (0035, 0036, or any future one), on any commit,
-old or new. `migration_versions` is the complete, authoritative
-applied-migration inventory and always correctly lists every migration that
-has actually run, including ones postdating the diagnostic set.
-`required_migrations[version] === true` is therefore sufficient positive
-evidence on its own, but its absence or `false` is never sufficient
-negative evidence by itself - `migration_versions` must also be checked
-before concluding a version was not applied.
-
-This bit on 2026-08-28 (run 33139603447): `evaluateReopenGate()` checked
-only `required_migrations`, so it unconditionally rejected any expected
-migration beyond the diagnostic set even when that migration was genuinely
-applied and correctly listed in `migration_versions` - the same defect
-directly blocks `ReleaseSalesGate.reopen()`, the real domain method behind
-the production reopen endpoint, for any owner expecting migration 0035 or
-later. `evaluateCandidateReopenGate()` already had the correct
-`required_migrations[version] === true || migration_versions.includes(version)`
-check. **Fix pattern**: extract that check into one shared, exported
-`migrationApplied()` predicate and have every consumer use it, so the two
-gates cannot drift apart again - not by inflating `required_migrations` to
-cover every future migration (`migration_versions` is already the complete
-inventory; the bug was one consumer ignoring it).
-
-**R5/0036 compatibility projection**: this predicate fix (shipped as R7)
-is a runtime code change, not a data migration - R5 itself is not being
-patched, and per the runtime-pinning invariant above, any preflight that
-judges R5's live evidence must do so using R5's own (unfixed)
-`evaluateReopenGate()`. A same-owner crossing whose submit preflight needs
-to prove R5's readiness therefore cannot simply route R5's evidence through
-R7's parser without weakening the runtime-pinning invariant itself.
-Instead, a narrow, one-shot, hard-bound compatibility adapter
-(`commerce/src/derive-r5-migration-compat-evidence.ts`) derives a
-compatibility copy of R5's evidence, adding exactly the `required_migrations`
-keys a correct evaluator would have derived from `migration_versions`
-itself. It fails closed unless the input matches the exact known defect
-pattern - hard-bound to both the owner's `expected.source_commit`/
-`expected.migration` and the runtime's own `source_commit` (not merely one
-or the other, since the adapter is itself a safety primitive and must
-enforce its own contract rather than depend on an adjacent caller guard) -
-and proves the derived copy differs from the original in no way beyond
-those added keys before writing it. This adapter is permitted **only** in
-a submit preflight, and only for the one runtime it is hard-bound to; a
-verify-only controller must always consume its judged runtime's own real,
-unmodified evidence - if a runtime's own parser cannot consume that
-runtime's own real evidence, the runtime is defective and verify-only must
-fail, not bridge it.
-
-## A read-only convergence loop must not collapse a parser exception into "not converged yet"
-
-A read-only convergence loop must never collapse a parser exception or a
-mismatch in **semantic/authority evidence** (durable release-control state:
-owner, mode, paused-state, expected target) into a generic "not converged
-yet" result - that state does not change by waiting, so any nonzero exit or
-mismatch there is fatal and terminal. **Observable rollout surfaces**
-(frontend/admin/health/ready responses, deployment source commits) are a
-different class: while a deployment is still in flight they may legitimately
-be absent, incomplete, or briefly malformed - JSON parse failures there
-remain retryable, exactly like a plain connection timeout, since a
-mid-restart container returning a truncated or empty body is expected
-transient behavior, not evidence of a defect. Semantic readiness proofs run
-only after rollout-surface convergence, and fail terminally.
-
-This bit on 2026-08-28 (run 33143519915): `controlled-r7-verify-only.yml`'s
-poll loop chained the semantic readiness parser (`assert-generic-production-
-deploy-ready.ts`) into the same `&&`-guarded `if` as the observable surface
-checks. The parser crashed with a `TypeError` on every single attempt - its
-`release.json` had been built by copying `status.json`'s `.expected` field
-verbatim, which never carries `legal_hashes` (that field lives only under
-`.runtime.legal_hashes`) - so `evaluateReopenGate()`'s legal-hash comparison
-dereferenced `undefined`. Because the crash lived inside the same `&&` chain
-as the retryable checks, the loop's exhaustion path reported the generic
-`VERIFY_RUNTIME_NOT_CONVERGED_YET`, indistinguishable from ordinary Coolify
-convergence delay - even though this was a deterministic bug that would
-reproduce identically no matter how long the loop waited or how many times
-it was redispatched.
-
-**Fix pattern**: separate the failure classes explicitly, and order the
-checks so an earlier one can never be masked by a later one failing in the
-same iteration.
-1. Fetching the durable status itself is the first, independently
-   retryable operation - a transport failure or timeout here says nothing
-   about authority or surfaces, so it just retries.
-2. Once that status read succeeds, its **authority fields** (owner, mode,
-   paused-state, expected target) are asserted immediately and
-   unconditionally - using `||` to a distinct exit code, never nested
-   inside an outer condition that also depends on the observable-surface
-   fetches below succeeding. An earlier fix attempt for this same incident
-   (commit `a2a34b1`) still nested the authority assertion inside the same
-   outer `&&` as the frontend/admin/health/ready fetches, so a genuine
-   authority violation could still be masked as `NOT_CONVERGED_YET` by an
-   unrelated, unlucky transient fetch failure in the same iteration -
-   correctness here requires unconditional evaluation, not just fatal-not-
-   retryable evaluation.
-3. Only once authority is proven does **observable surface convergence**
-   (runtime/worker source commit, frontend, admin, health, ready) become
-   the retryable condition, and the only thing
-   `VERIFY_RUNTIME_NOT_CONVERGED_YET` may ever mean.
-4. The **semantic readiness parser** runs exactly once, in its own step,
-   only after surface convergence is reached - never inside the retry loop.
-   Any nonzero exit from it is fatal and preserves its own stderr; it must
-   never be retried or reinterpreted as non-convergence.
-
-
-This is now implemented in the shared primitive itself, not only in one
-controller: `scripts/controlled-production-readiness.sh` polls **observable
-convergence only** (runtime and worker source commits, worker sweep evidence
-present, frontend/admin release descriptors, legal config, `/healthz`,
-`/readyz`) and runs the admission assertion exactly once, after convergence,
-outside the loop. The exit codes are distinct so a caller can never mistake one
-for the other:
-
-```text
-0   admitted
-2   configuration/usage error                                     (terminal)
-3   READINESS_ADMISSION_REFUSED  converged but inadmissible        (terminal)
-75  READINESS_POLL_EXHAUSTED     never converged  -- THE ONLY RETRYABLE CODE
-1, and anything else: unexpected failure                          (terminal)
-```
-
-**The retryable code must not be one the script can return by accident, and
-that rules out 1.** A caller is permitted to re-fire a production deployment on
-it, while in shell 1 is precisely the code `set -e` yields for an unbound
-`${VAR:?}`, a failed `mktemp`/`mkdir`/`cd`, or any future command added to the
-file. Granting 1 retryable status would let an unrelated latent defect
-authorise a redeploy. 75 is sysexits.h `EX_TEMPFAIL`, and only the exhaustion
-path produces it; missing inputs are classified as configuration (2) through
-`require_configuration` rather than left to `${VAR:?}`'s exit 1.
-
-A caller that re-deploys on a readiness failure **MUST** gate that retry on
-equality with 75, never on `!= 0`. `commerce/test/controlled-production-readiness-script.test.ts`
-proves the execution topology rather than the formatting: a fake `node` records
-every invocation together with the number of status polls already completed, so
-"ran exactly once" and "ran only after convergence" are observed facts. Two
-negative cases pin the exit-code contract from the other side: a missing
-required input and an injected `mktemp` failure must both land outside 75.
-
-## A same-owner reopen must use the durable owner identity, never a deployment target SHA
-
-A preserved same-owner recovery lineage must reopen using the durable owner
-identity that actually holds the gate. A deployment target SHA must never
-be used to synthesize a replacement release identity for reopen.
-
-`controlled-production-deploy.yml`'s reopen path unconditionally computes
-`RELEASE_ID=deploy-$TARGET_SHA` - correct for the ordinary fresh-deploy flow
-it was built for (where the release identity and the deployment target are
-the same thing), but wrong for any lineage whose owner identity predates
-and outlives its deployment target, such as the deploy-R4 owner preserved
-across the entire R3->R4->R5->R6->R7 same-owner crossings: its
-`release_id` (`deploy-aa492d5a...`) was fixed at the original R3/R4
-recovery and has never changed, while its `expected.source_commit` has
-moved through every subsequent crossing. Reopening this owner through
-`controlled-production-deploy.yml` would derive a release identity
-(`deploy-<current target SHA>`) that does not match the durable owner on
-record, and fail closed on `GENERIC_DEPLOY_BLOCKED_BY_RELEASE_OWNER` at
-best - or, if ever "fixed" by loosening that check, silently operate on
-the wrong release identity.
-
-**Fix pattern**: a same-owner reopen is its own narrowly-scoped,
-one-shot controller (see `controlled-r7-same-owner-reopen.yml`), which
-hard-binds the release identity to the actual durable owner constant, never
-derives it from any SHA, and treats a previous green verify-only run as
-useful audit evidence only - never as its own safety precondition. It
-re-proves every invariant (refs, authority, surfaces, checkout-paused,
-candidateHead/Promo state, provider readiness) fresh, immediately before
-its one mutation, with the POST itself as the literal last command and no
-retry loop: if the POST's result is ambiguous (e.g. the connection drops
-mid-response), the workflow stops rather than issuing a second POST -
-resolving that ambiguity is a separate, read-only investigation, never an
-automatic retry.
-
-## Prove the fact at the seam that consumes it
-
-A safety property is enforced where the orchestration actually consumes it, and
-nowhere else. Green unit tests on a pure implementation are not evidence of
-enforcement; neither is a sentence in this document, nor a comment in the
-controller that states the rule correctly.
-
-Three defects of this exact shape were found on 2026-08-29, all with correct
-logic behind a disconnected seam:
-
-```text
-ancestry fence        invariant real, production ref never fetched by CI
-semantic boundary     invariant real, sensitive paths cut by a git pathspec
-                      before the classifier ever saw them
-controller identity   invariant real, values never compared - and in two lanes
-                      a reflexive `merge-base --is-ancestor` ADMITTED the
-                      collision it appeared to forbid
-```
-
-Each would have produced a green production run that proved nothing. The third
-is the sharpest: a check that looks like protection can be the hole.
-
-**Therefore:** when adding or repairing an invariant, add a structural test
-against the workflow seam itself, and read the exact command a controller runs
-before dispatching it. `commerce/test/generic-deploy-boundary-enforcement.test.ts`
-and `commerce/test/controller-target-distinctness.test.ts` are the pattern.
-
-## Deploy lanes
-
-Three lanes, chosen by what the change set crosses. The category is a *deny*
-reason for the generic lane; it does not by itself say how a refused change
-should ship, and conflating those two is how a lane becomes a bypass.
-
-```text
-generic                     nothing crossed, or CONTROL_PLANE only
-release-semantics cutover   RELEASE_CONTROL only
-candidate protocol          SCHEMA or LEGAL
-```
-
-Ordinary SCHEMA uses the smallest candidate protocol: append-only migration
-admission publishes immutable `refs/heads/runtime/schema-<target_sha>`
-provenance, the existing runtime-candidate promotion performs its sole CAS,
-and a schema admission adapter supplies the target migration-inventory
-expectation to the shared controlled deployment execution. Legal remains a
-separate authority and COMPATIBILITY remains fail-closed; neither can use the
-schema lane. No schema-specific durable state, certificate, generation ledger,
-or additional approval exists.
-
-`RELEASE_CONTROL` is the state machine and its enforcement, for which pause →
-deploy → convergence → reopen is sufficient proof. `COMPATIBILITY` — crypto,
-certification evidence, promo pricing, basis points, legal manifest shape,
-timestamp semantics — changes what a durable value *means*, and a converged
-runtime proves none of it: the old and new meanings can each be self-consistent
-and still disagree about state written under the other. It fails closed out of
-the cutover lane and has no lane of its own yet.
-
-### `CONTROL_PLANE` is governed, not deployed
-
-Deploy classification, the assert/reconcile scripts and the controllers
-themselves never run in production. A change to them takes effect the moment it
-merges to protected `main`, because a controller executes policy from its own
-checkout.
-
-Classifying them as release-semantic produced an authority error rather than a
-safety property: the same commit that was already effective also demanded a
-production pause, purely so `production-deploy` would catch up and stop showing
-the file in later range diffs. That is servicing an abstraction leak. Their
-governance is protected `main` plus required CI.
-
-The exemption rests on one machine-checked fact, not on intent:
-
-```text
-CONTROL_PLANE  intersect  runtime-import closure  =  empty
-```
-
-Direction matters, and only one direction is forbidden. Control plane may import
-runtime code freely - `generic-production-deploy.ts` imports `evaluateReopenGate`
-and must, to reconcile against real release state. Runtime importing control
-plane is the violation, and
-`commerce/test/control-plane-isolation.test.ts` fails rather than letting the
-exemption quietly widen.
-
-### A controller must not be older than what it deploys
-
-```text
-git merge-base --is-ancestor "$TARGET_SHA" "$CONTROLLER_SHA"   # equality allowed
-```
-
-The policy doing the judging must cover the code being judged. This is
-deliberately **not** "controller and target are different commits", which was
-tried on 2026-08-29 and was wrong twice over.
-
-It bought no independence: `main` is a descendant of every target, so a
-different controller SHA still contains the target's own policy changes - a
-commit that weakened admission would be judged by its own weakened rule either
-way. And it forced a ceremonial extra commit before anything could ship, since a
-controller can never deploy its own HEAD.
-
-Real controller independence requires a separate protected controller artifact
-whose policy does not derive from the candidate. Strict SHA inequality on `main`
-was never that mechanism, and deliberateness is already supplied by the
-`production` environment approval.
-
-What the original invariant forbids is **deriving** the target from the
-controller - `TARGET_SHA="$(git rev-parse HEAD)"`, as `controlled-age-band-cutover.yml`
-does - which is a different statement from the two SHAs coinciding.
-
-### Known imprecision: `types.ts`
-
-`commerce/src/types.ts` is classified `RELEASE_CONTROL` because it owns the
-release request schema, but it also carries the checkout, refund, city, agent,
-promo and settlement schemas. An unrelated DTO edit is therefore over-classified
-into the controlled lane.
-
-This is accepted deliberately: the lane is *more* conservative than a generic
-deploy, so the failure direction is safe, and failing the whole file closed
-would have blocked the release-control hardening from the lane built for it.
-
-The fix is classification precision, not hunk-level or symbol-level git
-analysis:
-
-```text
-split releaseControlSchema out of types.ts
-  -> commerce/src/release-control-schema.ts   RELEASE_CONTROL
-  -> commerce/src/types.ts                    ordinary classification
-```
-
-### First execution of the release-semantics lane
-
-`680bdd3` (the release hardening: ABORT, the ancestry fence, runtime-candidate
-de-authorization, the single expectation owner, the boundary repair) deployed
-2026-08-29 as the lane's first production use.
-
-```text
-admission           RELEASE_SEMANTICS_CUTOVER_BOUNDARY_EXACT
-categories          RELEASE_CONTROL only, no COMPATIBILITY path touched
-controller/target   1f64edf / 680bdd3, distinct
-topology            descendant of production-deploy; no merge commits;
-                    no maintenance commits in range
-pause proof         POST /v1/public/checkouts -> 503 SALES_TEMPORARILY_PAUSED
-pause window        08:39:03Z -> 08:41:01Z (1m58s)
-convergence         commerce, worker and admin all at 680bdd3; worker sweeping
-reopen              sales_paused=false, owner released
-production-deploy   680bdd3
-```
-
-For comparison, the two Epoch A pauses were 12h09m and 11m32s. The difference
-is sequencing, not luck: everything provable was proved before acquiring.
-
-## Topology normalization is a one-shot repair, not an ancestry bypass
-
-Production ran a detached lineage for thirteen commits
-(`0ddc33d → … → d6ca9dc → acfef97`), each controlled candidate re-creating the
-detachment. CI stayed green only because `release-ref-topology.test.ts` admitted
-`acfef97f` through `isApprovedControlledCandidate`. That is a certificate
-exemption carrying a production runtime, not ordinary topology, and every
-further deploy failed closed at
-`RUNTIME_CANDIDATE_TARGET_NOT_DESCENDANT_OF_PRODUCTION`.
-
-`controlled-topology-normalization.yml` repaired it once, on 2026-09-13. Three
-properties make it a repair rather than a hole, and none of them generalize:
-
-**BASE is literal, TARGET is bound at dispatch.** The controller ships *in* the
-commit it deploys, so a hard-coded `TARGET_SHA` would be circular - writing it
-changes the tree, which changes the merge SHA, which invalidates what was
-written. TARGET therefore arrives as a required `workflow_dispatch` input and is
-bound by proof: `github.ref == refs/heads/main`, `target_sha == origin/main`
-(re-read again immediately before the CAS), `tree(target_sha) == target_tree`,
-and `github.sha == target_sha` as an independent confirmation. That last
-equality is a check, never a derivation - `TARGET_SHA="$(git rev-parse HEAD)"`
-remains forbidden, and `controller-not-older-than-target.test.ts` greps for it.
-
-**The excluded boundary classes are proved individually, never inferred from the
-classifier's single verdict.** `genericProductionDeployBoundary()` returns only
-the *first* crossing in priority order, so a `RELEASE_SEMANTICS` answer can hide
-a `COMPATIBILITY` category underneath it. The controller asserts all of:
-
-```text
-SCHEMA            0 changed paths under commerce/migrations
-LEGAL             0 changed paths under commerce/legal, public/legal, certification.sh
-SURFACE_CONTRACT  release-surface-contract.json unchanged
-COMPATIBILITY     0 paths in compatibilitySemanticsPaths
-then              boundary === RELEASE_SEMANTICS
-                  releaseSemanticsCategories === ["RELEASE_CONTROL"] exactly
-```
-
-`COMPATIBILITY` has no lane. Holding it byte-identical to the live production
-runtime is what keeps a one-shot controller from quietly becoming that lane.
-
-**The ancestry waiver is bound to two exact SHAs and expires with the run.** It
-does not weaken `RUNTIME_CANDIDATE_NOT_DESCENDANT_OF_PRODUCTION_DEPLOY` or the
-promotion primitive's own check, and it is not a precedent for a second use:
-a future repair writes its own controller with its own two SHAs.
-
-```text
-BASE                acfef97f  (detached production runtime)
-TARGET              2ae6a35   (frozen protected-main tip)
-admission           RELEASE_SEMANTICS / ["RELEASE_CONTROL"], four classes clean
-schema              identical at both SHAs, head 0057
-runtime closure     95 files at BASE, 95 at TARGET, none dropped
-Agent Referrals     ACTIVE revision 4, owner unchanged before and after
-post-state          main == production-deploy == runtime-candidate
-                         == runtime/topology-normalization-1 == 2ae6a35
-```
-
-The certificate exemption is no longer load-bearing: the fence now passes via
-plain `isAncestor(production-deploy, main)`. The next ordinary release proved
-it - PR #112's candidate is a direct single-parent child of `production-deploy`
-on `main`, needing no reconstruction certificate at all.
-
-### Semantics the normalization intentionally dropped
-
-Two changes existed on the old `main` and are **not** present in the current
-lineage. They are not production/main drift and there is nothing to reconcile;
-holding production's blobs is what made the cutover a topology-only repair:
-
-```text
-release-surface-contract.json   admin/partner agent-referrals-v1
-                                -> lineage carries sales-availability-v1
-certification-dispatch.ts       dispatched_after_unfence via strictlyAfter (>)
-                                -> lineage carries after (>=)
-```
-
-Do not restore either as ordinary cleanup, and do not read a future diff against
-old `main` as a lost line. If the change is still wanted it needs its own
-reviewed lane - `SURFACE_CONTRACT` for the first, and for the second a
-`COMPATIBILITY` evidence protocol that does not exist yet.
-
-## Exceptional cutovers are not the ordinary release model
-
-Phase 1 (the `agents` legal-identity cleanup) needed a one-shot controller, an
-operator evidence packet, six frozen dispatch inputs, an exact commit-sequence
-assertion and its own runbook. It needed them because of conditions that were
-themselves exceptional: production had run a detached lineage, a second durable
-representation of legal identity was being removed, and there was a real race
-around migration eligibility. **None of that is a baseline release requirement**,
-and generalizing it would make the controlled cutover the only way to ship
-anything - the outcome "Enforcement lives in `sales-gate.ts`, not `domain.ts`"
-above already exists to prevent.
-
-The ordinary path stays ordinary:
-
-```text
-protected main + required CI -> select candidate -> generic boundary admission
-  -> guarded production-deploy CAS -> deploy exact candidate
-  -> readiness/convergence -> terminal completion
-```
-
-Do **not** institutionalize any of these for an ordinary release: manual gate
-attestations, a durable evidence file per deploy, six frozen workflow inputs, an
-operator-supplied tree SHA, literal commit-sequence declarations, a controller
-per migration, runbook-extracted SQL for every schema change, or a post-deploy
-forensic packet. Each was proportionate to a specific exceptional condition and
-is disproportionate without it.
-
-### Make the bad state impossible at the transition, rather than proving it absent beforehand
-
-This is the single largest thing Phase 1 produced, and it generalizes.
-
-Both Phase 1 gates began as operator queries run before dispatch. That could not
-bind the cutover: the runtime's legacy `prepareSettlement()` writes
-`reward_settlements` rows without `settlement_flow` - so they read as LEGACY -
-and sits behind no fence (`assertNewOrdersOpen` is only on the checkout path),
-so production could invalidate either gate between the query and the migration.
-A freshness window on the evidence would have narrowed that race, never closed
-it.
-
-Moving both predicates *into* `0058`, ahead of its first destructive statement
-and inside the `BEGIN IMMEDIATE` that `applyFkOffMigration` already holds, closed
-it outright: a writer either lands before the lock and is counted, or cannot
-interleave at all. Prefer
-
-```text
-BEGIN IMMEDIATE
-  assert invariant
-  perform the DDL / data transition
-COMMIT
-```
-
-over `operator query -> freshness window -> later migration`. External evidence
-remains useful provenance and is worth collecting - it finds violations while
-production is still open and the pointer unmoved - but it must never be the
-authority when a race is possible.
-
-**So before adding another external proof, check whether the bad state can be
-made impossible closer to the mutation boundary instead.** Ask:
-
-```text
-What concrete failure does this prevent?
-Is that failure already impossible nearer the transaction, CAS or state change?
-Does this check become authority, or is it only corroboration?
-If only corroboration, is it worth permanent CI and controller complexity?
-```
-
-Prefer one strong invariant at the real mutation boundary over several weaker
-corroborating checks spread across CI, markdown, shell and operator evidence.
-See "Prove the fact at the seam that consumes it" above: proof volume is not
-proof strength.
-
-### Corroboration must not be described as evidence it did not produce
-
-A check that participates in admission or authority fails closed. A best-effort
-probe that cannot change the decision is fine - but it may only be cited as
-evidence when its output was actually obtained and verified.
-
-Phase 1's controller carries a best-effort `dormant-readiness` probe intended to
-corroborate the gate evidence with production's own `business_facts_tables`. In
-run `34757128419` it returned `422 VALIDATION_ERROR`: its request body did not
-satisfy `releaseExpectedSchema`, carrying only `source_commit` instead of the
-full expectation, so it was rejected before the handler ran. It was `|| true`,
-never authority, never part of admission, and the gates that mattered were
-re-proved by `0058` under its own lock - so there is no safety consequence. But
-the controller comment and PR body claimed it recorded evidence, and it recorded
-none.
-
-**Never cite that probe as production evidence from run `34757128419`.** If that
-controller is reused as a template, either send the full `expected` object or
-delete the probe together with every claim depending on it. A best-effort call
-that is systematically DTO-rejected is worse than either: it reads as
-corroboration while producing nothing.
-
-### Phase 1 historical baseline
-
-```text
-Phase 1                    CLOSED / COMPLETE (2026-09-13)
-controller run             34757128419, zero retries
-production-deploy          1d7310883f4822945725a6ba95d7ff37a470f502
-runtime-candidate          2ae6a351669d2cc9d8cd42cf92d50436d64d08cd
-0058                       APPLIED
-legal identity authority   legal-profile revision contour only
-agents legal shadows       REMOVED
-Gate 1 / Gate 2            enforced and passed under the migration's own
-                           BEGIN IMMEDIATE, not by the operator queries alone
-```
-
-`runtime-candidate` staying at the old base is expected, not a defect - see
-"`runtime-candidate` is never an authority" above. It advances on the next
-ordinary promotion.
-
-Phase 1 is not blocked on anything. Three items remain, each independent of it
-and of each other: retention policy for the backup databases sharing the
-production volume, the `runtime-candidate` advance, and the probe defect above.
+Authority is spent by `armExternalEffects()` **before** the first external
+effect becomes possible, not after one is observed. Recording afterwards is the
+same defect this codebase already refuses at the payment boundary: crossing an
+outside boundary and then hoping to write down that it happened. A converged
+topology is not an external effect and spends nothing - deploying four surfaces
+changes nothing outside the system, and such a deploy must stay reversible.
+
+## A lease ends ownership; it never opens sales
+
+An expired lease lets another runner take the session over. It does not prove
+anything about production's topology, so it never reopens sales by itself. If a
+fence is closed it stays closed until someone proves either the pre-deploy
+topology or the target one.
+
+## The database's lineage is checked before anything trusts it
+
+A database is classified before migration, not after: empty and bootstrappable,
+supported, legacy, or unknown. The last two fail closed. A runtime that
+silently accepts a database from a lineage it was not built for is how a
+restored backup becomes a corrupted production.
+
+## Three things the incidents taught
+
+**Prove the fact at the seam that consumes it.** A safety property is enforced
+where the orchestration actually consumes it, and nowhere else. Green unit tests
+on a pure implementation are not evidence of enforcement; neither is a sentence
+in this document, nor a comment stating the rule correctly above code that does
+not call it.
+
+**Make the bad state impossible at the transition, rather than proving it absent
+beforehand.** An operator query run before dispatch cannot bind anything:
+production may invalidate the answer between the query and the act. A freshness
+window narrows that race and never closes it. The check belongs inside the
+transition that depends on it.
+
+**Corroboration must not be described as evidence it did not produce.** A check
+that participates in admission fails closed. A best-effort probe that cannot
+change the decision is fine, but it may be cited only when its output was
+actually obtained and verified - a probe that returned a validation error and
+was recorded as corroboration is worse than no probe, because the record claims
+a check that never ran.
