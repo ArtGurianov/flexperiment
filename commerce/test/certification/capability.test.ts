@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
-  CertificationCapabilityError, InMemoryCertificationCapabilityStore, authorizationDefect, issueCapability,
+  CertificationCapabilityError, authorizationDefect, issueCapability,
   type TrustedCheckoutFacts,
 } from "../../src/certification/capability";
+import { certificationCapabilityStores } from "../support/certification-stores";
 
 const now = new Date("2026-09-19T00:00:00.000Z");
 const sha = "a".repeat(40);
@@ -10,11 +11,12 @@ const scope = { runId: "run", deploymentSessionId: "deploy", releaseSha: sha, ma
 const facts: TrustedCheckoutFacts = { deploymentSessionId: "deploy", runtimeReleaseSha: sha, actualAmountKopecks: 100, checkoutOccurrenceId: "occ" };
 const expected = { runId: "run", releaseSha: sha, occurrenceId: "occ" };
 
-describe("certification capability", () => {
+describe.each(certificationCapabilityStores)("certification capability (%s)", (_name, makeFixture) => {
   it("admits possession only when three views of the release agree", () => {
     // What the capability was issued against, what the runtime is serving, and
     // what the run set out to certify. Any disagreement means one of them moved.
-    const store = new InMemoryCertificationCapabilityStore();
+    const { store, bind } = makeFixture();
+    bind("run", "deploy");
     const capability = issueCapability(store, scope, now);
     const claim = { capabilityId: capability.id, runId: "run", nonce: capability.nonce };
 
@@ -27,7 +29,8 @@ describe("certification capability", () => {
     // An expired capability is reissued and the run continues; a runtime on a
     // different revision means production moved and the run must not continue
     // at all. A single boolean cannot tell those apart.
-    const store = new InMemoryCertificationCapabilityStore();
+    const { store, bind } = makeFixture();
+    bind("run", "deploy");
     const capability = issueCapability(store, scope, now);
     const claim = { capabilityId: capability.id, runId: "run", nonce: capability.nonce };
 
@@ -40,14 +43,36 @@ describe("certification capability", () => {
 
   it("refuses to put a second live capability behind the same fence", () => {
     // Whoever still holds the forgotten one decides when to use it.
-    const store = new InMemoryCertificationCapabilityStore();
+    const { store, bind } = makeFixture();
+    bind("run", "deploy");
     issueCapability(store, scope, now);
     expect(() => issueCapability(store, scope, now)).toThrow("CERTIFICATION_CAPABILITY_ALREADY_LIVE");
     expect(() => issueCapability(store, scope, new Date("2026-09-19T01:00:00.000Z"))).not.toThrow();
   });
 
+  it("reissues once the first has expired, and keeps it", () => {
+    // Expiry alone does not free the fence: the slot is a stored fact, so the
+    // old capability has to be retired for a replacement to exist at all. Both
+    // endings are kept, because "spent" and "replaced" are different histories.
+    const { store, bind } = makeFixture();
+    bind("run", "deploy");
+    const first = issueCapability(store, scope, now);
+    const afterExpiry = new Date(now.getTime() + scope.ttlMs + 1_000);
+
+    const second = issueCapability(store, scope, afterExpiry);
+    expect(second.id).not.toBe(first.id);
+    expect(store.get(first.id)).toBeDefined();
+    // ...and the replacement is the only one a claim can now be admitted with.
+    // Retired, not merely expired: without that case a retired-but-unconsumed
+    // capability would go on satisfying this predicate while the row that
+    // replaced it already existed - two capabilities, both authorised.
+    expect(authorizationDefect(store.get(first.id), { capabilityId: first.id, runId: "run", nonce: first.nonce }, facts, expected, afterExpiry))
+      .toBe("CERTIFICATION_CAPABILITY_RETIRED");
+  });
+
   it("will not issue an unbounded or unscoped permission", () => {
-    const store = new InMemoryCertificationCapabilityStore();
+    const { store, bind } = makeFixture();
+    bind("run", "deploy");
     expect(() => issueCapability(store, { ...scope, releaseSha: "" }, now)).toThrow(CertificationCapabilityError);
     expect(() => issueCapability(store, { ...scope, maxAmountKopecks: 0 }, now)).toThrow("CERTIFICATION_CAPABILITY_AMOUNT_INVALID");
     expect(() => issueCapability(store, { ...scope, ttlMs: 0 }, now)).toThrow("CERTIFICATION_CAPABILITY_TTL_INVALID");

@@ -151,7 +151,14 @@ export const authorizationDefect = (
   return undefined;
 };
 
-/** Test-only storage. In P9 the live-uniqueness rule becomes a partial UNIQUE index. */
+/**
+ * Test-only storage, modelling the same slot the schema enforces with a partial
+ * UNIQUE index over `consumed_at IS NULL AND retired_at IS NULL`.
+ *
+ * The slot is a stored fact, not a computed one: expiry alone does not free it,
+ * so a replacement requires the old capability to be retired. Keeping that here
+ * is what makes this a reference rather than a looser stand-in.
+ */
 export class InMemoryCertificationCapabilityStore implements CertificationCapabilityStore {
   #capabilities = new Map<string, CertificationCapability>();
 
@@ -160,8 +167,11 @@ export class InMemoryCertificationCapabilityStore implements CertificationCapabi
     // still usable is a second way through the same gate, and whoever holds
     // the forgotten one decides when to use it.
     for (const existing of this.#capabilities.values()) {
-      if (existing.deploymentSessionId !== capability.deploymentSessionId || existing.consumedAt) continue;
+      if (existing.deploymentSessionId !== capability.deploymentSessionId || existing.consumedAt || existing.retiredAt) continue;
       if (Date.parse(existing.expiresAt) > now.getTime()) throw new CertificationCapabilityError("CERTIFICATION_CAPABILITY_ALREADY_LIVE", existing.id);
+      // Retiring is what frees the slot, and it keeps the row: "spent" and
+      // "replaced" are different histories and neither is a deletion.
+      this.#capabilities.set(existing.id, { ...existing, retiredAt: now.toISOString() });
     }
     this.#capabilities.set(capability.id, capability);
     return capability;

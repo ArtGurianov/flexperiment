@@ -1,15 +1,16 @@
 import { describe, expect, it } from "vitest";
+import { certificationRunStores } from "../support/certification-stores";
 import {
-  InMemoryCertificationRunStore, commandPermitted, enterCleanup, planRecovery,
-  type CertificationRun,
+  commandPermitted, enterCleanup, planRecovery,
+  type CertificationRun, type CertificationRunStore,
 } from "../../src/certification/run";
 
 const base: CertificationRun = {
   runId: "run", revision: 1, releaseSha: "a".repeat(40), phase: "NEW", direction: "NORMAL",
   startedAt: "2026-09-20T00:00:00.000Z",
 };
-const opened = (over: Partial<CertificationRun> = {}) => {
-  const runs = new InMemoryCertificationRunStore();
+const opened = (makeRuns: () => CertificationRunStore, over: Partial<CertificationRun> = {}) => {
+  const runs = makeRuns();
   return { runs, run: runs.create({ ...base, ...over }) };
 };
 const cancelling: CertificationRun = {
@@ -19,11 +20,11 @@ const cancelling: CertificationRun = {
   pendingCommand: { kind: "CANCEL_BOOKING", idempotencyKey: "cancel-key", bookingId: "booking" },
 };
 
-describe("the run as an authority", () => {
+describe.each(certificationRunStores)("the run as an authority (%s)", (_name, makeRuns) => {
   it("lets exactly one of two runners advance it", () => {
     // Both read revision 1 and both believe they may act. Silently accepting
     // the second writer is how two runners each believe they own the money.
-    const { runs, run } = opened();
+    const { runs, run } = opened(makeRuns);
 
     const winner = runs.update(run.runId, run.revision, { phase: "OCCURRENCE_CREATED" });
 
@@ -33,7 +34,7 @@ describe("the run as an authority", () => {
   });
 
   it("refuses to move backwards in either direction it is monotonic in", () => {
-    const { runs, run } = opened();
+    const { runs, run } = opened(makeRuns);
     const advanced = runs.update(run.runId, run.revision, { phase: "OCCURRENCE_OPEN", direction: "CLEANUP_STARTED" });
     expect(() => runs.update(advanced.runId, advanced.revision, { phase: "NEW" })).toThrow("CERTIFICATION_RUN_PHASE_REGRESSED");
     expect(() => runs.update(advanced.runId, advanced.revision, { direction: "NORMAL" })).toThrow("CERTIFICATION_RUN_DIRECTION_REGRESSED");
@@ -42,7 +43,7 @@ describe("the run as an authority", () => {
   it("keeps the reason it failed, whatever goes wrong while recovering", () => {
     // The operator is told why the certification failed, not what the recovery
     // tripped over on its way to closing it out.
-    const { runs, run } = opened();
+    const { runs, run } = opened(makeRuns);
     const failure = { outcome: "FAILED" as const, code: "CERTIFICATION_EMAIL_TERMINAL:TICKET:BOUNCED", recordedAt: "2026-09-20T02:00:00.000Z" };
     const failed = runs.update(run.runId, run.revision, { failure });
 
@@ -54,18 +55,18 @@ describe("the run as an authority", () => {
   });
 
   it("keeps the certified revision immutable for the life of the run", () => {
-    const { runs, run } = opened();
+    const { runs, run } = opened(makeRuns);
     expect(() => runs.update(run.runId, run.revision, { releaseSha: "b".repeat(40) } as never)).toThrow("CERTIFICATION_RUN_RELEASE_IMMUTABLE");
   });
 });
 
-describe("entering cleanup", () => {
+describe.each(certificationRunStores)("entering cleanup (%s)", (_name, makeRuns) => {
   it("keeps a financial command exactly as it was armed", () => {
     // An ambiguous cancellation followed by an emergency close is what this
     // exists for: the catalogue has to shut, and the exact command and key
     // still have to be there, because that is what a reconciliation needs to
     // find out whether a customer was charged.
-    const { runs, run } = opened(cancelling);
+    const { runs, run } = opened(makeRuns, cancelling);
 
     const cleaning = enterCleanup(runs, run);
 
@@ -78,7 +79,7 @@ describe("entering cleanup", () => {
     // It must never execute again; its key is still how a reconciliation finds
     // out whether the request got through.
     const command = { kind: "OPEN_SALES" as const, idempotencyKey: "open-key", occurrenceId: "occ", expectedRevision: 3 };
-    const { runs, run } = opened({ phase: "OCCURRENCE_PUBLISHED", occurrenceId: "occ", pendingCommand: command });
+    const { runs, run } = opened(makeRuns, { phase: "OCCURRENCE_PUBLISHED", occurrenceId: "occ", pendingCommand: command });
 
     const cleaning = enterCleanup(runs, run);
 
@@ -87,12 +88,12 @@ describe("entering cleanup", () => {
   });
 
   it("is idempotent once the run is already travelling that way", () => {
-    const { runs, run } = opened({ direction: "CLEANUP_STARTED" });
+    const { runs, run } = opened(makeRuns, { direction: "CLEANUP_STARTED" });
     expect(enterCleanup(runs, run)).toBe(run);
   });
 });
 
-describe("what a run is permitted to do", () => {
+describe.each(certificationRunStores)("what a run is permitted to do (%s)", (_name, makeRuns) => {
   it("closes the catalogue direction permanently once cleanup has begun", () => {
     const cleaning = { ...base, direction: "CLEANUP_STARTED" as const, phase: "OCCURRENCE_PUBLISHED" as const };
     expect(commandPermitted(cleaning, "OPEN_SALES")).toBe("CERTIFICATION_CATALOGUE_REOPEN_FORBIDDEN");
@@ -120,7 +121,7 @@ describe("what a run is permitted to do", () => {
   });
 });
 
-describe("recovery planning", () => {
+describe.each(certificationRunStores)("recovery planning (%s)", (_name, makeRuns) => {
   it("refuses every branch when production is not the revision the run began on", () => {
     expect(planRecovery(cancelling, false)).toEqual({ kind: "BLOCKED_BASELINE" });
   });
