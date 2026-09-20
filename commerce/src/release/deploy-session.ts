@@ -171,8 +171,25 @@ export class DeploySessions {
    */
   armExternalEffects(id: string, ownerId: string): DeploySession {
     const session = this.owned(id, ownerId);
+    if (session.mode !== "MAINTENANCE_CUTOVER") throw new Error("ROLLING_SAFE_ARMS_NO_EXTERNAL_EFFECTS");
+    // Readiness stays the orchestrator's job, but arming certification on a
+    // knowingly partial deployment is the one misuse worth making impossible
+    // here rather than trusting a call order.
+    if (!session.observedTopology || !topologyIsTarget(session.observedTopology, session.targetSha)) {
+      throw new Error("TARGET_TOPOLOGY_NOT_OBSERVED");
+    }
     if (session.rollbackAuthority === "NEW_LINEAGE_ONLY") return session;
     return this.store.transition(id, ["DEPLOYING", "RECOVERY_REQUIRED"], { rollbackAuthority: "NEW_LINEAGE_ONLY" });
+  }
+
+  /**
+   * Recovery entry for a failure that no topology reading can classify - a
+   * certification step that failed past the irreversible boundary, say. It
+   * records the state durably instead of leaving the session mid-flight.
+   */
+  enterRecoveryRequired(id: string, ownerId: string): DeploySession {
+    this.owned(id, ownerId);
+    return this.store.transition(id, ["DEPLOYING", "RECOVERY_REQUIRED"], { state: "RECOVERY_REQUIRED" });
   }
 
   renewLease(id: string, ownerId: string): DeploySession {

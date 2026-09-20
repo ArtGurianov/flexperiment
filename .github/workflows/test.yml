@@ -37,6 +37,11 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
+      # Workflow defects used to surface only at dispatch time, which for a
+      # deploy path means surfacing in production. actionlint catches the
+      # structural ones before merge.
+      - name: Lint the workflows
+        uses: raven-actions/actionlint@v2
       # next-env.d.ts imports ./.next/types/*.d.ts, which only exist after a
       # build or typegen. Without them that file fails to load, taking its
       # next/image-types/global reference down with it, so a clean checkout

@@ -1,0 +1,49 @@
+# Publishes an immutable provenance ref for a revision and advances the
+# candidate pointer. It deploys nothing.
+name: Release candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: The exact 40-hex commit to publish as a candidate.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: flexperiment-release-candidate
+  cancel-in-progress: false
+
+jobs:
+  candidate:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Bind to the exact candidate commit
+        run: |
+          set -euo pipefail
+          [[ "${{ inputs.candidate_sha }}" =~ ^[a-f0-9]{40}$ ]] || { echo "CANDIDATE_SHA_INVALID" >&2; exit 1; }
+          git merge-base --is-ancestor "${{ inputs.candidate_sha }}" origin/main \
+            || { echo "CANDIDATE_SHA_NOT_ON_MAIN" >&2; exit 1; }
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.29.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Publish the candidate
+        env:
+          RELEASE_CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+        run: pnpm exec tsx scripts/release/release-candidate.ts

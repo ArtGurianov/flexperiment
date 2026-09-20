@@ -62,6 +62,7 @@ describe("deploy sessions", () => {
     sessions.beginDeploying(session.id, "owner");
     expect(() => sessions.completeTarget(session.id, "owner", topology(target)))
       .toThrow("MAINTENANCE_CUTOVER_EXTERNAL_EFFECTS_NOT_ARMED");
+    sessions.observeTopology(session.id, "owner", topology(target));
     sessions.armExternalEffects(session.id, "owner");
     expect(sessions.completeTarget(session.id, "owner", topology(target)))
       .toMatchObject({ state: "SUCCEEDED", rollbackAuthority: "NEW_LINEAGE_ONLY" });
@@ -81,6 +82,10 @@ describe("deploy sessions", () => {
     sessions.fence(session.id, "owner", topology(old));
     sessions.beginDeploying(session.id, "owner");
     sessions.classifyFailure(session.id, "owner", { ...topology(old), worker: changed });
+    // Recovery went forward: every surface now serves the target, which is what
+    // makes arming certification on this session meaningful at all.
+    expect(() => sessions.armExternalEffects(session.id, "owner")).toThrow("TARGET_TOPOLOGY_NOT_OBSERVED");
+    sessions.observeTopology(session.id, "owner", topology(target));
 
     // Arming happens BEFORE the ruble leaves, so a crash mid-payment can never
     // find a session that still calls the archived database truthful.
