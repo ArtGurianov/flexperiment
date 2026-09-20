@@ -168,11 +168,14 @@ export const performCertificationCatalogueCommand = (
   if (defect) throw new CertificationCapabilityError(defect);
 
   const authority = new SqliteCertificationCatalogueAuthority(ports.db, runs);
+  // Derived, never the caller's. A fresh key must not be able to open a second
+  // admin command for an operation this run has already performed.
+  const commandKey = SqliteCertificationCatalogueAuthority.commandKey(request.runId, request.command.kind);
   return authority.admit(request.runId, request.command, () => {
     if (request.command.kind === "CREATE_OCCURRENCE") {
-      return ports.createOccurrence(request.command.draft, request.commandId, request.reason);
+      return ports.createOccurrence(request.command.draft, commandKey, request.reason);
     }
     const patch = request.command.kind === "PUBLISH_OCCURRENCE" ? { visibility: "PUBLISHED" } : { sales_status: "OPEN" };
-    return ports.patchOccurrence(request.command.occurrenceId, patch, request.command.expectedRevision, request.commandId, request.reason);
+    return ports.patchOccurrence(request.command.occurrenceId, patch, request.command.expectedRevision, commandKey, request.reason);
   });
 };

@@ -59,7 +59,7 @@ describe("admitting a catalogue command", () => {
     // A run whose response was lost must learn the occurrence it made, not make
     // a second one in the production catalogue.
     expect(performed).toBe(1);
-    expect(authority.resultFor("key-1")).toEqual(occurrence);
+    expect(authority.resultFor("run", "CREATE_OCCURRENCE")).toEqual(occurrence);
   });
 
   it("commits the mutation and the record together, or neither", () => {
@@ -72,7 +72,7 @@ describe("admitting a catalogue command", () => {
     })).toThrow("LEDGER_WRITE_FAILED");
 
     expect(db.prepare("SELECT id FROM cities WHERE id = 'occ'").get()).toBeUndefined();
-    expect(authority.resultFor("key-1")).toBeUndefined();
+    expect(authority.resultFor("run", "CREATE_OCCURRENCE")).toBeUndefined();
   });
 
   it("offers no asynchronous entry point at all", () => {
@@ -89,7 +89,7 @@ describe("admitting a catalogue command", () => {
     // retired is no longer armed.
     seed({ pendingCommand: { ...create, idempotencyKey: "other-key" } });
     expect(() => authority.admit("run", create, mutate())).toThrow("CERTIFICATION_COMMAND_NOT_ARMED");
-    expect(authority.resultFor("key-1")).toBeUndefined();
+    expect(authority.resultFor("run", "CREATE_OCCURRENCE")).toBeUndefined();
   });
 
   it("refuses a catalogue that has turned to cleanup", () => {
@@ -111,16 +111,18 @@ describe("what only a durable ledger can say", () => {
     authority.admit("run", create, mutate());
 
     const reopened = new SqliteCertificationCatalogueAuthority(db, new SqliteCertificationRunStore(db));
-    expect(reopened.resultFor("key-1")).toEqual(occurrence);
+    expect(reopened.resultFor("run", "CREATE_OCCURRENCE")).toEqual(occurrence);
   });
 
-  it("will not hand one run the catalogue another run's key made", () => {
+  it("keeps each run's catalogue to itself", () => {
     seed();
     authority.admit("run", create, mutate());
     runs.create({ runId: "other", revision: 1, releaseSha: SHA, phase: "NEW", direction: "NORMAL", startedAt, pendingCommand: create });
 
-    expect(() => authority.admit("other", create, mutate("other-occ")))
-      .toThrow("CERTIFICATION_CATALOGUE_KEY_FOREIGN_RUN");
+    // A different run performing its own create is legitimate, and it gets its
+    // own row rather than this one's result.
+    expect(authority.admit("other", create, mutate("other-occ")).id).toBe("other-occ");
+    expect(authority.resultFor("run", "CREATE_OCCURRENCE")?.id).toBe("occ");
   });
 
   it("refuses to rewrite or erase what a key already did", () => {
@@ -129,9 +131,99 @@ describe("what only a durable ledger can say", () => {
 
     // Rewriting it would let a replay be answered with a different past than
     // the one the key actually produced.
-    expect(() => db.prepare("UPDATE certification_catalogue_mutations SET occurrence_id = 'other' WHERE idempotency_key = 'key-1'").run())
+    expect(() => db.prepare("UPDATE certification_catalogue_mutations SET occurrence_id = 'other' WHERE run_id = 'run'").run())
       .toThrow("CERTIFICATION_CATALOGUE_MUTATION_IMMUTABLE");
-    expect(() => db.prepare("DELETE FROM certification_catalogue_mutations WHERE idempotency_key = 'key-1'").run())
+    expect(() => db.prepare("DELETE FROM certification_catalogue_mutations WHERE run_id = 'run'").run())
       .toThrow("CERTIFICATION_CATALOGUE_MUTATION_IMMUTABLE");
+  });
+});
+
+describe("one run, one occurrence, in order", () => {
+  const publish = (occurrenceId: string, key: string) =>
+    ({ kind: "PUBLISH_OCCURRENCE" as const, idempotencyKey: key, occurrenceId, expectedRevision: 1 });
+  const open = (occurrenceId: string, key: string) =>
+    ({ kind: "OPEN_SALES" as const, idempotencyKey: key, occurrenceId, expectedRevision: 2 });
+  /**
+   * Clear, then arm - which is what the run really does, because the baseline
+   * refuses to swap one armed command for another in place. The test writes
+   * directly rather than through the machine on purpose: the server's
+   * cardinality must not depend on a well-behaved client.
+   */
+  const arm = (command: { kind: string }) => {
+    runs.update("run", runs.load("run")!.revision, { pendingCommand: null });
+    runs.update("run", runs.load("run")!.revision, { pendingCommand: command as never });
+  };
+
+  it("refuses a second create under a fresh command id", () => {
+    // The case a client-supplied key cannot catch: both requests are formally
+    // new, and the second would put a second certification occurrence in the
+    // production catalogue and orphan the first.
+    seed();
+    authority.admit("run", create, mutate());
+
+    const again = { ...create, idempotencyKey: "command-B" };
+    arm(again);
+
+    expect(authority.admit("run", again, mutate("second-occ"))).toEqual(occurrence);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM certification_catalogue_mutations WHERE run_id = 'run'").get())
+      .toEqual({ n: 1 });
+    expect(db.prepare("SELECT id FROM cities WHERE id = 'second-occ'").get()).toBeUndefined();
+  });
+
+  it("refuses to publish before anything was created", () => {
+    // Out of order is not a slower path to the same place: an occurrence
+    // published before it was created is one this run never made.
+    const command = publish("occ", "command-B");
+    seed({ pendingCommand: command });
+    expect(() => authority.admit("run", command, mutate())).toThrow("CERTIFICATION_CATALOGUE_OUT_OF_ORDER");
+  });
+
+  it("refuses to open sales before publication", () => {
+    seed();
+    authority.admit("run", create, mutate());
+    const command = open("occ", "command-C");
+    arm(command);
+    expect(() => authority.admit("run", command, () => occurrence)).toThrow("CERTIFICATION_CATALOGUE_OUT_OF_ORDER");
+  });
+
+  it("refuses a publish pointed at an occurrence this run did not create", () => {
+    // A command naming a different one is either a mistake or a real event
+    // being pointed at.
+    seed();
+    authority.admit("run", create, mutate());
+    const command = publish("someone-elses-event", "command-B");
+    arm(command);
+    expect(() => authority.admit("run", command, () => occurrence)).toThrow("CERTIFICATION_CATALOGUE_OCCURRENCE_DIVERGED");
+  });
+
+  it("runs the whole legal sequence once each, and reconciles every repeat", () => {
+    seed();
+    authority.admit("run", create, mutate());
+
+    const published = { ...occurrence, visibility: "PUBLISHED" };
+    const publishCommand = publish("occ", "command-B");
+    arm(publishCommand);
+    expect(authority.admit("run", publishCommand, () => published)).toEqual(published);
+
+    const opened = { ...published, sales_status: "OPEN" };
+    const openCommand = open("occ", "command-C");
+    arm(openCommand);
+    expect(authority.admit("run", openCommand, () => opened)).toEqual(opened);
+
+    // Every repeat, under any key, reconciles to what this run already did.
+    expect(authority.admit("run", { ...create, idempotencyKey: "fresh" }, mutate("no"))).toEqual(occurrence);
+    expect(authority.admit("run", publish("occ", "fresh"), () => ({ ...published, title: "changed" }))).toEqual(published);
+    expect(authority.admit("run", open("occ", "fresh"), () => ({ ...opened, title: "changed" }))).toEqual(opened);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM certification_catalogue_mutations WHERE run_id = 'run'").get())
+      .toEqual({ n: 3 });
+  });
+
+  it("derives the admin command key from the run and the kind, never from the caller", () => {
+    expect(SqliteCertificationCatalogueAuthority.commandKey("run", "CREATE_OCCURRENCE"))
+      .toBe("certification:run:CREATE_OCCURRENCE");
+    // Same hole one layer down: a fresh caller key must not open a second
+    // admin command for an operation this run already performed.
+    expect(SqliteCertificationCatalogueAuthority.commandKey("run", "CREATE_OCCURRENCE"))
+      .toBe(SqliteCertificationCatalogueAuthority.commandKey("run", "CREATE_OCCURRENCE"));
   });
 });
