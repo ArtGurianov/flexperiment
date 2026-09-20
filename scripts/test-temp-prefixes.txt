@@ -73,6 +73,7 @@ candidate-author-fixture
 candidate-threeway
 cert-dispatch
 cert-dispatch-template
+certification-operator
 claim-seam
 claim-seam-template
 commerce-test-db-snapshot
