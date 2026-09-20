@@ -1,7 +1,7 @@
 import { evaluateReadiness, type ReleaseReadinessEvidence, type ReleaseReadinessExpectation } from "./readiness";
 import {
-  DeploySessions, topologyIsTarget,
-  type DeployMode, type DeploySession, type PreDeployTopology,
+  DeploySessions, planResume, topologyIsTarget,
+  type DeployMode, type DeploySession, type PreDeployTopology, type ResumePlan,
 } from "./deploy-session";
 import type { CertificationCapability } from "./sales-gate";
 
@@ -37,12 +37,28 @@ export interface CertificationDriver {
   certify(capability: CertificationCapability): Promise<void>;
 }
 
+
+/**
+ * Undoing a cutover is not deploying one SHA. It restores a vector - each
+ * surface to whatever it was actually serving, which need not have been the
+ * same commit - and, across a lineage boundary, the archived database the
+ * predecessor handed over. The digest is passed so the driver can prove it is
+ * restoring that snapshot rather than a file that merely has the right name.
+ */
+export interface RecoveryDriver {
+  restorePreDeployState(input: {
+    readonly preDeployTopology: PreDeployTopology;
+    readonly predecessorDatabase?: { readonly ref: string; readonly sha256: string };
+  }): Promise<void>;
+}
+
 export type ReleasePorts = {
   readonly sessions: DeploySessions;
   readonly topology: TopologyReader;
   readonly evidence: RuntimeEvidenceReader;
   readonly deployment: DeploymentDriver;
   readonly certification?: CertificationDriver;
+  readonly recovery?: RecoveryDriver;
   readonly clock?: () => Date;
 };
 
@@ -151,6 +167,62 @@ export class ReleaseOrchestrator {
 
     // completeTarget settles the session and reopens the gate in one operation.
     return { kind: "SUCCEEDED", session: sessions.completeTarget(session.id, request.ownerId, final.topology) };
+  }
+
+  /**
+   * Picks up a session whose runner died.
+   *
+   * Taking over is allowed only once the lease has actually expired - a live
+   * owner is a live deploy, and stealing it would put two runners on one
+   * production topology. The takeover itself moves ownership and nothing else:
+   * the gate stays exactly as the dead runner left it, and no state is settled
+   * on the strength of a clock.
+   *
+   * What may happen next comes from a fresh reading of production. A partial
+   * topology is recorded durably as RECOVERY_REQUIRED before the caller is told
+   * anything, so the next crash finds the conclusion already written down.
+   */
+  async resume(sessionId: string, ownerId: string): Promise<{ session: DeploySession; plan: ResumePlan }> {
+    this.ports.sessions.takeOverExpiredLease(sessionId, ownerId);
+    const observed = await this.ports.topology.observe();
+    const session = this.ports.sessions.observeTopology(sessionId, ownerId, observed);
+    const plan = planResume(session, observed);
+    if (plan.kind === "FIX_FORWARD_OR_ROLLBACK" && session.state !== "RECOVERY_REQUIRED") {
+      return { session: this.ports.sessions.enterRecoveryRequired(sessionId, ownerId), plan };
+    }
+    return { session, plan };
+  }
+
+  /**
+   * Puts production back where it was and reopens sales.
+   *
+   * Legal only while the old lineage is still a truthful account of what
+   * happened; once external effects are committed the session refuses this
+   * outright, and the refusal is structural rather than a rule in a runbook.
+   * The driver's return is not taken as proof: the restored topology is read
+   * back and must match the recorded vector exactly, and only then do the
+   * terminal state and the gate move together.
+   */
+  async rollback(sessionId: string, ownerId: string): Promise<ReleaseOutcome> {
+    if (!this.ports.recovery) throw new ReleaseOrchestrationError("ROLLBACK_REQUIRES_RECOVERY_DRIVER");
+    const session = this.ports.sessions.observeTopology(sessionId, ownerId, await this.ports.topology.observe());
+    if (session.rollbackAuthority !== "OLD_LINEAGE_ALLOWED") throw new ReleaseOrchestrationError("OLD_LINEAGE_ROLLBACK_FORBIDDEN");
+    if (!session.preDeployTopology) throw new ReleaseOrchestrationError("PRE_DEPLOY_TOPOLOGY_REQUIRED");
+
+    const predecessorDatabase = session.predecessorDatabaseRef && session.predecessorDatabaseSha256
+      ? { ref: session.predecessorDatabaseRef, sha256: session.predecessorDatabaseSha256 }
+      : undefined;
+
+    try {
+      await this.ports.recovery.restorePreDeployState({ preDeployTopology: session.preDeployTopology, predecessorDatabase });
+    } catch (error) {
+      return this.recovery(sessionId, ownerId, `ROLLBACK_FAILED:${failureCode(error)}`);
+    }
+
+    const restored = await this.ports.topology.observe();
+    // completeRollback insists on the exact vector itself and settles the
+    // session and the gate in one operation.
+    return { kind: "ROLLED_BACK", session: this.ports.sessions.completeRollback(sessionId, ownerId, restored), code: "ROLLED_BACK" };
   }
 
   /** Convergence is proved by a fresh observation, never by the snapshot taken earlier. */

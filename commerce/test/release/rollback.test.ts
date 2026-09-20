@@ -1,0 +1,79 @@
+import { describe, expect, it } from "vitest";
+import { DeploySessions, InMemoryReleaseAuthorityStore, type PreDeployTopology } from "../../src/release/deploy-session";
+import { ReleaseOrchestrator, type ReleasePorts } from "../../src/release/orchestrator";
+
+const target = "a".repeat(40);
+const now = new Date("2026-09-20T00:00:00.000Z");
+/** Deliberately not one uniform SHA: a rollback restores a vector, not a commit. */
+const before: PreDeployTopology = { frontend: "b".repeat(40), admin: "c".repeat(40), commerce: "b".repeat(40), worker: "d".repeat(40) };
+const partial = { ...before, commerce: target };
+const predecessorDatabase = { ref: "prelaunch-2026-09-20.sqlite", sha256: "e".repeat(64) };
+
+const stranded = (options: { restoresTo?: PreDeployTopology; restoreFails?: string } = {}) => {
+  const restored: unknown[] = [];
+  const queue: PreDeployTopology[] = [partial, options.restoresTo ?? before];
+  let last = partial;
+  const store = new InMemoryReleaseAuthorityStore();
+  const sessions = new DeploySessions(store, () => now);
+  const ports: ReleasePorts = {
+    sessions, clock: () => now,
+    topology: { async observe() { last = queue.shift() ?? last; return last; } },
+    evidence: { async read() { return { schema: { lineage: "SUPPORTED", versions: [] } }; } },
+    deployment: { async deploy() { throw new Error("unused"); } },
+    recovery: {
+      async restorePreDeployState(input) {
+        restored.push(input);
+        if (options.restoreFails) throw new Error(options.restoreFails);
+      },
+    },
+  };
+  const session = sessions.acquireFenced({
+    id: "stranded", ownerId: "owner", mode: "MAINTENANCE_CUTOVER", targetSha: target,
+    adoptedCutoverId: "cutover-1",
+    predecessorDatabaseRef: predecessorDatabase.ref, predecessorDatabaseSha256: predecessorDatabase.sha256,
+  }, before);
+  sessions.beginDeploying(session.id, "owner");
+  return { store, sessions, restored, orchestrator: new ReleaseOrchestrator(ports) };
+};
+
+describe("rollback after a partial cutover", () => {
+  it("restores the exact vector and the archived database, then reopens sales", async () => {
+    const { store, restored, orchestrator } = stranded();
+
+    const outcome = await orchestrator.rollback("stranded", "owner");
+
+    expect(outcome).toMatchObject({ kind: "ROLLED_BACK" });
+    expect(outcome.session).toMatchObject({ state: "ROLLED_BACK", rollbackAuthority: "OLD_LINEAGE_ALLOWED" });
+    // Not "deploy the old SHA": each surface goes back to what it was serving,
+    // and the archive is named by digest so the driver can prove the snapshot.
+    expect(restored).toEqual([{ preDeployTopology: before, predecessorDatabase }]);
+    expect(store.deploymentGate()).toEqual({ closed: false, deploymentSessionId: null });
+  });
+
+  it("does not believe the driver: a topology that did not come back is not a rollback", async () => {
+    const stillPartial = { ...before, worker: target };
+    const { store, orchestrator } = stranded({ restoresTo: stillPartial });
+
+    await expect(orchestrator.rollback("stranded", "owner")).rejects.toThrow("ROLLBACK_TOPOLOGY_NOT_CONVERGED");
+    expect(store.deploymentGate().closed).toBe(true);
+  });
+
+  it("stays in recovery when the restore itself fails", async () => {
+    const { store, orchestrator } = stranded({ restoreFails: "ARCHIVE_DIGEST_MISMATCH" });
+
+    const outcome = await orchestrator.rollback("stranded", "owner");
+
+    expect(outcome).toMatchObject({ kind: "RECOVERY_REQUIRED", code: "ROLLBACK_FAILED:ARCHIVE_DIGEST_MISMATCH" });
+    expect(store.deploymentGate().closed).toBe(true);
+  });
+
+  it("refuses outright once external effects are committed", async () => {
+    const { sessions, restored, orchestrator } = stranded();
+    sessions.observeTopology("stranded", "owner", { frontend: target, admin: target, commerce: target, worker: target });
+    sessions.armExternalEffects("stranded", "owner");
+
+    await expect(orchestrator.rollback("stranded", "owner")).rejects.toThrow("OLD_LINEAGE_ROLLBACK_FORBIDDEN");
+    // The driver is never even asked: fix-forward is the only direction left.
+    expect(restored).toEqual([]);
+  });
+});

@@ -187,6 +187,40 @@ export class InMemoryReleaseAuthorityStore implements ReleaseAuthorityStore {
   }
 }
 
+
+/**
+ * What a new owner may do with a session it just took over.
+ *
+ * An expired lease means one thing only: the previous runner is gone and
+ * ownership may move. It never means sales may reopen, the deploy may be
+ * abandoned, or the old lineage may be restored - those are conclusions about
+ * production, and a clock says nothing about production. So the next action is
+ * decided by the session's own state and a fresh reading of the topology, never
+ * by the fact that time passed.
+ */
+export type ResumePlan =
+  /** Nothing was ever switched: the deploy can simply be attempted again. */
+  | { readonly kind: "RETRY_DEPLOY" }
+  /** Every surface already serves the target; pick up at readiness. */
+  | { readonly kind: "PROVE_READINESS" }
+  /** Some surfaces moved and some did not. A human decides the direction. */
+  | { readonly kind: "FIX_FORWARD_OR_ROLLBACK" }
+  /** External effects are committed, so the old lineage is no longer a destination. */
+  | { readonly kind: "FIX_FORWARD_ONLY" };
+
+export const planResume = (session: DeploySession, freshTopology: PreDeployTopology): ResumePlan => {
+  if (TERMINAL.has(session.state)) throw new Error("DEPLOY_SESSION_TERMINAL");
+  if (!session.preDeployTopology) throw new Error("PRE_DEPLOY_TOPOLOGY_REQUIRED");
+  if (session.rollbackAuthority === "NEW_LINEAGE_ONLY") return { kind: "FIX_FORWARD_ONLY" };
+  if (session.state === "RECOVERY_REQUIRED") return { kind: "FIX_FORWARD_OR_ROLLBACK" };
+  if (topologyIsTarget(freshTopology, session.targetSha)) return { kind: "PROVE_READINESS" };
+  // Unchanged means unchanged everywhere: one moved surface is a partial
+  // deployment, whatever the others say, and re-firing the deploy over it would
+  // be acting on an assumption nobody checked.
+  if (topologyEquals(freshTopology, session.preDeployTopology) && !session.mutationObserved) return { kind: "RETRY_DEPLOY" };
+  return { kind: "FIX_FORWARD_OR_ROLLBACK" };
+};
+
 export type AcquireInput = {
   readonly id?: string;
   readonly ownerId: string;
