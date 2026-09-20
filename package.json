@@ -33,7 +33,8 @@
     "test": "COMMERCE_TEST_DB_SNAPSHOT=1 vitest run --project '!export'",
     "test:export": "vitest run --project export",
     "test:watch": "vitest",
-    "test:temp:gc": "bash scripts/test-temp-gc.sh"
+    "test:temp:gc": "bash scripts/test-temp-gc.sh",
+    "commerce:launch-seed": "tsx commerce/src/launch-seed-cli.ts"
   },
   "dependencies": {
     "@hono/node-server": "^2.1.1",

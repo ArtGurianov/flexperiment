@@ -224,6 +224,28 @@ directly. The sweep did earn its keep on the first kind of question: it found a
 CHECK - "spent or replaced, never both" - that nothing tested, because the
 retirement guard was answering first in the only direction being exercised.
 
+## Changed after this document was approved
+
+Two changes to the baseline, both found by wiring adapters to it rather than by
+reading it again. Each is here because the file was frozen, and a frozen file
+that moves silently is worse than one that never froze.
+
+**`deploy_sessions.candidate_id` is nullable.** It was `NOT NULL`, and
+`cutover-handoff` - a production path - supplies no candidate: a session adopted
+from an envelope crosses into a database whose candidate registry is empty. The
+orchestrator's `SESSION_HAS_NO_CANDIDATE` is reachable by design, so the column
+had been stricter than the model it stores.
+
+**`launch_seed` is new**, with its own immutability and delete guards. The seed
+needs to answer "has this database been seeded", and that is not the same
+question as "are the seed tables empty": a city retired later would otherwise
+make the seed resurrect it. The row carries the catalogue's digest, so it also
+records *which* catalogue ran. Nothing else could hold the marker -
+`schema_identity` is immutable by design, and the ledger is not a place to put
+facts about content.
+
+After both: 111 tables, 87 indexes, 168 triggers.
+
 ## What is not in the delta, and why
 
 `schema_migrations` appears on both sides and cancels: `db.ts` creates it before

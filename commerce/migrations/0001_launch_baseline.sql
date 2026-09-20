@@ -3408,6 +3408,24 @@ CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_
 -- trustworthy.
 -- ---------------------------------------------------------------------------
 
+-- Whether this database has been seeded, which is not the same question as
+-- whether the seed tables have rows in them. A city can be retired later, and a
+-- seed that read emptiness as "never seeded" would resurrect the catalogue
+-- behind the operator who removed it. The digest records WHICH catalogue.
+CREATE TABLE launch_seed (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  catalogue_sha256 TEXT NOT NULL CHECK (length(catalogue_sha256) = 64),
+  applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TRIGGER launch_seed_immutable_guard
+BEFORE UPDATE ON launch_seed
+BEGIN SELECT RAISE(ABORT, 'LAUNCH_SEED_IMMUTABLE'); END;
+
+CREATE TRIGGER launch_seed_delete_guard
+BEFORE DELETE ON launch_seed
+BEGIN SELECT RAISE(ABORT, 'LAUNCH_SEED_IMMUTABLE'); END;
+
 INSERT INTO schema_identity(singleton, lineage, baseline_version) VALUES (1, 'flexperiment-launch', '0001_launch_baseline');
 
 INSERT INTO outbox_authority(singleton) VALUES (1);
