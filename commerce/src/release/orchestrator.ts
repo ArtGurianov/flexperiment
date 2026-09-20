@@ -39,17 +39,15 @@ export interface CertificationDriver {
 
 
 /**
- * Undoing a cutover is not deploying one SHA. It restores a vector - each
- * surface to whatever it was actually serving, which need not have been the
- * same commit - and, across a lineage boundary, the archived database the
- * predecessor handed over. The digest is passed so the driver can prove it is
- * restoring that snapshot rather than a file that merely has the right name.
+ * Undoing a same-lineage deploy is not deploying one SHA: it restores a vector,
+ * each surface to whatever it was actually serving, which need not have been
+ * the same commit. No database is involved - that only happens across a lineage
+ * boundary, and that case belongs to BootstrapRollback, which can prove the
+ * archive it restored. Keeping the two apart is what stops this driver from
+ * being both the actor and the only witness.
  */
 export interface RecoveryDriver {
-  restorePreDeployState(input: {
-    readonly preDeployTopology: PreDeployTopology;
-    readonly predecessorDatabase?: { readonly ref: string; readonly sha256: string };
-  }): Promise<void>;
+  restorePreDeployTopology(topology: PreDeployTopology): Promise<void>;
 }
 
 export type ReleasePorts = {
@@ -199,27 +197,30 @@ export class ReleaseOrchestrator {
   }
 
   /**
-   * Puts production back where it was and reopens sales.
+   * Puts production back where it was and reopens sales - for a same-lineage
+   * deploy only.
+   *
+   * It settles the session in the very database it is rolling back within, so
+   * it is valid precisely while that database survives the operation. A session
+   * that adopted a cutover is refused outright: reversing it replaces
+   * `commerce.sqlite`, and a rollback cannot keep its only receipt inside the
+   * thing it is destroying. That case belongs to BootstrapRollback, which
+   * records its terminal fact outside the database.
    *
    * Legal only while the old lineage is still a truthful account of what
-   * happened; once external effects are committed the session refuses this
-   * outright, and the refusal is structural rather than a rule in a runbook.
-   * The driver's return is not taken as proof: the restored topology is read
-   * back and must match the recorded vector exactly, and only then do the
-   * terminal state and the gate move together.
+   * happened. The driver's return is not taken as proof: the restored topology
+   * is read back and must match the recorded vector exactly, and only then do
+   * the terminal state and the gate move together.
    */
   async rollback(sessionId: string, ownerId: string): Promise<ReleaseOutcome> {
     if (!this.ports.recovery) throw new ReleaseOrchestrationError("ROLLBACK_REQUIRES_RECOVERY_DRIVER");
     const session = this.ports.sessions.observeTopology(sessionId, ownerId, await this.ports.topology.observe());
+    if (session.adoptedCutoverId) throw new ReleaseOrchestrationError("CROSS_LINEAGE_ROLLBACK_REQUIRES_REVERSE_HANDOFF");
     if (session.rollbackAuthority !== "OLD_LINEAGE_ALLOWED") throw new ReleaseOrchestrationError("OLD_LINEAGE_ROLLBACK_FORBIDDEN");
     if (!session.preDeployTopology) throw new ReleaseOrchestrationError("PRE_DEPLOY_TOPOLOGY_REQUIRED");
 
-    const predecessorDatabase = session.predecessorDatabaseRef && session.predecessorDatabaseSha256
-      ? { ref: session.predecessorDatabaseRef, sha256: session.predecessorDatabaseSha256 }
-      : undefined;
-
     try {
-      await this.ports.recovery.restorePreDeployState({ preDeployTopology: session.preDeployTopology, predecessorDatabase });
+      await this.ports.recovery.restorePreDeployTopology(session.preDeployTopology);
     } catch (error) {
       return this.recovery(sessionId, ownerId, `ROLLBACK_FAILED:${failureCode(error)}`);
     }
