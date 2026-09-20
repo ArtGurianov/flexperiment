@@ -6,13 +6,13 @@ name: Deploy production
 on:
   workflow_dispatch:
     inputs:
-      mode:
-        description: Release class. A rolling release never closes sales; a maintenance cutover does, and certifies.
-        required: true
-        type: choice
-        options: [ROLLING_SAFE, MAINTENANCE_CUTOVER]
-      target_sha:
-        description: The exact 40-hex commit to deploy. Must already be on main with a green Test run.
+      candidate:
+        description: >-
+          The published candidate to deploy. Its commit, release class and
+          readiness expectation all come from that candidate: an operator does
+          not get to name a commit, and does not get to choose whether sales
+          close - a rolling deploy is something a candidate is classified as,
+          never something a dispatcher asks for.
         required: true
         type: string
 
@@ -38,14 +38,12 @@ jobs:
       # The input reaches the shell only through the environment. A `${{ }}`
       # expression is substituted into the script text before bash ever runs it,
       # so a crafted value escapes its own quoting no matter how it is quoted.
-      - name: Bind to the exact target commit
+      - name: Bind to the published candidate
         env:
-          TARGET_SHA: ${{ inputs.target_sha }}
+          CANDIDATE: ${{ inputs.candidate }}
         run: |
           set -euo pipefail
-          [[ "$TARGET_SHA" =~ ^[a-f0-9]{40}$ ]] || { echo "TARGET_SHA_INVALID" >&2; exit 1; }
-          git merge-base --is-ancestor "$TARGET_SHA" origin/main \
-            || { echo "TARGET_SHA_NOT_ON_MAIN" >&2; exit 1; }
+          [[ -n "$CANDIDATE" ]] || { echo "CANDIDATE_REQUIRED" >&2; exit 1; }
 
       - uses: pnpm/action-setup@v4
         with:
@@ -61,6 +59,5 @@ jobs:
       # completion - so the workflow stays a thin caller and cannot reorder it.
       - name: Run the release orchestration
         env:
-          RELEASE_MODE: ${{ inputs.mode }}
-          RELEASE_TARGET_SHA: ${{ inputs.target_sha }}
+          RELEASE_CANDIDATE: ${{ inputs.candidate }}
         run: pnpm exec tsx scripts/release/deploy-production.ts

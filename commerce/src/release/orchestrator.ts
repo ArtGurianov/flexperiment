@@ -1,4 +1,5 @@
-import { evaluateReadiness, type ReleaseReadinessEvidence, type ReleaseReadinessExpectation } from "./readiness";
+import { deployMode, type ReleaseCandidate, type ReleaseCandidateReader } from "./candidate";
+import { evaluateReadiness, type ReleaseReadinessEvidence } from "./readiness";
 import {
   DeploySessions, planResume, topologyIsTarget,
   type DeployMode, type DeploySession, type PreDeployTopology, type ResumePlan,
@@ -57,14 +58,14 @@ export type ReleasePorts = {
   readonly deployment: DeploymentDriver;
   readonly certification?: CertificationDriver;
   readonly recovery?: RecoveryDriver;
+  readonly candidates?: ReleaseCandidateReader;
   readonly clock?: () => Date;
 };
 
 export type ReleaseRequest = {
   readonly ownerId: string;
-  readonly mode: DeployMode;
-  readonly targetSha: string;
-  readonly expectation: ReleaseReadinessExpectation;
+  /** Carries the commit, the release class and the expectation as one fact. */
+  readonly candidate: ReleaseCandidate;
   readonly sessionId?: string;
   readonly adoptedCutoverId?: string;
 };
@@ -76,7 +77,9 @@ export type ReleaseOutcome =
   | { readonly kind: "RECOVERY_REQUIRED"; readonly session: DeploySession; readonly code: string };
 
 export class ReleaseOrchestrationError extends Error {
-  constructor(readonly code: string) { super(code); }
+  constructor(readonly code: string, readonly detail?: string) {
+    super(detail ? `${code}: ${detail}` : code);
+  }
 }
 
 const failureCode = (error: unknown): string =>
@@ -95,13 +98,16 @@ export class ReleaseOrchestrator {
    * legal for a revision whose schema the previous one can still read.
    */
   async runRolling(request: ReleaseRequest): Promise<ReleaseOutcome> {
-    if (request.mode !== "ROLLING_SAFE") throw new ReleaseOrchestrationError("ROLLING_RELEASE_REQUIRES_ROLLING_SAFE");
+    if (deployMode(request.candidate) !== "ROLLING_SAFE") throw new ReleaseOrchestrationError("ROLLING_RELEASE_REQUIRES_ROLLING_SAFE");
     const { sessions } = this.ports;
     const before = await this.ports.topology.observe();
-    const session = sessions.acquireRolling({ id: request.sessionId, ownerId: request.ownerId, mode: "ROLLING_SAFE", targetSha: request.targetSha }, before);
+    const session = sessions.acquireRolling({
+      id: request.sessionId, ownerId: request.ownerId, mode: "ROLLING_SAFE",
+      targetSha: request.candidate.sha, candidateId: request.candidate.id,
+    }, before);
 
     try {
-      await this.ports.deployment.deploy(request.targetSha);
+      await this.ports.deployment.deploy(request.candidate.sha);
     } catch (error) {
       return this.classify(session.id, request.ownerId, failureCode(error));
     }
@@ -125,21 +131,21 @@ export class ReleaseOrchestrator {
    * certification capability does not exist until after that arming.
    */
   async runMaintenanceCutover(request: ReleaseRequest): Promise<ReleaseOutcome> {
-    if (request.mode !== "MAINTENANCE_CUTOVER") throw new ReleaseOrchestrationError("CUTOVER_REQUIRES_MAINTENANCE_CUTOVER");
+    if (deployMode(request.candidate) !== "MAINTENANCE_CUTOVER") throw new ReleaseOrchestrationError("CUTOVER_REQUIRES_MAINTENANCE_CUTOVER");
     if (!this.ports.certification) throw new ReleaseOrchestrationError("CUTOVER_REQUIRES_CERTIFICATION_DRIVER");
     const { sessions } = this.ports;
     // Captured before the gate closes and before anything is deployed, so a
     // failure can be judged against what production was actually serving. The
     // session, that snapshot and the closed gate are created together.
     const before = await this.ports.topology.observe();
-    const session = sessions.acquireFenced(
-      { id: request.sessionId, ownerId: request.ownerId, mode: "MAINTENANCE_CUTOVER", targetSha: request.targetSha, adoptedCutoverId: request.adoptedCutoverId },
-      before,
-    );
+    const session = sessions.acquireFenced({
+      id: request.sessionId, ownerId: request.ownerId, mode: "MAINTENANCE_CUTOVER",
+      targetSha: request.candidate.sha, candidateId: request.candidate.id, adoptedCutoverId: request.adoptedCutoverId,
+    }, before);
     sessions.beginDeploying(session.id, request.ownerId);
 
     try {
-      await this.ports.deployment.deploy(request.targetSha);
+      await this.ports.deployment.deploy(request.candidate.sha);
     } catch (error) {
       return this.classify(session.id, request.ownerId, failureCode(error));
     }
@@ -260,13 +266,27 @@ export class ReleaseOrchestrator {
    * reproduce the orchestrator's private ordering by hand - which is the thing
    * this whole contract exists to stop.
    */
-  async continueSession(sessionId: string, ownerId: string, expected: ResumePlan["kind"], request: Omit<ReleaseRequest, "mode" | "sessionId">): Promise<ReleaseOutcome> {
+  async continueSession(sessionId: string, ownerId: string, expected: ResumePlan["kind"]): Promise<ReleaseOutcome> {
+    if (!this.ports.candidates) throw new ReleaseOrchestrationError("CONTINUATION_REQUIRES_CANDIDATE_READER");
+
+    // The release's identity is read back from the session, never restated, and
+    // it is settled before anything is observed or recorded. A caller that could
+    // name the commit and the expectation again could continue one release as
+    // another; a session whose candidate no longer agrees with its target is not
+    // a session worth taking one more step of.
+    const known = this.ports.sessions.read(sessionId);
+    if (!known) throw new ReleaseOrchestrationError("DEPLOY_SESSION_NOT_FOUND", sessionId);
+    if (!known.candidateId) throw new ReleaseOrchestrationError("SESSION_HAS_NO_CANDIDATE", sessionId);
+    const candidate = this.ports.candidates.get(known.candidateId);
+    if (!candidate) throw new ReleaseOrchestrationError("CANDIDATE_NOT_FOUND", known.candidateId);
+    if (candidate.sha !== known.targetSha) throw new ReleaseOrchestrationError("CANDIDATE_SESSION_MISMATCH", known.candidateId);
+
     const observed = await this.ports.topology.observe();
     const session = this.ports.sessions.observeTopology(sessionId, ownerId, observed);
     const plan = planResume(session, observed);
     if (plan.kind !== expected) throw new ReleaseOrchestrationError(`RESUME_PLAN_STALE:${plan.kind}`);
 
-    const full: ReleaseRequest = { ...request, mode: session.mode, sessionId };
+    const full: ReleaseRequest = { ownerId, candidate, sessionId };
     if (plan.kind === "RETRY_DEPLOY") {
       try {
         await this.ports.deployment.deploy(session.targetSha);
@@ -285,14 +305,14 @@ export class ReleaseOrchestrator {
   ): Promise<{ topology: PreDeployTopology } | ReleaseOutcome> {
     const topology = await this.ports.topology.observe();
     this.ports.sessions.observeTopology(sessionId, request.ownerId, topology);
-    if (topologyIsTarget(topology, request.targetSha)) return { topology };
+    if (topologyIsTarget(topology, request.candidate.sha)) return { topology };
     return this.classify(sessionId, request.ownerId, "TARGET_TOPOLOGY_NOT_CONVERGED");
   }
 
   /** ADMITTED is the only answer that may precede arming. PENDING is not "close enough". */
   private async requireReadiness(sessionId: string, request: ReleaseRequest): Promise<ReleaseOutcome | undefined> {
     const evidence = await this.ports.evidence.read();
-    const readiness = evaluateReadiness(request.expectation, evidence, this.clock());
+    const readiness = evaluateReadiness(request.candidate.expectation, evidence, this.clock());
     if (readiness.state === "ADMITTED") return undefined;
     return this.classify(sessionId, request.ownerId, `READINESS_${readiness.state}:${readiness.code}`);
   }

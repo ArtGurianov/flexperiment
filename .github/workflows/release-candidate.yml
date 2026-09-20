@@ -1,5 +1,5 @@
-# Publishes an immutable provenance ref for a revision and advances the
-# candidate pointer. It deploys nothing.
+# Publishes an immutable candidate: the exact commit, its release class and the
+# readiness expectation that belong together. It deploys nothing.
 name: Release candidate
 
 on:
@@ -9,9 +9,19 @@ on:
         description: The exact 40-hex commit to publish as a candidate.
         required: true
         type: string
+      release_class:
+        description: >-
+          LAUNCH_BASELINE replaces the database and is never rolling.
+          ROLLING_COMPATIBLE requires a proof the previous revision can still
+          read this one's schema. Absence of that proof is MAINTENANCE_REQUIRED.
+        required: true
+        type: choice
+        options: [LAUNCH_BASELINE, ROLLING_COMPATIBLE, MAINTENANCE_REQUIRED]
 
 permissions:
   contents: read
+  # Reading the check runs of the exact candidate commit.
+  checks: read
 
 concurrency:
   group: flexperiment-release-candidate
@@ -31,11 +41,34 @@ jobs:
       - name: Bind to the exact candidate commit
         env:
           CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          RELEASE_CLASS: ${{ inputs.release_class }}
         run: |
           set -euo pipefail
           [[ "$CANDIDATE_SHA" =~ ^[a-f0-9]{40}$ ]] || { echo "CANDIDATE_SHA_INVALID" >&2; exit 1; }
           git merge-base --is-ancestor "$CANDIDATE_SHA" origin/main \
             || { echo "CANDIDATE_SHA_NOT_ON_MAIN" >&2; exit 1; }
+          # An ancestor that was green once is not the same claim. The launch
+          # cutover destroys the predecessor database, so it may only ever be
+          # the exact current tip.
+          if [[ "$RELEASE_CLASS" == "LAUNCH_BASELINE" ]]; then
+            [[ "$CANDIDATE_SHA" == "$(git rev-parse origin/main)" ]] \
+              || { echo "LAUNCH_BASELINE_MUST_BE_MAIN_HEAD" >&2; exit 1; }
+          fi
+
+      # Green on this exact commit, not somewhere in its history. A candidate
+      # inherits nothing from its ancestors.
+      - name: Require green CI on the exact candidate commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+        run: |
+          set -euo pipefail
+          for check in test docker-build; do
+            conclusion="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${CANDIDATE_SHA}/check-runs" \
+              --jq ".check_runs[] | select(.name == \"${check}\") | .conclusion" | head -1)"
+            [[ "$conclusion" == "success" ]] \
+              || { echo "CANDIDATE_CHECK_NOT_SUCCESS: ${check}=${conclusion:-missing}" >&2; exit 1; }
+          done
 
       - uses: pnpm/action-setup@v4
         with:
@@ -49,4 +82,5 @@ jobs:
       - name: Publish the candidate
         env:
           RELEASE_CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          RELEASE_CLASS: ${{ inputs.release_class }}
         run: pnpm exec tsx scripts/release/release-candidate.ts

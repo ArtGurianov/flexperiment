@@ -53,6 +53,12 @@ export type DeploySession = {
    * committed to restoring the predecessor.
    */
   readonly bootstrapRollbackId?: string;
+  /**
+   * The candidate this session deploys. Recorded at acquisition so a later call
+   * cannot restate the release's identity: a resumed session continues the
+   * release it started, not one a caller names afterwards.
+   */
+  readonly candidateId?: string;
 };
 
 export type DeploySessionPatch = Partial<Pick<DeploySession, "ownerId" | "state" | "rollbackAuthority" | "mutationObserved" | "leaseExpiresAt" | "preDeployTopology" | "observedTopology" | "bootstrapRollbackId">>;
@@ -294,6 +300,7 @@ export type AcquireInput = {
   readonly predecessorDatabaseRef?: string;
   readonly predecessorDatabaseSha256?: string;
   readonly adoptedEnvelopeSha256?: string;
+  readonly candidateId?: string;
 };
 
 export class DeploySessions {
@@ -339,6 +346,7 @@ export class DeploySessions {
       predecessorDatabaseRef: input.predecessorDatabaseRef,
       predecessorDatabaseSha256: input.predecessorDatabaseSha256,
       adoptedEnvelopeSha256: input.adoptedEnvelopeSha256,
+      candidateId: input.candidateId,
     };
   }
 
@@ -448,6 +456,16 @@ export class DeploySessions {
     assertTopology(topology);
     this.store.recordTopology(id, ownerId, this.clock(), "OBSERVED", topology);
     return this.store.settle(id, ownerId, this.clock(), ["DEPLOYING", "RECOVERY_REQUIRED"], "ROLLED_BACK");
+  }
+
+  /**
+   * Reads a session without claiming it. Deciding whether a caller is even
+   * continuing the right release is not an act of ownership, and demanding a
+   * live lease to answer that question would mean recording an observation
+   * against a session we are about to refuse.
+   */
+  read(id: string): DeploySession | undefined {
+    return this.store.get(id);
   }
 
   private owned(id: string, ownerId: string): DeploySession {

@@ -11,6 +11,7 @@ const expectation = {
   sourceCommit: target, schemaInventory: schemaInventoryExpectation(versions),
   legalVersion: "2026-09-20.1", legalManifestSha256: "e".repeat(64),
 };
+const candidate = { id: "candidate-1", sha: target, releaseClass: "LAUNCH_BASELINE" as const, expectation };
 
 /** A dead runner leaves a session mid-flight; a new one picks it up later. */
 const abandoned = (options: { at: string; observes: PreDeployTopology | PreDeployTopology[]; afterDeploy?: boolean; deploys?: boolean }) => {
@@ -23,6 +24,7 @@ const abandoned = (options: { at: string; observes: PreDeployTopology | PreDeplo
   const ports: ReleasePorts = {
     sessions, clock: () => clock,
     topology: { async observe() { if (queue.length) last = queue.shift()!; log.push(`observe:${last.commerce}`); return last; } },
+    candidates: { get: (id) => (id === candidate.id ? candidate : undefined) },
     evidence: {
       async read() {
         log.push("readiness");
@@ -45,10 +47,10 @@ const abandoned = (options: { at: string; observes: PreDeployTopology | PreDeplo
       async certify() { log.push("certify"); },
     },
   };
-  const session = sessions.acquireFenced({ id: options.at, ownerId: "dead-runner", mode: "MAINTENANCE_CUTOVER", targetSha: target }, topology(old));
+  const session = sessions.acquireFenced({ id: options.at, ownerId: "dead-runner", mode: "MAINTENANCE_CUTOVER", targetSha: target, candidateId: candidate.id }, topology(old));
   if (options.afterDeploy) sessions.beginDeploying(session.id, "dead-runner");
   const advance = (ms: number) => { clock = new Date(clock.getTime() + ms); };
-  return { store, sessions, session, advance, log, orchestrator: new ReleaseOrchestrator(ports) };
+  return { store, sessions, session, advance, log, ports, orchestrator: new ReleaseOrchestrator(ports) };
 };
 
 describe("takeover after a runner dies", () => {
@@ -119,15 +121,13 @@ describe("takeover after a runner dies", () => {
 });
 
 describe("continuing a session that was taken over", () => {
-  const request = { ownerId: "new-runner", targetSha: target, expectation };
-
   it("finishes a converged session through readiness, arming and certification", async () => {
     const { advance, log, orchestrator } = abandoned({ at: "pickup", observes: topology(target), afterDeploy: true });
     advance(120_000);
     const resumed = await orchestrator.resume("pickup", "new-runner");
     expect(resumed.plan).toEqual({ kind: "PROVE_READINESS" });
 
-    const outcome = await orchestrator.continueSession("pickup", "new-runner", "PROVE_READINESS", request);
+    const outcome = await orchestrator.continueSession("pickup", "new-runner", "PROVE_READINESS");
 
     expect(outcome).toMatchObject({ kind: "SUCCEEDED" });
     // The same ordering the live path uses, not a copy of it: no second deploy,
@@ -143,7 +143,7 @@ describe("continuing a session that was taken over", () => {
     advance(120_000);
     await orchestrator.resume("retry", "new-runner");
 
-    const outcome = await orchestrator.continueSession("retry", "new-runner", "RETRY_DEPLOY", request);
+    const outcome = await orchestrator.continueSession("retry", "new-runner", "RETRY_DEPLOY");
 
     expect(outcome).toMatchObject({ kind: "SUCCEEDED" });
     expect(log.filter((entry) => entry === "deploy")).toHaveLength(1);
@@ -160,9 +160,30 @@ describe("continuing a session that was taken over", () => {
     expect(resumed.plan).toEqual({ kind: "RETRY_DEPLOY" });
 
     // By the time the caller acts, every surface is already on the target.
-    await expect(orchestrator.continueSession("stale", "new-runner", "RETRY_DEPLOY", request))
+    await expect(orchestrator.continueSession("stale", "new-runner", "RETRY_DEPLOY"))
       .rejects.toThrow("RESUME_PLAN_STALE:PROVE_READINESS");
     expect(log).not.toContain("deploy");
+  });
+
+  it("refuses to continue a session whose candidate no longer names its target", async () => {
+    // The identity is settled before anything is observed or recorded. A
+    // candidate republished at a different commit, or a session pointed at a
+    // candidate it does not belong to, would otherwise be carried forward as
+    // though it were the release that was originally fenced for.
+    const { advance, log, orchestrator, ports, sessions } = abandoned({ at: "mismatch", observes: topology(target), afterDeploy: true });
+    advance(120_000);
+    await orchestrator.resume("mismatch", "new-runner");
+    log.length = 0;
+
+    const moved = { ...candidate, sha: old };
+    const rebound = new ReleaseOrchestrator({ ...ports, candidates: { get: () => moved } });
+
+    await expect(rebound.continueSession("mismatch", "new-runner", "PROVE_READINESS"))
+      .rejects.toThrow("CANDIDATE_SESSION_MISMATCH");
+    // Not one observation recorded, let alone a deploy: the refusal lands
+    // before the session is touched at all.
+    expect(log).toEqual([]);
+    expect(sessions.read("mismatch")?.state).toBe("DEPLOYING");
   });
 
   it("will not choose a direction for a session that needs one", async () => {
@@ -171,7 +192,7 @@ describe("continuing a session that was taken over", () => {
     advance(120_000);
     await orchestrator.resume("undecided", "new-runner");
 
-    await expect(orchestrator.continueSession("undecided", "new-runner", "FIX_FORWARD_OR_ROLLBACK", request))
+    await expect(orchestrator.continueSession("undecided", "new-runner", "FIX_FORWARD_OR_ROLLBACK"))
       .rejects.toThrow("FIX_FORWARD_DIRECTION_REQUIRED");
   });
 });
