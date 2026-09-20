@@ -146,8 +146,36 @@ describe("deploy sessions", () => {
 
     // A settle aimed at a session that is not the active one cannot release
     // the gate on its behalf, whatever state it claims to be in.
-    expect(() => store.settle("someone-else", ["DEPLOYING"], { state: "SUCCEEDED" }, { openGate: true }))
-      .toThrow("DEPLOY_SESSION_NOT_ACTIVE");
+    expect(() => store.settle("someone-else", ["DEPLOYING"], "SUCCEEDED")).toThrow("DEPLOY_SESSION_NOT_ACTIVE");
     expect(store.deploymentGate().closed).toBe(true);
+  });
+
+  it("makes a terminal state unreachable except through settle", () => {
+    // Otherwise a caller reaches SUCCEEDED through ordinary progress and the
+    // gate is never released at all - the exact state settle exists to prevent.
+    const store = new InMemoryReleaseAuthorityStore();
+    const sessions = new DeploySessions(store, () => new Date("2026-09-20T00:00:00.000Z"));
+    const session = sessions.acquireFenced({ id: "terminal-bypass", ownerId: "owner", mode: "MAINTENANCE_CUTOVER", targetSha: target }, topology(old));
+    sessions.beginDeploying(session.id, "owner");
+
+    expect(() => store.transitionNonTerminal(session.id, ["DEPLOYING"], { state: "SUCCEEDED" }))
+      .toThrow("TERMINAL_STATE_REQUIRES_SETTLE");
+    expect(store.deploymentGate()).toEqual({ closed: true, deploymentSessionId: session.id });
+  });
+
+  it("refuses a session whose initial state contradicts its own mode", () => {
+    // The gate follows from the mode, so a maintenance session that starts
+    // unfenced, or a rolling one that starts fenced, has no coherent meaning.
+    const store = new InMemoryReleaseAuthorityStore();
+    const blank = {
+      id: "mismatched", ownerId: "owner", targetSha: target, rollbackAuthority: "OLD_LINEAGE_ALLOWED" as const,
+      mutationObserved: false, createdAt: "2026-09-20T00:00:00.000Z", leaseExpiresAt: "2026-09-20T00:05:00.000Z",
+      preDeployTopology: topology(old),
+    };
+    expect(() => store.acquire({ ...blank, mode: "MAINTENANCE_CUTOVER", state: "DEPLOYING" }))
+      .toThrow("DEPLOY_SESSION_INITIAL_STATE_INVALID");
+    expect(() => store.acquire({ ...blank, mode: "ROLLING_SAFE", state: "FENCED" }))
+      .toThrow("DEPLOY_SESSION_INITIAL_STATE_INVALID");
+    expect(store.deploymentGate()).toEqual({ closed: false, deploymentSessionId: null });
   });
 });
