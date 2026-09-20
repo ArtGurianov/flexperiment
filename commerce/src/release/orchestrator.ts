@@ -106,11 +106,16 @@ export class ReleaseOrchestrator {
       return this.classify(session.id, request.ownerId, failureCode(error));
     }
 
-    const converged = await this.requireTargetTopology(session.id, request);
+    return this.finishRolling(session.id, request);
+  }
+
+  /** Everything a rolling release does once its deployment has been handed over. */
+  private async finishRolling(sessionId: string, request: ReleaseRequest): Promise<ReleaseOutcome> {
+    const converged = await this.requireTargetTopology(sessionId, request);
     if ("kind" in converged) return converged;
-    const admitted = await this.requireReadiness(session.id, request);
+    const admitted = await this.requireReadiness(sessionId, request);
     if (admitted) return admitted;
-    return { kind: "SUCCEEDED", session: sessions.completeTarget(session.id, request.ownerId, converged.topology) };
+    return { kind: "SUCCEEDED", session: this.ports.sessions.completeTarget(sessionId, request.ownerId, converged.topology) };
   }
 
   /**
@@ -139,32 +144,42 @@ export class ReleaseOrchestrator {
       return this.classify(session.id, request.ownerId, failureCode(error));
     }
 
-    const converged = await this.requireTargetTopology(session.id, request);
+    return this.finishCutover(session.id, request);
+  }
+
+  /**
+   * Everything a cutover does once its deployment has been handed over, from
+   * proving convergence through certification to settling. Shared so a resumed
+   * session finishes through the same ordering rather than a copy of it.
+   */
+  private async finishCutover(sessionId: string, request: ReleaseRequest): Promise<ReleaseOutcome> {
+    if (!this.ports.certification) throw new ReleaseOrchestrationError("CUTOVER_REQUIRES_CERTIFICATION_DRIVER");
+    const converged = await this.requireTargetTopology(sessionId, request);
     if ("kind" in converged) return converged;
-    const admitted = await this.requireReadiness(session.id, request);
+    const admitted = await this.requireReadiness(sessionId, request);
     if (admitted) return admitted;
 
     // ---- last reversible point -------------------------------------------
-    sessions.armExternalEffects(session.id, request.ownerId);
+    this.ports.sessions.armExternalEffects(sessionId, request.ownerId);
     // ----------------------------------------------------------------------
 
     try {
-      const capability = await this.ports.certification.issueCapability(session.id);
+      const capability = await this.ports.certification.issueCapability(sessionId);
       await this.ports.certification.certify(capability);
     } catch (error) {
       // Past the boundary there is no safe abort and no rollback: the archived
       // database can no longer account for what may already have happened.
-      return this.recovery(session.id, request.ownerId, `CERTIFICATION_FAILED:${failureCode(error)}`);
+      return this.recovery(sessionId, request.ownerId, `CERTIFICATION_FAILED:${failureCode(error)}`);
     }
 
     // Certification takes as long as a real payment and refund take, and a
     // surface can drift underneath it. The observation that closes the release
     // has to be the one taken after that, never the pre-arming snapshot.
-    const final = await this.requireTargetTopology(session.id, request);
+    const final = await this.requireTargetTopology(sessionId, request);
     if ("kind" in final) return final;
 
     // completeTarget settles the session and reopens the gate in one operation.
-    return { kind: "SUCCEEDED", session: sessions.completeTarget(session.id, request.ownerId, final.topology) };
+    return { kind: "SUCCEEDED", session: this.ports.sessions.completeTarget(sessionId, request.ownerId, final.topology) };
   }
 
   /**
@@ -229,6 +244,38 @@ export class ReleaseOrchestrator {
     // completeRollback insists on the exact vector itself and settles the
     // session and the gate in one operation.
     return { kind: "ROLLED_BACK", session: this.ports.sessions.completeRollback(sessionId, ownerId, restored), code: "ROLLED_BACK" };
+  }
+
+  /**
+   * Carries a taken-over session forward without acquiring anything.
+   *
+   * The caller says which plan it believes it is continuing, and this re-derives
+   * that plan from a fresh reading before acting on it. A plan is a statement
+   * about production at the moment it was made, and minutes pass between a
+   * recovery workflow reading one and acting on it; treating it as still true
+   * is how a deploy gets re-fired over a topology that moved. A caller that is
+   * out of date is told so rather than obeyed.
+   *
+   * Without this, a recovery workflow has no way to finish a session except to
+   * reproduce the orchestrator's private ordering by hand - which is the thing
+   * this whole contract exists to stop.
+   */
+  async continueSession(sessionId: string, ownerId: string, expected: ResumePlan["kind"], request: Omit<ReleaseRequest, "mode" | "sessionId">): Promise<ReleaseOutcome> {
+    const observed = await this.ports.topology.observe();
+    const session = this.ports.sessions.observeTopology(sessionId, ownerId, observed);
+    const plan = planResume(session, observed);
+    if (plan.kind !== expected) throw new ReleaseOrchestrationError(`RESUME_PLAN_STALE:${plan.kind}`);
+
+    const full: ReleaseRequest = { ...request, mode: session.mode, sessionId };
+    if (plan.kind === "RETRY_DEPLOY") {
+      try {
+        await this.ports.deployment.deploy(session.targetSha);
+      } catch (error) {
+        return this.classify(sessionId, ownerId, failureCode(error));
+      }
+    }
+    if (plan.kind === "FIX_FORWARD_OR_ROLLBACK") throw new ReleaseOrchestrationError("FIX_FORWARD_DIRECTION_REQUIRED");
+    return session.mode === "MAINTENANCE_CUTOVER" ? this.finishCutover(sessionId, full) : this.finishRolling(sessionId, full);
   }
 
   /** Convergence is proved by a fresh observation, never by the snapshot taken earlier. */

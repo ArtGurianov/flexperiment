@@ -1,8 +1,5 @@
 import { randomUUID } from "node:crypto";
-import {
-  canonicalEnvelopeSha256, createCutoverEnvelope,
-  type CutoverEnvelope, type PredecessorDatabase,
-} from "./cutover-envelope";
+import { createCutoverEnvelope, type CutoverEnvelope, type PredecessorDatabase } from "./cutover-envelope";
 import { topologyEquals, type PreDeployTopology } from "./deploy-session";
 import { isSourceCommit } from "./runtime-identity";
 
@@ -93,19 +90,26 @@ export class BootstrapCutoverPreparation {
     if (Date.parse(request.expiresAt) <= now.getTime()) throw new CutoverPreparationError("CUTOVER_ENVELOPE_EXPIRY_INVALID", request.expiresAt);
 
     const cutoverId = request.cutoverId ?? randomUUID();
-    const adoptionNonce = request.adoptionNonce ?? randomUUID();
 
     // Checked before any side effect, because the crash worth surviving is
     // "the envelope was written and the runner died before hearing so". A
     // retry must not census and archive the predecessor a second time.
+    //
+    // Compared against the request, not a reconstructed envelope: what is being
+    // asked is whether this is the same preparation, and that is exactly the
+    // three inputs a caller supplies. The nonce is only checked when one was
+    // given - a plain retry that omits it is still the same intent, and minting
+    // a fresh one before this point made that ordinary case fail as a mismatch.
     const existing = await this.ports.envelopes.read(cutoverId);
     if (existing) {
-      const expected = { ...existing, targetSha: request.targetSha, adoptionNonce };
-      if (canonicalEnvelopeSha256(existing) !== canonicalEnvelopeSha256(expected)) {
-        throw new CutoverPreparationError("CUTOVER_ENVELOPE_IDENTITY_MISMATCH", cutoverId);
-      }
+      const sameIntent = existing.targetSha === request.targetSha
+        && existing.expiresAt === request.expiresAt
+        && (request.adoptionNonce === undefined || existing.adoptionNonce === request.adoptionNonce);
+      if (!sameIntent) throw new CutoverPreparationError("CUTOVER_ENVELOPE_IDENTITY_MISMATCH", cutoverId);
       return { envelope: existing, alreadyPrepared: true };
     }
+
+    const adoptionNonce = request.adoptionNonce ?? randomUUID();
 
     await this.ports.fence.ensureClosed();
     const beforeQuiesce = await this.ports.topology.observe();

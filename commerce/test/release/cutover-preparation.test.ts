@@ -122,6 +122,32 @@ describe("bootstrap cutover preparation", () => {
     expect(retry.log).toEqual([]);
   });
 
+  it("is idempotent for a plain retry that does not restate the nonce", async () => {
+    // The ordinary resume: same cutover, same target, same window, no nonce.
+    // Minting a fresh one before the existing envelope was consulted turned
+    // this into a mismatch.
+    const first = predecessor();
+    const { envelope } = await first.preparation.prepare(request);
+    const retry = predecessor({ written: envelope });
+
+    const result = await retry.preparation.prepare({
+      targetSha: request.targetSha, expiresAt: request.expiresAt, cutoverId: request.cutoverId,
+    });
+
+    expect(result).toEqual({ envelope, alreadyPrepared: true });
+    expect(retry.log).toEqual([]);
+  });
+
+  it("refuses a retry that moves the window, which is a different preparation", async () => {
+    const first = predecessor();
+    const { envelope } = await first.preparation.prepare(request);
+    const retry = predecessor({ written: envelope });
+
+    await expect(retry.preparation.prepare({ ...request, expiresAt: "2026-09-20T12:00:00.000Z" }))
+      .rejects.toThrow("CUTOVER_ENVELOPE_IDENTITY_MISMATCH");
+    expect(retry.log).toEqual([]);
+  });
+
   it("refuses a cutover id already used by a different preparation", async () => {
     const first = predecessor();
     const { envelope } = await first.preparation.prepare(request);

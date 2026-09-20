@@ -13,20 +13,42 @@ const expectation = {
 };
 
 /** A dead runner leaves a session mid-flight; a new one picks it up later. */
-const abandoned = (options: { at: string; observes: PreDeployTopology; afterDeploy?: boolean }) => {
+const abandoned = (options: { at: string; observes: PreDeployTopology | PreDeployTopology[]; afterDeploy?: boolean; deploys?: boolean }) => {
+  const queue = Array.isArray(options.observes) ? [...options.observes] : [];
+  let last = Array.isArray(options.observes) ? queue[0] : options.observes;
+  const log: string[] = [];
   let clock = new Date("2026-09-20T00:00:00.000Z");
   const store = new InMemoryReleaseAuthorityStore();
   const sessions = new DeploySessions(store, () => clock, 60_000);
   const ports: ReleasePorts = {
     sessions, clock: () => clock,
-    topology: { async observe() { return options.observes; } },
-    evidence: { async read() { return { schema: { lineage: "SUPPORTED", versions } }; } },
-    deployment: { async deploy() { throw new Error("the dead runner already tried"); } },
+    topology: { async observe() { if (queue.length) last = queue.shift()!; log.push(`observe:${last.commerce}`); return last; } },
+    evidence: {
+      async read() {
+        log.push("readiness");
+        const runtime = { sourceCommit: target, startedAt: "2026-09-19T23:59:00.000Z", heartbeatAt: clock.toISOString() };
+        return {
+          commerce: runtime, worker: { ...runtime, lastSuccessfulSweepAt: clock.toISOString() },
+          schema: { lineage: "SUPPORTED" as const, versions },
+          legal: { version: expectation.legalVersion, manifestSha256: expectation.legalManifestSha256 },
+        };
+      },
+    },
+    deployment: {
+      async deploy() {
+        log.push("deploy");
+        if (!options.deploys) throw new Error("the dead runner already tried");
+      },
+    },
+    certification: {
+      async issueCapability(id) { log.push("capability"); return { id: "cap", deploymentSessionId: id, expiresAt: "2026-09-21T00:00:00.000Z" }; },
+      async certify() { log.push("certify"); },
+    },
   };
   const session = sessions.acquireFenced({ id: options.at, ownerId: "dead-runner", mode: "MAINTENANCE_CUTOVER", targetSha: target }, topology(old));
   if (options.afterDeploy) sessions.beginDeploying(session.id, "dead-runner");
   const advance = (ms: number) => { clock = new Date(clock.getTime() + ms); };
-  return { store, sessions, session, advance, orchestrator: new ReleaseOrchestrator(ports) };
+  return { store, sessions, session, advance, log, orchestrator: new ReleaseOrchestrator(ports) };
 };
 
 describe("takeover after a runner dies", () => {
@@ -93,5 +115,63 @@ describe("takeover after a runner dies", () => {
     // The archived database can no longer account for what happened, so a
     // takeover inherits a one-way situation whatever the topology says.
     expect(resumed.plan).toEqual({ kind: "FIX_FORWARD_ONLY" });
+  });
+});
+
+describe("continuing a session that was taken over", () => {
+  const request = { ownerId: "new-runner", targetSha: target, expectation };
+
+  it("finishes a converged session through readiness, arming and certification", async () => {
+    const { advance, log, orchestrator } = abandoned({ at: "pickup", observes: topology(target), afterDeploy: true });
+    advance(120_000);
+    const resumed = await orchestrator.resume("pickup", "new-runner");
+    expect(resumed.plan).toEqual({ kind: "PROVE_READINESS" });
+
+    const outcome = await orchestrator.continueSession("pickup", "new-runner", "PROVE_READINESS", request);
+
+    expect(outcome).toMatchObject({ kind: "SUCCEEDED" });
+    // The same ordering the live path uses, not a copy of it: no second deploy,
+    // and certification still sits between readiness and completion.
+    expect(log).not.toContain("deploy");
+    expect(log.indexOf("readiness")).toBeLessThan(log.indexOf("certify"));
+  });
+
+  it("re-fires the deployment only when the topology still says nothing moved", async () => {
+    const { advance, log, orchestrator } = abandoned({
+      at: "retry", observes: [topology(old), topology(old), topology(target), topology(target)], deploys: true,
+    });
+    advance(120_000);
+    await orchestrator.resume("retry", "new-runner");
+
+    const outcome = await orchestrator.continueSession("retry", "new-runner", "RETRY_DEPLOY", request);
+
+    expect(outcome).toMatchObject({ kind: "SUCCEEDED" });
+    expect(log.filter((entry) => entry === "deploy")).toHaveLength(1);
+  });
+
+  it("refuses a plan that production has since outgrown", async () => {
+    // Minutes pass between a recovery workflow reading a plan and acting on it.
+    // A plan is a statement about production when it was made, not a promise.
+    const { advance, log, orchestrator } = abandoned({
+      at: "stale", observes: [topology(old), topology(target)], afterDeploy: true,
+    });
+    advance(120_000);
+    const resumed = await orchestrator.resume("stale", "new-runner");
+    expect(resumed.plan).toEqual({ kind: "RETRY_DEPLOY" });
+
+    // By the time the caller acts, every surface is already on the target.
+    await expect(orchestrator.continueSession("stale", "new-runner", "RETRY_DEPLOY", request))
+      .rejects.toThrow("RESUME_PLAN_STALE:PROVE_READINESS");
+    expect(log).not.toContain("deploy");
+  });
+
+  it("will not choose a direction for a session that needs one", async () => {
+    const partial = { ...topology(old), commerce: target };
+    const { advance, orchestrator } = abandoned({ at: "undecided", observes: partial, afterDeploy: true });
+    advance(120_000);
+    await orchestrator.resume("undecided", "new-runner");
+
+    await expect(orchestrator.continueSession("undecided", "new-runner", "FIX_FORWARD_OR_ROLLBACK", request))
+      .rejects.toThrow("FIX_FORWARD_DIRECTION_REQUIRED");
   });
 });
