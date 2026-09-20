@@ -46,7 +46,7 @@ import {
 } from "./domain/admin-catalog";
 import { cancellationFinancialOverview, completeOccurrence, createAdminReauth, createOccurrence, createOccurrenceRecord, type OccurrenceCreateInput } from "./domain/occurrences";
 import { checkout, checkoutAsync, checkoutContext, checkoutStatus, replayCheckout, type CheckoutInput } from "./domain/checkout";
-import { reconcilePayment, reconcilePendingPayments } from "./domain/payments";
+import { applyTochkaPaymentWebhook, markPaymentPaid, reconcilePayment, reconcilePendingPayments, type TochkaPaymentWebhook } from "./domain/payments";
 import { ensureFullCapturedRefund, reconcilePendingRefunds, submitRequestedRefunds, upsertRefundObligation } from "./domain/refunds";
 import { parseUtcTimestamp } from "./utc-timestamp";
 import { emergencySalesPaused } from "./emergency-sales-gate";
@@ -59,6 +59,9 @@ import {
   legalManifest,
   many,
   one,
+  occurrenceCustomerSnapshot,
+  isOccurrenceCustomerSnapshot,
+  type OccurrenceCustomerSnapshot,
   type Row,
   withImmediateTransaction,
 } from "./domain/shared";
@@ -178,18 +181,6 @@ const isAllowedOccurrenceStateTransition = (before: Row, after: Row) => {
   return previous === next || allowedOccurrenceStateTransitions.has(`${previous}->${next}`);
 };
 
-type OccurrenceCustomerSnapshot = {
-  title: string;
-  starts_at: string;
-  ends_at: string;
-  timezone: string;
-  venue_status: "CONFIRMED" | "TO_BE_ANNOUNCED";
-  venue_name: string | null;
-  venue_address: string | null;
-  venue_disclosure_text: string | null;
-  venue_announce_by: string | null;
-};
-
 export type OccurrenceRevisionClassification = {
   changed: boolean;
   notificationMaterial: boolean;
@@ -203,32 +194,6 @@ type CorruptOccurrenceNotification = { outboxId: string; revisionId: string };
 type PendingOccurrenceUpdateBaseline =
   | { before: OccurrenceCustomerSnapshot; revisionIds: string[]; recoveredCorruptNotifications: CorruptOccurrenceNotification[]; corruptNotifications?: never }
   | { before?: never; revisionIds?: never; recoveredCorruptNotifications?: never; corruptNotifications: CorruptOccurrenceNotification[] };
-
-const occurrenceCustomerSnapshot = (value: Row): OccurrenceCustomerSnapshot => ({
-  title: String(value.title),
-  starts_at: String(value.starts_at),
-  ends_at: String(value.ends_at),
-  timezone: String(value.timezone),
-  venue_status: value.venue_status === "CONFIRMED" ? "CONFIRMED" : "TO_BE_ANNOUNCED",
-  venue_name: value.venue_name == null ? null : String(value.venue_name),
-  venue_address: value.venue_address == null ? null : String(value.venue_address),
-  venue_disclosure_text: value.venue_disclosure_text == null ? null : String(value.venue_disclosure_text),
-  venue_announce_by: value.venue_announce_by == null ? null : String(value.venue_announce_by),
-});
-
-const isOccurrenceCustomerSnapshot = (value: unknown): value is OccurrenceCustomerSnapshot => {
-  if (!value || typeof value !== "object") return false;
-  const snapshot = value as Record<string, unknown>;
-  return typeof snapshot.title === "string"
-    && typeof snapshot.starts_at === "string"
-    && typeof snapshot.ends_at === "string"
-    && typeof snapshot.timezone === "string"
-    && (snapshot.venue_status === "CONFIRMED" || snapshot.venue_status === "TO_BE_ANNOUNCED")
-    && [null, "string"].includes(snapshot.venue_name === null ? null : typeof snapshot.venue_name)
-    && [null, "string"].includes(snapshot.venue_address === null ? null : typeof snapshot.venue_address)
-    && [null, "string"].includes(snapshot.venue_disclosure_text === null ? null : typeof snapshot.venue_disclosure_text)
-    && [null, "string"].includes(snapshot.venue_announce_by === null ? null : typeof snapshot.venue_announce_by);
-};
 
 /**
  * Classifies persisted, normalized occurrence facts. It deliberately does not
@@ -686,92 +651,11 @@ export class CommerceDomain {
   }
 
   markPaymentPaid(paymentId: string, capturedAmount: number, providerPaymentId?: string) {
-    return withImmediateTransaction(this.db, () => this.markPaymentPaidInTransaction(paymentId, capturedAmount, providerPaymentId));
+    return markPaymentPaid(this, paymentId, capturedAmount, providerPaymentId);
   }
 
-  private markPaymentPaidInTransaction(paymentId: string, capturedAmount: number, providerPaymentId?: string) {
-      const payment = one(this.db, "SELECT p.*, o.occurrence_id, o.id AS order_id FROM payments p JOIN orders o ON o.id = p.order_id WHERE p.id = ?", paymentId);
-      if (!payment) throw new DomainError("PAYMENT_NOT_FOUND", 404);
-      if (payment.status === "PAID") return payment;
-      this.db.prepare("UPDATE payments SET status = 'PAID', state = 'CREATED', captured_amount_kopecks = ?, provider_payment_id = COALESCE(?, provider_payment_id), updated_at = ? WHERE id = ?").run(capturedAmount, providerPaymentId ?? null, now(), paymentId);
-      const booking = one(this.db, "SELECT * FROM bookings WHERE order_id = ?", payment.order_id);
-      const occurrence = one(this.db, "SELECT fulfillment_status FROM occurrences WHERE id = ?", payment.occurrence_id);
-      if (booking?.status === "RESERVED" && occurrence?.fulfillment_status === "SCHEDULED") {
-        this.db.prepare("UPDATE bookings SET status = 'CONFIRMED' WHERE id = ? AND status = 'RESERVED'").run(booking.id);
-        const capability = publicId();
-        const encrypted = encryptTicketCapability(capability);
-        const order = one(this.db, `SELECT o.customer_email, o.customer_email_hash, o.public_order_number,
-          o.participant_age_band, o.participant_requires_adult_accompaniment,
-          oc.title, oc.starts_at, oc.ends_at, oc.timezone, oc.venue_status, oc.venue_name,
-          oc.venue_address, oc.venue_disclosure_text, oc.venue_announce_by, c.title AS city_title
-          FROM orders o JOIN occurrences oc ON oc.id = o.occurrence_id JOIN cities c ON c.id = oc.city_id
-          WHERE o.id = ?`, payment.order_id)!;
-        const ticketId = id();
-        this.db.prepare(`INSERT INTO tickets(id, booking_id, status, capability_hash, capability_ciphertext, capability_nonce, key_version)
-          VALUES (?, ?, 'VALID', ?, ?, ?, 1)`).run(ticketId, booking.id, sha256(capability), encrypted.ciphertext, encrypted.nonce);
-        // The outbox references an immutable ticket row. A future Unisender worker
-        // derives the actual URL from its encrypted capability at send time; the raw
-        // capability is never copied to application logs or browser storage.
-        this.enqueueEmail("TICKET", String(order.customer_email), String(order.customer_email_hash), "ticket", ticketId, {
-          schema_version: 1,
-          ticket_id: ticketId,
-          order_id: payment.order_id,
-          public_order_number: order.public_order_number,
-          payment_confirmed: true,
-          amount_kopecks: capturedAmount,
-          participant_age_band: order.participant_age_band,
-          participant_requires_adult_accompaniment: Boolean(order.participant_requires_adult_accompaniment),
-          occurrence: occurrenceCustomerSnapshot(order),
-          city_title: order.city_title,
-        });
-      } else {
-        const abandonment = one(this.db, "SELECT id FROM reservation_abandonments WHERE payment_id = ?", payment.id);
-        const source = abandonment ? "LATE_PAYMENT_AFTER_RESERVATION_ABANDONMENT" : occurrence?.fulfillment_status === "SCHEDULED" ? "LATE_PAYMENT_AFTER_CUSTOMER_CANCELLATION" : "LATE_PAYMENT_AFTER_TERMINAL_OCCURRENCE";
-        const obligation = this.upsertRefundObligation(String(payment.id), source, capturedAmount);
-        if (abandonment) {
-          this.db.prepare("UPDATE refund_obligations SET status = 'REVIEW_REQUIRED' WHERE id = ?").run(obligation.id);
-          this.db.prepare("UPDATE reservation_abandonments SET status = 'LATE_PAYMENT_REVIEW_REQUIRED' WHERE id = ?").run(abandonment.id);
-        }
-      }
-      return one(this.db, "SELECT * FROM payments WHERE id = ?", paymentId)!;
-  }
-
-  applyTochkaPaymentWebhook(input: { rawHash: string; operationId: string; paymentLinkId: string; amountKopecks: number; customerCode: string; merchantId: string; paymentType: string; status: string; webhookType: string; currency?: string }, expected: { customerCode: string; merchantId: string }) {
-    return withImmediateTransaction(this.db, () => {
-      const semanticKey = `${input.operationId}:${input.status}`;
-      const known = one(this.db, "SELECT id, payload_hash, status, entity_id FROM provider_webhook_events WHERE provider = 'TOCHKA' AND semantic_key = ?", semanticKey);
-      const payment = one(this.db, `SELECT p.*, o.amount_kopecks FROM payments p JOIN orders o ON o.id = p.order_id WHERE p.id = ?`, input.paymentLinkId);
-      const observed = JSON.stringify({ operation_id: input.operationId, payment_link_id: input.paymentLinkId, amount_kopecks: input.amountKopecks, payment_type: input.paymentType, status: input.status, webhook_type: input.webhookType, currency: input.currency ?? "RUB" });
-      const valid = input.webhookType === "acquiringInternetPayment" && input.status === "APPROVED" && ["card", "sbp"].includes(input.paymentType) && (!input.currency || input.currency === "RUB") && input.customerCode === expected.customerCode && input.merchantId === expected.merchantId && payment && Number(payment.amount_kopecks) === input.amountKopecks;
-      if (known) {
-        if (known.payload_hash === input.rawHash) return { duplicate: true, applied: false };
-        const knownVariant = one(this.db, `SELECT id FROM provider_webhook_event_conflicts
-          WHERE provider = 'TOCHKA' AND semantic_key = ? AND payload_hash = ?`, semanticKey, input.rawHash);
-        if (knownVariant) return { duplicate: true, applied: false };
-        this.db.prepare(`INSERT INTO provider_webhook_event_conflicts(
-          id, provider, semantic_key, original_event_id, payload_hash, status, entity_id, observed_json
-        ) VALUES (?, 'TOCHKA', ?, ?, ?, ?, ?, ?)`)
-          .run(id(), semanticKey, known.id, input.rawHash, "CONFLICT_QUARANTINED", payment?.id ?? known.entity_id ?? null, observed);
-        const affectedPaymentId = payment?.id ?? known.entity_id;
-        if (affectedPaymentId) this.recordProviderDrift("PAYMENT", String(affectedPaymentId), {
-          webhook_semantic_key_collision: {
-            semantic_key: semanticKey,
-            original_event_id: known.id,
-            original_status: known.status,
-            incoming_payload_hash: input.rawHash,
-          },
-        });
-        return { duplicate: false, applied: false, conflict: true };
-      }
-      if (!valid) {
-        this.db.prepare("INSERT INTO provider_webhook_events(id, provider, semantic_key, payload_hash, status, entity_id, observed_json) VALUES (?, 'TOCHKA', ?, ?, 'QUARANTINED', ?, ?)").run(id(), semanticKey, input.rawHash, payment?.id ?? null, observed);
-        if (payment) this.recordProviderDrift("PAYMENT", String(payment.id), { webhook: { operation_id: input.operationId, amount_kopecks: input.amountKopecks, payment_type: input.paymentType, status: input.status } });
-        return { duplicate: false, applied: false };
-      }
-      this.db.prepare("INSERT INTO provider_webhook_events(id, provider, semantic_key, payload_hash, status, entity_id, observed_json) VALUES (?, 'TOCHKA', ?, ?, 'APPLIED', ?, ?)").run(id(), semanticKey, input.rawHash, payment.id, observed);
-      this.markPaymentPaidInTransaction(String(payment.id), input.amountKopecks, input.operationId);
-      return { duplicate: false, applied: true };
-    });
+  applyTochkaPaymentWebhook(input: TochkaPaymentWebhook, expected: { customerCode: string; merchantId: string }) {
+    return applyTochkaPaymentWebhook(this, input, expected);
   }
 
   upsertRefundObligation(paymentId: string, source: string, target: number) {
@@ -2383,7 +2267,7 @@ export class CommerceDomain {
 
   private purgeOccurrenceNotificationRequest(requestId: string) { return purgeOccurrenceNotificationRequest(this, requestId); }
 
-  private recordProviderDrift(entityType: "PAYMENT" | "REFUND", entityId: string, observed: Record<string, unknown>) {
+  recordProviderDrift(entityType: "PAYMENT" | "REFUND", entityId: string, observed: Record<string, unknown>) {
     const existing = one(this.db, "SELECT id FROM provider_drift_reviews WHERE entity_type = ? AND entity_id = ? AND status = 'OPEN'", entityType, entityId);
     if (!existing) this.db.prepare("INSERT INTO provider_drift_reviews(id, entity_type, entity_id, observed_json) VALUES (?, ?, ?, ?)").run(id(), entityType, entityId, JSON.stringify(observed));
   }
