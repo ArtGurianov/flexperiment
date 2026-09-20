@@ -3,17 +3,24 @@ import { readSchemaIdentity } from "../db";
 import { classifySchemaLineage } from "./schema-identity";
 import { isFreshTimestamp, isSourceCommit, type RuntimeEvidence } from "./runtime-identity";
 import { runtimeInstances } from "./runtime-instance-evidence";
-import type { PreDeployTopology } from "./deploy-session";
+import type { DeploymentObservation, RuntimeTopology } from "./deploy-session";
 import type { ReleaseReadinessEvidence } from "./readiness";
 
 /**
- * What production is actually serving, per surface.
+ * What production is, in both the layers a cutover moves.
  *
- * Two surfaces answer over HTTP, through the descriptor `pnpm build` writes;
- * two answer through the evidence they record in the database this reader runs
- * beside. Every one of the four fails closed: unreachable, malformed, stale and
- * disagreeing all produce a topology that cannot equal any snapshot, rather
- * than a hole a comparison would skip over.
+ * Of the four runtime surfaces, two answer over HTTP through the descriptor
+ * `pnpm build` writes and two through the evidence they record in the database
+ * this reader runs beside. The fifth reading is the deploy pointer, which is
+ * not a surface at all: it is where the deployment applications would deploy
+ * from next.
+ *
+ * Every one of the five fails closed: unreachable, malformed, stale and
+ * disagreeing all raise, rather than leaving a hole a comparison would skip
+ * over. The pointer fails closed for a sharper reason than the rest - a reader
+ * that answered "the runtime matched, the pointer was unreadable" would be
+ * handing a caller the two thirds of an observation that argue for a safe
+ * abort while silently dropping the third that could forbid it.
  */
 
 export class TopologyReadError extends Error {
@@ -26,6 +33,8 @@ export type TopologyReaderOptions = {
   readonly frontendReleaseUrl: string;
   readonly adminReleaseUrl: string;
   readonly db: Database.Database;
+  /** The deploy pointer's reader, injected so this stays a reader of production rather than a caller of git. */
+  readonly deployRef: { read(): Promise<string> };
   readonly fetch?: typeof globalThis.fetch;
   readonly now?: () => Date;
   /** Beyond this, a heartbeat is not evidence that anything is still running. */
@@ -37,7 +46,31 @@ const DEFAULT_HEARTBEAT_MAX_AGE_MS = 90_000;
 export class ProductionTopologyReader {
   constructor(private readonly options: TopologyReaderOptions) {}
 
-  async observe(): Promise<PreDeployTopology> {
+  /**
+   * Both layers, always together.
+   *
+   * There is deliberately no public call that answers with the runtime alone.
+   * A caller holding four surfaces and no pointer has the exact shape a safe
+   * abort must never be decided from, and the cheapest way to keep it from
+   * existing is to never hand it out.
+   */
+  async observe(): Promise<DeploymentObservation> {
+    const [runtime, productionDeployRefSha] = await Promise.all([this.readRuntime(), this.readDeployRef()]);
+    return { runtime, controlPlane: { productionDeployRefSha } };
+  }
+
+  private async readDeployRef(): Promise<string> {
+    let sha: string;
+    try {
+      sha = await this.options.deployRef.read();
+    } catch (error) {
+      throw new TopologyReadError("TOPOLOGY_DEPLOY_REF_UNREADABLE", error instanceof Error ? error.message : "unknown error");
+    }
+    if (!isSourceCommit(sha)) throw new TopologyReadError("TOPOLOGY_DEPLOY_REF_INVALID", String(sha ?? "absent"));
+    return sha;
+  }
+
+  private async readRuntime(): Promise<RuntimeTopology> {
     const [frontend, admin] = await Promise.all([
       this.readDescriptor("frontend", this.options.frontendReleaseUrl),
       this.readDescriptor("admin", this.options.adminReleaseUrl),

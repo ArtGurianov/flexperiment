@@ -143,7 +143,7 @@ describe("putting production back", () => {
     const { refs, recovery } = await drivers();
     await refs.compareAndSet(preSha, targetSha);
 
-    await recovery.restorePreDeployTopology({ frontend: preSha, admin: preSha, commerce: preSha, worker: preSha });
+    await recovery.restorePreDeployTopology({ runtime: { frontend: preSha, admin: preSha, commerce: preSha, worker: preSha }, controlPlane: { productionDeployRefSha: preSha } });
 
     expect(await refs.read()).toBe(preSha);
     expect(calls.filter((call) => call.endsWith("/rollback"))).toHaveLength(3);
@@ -156,7 +156,7 @@ describe("putting production back", () => {
     const { refs, recovery } = await drivers();
     await refs.compareAndSet(preSha, targetSha);
 
-    await expect(recovery.restorePreDeployTopology({ frontend: preSha, admin: preSha, commerce: preSha, worker: preSha }))
+    await expect(recovery.restorePreDeployTopology({ runtime: { frontend: preSha, admin: preSha, commerce: preSha, worker: preSha }, controlPlane: { productionDeployRefSha: preSha } }))
       .rejects.toThrow("RECOVERY_ROLLBACK_IMAGE_MISSING");
   });
 
@@ -164,7 +164,7 @@ describe("putting production back", () => {
     // All three applications track one ref, so a vector naming two commits is
     // not a state they can be returned to.
     const { recovery } = await drivers();
-    await expect(recovery.restorePreDeployTopology({ frontend: preSha, admin: targetSha, commerce: preSha, worker: preSha }))
+    await expect(recovery.restorePreDeployTopology({ runtime: { frontend: preSha, admin: targetSha, commerce: preSha, worker: preSha }, controlPlane: { productionDeployRefSha: preSha } }))
       .rejects.toThrow("RECOVERY_TOPOLOGY_NOT_UNIFORM");
   });
 
@@ -172,7 +172,7 @@ describe("putting production back", () => {
     deploymentStatus = "failed";
     const { refs, recovery } = await drivers();
     await refs.compareAndSet(preSha, targetSha);
-    await expect(recovery.restorePreDeployTopology({ frontend: preSha, admin: preSha, commerce: preSha, worker: preSha }))
+    await expect(recovery.restorePreDeployTopology({ runtime: { frontend: preSha, admin: preSha, commerce: preSha, worker: preSha }, controlPlane: { productionDeployRefSha: preSha } }))
       .rejects.toThrow("RECOVERY_ROLLBACK_FAILED");
   });
 });

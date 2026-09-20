@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { DeploySessions, type PreDeployTopology } from "../../src/release/deploy-session";
+import { DeploySessions } from "../../src/release/deploy-session";
 import { releaseAuthorityStores } from "../support/release-authority-stores";
+import { snapshot as topology, withDeployRef, withSurface } from "../support/deploy-snapshot";
 
 const target = "a".repeat(40);
 const old = "b".repeat(40);
 const changed = "c".repeat(40);
-const topology = (sha: string): PreDeployTopology => ({ frontend: sha, admin: sha, commerce: sha, worker: sha });
 
 describe.each(releaseAuthorityStores)("deploy sessions (%s)", (_name, makeStore) => {
   it("safe-aborts only when every surface remains exactly at its pre-deploy topology", () => {
@@ -25,7 +25,7 @@ describe.each(releaseAuthorityStores)("deploy sessions (%s)", (_name, makeStore)
     const session = sessions.acquireFenced({ id: "recovery", ownerId: "owner", mode: "MAINTENANCE_CUTOVER", targetSha: target, candidateId: "candidate" }, topology(old));
     expect(session.state).toBe("FENCED");
     sessions.beginDeploying(session.id, "owner");
-    const partial = { ...topology(old), frontend: changed };
+    const partial = withSurface(topology(old), "frontend", changed);
     expect(sessions.classifyFailure(session.id, "owner", partial))
       .toMatchObject({ state: "RECOVERY_REQUIRED", rollbackAuthority: "OLD_LINEAGE_ALLOWED", mutationObserved: true });
     expect(sessions.completeRollback(session.id, "owner", topology(old)))
@@ -40,7 +40,7 @@ describe.each(releaseAuthorityStores)("deploy sessions (%s)", (_name, makeStore)
     const session = sessions.acquireFenced({ id: "no-safe-abort", ownerId: "owner", mode: "MAINTENANCE_CUTOVER", targetSha: target, candidateId: "candidate" }, topology(old));
     expect(session.state).toBe("FENCED");
     sessions.beginDeploying(session.id, "owner");
-    sessions.observeTopology(session.id, "owner", { ...topology(old), commerce: changed });
+    sessions.observeTopology(session.id, "owner", withSurface(topology(old), "commerce", changed));
     expect(sessions.classifyFailure(session.id, "owner", topology(old)))
       .toMatchObject({ state: "RECOVERY_REQUIRED", mutationObserved: true });
   });
@@ -88,7 +88,7 @@ describe.each(releaseAuthorityStores)("deploy sessions (%s)", (_name, makeStore)
     const session = sessions.acquireFenced({ id: "external", ownerId: "owner", mode: "MAINTENANCE_CUTOVER", targetSha: target, candidateId: "candidate" }, topology(old));
     expect(session.state).toBe("FENCED");
     sessions.beginDeploying(session.id, "owner");
-    sessions.classifyFailure(session.id, "owner", { ...topology(old), worker: changed });
+    sessions.classifyFailure(session.id, "owner", withSurface(topology(old), "worker", changed));
     // Recovery went forward: every surface now serves the target, which is what
     // makes arming certification on this session meaningful at all.
     expect(() => sessions.armExternalEffects(session.id, "owner")).toThrow("TARGET_TOPOLOGY_NOT_OBSERVED");
@@ -214,4 +214,72 @@ describe.each(releaseAuthorityStores)("deploy sessions (%s)", (_name, makeStore)
     expect(() => sessions.armExternalEffects(session.id, "first")).toThrow("DEPLOY_SESSION_NOT_OWNER");
     expect(() => sessions.completeTarget(session.id, "first", topology(target))).toThrow("DEPLOY_SESSION_NOT_OWNER");
   });
+  // The deploy pointer is the second layer of the snapshot, and these four
+  // cases are the reason it is there. Every one of them has a runtime that
+  // argues for a safe abort; only the last one gets it.
+  describe("a safe abort needs both layers, not just the four surfaces", () => {
+    const fenced = () => {
+      const store = makeStore();
+      const sessions = new DeploySessions(store, () => new Date("2026-09-19T00:00:00.000Z"));
+      const session = sessions.acquireFenced(
+        { id: "two-layer", ownerId: "owner", mode: "MAINTENANCE_CUTOVER", targetSha: target, candidateId: "candidate" },
+        topology(old),
+      );
+      sessions.beginDeploying(session.id, "owner");
+      return { store, sessions, session };
+    };
+
+    it("refuses a safe abort while the pointer still names the target", () => {
+      // Nothing has been deployed yet, so all four surfaces are untouched. But
+      // the applications follow this pointer: production is not a production
+      // that was left alone, it is one waiting to move. Reopening sales here
+      // would reopen them in front of a deploy that is still coming.
+      const { sessions, session } = fenced();
+      const outcome = sessions.classifyFailure(session.id, "owner", withDeployRef(topology(old), target));
+      expect(outcome).toMatchObject({ state: "RECOVERY_REQUIRED", mutationObserved: false });
+    });
+
+    it("refuses a safe abort when the pointer could not be read at all", () => {
+      // An unreadable pointer reaches this boundary as a failed observation,
+      // never as an observation with the pointer left out. The check is that
+      // no snapshot without one can even be built to pass in.
+      const { sessions, session } = fenced();
+      expect(() => sessions.classifyFailure(session.id, "owner", topology(old).runtime as never))
+        .toThrow("DEPLOY_SNAPSHOT_MALFORMED");
+      expect(() => sessions.classifyFailure(session.id, "owner", { ...topology(old), controlPlane: { productionDeployRefSha: "" } } as never))
+        .toThrow("DEPLOY_CONTROL_PLANE_REF_INVALID");
+      // The session is untouched by either refusal: it did not quietly become
+      // safe-abortable, and it did not quietly become recovery either.
+      expect(sessions.read(session.id)).toMatchObject({ state: "DEPLOYING", mutationObserved: false });
+    });
+
+    it("requires recovery when the pointer is home but a surface is not", () => {
+      const { sessions, session } = fenced();
+      const outcome = sessions.classifyFailure(session.id, "owner", withSurface(topology(old), "admin", changed));
+      expect(outcome).toMatchObject({ state: "RECOVERY_REQUIRED", mutationObserved: true });
+    });
+
+    it("safe-aborts once both layers are back where the snapshot found them", () => {
+      // The pointer moved and came back. That is legal: a pointer can be put
+      // back and a deployed surface cannot, which is why the control plane is
+      // compared against this reading rather than latching the monotonic bit.
+      const { store, sessions, session } = fenced();
+      sessions.observeTopology(session.id, "owner", withDeployRef(topology(old), target));
+      const outcome = sessions.classifyFailure(session.id, "owner", topology(old));
+      expect(outcome).toMatchObject({ state: "SAFE_ABORTED", rollbackAuthority: "OLD_LINEAGE_ALLOWED" });
+      expect(store.deploymentGate().closed).toBe(false);
+    });
+
+    it("decides from the observation it is given, not from what a mover claimed", () => {
+      // A caller that moved the pointer back holds the sha its own compare-and
+      // -set returned. Passing that in would be believing the write instead of
+      // reading production, so the snapshot has to come from a fresh look - and
+      // a fresh look that disagrees forbids the abort.
+      const { sessions, session } = fenced();
+      const reread = withDeployRef(topology(old), changed);
+      expect(sessions.classifyFailure(session.id, "owner", reread))
+        .toMatchObject({ state: "RECOVERY_REQUIRED", mutationObserved: false });
+    });
+  });
+
 });

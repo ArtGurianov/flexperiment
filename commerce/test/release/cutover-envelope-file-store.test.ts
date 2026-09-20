@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { migrate } from "../../src/db";
 import { createCutoverEnvelope, type CutoverEnvelope } from "../../src/release/cutover-envelope";
 import { FileCutoverEnvelopeStore } from "../../src/release/cutover-envelope-file-store";
+import { snapshot } from "../support/deploy-snapshot";
 
 const TARGET = "a".repeat(40);
 const OLD = "b".repeat(40);
@@ -13,7 +14,7 @@ const OLD = "b".repeat(40);
 const envelope = (over: Partial<Parameters<typeof createCutoverEnvelope>[0]> = {}): CutoverEnvelope =>
   createCutoverEnvelope({
     cutoverId: "cutover-1", targetSha: TARGET, mode: "MAINTENANCE_CUTOVER",
-    preDeployTopology: { frontend: OLD, admin: OLD, commerce: OLD, worker: OLD },
+    preDeployTopology: snapshot(OLD),
     predecessorDatabase: { ref: "prelaunch-2026-09-20.sqlite", sha256: "f".repeat(64) },
     createdAt: "2026-09-20T11:00:00.000Z", expiresAt: "2026-09-20T13:00:00.000Z",
     adoptionNonce: "nonce-1", ...over,

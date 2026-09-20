@@ -3,12 +3,13 @@ import {
   BootstrapRollback, InMemoryBootstrapRollbackReceiptStore,
   type BootstrapRollbackPorts, type DatabaseArchive,
 } from "../../src/release/bootstrap-rollback";
-import { DeploySessions, type PreDeployTopology, type ReleaseAuthorityStore } from "../../src/release/deploy-session";
+import { DeploySessions, type PreDeploySnapshot, type ReleaseAuthorityStore } from "../../src/release/deploy-session";
 import { releaseAuthorityStores } from "../support/release-authority-stores";
+import { withSurface } from "../support/deploy-snapshot";
 
 const target = "a".repeat(40);
-const before: PreDeployTopology = { frontend: "b".repeat(40), admin: "c".repeat(40), commerce: "b".repeat(40), worker: "d".repeat(40) };
-const afterCutover: PreDeployTopology = { frontend: target, admin: target, commerce: target, worker: target };
+const before: PreDeploySnapshot = { runtime: { frontend: "b".repeat(40), admin: "c".repeat(40), commerce: "b".repeat(40), worker: "d".repeat(40) }, controlPlane: { productionDeployRefSha: "b".repeat(40) } };
+const afterCutover: PreDeploySnapshot = { runtime: { frontend: target, admin: target, commerce: target, worker: target }, controlPlane: { productionDeployRefSha: target } };
 const predecessorDatabase: DatabaseArchive = { ref: "prelaunch-2026-09-20.sqlite", sha256: "e".repeat(64) };
 const successorDatabase: DatabaseArchive = { ref: "successor-2026-09-20.sqlite", sha256: "f".repeat(64) };
 const now = new Date("2026-09-20T00:00:00.000Z");
@@ -17,7 +18,7 @@ let clock = now;
 const world = (makeStore: () => ReleaseAuthorityStore, options: {
   archiveFails?: string;
   restoredSha256?: string;
-  restoredTopology?: PreDeployTopology;
+  restoredTopology?: PreDeploySnapshot;
   lineage?: "LEGACY" | "SUPPORTED";
   predecessorGateOpen?: boolean;
   armed?: boolean;
@@ -118,7 +119,7 @@ describe.each(releaseAuthorityStores)("bootstrap reverse handoff (%s)", (_name, 
   });
 
   it("refuses to complete when the database came back but the topology did not", async () => {
-    const stillPartial = { ...before, worker: target };
+    const stillPartial = withSurface(before, "worker", target);
     const { prepare, rollback, log, receipts } = world(makeStore, { restoredTopology: stillPartial });
     const { envelope } = await prepare();
 

@@ -1,12 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { createCutoverEnvelope, InMemoryCutoverEnvelopeStore } from "../../src/release/cutover-envelope";
+import { snapshot } from "../support/deploy-snapshot";
 
 const target = "a".repeat(40);
-const topology = { frontend: "b".repeat(40), admin: "b".repeat(40), commerce: "b".repeat(40), worker: "b".repeat(40) } as const;
+const preDeploy = snapshot("b".repeat(40));
 const predecessorDatabase = { ref: "prelaunch-2026-09-20.sqlite", sha256: "c".repeat(64) };
 const envelopeInput = {
   cutoverId: "cutover", adoptionNonce: "nonce", targetSha: target, mode: "MAINTENANCE_CUTOVER" as const,
-  preDeployTopology: topology, predecessorDatabase,
+  preDeployTopology: preDeploy, predecessorDatabase,
   createdAt: "2026-09-19T00:00:00.000Z", expiresAt: "2026-09-19T00:05:00.000Z",
 };
 
@@ -21,8 +22,15 @@ describe("cutover envelope", () => {
       .toThrow("CUTOVER_ENVELOPE_PREDECESSOR_DIGEST_INVALID");
   });
 
-  it("refuses a malformed pre-deploy topology before an envelope can be stored", () => {
-    expect(() => createCutoverEnvelope({ ...envelopeInput, preDeployTopology: { ...topology, worker: "not-a-sha" } }))
+  it("refuses a malformed pre-deploy snapshot before an envelope can be stored", () => {
+    expect(() => createCutoverEnvelope({ ...envelopeInput, preDeployTopology: { ...preDeploy, runtime: { ...preDeploy.runtime, worker: "not-a-sha" } } }))
+      .toThrow("CUTOVER_ENVELOPE_TOPOLOGY_INVALID");
+    expect(() => createCutoverEnvelope({ ...envelopeInput, preDeployTopology: { ...preDeploy, controlPlane: { productionDeployRefSha: "not-a-sha" } } }))
+      .toThrow("CUTOVER_ENVELOPE_TOPOLOGY_INVALID");
+    // The shape this predates: four surfaces and no pointer. An envelope is
+    // written once and read after the database it describes is gone, so the
+    // missing layer can never be recovered later - it has to be refused here.
+    expect(() => createCutoverEnvelope({ ...envelopeInput, preDeployTopology: preDeploy.runtime as never }))
       .toThrow("CUTOVER_ENVELOPE_TOPOLOGY_INVALID");
   });
 

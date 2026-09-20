@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { DeployMode, PreDeployTopology } from "./deploy-session";
+import { assertSnapshot, snapshotDigestParts, type DeployMode, type PreDeploySnapshot } from "./deploy-session";
 import { isSourceCommit } from "./runtime-identity";
 
 /**
@@ -17,7 +17,7 @@ export type CutoverEnvelope = {
   readonly cutoverId: string;
   readonly targetSha: string;
   readonly mode: DeployMode;
-  readonly preDeployTopology: PreDeployTopology;
+  readonly preDeployTopology: PreDeploySnapshot;
   readonly predecessorDatabase: PredecessorDatabase;
   readonly createdAt: string;
   readonly expiresAt: string;
@@ -35,8 +35,11 @@ export type CutoverAdoption = {
 export const createCutoverEnvelope = (input: Omit<CutoverEnvelope, "cutoverId" | "adoptionNonce"> & Partial<Pick<CutoverEnvelope, "cutoverId" | "adoptionNonce">>): CutoverEnvelope => {
   if (input.mode !== "MAINTENANCE_CUTOVER") throw new Error("CUTOVER_ENVELOPE_MODE_INVALID");
   if (!isSourceCommit(input.targetSha)) throw new Error("CUTOVER_ENVELOPE_TARGET_SHA_INVALID");
-  const surfaces = ["frontend", "admin", "commerce", "worker"] as const;
-  if (Object.keys(input.preDeployTopology).length !== surfaces.length || surfaces.some((surface) => !isSourceCommit(input.preDeployTopology[surface]))) {
+  // Both layers, or the envelope is not a handoff the successor can act on:
+  // it has to be able to put the deploy pointer back as well as the surfaces.
+  try {
+    assertSnapshot(input.preDeployTopology);
+  } catch {
     throw new Error("CUTOVER_ENVELOPE_TOPOLOGY_INVALID");
   }
   if (!(Date.parse(input.createdAt) < Date.parse(input.expiresAt))) throw new Error("CUTOVER_ENVELOPE_EXPIRY_INVALID");
@@ -55,8 +58,7 @@ export const createCutoverEnvelope = (input: Omit<CutoverEnvelope, "cutoverId" |
 export const canonicalEnvelopeSha256 = (envelope: CutoverEnvelope): string =>
   createHash("sha256").update(JSON.stringify([
     envelope.cutoverId, envelope.targetSha, envelope.mode,
-    envelope.preDeployTopology.frontend, envelope.preDeployTopology.admin,
-    envelope.preDeployTopology.commerce, envelope.preDeployTopology.worker,
+    ...snapshotDigestParts(envelope.preDeployTopology),
     envelope.predecessorDatabase.ref, envelope.predecessorDatabase.sha256,
     envelope.adoptionNonce, envelope.createdAt, envelope.expiresAt,
   ])).digest("hex");

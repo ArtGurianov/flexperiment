@@ -1,7 +1,7 @@
 import { CoolifyClient, CoolifyError, type CoolifyDeployment } from "./coolify";
 import { ProductionDeployRefStore } from "./deploy-ref";
 import type { DeploymentDriver, RecoveryDriver } from "./orchestrator";
-import type { PreDeployTopology } from "./deploy-session";
+import type { PreDeploySnapshot, RuntimeTopology } from "./deploy-session";
 
 /**
  * Deploying, and putting production back, through the control plane that
@@ -18,7 +18,7 @@ import type { PreDeployTopology } from "./deploy-session";
 
 export type SurfaceApplication = {
   /** `commerce` covers two surfaces, which is why this is a list. */
-  readonly surfaces: readonly (keyof PreDeployTopology)[];
+  readonly surfaces: readonly (keyof RuntimeTopology)[];
   readonly uuid: string;
   readonly name: string;
 };
@@ -111,9 +111,9 @@ export class CoolifyRecoveryDriver implements RecoveryDriver {
    * to restore the one that was running, so this refuses and leaves the
    * session in recovery with sales shut.
    */
-  async restorePreDeployTopology(topology: PreDeployTopology): Promise<void> {
+  async restorePreDeployTopology(snapshot: PreDeploySnapshot): Promise<void> {
     const targets = new Set(this.options.applications.flatMap((application) =>
-      application.surfaces.map((surface) => topology[surface])));
+      application.surfaces.map((surface) => snapshot.runtime[surface])));
     if (targets.size !== 1) {
       // One vector, one commit: these applications all track one ref, so a
       // snapshot naming two commits is not one this control plane can restore.

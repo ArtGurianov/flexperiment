@@ -3,7 +3,24 @@ import { isSourceCommit } from "./runtime-identity";
 
 export type DeployMode = "MAINTENANCE_CUTOVER" | "ROLLING_SAFE";
 export type DeploySurface = "frontend" | "admin" | "commerce" | "worker";
-export type PreDeployTopology = Readonly<Record<DeploySurface, string>>;
+export type RuntimeTopology = Readonly<Record<DeploySurface, string>>;
+
+/**
+ * What production was, in both the layers a cutover can move.
+ *
+ * The four surfaces are what production serves. The deploy pointer is what it
+ * will serve next: the deployment applications track that ref, so a runtime
+ * restored to the old commits while the ref names the new one is not a
+ * production that was left alone - it is one waiting to move again. A snapshot
+ * of only the first layer cannot tell those apart.
+ */
+export type PreDeploySnapshot = {
+  readonly runtime: RuntimeTopology;
+  readonly controlPlane: { readonly productionDeployRefSha: string };
+};
+
+/** A fresh reading of the same two layers. */
+export type DeploymentObservation = PreDeploySnapshot;
 export type DeploySessionState = "ACQUIRED" | "FENCED" | "DEPLOYING" | "RECOVERY_REQUIRED" | "SAFE_ABORTED" | "SUCCEEDED" | "ROLLED_BACK";
 export type RollbackAuthority = "OLD_LINEAGE_ALLOWED" | "NEW_LINEAGE_ONLY";
 
@@ -23,8 +40,8 @@ export type DeploySession = {
   readonly mutationObserved: boolean;
   readonly createdAt: string;
   readonly leaseExpiresAt: string;
-  readonly preDeployTopology?: PreDeployTopology;
-  readonly observedTopology?: PreDeployTopology;
+  readonly preDeployTopology?: PreDeploySnapshot;
+  readonly observedTopology?: DeploymentObservation;
   /**
    * The cutover envelope this session adopted, when it was created across a
    * lineage boundary. Unique per session: the filesystem envelope and the
@@ -92,7 +109,7 @@ export interface ReleaseAuthorityStore {
    * this one guarded UPDATE whose `changes === 1` is the only proof of
    * ownership, so the contract has to demand it here too.
    */
-  recordTopology(id: string, ownerId: string, now: Date, kind: "PRE_DEPLOY" | "OBSERVED", topology: PreDeployTopology): DeploySession;
+  recordTopology(id: string, ownerId: string, now: Date, kind: "PRE_DEPLOY" | "OBSERVED", observation: DeploymentObservation): DeploySession;
   /** Ordinary progress. Terminal states are unreachable here by construction. */
   transitionNonTerminal(id: string, ownerId: string, now: Date, from: readonly DeploySessionState[], patch: DeploySessionPatch): DeploySession;
   /** The only way to a terminal state, and it releases the gate in the same operation. */
@@ -118,14 +135,38 @@ export const TERMINAL = new Set<DeploySessionState>(["SAFE_ABORTED", "SUCCEEDED"
 export const NON_TERMINAL: readonly DeploySessionState[] = ["ACQUIRED", "FENCED", "DEPLOYING", "RECOVERY_REQUIRED"];
 const surfaces: readonly DeploySurface[] = ["frontend", "admin", "commerce", "worker"];
 
-export const topologyEquals = (left: PreDeployTopology, right: PreDeployTopology): boolean =>
+export const runtimeEquals = (left: RuntimeTopology, right: RuntimeTopology): boolean =>
   surfaces.every((surface) => left[surface] === right[surface]);
 
-export const topologyIsTarget = (topology: PreDeployTopology, targetSha: string): boolean =>
-  surfaces.every((surface) => topology[surface] === targetSha);
+export const runtimeIsTarget = (runtime: RuntimeTopology, targetSha: string): boolean =>
+  surfaces.every((surface) => runtime[surface] === targetSha);
 
-const assertTopology = (topology: PreDeployTopology): void => {
-  for (const surface of surfaces) if (!isSourceCommit(topology[surface])) throw new Error(`DEPLOY_TOPOLOGY_${surface.toUpperCase()}_INVALID`);
+/** Both layers, so that a snapshot missing one cannot be compared as though it had it. */
+export const snapshotEquals = (left: PreDeploySnapshot, right: PreDeploySnapshot): boolean =>
+  runtimeEquals(left.runtime, right.runtime)
+  && left.controlPlane.productionDeployRefSha === right.controlPlane.productionDeployRefSha;
+
+/**
+ * The snapshot's fields in a fixed order, for the digests that identify an
+ * envelope. `Object.values` would follow insertion order, which differs between
+ * a literal built here and the same snapshot parsed back out of its own JSON -
+ * so a replay could recompute a different digest for an identical envelope and
+ * refuse the handoff it was written to prove.
+ */
+export const snapshotDigestParts = (snapshot: PreDeploySnapshot): readonly string[] => [
+  ...surfaces.map((surface) => snapshot.runtime[surface]),
+  snapshot.controlPlane.productionDeployRefSha,
+];
+
+export const assertSnapshot = (snapshot: PreDeploySnapshot): void => {
+  // A snapshot carrying only four surfaces is the shape this predates. It is
+  // refused rather than completed with an assumed pointer: guessing where the
+  // control plane was is exactly the reading that makes a safe abort unsafe.
+  if (!snapshot?.runtime || !snapshot.controlPlane) throw new Error("DEPLOY_SNAPSHOT_MALFORMED");
+  for (const surface of surfaces) {
+    if (!isSourceCommit(snapshot.runtime[surface])) throw new Error(`DEPLOY_TOPOLOGY_${surface.toUpperCase()}_INVALID`);
+  }
+  if (!isSourceCommit(snapshot.controlPlane.productionDeployRefSha)) throw new Error("DEPLOY_CONTROL_PLANE_REF_INVALID");
 };
 
 export class InMemoryReleaseAuthorityStore implements ReleaseAuthorityStore {
@@ -185,10 +226,10 @@ export class InMemoryReleaseAuthorityStore implements ReleaseAuthorityStore {
     return { closed: this.#gateOwnerSessionId !== null, deploymentSessionId: this.#gateOwnerSessionId };
   }
 
-  recordTopology(id: string, ownerId: string, now: Date, kind: "PRE_DEPLOY" | "OBSERVED", topology: PreDeployTopology): DeploySession {
+  recordTopology(id: string, ownerId: string, now: Date, kind: "PRE_DEPLOY" | "OBSERVED", observation: DeploymentObservation): DeploySession {
     const session = this.write(id, ownerId, now, NON_TERMINAL, {});
     if (kind === "PRE_DEPLOY" && session.preDeployTopology) throw new Error("PRE_DEPLOY_TOPOLOGY_ALREADY_RECORDED");
-    const next = kind === "PRE_DEPLOY" ? { ...session, preDeployTopology: topology } : { ...session, observedTopology: topology };
+    const next = kind === "PRE_DEPLOY" ? { ...session, preDeployTopology: observation } : { ...session, observedTopology: observation };
     this.#sessions.set(id, next);
     return next;
   }
@@ -274,16 +315,16 @@ export type ResumePlan =
   /** External effects are committed, so the old lineage is no longer a destination. */
   | { readonly kind: "FIX_FORWARD_ONLY" };
 
-export const planResume = (session: DeploySession, freshTopology: PreDeployTopology): ResumePlan => {
+export const planResume = (session: DeploySession, freshObservation: DeploymentObservation): ResumePlan => {
   if (TERMINAL.has(session.state)) throw new Error("DEPLOY_SESSION_TERMINAL");
   if (!session.preDeployTopology) throw new Error("PRE_DEPLOY_TOPOLOGY_REQUIRED");
   if (session.rollbackAuthority === "NEW_LINEAGE_ONLY") return { kind: "FIX_FORWARD_ONLY" };
   if (session.state === "RECOVERY_REQUIRED") return { kind: "FIX_FORWARD_OR_ROLLBACK" };
-  if (topologyIsTarget(freshTopology, session.targetSha)) return { kind: "PROVE_READINESS" };
+  if (runtimeIsTarget(freshObservation.runtime, session.targetSha)) return { kind: "PROVE_READINESS" };
   // Unchanged means unchanged everywhere: one moved surface is a partial
   // deployment, whatever the others say, and re-firing the deploy over it would
   // be acting on an assumption nobody checked.
-  if (topologyEquals(freshTopology, session.preDeployTopology) && !session.mutationObserved) return { kind: "RETRY_DEPLOY" };
+  if (snapshotEquals(freshObservation, session.preDeployTopology) && !session.mutationObserved) return { kind: "RETRY_DEPLOY" };
   return { kind: "FIX_FORWARD_OR_ROLLBACK" };
 };
 
@@ -318,16 +359,16 @@ export class DeploySessions {
    * dead runner could leave a session that believes it fenced nothing, or a
    * gate closed by a session that does not exist.
    */
-  acquireFenced(input: AcquireInput, preDeployTopology: PreDeployTopology): DeploySession {
+  acquireFenced(input: AcquireInput, preDeployTopology: PreDeploySnapshot): DeploySession {
     if (input.mode !== "MAINTENANCE_CUTOVER") throw new Error("ROLLING_SAFE_DOES_NOT_FENCE_SALES");
-    assertTopology(preDeployTopology);
+    assertSnapshot(preDeployTopology);
     return this.store.acquire({ ...this.blank(input), state: "FENCED", preDeployTopology });
   }
 
   /** A rolling release never touches the gate, so its creation says so explicitly. */
-  acquireRolling(input: AcquireInput, preDeployTopology: PreDeployTopology): DeploySession {
+  acquireRolling(input: AcquireInput, preDeployTopology: PreDeploySnapshot): DeploySession {
     if (input.mode !== "ROLLING_SAFE") throw new Error("ROLLING_RELEASE_REQUIRES_ROLLING_SAFE");
-    assertTopology(preDeployTopology);
+    assertSnapshot(preDeployTopology);
     return this.store.acquire({ ...this.blank(input), state: "DEPLOYING", preDeployTopology });
   }
 
@@ -352,19 +393,39 @@ export class DeploySessions {
     };
   }
 
-  observeTopology(id: string, ownerId: string, topology: PreDeployTopology): DeploySession {
+  /**
+   * `mutationObserved` latches on the RUNTIME layer only.
+   *
+   * It is monotonic and permanent - production having been touched is not a
+   * thing that stops being true - and the control plane deliberately does not
+   * feed it. Moving the deploy pointer is how a deploy begins; if that latched
+   * the bit, returning the pointer afterwards could never restore a safe abort,
+   * and the recovery path this exists for would be unreachable.
+   */
+  observeTopology(id: string, ownerId: string, observation: DeploymentObservation): DeploySession {
     const session = this.owned(id, ownerId);
     if (!session.preDeployTopology) throw new Error("PRE_DEPLOY_TOPOLOGY_REQUIRED");
-    assertTopology(topology);
-    this.store.recordTopology(id, ownerId, this.clock(), "OBSERVED", topology);
-    const mutationObserved = session.mutationObserved || !topologyEquals(topology, session.preDeployTopology);
+    assertSnapshot(observation);
+    this.store.recordTopology(id, ownerId, this.clock(), "OBSERVED", observation);
+    const mutationObserved = session.mutationObserved
+      || !runtimeEquals(observation.runtime, session.preDeployTopology.runtime);
     return this.store.transitionNonTerminal(id, ownerId, this.clock(), ["DEPLOYING", "RECOVERY_REQUIRED"], { mutationObserved });
   }
 
-  classifyFailure(id: string, ownerId: string, topology: PreDeployTopology): DeploySession {
-    const observed = this.observeTopology(id, ownerId, topology);
-    if (!observed.preDeployTopology) throw new Error("PRE_DEPLOY_TOPOLOGY_REQUIRED");
-    if (!observed.mutationObserved) {
+  /**
+   * A safe abort claims production was never touched, in either layer.
+   *
+   * The runtime half is the monotonic bit; the control-plane half is checked
+   * against this reading, now, because a pointer can be put back and a deployed
+   * surface cannot. A caller that has moved the ref and wants a safe abort must
+   * return the ref first and observe again - which is the whole point.
+   */
+  classifyFailure(id: string, ownerId: string, observation: DeploymentObservation): DeploySession {
+    const observed = this.observeTopology(id, ownerId, observation);
+    const snapshot = observed.preDeployTopology;
+    if (!snapshot) throw new Error("PRE_DEPLOY_TOPOLOGY_REQUIRED");
+    const controlPlaneRestored = observation.controlPlane.productionDeployRefSha === snapshot.controlPlane.productionDeployRefSha;
+    if (!observed.mutationObserved && controlPlaneRestored) {
       return this.store.settle(id, ownerId, this.clock(), ["DEPLOYING", "RECOVERY_REQUIRED"], "SAFE_ABORTED");
     }
     return this.store.transitionNonTerminal(id, ownerId, this.clock(), ["DEPLOYING", "RECOVERY_REQUIRED"], { state: "RECOVERY_REQUIRED" });
@@ -403,7 +464,7 @@ export class DeploySessions {
     // Readiness stays the orchestrator's job, but arming certification on a
     // knowingly partial deployment is the one misuse worth making impossible
     // here rather than trusting a call order.
-    if (!session.observedTopology || !topologyIsTarget(session.observedTopology, session.targetSha)) {
+    if (!session.observedTopology || !runtimeIsTarget(session.observedTopology.runtime, session.targetSha)) {
       throw new Error("TARGET_TOPOLOGY_NOT_OBSERVED");
     }
     if (session.rollbackAuthority === "NEW_LINEAGE_ONLY") return session;
@@ -440,23 +501,30 @@ export class DeploySessions {
    * makes "certification ran before this release was called done" structural.
    * A rolling release crosses no external boundary and needs no such proof.
    */
-  completeTarget(id: string, ownerId: string, topology: PreDeployTopology): DeploySession {
-    const observed = this.observeTopology(id, ownerId, topology);
+  completeTarget(id: string, ownerId: string, observation: DeploymentObservation): DeploySession {
+    const observed = this.observeTopology(id, ownerId, observation);
     if (observed.bootstrapRollbackId) throw new Error("BOOTSTRAP_ROLLBACK_RESERVED");
-    if (!topologyIsTarget(topology, observed.targetSha)) throw new Error("TARGET_TOPOLOGY_NOT_CONVERGED");
+    if (!runtimeIsTarget(observation.runtime, observed.targetSha)) throw new Error("TARGET_TOPOLOGY_NOT_CONVERGED");
     if (observed.mode === "MAINTENANCE_CUTOVER" && observed.rollbackAuthority !== "NEW_LINEAGE_ONLY") {
       throw new Error("MAINTENANCE_CUTOVER_EXTERNAL_EFFECTS_NOT_ARMED");
     }
     return this.store.settle(id, ownerId, this.clock(), ["DEPLOYING", "RECOVERY_REQUIRED"], "SUCCEEDED");
   }
 
-  /** Production was put back on the pre-deploy topology. Only legal while the old lineage is still a truthful destination. */
-  completeRollback(id: string, ownerId: string, topology: PreDeployTopology): DeploySession {
+  /**
+   * Production was put back, in both layers. Only legal while the old lineage
+   * is still a truthful destination.
+   *
+   * The pointer is compared too: a runtime on the old commits with the ref
+   * still naming the new one is a rollback that the next ordinary deploy would
+   * undo, and calling that ROLLED_BACK would open sales on it.
+   */
+  completeRollback(id: string, ownerId: string, observation: DeploymentObservation): DeploySession {
     const session = this.owned(id, ownerId);
     if (session.rollbackAuthority !== "OLD_LINEAGE_ALLOWED") throw new Error("OLD_LINEAGE_ROLLBACK_FORBIDDEN");
-    if (!session.preDeployTopology || !topologyEquals(topology, session.preDeployTopology)) throw new Error("ROLLBACK_TOPOLOGY_NOT_CONVERGED");
-    assertTopology(topology);
-    this.store.recordTopology(id, ownerId, this.clock(), "OBSERVED", topology);
+    if (!session.preDeployTopology || !snapshotEquals(observation, session.preDeployTopology)) throw new Error("ROLLBACK_TOPOLOGY_NOT_CONVERGED");
+    assertSnapshot(observation);
+    this.store.recordTopology(id, ownerId, this.clock(), "OBSERVED", observation);
     return this.store.settle(id, ownerId, this.clock(), ["DEPLOYING", "RECOVERY_REQUIRED"], "ROLLED_BACK");
   }
 

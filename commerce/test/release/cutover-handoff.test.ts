@@ -4,17 +4,17 @@ import { cutoverEnvelopeStores, type WritableEnvelopeStore } from "../support/cu
 import { adoptCutover } from "../../src/release/cutover-handoff";
 import { DeploySessions, type ReleaseAuthorityStore } from "../../src/release/deploy-session";
 import { releaseAuthorityStores } from "../support/release-authority-stores";
+import { snapshot } from "../support/deploy-snapshot";
 
 const target = "a".repeat(40);
 const old = "b".repeat(40);
-const topology = (sha: string) => ({ frontend: sha, admin: sha, commerce: sha, worker: sha });
 const predecessorDatabase = { ref: "prelaunch-2026-09-20.sqlite", sha256: "c".repeat(64) };
 const now = new Date("2026-09-20T00:01:00.000Z");
 
 const envelope = (overrides: Partial<Parameters<typeof createCutoverEnvelope>[0]> = {}) =>
   createCutoverEnvelope({
     cutoverId: "cutover-1", adoptionNonce: "nonce-1", targetSha: target, mode: "MAINTENANCE_CUTOVER",
-    preDeployTopology: topology(old), predecessorDatabase,
+    preDeployTopology: snapshot(old), predecessorDatabase,
     createdAt: "2026-09-20T00:00:00.000Z", expiresAt: "2026-09-20T00:05:00.000Z",
     ...overrides,
   });

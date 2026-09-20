@@ -63,6 +63,28 @@ describe("the production deploy pointer", () => {
     expect(await store.read()).toBe(second);
   });
 
+  it("does not believe its own push: a pointer that did not move is not a move", async () => {
+    // The one case a real repository cannot stage, so git is stubbed for it
+    // alone: the push is accepted and the pointer is somewhere else anyway -
+    // another controller landing between the two, or a remote that took the
+    // write and served something older. Returning the sha the caller asked for
+    // would hand a cutover a control-plane reading it never observed, and that
+    // reading is half of what a safe abort is decided from.
+    const third = commit("third");
+    const stubbed = new ProductionDeployRefStore({
+      cwd: clone,
+      git: async (args) => {
+        if (args[0] === "ls-remote") return `${third}\trefs/heads/production-deploy`;
+        return "";
+      },
+    });
+
+    await expect(stubbed.compareAndSet(first, second)).rejects.toThrow("DEPLOY_REF_NOT_MOVED");
+    // The refusal names both shas, because an operator reading it has to know
+    // which pointer is live before deciding anything.
+    await expect(stubbed.compareAndSet(first, second)).rejects.toThrow(third);
+  });
+
   it("refuses a target the remote cannot resolve", async () => {
     // Pushing a commit the remote does not have would leave the ref naming
     // nothing, and discovering that after the push is discovering it too late.

@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { DeploySessions, InMemoryReleaseAuthorityStore, type PreDeployTopology } from "../../src/release/deploy-session";
+import { DeploySessions, InMemoryReleaseAuthorityStore, type PreDeploySnapshot } from "../../src/release/deploy-session";
 import { ReleaseOrchestrator, type ReleasePorts } from "../../src/release/orchestrator";
 import { schemaInventoryExpectation } from "../../src/release/expectation";
+import { withSurface } from "../support/deploy-snapshot";
 
 const target = "a".repeat(40);
 const old = "b".repeat(40);
-const topology = (sha: string): PreDeployTopology => ({ frontend: sha, admin: sha, commerce: sha, worker: sha });
+const topology = (sha: string): PreDeploySnapshot => ({ runtime: { frontend: sha, admin: sha, commerce: sha, worker: sha }, controlPlane: { productionDeployRefSha: sha } });
 const versions = ["0001_launch_baseline.sql"];
 const expectation = {
   schemaInventory: schemaInventoryExpectation(versions),
@@ -14,7 +15,7 @@ const expectation = {
 const candidate = { id: "candidate-1", sha: target, releaseClass: "LAUNCH_BASELINE" as const, expectation };
 
 /** A dead runner leaves a session mid-flight; a new one picks it up later. */
-const abandoned = (options: { at: string; observes: PreDeployTopology | PreDeployTopology[]; afterDeploy?: boolean; deploys?: boolean }) => {
+const abandoned = (options: { at: string; observes: PreDeploySnapshot | PreDeploySnapshot[]; afterDeploy?: boolean; deploys?: boolean }) => {
   const queue = Array.isArray(options.observes) ? [...options.observes] : [];
   let last = Array.isArray(options.observes) ? queue[0] : options.observes;
   const log: string[] = [];
@@ -23,7 +24,7 @@ const abandoned = (options: { at: string; observes: PreDeployTopology | PreDeplo
   const sessions = new DeploySessions(store, () => clock, 60_000);
   const ports: ReleasePorts = {
     sessions, clock: () => clock,
-    topology: { async observe() { if (queue.length) last = queue.shift()!; log.push(`observe:${last.commerce}`); return last; } },
+    topology: { async observe() { if (queue.length) last = queue.shift()!; log.push(`observe:${last.runtime.commerce}`); return last; } },
     candidates: { get: (id) => (id === candidate.id ? candidate : undefined) },
     evidence: {
       async read() {
@@ -95,7 +96,7 @@ describe("takeover after a runner dies", () => {
   });
 
   it("records a partial topology as recovery before telling the caller anything", async () => {
-    const partial = { ...topology(old), commerce: target };
+    const partial = withSurface(topology(old), "commerce", target);
     const { store, advance, orchestrator } = abandoned({ at: "partial", observes: partial, afterDeploy: true });
     advance(120_000);
 
@@ -187,7 +188,7 @@ describe("continuing a session that was taken over", () => {
   });
 
   it("will not choose a direction for a session that needs one", async () => {
-    const partial = { ...topology(old), commerce: target };
+    const partial = withSurface(topology(old), "commerce", target);
     const { advance, orchestrator } = abandoned({ at: "undecided", observes: partial, afterDeploy: true });
     advance(120_000);
     await orchestrator.resume("undecided", "new-runner");

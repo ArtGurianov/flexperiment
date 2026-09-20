@@ -1,15 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { DeploySessions, InMemoryReleaseAuthorityStore, type PreDeployTopology } from "../../src/release/deploy-session";
+import { DeploySessions, InMemoryReleaseAuthorityStore, type PreDeploySnapshot } from "../../src/release/deploy-session";
 import { ReleaseOrchestrator, type ReleasePorts } from "../../src/release/orchestrator";
+import { withSurface } from "../support/deploy-snapshot";
 
 const target = "a".repeat(40);
 const now = new Date("2026-09-20T00:00:00.000Z");
 /** Deliberately not one uniform SHA: a rollback restores a vector, not a commit. */
-const before: PreDeployTopology = { frontend: "b".repeat(40), admin: "c".repeat(40), commerce: "b".repeat(40), worker: "d".repeat(40) };
-const partial = { ...before, commerce: target };
-const stranded = (options: { restoresTo?: PreDeployTopology; restoreFails?: string } = {}) => {
+const before: PreDeploySnapshot = { runtime: { frontend: "b".repeat(40), admin: "c".repeat(40), commerce: "b".repeat(40), worker: "d".repeat(40) }, controlPlane: { productionDeployRefSha: "b".repeat(40) } };
+const partial = withSurface(before, "commerce", target);
+const stranded = (options: { restoresTo?: PreDeploySnapshot; restoreFails?: string } = {}) => {
   const restored: unknown[] = [];
-  const queue: PreDeployTopology[] = [partial, options.restoresTo ?? before];
+  const queue: PreDeploySnapshot[] = [partial, options.restoresTo ?? before];
   let last = partial;
   const store = new InMemoryReleaseAuthorityStore();
   const sessions = new DeploySessions(store, () => now);
@@ -47,7 +48,7 @@ describe("rollback after a partial cutover", () => {
   });
 
   it("does not believe the driver: a topology that did not come back is not a rollback", async () => {
-    const stillPartial = { ...before, worker: target };
+    const stillPartial = withSurface(before, "worker", target);
     const { store, orchestrator } = stranded({ restoresTo: stillPartial });
 
     await expect(orchestrator.rollback("stranded", "owner")).rejects.toThrow("ROLLBACK_TOPOLOGY_NOT_CONVERGED");
@@ -65,7 +66,7 @@ describe("rollback after a partial cutover", () => {
 
   it("refuses outright once external effects are committed", async () => {
     const { sessions, restored, orchestrator } = stranded();
-    sessions.observeTopology("stranded", "owner", { frontend: target, admin: target, commerce: target, worker: target });
+    sessions.observeTopology("stranded", "owner", { runtime: { frontend: target, admin: target, commerce: target, worker: target }, controlPlane: { productionDeployRefSha: target } });
     sessions.armExternalEffects("stranded", "owner");
 
     await expect(orchestrator.rollback("stranded", "owner")).rejects.toThrow("OLD_LINEAGE_ROLLBACK_FORBIDDEN");

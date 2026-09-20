@@ -2,7 +2,7 @@ import type Database from "better-sqlite3";
 import {
   NON_TERMINAL, TERMINAL,
   type DeploymentGateView, type DeploySession, type DeploySessionPatch, type DeploySessionState,
-  type PreDeployTopology, type ReleaseAuthorityStore, type TerminalState,
+  assertSnapshot, type DeploymentObservation, type PreDeploySnapshot, type ReleaseAuthorityStore, type TerminalState,
 } from "./deploy-session";
 
 /**
@@ -37,6 +37,24 @@ const COLUMNS = `id, owner_id, mode, target_sha, candidate_id, state, rollback_a
 
 const optional = <T>(value: T | null | undefined): T | undefined => (value === null ? undefined : value);
 
+/**
+ * The column is still called `pre_deploy_topology`, and it now holds both
+ * layers. A stored value carrying only the four surfaces predates the deploy
+ * pointer being part of the snapshot: it is refused rather than completed with
+ * an assumed pointer, because guessing where the control plane was is exactly
+ * the reading that makes a safe abort unsafe.
+ */
+const readSnapshot = (stored: string): PreDeploySnapshot => {
+  let parsed: PreDeploySnapshot;
+  try {
+    parsed = JSON.parse(stored) as PreDeploySnapshot;
+  } catch {
+    throw new Error("DEPLOY_SNAPSHOT_MALFORMED");
+  }
+  assertSnapshot(parsed);
+  return parsed;
+};
+
 const toSession = (row: Row): DeploySession => ({
   id: row.id,
   ownerId: row.owner_id,
@@ -48,8 +66,8 @@ const toSession = (row: Row): DeploySession => ({
   mutationObserved: row.mutation_observed === 1,
   createdAt: row.created_at,
   leaseExpiresAt: row.lease_expires_at,
-  preDeployTopology: JSON.parse(row.pre_deploy_topology) as PreDeployTopology,
-  observedTopology: row.observed_topology ? (JSON.parse(row.observed_topology) as PreDeployTopology) : undefined,
+  preDeployTopology: readSnapshot(row.pre_deploy_topology),
+  observedTopology: row.observed_topology ? readSnapshot(row.observed_topology) : undefined,
   adoptedCutoverId: optional(row.adopted_cutover_id),
   adoptedEnvelopeSha256: optional(row.adopted_envelope_sha256),
   predecessorDatabaseRef: optional(row.predecessor_database_ref),
@@ -112,12 +130,12 @@ export class SqliteReleaseAuthorityStore implements ReleaseAuthorityStore {
     return { closed: row !== undefined, deploymentSessionId: row?.id ?? null };
   }
 
-  recordTopology(id: string, ownerId: string, now: Date, kind: "PRE_DEPLOY" | "OBSERVED", topology: PreDeployTopology): DeploySession {
+  recordTopology(id: string, ownerId: string, now: Date, kind: "PRE_DEPLOY" | "OBSERVED", observation: DeploymentObservation): DeploySession {
     // `pre_deploy_topology` is written once, at acquisition, and frozen by the
     // schema thereafter. There is no session without one, so this arm exists
     // only to say the same thing the trigger would, in the caller's language.
     if (kind === "PRE_DEPLOY") throw new Error("PRE_DEPLOY_TOPOLOGY_ALREADY_RECORDED");
-    return this.write(id, ownerId, now, NON_TERMINAL, { observedTopology: topology });
+    return this.write(id, ownerId, now, NON_TERMINAL, { observedTopology: observation });
   }
 
   transitionNonTerminal(id: string, ownerId: string, now: Date, from: readonly DeploySessionState[], patch: DeploySessionPatch): DeploySession {

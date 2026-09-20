@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { createCutoverEnvelope, type CutoverEnvelope, type PredecessorDatabase } from "./cutover-envelope";
-import { topologyEquals, type PreDeployTopology } from "./deploy-session";
+import { snapshotEquals, type DeploymentObservation } from "./deploy-session";
 import { isSourceCommit } from "./runtime-identity";
 
 /**
@@ -57,7 +57,7 @@ export type PreparationPorts = {
   readonly quiescer: WriterQuiescer;
   readonly census: FinalCensus;
   readonly archiver: PredecessorDatabaseArchiver;
-  readonly topology: { observe(): Promise<PreDeployTopology> };
+  readonly topology: { observe(): Promise<DeploymentObservation> };
   readonly envelopes: CutoverEnvelopeWriter;
   readonly clock?: () => Date;
 };
@@ -124,7 +124,7 @@ export class BootstrapCutoverPreparation {
     // census and the archive is what proves the snapshot and the vector
     // describe one predecessor state instead of two.
     const afterArchive = await this.ports.topology.observe();
-    if (!topologyEquals(beforeQuiesce, afterArchive)) throw new CutoverPreparationError("PREDECESSOR_TOPOLOGY_DRIFTED");
+    if (!snapshotEquals(beforeQuiesce, afterArchive)) throw new CutoverPreparationError("PREDECESSOR_TOPOLOGY_DRIFTED");
 
     // Archiving takes time, and the gate could have been opened during it. A
     // backup taken behind a gate that is now open is not the quiet snapshot it

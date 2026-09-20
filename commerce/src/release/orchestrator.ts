@@ -1,8 +1,8 @@
 import { deployMode, readinessExpectation, type ReleaseCandidate, type ReleaseCandidateReader } from "./candidate";
 import { evaluateReadiness, type ReleaseReadinessEvidence } from "./readiness";
 import {
-  DeploySessions, planResume, topologyIsTarget,
-  type DeployMode, type DeploySession, type PreDeployTopology, type ResumePlan,
+  DeploySessions, planResume, runtimeIsTarget,
+  type DeployMode, type DeploySession, type DeploymentObservation, type PreDeploySnapshot, type ResumePlan,
 } from "./deploy-session";
 import type { CertificationCapability } from "../certification/capability";
 
@@ -19,7 +19,7 @@ import type { CertificationCapability } from "../certification/capability";
 
 /** Reads the SHA each production surface is actually serving. */
 export interface TopologyReader {
-  observe(): Promise<PreDeployTopology>;
+  observe(): Promise<DeploymentObservation>;
 }
 
 /** Reads the evidence readiness judges: both runtimes, the schema, the legal release. */
@@ -48,7 +48,7 @@ export interface CertificationDriver {
  * being both the actor and the only witness.
  */
 export interface RecoveryDriver {
-  restorePreDeployTopology(topology: PreDeployTopology): Promise<void>;
+  restorePreDeployTopology(snapshot: PreDeploySnapshot): Promise<void>;
 }
 
 export type ReleasePorts = {
@@ -302,10 +302,10 @@ export class ReleaseOrchestrator {
   private async requireTargetTopology(
     sessionId: string,
     request: ReleaseRequest,
-  ): Promise<{ topology: PreDeployTopology } | ReleaseOutcome> {
+  ): Promise<{ topology: DeploymentObservation } | ReleaseOutcome> {
     const topology = await this.ports.topology.observe();
     this.ports.sessions.observeTopology(sessionId, request.ownerId, topology);
-    if (topologyIsTarget(topology, request.candidate.sha)) return { topology };
+    if (runtimeIsTarget(topology.runtime, request.candidate.sha)) return { topology };
     return this.classify(sessionId, request.ownerId, "TARGET_TOPOLOGY_NOT_CONVERGED");
   }
 

@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { DeploySession, PreDeployTopology, ReleaseAuthorityStore } from "./deploy-session";
-import { topologyEquals } from "./deploy-session";
+import type { DeploySession, DeploymentObservation, PreDeploySnapshot, ReleaseAuthorityStore } from "./deploy-session";
+import { snapshotDigestParts, snapshotEquals } from "./deploy-session";
 import type { SchemaLineage } from "./schema-identity";
 
 /**
@@ -29,10 +29,10 @@ export type BootstrapRollbackEnvelope = {
   readonly cutoverId: string;
   readonly successorSessionId: string;
   readonly predecessorDatabase: DatabaseArchive;
-  readonly preDeployTopology: PreDeployTopology;
+  readonly preDeployTopology: PreDeploySnapshot;
   /** The database about to be discarded, kept so the operation is symmetric with the forward handoff. */
   readonly successorDatabase: DatabaseArchive;
-  readonly successorTopology: PreDeployTopology;
+  readonly successorTopology: DeploymentObservation;
   readonly createdAt: string;
   readonly expiresAt: string;
   readonly nonce: string;
@@ -57,7 +57,7 @@ export const canonicalRollbackSha256 = (envelope: BootstrapRollbackEnvelope): st
     envelope.rollbackId, envelope.cutoverId, envelope.successorSessionId,
     envelope.predecessorDatabase.ref, envelope.predecessorDatabase.sha256,
     envelope.successorDatabase.ref, envelope.successorDatabase.sha256,
-    Object.values(envelope.preDeployTopology), Object.values(envelope.successorTopology),
+    snapshotDigestParts(envelope.preDeployTopology), snapshotDigestParts(envelope.successorTopology),
     envelope.createdAt, envelope.expiresAt, envelope.nonce,
   ])).digest("hex");
 
@@ -135,7 +135,7 @@ export interface SuccessorArchiver {
 export interface PredecessorRestorer {
   ensureSuccessorRuntimesStopped(): Promise<void>;
   ensurePredecessorDatabaseRestored(archive: DatabaseArchive): Promise<void>;
-  ensurePreDeployTopologyRestored(topology: PreDeployTopology): Promise<void>;
+  ensurePreDeployTopologyRestored(snapshot: PreDeploySnapshot): Promise<void>;
   ensurePredecessorRuntimeRunning(): Promise<void>;
 }
 
@@ -163,7 +163,7 @@ export type BootstrapRollbackPorts = {
   readonly restorer: PredecessorRestorer;
   readonly identity: DatabaseIdentityReader;
   readonly predecessorGate: PredecessorEmergencyGate;
-  readonly topology: { observe(): Promise<PreDeployTopology> };
+  readonly topology: { observe(): Promise<DeploymentObservation> };
   readonly clock?: () => Date;
 };
 
@@ -289,7 +289,7 @@ export class BootstrapRollback {
     if (lineage !== "LEGACY") throw new BootstrapRollbackError("PREDECESSOR_LINEAGE_NOT_RESTORED", lineage);
 
     const topology = await this.ports.topology.observe();
-    if (!topologyEquals(topology, envelope.preDeployTopology)) {
+    if (!snapshotEquals(topology, envelope.preDeployTopology)) {
       throw new BootstrapRollbackError("PREDECESSOR_TOPOLOGY_NOT_RESTORED");
     }
     // The pre-cutover backup was taken behind this gate, so the restored

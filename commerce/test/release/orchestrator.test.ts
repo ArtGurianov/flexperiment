@@ -1,15 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { DeploySessions, InMemoryReleaseAuthorityStore, type PreDeployTopology } from "../../src/release/deploy-session";
+import { DeploySessions, InMemoryReleaseAuthorityStore, type PreDeploySnapshot } from "../../src/release/deploy-session";
 import { ReleaseOrchestrator, type ReleasePorts } from "../../src/release/orchestrator";
 import type { ReleaseReadinessEvidence, ReleaseReadinessExpectation } from "../../src/release/readiness";
 import { schemaInventoryExpectation } from "../../src/release/expectation";
 import type { CertificationCapability } from "../../src/certification/capability";
+import { withSurface } from "../support/deploy-snapshot";
 
 const target = "a".repeat(40);
 const old = "b".repeat(40);
 const now = new Date("2026-09-20T00:00:00.000Z");
 const versions = ["0001_launch_baseline.sql"];
-const topology = (sha: string): PreDeployTopology => ({ frontend: sha, admin: sha, commerce: sha, worker: sha });
+const topology = (sha: string): PreDeploySnapshot => ({ runtime: { frontend: sha, admin: sha, commerce: sha, worker: sha }, controlPlane: { productionDeployRefSha: sha } });
 
 const candidateFor = (releaseClass: "LAUNCH_BASELINE" | "ROLLING_COMPATIBLE" | "MAINTENANCE_REQUIRED") => ({
   id: `candidate-${releaseClass}`, sha: target, releaseClass, expectation,
@@ -33,7 +34,7 @@ const admittedEvidence = (): ReleaseReadinessEvidence => {
 
 /** Records what the orchestrator actually did, in order. */
 const harness = (options: {
-  topologies: PreDeployTopology[];
+  topologies: PreDeploySnapshot[];
   deployFails?: string;
   certifyFails?: string;
   evidence?: ReleaseReadinessEvidence;
@@ -47,7 +48,7 @@ const harness = (options: {
     sessions,
     clock: () => now,
     topology: {
-      async observe() { last = queue.shift() ?? last; log.push(`observe:${last.commerce}`); return last; },
+      async observe() { last = queue.shift() ?? last; log.push(`observe:${last.runtime.commerce}`); return last; },
     },
     evidence: { async read() { log.push("readiness"); return options.evidence ?? admittedEvidence(); } },
     deployment: {
@@ -101,7 +102,7 @@ describe("maintenance cutover ordering", () => {
   });
 
   it("keeps sales closed and never certifies when only some surfaces moved", async () => {
-    const partial = { ...topology(old), frontend: target };
+    const partial = withSurface(topology(old), "frontend", target);
     const { log, store, orchestrator } = harness({ topologies: [topology(old), partial, partial] });
     const outcome = await orchestrator.runMaintenanceCutover(cutoverRequest);
 
@@ -139,7 +140,7 @@ describe("maintenance cutover ordering", () => {
   it("re-observes the topology after certification and refuses a drifted surface", async () => {
     // A payment and a refund take real minutes. A surface that drifts during
     // them must not be closed over by the snapshot taken before arming.
-    const drifted = { ...topology(target), admin: old };
+    const drifted = withSurface(topology(target), "admin", old);
     const { log, store, orchestrator } = harness({ topologies: [topology(old), topology(target), drifted, drifted] });
     const outcome = await orchestrator.runMaintenanceCutover(cutoverRequest);
 

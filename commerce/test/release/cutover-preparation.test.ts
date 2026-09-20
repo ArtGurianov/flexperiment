@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { BootstrapCutoverPreparation, type PreparationPorts } from "../../src/release/cutover-preparation";
 import type { CutoverEnvelope } from "../../src/release/cutover-envelope";
-import type { PreDeployTopology } from "../../src/release/deploy-session";
+import type { PreDeploySnapshot } from "../../src/release/deploy-session";
+import { withSurface } from "../support/deploy-snapshot";
 
 const target = "a".repeat(40);
-const before: PreDeployTopology = { frontend: "b".repeat(40), admin: "c".repeat(40), commerce: "b".repeat(40), worker: "d".repeat(40) };
+const before: PreDeploySnapshot = { runtime: { frontend: "b".repeat(40), admin: "c".repeat(40), commerce: "b".repeat(40), worker: "d".repeat(40) }, controlPlane: { productionDeployRefSha: "b".repeat(40) } };
 const archive = { ref: "prelaunch-2026-09-20.sqlite", sha256: "e".repeat(64) };
 const now = new Date("2026-09-20T00:00:00.000Z");
 const request = { targetSha: target, expiresAt: "2026-09-20T06:00:00.000Z", cutoverId: "cutover-1", adoptionNonce: "nonce-1" };
@@ -12,7 +13,7 @@ const request = { targetSha: target, expiresAt: "2026-09-20T06:00:00.000Z", cuto
 const predecessor = (options: {
   blockers?: readonly string[];
   archiveFails?: string;
-  topologies?: PreDeployTopology[];
+  topologies?: PreDeploySnapshot[];
   gateOpensDuringArchive?: boolean;
   written?: CutoverEnvelope;
 } = {}) => {
@@ -86,7 +87,7 @@ describe("bootstrap cutover preparation", () => {
   it("refuses to pair an archive with a topology that moved underneath it", async () => {
     // Otherwise the snapshot and the vector describe two different predecessor
     // states, and the successor would inherit a handoff that never existed.
-    const drifted = { ...before, worker: target };
+    const drifted = withSurface(before, "worker", target);
     const { stored, preparation } = predecessor({ topologies: [before, drifted] });
 
     await expect(preparation.prepare(request)).rejects.toThrow("PREDECESSOR_TOPOLOGY_DRIFTED");

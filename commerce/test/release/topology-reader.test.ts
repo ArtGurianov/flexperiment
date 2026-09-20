@@ -3,6 +3,7 @@ import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { migrate } from "../../src/db";
 import { DatabaseRuntimeEvidenceReader, ProductionTopologyReader } from "../../src/release/topology-reader";
+import { snapshot } from "../support/deploy-snapshot";
 
 const COMMIT = "a".repeat(40);
 const OTHER = "b".repeat(40);
@@ -37,17 +38,41 @@ const instance = (unit: "COMMERCE" | "WORKER", id: string, commit: string, heart
   db.prepare(`INSERT INTO runtime_instance_evidence(instance_id, unit, source_commit, started_at, heartbeat_at, last_successful_sweep_at)
     VALUES (?, ?, ?, ?, ?, ?)`).run(id, unit, commit, at(-60_000), at(heartbeatOffsetMs), sweep);
 
-const reader = async (frontend: string, admin: string) => new ProductionTopologyReader({
-  frontendReleaseUrl: frontend, adminReleaseUrl: admin, db, now: () => NOW,
-});
+const reader = async (frontend: string, admin: string, deployRef: () => Promise<string> = async () => COMMIT) =>
+  new ProductionTopologyReader({
+    frontendReleaseUrl: frontend, adminReleaseUrl: admin, db, now: () => NOW,
+    deployRef: { read: deployRef },
+  });
 
 describe("reading what production is serving", () => {
-  it("answers with all four surfaces when every one of them agrees", async () => {
+  it("answers with both layers when every surface and the pointer agree", async () => {
     const url = await descriptor(JSON.stringify({ source_commit: COMMIT }));
     instance("COMMERCE", "api-1", COMMIT);
     instance("WORKER", "worker-1", COMMIT, 0, at(-30_000));
 
-    expect(await (await reader(url, url)).observe()).toEqual({ frontend: COMMIT, admin: COMMIT, commerce: COMMIT, worker: COMMIT });
+    expect(await (await reader(url, url)).observe()).toEqual(snapshot(COMMIT));
+  });
+
+  it("reports the pointer where it actually is, not where the runtime is", async () => {
+    // A production whose surfaces still serve the old commit while the pointer
+    // already names the new one is not a production that was left alone, and
+    // an observation that collapsed the two would say it was.
+    const url = await descriptor(JSON.stringify({ source_commit: COMMIT }));
+    instance("COMMERCE", "api-1", COMMIT);
+    instance("WORKER", "worker-1", COMMIT);
+
+    expect(await (await reader(url, url, async () => OTHER)).observe()).toEqual(snapshot(COMMIT, OTHER));
+  });
+
+  it("fails closed on a pointer it cannot read or cannot believe", async () => {
+    const url = await descriptor(JSON.stringify({ source_commit: COMMIT }));
+    instance("COMMERCE", "api-1", COMMIT);
+    instance("WORKER", "worker-1", COMMIT);
+
+    await expect((await reader(url, url, async () => { throw new Error("DEPLOY_REF_ABSENT"); })).observe())
+      .rejects.toThrow("TOPOLOGY_DEPLOY_REF_UNREADABLE");
+    await expect((await reader(url, url, async () => "refs/heads/production-deploy")).observe())
+      .rejects.toThrow("TOPOLOGY_DEPLOY_REF_INVALID");
   });
 
   it("fails closed on a surface it cannot reach", async () => {
