@@ -155,6 +155,7 @@ release-control-v2-index
 release-control-v2-materializer
 release-control-v2-materializer-rename
 release-control-v2-shadow
+release-runner
 release-semantics-boundary
 seo-snapshot
 suppression

@@ -9,7 +9,7 @@ import { parse } from "yaml";
  * ones whose absence is a production incident rather than a diff.
  */
 type Workflow = {
-  on: Record<string, unknown> & { workflow_dispatch?: { inputs?: Record<string, { type?: string; options?: string[] }> } };
+  on: Record<string, unknown> & { workflow_dispatch?: { inputs?: Record<string, { type?: string; options?: string[]; default?: string }> } };
   permissions?: Record<string, string>;
   concurrency?: { group?: string; "cancel-in-progress"?: boolean };
   jobs: Record<string, { environment?: string; steps?: { run?: string; uses?: string; env?: Record<string, string> }[] }>;
@@ -50,7 +50,44 @@ describe("production workflow contract", () => {
     // A deploy that could still be handed a commit would be a second way to say
     // what is being released, and the two could disagree. The commit, the class
     // and the readiness expectation all travel inside the candidate.
-    expect(Object.keys(inputsOf("deploy-production.yml"))).toEqual(["candidate"]);
+    //
+    // Asserted as the rule rather than as a list of names, because the list was
+    // the thing that failed when a `command` input was added - and a verb is
+    // not a second way to name a release.
+    const inputs = Object.keys(inputsOf("deploy-production.yml"));
+    expect(inputs).toContain("candidate");
+    expect(inputs.filter((name) => /sha|commit|ref|branch|release[_-]?class|rolling|fence|sales/i.test(name))).toEqual([]);
+  });
+
+  it("gives each command the argument it means, rather than one input for all of them", () => {
+    // One input carrying either a candidate or a session depending on the verb
+    // is how a rollback ends up pointed at a candidate file.
+    const inputs = inputsOf("deploy-production.yml");
+    expect(Object.keys(inputs)).toEqual(["command", "candidate", "session"]);
+    expect(inputs.command.options).toEqual(["observe", "deploy", "resume", "rollback"]);
+    expect(inputs.command.default).toBe("observe");
+  });
+
+  it("keeps the deploy out of the GitHub runner entirely", () => {
+    // The controller must outlive the containers it replaces and must not
+    // depend on a network it cannot influence. A job that ran the orchestration
+    // here would hold the only handle on a closed sales gate.
+    const steps = Object.values(workflow("deploy-production.yml").jobs).flatMap((job) => job.steps ?? []);
+    const scripts = steps.map((step) => step.run ?? "").join("\n");
+    expect(scripts).not.toMatch(/tsx\s+scripts\/release\/cutover-runner\.ts/);
+    expect(scripts).toMatch(/\bssh\b/);
+    // Host keys are pinned. An unknown host at this moment is an unknown
+    // machine being handed production.
+    expect(scripts).toMatch(/StrictHostKeyChecking=yes/);
+    expect(scripts).not.toMatch(/StrictHostKeyChecking=(no|accept-new)/);
+  });
+
+  it("does not swallow the runner's exit code", () => {
+    // 12 means production needs a decision a workflow must not make. A run that
+    // reported success there would leave sales closed and nobody looking.
+    const scripts = Object.values(workflow("deploy-production.yml").jobs)
+      .flatMap((job) => job.steps ?? []).map((step) => step.run ?? "").join("\n");
+    expect(scripts).toMatch(/exit "\$status"/);
   });
 
   it("publishes launch candidates from exactly one operator input", () => {

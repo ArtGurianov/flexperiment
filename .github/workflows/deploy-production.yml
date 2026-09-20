@@ -1,19 +1,36 @@
-# The ordinary production deploy path. It carries the ordering the release
-# contract fixes; the executable half arrives with the launch baseline, and
-# until then the entry point exits 78 rather than pretending to deploy.
+# The workflow does not deploy. It starts the release runner on the VPS and
+# waits for its exit code.
+#
+# The runner has to live there, not here: a controller inside `commerce` would
+# be replaced by the deploy it is driving, and a controller inside this job
+# would be a process whose survival depends on a network it cannot influence,
+# holding the only handle on a closed sales gate. A cancelled job, a runner
+# timeout or a dropped connection would then leave production fenced with
+# nothing alive to release it.
 name: Deploy production
 
 on:
   workflow_dispatch:
     inputs:
+      command:
+        description: What the runner should do. It selects an action, never a release.
+        required: true
+        default: observe
+        type: choice
+        options: [observe, deploy, resume, rollback]
       candidate:
         description: >-
-          The published candidate to deploy. Its commit, release class and
-          readiness expectation all come from that candidate: an operator does
-          not get to name a commit, and does not get to choose whether sales
-          close - a rolling deploy is something a candidate is classified as,
-          never something a dispatcher asks for.
-        required: true
+          For `deploy`: the published candidate, by the path it was written to
+          on the VPS. Its commit, release class and readiness expectation all
+          come from that file - an operator does not get to name a commit, and
+          does not get to choose whether sales close, because a rolling deploy
+          is something a candidate is classified as, never something a
+          dispatcher asks for.
+        required: false
+        type: string
+      session:
+        description: "For `resume` and `rollback`: the deploy session to act on."
+        required: false
         type: string
 
 permissions:
@@ -21,43 +38,81 @@ permissions:
 
 # A deploy must never race another deploy, and must never be cancelled
 # half-way: an interrupted run is exactly how production is left mid-topology.
+# The runner holds its own filesystem lock as well, because this group only
+# constrains this workflow and the lock constrains the machine.
 concurrency:
   group: flexperiment-production-deploy
   cancel-in-progress: false
 
 jobs:
-  deploy:
+  run-release:
     runs-on: ubuntu-latest
     environment: production
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      # The input reaches the shell only through the environment. A `${{ }}`
-      # expression is substituted into the script text before bash ever runs it,
-      # so a crafted value escapes its own quoting no matter how it is quoted.
-      - name: Bind to the published candidate
+      # Inputs reach the shell only through the environment. A `${{ }}`
+      # expression is substituted into the script text before bash ever runs
+      # it, so a crafted value escapes its own quoting no matter how it is
+      # quoted, and actionlint does not catch it.
+      - name: Check the dispatch
         env:
           CANDIDATE: ${{ inputs.candidate }}
+          SESSION: ${{ inputs.session }}
+          COMMAND: ${{ inputs.command }}
         run: |
           set -euo pipefail
-          [[ -n "$CANDIDATE" ]] || { echo "CANDIDATE_REQUIRED" >&2; exit 1; }
+          # Each command takes exactly the argument it means. One input carrying
+          # either a candidate or a session depending on the verb is how a
+          # rollback ends up pointed at a candidate file.
+          case "$COMMAND" in
+            observe)  argument="" ;;
+            deploy)   argument="$CANDIDATE"; [[ -n "$argument" ]] || { echo "CANDIDATE_REQUIRED" >&2; exit 1; } ;;
+            resume|rollback) argument="$SESSION"; [[ -n "$argument" ]] || { echo "SESSION_REQUIRED" >&2; exit 1; } ;;
+            *) echo "COMMAND_UNKNOWN" >&2; exit 1 ;;
+          esac
+          # The argument is passed to a remote shell, so it may not be able to
+          # end its own word. A path and a session id need none of this.
+          [[ -z "$argument" || "$argument" =~ ^[A-Za-z0-9._/-]+$ ]] || { echo "ARGUMENT_MALFORMED" >&2; exit 1; }
+          printf 'argument=%s\n' "$argument" >> "$GITHUB_ENV"
 
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10.29.3
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-
-      # The orchestrator owns the whole sequence - pre-topology capture, the
-      # fence, deployment, convergence, readiness, arming, certification,
-      # completion - so the workflow stays a thin caller and cannot reorder it.
-      - name: Run the release orchestration
+      - name: Open the connection to the release host
         env:
-          RELEASE_CANDIDATE: ${{ inputs.candidate }}
-        run: pnpm exec tsx scripts/release/deploy-production.ts
+          SSH_KEY: ${{ secrets.RELEASE_RUNNER_SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.RELEASE_RUNNER_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          [[ -n "$SSH_KEY" && -n "$SSH_KNOWN_HOSTS" ]] || { echo "RELEASE_RUNNER_SSH_UNCONFIGURED" >&2; exit 1; }
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_release && chmod 600 ~/.ssh/id_release
+          # Pinned host keys, never accept-new: an unknown host at this moment
+          # is an unknown machine being handed the deploy.
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts && chmod 600 ~/.ssh/known_hosts
+
+      # One remote call. Everything the runner needs is configured on the host
+      # in root-owned files, so no secret is passed over this connection and no
+      # token appears in this job's environment or its log.
+      - name: Run the release runner on the VPS
+        env:
+          RELEASE_HOST: ${{ secrets.RELEASE_RUNNER_HOST }}
+          COMMAND: ${{ inputs.command }}
+        run: |
+          set -euo pipefail
+          [[ -n "$RELEASE_HOST" ]] || { echo "RELEASE_RUNNER_HOST_UNCONFIGURED" >&2; exit 1; }
+          set +e
+          ssh -i ~/.ssh/id_release -o StrictHostKeyChecking=yes -o BatchMode=yes \
+            "$RELEASE_HOST" flexperiment-release "$COMMAND" "$argument"
+          status=$?
+          set -e
+          # The runner's exit code is the result. 12 means production needs a
+          # decision a workflow must not make: sales stay closed and this run
+          # fails loudly rather than retrying into a half-moved topology.
+          case "$status" in
+            0)  echo "release: completed" ;;
+            10) echo "release: safe aborted - production untouched, sales open" ;;
+            11) echo "release: rolled back - production restored, sales open" ;;
+            12) echo "release: RECOVERY REQUIRED - sales remain closed, an operator must decide" >&2 ;;
+            20) echo "release: refused before any mutation" >&2 ;;
+            130) echo "release: interrupted - session and gate left as they were" >&2 ;;
+            *)  echo "release: unexpected runner status $status" >&2 ;;
+          esac
+          exit "$status"

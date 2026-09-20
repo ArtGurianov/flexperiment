@@ -35,7 +35,8 @@
     "test:watch": "vitest",
     "test:temp:gc": "bash scripts/test-temp-gc.sh",
     "commerce:launch-seed": "tsx commerce/src/launch-seed-cli.ts",
-    "release:coolify-probe": "tsx scripts/release/coolify-capability-probe.ts"
+    "release:coolify-probe": "tsx scripts/release/coolify-capability-probe.ts",
+    "release:runner": "tsx scripts/release/cutover-runner.ts"
   },
   "dependencies": {
     "@hono/node-server": "^2.1.1",
