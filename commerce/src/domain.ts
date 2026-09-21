@@ -244,8 +244,6 @@ export class CommerceDomain {
    * touches nothing a customer can buy, refund or cancel. It is therefore held
    * by release control rather than admin - unlike the emergency sales stop,
    * which is absolute and business-facing and stays with an operator.
-   *
-   * There is deliberately no method here that moves attempt_authority.
    */
   /**
    * The whole outbox control surface a cutover controller needs, in one read:

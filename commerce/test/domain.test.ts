@@ -44,8 +44,13 @@ const promoCandidateHead = (releaseId = `promo-codes-v0:${randomUUID()}`) => ({
   phase: "PAUSED" as const, phase_sequence: 0,
 });
 
-function promoter(setup: ReturnType<typeof fixture>, slug: string, rewardType: "PERCENT" | "FIXED" = "PERCENT", rewardValue = 1_000) {
-  return setup.domain.createAgent({ slug, display_name: slug, email: `${slug}@example.test`, contract_reference: `C-${slug}`, default_reward_type: rewardType, default_reward_value: rewardValue });
+/**
+ * A partner. It carries no reward terms: a reward is decided by the engagement
+ * revision that authorises it, and the columns that once held defaults are not
+ * in the baseline.
+ */
+function promoter(setup: ReturnType<typeof fixture>, slug: string) {
+  return setup.domain.createAgent({ slug, display_name: slug, email: `${slug}@example.test` });
 }
 
 function bindSettlementLegalIdentity(setup: ReturnType<typeof fixture>, agentId: string, email: string) {
@@ -57,7 +62,7 @@ function bindSettlementLegalIdentity(setup: ReturnType<typeof fixture>, agentId:
 }
 
 async function maturedReward(setup: ReturnType<typeof fixture>, slug: string, amount = 10_000) {
-  const agent = promoter(setup, slug, "FIXED", amount);
+  const agent = promoter(setup, slug);
   const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, referralSlug: slug });
   const result = await setup.domain.checkoutAsync(checkoutPayload(quote.quote_id), `settlement-${slug}-checkout`, "https://flexperiment.ru");
   const payment = setup.db.prepare("SELECT p.id FROM payments p JOIN orders o ON o.id = p.order_id WHERE o.public_status_id = ?").get(result.status_id) as { id: string };

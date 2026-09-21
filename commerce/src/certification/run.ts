@@ -9,6 +9,8 @@
  * dies mid-flight leaves something that can be re-issued as itself rather than
  * a question nobody can answer.
  */
+import { CERTIFICATION_PHASE_ORDER, CLEANUP_DIRECTION_ORDER, rankOf } from "./ranks";
+
 export type CertificationPhase =
   | "NEW"
   | "OCCURRENCE_CREATED"
@@ -27,12 +29,7 @@ export type CertificationPhase =
   | "OCCURRENCE_CLEANED"
   | "COMPLETE";
 
-const PHASE_ORDER: readonly CertificationPhase[] = [
-  "NEW", "OCCURRENCE_CREATED", "OCCURRENCE_PUBLISHED", "OCCURRENCE_OPEN", "QUOTE_READY",
-  "CHECKOUT_SUBMITTING", "CHECKOUT_CREATED", "ORDER_IDENTIFIED", "PAYMENT_PROVEN",
-  "TICKET_EMAIL_DELIVERED", "BOOKING_CANCELLED", "BOOKING_CANCELLED_EMAIL_DELIVERED",
-  "REFUND_SUCCEEDED", "REFUND_EMAIL_DELIVERED", "OCCURRENCE_CLEANED", "COMPLETE",
-];
+
 
 /**
  * How far the run has travelled, and it only travels one way.
@@ -45,7 +42,6 @@ const PHASE_ORDER: readonly CertificationPhase[] = [
  */
 export type CleanupDirection = "NORMAL" | "FINANCIAL_EFFECT_POSSIBLE" | "CLEANUP_STARTED" | "CATALOGUE_CLEAN";
 
-const DIRECTION_ORDER: readonly CleanupDirection[] = ["NORMAL", "FINANCIAL_EFFECT_POSSIBLE", "CLEANUP_STARTED", "CATALOGUE_CLEAN"];
 
 /** The operator-supplied half of the fixture. Not the customer's data, so it is persisted. */
 export type OccurrenceDraft = {
@@ -191,11 +187,15 @@ export interface CertificationRunStore {
   update(runId: string, expectedRevision: number, mutation: CertificationRunMutation): CertificationRun;
 }
 
+// Both orders come from `ranks.ts`, which the migrations are tested against.
+// A second copy here is how the application's idea of "later" drifts from the
+// database's, in the direction where a regression the guard should refuse gets
+// waved through.
 export const directionAtLeast = (direction: CleanupDirection, least: CleanupDirection): boolean =>
-  DIRECTION_ORDER.indexOf(direction) >= DIRECTION_ORDER.indexOf(least);
+  rankOf(CLEANUP_DIRECTION_ORDER, direction) >= rankOf(CLEANUP_DIRECTION_ORDER, least);
 
 export const phaseAtLeast = (phase: CertificationPhase, least: CertificationPhase): boolean =>
-  PHASE_ORDER.indexOf(phase) >= PHASE_ORDER.indexOf(least);
+  rankOf(CERTIFICATION_PHASE_ORDER, phase) >= rankOf(CERTIFICATION_PHASE_ORDER, least);
 
 /**
  * Commands that exist to find out what happened to money, rather than to make
@@ -310,8 +310,8 @@ export class InMemoryCertificationRunStore implements CertificationRunStore {
     if (current.revision !== expectedRevision) throw new CertificationRunError("CERTIFICATION_RUN_REVISION_CONFLICT", `${current.revision}`);
 
     const next = { ...current, ...mutation, revision: current.revision + 1 };
-    if (PHASE_ORDER.indexOf(next.phase) < PHASE_ORDER.indexOf(current.phase)) throw new CertificationRunError("CERTIFICATION_RUN_PHASE_REGRESSED", next.phase);
-    if (DIRECTION_ORDER.indexOf(next.direction) < DIRECTION_ORDER.indexOf(current.direction)) throw new CertificationRunError("CERTIFICATION_RUN_DIRECTION_REGRESSED", next.direction);
+    if (!phaseAtLeast(next.phase, current.phase)) throw new CertificationRunError("CERTIFICATION_RUN_PHASE_REGRESSED", next.phase);
+    if (!directionAtLeast(next.direction, current.direction)) throw new CertificationRunError("CERTIFICATION_RUN_DIRECTION_REGRESSED", next.direction);
     if (next.releaseSha !== current.releaseSha) throw new CertificationRunError("CERTIFICATION_RUN_RELEASE_IMMUTABLE");
     // The first failure is the one the operator is told about. A later step
     // that fails while reconciling must not rewrite the reason the run failed.
