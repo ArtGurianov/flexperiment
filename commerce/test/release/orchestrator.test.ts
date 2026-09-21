@@ -37,6 +37,7 @@ const harness = (options: {
   topologies: PreDeploySnapshot[];
   deployFails?: string;
   certifyFails?: string;
+  preflightFails?: string;
   evidence?: ReleaseReadinessEvidence;
 } ) => {
   const log: string[] = [];
@@ -57,8 +58,9 @@ const harness = (options: {
     certification: {
       async issueCapability(sessionId): Promise<CertificationCapability> {
         log.push("capability-issued");
-        return { id: "cap", runId: "run", deploymentSessionId: sessionId, releaseSha: target, maxAmountKopecks: 100, nonce: "nonce", expiresAt: "2026-09-20T00:15:00.000Z" };
+        return { id: "cap", runId: "run", deploymentSessionId: sessionId, releaseSha: target, maxAmountKopecks: 100, nonceDigest: "digest", expiresAt: "2026-09-20T00:15:00.000Z" };
       },
+      async preflight() { log.push("preflight"); if (options.preflightFails) throw new Error(options.preflightFails); },
       async certify() { log.push("certify"); if (options.certifyFails) throw new Error(options.certifyFails); },
     },
   };
@@ -98,7 +100,10 @@ describe("maintenance cutover ordering", () => {
     // the capability that might never be spent.
     expect(log).toEqual([
       `observe:${old}`, `deploy:${target}`, `observe:${target}`, "readiness",
-      "capability-issued", "certify", `observe:${target}`,
+      // Preflight is read-only and sits before the point of no return: an
+      // unreachable runtime or an absent operator is an ordinary refusal, not
+      // a release that can no longer be rolled back.
+      "capability-issued", "preflight", "certify", `observe:${target}`,
     ]);
     expect(outcome.session).toMatchObject({ state: "SUCCEEDED", rollbackAuthority: "NEW_LINEAGE_ONLY" });
     // Settling the session and reopening the gate is one operation, so a
@@ -114,6 +119,51 @@ describe("maintenance cutover ordering", () => {
     const prepared = await orchestrator.runMaintenanceCutover(cutoverRequest);
 
     expect(prepared.session.rollbackAuthority).toBe("OLD_LINEAGE_ALLOWED");
+  });
+
+  describe("the point of no return sits after every read-only check", () => {
+    const prepared = async (options: Parameters<typeof harness>[0]) => {
+      const context = harness(options);
+      const outcome = await context.orchestrator.runMaintenanceCutover(cutoverRequest);
+      if (outcome.kind !== "AWAITING_OPERATOR") throw new Error(`expected a handoff, got ${outcome.kind}`);
+      return { ...context, prepared: outcome };
+    };
+
+    it.each([
+      ["the capability cannot be recovered", "CERTIFICATION_CAPABILITY_UNRECOVERABLE"],
+      ["the catalogue is not ready", "CERTIFICATION_CITY_ABSENT"],
+      ["the target runtime cannot be reached", "CERTIFICATION_RUNTIME_UNREACHABLE"],
+      ["no operator is at a terminal", "CERTIFICATION_REQUIRES_ATTENDED_TERMINAL"],
+    ])("leaves the old lineage a legal destination when %s", async (_label, code) => {
+      // Each of these is a precondition, not an external effect. Arming first
+      // would spend the release's last reversible step on one and leave a
+      // cutover that can neither be rolled back nor certified.
+      const { log, store, orchestrator, prepared: handoff } = await prepared({
+        topologies: [topology(old), topology(target), topology(target)], preflightFails: code,
+      });
+
+      const outcome = await orchestrator.certifyAndComplete(handoff.session.id, cutoverRequest, handoff.capability);
+
+      expect(outcome).toMatchObject({ kind: "RECOVERY_REQUIRED", code: `CERTIFICATION_PREFLIGHT_FAILED:${code}` });
+      expect(outcome.session).toMatchObject({ state: "RECOVERY_REQUIRED", rollbackAuthority: "OLD_LINEAGE_ALLOWED" });
+      expect(log).not.toContain("certify");
+      expect(store.deploymentGate().closed).toBe(true);
+    });
+
+    it("spends the authority once preflight passed, even if the first request then fails", async () => {
+      // The conservative irreversible window: after arming, a request that
+      // never reached the provider still costs the old lineage. That cannot be
+      // removed, only kept as small as this.
+      const { log, orchestrator, prepared: handoff } = await prepared({
+        topologies: [topology(old), topology(target), topology(target)], certifyFails: "CHECKOUT_RESPONSE_LOST",
+      });
+
+      const outcome = await orchestrator.certifyAndComplete(handoff.session.id, cutoverRequest, handoff.capability);
+
+      expect(outcome).toMatchObject({ kind: "RECOVERY_REQUIRED", code: "CERTIFICATION_FAILED:CHECKOUT_RESPONSE_LOST" });
+      expect(outcome.session.rollbackAuthority).toBe("NEW_LINEAGE_ONLY");
+      expect(log).toEqual(expect.arrayContaining(["preflight", "certify"]));
+    });
   });
 
   it("safe-aborts and reopens sales when the build fails before any surface moves", async () => {

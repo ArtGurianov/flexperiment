@@ -42,6 +42,13 @@ export interface DeploymentDriver {
  */
 export interface CertificationDriver {
   issueCapability(sessionId: string): Promise<CertificationCapability>;
+  /**
+   * Everything checkable without changing anything outside the system: the
+   * capability is recoverable, the operator is present, the run agrees with the
+   * release, the target runtime answers. It must not mutate, because it runs
+   * while a rollback is still legal.
+   */
+  preflight(capability: CertificationCapability): Promise<void>;
   certify(capability: CertificationCapability): Promise<void>;
 }
 
@@ -205,7 +212,19 @@ export class ReleaseOrchestrator {
   async certifyAndComplete(sessionId: string, request: ReleaseRequest, capability: CertificationCapability): Promise<ReleaseOutcome> {
     if (!this.ports.certification) throw new ReleaseOrchestrationError("CUTOVER_REQUIRES_CERTIFICATION_DRIVER");
 
+    // Read-only, and deliberately before the arming below. An unreachable
+    // runtime, a lost capability, a catalogue that is not ready or an
+    // unattended terminal are ordinary refusals, and they stay ordinary: arming
+    // first would spend the release's last reversible step on a precondition
+    // and leave a cutover that can neither be rolled back nor certified.
+    try {
+      await this.ports.certification.preflight(capability);
+    } catch (error) {
+      return this.recovery(sessionId, request.ownerId, `CERTIFICATION_PREFLIGHT_FAILED:${failureCode(error)}`);
+    }
+
     // ---- last reversible point -------------------------------------------
+    // Immediately before the first request that can create a real payment.
     this.ports.sessions.armExternalEffects(sessionId, request.ownerId);
     // ----------------------------------------------------------------------
 

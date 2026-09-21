@@ -10,7 +10,7 @@ const facts: TrustedCheckoutFacts = { deploymentSessionId: SESSION, runtimeRelea
 describe.each(certificationCheckoutAuthorities)("admitting a certification checkout (%s)", (_name, make) => {
   const setup = (over: Partial<CertificationRun> = {}) => {
     const fixture: AuthorityFixture = make(over, now);
-    return { ...fixture, claim: { capabilityId: fixture.capability.id, runId: "run", nonce: fixture.capability.nonce } };
+    return { ...fixture, claim: { capabilityId: fixture.capability.id, runId: "run", nonce: fixture.nonce } };
   };
 
   it("spends the capability and creates the order in one act", () => {

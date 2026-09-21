@@ -6,6 +6,7 @@ import { issueCapability } from "../../src/certification/capability";
 import { admitCertificationCheckout, parseCertificationClaim } from "../../src/certification/checkout-admission";
 import { SqliteCertificationCapabilityStore, SqliteCertificationRunStore } from "../../src/certification/store-sqlite";
 import { concurrencyFixture, type ConcurrencyFixture } from "../support/concurrency-fixture";
+import { testSecret } from "../support/certification-secret";
 
 /**
  * The seam that did not exist: a recorded deployment fence that nothing in the
@@ -63,9 +64,8 @@ const armRun = (db: ConcurrencyFixture["primary"]) => {
     runId: "run", revision: 1, releaseSha: SHA, phase: "CHECKOUT_SUBMITTING", direction: "FINANCIAL_EFFECT_POSSIBLE",
     startedAt: now.toISOString(), occurrenceId: "occ", quoteId: "quote",
   });
-  const capability = issueCapability(new SqliteCertificationCapabilityStore(db),
-    { runId: "run", deploymentSessionId: SESSION, releaseSha: SHA, maxAmountKopecks: 100, ttlMs: 300_000 }, now);
-  return capability;
+  return issueCapability(new SqliteCertificationCapabilityStore(db),
+    { runId: "run", deploymentSessionId: SESSION, releaseSha: SHA, maxAmountKopecks: 100, ttlMs: 300_000 }, now, testSecret());
 };
 
 const refusal = (run: () => unknown): string => {
@@ -89,12 +89,12 @@ describe("the deployment fence and the public checkout are one fact", () => {
   it("keeps the emergency stop above any capability", () => {
     const { db, domain } = setup();
     closeFence(db);
-    const capability = armRun(db);
+    const { capability, nonce } = armRun(db);
     db.prepare("UPDATE emergency_sales_gate SET sales_paused = 1, revision = revision + 1 WHERE singleton = 1").run();
 
     // A capability that could pass this would turn the operator's last manual
     // stop into an advisory one.
-    expect(refusal(() => admitCertificationCheckout(db, { capabilityId: capability.id, runId: "run", nonce: capability.nonce },
+    expect(refusal(() => admitCertificationCheckout(db, { capabilityId: capability.id, runId: "run", nonce },
       "quote", "idempotency-key-0001", now, () => ({ status_id: "s" }))))
       .not.toBe("OPEN");
     expect(domain.emergencySalesPaused()).toBe(true);
@@ -103,9 +103,9 @@ describe("the deployment fence and the public checkout are one fact", () => {
   it("admits a scoped capability through the fence the release itself closed", () => {
     const { db } = setup();
     closeFence(db);
-    const capability = armRun(db);
+    const { capability, nonce } = armRun(db);
 
-    const admitted = admitCertificationCheckout(db, { capabilityId: capability.id, runId: "run", nonce: capability.nonce },
+    const admitted = admitCertificationCheckout(db, { capabilityId: capability.id, runId: "run", nonce },
       "quote", "idempotency-key-0001", now, (certification) => {
         // The gate is asked with the capability, from inside the transaction.
         expect(certification.run.runId).toBe("run");
@@ -124,8 +124,8 @@ describe("the deployment fence and the public checkout are one fact", () => {
     // shut is not scoped to anything.
     session(db, SESSION, "SUCCEEDED", 0);
     closeFence(db, "another-session");
-    const capability = armRun(db);
-    const claim = { capabilityId: capability.id, runId: "run", nonce: capability.nonce };
+    const { capability, nonce } = armRun(db);
+    const claim = { capabilityId: capability.id, runId: "run", nonce };
 
     expect(() => admitCertificationCheckout(db, claim, "quote", "idempotency-key-0001", now, () => ({ status_id: "s" })))
       .toThrow(/CERTIFICATION_CAPABILITY_SESSION_MISMATCH|CERTIFICATION_CONTEXT_SESSION_MISMATCH/);
@@ -135,7 +135,7 @@ describe("the deployment fence and the public checkout are one fact", () => {
   it("refuses a nonce that does not match, without spending the capability", () => {
     const { db } = setup();
     closeFence(db);
-    const capability = armRun(db);
+    const { capability, nonce } = armRun(db);
 
     expect(() => admitCertificationCheckout(db, { capabilityId: capability.id, runId: "run", nonce: "wrong-nonce" },
       "quote", "idempotency-key-0001", now, () => ({ status_id: "s" }))).toThrow();

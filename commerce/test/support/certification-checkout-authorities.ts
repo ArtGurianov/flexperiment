@@ -9,6 +9,7 @@ import {
 import { SqliteCertificationCheckoutAuthority, SqliteCertificationOrderLedger } from "../../src/certification/checkout-authority-sqlite";
 import { InMemoryCertificationRunStore, type CertificationRun, type CertificationRunStore } from "../../src/certification/run";
 import { SqliteCertificationCapabilityStore, SqliteCertificationRunStore } from "../../src/certification/store-sqlite";
+import { testSecret } from "./certification-secret";
 
 /**
  * Both checkout authorities, so the contract suite runs against each.
@@ -27,6 +28,8 @@ export type AuthorityFixture = {
   readonly authority: CertificationCheckoutAuthority;
   readonly orders: CertificationOrderLedger;
   readonly capability: CertificationCapability;
+  /** The bearer, which the store never holds. */
+  readonly nonce: string;
   readonly runs: CertificationRunStore;
   /** Creates the order the admission stands for, the way the real checkout would. */
   readonly create: (idempotencyKey: string, runId: string) => { orderId: string; statusId: string };
@@ -45,10 +48,10 @@ const memory = (over: Partial<CertificationRun>, now: Date): AuthorityFixture =>
   const runs = new InMemoryCertificationRunStore();
   const orders = new InMemoryCertificationOrderLedger();
   runs.create(runSeed(over));
-  const capability = issueCapability(capabilities, { runId: "run", deploymentSessionId: SESSION, releaseSha: SHA, maxAmountKopecks: 100, ttlMs: 300_000 }, now);
+  const { capability, nonce } = issueCapability(capabilities, { runId: "run", deploymentSessionId: SESSION, releaseSha: SHA, maxAmountKopecks: 100, ttlMs: 300_000 }, now, testSecret());
   return {
     authority: new InMemoryCertificationCheckoutAuthority(capabilities, runs, orders),
-    orders, capability, runs,
+    orders, capability, nonce, runs,
     create: () => ({ orderId: "order", statusId: "status" }),
     plantOrdinaryOrder: (idempotencyKey) => orders.record(idempotencyKey, { orderId: "customer-order", statusId: "customer-status", certificationRunId: "" }),
     capabilityConsumedAt: (id) => capabilities.get(id)?.consumedAt,
@@ -89,7 +92,7 @@ const sqlite = (over: Partial<CertificationRun>, now: Date): AuthorityFixture =>
   db.prepare(`INSERT INTO certification_catalogue_mutations(run_id, command_kind, command_id, occurrence_id, occurrence_json)
     VALUES ('run', 'CREATE_OCCURRENCE', 'command-1', 'occ', '{"id":"occ"}')`).run();
   const capabilities = new SqliteCertificationCapabilityStore(db);
-  const capability = issueCapability(capabilities, { runId: "run", deploymentSessionId: SESSION, releaseSha: SHA, maxAmountKopecks: 100, ttlMs: 300_000 }, now);
+  const { capability, nonce } = issueCapability(capabilities, { runId: "run", deploymentSessionId: SESSION, releaseSha: SHA, maxAmountKopecks: 100, ttlMs: 300_000 }, now, testSecret());
   const orders = new SqliteCertificationOrderLedger(db);
 
   let created = 0;
@@ -109,7 +112,7 @@ const sqlite = (over: Partial<CertificationRun>, now: Date): AuthorityFixture =>
 
   return {
     authority: new SqliteCertificationCheckoutAuthority(db, capabilities, runs, orders),
-    orders, capability, runs,
+    orders, capability, nonce, runs,
     // What the real checkout writes: the order carrying its run, and the
     // permanent idempotency record, in the caller's transaction.
     create: (idempotencyKey: string, runId: string) => insert(idempotencyKey, runId || null),

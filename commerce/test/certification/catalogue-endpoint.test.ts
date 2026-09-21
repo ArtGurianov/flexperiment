@@ -10,6 +10,7 @@ import {
 } from "../../src/certification/catalogue-endpoint";
 import { SqliteCertificationCapabilityStore, SqliteCertificationRunStore } from "../../src/certification/store-sqlite";
 import type { OccurrenceView } from "../../src/certification/evidence";
+import { testSecret } from "../support/certification-secret";
 
 const SHA = "a".repeat(40);
 const OTHER = "b".repeat(40);
@@ -50,9 +51,9 @@ const armed = (releaseSha = SHA) => {
     venueDisclosureText: "Announced later", venueAnnounceBy: "2026-09-25T00:00:00.000Z",
   } };
   runs.create({ runId: "run", revision: 1, releaseSha, phase: "NEW", direction: "NORMAL", startedAt: now.toISOString(), pendingCommand: command });
-  const capability = issueCapability(new SqliteCertificationCapabilityStore(db),
-    { runId: "run", deploymentSessionId: SESSION, releaseSha, maxAmountKopecks: 100, ttlMs: 300_000 }, now);
-  claim = { capability_id: capability.id, run_id: "run", nonce: capability.nonce };
+  const { capability, nonce } = issueCapability(new SqliteCertificationCapabilityStore(db),
+    { runId: "run", deploymentSessionId: SESSION, releaseSha, maxAmountKopecks: 100, ttlMs: 300_000 }, now, testSecret());
+  claim = { capability_id: capability.id, run_id: "run", nonce };
   return capability;
 };
 

@@ -93,6 +93,8 @@ export type CertifyInput = {
   readonly runId: string;
   readonly candidate: ReleaseCandidate;
   readonly capability: CertificationCapability;
+  /** The derived bearer for that capability. Held in memory and in a header, nowhere else. */
+  readonly bearerNonce: string;
   readonly scope: CertificationScope;
   readonly citySlug: string;
   readonly timeouts: { readonly paymentMs: number; readonly emailMs: number; readonly refundMs: number };
@@ -231,7 +233,10 @@ class CertificationMachine {
         // Permanent idempotency rejects a body that is not identical, so this
         // proves the re-entered data before a second checkout could exist.
         if (command.requestSha256 !== request.sha256) throw new CertificationFailed("CERTIFICATION_CHECKOUT_REQUEST_CHANGED");
-        const claim: CertificationClaim = { capabilityId: this.input.capability.id, runId: run.runId, nonce: this.input.capability.nonce };
+        // The bearer travels beside the capability, never inside it: the record
+        // holds only a digest, so the only thing that can present a claim is a
+        // caller that derived the nonce.
+        const claim: CertificationClaim = { capabilityId: this.input.capability.id, runId: run.runId, nonce: this.input.bearerNonce };
         const checkout = await this.ports.publicApi.createCheckout(request.body, command.idempotencyKey, claim).catch((error: unknown) => {
           // Re-issued after cleanup and refused. That refusal is the answer:
           // the key created no order, so the command is retired here rather

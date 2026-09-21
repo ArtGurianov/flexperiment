@@ -150,7 +150,9 @@ const toCapability = (row: Record<string, unknown>): CertificationCapability => 
   releaseSha: String(row.release_sha),
   maxAmountKopecks: Number(row.max_amount_kopecks),
   expiresAt: String(row.expires_at),
-  nonce: String(row.nonce),
+  // The column is still called `nonce` - the baseline is frozen - and it holds
+  // the bearer's digest. What it stores cannot be presented.
+  nonceDigest: String(row.nonce),
   consumedAt: text(row.consumed_at),
   retiredAt: text(row.retired_at),
 });
@@ -183,7 +185,7 @@ export class SqliteCertificationCapabilityStore implements CertificationCapabili
           max_amount_kopecks, expires_at, nonce, consumed_at, retired_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL)`).run(
         capability.id, capability.runId, capability.deploymentSessionId, capability.releaseSha,
-        capability.maxAmountKopecks, capability.expiresAt, capability.nonce,
+        capability.maxAmountKopecks, capability.expiresAt, capability.nonceDigest,
       );
       return this.required(capability.id);
     });

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { certificationNonceDigest, deriveCertificationNonce, nonceDigestMatches, type NonceBinding } from "./nonce";
 
 /**
  * A one-shot permission to transact through a deployment fence, and nothing
@@ -25,7 +26,15 @@ export type CertificationCapability = {
   readonly releaseSha: string;
   readonly maxAmountKopecks: number;
   readonly expiresAt: string;
-  readonly nonce: string;
+  /**
+   * The digest of the bearer, never the bearer.
+   *
+   * A nonce kept as a column makes a read-only leak of this database a
+   * capability to pass the deployment fence and buy behind it. The bearer is
+   * derived from the fields above and one secret the runner holds; this proves
+   * a presented one and mints nothing.
+   */
+  readonly nonceDigest: string;
   readonly consumedAt?: string | null;
   /** Set when the capability was replaced after expiry rather than spent. One-way, and never both. */
   readonly retiredAt?: string | null;
@@ -89,31 +98,52 @@ export interface CertificationCapabilityStore {
   get(id: string): CertificationCapability | undefined;
 }
 
-const nonceMatches = (left: string, right: string): boolean => {
-  // Constant time over the whole comparison: a nonce checked with `===` leaks
-  // its prefix through timing, and this one is the difference between an open
-  // fence and a closed one.
-  if (left.length !== right.length) return false;
-  let difference = 0;
-  for (let index = 0; index < left.length; index += 1) difference |= left.charCodeAt(index) ^ right.charCodeAt(index);
-  return difference === 0;
-};
-
-export const issueCapability = (store: CertificationCapabilityStore, input: IssueCapabilityInput, now: Date): CertificationCapability => {
+/**
+ * Issues, and hands the bearer back exactly once.
+ *
+ * The capability that goes into the store carries only the digest; the bearer
+ * is returned beside it and never persisted. A caller that needs it again
+ * derives it from the row, which is what makes the handoff between two
+ * processes work without keeping a secret anywhere.
+ */
+export const issueCapability = (
+  store: CertificationCapabilityStore,
+  input: IssueCapabilityInput,
+  now: Date,
+  secret: { version: string; key: string },
+): { capability: CertificationCapability; nonce: string } => {
   if (!input.runId || !input.deploymentSessionId || !input.releaseSha) throw new CertificationCapabilityError("CERTIFICATION_CAPABILITY_SCOPE_REQUIRED");
   if (!Number.isSafeInteger(input.maxAmountKopecks) || input.maxAmountKopecks <= 0) throw new CertificationCapabilityError("CERTIFICATION_CAPABILITY_AMOUNT_INVALID");
   if (!Number.isSafeInteger(input.ttlMs) || input.ttlMs <= 0) throw new CertificationCapabilityError("CERTIFICATION_CAPABILITY_TTL_INVALID");
-  return store.issue({
-    id: randomUUID(),
+  const binding = {
+    capabilityId: randomUUID(),
     runId: input.runId,
     deploymentSessionId: input.deploymentSessionId,
     releaseSha: input.releaseSha,
-    maxAmountKopecks: input.maxAmountKopecks,
     expiresAt: new Date(now.getTime() + input.ttlMs).toISOString(),
-    nonce: randomUUID(),
+  };
+  const nonce = deriveCertificationNonce(secret, binding);
+  const capability = store.issue({
+    id: binding.capabilityId,
+    runId: binding.runId,
+    deploymentSessionId: binding.deploymentSessionId,
+    releaseSha: binding.releaseSha,
+    maxAmountKopecks: input.maxAmountKopecks,
+    expiresAt: binding.expiresAt,
+    nonceDigest: certificationNonceDigest(nonce),
     consumedAt: null,
   }, now);
+  return { capability, nonce };
 };
+
+/** The binding a stored capability was derived from, for a caller re-deriving the bearer. */
+export const capabilityBinding = (capability: CertificationCapability): NonceBinding => ({
+  capabilityId: capability.id,
+  runId: capability.runId,
+  deploymentSessionId: capability.deploymentSessionId,
+  releaseSha: capability.releaseSha,
+  expiresAt: capability.expiresAt,
+});
 
 /**
  * Pure. Compares possession against facts the server established and against
@@ -151,7 +181,7 @@ export const capabilityPossessionDefect = (
 ): CapabilityDefect | undefined => {
   if (!capability || capability.id !== claim.capabilityId) return "CERTIFICATION_CAPABILITY_NOT_FOUND";
   if (capability.runId !== claim.runId || capability.runId !== expected.runId) return "CERTIFICATION_CAPABILITY_RUN_MISMATCH";
-  if (!nonceMatches(capability.nonce, claim.nonce)) return "CERTIFICATION_CAPABILITY_NONCE_MISMATCH";
+  if (!nonceDigestMatches(capability.nonceDigest, claim.nonce)) return "CERTIFICATION_CAPABILITY_NONCE_MISMATCH";
   // Three views of the release have to agree: what the capability was issued
   // against, what the runtime is actually serving, and what the run set out to
   // certify. Any disagreement means one of them moved.

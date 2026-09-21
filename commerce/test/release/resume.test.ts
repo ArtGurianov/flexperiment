@@ -44,7 +44,8 @@ const abandoned = (options: { at: string; observes: PreDeploySnapshot | PreDeplo
       },
     },
     certification: {
-      async issueCapability(id) { log.push("capability"); return { id: "cap", runId: "run", deploymentSessionId: id, releaseSha: target, maxAmountKopecks: 100, nonce: "nonce", expiresAt: "2026-09-21T00:00:00.000Z" }; },
+      async issueCapability(id) { log.push("capability"); return { id: "cap", runId: "run", deploymentSessionId: id, releaseSha: target, maxAmountKopecks: 100, nonceDigest: "digest", expiresAt: "2026-09-21T00:00:00.000Z" }; },
+      async preflight() { log.push("preflight"); },
       async certify() { log.push("certify"); },
     },
   };

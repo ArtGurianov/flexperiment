@@ -1,16 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { evaluateSalesGate, type PresentedCertificationCapability } from "../../src/release/sales-gate";
 import { InMemoryCertificationCapabilityStore, issueCapability } from "../../src/certification/capability";
+import { testSecret } from "../support/certification-secret";
 
 const now = new Date("2026-09-19T00:00:00.000Z");
 const sha = "a".repeat(40);
 const fenced = { emergencyClosed: false, businessClosed: false, deploymentClosed: true, deploymentSessionId: "deploy" };
 
 const presented = (): PresentedCertificationCapability => {
-  const capability = issueCapability(new InMemoryCertificationCapabilityStore(), { runId: "run", deploymentSessionId: "deploy", releaseSha: sha, maxAmountKopecks: 100, ttlMs: 300_000 }, now);
+  const { capability, nonce } = issueCapability(new InMemoryCertificationCapabilityStore(), { runId: "run", deploymentSessionId: "deploy", releaseSha: sha, maxAmountKopecks: 100, ttlMs: 300_000 }, now, testSecret());
   return {
     capability,
-    claim: { capabilityId: capability.id, runId: "run", nonce: capability.nonce },
+    claim: { capabilityId: capability.id, runId: "run", nonce },
     facts: { deploymentSessionId: "deploy", runtimeReleaseSha: sha, actualAmountKopecks: 100, checkoutOccurrenceId: "occ" },
     expected: { runId: "run", releaseSha: sha, occurrenceId: "occ" },
   };
@@ -67,8 +68,8 @@ describe("release sales gate", () => {
     // exactly the pair that can come apart. Consumption stays inside the
     // checkout authority's own transaction.
     const store = new InMemoryCertificationCapabilityStore();
-    const capability = issueCapability(store, { runId: "run", deploymentSessionId: "deploy", releaseSha: sha, maxAmountKopecks: 100, ttlMs: 300_000 }, now);
-    const claim = { capabilityId: capability.id, runId: "run", nonce: capability.nonce };
+    const { capability, nonce } = issueCapability(store, { runId: "run", deploymentSessionId: "deploy", releaseSha: sha, maxAmountKopecks: 100, ttlMs: 300_000 }, now, testSecret());
+    const claim = { capabilityId: capability.id, runId: "run", nonce };
     const facts = { deploymentSessionId: "deploy", runtimeReleaseSha: sha, actualAmountKopecks: 100, checkoutOccurrenceId: "occ" };
 
     expect(evaluateSalesGate(fenced, now, { capability, claim, facts, expected: { runId: "run", releaseSha: sha, occurrenceId: "occ" } })).toEqual({ open: true });

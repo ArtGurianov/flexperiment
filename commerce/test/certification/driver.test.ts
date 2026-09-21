@@ -6,6 +6,7 @@ import { certificationRunId, ProductionCertificationDriver } from "../../src/cer
 import { SqliteCertificationCapabilityStore, SqliteCertificationRunStore } from "../../src/certification/store-sqlite";
 import type { TerminalChannel } from "../../src/certification/operator-terminal";
 import { schemaInventoryExpectation } from "../../src/release/expectation";
+import { TEST_CAPABILITY_KEY } from "../support/certification-secret";
 
 const SHA = "a".repeat(40);
 const SESSION = "deploy-session";
@@ -35,7 +36,7 @@ beforeEach(() => {
       '2026-09-21T00:00:00.000Z', '2099-01-01T00:00:00.000Z', 1)`).run(SESSION, SHA, SHA);
   driver = new ProductionCertificationDriver({
     db, candidate, adminBaseUrl: "http://127.0.0.1:1", publicBaseUrl: "http://127.0.0.1:1",
-    serviceToken: "token", citySlug: "test-city", now: () => now,
+    serviceToken: "token", capabilityKey: TEST_CAPABILITY_KEY, citySlug: "test-city", now: () => now,
     operator: { occurrence: { startsAt: "2026-10-01T10:00:00.000Z", endsAt: "2026-10-01T12:00:00.000Z", venueDisclosureText: "Later", venueAnnounceBy: "2026-09-25T00:00:00.000Z" }, checkoutBodyPath: "/dev/null" },
     terminal: terminal(),
   });
@@ -66,7 +67,7 @@ describe("preparing a certification", () => {
     // untouched by that.
     const later = new ProductionCertificationDriver({
       db, candidate, adminBaseUrl: "http://127.0.0.1:1", publicBaseUrl: "http://127.0.0.1:1",
-      serviceToken: "token", citySlug: "test-city",
+      serviceToken: "token", capabilityKey: TEST_CAPABILITY_KEY, citySlug: "test-city",
       now: () => new Date(now.getTime() + 5 * 60 * 60_000),
       operator: { occurrence: { startsAt: "2026-10-01T10:00:00.000Z", endsAt: "2026-10-01T12:00:00.000Z", venueDisclosureText: "Later", venueAnnounceBy: "2026-09-25T00:00:00.000Z" }, checkoutBodyPath: "/dev/null" },
       terminal: terminal(),
@@ -105,7 +106,7 @@ describe("the claim between prepare and certify", () => {
   /** A fresh process: nothing carried over but the file on disk. */
   const restarted = () => new ProductionCertificationDriver({
     db, candidate, adminBaseUrl: "http://127.0.0.1:1", publicBaseUrl: "http://127.0.0.1:1",
-    serviceToken: "token", citySlug: "test-city", now: () => now,
+    serviceToken: "token", capabilityKey: TEST_CAPABILITY_KEY, citySlug: "test-city", now: () => now,
     operator: { occurrence: { startsAt: "2026-10-01T10:00:00.000Z", endsAt: "2026-10-01T12:00:00.000Z", venueDisclosureText: "Later", venueAnnounceBy: "2026-09-25T00:00:00.000Z" }, checkoutBodyPath: "/dev/null" },
     terminal: terminal(),
   });
@@ -118,7 +119,7 @@ describe("the claim between prepare and certify", () => {
     const recovered = restarted().recoverCapability(SESSION);
 
     expect(recovered).toEqual(issued);
-    expect(recovered?.nonce).toBe(issued.nonce);
+    expect(restarted().bearerFor(recovered!)).toBe(driver.bearerFor(issued));
     expect(db.prepare("SELECT COUNT(*) AS n FROM certification_capabilities").get()).toEqual({ n: 1 });
   });
 
@@ -131,7 +132,7 @@ describe("the claim between prepare and certify", () => {
 
     const recovered = restarted().recoverCapability(SESSION);
     expect(recovered?.id).toBe(issued.id);
-    expect(recovered?.nonce).toBe(issued.nonce);
+    expect(restarted().bearerFor(recovered!)).toBe(driver.bearerFor(issued));
     expect(recovered?.consumedAt).toBe(now.toISOString());
   });
 

@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
-import { issueCapability, type CertificationCapability } from "./capability";
+import { capabilityBinding, issueCapability, type CertificationCapability } from "./capability";
+import { certificationNonceDigest, deriveCertificationNonce, parseCapabilityKey } from "./nonce";
+import { assertAttended } from "./operator-terminal";
 import { certifyProduction, type CertifyPorts } from "./machine";
 import { HttpCertificationAdminPort, HttpCertificationPublicPort } from "./http-ports";
 import { TerminalOperator, type OperatorScope, type TerminalChannel } from "./operator-terminal";
@@ -29,6 +31,8 @@ export type CertificationDriverOptions = {
   readonly adminBaseUrl: string;
   readonly publicBaseUrl: string;
   readonly serviceToken: string;
+  /** `<version>:<key>`. Only the runner holds it; the certified runtime never does. */
+  readonly capabilityKey: string;
   readonly citySlug: string;
   readonly operator: OperatorScope;
   readonly terminal: TerminalChannel;
@@ -69,11 +73,66 @@ export class ProductionCertificationDriver implements CertificationDriver {
         phase: "NEW", direction: "NORMAL", startedAt: this.now().toISOString(),
       });
     }
-    return issueCapability(new SqliteCertificationCapabilityStore(this.options.db), {
+    const { capability } = issueCapability(new SqliteCertificationCapabilityStore(this.options.db), {
       runId, deploymentSessionId: sessionId, releaseSha: this.options.candidate.sha,
       maxAmountKopecks: CERTIFICATION_PRICE_KOPECKS,
       ttlMs: this.options.capabilityTtlMs ?? 4 * 60 * 60_000,
-    }, this.now());
+    }, this.now(), this.secret());
+    // The bearer is deliberately dropped here. It is derived again when it is
+    // needed, so nothing carries it between these two moments.
+    return capability;
+  }
+
+  private secret() { return parseCapabilityKey(this.options.capabilityKey); }
+
+  /** The bearer for a capability, recomputed from its own binding. */
+  bearerFor(capability: CertificationCapability): string {
+    return deriveCertificationNonce(this.secret(), capabilityBinding(capability));
+  }
+
+  /**
+   * Everything that can be checked without changing anything outside this
+   * system, done before the point of no return.
+   *
+   * A runtime that cannot be reached, a capability that is gone, a catalogue
+   * that is not ready or an unattended terminal are all ordinary refusals - and
+   * they must stay ordinary. Arming first would spend the release's last
+   * reversible step on a precondition, leaving a cutover that cannot be rolled
+   * back and has not certified anything.
+   */
+  async preflight(capability: CertificationCapability): Promise<void> {
+    const recovered = this.recoverCapability(capability.deploymentSessionId);
+    if (!recovered || recovered.id !== capability.id) {
+      throw new Error("CERTIFICATION_CAPABILITY_UNRECOVERABLE");
+    }
+    // Derivable at all: a key that cannot reproduce the stored digest is the
+    // wrong key, and finding that out after arming would be finding it out too
+    // late.
+    if (certificationNonceDigest(this.bearerFor(recovered)) !== recovered.nonceDigest) {
+      throw new Error("CERTIFICATION_CAPABILITY_KEY_MISMATCH");
+    }
+    assertAttended();
+
+    const runs = new SqliteCertificationRunStore(this.options.db);
+    const run = runs.load(capability.runId);
+    if (!run) throw new Error("CERTIFICATION_RUN_NOT_FOUND");
+    if (run.releaseSha !== this.options.candidate.sha) throw new Error("CERTIFICATION_RUN_RELEASE_MISMATCH");
+
+    // Read-only, and against the runtime being certified rather than against
+    // this process's own database.
+    const admin = this.admin(capability);
+    const evidence = await admin.systemEvidence();
+    if (evidence.schema.lineage !== "SUPPORTED") throw new Error(`CERTIFICATION_LINEAGE_${evidence.schema.lineage}`);
+    if (!await admin.cityIdBySlug(this.options.citySlug)) throw new Error("CERTIFICATION_CITY_ABSENT");
+  }
+
+  private admin(capability: CertificationCapability): HttpCertificationAdminPort {
+    const admin = new HttpCertificationAdminPort({
+      baseUrl: this.options.adminBaseUrl, token: this.options.serviceToken,
+      runId: capability.runId, fetch: this.options.fetch,
+    });
+    admin.useClaim({ capabilityId: capability.id, runId: capability.runId, nonce: this.bearerFor(capability) });
+    return admin;
   }
 
   /**
@@ -86,10 +145,7 @@ export class ProductionCertificationDriver implements CertificationDriver {
    */
   async certify(capability: CertificationCapability): Promise<void> {
     const runId = capability.runId;
-    const admin = new HttpCertificationAdminPort({
-      baseUrl: this.options.adminBaseUrl, token: this.options.serviceToken, runId, fetch: this.options.fetch,
-    });
-    admin.useClaim({ capabilityId: capability.id, runId, nonce: capability.nonce });
+    const admin = this.admin(capability);
     this.#admin = admin;
 
     const ports: CertifyPorts = {
@@ -106,7 +162,7 @@ export class ProductionCertificationDriver implements CertificationDriver {
     };
 
     const outcome = await certifyProduction(ports, {
-      runId, candidate: this.options.candidate, capability,
+      runId, candidate: this.options.candidate, capability, bearerNonce: this.bearerFor(capability),
       scope: {
         citySlug: this.options.citySlug, title: CERTIFICATION_OCCURRENCE_TITLE,
         timezone: CERTIFICATION_TIMEZONE, priceKopecks: CERTIFICATION_PRICE_KOPECKS, capacity: 1,

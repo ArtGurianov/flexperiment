@@ -8,6 +8,7 @@ import { InMemoryCertificationRunStore, type CertificationRun } from "../../src/
 import type { OccurrenceView, OrderEvidence } from "../../src/certification/evidence";
 import { schemaInventoryExpectation } from "../../src/release/expectation";
 import type { ReleaseCandidate } from "../../src/release/candidate";
+import { testSecret } from "../support/certification-secret";
 
 const sha = "a".repeat(40);
 const versions = ["0001_launch_baseline.sql"];
@@ -80,7 +81,7 @@ const production = (options: Options = {}) => {
   });
 
   const capabilities = new InMemoryCertificationCapabilityStore();
-  const capability = issueCapability(capabilities, { runId: "run", deploymentSessionId: "deploy", releaseSha: sha, maxAmountKopecks: 100, ttlMs: 900_000 }, now);
+  const { capability, nonce: bearerNonce } = issueCapability(capabilities, { runId: "run", deploymentSessionId: "deploy", releaseSha: sha, maxAmountKopecks: 100, ttlMs: 900_000 }, now, testSecret());
   const orders = new InMemoryCertificationOrderLedger();
   const authority = new InMemoryCertificationCheckoutAuthority(capabilities, runs, orders);
 
@@ -151,8 +152,8 @@ const production = (options: Options = {}) => {
     },
   };
 
-  const input = { runId: created.runId, candidate, capability, scope, citySlug: "kemerovo", timeouts: { paymentMs: 1000, emailMs: 1000, refundMs: 1000 } };
-  return { calls, log, ports, input, runs, capabilities, capability, orders, catalogue, authority, occurrenceNow: () => occurrence };
+  const input = { runId: created.runId, candidate, capability, bearerNonce, scope, citySlug: "kemerovo", timeouts: { paymentMs: 1000, emailMs: 1000, refundMs: 1000 } };
+  return { calls, log, ports, input, runs, capabilities, capability, bearerNonce, orders, catalogue, authority, occurrenceNow: () => occurrence };
 };
 
 describe("certifying production", () => {
@@ -282,14 +283,14 @@ describe("certifying production", () => {
     // The order exists and the capability is spent; only the response was
     // lost. Retiring the command would strand the run with no way to learn its
     // own status id, so it survives cleanup and is re-issued as a lookup.
-    const { ports, input, runs, capabilities, capability, orders } = production({
+    const { ports, input, runs, capabilities, capability, bearerNonce, orders } = production({
       startAt: { phase: "CHECKOUT_SUBMITTING", direction: "FINANCIAL_EFFECT_POSSIBLE", occurrenceId: "occ", quoteId: "quote" },
     });
     const command = { kind: "CREATE_CHECKOUT" as const, idempotencyKey: "checkout-key", quoteId: "quote", requestSha256: "d".repeat(64) };
     let run = runs.update("run", runs.load("run")!.revision, { pendingCommand: command });
 
     // The request got through: order created, capability spent, response lost.
-    await ports.publicApi.createCheckout("{}", command.idempotencyKey, { capabilityId: capability.id, runId: "run", nonce: capability.nonce });
+    await ports.publicApi.createCheckout("{}", command.idempotencyKey, { capabilityId: capability.id, runId: "run", nonce: bearerNonce });
     const spentAt = capabilities.get(capability.id)?.consumedAt;
     run = runs.update("run", run.revision, { failure: { outcome: "INCOMPLETE", code: "CERTIFICATION_CHECKOUT_UNRESOLVED", recordedAt: now.toISOString() } });
     run = await ensureCatalogueClean(runs, ports.admin, runs.load("run")!);

@@ -4,6 +4,7 @@ import {
   type TrustedCheckoutFacts,
 } from "../../src/certification/capability";
 import { certificationCapabilityStores } from "../support/certification-stores";
+import { testSecret } from "../support/certification-secret";
 
 const now = new Date("2026-09-19T00:00:00.000Z");
 const sha = "a".repeat(40);
@@ -17,8 +18,8 @@ describe.each(certificationCapabilityStores)("certification capability (%s)", (_
     // what the run set out to certify. Any disagreement means one of them moved.
     const { store, bind } = makeFixture();
     bind("run", "deploy");
-    const capability = issueCapability(store, scope, now);
-    const claim = { capabilityId: capability.id, runId: "run", nonce: capability.nonce };
+    const { capability, nonce } = issueCapability(store, scope, now, testSecret());
+    const claim = { capabilityId: capability.id, runId: "run", nonce };
 
     expect(authorizationDefect(capability, claim, facts, expected, now)).toBeUndefined();
     expect(authorizationDefect(capability, claim, { ...facts, runtimeReleaseSha: "b".repeat(40) }, expected, now)).toBe("CERTIFICATION_CAPABILITY_RELEASE_MISMATCH");
@@ -31,8 +32,8 @@ describe.each(certificationCapabilityStores)("certification capability (%s)", (_
     // at all. A single boolean cannot tell those apart.
     const { store, bind } = makeFixture();
     bind("run", "deploy");
-    const capability = issueCapability(store, scope, now);
-    const claim = { capabilityId: capability.id, runId: "run", nonce: capability.nonce };
+    const { capability, nonce } = issueCapability(store, scope, now, testSecret());
+    const claim = { capabilityId: capability.id, runId: "run", nonce };
 
     expect(authorizationDefect(capability, { ...claim, nonce: "not-the-nonce" }, facts, expected, now)).toBe("CERTIFICATION_CAPABILITY_NONCE_MISMATCH");
     expect(authorizationDefect(capability, { ...claim, runId: "another" }, facts, expected, now)).toBe("CERTIFICATION_CAPABILITY_RUN_MISMATCH");
@@ -45,9 +46,9 @@ describe.each(certificationCapabilityStores)("certification capability (%s)", (_
     // Whoever still holds the forgotten one decides when to use it.
     const { store, bind } = makeFixture();
     bind("run", "deploy");
-    issueCapability(store, scope, now);
-    expect(() => issueCapability(store, scope, now)).toThrow("CERTIFICATION_CAPABILITY_ALREADY_LIVE");
-    expect(() => issueCapability(store, scope, new Date("2026-09-19T01:00:00.000Z"))).not.toThrow();
+    issueCapability(store, scope, now, testSecret());
+    expect(() => issueCapability(store, scope, now, testSecret())).toThrow("CERTIFICATION_CAPABILITY_ALREADY_LIVE");
+    expect(() => issueCapability(store, scope, new Date("2026-09-19T01:00:00.000Z"), testSecret())).not.toThrow();
   });
 
   it("reissues once the first has expired, and keeps it", () => {
@@ -56,25 +57,25 @@ describe.each(certificationCapabilityStores)("certification capability (%s)", (_
     // endings are kept, because "spent" and "replaced" are different histories.
     const { store, bind } = makeFixture();
     bind("run", "deploy");
-    const first = issueCapability(store, scope, now);
+    const { capability: first, nonce: firstNonce } = issueCapability(store, scope, now, testSecret());
     const afterExpiry = new Date(now.getTime() + scope.ttlMs + 1_000);
 
-    const second = issueCapability(store, scope, afterExpiry);
+    const { capability: second } = issueCapability(store, scope, afterExpiry, testSecret());
     expect(second.id).not.toBe(first.id);
     expect(store.get(first.id)).toBeDefined();
     // ...and the replacement is the only one a claim can now be admitted with.
     // Retired, not merely expired: without that case a retired-but-unconsumed
     // capability would go on satisfying this predicate while the row that
     // replaced it already existed - two capabilities, both authorised.
-    expect(authorizationDefect(store.get(first.id), { capabilityId: first.id, runId: "run", nonce: first.nonce }, facts, expected, afterExpiry))
+    expect(authorizationDefect(store.get(first.id), { capabilityId: first.id, runId: "run", nonce: firstNonce }, facts, expected, afterExpiry))
       .toBe("CERTIFICATION_CAPABILITY_RETIRED");
   });
 
   it("will not issue an unbounded or unscoped permission", () => {
     const { store, bind } = makeFixture();
     bind("run", "deploy");
-    expect(() => issueCapability(store, { ...scope, releaseSha: "" }, now)).toThrow(CertificationCapabilityError);
-    expect(() => issueCapability(store, { ...scope, maxAmountKopecks: 0 }, now)).toThrow("CERTIFICATION_CAPABILITY_AMOUNT_INVALID");
-    expect(() => issueCapability(store, { ...scope, ttlMs: 0 }, now)).toThrow("CERTIFICATION_CAPABILITY_TTL_INVALID");
+    expect(() => issueCapability(store, { ...scope, releaseSha: "" }, now, testSecret())).toThrow(CertificationCapabilityError);
+    expect(() => issueCapability(store, { ...scope, maxAmountKopecks: 0 }, now, testSecret())).toThrow("CERTIFICATION_CAPABILITY_AMOUNT_INVALID");
+    expect(() => issueCapability(store, { ...scope, ttlMs: 0 }, now, testSecret())).toThrow("CERTIFICATION_CAPABILITY_TTL_INVALID");
   });
 });
