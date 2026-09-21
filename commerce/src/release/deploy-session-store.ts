@@ -165,12 +165,15 @@ export class SqliteReleaseAuthorityStore implements ReleaseAuthorityStore {
       if (session.bootstrapRollbackId !== rollbackId) throw new Error("BOOTSTRAP_ROLLBACK_ALREADY_RESERVED");
       // Idempotent is not unauthenticated: the repeat still has to prove it
       // holds the lease, or a runner that lost it reads success and carries on.
-      return this.write(id, ownerId, now, NON_TERMINAL, {});
+      return this.write(id, ownerId, now, ["DEPLOYING", "RECOVERY_REQUIRED"], { state: "RECOVERY_REQUIRED" });
     }
     if (!session.adoptedCutoverId) throw new Error("BOOTSTRAP_ROLLBACK_NOT_A_CUTOVER_SESSION");
     if (session.rollbackAuthority !== "OLD_LINEAGE_ALLOWED") throw new Error("OLD_LINEAGE_ROLLBACK_FORBIDDEN");
     if (this.deploymentGate().deploymentSessionId !== id) throw new Error("DEPLOYMENT_GATE_NOT_OWNED");
-    return this.write(id, ownerId, now, NON_TERMINAL, { bootstrapRollbackId: rollbackId });
+    return this.write(id, ownerId, now, ["DEPLOYING", "RECOVERY_REQUIRED"], {
+      bootstrapRollbackId: rollbackId,
+      state: "RECOVERY_REQUIRED",
+    });
   }
 
   assertBootstrapRollbackOwned(id: string, ownerId: string, now: Date, rollbackId: string): DeploySession {

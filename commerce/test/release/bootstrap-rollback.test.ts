@@ -1,301 +1,247 @@
 import { describe, expect, it } from "vitest";
 import {
-  BootstrapRollback, InMemoryBootstrapRollbackReceiptStore,
+  BootstrapRollback, InMemoryBootstrapRollbackReceiptStore, bootstrapRollbackId,
   type BootstrapRollbackPorts, type DatabaseArchive,
 } from "../../src/release/bootstrap-rollback";
-import { DeploySessions, type PreDeploySnapshot, type ReleaseAuthorityStore } from "../../src/release/deploy-session";
+import { canonicalEnvelopeSha256, createCutoverEnvelope, InMemoryCutoverEnvelopeStore } from "../../src/release/cutover-envelope";
+import { DeploySessions, InMemoryReleaseAuthorityStore, type DeploymentObservation, type ReleaseAuthorityStore } from "../../src/release/deploy-session";
 import { releaseAuthorityStores } from "../support/release-authority-stores";
-import { withSurface } from "../support/deploy-snapshot";
 import { RuntimeQuiescenceAuthority, type RuntimeLeaseBinding } from "../../src/release/runtime-quiescence-authority";
 
 const target = "a".repeat(40);
-const before: PreDeploySnapshot = { runtime: { frontend: "b".repeat(40), admin: "c".repeat(40), commerce: "b".repeat(40), worker: "d".repeat(40) }, controlPlane: { productionDeployRefSha: "b".repeat(40) } };
-const afterCutover: PreDeploySnapshot = { runtime: { frontend: target, admin: target, commerce: target, worker: target }, controlPlane: { productionDeployRefSha: target } };
-const predecessorDatabase: DatabaseArchive = { ref: "prelaunch-2026-09-20.sqlite", sha256: "e".repeat(64) };
-const successorDatabase: DatabaseArchive = { ref: "successor-2026-09-20.sqlite", sha256: "f".repeat(64) };
-const now = new Date("2026-09-20T00:00:00.000Z");
-let clock = now;
+const predecessor = "b".repeat(40);
+const before: DeploymentObservation = {
+  runtime: { frontend: predecessor, admin: predecessor, commerce: predecessor, worker: predecessor },
+  controlPlane: { productionDeployRefSha: predecessor },
+};
+const successorDatabase: DatabaseArchive = { ref: "/state/archive/successor.sqlite", sha256: "f".repeat(64) };
+const predecessorDatabase: DatabaseArchive = { ref: "/state/archive/predecessor.sqlite", sha256: "e".repeat(64) };
+const now = new Date("2026-09-21T00:00:00.000Z");
 
-const world = (makeStore: () => ReleaseAuthorityStore, options: {
-  archiveFails?: string;
-  restoredSha256?: string;
-  restoredTopology?: PreDeploySnapshot;
-  lineage?: "LEGACY" | "SUPPORTED";
-  predecessorGateOpen?: boolean;
-  armed?: boolean;
-  installedSha256?: string;
-  targetStillRunning?: boolean;
-} = {}) => {
+type Failure = "archive-hash" | "runtime" | "storage" | "ref" | "frontend" | "admin" | "commerce" | "observe" | "open-gate";
+
+const world = (makeStore: () => ReleaseAuthorityStore, options: { armed?: boolean; fail?: Failure; observed?: DeploymentObservation } = {}) => {
   const log: string[] = [];
-  let gateClosed = !options.predecessorGateOpen;
-  let observed = afterCutover;
-  /** Digest of the database file at rest, as a restore would actually change it. */
-  let installed = options.installedSha256 ?? "0".repeat(64);
-  clock = now;
-  const receipts = new InMemoryBootstrapRollbackReceiptStore();
-  const quiescence = new RuntimeQuiescenceAuthority(() => 0);
-  const rollbackBinding: RuntimeLeaseBinding = {
-    sessionId: "rb-1", operation: "RESTORE", databasePath: "/db", databaseIdentity: { canonicalPath: "/db", dev: 1, ino: 2 },
-    sha: target, applicationUuid: "commerce-uuid", applicationResourceId: "3",
-    repositories: { commerce: "repo/commerce", "commerce-worker": "repo/worker" },
-    units: [{ service: "commerce", containerId: "c1" }, { service: "commerce-worker", containerId: "c2" }], lockOwner: "runner",
-  };
-  const store = makeStore();
-  const sessions = new DeploySessions(store, () => clock, 60_000);
+  const failures = new Set(options.fail ? [options.fail] : []);
+  const authority = makeStore();
+  const sessions = new DeploySessions(authority, () => now, 60_000);
+  const envelopes = new InMemoryCutoverEnvelopeStore();
+  const envelope = createCutoverEnvelope({
+    cutoverId: "cutover-1", adoptionNonce: "nonce-1", targetSha: target, mode: "MAINTENANCE_CUTOVER",
+    preDeployTopology: before, predecessorDatabase,
+    createdAt: now.toISOString(), expiresAt: "2026-09-21T06:00:00.000Z",
+  });
+  envelopes.write(envelope);
+  envelopes.markConsumed(envelope.cutoverId);
   const session = sessions.acquireFenced({
     id: "successor", ownerId: "owner", mode: "MAINTENANCE_CUTOVER", targetSha: target,
-    adoptedCutoverId: "cutover-1",
-    // Adoption is one fact with four parts; a fixture that supplies three of
-    // them is describing a handoff that could not have happened.
-    adoptedEnvelopeSha256: "e".repeat(64),
+    adoptedCutoverId: envelope.cutoverId, adoptedEnvelopeSha256: canonicalEnvelopeSha256(envelope),
     predecessorDatabaseRef: predecessorDatabase.ref, predecessorDatabaseSha256: predecessorDatabase.sha256,
   }, before);
   sessions.beginDeploying(session.id, "owner");
   if (options.armed) {
-    sessions.observeTopology(session.id, "owner", afterCutover);
+    sessions.observeTopology(session.id, "owner", {
+      runtime: { frontend: target, admin: target, commerce: target, worker: target },
+      controlPlane: { productionDeployRefSha: target },
+    });
     sessions.armExternalEffects(session.id, "owner");
   }
 
+  const receipts = new InMemoryBootstrapRollbackReceiptStore();
+  const applications: Record<"frontend" | "admin" | "commerce", string> = { frontend: target, admin: target, commerce: target };
+  let ref = target;
+  let gateClosed = true;
+  let archiveDigest = predecessorDatabase.sha256;
+  let storageRestored = false;
+  const runtimeAuthority = new RuntimeQuiescenceAuthority(() => 0);
+  const binding: RuntimeLeaseBinding = {
+    sessionId: bootstrapRollbackId(session.id), operation: "RESTORE", databasePath: "/db",
+    databaseIdentity: { canonicalPath: "/db", dev: 1, ino: 2 }, sha: target,
+    applicationUuid: "commerce-uuid", applicationResourceId: "3",
+    repositories: { commerce: "repo/commerce", "commerce-worker": "repo/worker" },
+    units: [{ service: "commerce", containerId: "c1" }, { service: "commerce-worker", containerId: "c2" }],
+    lockOwner: "runner",
+  };
+
   const ports: BootstrapRollbackPorts = {
-    receipts, clock: () => clock,
-    archiver: {
-      async quiesceAndArchive() {
+    authority, envelopes, receipts, clock: () => now,
+    storage: {
+      inspectPredecessorArchive(archive) {
+        log.push("inspect-archive");
+        if (failures.delete("archive-hash")) throw new Error("CUTOVER_STORAGE_PREDECESSOR_ARCHIVE_DIGEST_MISMATCH");
+        if (archive.sha256 !== archiveDigest) throw new Error("PREDECESSOR_ARCHIVE_CHANGED");
+        return archive;
+      },
+      async restore(_rollbackId, archive) {
         log.push("archive-successor");
-        if (options.archiveFails) throw new Error(options.archiveFails);
-        return successorDatabase;
+        storageRestored = true;
+        log.push("restore-predecessor");
+        if (failures.delete("storage")) throw new Error("CRASH_AFTER_DATABASE_RESTORE");
+        return { successorDatabase, predecessorDatabase: archive };
       },
     },
-    restorer: {
-      async ensureSuccessorRuntimesStopped() {
-        log.push("stop-successor");
-        if (options.targetStillRunning) throw new Error("COMPOSE_RUNTIME_CONTAINERS_STILL_RUNNING");
-        return { lease: quiescence.acquire(rollbackBinding), binding: rollbackBinding };
+    runtime: {
+      async acquire() {
+        log.push("stop-target");
+        if (failures.delete("runtime")) throw new Error("COMPOSE_RUNTIME_CONTAINERS_STILL_RUNNING");
+        return { lease: runtimeAuthority.acquire(binding), binding };
       },
-      async ensurePredecessorDatabaseRestored(archive) { log.push(`restore-db:${archive.ref}`); installed = options.restoredSha256 ?? predecessorDatabase.sha256; },
-      async ensurePreDeployTopologyRestored() { log.push("restore-topology"); observed = options.restoredTopology ?? before; },
-      async ensurePredecessorRuntimeRunning() { log.push("start-predecessor"); },
+      async applicationIsAt(name, sha) { log.push(`observe-${name}`); return applications[name] === sha; },
+      async restoreApplication(name, sha) {
+        log.push(`restore-${name}`);
+        if (failures.delete(name)) throw new Error(`ROLLBACK_${name.toUpperCase()}_FAILED`);
+        applications[name] = sha;
+      },
     },
-    identity: {
-      async restedFileSha256() { return installed; },
-      async runningLineage() { return options.lineage ?? "LEGACY"; },
+    refs: {
+      async read() { log.push("read-ref"); return ref; },
+      async compareAndSet(expected, next) {
+        log.push(`cas-ref:${expected}:${next}`);
+        if (failures.delete("ref")) throw new Error("DEPLOY_REF_LEASE_REFUSED");
+        if (ref !== expected) throw new Error("DEPLOY_REF_LEASE_REFUSED");
+        ref = next;
+        return ref;
+      },
+    },
+    verification: {
+      async observe() {
+        log.push("fresh-observation");
+        if (failures.delete("observe")) throw new Error("OBSERVATION_FAILED");
+        return {
+          lineage: "LEGACY",
+          topology: options.observed ?? {
+            runtime: { frontend: applications.frontend, admin: applications.admin, commerce: applications.commerce, worker: applications.commerce },
+            controlPlane: { productionDeployRefSha: ref },
+          },
+        };
+      },
     },
     predecessorGate: {
-      async isClosed() { return gateClosed; },
-      async open() { log.push("open-predecessor-gate"); gateClosed = false; },
+      async isClosed() { log.push("gate-is-closed"); return gateClosed; },
+      async open() {
+        log.push("open-gate");
+        if (failures.delete("open-gate")) throw new Error("GATE_OPEN_FAILED");
+        gateClosed = false;
+      },
     },
-    topology: { async observe() { return observed; } },
   };
   return {
-    log, receipts, store, sessions, session, portsFor: () => ports,
-    advance: (ms: number) => { clock = new Date(clock.getTime() + ms); },
-    gate: () => store.deploymentGate(),
+    log, failures, authority, sessions, session, receipts, ports,
     rollback: new BootstrapRollback(ports),
-    prepare: (owner = "owner") => new BootstrapRollback(ports).prepare(store, session.id, owner, { rollbackId: "rb-1", nonce: "n-1", expiresAt: "2026-09-20T06:00:00.000Z" }),
+    run: () => new BootstrapRollback(ports).rollback(session.id, "owner"),
+    gateClosed: () => gateClosed,
+    ref: () => ref,
+    storageRestored: () => storageRestored,
+    mutateArchive: () => { archiveDigest = "0".repeat(64); },
   };
 };
 
-describe.each(releaseAuthorityStores)("bootstrap reverse handoff (%s)", (_name, makeStore) => {
-  it("cannot even be prepared once external effects are armed", async () => {
-    const { prepare, log } = world(makeStore, { armed: true });
-    await expect(prepare()).rejects.toThrow("OLD_LINEAGE_ROLLBACK_FORBIDDEN");
-    // Not "refused later by whoever executes it": nothing was archived at all.
-    expect(log).toEqual([]);
+describe.each(releaseAuthorityStores)("production cross-lineage rollback (%s)", (_name, makeStore) => {
+  it("forbids rollback permanently after NEW_LINEAGE_ONLY", async () => {
+    const local = world(makeStore, { armed: true });
+    await expect(local.run()).rejects.toThrow("OLD_LINEAGE_ROLLBACK_FORBIDDEN");
+    expect(local.log).toEqual([]);
   });
 
-  it("writes no envelope and leaves the successor untouched when its archive fails", async () => {
-    const { prepare, receipts, log } = world(makeStore, { archiveFails: "SUCCESSOR_BACKUP_FAILED" });
-    await expect(prepare()).rejects.toThrow("SUCCESSOR_BACKUP_FAILED");
-    expect(receipts.read("rb-1")).toBeUndefined();
-    expect(log).toEqual(["archive-successor"]);
+  it("rejects a wrong predecessor hash with zero live DB/ref mutation", async () => {
+    const local = world(makeStore, { fail: "archive-hash" });
+    await expect(local.run()).rejects.toThrow("CUTOVER_STORAGE_PREDECESSOR_ARCHIVE_DIGEST_MISMATCH");
+    expect(local.storageRestored()).toBe(false);
+    expect(local.ref()).toBe(target);
+    expect(local.authority.get(local.session.id)?.bootstrapRollbackId).toBeUndefined();
   });
 
-  it("captures both archives and the observed successor topology before anything is discarded", async () => {
-    const { prepare } = world(makeStore);
-    const receipt = await prepare();
-    expect(receipt.stage).toBe("PREPARED");
-    expect(receipt.envelope).toMatchObject({
-      rollbackId: "rb-1", cutoverId: "cutover-1", successorSessionId: "successor",
-      predecessorDatabase, successorDatabase, preDeployTopology: before, successorTopology: afterCutover,
-    });
+  it("cannot restore while target runtime remains live", async () => {
+    const local = world(makeStore, { fail: "runtime" });
+    await expect(local.run()).rejects.toThrow("COMPOSE_RUNTIME_CONTAINERS_STILL_RUNNING");
+    expect(local.log).not.toContain("archive-successor");
+    expect(local.authority.get(local.session.id)?.state).toBe("RECOVERY_REQUIRED");
+    expect(local.gateClosed()).toBe(true);
   });
 
-  it("never starts the predecessor when the restored archive has the wrong digest", async () => {
-    const { prepare, rollback, log, receipts } = world(makeStore, { restoredSha256: "0".repeat(64) });
-    const { envelope } = await prepare();
-
-    await expect(rollback.execute("rb-1", envelope)).rejects.toThrow("PREDECESSOR_DATABASE_DIGEST_MISMATCH");
-    // Verified while nothing runs: once writers start the file legitimately
-    // diverges and this check could never be made again.
-    expect(log).not.toContain("start-predecessor");
-    expect(log).not.toContain("open-predecessor-gate");
-    expect(receipts.read("rb-1")!.stage).toBe("PREPARED");
+  it("archives the launch DB before restoring predecessor and keeps the source archive immutable", async () => {
+    const local = world(makeStore);
+    await local.run();
+    expect(local.log.indexOf("archive-successor")).toBeLessThan(local.log.indexOf("restore-predecessor"));
+    expect(local.log.filter((entry) => entry === "inspect-archive")).toHaveLength(3);
+    expect(local.gateClosed()).toBe(false);
   });
 
-  it("refuses restore while the target runtime is still running", async () => {
-    const { prepare, rollback, log, receipts } = world(makeStore, { targetStillRunning: true });
-    const { envelope } = await prepare();
-
-    await expect(rollback.execute("rb-1", envelope)).rejects.toThrow("COMPOSE_RUNTIME_CONTAINERS_STILL_RUNNING");
-    expect(log).not.toContain(`restore-db:${predecessorDatabase.ref}`);
-    expect(receipts.read("rb-1")!.stage).toBe("PREPARED");
+  it("resumes after DB restore before CAS without restoring the DB twice", async () => {
+    const local = world(makeStore, { fail: "ref" });
+    await expect(local.run()).rejects.toThrow("DEPLOY_REF_LEASE_REFUSED");
+    expect(local.receipts.read(bootstrapRollbackId(local.session.id))?.stage).toBe("DATABASE_RESTORED");
+    const restores = local.log.filter((entry) => entry === "restore-predecessor").length;
+    await local.run();
+    expect(local.log.filter((entry) => entry === "restore-predecessor")).toHaveLength(restores);
   });
 
-  it("refuses to complete when the database came back but the topology did not", async () => {
-    const stillPartial = withSurface(before, "worker", target);
-    const { prepare, rollback, log, receipts } = world(makeStore, { restoredTopology: stillPartial });
-    const { envelope } = await prepare();
-
-    await expect(rollback.execute("rb-1", envelope)).rejects.toThrow("PREDECESSOR_TOPOLOGY_NOT_RESTORED");
-    expect(receipts.read("rb-1")!.stage).toBe("RESTORED");
-    expect(log).not.toContain("open-predecessor-gate");
+  it("re-enters storage idempotently when the process dies after atomic DB restore but before its receipt advance", async () => {
+    const local = world(makeStore, { fail: "storage" });
+    await expect(local.run()).rejects.toThrow("CRASH_AFTER_DATABASE_RESTORE");
+    expect(local.receipts.read(bootstrapRollbackId(local.session.id))?.stage).toBe("RESERVED");
+    expect(local.storageRestored()).toBe(true);
+    await local.run();
+    expect(local.receipts.read(bootstrapRollbackId(local.session.id))?.stage).toBe("COMPLETED");
+    expect(local.gateClosed()).toBe(false);
   });
 
-  it("records completion before the predecessor gate may reopen", async () => {
-    const { prepare, rollback, log, receipts } = world(makeStore);
-    const { envelope } = await prepare();
-
-    const done = await rollback.execute("rb-1", envelope);
-
-    expect(done.stage).toBe("COMPLETED");
-    expect(receipts.read("rb-1")!.stage).toBe("COMPLETED");
-    expect(log).toEqual([
-      "archive-successor", "stop-successor", `restore-db:${predecessorDatabase.ref}`,
-      "restore-topology", "start-predecessor", "open-predecessor-gate",
-    ]);
+  it("reports a ref CAS conflict and never starts Coolify rollback", async () => {
+    const local = world(makeStore, { fail: "ref" });
+    await expect(local.run()).rejects.toThrow("DEPLOY_REF_LEASE_REFUSED");
+    expect(local.log.some((entry) => entry.startsWith("restore-frontend"))).toBe(false);
+    expect(local.gateClosed()).toBe(true);
   });
 
-  it("resumes from the last durable fact and never restores a database twice", async () => {
-    const { prepare, rollback, log, receipts } = world(makeStore);
-    const { envelope } = await prepare();
-    await rollback.execute("rb-1", envelope);
-    const restoresBefore = log.filter((entry) => entry.startsWith("restore-db")).length;
-
-    // The crash this models: COMPLETED is durable, the reopen did not happen.
-    // A retry may only finish the reopen.
-    receipts.advance("rb-1", "COMPLETED");
-    await rollback.execute("rb-1", envelope);
-
-    expect(log.filter((entry) => entry.startsWith("restore-db")).length).toBe(restoresBefore);
-    expect(receipts.read("rb-1")!.stage).toBe("COMPLETED");
+  it("resumes a partial Coolify rollback without repeating a converged application", async () => {
+    const local = world(makeStore, { fail: "admin" });
+    await expect(local.run()).rejects.toThrow("ROLLBACK_ADMIN_FAILED");
+    expect(local.receipts.read(bootstrapRollbackId(local.session.id))?.stage).toBe("FRONTEND_RESTORED");
+    const frontendRestores = local.log.filter((entry) => entry === "restore-frontend").length;
+    await local.run();
+    expect(local.log.filter((entry) => entry === "restore-frontend")).toHaveLength(frontendRestores);
   });
 
-  it("closes the arming race by reserving the direction before the successor is archived", async () => {
-    // The successor database is about to be archived and lost, so which way
-    // recovery goes has to be decided in it first. Otherwise another runner
-    // arms external effects - and takes a real payment - behind a rollback
-    // that already committed to restoring the predecessor.
-    const { prepare, sessions, session, store } = world(makeStore);
-    await prepare();
-
-    expect(store.get(session.id)!.bootstrapRollbackId).toBe("rb-1");
-    expect(() => sessions.armExternalEffects(session.id, "owner")).toThrow("BOOTSTRAP_ROLLBACK_RESERVED");
-    expect(() => sessions.completeTarget(session.id, "owner", afterCutover)).toThrow("BOOTSTRAP_ROLLBACK_RESERVED");
+  it("refuses completion when ref is restored but one fresh surface remains target", async () => {
+    const local = world(makeStore, { observed: {
+      runtime: { ...before.runtime, worker: target }, controlPlane: before.controlPlane,
+    } });
+    await expect(local.run()).rejects.toThrow("PREDECESSOR_TOPOLOGY_NOT_RESTORED");
+    expect(local.receipts.read(bootstrapRollbackId(local.session.id))?.stage).toBe("COMMERCE_RESTORED");
+    expect(local.gateClosed()).toBe(true);
   });
 
-  it("refuses a displaced runner even when it repeats the very same rollback id", async () => {
-    // Idempotent is not unauthenticated: the same id from a runner that lost
-    // its lease must fail, or it reads success and carries on archiving.
-    const { prepare, sessions, session, advance } = world(makeStore);
-    await prepare();
-    advance(120_000);
-    sessions.takeOverExpiredLease(session.id, "new-runner");
-
-    expect(() => sessions.reserveBootstrapRollback(session.id, "owner", "rb-1")).toThrow("DEPLOY_SESSION_NOT_OWNER");
-    expect(sessions.reserveBootstrapRollback(session.id, "new-runner", "rb-1").bootstrapRollbackId).toBe("rb-1");
+  it("requires a fresh observation and opens the gate only after durable completion", async () => {
+    const local = world(makeStore, { fail: "open-gate" });
+    await expect(local.run()).rejects.toThrow("GATE_OPEN_FAILED");
+    expect(local.receipts.read(bootstrapRollbackId(local.session.id))?.stage).toBe("COMPLETED");
+    expect(local.gateClosed()).toBe(true);
+    const beforeRetry = local.log.length;
+    await local.run();
+    expect(local.log.slice(beforeRetry)).toEqual(["inspect-archive", "gate-is-closed", "open-gate"]);
+    expect(local.gateClosed()).toBe(false);
   });
 
-  it("refuses to prepare as an owner it is not, and archives nothing", async () => {
-    const { store, session, sessions, advance, portsFor, log } = world(makeStore);
-    advance(120_000);
-    sessions.takeOverExpiredLease(session.id, "new-runner");
-
-    // The dead runner comes back and tries to prepare. It must not be able to
-    // act as whoever currently holds the lease.
-    await expect(new BootstrapRollback(portsFor()).prepare(store, session.id, "owner", { rollbackId: "rb-1", nonce: "n", expiresAt: "2026-09-20T06:00:00.000Z" }))
-      .rejects.toThrow("DEPLOY_SESSION_NOT_OWNER");
-    expect(log).toEqual([]);
+  it("refuses completion if fresh observation itself fails", async () => {
+    const local = world(makeStore, { fail: "observe" });
+    await expect(local.run()).rejects.toThrow("OBSERVATION_FAILED");
+    expect(local.receipts.read(bootstrapRollbackId(local.session.id))?.stage).toBe("COMMERCE_RESTORED");
+    expect(local.log).not.toContain("open-gate");
   });
 
-  it("writes no receipt when the lease lapses while the successor is being archived", async () => {
-    // Archiving is a long external step. A runner that lost ownership during it
-    // must not leave a durable receipt outside the database.
-    const { store, session, sessions, portsFor, receipts, advance } = world(makeStore);
-    const ports = portsFor();
-    const stealing = {
-      ...ports,
-      archiver: {
-        async quiesceAndArchive() {
-          advance(120_000);
-          sessions.takeOverExpiredLease(session.id, "new-runner");
-          return successorDatabase;
-        },
-      },
-    };
-
-    await expect(new BootstrapRollback(stealing).prepare(store, session.id, "owner", { rollbackId: "rb-1", nonce: "n", expiresAt: "2026-09-20T06:00:00.000Z" }))
-      .rejects.toThrow("DEPLOY_SESSION_NOT_OWNER");
-    expect(receipts.read("rb-1")).toBeUndefined();
+  it("continues the same receipt after process restart without a successor session row", async () => {
+    const local = world(makeStore, { fail: "admin" });
+    await expect(local.run()).rejects.toThrow("ROLLBACK_ADMIN_FAILED");
+    const restarted = new BootstrapRollback({ ...local.ports, authority: new InMemoryReleaseAuthorityStore() });
+    await restarted.rollback(local.session.id, "new-owner");
+    expect(local.receipts.read(bootstrapRollbackId(local.session.id))?.stage).toBe("COMPLETED");
   });
 
-  it("refuses a second reverse handoff over the first", async () => {
-    const { prepare, sessions, session } = world(makeStore);
-    await prepare();
-    expect(() => sessions.reserveBootstrapRollback(session.id, "owner", "rb-2")).toThrow("BOOTSTRAP_ROLLBACK_ALREADY_RESERVED");
-    // The same one again is simply the same decision, so it is a no-op.
-    expect(sessions.reserveBootstrapRollback(session.id, "owner", "rb-1").bootstrapRollbackId).toBe("rb-1");
-  });
-
-  it("does not restore over a database that is already the right one", async () => {
-    // The crash this models: the file was replaced, the RESTORED marker was
-    // not written. A replay must not write over it a second time.
-    const { prepare, rollback, log } = world(makeStore, { installedSha256: predecessorDatabase.sha256 });
-    const { envelope } = await prepare();
-
-    await rollback.execute("rb-1", envelope);
-
-    expect(log).not.toContain(`restore-db:${predecessorDatabase.ref}`);
-    expect(log).toContain("start-predecessor");
-  });
-
-  it("marks the restore durable before the predecessor is ever started", async () => {
-    // A marker written after startup would let a replay restore the database
-    // out from under a predecessor that was already running and writing.
-    const { prepare, rollback, receipts, log } = world(makeStore, { lineage: "SUPPORTED" });
-    const { envelope } = await prepare();
-
-    await expect(rollback.execute("rb-1", envelope)).rejects.toThrow("PREDECESSOR_LINEAGE_NOT_RESTORED");
-    expect(receipts.read("rb-1")!.stage).toBe("RESTORED");
-    expect(log.indexOf("restore-topology")).toBeLessThan(log.indexOf("start-predecessor"));
-  });
-
-  it("refuses a receipt that skips straight from prepared to completed", async () => {
-    // Each stage is the proof the next rests on; skipping records a finished
-    // rollback that never restored anything.
-    const { prepare, receipts } = world(makeStore);
-    await prepare();
-    expect(() => receipts.advance("rb-1", "COMPLETED")).toThrow("BOOTSTRAP_ROLLBACK_STAGE_SKIP");
-  });
-
-  it("refuses an expiry that has already passed, but never lets one cancel a started rollback", async () => {
-    const expired = world(makeStore);
-    await expect(
-      new BootstrapRollback({ ...expired.portsFor(), clock: () => now })
-        .prepare(expired.store, expired.session.id, "owner", { rollbackId: "rb-expired", nonce: "n", expiresAt: "2026-09-19T00:00:00.000Z" }),
-    ).rejects.toThrow("BOOTSTRAP_ROLLBACK_EXPIRY_INVALID");
-
-    // Once PREPARED is durable the window no longer matters: the operation has
-    // begun, and the only safe direction is to finish it.
-    const started = world(makeStore);
-    const { envelope } = await started.prepare();
-    const late = new BootstrapRollback({ ...started.portsFor(), clock: () => new Date("2026-09-21T00:00:00.000Z") });
-    expect((await late.execute("rb-1", envelope)).stage).toBe("COMPLETED");
-  });
-
-  it("refuses a rollback id whose envelope is a different rollback", async () => {
-    const { prepare, rollback } = world(makeStore);
-    const { envelope } = await prepare();
-
-    await expect(rollback.execute("rb-1", { ...envelope, nonce: "n-2" }))
-      .rejects.toThrow("BOOTSTRAP_ROLLBACK_IDENTITY_MISMATCH");
+  it("detects immutable predecessor archive drift before final observation", async () => {
+    const local = world(makeStore, { fail: "commerce" });
+    await expect(local.run()).rejects.toThrow("ROLLBACK_COMMERCE_FAILED");
+    local.mutateArchive();
+    await expect(local.run()).rejects.toThrow("PREDECESSOR_ARCHIVE_CHANGED");
+    expect(local.gateClosed()).toBe(true);
   });
 });

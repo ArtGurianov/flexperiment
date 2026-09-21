@@ -115,20 +115,36 @@ describe("physical SQLite launch handoff", () => {
     await expect(storage.ensureArchivedAndFresh(envelope(planned), next.lease, next.binding)).rejects.toMatchObject({ code: "CUTOVER_STORAGE_ARCHIVE_AND_LEGACY_PRESENT" });
   });
 
-  it("archives the successor, then restores the predecessor through a checked temporary file without consuming the archive", async () => {
-    const { archive, database, storage, grant } = fixture();
+  it("archives the successor and restores the predecessor under one consumed RESTORE lease", async () => {
+    const { archive, storage, grant } = fixture();
     let next = grant("PREPARE", "cutover-1");
     const planned = await storage.prepareArchive("cutover-1", next.lease, next.binding);
     next = grant("PREPARE", "cutover-1");
     await storage.ensureArchivedAndFresh(envelope(planned), next.lease, next.binding);
     next = grant("RESTORE", "rollback-1");
-    const successor = await storage.archiveSuccessor("rollback-1", next.lease, next.binding);
-    expect(existsSync(database)).toBe(false);
-    next = grant("RESTORE", "rollback-1");
-    await storage.restorePredecessor("rollback-1", { ref: planned.ref, sha256: planned.sha256 }, next.lease, next.binding);
+    const restored = await storage.restore("rollback-1", { ref: planned.ref, sha256: planned.sha256 }, next.lease, next.binding);
     expect(storage.restedFileSha256()).toBe(planned.sha256);
     expect(sha(planned.ref)).toBe(planned.sha256);
-    expect(sha(join(archive, "rollback-1.successor.sqlite"))).toBe(successor.sha256);
+    expect(sha(join(archive, "rollback-1.successor.sqlite"))).toBe(restored.successorDatabase.sha256);
+    const replay = grant("RESTORE", "rollback-1");
+    await expect(storage.restore("rollback-1", { ref: planned.ref, sha256: planned.sha256 }, replay.lease, replay.binding))
+      .resolves.toEqual(restored);
+  });
+
+  it("resumes after the no-overwrite launch archive is durable but before predecessor rename", async () => {
+    const { archive, database, storage, grant } = fixture();
+    let next = grant("PREPARE", "cutover-1");
+    const planned = await storage.prepareArchive("cutover-1", next.lease, next.binding);
+    next = grant("PREPARE", "cutover-1");
+    await storage.ensureArchivedAndFresh(envelope(planned), next.lease, next.binding);
+    const launchHash = sha(database);
+    copyFileSync(database, join(archive, "rollback-1.successor.sqlite"));
+
+    next = grant("RESTORE", "rollback-1");
+    const restored = await storage.restore("rollback-1", planned, next.lease, next.binding);
+    expect(restored.successorDatabase.sha256).toBe(launchHash);
+    expect(storage.restedFileSha256()).toBe(planned.sha256);
+    expect(sha(planned.ref)).toBe(planned.sha256);
   });
 
   it("rejects state under the replaceable namespace and any symlinked path", () => {
@@ -217,7 +233,7 @@ describe("physical SQLite launch handoff", () => {
   it("never crosses PREPARE and RESTORE capabilities", async () => {
     const prepareFixture = fixture();
     const prepare = prepareFixture.grant("PREPARE", "rollback-1");
-    await expect(prepareFixture.storage.restorePredecessor("rollback-1", { ref: join(prepareFixture.archive, "missing.sqlite"), sha256: "0".repeat(64) }, prepare.lease, prepare.binding))
+    await expect(prepareFixture.storage.restore("rollback-1", { ref: join(prepareFixture.archive, "missing.sqlite"), sha256: "0".repeat(64) }, prepare.lease, prepare.binding))
       .rejects.toMatchObject({ code: "CUTOVER_STORAGE_QUIESCENCE_DIRECTION_MISMATCH" });
 
     const restoreFixture = fixture();

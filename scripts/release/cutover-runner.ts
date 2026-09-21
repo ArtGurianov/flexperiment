@@ -18,7 +18,7 @@
  *   certify <session>  the attended half: arm, buy, refund, shut the fixture
  *   verify  <session>  prove a finished cutover, changing nothing
  *   resume  <session>  take over a session whose lease expired and report the plan
- *   rollback <session> restore the pre-deploy vector for a same-lineage deploy
+ *   rollback <session> restore the pre-deploy vector; launch rollback resumes from its external receipt
  *
  * Exit codes are the contract the workflow reads:
  *   0   succeeded, or observe/verify/resume completed
@@ -30,6 +30,7 @@
  *   130 interrupted; the session and the gate are left exactly as they were
  */
 import { hostname } from "node:os";
+import { pathToFileURL } from "node:url";
 import type { ReleaseClass } from "../../commerce/src/release/candidate";
 import { loadCandidatePublicationConfig, loadProductionReleaseConfig, loadReadOnlyReleaseConfig } from "../../commerce/src/release/production-config";
 import { buildCandidatePublisher, buildProductionRelease, buildReadOnlyRelease, holdSalesOnSignal, type ProductionRelease } from "../../commerce/src/release/production-runner";
@@ -44,7 +45,7 @@ const EXIT_BY_OUTCOME: Record<string, number> = {
 
 const say = (payload: Record<string, unknown>) => process.stdout.write(`${JSON.stringify(payload)}\n`);
 
-const run = async (release: ProductionRelease, argv: readonly string[], ownerId: string): Promise<number> => {
+export const runCutoverCommand = async (release: ProductionRelease, argv: readonly string[], ownerId: string): Promise<number> => {
   const [command, argument] = argv;
   switch (command) {
     case "prepare-bootstrap": {
@@ -114,6 +115,29 @@ const run = async (release: ProductionRelease, argv: readonly string[], ownerId:
     }
     case "rollback": {
       if (!argument) throw new Error("RELEASE_SESSION_REQUIRED");
+      // The restored predecessor may not contain the successor's release tables
+      // at all. An external receipt must therefore be consulted before any
+      // attempt to read that now-noncanonical session row.
+      const startedCrossLineage = release.bootstrapRollback?.isStarted(argument) ?? false;
+      const session = startedCrossLineage ? undefined : release.sessions.read(argument);
+      const crossLineage = release.bootstrapRollback
+        && (startedCrossLineage || Boolean(session?.adoptedCutoverId));
+      if (crossLineage) {
+        try {
+          const receipt = await release.bootstrapRollback!.rollback(argument, ownerId);
+          release.journal.record("bootstrap-rollback.outcome", { session: argument, rollback: receipt.intent.rollbackId, stage: receipt.stage });
+          say({ command, outcome: "ROLLED_BACK", session: argument, rollback: receipt.intent.rollbackId });
+          return 11;
+        } catch (error) {
+          if (!release.bootstrapRollback!.isStarted(argument)) throw error;
+          release.journal.record("bootstrap-rollback.recovery-required", {
+            session: argument,
+            code: error instanceof Error ? error.message.split(":")[0] : "UNKNOWN_RELEASE_FAILURE",
+          });
+          say({ command, outcome: "RECOVERY_REQUIRED", session: argument });
+          return 12;
+        }
+      }
       const outcome = await release.orchestrator.rollback(argument, ownerId);
       release.journal.record("rollback.outcome", { kind: outcome.kind, session: outcome.session.id });
       say({ command, outcome: outcome.kind, session: outcome.session.id });
@@ -159,7 +183,7 @@ const observe = async (): Promise<number> => {
   }
 };
 
-const main = async (): Promise<number> => {
+export const main = async (): Promise<number> => {
   const [command, argument] = process.argv.slice(2);
   if (command === "observe") return observe();
   if (command === "publish-candidate") {
@@ -174,18 +198,20 @@ const main = async (): Promise<number> => {
   const release = buildProductionRelease(config);
   holdSalesOnSignal(release);
   try {
-    return await run(release, process.argv.slice(2), ownerId);
+    return await runCutoverCommand(release, process.argv.slice(2), ownerId);
   } finally {
     release.close();
   }
 };
 
-void main().then(
-  (code) => { process.exitCode = code; },
-  (error: unknown) => {
-    // Never the token, never a full authenticated URL: this text reaches CI
-    // logs and tickets.
-    process.stderr.write(`${error instanceof Error ? error.message : "UNKNOWN_RELEASE_FAILURE"}\n`);
-    process.exitCode = 20;
-  },
-);
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  void main().then(
+    (code) => { process.exitCode = code; },
+    (error: unknown) => {
+      // Never the token, never a full authenticated URL: this text reaches CI
+      // logs and tickets.
+      process.stderr.write(`${error instanceof Error ? error.message : "UNKNOWN_RELEASE_FAILURE"}\n`);
+      process.exitCode = 20;
+    },
+  );
+}

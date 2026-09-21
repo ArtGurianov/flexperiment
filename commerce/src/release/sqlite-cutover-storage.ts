@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import Database from "better-sqlite3";
 import {
-  closeSync, copyFileSync, existsSync, fsyncSync, lstatSync, openSync,
+  closeSync, constants as fsConstants, copyFileSync, existsSync, fsyncSync, lstatSync, openSync,
   realpathSync, readFileSync, renameSync, statSync, unlinkSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -22,6 +22,10 @@ export class SqliteCutoverStorageError extends Error {
 }
 
 export type OnlineBackupEvidence = { readonly path: string; readonly sha256: string };
+export type RestoredDatabaseEvidence = {
+  readonly successorDatabase: DatabaseArchive;
+  readonly predecessorDatabase: DatabaseArchive;
+};
 
 export type SqliteCutoverStorageOptions = {
   /** Existing live SQLite file, inside the namespace that is about to be replaced. */
@@ -221,46 +225,59 @@ export class SqliteCutoverStorage {
     this.ensureFreshLaunchDatabase();
   }
 
-  /** Archives the launch database before a reverse handoff, never overwriting a prior attempt. */
-  async archiveSuccessor(rollbackId: string, lease: RuntimeQuiescenceLease, binding: RuntimeLeaseBinding): Promise<DatabaseArchive> {
-    await this.authorize(rollbackId, "RESTORE", lease, binding);
-    const safeId = cutoverId(rollbackId);
-    const target = join(this.#layout.archiveDirectory, `${safeId}.successor.sqlite`);
-    if (existsSync(target)) return { ref: target, sha256: sha256(target) };
-    if (!existsSync(this.#layout.database)) throw new SqliteCutoverStorageError("CUTOVER_STORAGE_SUCCESSOR_DATABASE_MISSING");
-    this.checkpointAndRefuseLiveSidecars();
-    const digest = sha256(this.#layout.database);
-    renameSync(this.#layout.database, target);
-    fsyncDirectory(this.#layout.archiveDirectory);
-    fsyncDirectory(this.#layout.databaseDirectory);
-    return { ref: target, sha256: digest };
-  }
-
-  /**
-   * The predecessor archive remains immutable. Restoration copies it to a
-   * same-device temporary file, verifies the digest, then atomically renames
-   * that file into an absent database path. A hard link would share mutable
-   * SQLite pages with the archive, so it is explicitly not used.
-   */
-  async restorePredecessor(rollbackId: string, archive: DatabaseArchive, lease: RuntimeQuiescenceLease, binding: RuntimeLeaseBinding): Promise<void> {
-    await this.authorize(rollbackId, "RESTORE", lease, binding);
+  /** Read-only admission for rollback. It must pass before recovery reserves a session or touches the live DB/ref. */
+  inspectPredecessorArchive(archive: DatabaseArchive): DatabaseArchive {
     const source = this.canonicalArchive(archive);
     if (!existsSync(source)) throw new SqliteCutoverStorageError("CUTOVER_STORAGE_PREDECESSOR_ARCHIVE_MISSING", source);
     if (sha256(source) !== archive.sha256) throw new SqliteCutoverStorageError("CUTOVER_STORAGE_PREDECESSOR_ARCHIVE_DIGEST_MISMATCH");
-    if (existsSync(this.#layout.database)) {
-      if (sha256(this.#layout.database) === archive.sha256) return;
-      throw new SqliteCutoverStorageError("CUTOVER_STORAGE_RESTORE_TARGET_EXISTS");
+    this.assertHealthyLegacyDatabase(source, "CUTOVER_STORAGE_PREDECESSOR_ARCHIVE");
+    return { ref: source, sha256: archive.sha256 };
+  }
+
+  /**
+   * One RESTORE lease covers the first storage mutation through the durable
+   * predecessor restore. It is consumed before checkpointing. The launch DB is
+   * archived write-once, the predecessor archive is copied rather than moved,
+   * and a replay recognizes the already-restored state without overwriting it.
+   */
+  async restore(
+    rollbackId: string,
+    archive: DatabaseArchive,
+    lease: RuntimeQuiescenceLease,
+    binding: RuntimeLeaseBinding,
+  ): Promise<RestoredDatabaseEvidence> {
+    await this.authorize(rollbackId, "RESTORE", lease, binding);
+    const predecessor = this.inspectPredecessorArchive(archive);
+    const safeId = cutoverId(rollbackId);
+    const successorPath = join(this.#layout.archiveDirectory, `${safeId}.successor.sqlite`);
+
+    if (existsSync(successorPath)) {
+      this.assertHealthyLaunchDatabase(successorPath);
+    } else {
+      if (!existsSync(this.#layout.database)) throw new SqliteCutoverStorageError("CUTOVER_STORAGE_SUCCESSOR_DATABASE_MISSING");
+      this.assertHealthyLaunchDatabase(this.#layout.database);
+      this.checkpointAndRefuseLiveSidecars();
+      const launchDigest = sha256(this.#layout.database);
+      copyFileSync(this.#layout.database, successorPath, fsConstants.COPYFILE_EXCL);
+      fsyncFile(successorPath);
+      if (sha256(successorPath) !== launchDigest) {
+        throw new SqliteCutoverStorageError("CUTOVER_STORAGE_SUCCESSOR_ARCHIVE_DIGEST_MISMATCH");
+      }
+      fsyncDirectory(this.#layout.archiveDirectory);
     }
-    const temporary = `${this.#layout.database}.restore-${process.pid}.tmp`;
-    if (existsSync(temporary)) throw new SqliteCutoverStorageError("CUTOVER_STORAGE_RESTORE_TEMP_EXISTS");
-    copyFileSync(source, temporary, 0);
-    fsyncFile(temporary);
-    if (sha256(temporary) !== archive.sha256) {
-      unlinkSync(temporary);
-      throw new SqliteCutoverStorageError("CUTOVER_STORAGE_RESTORE_DIGEST_MISMATCH");
+    this.restorePredecessorCopy(predecessor);
+
+    if (sha256(predecessor.ref) !== predecessor.sha256) {
+      throw new SqliteCutoverStorageError("CUTOVER_STORAGE_PREDECESSOR_ARCHIVE_CHANGED");
     }
-    renameSync(temporary, this.#layout.database);
-    fsyncDirectory(this.#layout.databaseDirectory);
+    if (sha256(this.#layout.database) !== predecessor.sha256) {
+      throw new SqliteCutoverStorageError("CUTOVER_STORAGE_RESTORED_DATABASE_DIGEST_MISMATCH");
+    }
+    this.assertHealthyLegacyDatabase(this.#layout.database, "CUTOVER_STORAGE_RESTORED_DATABASE");
+    return {
+      successorDatabase: { ref: successorPath, sha256: sha256(successorPath) },
+      predecessorDatabase: predecessor,
+    };
   }
 
   restedFileSha256(): string {
@@ -308,6 +325,57 @@ export class SqliteCutoverStorage {
   private lineageAtRest() {
     const db = new Database(this.#layout.database, { readonly: true, fileMustExist: true });
     try { return classifySchemaLineage(readSchemaIdentity(db)); } finally { db.close(); }
+  }
+
+  private assertHealthyLaunchDatabase(path: string): void {
+    const db = new Database(path, { readonly: true, fileMustExist: true });
+    try {
+      const lineage = classifySchemaLineage(readSchemaIdentity(db));
+      if (lineage !== "SUPPORTED") throw new SqliteCutoverStorageError("CUTOVER_STORAGE_SUCCESSOR_LINEAGE_INVALID", lineage);
+      this.assertIntegrity(db, "CUTOVER_STORAGE_SUCCESSOR");
+    } finally { db.close(); }
+  }
+
+  private assertHealthyLegacyDatabase(path: string, prefix: string): void {
+    const db = new Database(path, { readonly: true, fileMustExist: true });
+    try {
+      const lineage = classifySchemaLineage(readSchemaIdentity(db));
+      if (lineage !== "LEGACY") throw new SqliteCutoverStorageError(`${prefix}_LINEAGE_INVALID`, lineage);
+      this.assertIntegrity(db, prefix);
+    } finally { db.close(); }
+  }
+
+  private assertIntegrity(db: Database.Database, prefix: string): void {
+    const integrity = db.pragma("integrity_check") as { integrity_check?: unknown }[];
+    if (integrity.length !== 1 || integrity[0]?.integrity_check !== "ok") {
+      throw new SqliteCutoverStorageError(`${prefix}_INTEGRITY_FAILED`);
+    }
+    const foreignKeys = db.pragma("foreign_key_check") as unknown[];
+    if (foreignKeys.length !== 0) throw new SqliteCutoverStorageError(`${prefix}_FOREIGN_KEY_FAILED`);
+  }
+
+  private restorePredecessorCopy(predecessor: DatabaseArchive): void {
+    if (!existsSync(this.#layout.database)) throw new SqliteCutoverStorageError("CUTOVER_STORAGE_RESTORE_TARGET_MISSING");
+    if (sha256(this.#layout.database) === predecessor.sha256) return;
+    this.assertHealthyLaunchDatabase(this.#layout.database);
+    const temporary = `${this.#layout.database}.restore-${process.pid}.tmp`;
+    if (existsSync(temporary) && sha256(temporary) !== predecessor.sha256) {
+      // A torn private temp is not evidence and is safe to recreate from the
+      // still-immutable predecessor archive. Neither canonical DB is touched.
+      unlinkSync(temporary);
+    }
+    if (!existsSync(temporary)) {
+      copyFileSync(predecessor.ref, temporary, fsConstants.COPYFILE_EXCL);
+      fsyncFile(temporary);
+      if (sha256(temporary) !== predecessor.sha256) {
+        unlinkSync(temporary);
+        throw new SqliteCutoverStorageError("CUTOVER_STORAGE_RESTORE_DIGEST_MISMATCH");
+      }
+    }
+    // POSIX rename replaces the stopped launch inode atomically: the canonical
+    // path is never absent, so a killed runner can always build and resume.
+    renameSync(temporary, this.#layout.database);
+    fsyncDirectory(this.#layout.databaseDirectory);
   }
 
   private canonicalArchive(archive: DatabaseArchive): string {

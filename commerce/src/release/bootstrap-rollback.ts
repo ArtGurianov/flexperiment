@@ -1,66 +1,57 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
+import { canonicalEnvelopeSha256, type CutoverEnvelopeStore } from "./cutover-envelope";
 import type { DeploySession, DeploymentObservation, PreDeploySnapshot, ReleaseAuthorityStore } from "./deploy-session";
-import { snapshotDigestParts, snapshotEquals } from "./deploy-session";
-import type { SchemaLineage } from "./schema-identity";
+import { snapshotEquals } from "./deploy-session";
 import type { RuntimeLeaseGrant } from "./runtime-quiescer";
 
 /**
- * Undoing the launch cutover is not the same operation as undoing an ordinary
- * deploy, and must not share its API.
- *
- * An ordinary rollback restores a topology while the authority that records it
- * stays where it is. This one replaces the database that authority lives in, so
- * writing ROLLED_BACK into `deploy_sessions` would either be impossible - the
- * row is gone - or worse, land in a successor database that is no longer
- * canonical and that the restored predecessor will never read. A rollback
- * cannot keep its only receipt inside the thing it is destroying.
- *
- * So the terminal fact lives outside `commerce.sqlite`, next to the forward
- * envelope, and `completeRollback()` stays what it always was: the same-lineage
- * ending for ordinary maintenance deploys.
+ * Cross-lineage rollback cannot keep its recovery cursor in commerce.sqlite:
+ * the operation deliberately replaces that database with the predecessor.
+ * This receipt is therefore the durable authority once recovery begins. The
+ * successor session remains RECOVERY_REQUIRED in the immutable failure
+ * archive; pretending to settle that non-canonical row would create two truths.
  */
 
-export type DatabaseArchive = {
-  readonly ref: string;
-  readonly sha256: string;
-};
+export type DatabaseArchive = { readonly ref: string; readonly sha256: string };
 
-export type BootstrapRollbackEnvelope = {
+export type BootstrapRollbackIntent = {
   readonly rollbackId: string;
   readonly cutoverId: string;
   readonly successorSessionId: string;
+  readonly targetSha: string;
+  readonly forwardEnvelopeSha256: string;
   readonly predecessorDatabase: DatabaseArchive;
   readonly preDeployTopology: PreDeploySnapshot;
-  /** The database about to be discarded, kept so the operation is symmetric with the forward handoff. */
-  readonly successorDatabase: DatabaseArchive;
-  readonly successorTopology: DeploymentObservation;
   readonly createdAt: string;
-  readonly expiresAt: string;
-  readonly nonce: string;
 };
 
-/**
- * Monotonic markers rather than a state machine: each says one thing has
- * durably happened, and replay only ever needs to know how far the last attempt
- * got. RESTORED means the predecessor database and topology are back and
- * verified; COMPLETED means the rollback is finished and only the predecessor's
- * own emergency gate is still holding sales shut.
- */
-export type BootstrapRollbackStage = "PREPARED" | "RESTORED" | "COMPLETED";
+export type BootstrapRollbackStage =
+  | "RESERVED"
+  | "DATABASE_RESTORED"
+  | "REF_RESTORED"
+  | "FRONTEND_RESTORED"
+  | "ADMIN_RESTORED"
+  | "COMMERCE_RESTORED"
+  | "VERIFIED"
+  | "COMPLETED";
 
 export type BootstrapRollbackReceipt = {
-  readonly envelope: BootstrapRollbackEnvelope;
+  readonly intent: BootstrapRollbackIntent;
   readonly stage: BootstrapRollbackStage;
+  readonly successorDatabase?: DatabaseArchive;
+  readonly observation?: DeploymentObservation;
 };
 
-export const canonicalRollbackSha256 = (envelope: BootstrapRollbackEnvelope): string =>
-  createHash("sha256").update(JSON.stringify([
-    envelope.rollbackId, envelope.cutoverId, envelope.successorSessionId,
-    envelope.predecessorDatabase.ref, envelope.predecessorDatabase.sha256,
-    envelope.successorDatabase.ref, envelope.successorDatabase.sha256,
-    snapshotDigestParts(envelope.preDeployTopology), snapshotDigestParts(envelope.successorTopology),
-    envelope.createdAt, envelope.expiresAt, envelope.nonce,
-  ])).digest("hex");
+export const BOOTSTRAP_ROLLBACK_STAGES: readonly BootstrapRollbackStage[] = [
+  "RESERVED", "DATABASE_RESTORED", "REF_RESTORED", "FRONTEND_RESTORED",
+  "ADMIN_RESTORED", "COMMERCE_RESTORED", "VERIFIED", "COMPLETED",
+];
+
+export const bootstrapRollbackId = (sessionId: string): string =>
+  `rollback-${createHash("sha256").update(sessionId).digest("hex")}`;
+
+export const canonicalRollbackReceiptSha256 = (receipt: BootstrapRollbackReceipt): string =>
+  createHash("sha256").update(JSON.stringify(receipt)).digest("hex");
 
 export class BootstrapRollbackError extends Error {
   constructor(readonly code: string, readonly detail?: string) {
@@ -68,14 +59,14 @@ export class BootstrapRollbackError extends Error {
   }
 }
 
-const STAGE_ORDER: readonly BootstrapRollbackStage[] = ["PREPARED", "RESTORED", "COMPLETED"];
-
 export interface BootstrapRollbackReceiptStore {
   read(rollbackId: string): BootstrapRollbackReceipt | undefined;
-  /** Written once, before the successor database may be discarded. */
   write(receipt: BootstrapRollbackReceipt): void;
-  /** Monotonic: a stage may advance, never regress. */
-  advance(rollbackId: string, stage: BootstrapRollbackStage): BootstrapRollbackReceipt;
+  advance(
+    rollbackId: string,
+    stage: BootstrapRollbackStage,
+    evidence?: Pick<BootstrapRollbackReceipt, "successorDatabase" | "observation">,
+  ): BootstrapRollbackReceipt;
 }
 
 export class InMemoryBootstrapRollbackReceiptStore implements BootstrapRollbackReceiptStore {
@@ -84,221 +75,226 @@ export class InMemoryBootstrapRollbackReceiptStore implements BootstrapRollbackR
   read(rollbackId: string): BootstrapRollbackReceipt | undefined { return this.#receipts.get(rollbackId); }
 
   write(receipt: BootstrapRollbackReceipt): void {
-    if (this.#receipts.has(receipt.envelope.rollbackId)) throw new BootstrapRollbackError("BOOTSTRAP_ROLLBACK_RECEIPT_EXISTS");
-    this.#receipts.set(receipt.envelope.rollbackId, receipt);
+    if (this.#receipts.has(receipt.intent.rollbackId)) throw new BootstrapRollbackError("BOOTSTRAP_ROLLBACK_RECEIPT_EXISTS");
+    this.#receipts.set(receipt.intent.rollbackId, receipt);
   }
 
-  advance(rollbackId: string, stage: BootstrapRollbackStage): BootstrapRollbackReceipt {
+  advance(
+    rollbackId: string,
+    stage: BootstrapRollbackStage,
+    evidence: Pick<BootstrapRollbackReceipt, "successorDatabase" | "observation"> = {},
+  ): BootstrapRollbackReceipt {
     const receipt = this.#receipts.get(rollbackId);
     if (!receipt) throw new BootstrapRollbackError("BOOTSTRAP_ROLLBACK_RECEIPT_NOT_FOUND", rollbackId);
-    const from = STAGE_ORDER.indexOf(receipt.stage);
-    const to = STAGE_ORDER.indexOf(stage);
+    const from = BOOTSTRAP_ROLLBACK_STAGES.indexOf(receipt.stage);
+    const to = BOOTSTRAP_ROLLBACK_STAGES.indexOf(stage);
     if (to < from) throw new BootstrapRollbackError("BOOTSTRAP_ROLLBACK_STAGE_REGRESSION", `${receipt.stage} -> ${stage}`);
-    // Each stage is the proof the next one rests on, so skipping one would let
-    // a caller record a finished rollback that never restored anything.
     if (to > from + 1) throw new BootstrapRollbackError("BOOTSTRAP_ROLLBACK_STAGE_SKIP", `${receipt.stage} -> ${stage}`);
-    const next = { ...receipt, stage };
+    if (to === from) return receipt;
+    const next = { ...receipt, ...evidence, stage };
     this.#receipts.set(rollbackId, next);
     return next;
   }
 }
 
-/**
- * Whether this session may be reversed at all. Arming is the hard stop: once
- * external effects are committed the predecessor database no longer accounts
- * for what happened, so a reverse handoff must be impossible to even prepare -
- * not merely refused later by whoever executes it.
- */
 export const assertReversible = (session: DeploySession, gate: { closed: boolean; deploymentSessionId: string | null }): void => {
   if (!session.adoptedCutoverId) throw new BootstrapRollbackError("BOOTSTRAP_ROLLBACK_NOT_A_CUTOVER_SESSION", session.id);
   if (session.mode !== "MAINTENANCE_CUTOVER") throw new BootstrapRollbackError("BOOTSTRAP_ROLLBACK_REQUIRES_MAINTENANCE_CUTOVER");
   if (session.rollbackAuthority !== "OLD_LINEAGE_ALLOWED") throw new BootstrapRollbackError("OLD_LINEAGE_ROLLBACK_FORBIDDEN", session.id);
   if (!session.preDeployTopology) throw new BootstrapRollbackError("PRE_DEPLOY_TOPOLOGY_REQUIRED", session.id);
-  if (!session.predecessorDatabaseRef || !session.predecessorDatabaseSha256) {
+  if (!session.predecessorDatabaseRef || !session.predecessorDatabaseSha256 || !session.adoptedEnvelopeSha256) {
     throw new BootstrapRollbackError("PREDECESSOR_ARCHIVE_IDENTITY_INCOMPLETE", session.id);
   }
-  if (!gate.closed || gate.deploymentSessionId !== session.id) {
-    throw new BootstrapRollbackError("DEPLOYMENT_GATE_NOT_OWNED", session.id);
-  }
+  if (!gate.closed || gate.deploymentSessionId !== session.id) throw new BootstrapRollbackError("DEPLOYMENT_GATE_NOT_OWNED", session.id);
 };
 
-/** Quiesces the successor and captures the database about to be discarded. */
-export interface SuccessorArchiver {
-  quiesceAndArchive(rollbackId: string): Promise<DatabaseArchive>;
+export interface BootstrapRollbackStorage {
+  inspectPredecessorArchive(archive: DatabaseArchive): DatabaseArchive;
+  restore(rollbackId: string, archive: DatabaseArchive, grant: RuntimeLeaseGrant): Promise<{
+    readonly successorDatabase: DatabaseArchive;
+    readonly predecessorDatabase: DatabaseArchive;
+  }>;
 }
 
-/**
- * Every operation is an `ensure`, and every one is idempotent. A crash can land
- * between any two of them, and a replay must be able to run the whole sequence
- * again without asking what the last attempt got through - "make it so" is
- * replayable, "do it" is not.
- */
-export interface PredecessorRestorer {
-  /** Returns the host-verified lease that storage requires for the restore. */
-  ensureSuccessorRuntimesStopped(): Promise<RuntimeLeaseGrant>;
-  ensurePredecessorDatabaseRestored(archive: DatabaseArchive, grant: RuntimeLeaseGrant): Promise<void>;
-  ensurePreDeployTopologyRestored(snapshot: PreDeploySnapshot): Promise<void>;
-  ensurePredecessorRuntimeRunning(): Promise<void>;
-}
-
-/**
- * Proof, independent of whoever performed the restore. A driver that both acts
- * and reports on itself can say the archive is back without it being back, and
- * the whole point of reading it separately is that nobody has to take its word.
- */
-export interface DatabaseIdentityReader {
-  /** Digest of the restored file, read before any writer starts and can change it. */
-  restedFileSha256(): Promise<string>;
-  /** Lineage of the running predecessor, once it is up. */
-  runningLineage(): Promise<SchemaLineage>;
-}
-
-/** The predecessor's own operator gate, which the pre-cutover backup was taken behind. */
-export interface PredecessorEmergencyGate {
-  isClosed(): Promise<boolean>;
-  open(): Promise<void>;
+export interface BootstrapRollbackRuntime {
+  acquire(rollbackId: string, targetSha: string): Promise<RuntimeLeaseGrant>;
+  applicationIsAt(name: "frontend" | "admin" | "commerce", sha: string): Promise<boolean>;
+  restoreApplication(name: "frontend" | "admin" | "commerce", sha: string): Promise<void>;
 }
 
 export type BootstrapRollbackPorts = {
+  readonly authority: ReleaseAuthorityStore;
+  readonly envelopes: CutoverEnvelopeStore;
   readonly receipts: BootstrapRollbackReceiptStore;
-  readonly archiver: SuccessorArchiver;
-  readonly restorer: PredecessorRestorer;
-  readonly identity: DatabaseIdentityReader;
-  readonly predecessorGate: PredecessorEmergencyGate;
-  readonly topology: { observe(): Promise<DeploymentObservation> };
+  readonly storage: BootstrapRollbackStorage;
+  readonly runtime: BootstrapRollbackRuntime;
+  readonly refs: { read(): Promise<string>; compareAndSet(expected: string, target: string): Promise<string> };
+  readonly verification: { observe(): Promise<{ readonly topology: DeploymentObservation; readonly lineage: string }> };
+  readonly predecessorGate: { isClosed(): Promise<boolean>; open(): Promise<void> };
   readonly clock?: () => Date;
 };
 
+const exactEnvelope = (session: DeploySession, envelope: NonNullable<ReturnType<CutoverEnvelopeStore["read"]>>): void => {
+  if (envelope.cutoverId !== session.adoptedCutoverId) throw new BootstrapRollbackError("CUTOVER_ENVELOPE_IDENTITY_MISMATCH");
+  if (canonicalEnvelopeSha256(envelope) !== session.adoptedEnvelopeSha256) throw new BootstrapRollbackError("CUTOVER_ENVELOPE_DIGEST_MISMATCH");
+  if (envelope.targetSha !== session.targetSha) throw new BootstrapRollbackError("CUTOVER_ENVELOPE_TARGET_MISMATCH");
+  if (envelope.mode !== session.mode) throw new BootstrapRollbackError("CUTOVER_ENVELOPE_MODE_MISMATCH");
+  if (!session.preDeployTopology || !snapshotEquals(envelope.preDeployTopology, session.preDeployTopology)) {
+    throw new BootstrapRollbackError("CUTOVER_ENVELOPE_TOPOLOGY_MISMATCH");
+  }
+  if (envelope.predecessorDatabase.ref !== session.predecessorDatabaseRef
+    || envelope.predecessorDatabase.sha256 !== session.predecessorDatabaseSha256) {
+    throw new BootstrapRollbackError("CUTOVER_ENVELOPE_PREDECESSOR_MISMATCH");
+  }
+};
+
+const predecessorSha = (intent: BootstrapRollbackIntent): string => {
+  const values = new Set([
+    ...Object.values(intent.preDeployTopology.runtime),
+    intent.preDeployTopology.controlPlane.productionDeployRefSha,
+  ]);
+  if (values.size !== 1) throw new BootstrapRollbackError("BOOTSTRAP_ROLLBACK_PREDECESSOR_TOPOLOGY_NOT_UNIFORM");
+  return [...values][0]!;
+};
+
+/** One operator invocation performs no retries; another invocation resumes the same durable receipt. */
 export class BootstrapRollback {
   constructor(private readonly ports: BootstrapRollbackPorts) {}
 
-  /**
-   * Everything that must survive the successor database is captured and written
-   * down first. Only when the envelope is durable may that database be
-   * discarded - a failure before this point leaves the successor untouched and
-   * the rollback simply not started.
-   */
-  async prepare(authority: ReleaseAuthorityStore, sessionId: string, ownerId: string, input: {
-    readonly rollbackId?: string;
-    readonly nonce?: string;
-    readonly expiresAt: string;
-  }): Promise<BootstrapRollbackReceipt> {
-    // Read here rather than accept a snapshot: a caller holding a session
-    // captured before arming would otherwise pass the reversibility check with
-    // an answer that stopped being true.
-    // The caller's own identity, never the session's. Reading the owner out of
-    // the row and then acting as it means any caller acts as whoever holds the
-    // lease - including a runner that was displaced a moment ago.
-    const session = authority.get(sessionId);
-    if (!session) throw new BootstrapRollbackError("DEPLOY_SESSION_NOT_FOUND", sessionId);
-    assertReversible(session, authority.deploymentGate());
-    const now = (this.ports.clock ?? (() => new Date()))();
-    if (Date.parse(input.expiresAt) <= now.getTime()) throw new BootstrapRollbackError("BOOTSTRAP_ROLLBACK_EXPIRY_INVALID", input.expiresAt);
+  isStarted(sessionId: string): boolean {
+    try {
+      if (this.ports.receipts.read(bootstrapRollbackId(sessionId))) return true;
+    } catch {
+      // An unreadable external receipt is not evidence that recovery never
+      // started. Treat it as started so the CLI leaves the gate closed and
+      // reports RECOVERY_REQUIRED rather than a pre-mutation refusal.
+      return true;
+    }
+    return Boolean(this.ports.authority.get(sessionId)?.bootstrapRollbackId);
+  }
 
-    // Direction is chosen in the successor's own authority before that database
-    // can be archived and lost. From here arming is refused, so no external
-    // effect can appear behind a rollback that has already committed to
-    // restoring the predecessor. A failure after this leaves a rollback intent
-    // and sales closed - safe, resumable, and deliberately not cleared
-    // automatically, since clearing it would reopen the very race it closes.
-    const rollbackId = input.rollbackId ?? randomUUID();
-    authority.reserveBootstrapRollback(sessionId, ownerId, now, rollbackId);
+  async rollback(sessionId: string, ownerId: string): Promise<BootstrapRollbackReceipt> {
+    let receipt = this.ports.receipts.read(bootstrapRollbackId(sessionId));
+    if (!receipt) receipt = this.reserve(sessionId, ownerId);
+    if (receipt.intent.successorSessionId !== sessionId) throw new BootstrapRollbackError("BOOTSTRAP_ROLLBACK_SESSION_MISMATCH");
+    this.assertDurableIntent(receipt);
 
-    const successorDatabase = await this.ports.archiver.quiesceAndArchive(rollbackId);
-    if (!successorDatabase.ref.trim()) throw new BootstrapRollbackError("SUCCESSOR_ARCHIVE_REF_INVALID");
-    if (!/^[a-f0-9]{64}$/.test(successorDatabase.sha256)) throw new BootstrapRollbackError("SUCCESSOR_ARCHIVE_DIGEST_INVALID");
-    // Read after quiescing: the vector recorded is the one the successor was
-    // actually serving when it stopped, not one observed earlier and hoped for.
-    const successorTopology = await this.ports.topology.observe();
+    const oldSha = predecessorSha(receipt.intent);
+    if (receipt.stage === "RESERVED") {
+      const grant = await this.ports.runtime.acquire(receipt.intent.rollbackId, receipt.intent.targetSha);
+      const restored = await this.ports.storage.restore(receipt.intent.rollbackId, receipt.intent.predecessorDatabase, grant);
+      if (restored.predecessorDatabase.sha256 !== receipt.intent.predecessorDatabase.sha256) {
+        throw new BootstrapRollbackError("PREDECESSOR_DATABASE_DIGEST_MISMATCH");
+      }
+      receipt = this.ports.receipts.advance(receipt.intent.rollbackId, "DATABASE_RESTORED", {
+        successorDatabase: restored.successorDatabase,
+      });
+    }
 
-    const envelope: BootstrapRollbackEnvelope = {
-      rollbackId,
-      cutoverId: session.adoptedCutoverId!,
-      successorSessionId: session.id,
-      predecessorDatabase: { ref: session.predecessorDatabaseRef!, sha256: session.predecessorDatabaseSha256! },
-      preDeployTopology: session.preDeployTopology!,
-      successorDatabase,
-      successorTopology,
-      createdAt: now.toISOString(),
-      expiresAt: input.expiresAt,
-      nonce: input.nonce ?? randomUUID(),
-    };
-    // Archiving is a long external step, and a lease can lapse while it runs.
-    // Re-prove ownership before writing anything durable outside the database,
-    // or a displaced runner leaves a receipt the real owner never made.
-    authority.assertBootstrapRollbackOwned(sessionId, ownerId, now, rollbackId);
+    if (receipt.stage === "DATABASE_RESTORED") {
+      const current = await this.ports.refs.read();
+      if (current === receipt.intent.targetSha) {
+        await this.ports.refs.compareAndSet(receipt.intent.targetSha, oldSha);
+      } else if (current !== oldSha) {
+        throw new BootstrapRollbackError("BOOTSTRAP_ROLLBACK_REF_CAS_CONFLICT", `found ${current}`);
+      }
+      receipt = this.ports.receipts.advance(receipt.intent.rollbackId, "REF_RESTORED");
+    }
 
-    const receipt: BootstrapRollbackReceipt = { envelope, stage: "PREPARED" };
-    this.ports.receipts.write(receipt);
+    receipt = await this.restoreApplication(receipt, "REF_RESTORED", "frontend", "FRONTEND_RESTORED", oldSha);
+    receipt = await this.restoreApplication(receipt, "FRONTEND_RESTORED", "admin", "ADMIN_RESTORED", oldSha);
+    receipt = await this.restoreApplication(receipt, "ADMIN_RESTORED", "commerce", "COMMERCE_RESTORED", oldSha);
+
+    if (receipt.stage === "COMMERCE_RESTORED") {
+      this.ports.storage.inspectPredecessorArchive(receipt.intent.predecessorDatabase);
+      const observed = await this.ports.verification.observe();
+      if (observed.lineage !== "LEGACY") throw new BootstrapRollbackError("PREDECESSOR_LINEAGE_NOT_RESTORED", observed.lineage);
+      if (!snapshotEquals(observed.topology, receipt.intent.preDeployTopology)) {
+        throw new BootstrapRollbackError("PREDECESSOR_TOPOLOGY_NOT_RESTORED");
+      }
+      if (!(await this.ports.predecessorGate.isClosed())) throw new BootstrapRollbackError("PREDECESSOR_GATE_ALREADY_OPEN");
+      receipt = this.ports.receipts.advance(receipt.intent.rollbackId, "VERIFIED", { observation: observed.topology });
+    }
+
+    if (receipt.stage === "VERIFIED") receipt = this.completeRollback(receipt);
+    if (receipt.stage === "COMPLETED" && await this.ports.predecessorGate.isClosed()) {
+      await this.ports.predecessorGate.open();
+    }
     return receipt;
   }
 
-  /**
-   * Resumable by construction. Each stage is re-derived from the receipt, so a
-   * crash anywhere replays from the last durable fact rather than from the
-   * start - and a completed rollback never restores a database twice.
-   */
-  async execute(rollbackId: string, expected: BootstrapRollbackEnvelope): Promise<BootstrapRollbackReceipt> {
-    const receipt = this.ports.receipts.read(rollbackId);
-    if (!receipt) throw new BootstrapRollbackError("BOOTSTRAP_ROLLBACK_RECEIPT_NOT_FOUND", rollbackId);
-    if (canonicalRollbackSha256(receipt.envelope) !== canonicalRollbackSha256(expected)) {
-      // Same id, different rollback. Choosing between them is not a decision
-      // automated recovery may make.
-      throw new BootstrapRollbackError("BOOTSTRAP_ROLLBACK_IDENTITY_MISMATCH", rollbackId);
-    }
+  private reserve(sessionId: string, ownerId: string): BootstrapRollbackReceipt {
+    const session = this.ports.authority.get(sessionId);
+    if (!session) throw new BootstrapRollbackError("DEPLOY_SESSION_NOT_FOUND", sessionId);
+    assertReversible(session, this.ports.authority.deploymentGate());
+    const envelope = this.ports.envelopes.read(session.adoptedCutoverId!);
+    if (!envelope) throw new BootstrapRollbackError("CUTOVER_ENVELOPE_NOT_FOUND", session.adoptedCutoverId);
+    if (!this.ports.envelopes.isConsumed(envelope.cutoverId)) throw new BootstrapRollbackError("CUTOVER_ENVELOPE_NOT_CONSUMED");
+    exactEnvelope(session, envelope);
+    const predecessor = this.ports.storage.inspectPredecessorArchive(envelope.predecessorDatabase);
+    const rollbackId = bootstrapRollbackId(session.id);
 
-    let current = receipt;
-    if (current.stage === "PREPARED") current = await this.restore(current);
-    if (current.stage === "RESTORED") current = await this.complete(current);
-    // Reopening is last and separately replayable: a crash between COMPLETED
-    // and the reopen leaves "rolled back, sales still shut", which is safe and
-    // finishable. The reverse order would open sales with no durable proof the
-    // rollback ever finished.
-    if (await this.ports.predecessorGate.isClosed()) await this.ports.predecessorGate.open();
-    return current;
+    this.ports.authority.reserveBootstrapRollback(session.id, ownerId, (this.ports.clock ?? (() => new Date()))(), rollbackId);
+    const receipt: BootstrapRollbackReceipt = {
+      stage: "RESERVED",
+      intent: {
+        rollbackId,
+        cutoverId: envelope.cutoverId,
+        successorSessionId: session.id,
+        targetSha: envelope.targetSha,
+        forwardEnvelopeSha256: canonicalEnvelopeSha256(envelope),
+        predecessorDatabase: predecessor,
+        preDeployTopology: envelope.preDeployTopology,
+        createdAt: (this.ports.clock ?? (() => new Date()))().toISOString(),
+      },
+    };
+    try {
+      this.ports.receipts.write(receipt);
+    } catch (error) {
+      const existing = this.ports.receipts.read(rollbackId);
+      if (!existing || canonicalRollbackReceiptSha256(existing) !== canonicalRollbackReceiptSha256(receipt)) throw error;
+      return existing;
+    }
+    return receipt;
   }
 
-  /**
-   * RESTORED means the predecessor database and topology are in place and the
-   * digest checked, and deliberately that nothing has been started yet. Marking
-   * it after startup instead left a window where a crash would replay the
-   * restore over a predecessor that was already running and writing.
-   */
-  private async restore(receipt: BootstrapRollbackReceipt): Promise<BootstrapRollbackReceipt> {
-    const { envelope } = receipt;
-    const grant = await this.ports.restorer.ensureSuccessorRuntimesStopped();
+  private assertDurableIntent(receipt: BootstrapRollbackReceipt): void {
+    const envelope = this.ports.envelopes.read(receipt.intent.cutoverId);
+    if (!envelope) throw new BootstrapRollbackError("CUTOVER_ENVELOPE_NOT_FOUND", receipt.intent.cutoverId);
+    if (!this.ports.envelopes.isConsumed(envelope.cutoverId)) throw new BootstrapRollbackError("CUTOVER_ENVELOPE_NOT_CONSUMED");
+    if (canonicalEnvelopeSha256(envelope) !== receipt.intent.forwardEnvelopeSha256
+      || envelope.targetSha !== receipt.intent.targetSha
+      || envelope.predecessorDatabase.ref !== receipt.intent.predecessorDatabase.ref
+      || envelope.predecessorDatabase.sha256 !== receipt.intent.predecessorDatabase.sha256
+      || !snapshotEquals(envelope.preDeployTopology, receipt.intent.preDeployTopology)) {
+      throw new BootstrapRollbackError("BOOTSTRAP_ROLLBACK_FORWARD_ENVELOPE_MISMATCH");
+    }
+    // Must precede quiescence on every retry. A missing/corrupt recovery source
+    // may not stop production just because a receipt was written earlier.
+    this.ports.storage.inspectPredecessorArchive(receipt.intent.predecessorDatabase);
+  }
 
-    // A replay may find the file already in place. Overwriting it blindly would
-    // be a second restore nobody asked for, so the digest decides.
-    if (await this.ports.identity.restedFileSha256() !== envelope.predecessorDatabase.sha256) {
-      await this.ports.restorer.ensurePredecessorDatabaseRestored(envelope.predecessorDatabase, grant);
-      const restoredSha256 = await this.ports.identity.restedFileSha256();
-      // Checked while nothing runs: once writers start, the file legitimately
-      // diverges from the archive and this could never be checked again.
-      if (restoredSha256 !== envelope.predecessorDatabase.sha256) {
-        throw new BootstrapRollbackError("PREDECESSOR_DATABASE_DIGEST_MISMATCH", restoredSha256);
+  private async restoreApplication(
+    receipt: BootstrapRollbackReceipt,
+    from: BootstrapRollbackStage,
+    application: "frontend" | "admin" | "commerce",
+    to: BootstrapRollbackStage,
+    sha: string,
+  ): Promise<BootstrapRollbackReceipt> {
+    if (receipt.stage !== from) return receipt;
+    if (!(await this.ports.runtime.applicationIsAt(application, sha))) {
+      await this.ports.runtime.restoreApplication(application, sha);
+      if (!(await this.ports.runtime.applicationIsAt(application, sha))) {
+        throw new BootstrapRollbackError("BOOTSTRAP_ROLLBACK_APPLICATION_NOT_CONVERGED", application);
       }
     }
-
-    await this.ports.restorer.ensurePreDeployTopologyRestored(envelope.preDeployTopology);
-    return this.ports.receipts.advance(envelope.rollbackId, "RESTORED");
+    return this.ports.receipts.advance(receipt.intent.rollbackId, to);
   }
 
-  private async complete(receipt: BootstrapRollbackReceipt): Promise<BootstrapRollbackReceipt> {
-    const { envelope } = receipt;
-    await this.ports.restorer.ensurePredecessorRuntimeRunning();
-    const lineage = await this.ports.identity.runningLineage();
-    if (lineage !== "LEGACY") throw new BootstrapRollbackError("PREDECESSOR_LINEAGE_NOT_RESTORED", lineage);
-
-    const topology = await this.ports.topology.observe();
-    if (!snapshotEquals(topology, envelope.preDeployTopology)) {
-      throw new BootstrapRollbackError("PREDECESSOR_TOPOLOGY_NOT_RESTORED");
+  private completeRollback(receipt: BootstrapRollbackReceipt): BootstrapRollbackReceipt {
+    if (!receipt.observation || !snapshotEquals(receipt.observation, receipt.intent.preDeployTopology)) {
+      throw new BootstrapRollbackError("BOOTSTRAP_ROLLBACK_FRESH_OBSERVATION_REQUIRED");
     }
-    // The pre-cutover backup was taken behind this gate, so the restored
-    // predecessor must come up still holding it. If it is already open,
-    // something reopened sales without this rollback's consent.
-    if (!(await this.ports.predecessorGate.isClosed())) throw new BootstrapRollbackError("PREDECESSOR_GATE_ALREADY_OPEN");
-
-    return this.ports.receipts.advance(envelope.rollbackId, "COMPLETED");
+    return this.ports.receipts.advance(receipt.intent.rollbackId, "COMPLETED");
   }
 }

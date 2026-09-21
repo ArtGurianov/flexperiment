@@ -253,12 +253,15 @@ export class InMemoryReleaseAuthorityStore implements ReleaseAuthorityStore {
       // Idempotent is not unauthenticated. Returning early here let a runner
       // that had already lost its lease repeat the same id, read success, and
       // carry on archiving the successor.
-      return this.write(id, ownerId, now, NON_TERMINAL, {});
+      return this.write(id, ownerId, now, ["DEPLOYING", "RECOVERY_REQUIRED"], { state: "RECOVERY_REQUIRED" });
     }
     if (!session.adoptedCutoverId) throw new Error("BOOTSTRAP_ROLLBACK_NOT_A_CUTOVER_SESSION");
     if (session.rollbackAuthority !== "OLD_LINEAGE_ALLOWED") throw new Error("OLD_LINEAGE_ROLLBACK_FORBIDDEN");
     if (this.#gateOwnerSessionId !== id) throw new Error("DEPLOYMENT_GATE_NOT_OWNED");
-    return this.write(id, ownerId, now, NON_TERMINAL, { bootstrapRollbackId: rollbackId });
+    return this.write(id, ownerId, now, ["DEPLOYING", "RECOVERY_REQUIRED"], {
+      bootstrapRollbackId: rollbackId,
+      state: "RECOVERY_REQUIRED",
+    });
   }
 
   assertBootstrapRollbackOwned(id: string, ownerId: string, now: Date, rollbackId: string): DeploySession {

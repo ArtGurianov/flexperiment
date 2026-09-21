@@ -167,6 +167,18 @@ export class CoolifyRecoveryDriver implements RecoveryDriver {
 
   private log(message: string) { this.options.onProgress?.(message); }
 
+  async restoreApplication(name: string, sha: string): Promise<void> {
+    const application = this.options.applications.find((entry) => entry.name === name);
+    if (!application) throw new DeploymentError("RECOVERY_APPLICATION_UNKNOWN", name);
+    const images = await this.options.client.rollbackImages(application.uuid);
+    if (!images.some((image) => image.includes(sha))) {
+      throw new DeploymentError("RECOVERY_ROLLBACK_IMAGE_MISSING", `${application.name}: no retained image for ${sha}`);
+    }
+    const deployment = await this.options.client.awaitDeployment(await this.options.client.rollback(application.uuid, sha));
+    if (!settled(deployment)) throw new DeploymentError("RECOVERY_ROLLBACK_FAILED", `${application.name}: ${deployment.status}`);
+    this.log(`${application.name} rolled back`);
+  }
+
   /**
    * Puts production back on the pre-deploy vector.
    *
@@ -194,17 +206,7 @@ export class CoolifyRecoveryDriver implements RecoveryDriver {
     this.log(`returning the deploy pointer ${current} -> ${preSha}`);
     await this.options.refs.compareAndSet(current, preSha);
 
-    for (const application of this.options.applications) {
-      const images = await this.options.client.rollbackImages(application.uuid);
-      if (!images.some((image) => image.includes(preSha))) {
-        throw new DeploymentError("RECOVERY_ROLLBACK_IMAGE_MISSING", `${application.name}: no retained image for ${preSha}`);
-      }
-      const deployment = await this.options.client.awaitDeployment(await this.options.client.rollback(application.uuid, preSha));
-      if (!settled(deployment)) {
-        throw new DeploymentError("RECOVERY_ROLLBACK_FAILED", `${application.name}: ${deployment.status}`);
-      }
-      this.log(`${application.name} rolled back`);
-    }
+    for (const application of this.options.applications) await this.restoreApplication(application.name, preSha);
   }
 }
 

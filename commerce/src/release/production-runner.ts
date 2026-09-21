@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 import { createHash, randomUUID } from "node:crypto";
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { CoolifyClient } from "./coolify";
 import { CoolifyDeploymentDriver, CoolifyRecoveryDriver } from "./coolify-deployment";
 import { FileCutoverEnvelopeStore } from "./cutover-envelope-file-store";
@@ -25,6 +25,9 @@ import { BootstrapCutoverPreparation, type PreparationRequest, type PreparationR
 import { RuntimeQuiescenceAuthority } from "./runtime-quiescence-authority";
 import { RuntimeQuiescer, type DatabaseIdentityProbe, type OpenHandleProbe } from "./runtime-quiescer";
 import { TrustedComposeRuntimeControl } from "./trusted-compose-runtime";
+import { BootstrapRollback } from "./bootstrap-rollback";
+import { FileBootstrapRollbackReceiptStore } from "./bootstrap-rollback-file-store";
+import { classifySchemaLineage } from "./schema-identity";
 
 /**
  * The production composition root.
@@ -241,6 +244,8 @@ export type ProductionRelease = {
   readonly storage: SqliteCutoverStorage;
   /** Present only while the configured database is the verified legacy predecessor. */
   readonly bootstrapPreparation?: { prepare(request: PreparationRequest): Promise<PreparationResult> };
+  /** Present only when the one trusted predecessor is configured. */
+  readonly bootstrapRollback?: BootstrapRollback;
   readonly deployRef: ProductionDeployRefStore;
   readonly deployment: CoolifyDeploymentDriver;
   readonly candidates: FileReleaseCandidateStore;
@@ -413,6 +418,13 @@ export const buildProductionRelease = (config: ProductionReleaseConfig, options:
         return Number(row?.sales_paused ?? 1) === 1;
       } finally { inspection.close(); }
     };
+    const openGateAtRest = () => {
+      const predecessor = new Database(config.databasePath, { fileMustExist: true });
+      try {
+        const result = predecessor.prepare("UPDATE emergency_sales_gate SET sales_paused = 0, revision = revision + 1 WHERE singleton = 1 AND sales_paused = 1").run();
+        if (result.changes === 0 && gateAtRestIsClosed()) throw new ReleaseRunnerError("BOOTSTRAP_EMERGENCY_GATE_UNAVAILABLE");
+      } finally { predecessor.close(); }
+    };
     const bootstrapPreparation = predecessorTopology && commerce ? new BootstrapCutoverPreparation({
       fence: {
         async ensureClosed() {
@@ -465,6 +477,77 @@ export const buildProductionRelease = (config: ProductionReleaseConfig, options:
       clock: now,
     }) : undefined;
 
+    const recovery = ports.recovery as CoolifyRecoveryDriver;
+    const freshPredecessorObservation = async () => {
+      if (!config.predecessor) throw new ReleaseRunnerError("BOOTSTRAP_PREDECESSOR_CONFIGURATION_MISSING");
+      const inspection = new Database(config.databasePath, { readonly: true, fileMustExist: true });
+      try {
+        const integrity = inspection.pragma("integrity_check") as { integrity_check?: unknown }[];
+        if (integrity.length !== 1 || integrity[0]?.integrity_check !== "ok") throw new ReleaseRunnerError("BOOTSTRAP_ROLLBACK_INTEGRITY_FAILED");
+        if ((inspection.pragma("foreign_key_check") as unknown[]).length !== 0) throw new ReleaseRunnerError("BOOTSTRAP_ROLLBACK_FOREIGN_KEY_FAILED");
+        const lineage = classifySchemaLineage(readSchemaIdentity(inspection));
+        const topology = await new LegacyPredecessorTopologyReader({
+          frontendReleaseUrl: config.topology.frontendReleaseUrl,
+          adminReleaseUrl: config.topology.adminReleaseUrl,
+          commerceReadyUrl: config.predecessor.commerceReadyUrl,
+          db: inspection, deployRef, now, fetch: options.fetch,
+          expectedPredecessorSha: config.predecessor.expectedSha,
+          expectedLedgerLength: config.predecessor.expectedLedgerLength,
+        }).observe();
+        return { topology, lineage };
+      } finally { inspection.close(); }
+    };
+    const surfaceAt = async (name: "frontend" | "admin", sha: string) => {
+      const url = name === "frontend" ? config.topology.frontendReleaseUrl : config.topology.adminReleaseUrl;
+      try {
+        const response = await (options.fetch ?? globalThis.fetch)(url, { headers: { Accept: "application/json" } });
+        if (!response.ok) return false;
+        const body = JSON.parse(await response.text()) as { source_commit?: unknown };
+        return body.source_commit === sha;
+      } catch { return false; }
+    };
+    const bootstrapRollback = config.predecessor && commerce ? new BootstrapRollback({
+      authority,
+      envelopes: new FileCutoverEnvelopeStore(config.envelopeDirectory),
+      receipts: new FileBootstrapRollbackReceiptStore(join(config.envelopeDirectory, "rollback")),
+      storage: {
+        inspectPredecessorArchive(archive) { return storage.inspectPredecessorArchive(archive); },
+        async restore(rollbackId, archive, grant) {
+          return storage.restore(rollbackId, archive, grant.lease, grant.binding);
+        },
+      },
+      runtime: {
+        async acquire(rollbackId, targetSha) {
+          const resourceId = await (ports.deployment as CoolifyDeploymentDriver).composeResourceId(commerce.uuid);
+          return runtimeQuiescer.acquire({
+            sessionId: rollbackId,
+            operation: "RESTORE",
+            databasePath: config.databasePath,
+            sha: targetSha,
+            lockOwner: lock.ownerId,
+            compose: { applicationUuid: commerce.uuid, resourceId, repositories: config.composeRepositories },
+          });
+        },
+        async applicationIsAt(name, sha) {
+          if (name === "frontend" || name === "admin") return surfaceAt(name, sha);
+          try {
+            const observed = await freshPredecessorObservation();
+            return observed.lineage === "LEGACY"
+              && observed.topology.runtime.commerce === sha
+              && observed.topology.runtime.worker === sha;
+          } catch { return false; }
+        },
+        async restoreApplication(name, sha) { await recovery.restoreApplication(name, sha); },
+      },
+      refs: deployRef,
+      verification: { observe: freshPredecessorObservation },
+      predecessorGate: {
+        async isClosed() { return gateAtRestIsClosed(); },
+        async open() { openGateAtRest(); },
+      },
+      clock: now,
+    }) : undefined;
+
     const certificationFor = (candidate: ReleaseCandidate): ProductionCertificationDriver => new ProductionCertificationDriver({
       db: opened, candidate, now,
       adminBaseUrl: config.certification.adminBaseUrl,
@@ -483,7 +566,7 @@ export const buildProductionRelease = (config: ProductionReleaseConfig, options:
     return {
       ports, sessions, journal, lock, deployRef, authority, candidates, certificationFor, database: opened,
       deployment: ports.deployment as CoolifyDeploymentDriver,
-      envelopes: new FileCutoverEnvelopeStore(config.envelopeDirectory), storage, bootstrapPreparation,
+      envelopes: new FileCutoverEnvelopeStore(config.envelopeDirectory), storage, bootstrapPreparation, bootstrapRollback,
       orchestrator: new ReleaseOrchestrator(ports),
       close() {
         closeDatabaseForStorage();
