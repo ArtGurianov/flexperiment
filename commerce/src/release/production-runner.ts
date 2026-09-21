@@ -1,5 +1,5 @@
 import Database from "better-sqlite3";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
 import { CoolifyClient } from "./coolify";
@@ -22,7 +22,9 @@ import { readSchemaIdentity } from "../db";
 import { DatabaseRuntimeEvidenceReader, ProductionTopologyReader } from "./topology-reader";
 import { SqliteCutoverStorage } from "./sqlite-cutover-storage";
 import { BootstrapCutoverPreparation, type PreparationRequest, type PreparationResult } from "./cutover-preparation";
-import { DockerComposeRuntimeControl } from "./docker-compose-runtime";
+import { RuntimeQuiescenceAuthority } from "./runtime-quiescence-authority";
+import { RuntimeQuiescer, type DatabaseIdentityProbe, type OpenHandleProbe } from "./runtime-quiescer";
+import { TrustedComposeRuntimeControl } from "./trusted-compose-runtime";
 
 /**
  * The production composition root.
@@ -53,6 +55,7 @@ export class ReleaseRunnerError extends Error {
  */
 export class ReleaseRunnerLock {
   #held = false;
+  #owner: string | undefined;
 
   private constructor(private readonly path: string) {}
 
@@ -80,20 +83,22 @@ export class ReleaseRunnerLock {
       if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
       throw error;
     }
+    const owner = randomUUID();
     try {
-      writeSync(fd, JSON.stringify({ pid: process.pid, acquiredAt: now().toISOString() }));
+      writeSync(fd, JSON.stringify({ pid: process.pid, acquiredAt: now().toISOString(), owner }));
     } finally {
       closeSync(fd);
     }
     this.#held = true;
+    this.#owner = owner;
     return true;
   }
 
-  private holder(): { pid: number; acquiredAt: string } | undefined {
+  private holder(): { pid: number; acquiredAt: string; owner?: string } | undefined {
     try {
-      const parsed = JSON.parse(readFileSync(this.path, "utf8")) as { pid?: unknown; acquiredAt?: unknown };
+      const parsed = JSON.parse(readFileSync(this.path, "utf8")) as { pid?: unknown; acquiredAt?: unknown; owner?: unknown };
       if (typeof parsed.pid !== "number" || !Number.isInteger(parsed.pid)) return undefined;
-      return { pid: parsed.pid, acquiredAt: typeof parsed.acquiredAt === "string" ? parsed.acquiredAt : "unknown" };
+      return { pid: parsed.pid, acquiredAt: typeof parsed.acquiredAt === "string" ? parsed.acquiredAt : "unknown", owner: typeof parsed.owner === "string" ? parsed.owner : undefined };
     } catch {
       // An unreadable lock is treated as held by something unknown, which is
       // the safe reading: it is not evidence that nothing is running.
@@ -115,7 +120,20 @@ export class ReleaseRunnerLock {
   release(): void {
     if (!this.#held) return;
     this.#held = false;
+    this.#owner = undefined;
     try { unlinkSync(this.path); } catch { /* already gone */ }
+  }
+
+  get ownerId(): string {
+    if (!this.#held || !this.#owner) throw new ReleaseRunnerError("RELEASE_RUNNER_LOCK_NOT_HELD");
+    return this.#owner;
+  }
+
+  async assertHeld(owner: string): Promise<void> {
+    const current = this.holder();
+    if (!this.#held || !this.#owner || owner !== this.#owner || current?.owner !== owner || current.pid !== process.pid) {
+      throw new ReleaseRunnerError("RELEASE_RUNNER_LOCK_OWNERSHIP_LOST");
+    }
   }
 }
 
@@ -254,8 +272,11 @@ export type BuildOptions = {
    * first line, before the topology is even read.
    */
   readonly certification?: CertificationDriver;
-  /** Test seam for the host adapter; production always controls the real Compose pair. */
-  readonly runtimeControl?: Pick<DockerComposeRuntimeControl, "ensureStopped">;
+  /** Test seams for host observation; production uses the bounded real adapters. */
+  readonly runtimeControl?: Pick<TrustedComposeRuntimeControl, "capture" | "stopAndReprove" | "assertStopped" | "startCaptured">;
+  readonly databaseIdentity?: DatabaseIdentityProbe;
+  readonly openHandles?: OpenHandleProbe;
+  readonly monotonicNow?: () => number;
 };
 
 /**
@@ -272,15 +293,6 @@ export const buildProductionRelease = (config: ProductionReleaseConfig, options:
   for (const [label, path] of [["database", config.databasePath], ["deploy ref worktree", config.deployRef.worktree]] as const) {
     if (!existsSync(path)) throw new ReleaseConfigError("RELEASE_RUNNER_PATH_MISSING", `${label}: ${path}`);
   }
-  // This performs no mutation. A release runner must not create a plausible
-  // looking state layout on whatever filesystem it happened to be pointed at.
-  const storage = new SqliteCutoverStorage({
-    databasePath: config.databasePath, replacementRoot: config.replacementRoot,
-    stateDirectory: config.stateDirectory, archiveDirectory: config.archiveDirectory,
-    envelopeDirectory: config.envelopeDirectory, journalPath: config.journalPath,
-    lockPath: config.lockPath,
-  });
-
   const lock = ReleaseRunnerLock.acquire(config.lockPath, now);
   let db: Database.Database | undefined;
   let databaseClosed = false;
@@ -376,6 +388,24 @@ export const buildProductionRelease = (config: ProductionReleaseConfig, options:
       databaseClosed = true;
       opened.close();
     };
+    const runtimeQuiescenceAuthority = new RuntimeQuiescenceAuthority(options.monotonicNow ?? (() => performance.now()));
+    const runtimeQuiescer = new RuntimeQuiescer({
+      authority: runtimeQuiescenceAuthority,
+      runtime: options.runtimeControl,
+      database: options.databaseIdentity,
+      handles: options.openHandles,
+      lock,
+      closeControllerDatabase: closeDatabaseForStorage,
+    });
+    // This performs no mutation. The same authority instance is the issuer in
+    // runtimeQuiescer and the consumer in storage; a second registry cannot be
+    // constructed by this composition.
+    const storage = new SqliteCutoverStorage({
+      databasePath: config.databasePath, replacementRoot: config.replacementRoot,
+      stateDirectory: config.stateDirectory, archiveDirectory: config.archiveDirectory,
+      envelopeDirectory: config.envelopeDirectory, journalPath: config.journalPath,
+      lockPath: config.lockPath, authority: runtimeQuiescenceAuthority, revalidation: runtimeQuiescer,
+    });
     const gateAtRestIsClosed = () => {
       const inspection = new Database(config.databasePath, { readonly: true, fileMustExist: true });
       try {
@@ -392,10 +422,19 @@ export const buildProductionRelease = (config: ProductionReleaseConfig, options:
         async isClosed() { return gateAtRestIsClosed(); },
       },
       quiescer: {
-        async ensureQuiesced() {
+        async acquire(cutoverId) {
           const id = await (ports.deployment as CoolifyDeploymentDriver).composeResourceId(commerce.uuid);
-          await (options.runtimeControl ?? new DockerComposeRuntimeControl()).ensureStopped(id);
+          if (!config.predecessor) throw new ReleaseRunnerError("BOOTSTRAP_PREDECESSOR_CONFIGURATION_MISSING");
+          return runtimeQuiescer.acquire({
+            sessionId: cutoverId,
+            operation: "PREPARE",
+            databasePath: config.databasePath,
+            sha: config.predecessor.expectedSha,
+            lockOwner: lock.ownerId,
+            compose: { applicationUuid: commerce.uuid, resourceId: id, repositories: config.composeRepositories },
+          });
         },
+        async abortBeforeArchive(grant) { await runtimeQuiescer.resumeCaptured(grant); },
       },
       census: {
         async inspect() {
@@ -412,9 +451,11 @@ export const buildProductionRelease = (config: ProductionReleaseConfig, options:
         },
       },
       archiver: {
-        async verifyOnlineBackups(cutoverId) { await storage.verifyOnlineBackups(cutoverId); },
-        async prepareArchive(cutoverId) { closeDatabaseForStorage(); return storage.prepareArchive(cutoverId); },
-        async ensureArchivedAndFresh(envelope) { await storage.ensureArchivedAndFresh(envelope); },
+        async createVerifiedBackups(cutoverId) { await storage.createVerifiedBackups(cutoverId); },
+        async prepareArchive(cutoverId, grant) { return storage.prepareArchive(cutoverId, grant.lease, grant.binding); },
+        async ensureArchivedAndFresh(envelope, grant, writeEnvelope) {
+          await storage.ensureArchivedAndFresh(envelope, grant.lease, grant.binding, writeEnvelope);
+        },
       },
       topology: predecessorTopology,
       envelopes: {

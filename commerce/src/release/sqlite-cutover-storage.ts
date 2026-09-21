@@ -9,6 +9,12 @@ import { migrate, openDatabase, readSchemaIdentity } from "../db";
 import { classifySchemaLineage } from "./schema-identity";
 import type { CutoverEnvelope, PredecessorDatabase } from "./cutover-envelope";
 import type { DatabaseArchive } from "./bootstrap-rollback";
+import {
+  RuntimeQuiescenceAuthority,
+  type RuntimeLeaseBinding,
+  type RuntimeLeaseRevalidation,
+  type RuntimeQuiescenceLease,
+} from "./runtime-quiescence-authority";
 
 /** A named refusal is safer than letting an fs error choose a recovery path. */
 export class SqliteCutoverStorageError extends Error {
@@ -28,6 +34,9 @@ export type SqliteCutoverStorageOptions = {
   readonly envelopeDirectory: string;
   readonly journalPath: string;
   readonly lockPath: string;
+  /** Shared process-local capability authority; there is no construction path without it. */
+  readonly authority: RuntimeQuiescenceAuthority;
+  readonly revalidation: RuntimeLeaseRevalidation;
 };
 
 type Layout = {
@@ -141,10 +150,16 @@ const layout = (options: SqliteCutoverStorageOptions): Layout => {
  */
 export class SqliteCutoverStorage {
   readonly #layout: Layout;
+  readonly #authority: RuntimeQuiescenceAuthority;
+  readonly #revalidation: RuntimeLeaseRevalidation;
 
-  constructor(options: SqliteCutoverStorageOptions) { this.#layout = layout(options); }
+  constructor(options: SqliteCutoverStorageOptions) {
+    this.#layout = layout(options);
+    this.#authority = options.authority;
+    this.#revalidation = options.revalidation;
+  }
 
-  async verifyOnlineBackups(id: string): Promise<readonly OnlineBackupEvidence[]> {
+  async createVerifiedBackups(id: string): Promise<readonly OnlineBackupEvidence[]> {
     const safeId = cutoverId(id);
     const evidence: OnlineBackupEvidence[] = [];
     for (const ordinal of [1, 2]) {
@@ -163,7 +178,8 @@ export class SqliteCutoverStorage {
   }
 
   /** Checkpoint only after the caller proved every runtime writer has stopped. */
-  async prepareArchive(id: string): Promise<PredecessorDatabase> {
+  async prepareArchive(id: string, lease: RuntimeQuiescenceLease, binding: RuntimeLeaseBinding): Promise<PredecessorDatabase> {
+    await this.authorize(id, "PREPARE", lease, binding);
     const safeId = cutoverId(id);
     this.checkpointAndRefuseLiveSidecars();
     const digest = sha256(this.#layout.database);
@@ -178,7 +194,14 @@ export class SqliteCutoverStorage {
    * the exact file named by the envelope, or refuses; it never overwrites an
    * archive or turns a mismatched old database into a new baseline.
    */
-  async ensureArchivedAndFresh(envelope: CutoverEnvelope): Promise<void> {
+  async ensureArchivedAndFresh(
+    envelope: CutoverEnvelope,
+    lease: RuntimeQuiescenceLease,
+    binding: RuntimeLeaseBinding,
+    writeEnvelope?: () => void | Promise<void>,
+  ): Promise<void> {
+    await this.authorize(envelope.cutoverId, "PREPARE", lease, binding);
+    await writeEnvelope?.();
     const archive = this.canonicalArchive(envelope.predecessorDatabase);
     if (existsSync(archive)) {
       if (sha256(archive) !== envelope.predecessorDatabase.sha256) throw new SqliteCutoverStorageError("CUTOVER_STORAGE_ARCHIVE_DIGEST_MISMATCH");
@@ -199,7 +222,8 @@ export class SqliteCutoverStorage {
   }
 
   /** Archives the launch database before a reverse handoff, never overwriting a prior attempt. */
-  async archiveSuccessor(rollbackId: string): Promise<DatabaseArchive> {
+  async archiveSuccessor(rollbackId: string, lease: RuntimeQuiescenceLease, binding: RuntimeLeaseBinding): Promise<DatabaseArchive> {
+    await this.authorize(rollbackId, "RESTORE", lease, binding);
     const safeId = cutoverId(rollbackId);
     const target = join(this.#layout.archiveDirectory, `${safeId}.successor.sqlite`);
     if (existsSync(target)) return { ref: target, sha256: sha256(target) };
@@ -218,7 +242,8 @@ export class SqliteCutoverStorage {
    * that file into an absent database path. A hard link would share mutable
    * SQLite pages with the archive, so it is explicitly not used.
    */
-  async restorePredecessor(archive: DatabaseArchive): Promise<void> {
+  async restorePredecessor(rollbackId: string, archive: DatabaseArchive, lease: RuntimeQuiescenceLease, binding: RuntimeLeaseBinding): Promise<void> {
+    await this.authorize(rollbackId, "RESTORE", lease, binding);
     const source = this.canonicalArchive(archive);
     if (!existsSync(source)) throw new SqliteCutoverStorageError("CUTOVER_STORAGE_PREDECESSOR_ARCHIVE_MISSING", source);
     if (sha256(source) !== archive.sha256) throw new SqliteCutoverStorageError("CUTOVER_STORAGE_PREDECESSOR_ARCHIVE_DIGEST_MISMATCH");
@@ -292,5 +317,14 @@ export class SqliteCutoverStorage {
       throw new SqliteCutoverStorageError("CUTOVER_STORAGE_ARCHIVE_DIFFERENT_FILESYSTEM");
     }
     return planned;
+  }
+
+  private async authorize(operationId: string, operation: RuntimeLeaseBinding["operation"], lease: RuntimeQuiescenceLease, binding: RuntimeLeaseBinding): Promise<void> {
+    if (binding.sessionId !== operationId) throw new SqliteCutoverStorageError("CUTOVER_STORAGE_QUIESCENCE_OPERATION_MISMATCH");
+    if (binding.operation !== operation) throw new SqliteCutoverStorageError("CUTOVER_STORAGE_QUIESCENCE_DIRECTION_MISMATCH");
+    if (binding.databasePath !== this.#layout.database || binding.databaseIdentity.canonicalPath !== this.#layout.database) {
+      throw new SqliteCutoverStorageError("CUTOVER_STORAGE_QUIESCENCE_DATABASE_MISMATCH");
+    }
+    await this.#authority.consume(lease, binding, this.#revalidation);
   }
 }

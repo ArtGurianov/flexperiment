@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { DeploySession, DeploymentObservation, PreDeploySnapshot, ReleaseAuthorityStore } from "./deploy-session";
 import { snapshotDigestParts, snapshotEquals } from "./deploy-session";
 import type { SchemaLineage } from "./schema-identity";
+import type { RuntimeLeaseGrant } from "./runtime-quiescer";
 
 /**
  * Undoing the launch cutover is not the same operation as undoing an ordinary
@@ -133,8 +134,9 @@ export interface SuccessorArchiver {
  * replayable, "do it" is not.
  */
 export interface PredecessorRestorer {
-  ensureSuccessorRuntimesStopped(): Promise<void>;
-  ensurePredecessorDatabaseRestored(archive: DatabaseArchive): Promise<void>;
+  /** Returns the host-verified lease that storage requires for the restore. */
+  ensureSuccessorRuntimesStopped(): Promise<RuntimeLeaseGrant>;
+  ensurePredecessorDatabaseRestored(archive: DatabaseArchive, grant: RuntimeLeaseGrant): Promise<void>;
   ensurePreDeployTopologyRestored(snapshot: PreDeploySnapshot): Promise<void>;
   ensurePredecessorRuntimeRunning(): Promise<void>;
 }
@@ -264,12 +266,12 @@ export class BootstrapRollback {
    */
   private async restore(receipt: BootstrapRollbackReceipt): Promise<BootstrapRollbackReceipt> {
     const { envelope } = receipt;
-    await this.ports.restorer.ensureSuccessorRuntimesStopped();
+    const grant = await this.ports.restorer.ensureSuccessorRuntimesStopped();
 
     // A replay may find the file already in place. Overwriting it blindly would
     // be a second restore nobody asked for, so the digest decides.
     if (await this.ports.identity.restedFileSha256() !== envelope.predecessorDatabase.sha256) {
-      await this.ports.restorer.ensurePredecessorDatabaseRestored(envelope.predecessorDatabase);
+      await this.ports.restorer.ensurePredecessorDatabaseRestored(envelope.predecessorDatabase, grant);
       const restoredSha256 = await this.ports.identity.restedFileSha256();
       // Checked while nothing runs: once writers start, the file legitimately
       // diverges from the archive and this could never be checked again.

@@ -3,6 +3,7 @@ import { BootstrapCutoverPreparation, type PreparationPorts } from "../../src/re
 import type { CutoverEnvelope } from "../../src/release/cutover-envelope";
 import type { PreDeploySnapshot } from "../../src/release/deploy-session";
 import { withSurface } from "../support/deploy-snapshot";
+import { RuntimeQuiescenceAuthority, type RuntimeLeaseBinding } from "../../src/release/runtime-quiescence-authority";
 
 const target = "a".repeat(40);
 const before: PreDeploySnapshot = { runtime: { frontend: "b".repeat(40), admin: "c".repeat(40), commerce: "b".repeat(40), worker: "d".repeat(40) }, controlPlane: { productionDeployRefSha: "b".repeat(40) } };
@@ -17,13 +18,25 @@ const predecessor = (options: {
   gateOpensDuringArchive?: boolean;
   written?: CutoverEnvelope;
   failAfterEnvelope?: string;
+  interruptAfterStop?: boolean;
 } = {}) => {
   const log: string[] = [];
   const stored = new Map<string, CutoverEnvelope>();
+  const authority = new RuntimeQuiescenceAuthority(() => 0);
+  const grant = (cutoverId: string) => {
+    const binding: RuntimeLeaseBinding = {
+      sessionId: cutoverId, operation: "PREPARE", databasePath: "/db", databaseIdentity: { canonicalPath: "/db", dev: 1, ino: 2 },
+      sha: "b".repeat(40), applicationUuid: "commerce-uuid", applicationResourceId: "3",
+      repositories: { commerce: "repo/commerce", "commerce-worker": "repo/worker" },
+      units: [{ service: "commerce", containerId: "c1" }, { service: "commerce-worker", containerId: "c2" }], lockOwner: "runner",
+    };
+    return { lease: authority.acquire(binding), binding };
+  };
   if (options.written) stored.set(options.written.cutoverId, options.written);
   const queue = [...(options.topologies ?? [before, before])];
   let last = before;
   let gateClosed = false;
+  let quiesceCalls = 0;
 
   const ports: PreparationPorts = {
     clock: () => now,
@@ -31,7 +44,15 @@ const predecessor = (options: {
       async ensureClosed() { log.push("fence-close"); gateClosed = true; },
       async isClosed() { log.push("fence-proof"); return gateClosed; },
     },
-    quiescer: { async ensureQuiesced() { log.push("quiesce"); } },
+    quiescer: {
+      async acquire(cutoverId) {
+        log.push("quiesce");
+        quiesceCalls += 1;
+        if (options.interruptAfterStop && quiesceCalls === 1) throw new Error("INTERRUPTED_AFTER_STOP");
+        return grant(cutoverId);
+      },
+      async abortBeforeArchive() { log.push("abort-before-archive"); },
+    },
     census: {
       async inspect() {
         log.push("census");
@@ -39,14 +60,15 @@ const predecessor = (options: {
       },
     },
     archiver: {
-      async verifyOnlineBackups() { log.push("online-backups"); },
+      async createVerifiedBackups() { log.push("online-backups"); },
       async prepareArchive() {
         log.push("prepare-archive");
         if (options.gateOpensDuringArchive) gateClosed = false;
         if (options.archiveFails) throw new Error(options.archiveFails);
         return archive;
       },
-      async ensureArchivedAndFresh() {
+      async ensureArchivedAndFresh(_envelope, _grant, writeEnvelope) {
+        await writeEnvelope?.();
         log.push("archive-and-fresh");
         if (options.failAfterEnvelope) throw new Error(options.failAfterEnvelope);
       },
@@ -69,7 +91,7 @@ describe("bootstrap cutover preparation", () => {
     expect(result.alreadyPrepared).toBe(false);
     // The envelope is the moment the lineage is handed over, so every proof it
     // carries has to already exist when it appears.
-    expect(log).toEqual(["fence-close", "observe", "online-backups", "observe", "quiesce", "census", "prepare-archive", "fence-proof", "write-envelope", "archive-and-fresh"]);
+    expect(log).toEqual(["fence-close", "observe", "online-backups", "observe", "census", "fence-proof", "quiesce", "prepare-archive", "fence-proof", "quiesce", "write-envelope", "archive-and-fresh"]);
     expect(result.envelope).toMatchObject({
       cutoverId: "cutover-1", targetSha: target, mode: "MAINTENANCE_CUTOVER",
       preDeployTopology: before, predecessorDatabase: archive,
@@ -182,5 +204,23 @@ describe("bootstrap cutover preparation", () => {
     const retry = predecessor({ written: first.stored.get("cutover-1")! });
     await expect(retry.preparation.prepare(request)).resolves.toMatchObject({ alreadyPrepared: true });
     expect(retry.log).toEqual(["fence-close", "quiesce", "archive-and-fresh"]);
+  });
+
+  it("raises the stopped predecessor back only for a safe pre-envelope abort", async () => {
+    const { log, preparation } = predecessor({ archiveFails: "CHECKPOINT_REFUSED" });
+
+    await expect(preparation.prepare(request)).rejects.toThrow("CHECKPOINT_REFUSED");
+    expect(log).toContain("abort-before-archive");
+    expect(log).not.toContain("write-envelope");
+  });
+
+  it("resumes the same cutover id after an interruption immediately after stop", async () => {
+    const interrupted = predecessor({ interruptAfterStop: true });
+    await expect(interrupted.preparation.prepare(request)).rejects.toThrow("INTERRUPTED_AFTER_STOP");
+    expect(interrupted.stored.get(request.cutoverId)).toBeUndefined();
+
+    const retry = predecessor();
+    await expect(retry.preparation.prepare(request)).resolves.toMatchObject({ envelope: { cutoverId: request.cutoverId } });
+    expect(retry.log).toContain("quiesce");
   });
 });

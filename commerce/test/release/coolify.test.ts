@@ -15,7 +15,7 @@ const OTHER = "b".repeat(40);
 type Handler = (method: string, path: string, body: string) => { status: number; body: string };
 
 let server: Server | undefined;
-const listen = async (handler: Handler): Promise<string> => {
+const listen = async (handler: Handler, port = 0): Promise<string> => {
   server = createServer((request, response) => {
     let payload = "";
     request.on("data", (chunk) => { payload += String(chunk); });
@@ -25,12 +25,20 @@ const listen = async (handler: Handler): Promise<string> => {
       response.end(body);
     });
   });
-  await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve));
+  await new Promise<void>((resolve, reject) => {
+    const current = server!;
+    const cleanup = () => { current.off("error", onError); current.off("listening", onListening); };
+    const onError = (error: Error) => { cleanup(); reject(error); };
+    const onListening = () => { cleanup(); resolve(); };
+    current.once("error", onError);
+    current.once("listening", onListening);
+    current.listen(port, "127.0.0.1");
+  });
   const address = server!.address();
   return `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}/api/v1`;
 };
 afterEach(async () => {
-  if (server) await new Promise<void>((resolve) => server!.close(() => resolve()));
+  if (server?.listening) await new Promise<void>((resolve) => server!.close(() => resolve()));
   server = undefined;
 });
 
@@ -38,6 +46,21 @@ const client = (apiUrl: string, over: Partial<ConstructorParameters<typeof Cooli
   new CoolifyClient({ apiUrl, token: "probe-token", pollIntervalMs: 1, sleep: async () => {}, ...over });
 
 describe("the Coolify client", () => {
+  it("rejects a listen startup error immediately instead of waiting for a test timeout", async () => {
+    const occupied = createServer();
+    await new Promise<void>((resolve, reject) => {
+      occupied.once("error", reject);
+      occupied.listen(0, "127.0.0.1", resolve);
+    });
+    const address = occupied.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    try {
+      await expect(listen(() => ({ status: 200, body: "{}" }), port)).rejects.toMatchObject({ code: "EADDRINUSE" });
+    } finally {
+      await new Promise<void>((resolve) => occupied.close(() => resolve()));
+    }
+  });
+
   it("reads an application", async () => {
     const url = await listen(() => ({ status: 200, body: JSON.stringify({ uuid: "app-1", name: "commerce", build_pack: "dockercompose", git_branch: "production-deploy", git_commit_sha: null, settings: { docker_images_to_keep: 2 } }) }));
     expect(await client(url).application("app-1")).toEqual({

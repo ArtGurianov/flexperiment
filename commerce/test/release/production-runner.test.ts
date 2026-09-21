@@ -126,6 +126,8 @@ describe("what the runner refuses to start without", () => {
     CERTIFICATION_CHECKOUT_BODY: vps.config.certification.checkoutBodyPath,
     COOLIFY_API_URL: vps.config.coolify.apiUrl,
     COOLIFY_TOKEN: "test-token",
+    FLEXPERIMENT_COMMERCE_IMAGE_REPOSITORY: vps.config.composeRepositories.commerce,
+    FLEXPERIMENT_COMMERCE_WORKER_IMAGE_REPOSITORY: vps.config.composeRepositories["commerce-worker"],
     COOLIFY_APPLICATION_FRONTEND: "app-frontend",
     COOLIFY_APPLICATION_ADMIN: "app-admin",
     COOLIFY_APPLICATION_COMMERCE: "app-commerce",
@@ -210,6 +212,15 @@ describe("one cutover at a time", () => {
     mkdirSync(dirname(vps.config.lockPath), { recursive: true });
     writeFileSync(vps.config.lockPath, "not json");
     expect(() => ReleaseRunnerLock.acquire(vps.config.lockPath, now)).toThrow("RELEASE_RUNNER_LOCKED");
+  });
+
+  it("detects loss of the concrete release-lock owner", async () => {
+    const lock = ReleaseRunnerLock.acquire(vps.config.lockPath, now);
+    try {
+      await expect(lock.assertHeld(lock.ownerId)).resolves.toBeUndefined();
+      writeFileSync(vps.config.lockPath, JSON.stringify({ pid: process.pid, acquiredAt: NOW.toISOString(), owner: "other-runner" }));
+      await expect(lock.assertHeld(lock.ownerId)).rejects.toThrow("RELEASE_RUNNER_LOCK_OWNERSHIP_LOST");
+    } finally { lock.release(); }
   });
 
   it("frees the lock when the build fails after taking it", () => {

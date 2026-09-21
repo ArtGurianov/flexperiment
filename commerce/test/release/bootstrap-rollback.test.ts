@@ -6,6 +6,7 @@ import {
 import { DeploySessions, type PreDeploySnapshot, type ReleaseAuthorityStore } from "../../src/release/deploy-session";
 import { releaseAuthorityStores } from "../support/release-authority-stores";
 import { withSurface } from "../support/deploy-snapshot";
+import { RuntimeQuiescenceAuthority, type RuntimeLeaseBinding } from "../../src/release/runtime-quiescence-authority";
 
 const target = "a".repeat(40);
 const before: PreDeploySnapshot = { runtime: { frontend: "b".repeat(40), admin: "c".repeat(40), commerce: "b".repeat(40), worker: "d".repeat(40) }, controlPlane: { productionDeployRefSha: "b".repeat(40) } };
@@ -23,6 +24,7 @@ const world = (makeStore: () => ReleaseAuthorityStore, options: {
   predecessorGateOpen?: boolean;
   armed?: boolean;
   installedSha256?: string;
+  targetStillRunning?: boolean;
 } = {}) => {
   const log: string[] = [];
   let gateClosed = !options.predecessorGateOpen;
@@ -31,6 +33,13 @@ const world = (makeStore: () => ReleaseAuthorityStore, options: {
   let installed = options.installedSha256 ?? "0".repeat(64);
   clock = now;
   const receipts = new InMemoryBootstrapRollbackReceiptStore();
+  const quiescence = new RuntimeQuiescenceAuthority(() => 0);
+  const rollbackBinding: RuntimeLeaseBinding = {
+    sessionId: "rb-1", operation: "RESTORE", databasePath: "/db", databaseIdentity: { canonicalPath: "/db", dev: 1, ino: 2 },
+    sha: target, applicationUuid: "commerce-uuid", applicationResourceId: "3",
+    repositories: { commerce: "repo/commerce", "commerce-worker": "repo/worker" },
+    units: [{ service: "commerce", containerId: "c1" }, { service: "commerce-worker", containerId: "c2" }], lockOwner: "runner",
+  };
   const store = makeStore();
   const sessions = new DeploySessions(store, () => clock, 60_000);
   const session = sessions.acquireFenced({
@@ -57,7 +66,11 @@ const world = (makeStore: () => ReleaseAuthorityStore, options: {
       },
     },
     restorer: {
-      async ensureSuccessorRuntimesStopped() { log.push("stop-successor"); },
+      async ensureSuccessorRuntimesStopped() {
+        log.push("stop-successor");
+        if (options.targetStillRunning) throw new Error("COMPOSE_RUNTIME_CONTAINERS_STILL_RUNNING");
+        return { lease: quiescence.acquire(rollbackBinding), binding: rollbackBinding };
+      },
       async ensurePredecessorDatabaseRestored(archive) { log.push(`restore-db:${archive.ref}`); installed = options.restoredSha256 ?? predecessorDatabase.sha256; },
       async ensurePreDeployTopologyRestored() { log.push("restore-topology"); observed = options.restoredTopology ?? before; },
       async ensurePredecessorRuntimeRunning() { log.push("start-predecessor"); },
@@ -115,6 +128,15 @@ describe.each(releaseAuthorityStores)("bootstrap reverse handoff (%s)", (_name, 
     // diverges and this check could never be made again.
     expect(log).not.toContain("start-predecessor");
     expect(log).not.toContain("open-predecessor-gate");
+    expect(receipts.read("rb-1")!.stage).toBe("PREPARED");
+  });
+
+  it("refuses restore while the target runtime is still running", async () => {
+    const { prepare, rollback, log, receipts } = world(makeStore, { targetStillRunning: true });
+    const { envelope } = await prepare();
+
+    await expect(rollback.execute("rb-1", envelope)).rejects.toThrow("COMPOSE_RUNTIME_CONTAINERS_STILL_RUNNING");
+    expect(log).not.toContain(`restore-db:${predecessorDatabase.ref}`);
     expect(receipts.read("rb-1")!.stage).toBe("PREPARED");
   });
 

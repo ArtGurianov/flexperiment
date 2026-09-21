@@ -58,6 +58,7 @@ describe("bootstrap storage through the production composition root", () => {
       certification: { adminBaseUrl: "https://admin.invalid", publicBaseUrl: "https://public.invalid", serviceToken: "t", capabilityKey: "k1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", citySlug: "city", occurrenceScopePath: join(root, "scope.json"), checkoutBodyPath: join(root, "checkout.json") },
       predecessor: { expectedSha: predecessor, expectedLedgerLength: 1, commerceReadyUrl: "https://commerce.invalid/readyz" },
       coolify: { apiUrl: "https://coolify.invalid/api/v1", token: "t" },
+      composeRepositories: { commerce: "repo/commerce", "commerce-worker": "repo/worker" },
       applications: [
         { name: "frontend", uuid: "app-frontend", surfaces: ["frontend"] },
         { name: "admin", uuid: "app-admin", surfaces: ["admin"] },
@@ -67,6 +68,7 @@ describe("bootstrap storage through the production composition root", () => {
       deployRef: { remote: origin, ref: "refs/heads/production-deploy", worktree },
     };
     const stopped: string[] = [];
+    const runtimeEvents: string[] = [];
     const fetch = async (input: string | URL | Request) => {
       const url = String(input);
       if (url.endsWith("/servers")) return new Response(JSON.stringify([{ uuid: "server-1" }]));
@@ -76,12 +78,34 @@ describe("bootstrap storage through the production composition root", () => {
       if (url.endsWith("/readyz")) return new Response("{}", { status: 200 });
       return new Response(JSON.stringify({ source_commit: predecessor }), { status: 200 });
     };
-    const release = buildProductionRelease(config, { now: () => now, fetch: fetch as typeof globalThis.fetch, runtimeControl: { async ensureStopped(id) { stopped.push(id); } } });
+    const release = buildProductionRelease(config, {
+      now: () => now, fetch: fetch as typeof globalThis.fetch,
+      runtimeControl: {
+        async capture(binding, expectedSha) {
+          stopped.push(binding.resourceId); runtimeEvents.push("capture");
+          return [
+            { id: "1".repeat(64), service: "commerce", image: `repo/commerce:${expectedSha}`, running: true },
+            { id: "2".repeat(64), service: "commerce-worker", image: `repo/worker:${expectedSha}`, running: true },
+          ];
+        },
+        async stopAndReprove() { runtimeEvents.push("stop"); },
+        async assertStopped() { runtimeEvents.push("containers-absent"); },
+        async startCaptured() { runtimeEvents.push("start"); },
+      },
+      openHandles: { async assertNoOpenHandles() { runtimeEvents.push("handles-absent"); } },
+    });
     try {
       expect(release.bootstrapPreparation).toBeDefined();
       const prepared = await release.bootstrapPreparation!.prepare({ targetSha: target, expiresAt: "2026-09-21T06:00:00.000Z", cutoverId: "cutover-1" });
       expect(prepared.alreadyPrepared).toBe(false);
-      expect(stopped).toEqual(["3"]);
+      // A second read-back after checkpoint/gate verification is deliberate:
+      // it re-proves there are no running containers or open handles before
+      // the durable envelope authorizes the rename.
+      expect(stopped).toEqual(["3", "3"]);
+      expect(runtimeEvents).toEqual([
+        "capture", "stop", "handles-absent", "containers-absent", "handles-absent",
+        "capture", "stop", "handles-absent", "containers-absent", "handles-absent",
+      ]);
       expect(existsSync(join(archive, "cutover-1.predecessor.sqlite"))).toBe(true);
       const launched = openReadOnlyDatabase(databasePath);
       try { expect(classifySchemaLineage(readSchemaIdentity(launched))).toBe("SUPPORTED"); } finally { launched.close(); }

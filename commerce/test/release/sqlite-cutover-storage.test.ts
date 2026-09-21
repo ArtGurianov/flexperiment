@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import Database from "better-sqlite3";
-import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, renameSync, symlinkSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
@@ -8,6 +8,7 @@ import { createCutoverEnvelope } from "../../src/release/cutover-envelope";
 import { SqliteCutoverStorage } from "../../src/release/sqlite-cutover-storage";
 import { classifySchemaLineage } from "../../src/release/schema-identity";
 import { openReadOnlyDatabase, readSchemaIdentity } from "../../src/db";
+import { RuntimeQuiescenceAuthority, type RuntimeLeaseBinding, type RuntimeLeaseOperation } from "../../src/release/runtime-quiescence-authority";
 
 const sha = (path: string) => createHash("sha256").update(readFileSync(path)).digest("hex");
 const predecessor = "b".repeat(40);
@@ -25,12 +26,28 @@ const fixture = () => {
   db.pragma("journal_mode = WAL");
   db.exec("CREATE TABLE schema_migrations (version TEXT PRIMARY KEY); INSERT INTO schema_migrations VALUES ('legacy'); CREATE TABLE legacy_payload (value TEXT NOT NULL); INSERT INTO legacy_payload VALUES ('real clone payload');");
   db.close();
+  let now = 0;
+  const authority = new RuntimeQuiescenceAuthority(() => now, 10);
+  const revalidation = {
+    async assertLockHeld() {}, async assertDatabaseIdentity() {}, async assertUnitsStopped() {}, async assertNoSqliteHandles() {},
+  };
   const storage = new SqliteCutoverStorage({
     databasePath: database, replacementRoot: replacement, stateDirectory: state,
     archiveDirectory: archive, envelopeDirectory: envelopes,
-    journalPath: join(state, "release.jsonl"), lockPath: join(state, "release.lock"),
+    journalPath: join(state, "release.jsonl"), lockPath: join(state, "release.lock"), authority, revalidation,
   });
-  return { root, replacement, state, archive, envelopes, database, storage };
+  let lastIdentity = (() => { const stat = statSync(database); return { canonicalPath: realpathSync(database), dev: stat.dev, ino: stat.ino }; })();
+  const grant = (operation: RuntimeLeaseOperation, sessionId: string, override: Partial<RuntimeLeaseBinding> = {}) => {
+    if (existsSync(database)) { const stat = statSync(database); lastIdentity = { canonicalPath: realpathSync(database), dev: stat.dev, ino: stat.ino }; }
+    const binding: RuntimeLeaseBinding = {
+      sessionId, operation, databasePath: database, databaseIdentity: lastIdentity,
+      sha: operation === "PREPARE" ? predecessor : target, applicationUuid: "commerce-uuid", applicationResourceId: "3",
+      repositories: { commerce: "repo/commerce", "commerce-worker": "repo/worker" },
+      units: [{ service: "commerce", containerId: "c1" }, { service: "commerce-worker", containerId: "c2" }], lockOwner: "runner-1", ...override,
+    };
+    return { lease: authority.acquire(binding), binding };
+  };
+  return { root, replacement, state, archive, envelopes, database, storage, authority, grant, expire: () => { now = 11; }, revalidation };
 };
 
 const envelope = (database: { ref: string; sha256: string }) => createCutoverEnvelope({
@@ -41,15 +58,17 @@ const envelope = (database: { ref: string; sha256: string }) => createCutoverEnv
 
 describe("physical SQLite launch handoff", () => {
   it("takes two checked online backups, writes an archive identity before moving it, and bootstraps through db.ts", async () => {
-    const { database, archive, storage } = fixture();
-    const backups = await storage.verifyOnlineBackups("cutover-1");
+    const { database, archive, storage, grant } = fixture();
+    const backups = await storage.createVerifiedBackups("cutover-1");
     expect(backups).toHaveLength(2);
     expect(backups[0]!.sha256).toMatch(/^[a-f0-9]{64}$/);
     expect(backups[1]!.sha256).toMatch(/^[a-f0-9]{64}$/);
 
-    const planned = await storage.prepareArchive("cutover-1");
+    const first = grant("PREPARE", "cutover-1");
+    const planned = await storage.prepareArchive("cutover-1", first.lease, first.binding);
     expect(existsSync(planned.ref)).toBe(false);
-    await storage.ensureArchivedAndFresh(envelope(planned));
+    const second = grant("PREPARE", "cutover-1");
+    await storage.ensureArchivedAndFresh(envelope(planned), second.lease, second.binding);
 
     expect(sha(join(archive, "cutover-1.predecessor.sqlite"))).toBe(planned.sha256);
     const launched = openReadOnlyDatabase(database);
@@ -57,55 +76,67 @@ describe("physical SQLite launch handoff", () => {
   });
 
   it("resumes after envelope-before-rename and after fresh-db-before-deploy without a second move", async () => {
-    const { database, archive, storage } = fixture();
-    const planned = await storage.prepareArchive("cutover-1");
+    const { database, archive, storage, grant } = fixture();
+    const first = grant("PREPARE", "cutover-1");
+    const planned = await storage.prepareArchive("cutover-1", first.lease, first.binding);
     const handoff = envelope(planned);
     // This is the durable-envelope / before-rename crash: no archive exists.
-    await storage.ensureArchivedAndFresh(handoff);
+    let next = grant("PREPARE", "cutover-1");
+    await storage.ensureArchivedAndFresh(handoff, next.lease, next.binding);
     const firstArchiveHash = sha(join(archive, "cutover-1.predecessor.sqlite"));
-    await storage.ensureArchivedAndFresh(handoff);
+    next = grant("PREPARE", "cutover-1");
+    await storage.ensureArchivedAndFresh(handoff, next.lease, next.binding);
     expect(sha(join(archive, "cutover-1.predecessor.sqlite"))).toBe(firstArchiveHash);
     const launched = openReadOnlyDatabase(database);
     try { expect(classifySchemaLineage(readSchemaIdentity(launched))).toBe("SUPPORTED"); } finally { launched.close(); }
   });
 
   it("resumes after an atomic rename completed but before fresh db.ts bootstrap", async () => {
-    const { database, storage } = fixture();
-    const planned = await storage.prepareArchive("cutover-1");
+    const { database, storage, grant } = fixture();
+    let next = grant("PREPARE", "cutover-1");
+    const planned = await storage.prepareArchive("cutover-1", next.lease, next.binding);
     // Simulate the power loss after rename/fsync but before fresh-db creation.
     renameSync(database, planned.ref);
-    await storage.ensureArchivedAndFresh(envelope(planned));
+    next = grant("PREPARE", "cutover-1");
+    await storage.ensureArchivedAndFresh(envelope(planned), next.lease, next.binding);
     const launched = openReadOnlyDatabase(database);
     try { expect(classifySchemaLineage(readSchemaIdentity(launched))).toBe("SUPPORTED"); } finally { launched.close(); }
   });
 
   it("never overwrites an archive target and refuses an archive paired with a still-live legacy database", async () => {
-    const { database, archive, storage } = fixture();
-    const planned = await storage.prepareArchive("cutover-1");
+    const { database, archive, storage, grant } = fixture();
+    let next = grant("PREPARE", "cutover-1");
+    const planned = await storage.prepareArchive("cutover-1", next.lease, next.binding);
     const copied = join(archive, "cutover-1.predecessor.sqlite");
     copyFileSync(database, copied);
-    await expect(storage.prepareArchive("cutover-1")).rejects.toMatchObject({ code: "CUTOVER_STORAGE_ARCHIVE_ALREADY_EXISTS" });
-    await expect(storage.ensureArchivedAndFresh(envelope(planned))).rejects.toMatchObject({ code: "CUTOVER_STORAGE_ARCHIVE_AND_LEGACY_PRESENT" });
+    next = grant("PREPARE", "cutover-1");
+    await expect(storage.prepareArchive("cutover-1", next.lease, next.binding)).rejects.toMatchObject({ code: "CUTOVER_STORAGE_ARCHIVE_ALREADY_EXISTS" });
+    next = grant("PREPARE", "cutover-1");
+    await expect(storage.ensureArchivedAndFresh(envelope(planned), next.lease, next.binding)).rejects.toMatchObject({ code: "CUTOVER_STORAGE_ARCHIVE_AND_LEGACY_PRESENT" });
   });
 
   it("archives the successor, then restores the predecessor through a checked temporary file without consuming the archive", async () => {
-    const { archive, database, storage } = fixture();
-    const planned = await storage.prepareArchive("cutover-1");
-    await storage.ensureArchivedAndFresh(envelope(planned));
-    const successor = await storage.archiveSuccessor("rollback-1");
+    const { archive, database, storage, grant } = fixture();
+    let next = grant("PREPARE", "cutover-1");
+    const planned = await storage.prepareArchive("cutover-1", next.lease, next.binding);
+    next = grant("PREPARE", "cutover-1");
+    await storage.ensureArchivedAndFresh(envelope(planned), next.lease, next.binding);
+    next = grant("RESTORE", "rollback-1");
+    const successor = await storage.archiveSuccessor("rollback-1", next.lease, next.binding);
     expect(existsSync(database)).toBe(false);
-    await storage.restorePredecessor({ ref: planned.ref, sha256: planned.sha256 });
+    next = grant("RESTORE", "rollback-1");
+    await storage.restorePredecessor("rollback-1", { ref: planned.ref, sha256: planned.sha256 }, next.lease, next.binding);
     expect(storage.restedFileSha256()).toBe(planned.sha256);
     expect(sha(planned.ref)).toBe(planned.sha256);
     expect(sha(join(archive, "rollback-1.successor.sqlite"))).toBe(successor.sha256);
   });
 
   it("rejects state under the replaceable namespace and any symlinked path", () => {
-    const { root, replacement, state, archive, envelopes, database } = fixture();
+    const { root, replacement, state, archive, envelopes, database, authority, revalidation } = fixture();
     expect(() => new SqliteCutoverStorage({
       databasePath: database, replacementRoot: replacement, stateDirectory: replacement,
       archiveDirectory: archive, envelopeDirectory: envelopes,
-      journalPath: join(state, "release.jsonl"), lockPath: join(state, "release.lock"),
+      journalPath: join(state, "release.jsonl"), lockPath: join(state, "release.lock"), authority, revalidation,
     })).toThrow("CUTOVER_STORAGE_STATE_NAMESPACE_INVALID");
 
     const alias = join(root, "state-alias");
@@ -113,21 +144,110 @@ describe("physical SQLite launch handoff", () => {
     expect(() => new SqliteCutoverStorage({
       databasePath: database, replacementRoot: replacement, stateDirectory: alias,
       archiveDirectory: archive, envelopeDirectory: envelopes,
-      journalPath: join(state, "release.jsonl"), lockPath: join(state, "release.lock"),
+      journalPath: join(state, "release.jsonl"), lockPath: join(state, "release.lock"), authority, revalidation,
     })).toThrow("CUTOVER_STORAGE_SYMLINK_REFUSED");
   });
 
   it("refuses to move a main file while a live WAL writer prevents a clean checkpoint", async () => {
-    const { database, storage } = fixture();
+    const { database, storage, grant } = fixture();
     const writer = new Database(database);
     try {
       writer.pragma("journal_mode = WAL");
       writer.exec("BEGIN IMMEDIATE");
       writer.prepare("INSERT INTO legacy_payload VALUES ('uncheckpointed')").run();
-      await expect(storage.prepareArchive("cutover-1")).rejects.toMatchObject({ code: "CUTOVER_STORAGE_WAL_STILL_ACTIVE" });
+      const next = grant("PREPARE", "cutover-1");
+      await expect(storage.prepareArchive("cutover-1", next.lease, next.binding)).rejects.toMatchObject({ code: "CUTOVER_STORAGE_WAL_STILL_ACTIVE" });
     } finally {
       writer.exec("ROLLBACK");
       writer.close();
     }
+  });
+
+  it("rejects a lease issued by another authority before any SQLite mutation", async () => {
+    const { storage, grant, database } = fixture();
+    const before = sha(database);
+    const expected = grant("PREPARE", "cutover-1");
+    const foreignAuthority = new RuntimeQuiescenceAuthority(() => 0);
+    const foreignLease = foreignAuthority.acquire(expected.binding);
+    await expect(storage.prepareArchive("cutover-1", foreignLease, expected.binding)).rejects.toMatchObject({ code: "RUNTIME_LEASE_INVALID" });
+    expect(sha(database)).toBe(before);
+    // The local authority still issues a capability after the refusal.
+    const local = grant("PREPARE", "cutover-1");
+    await expect(storage.prepareArchive("cutover-1", local.lease, local.binding)).resolves.toBeDefined();
+  });
+
+  it("rejects expired, wrong-direction, and mismatched bindings with zero durable mutation", async () => {
+    const expired = fixture();
+    const expiredGrant = expired.grant("PREPARE", "cutover-1");
+    const before = sha(expired.database);
+    expired.expire();
+    await expect(expired.storage.prepareArchive("cutover-1", expiredGrant.lease, expiredGrant.binding))
+      .rejects.toMatchObject({ code: "RUNTIME_LEASE_EXPIRED" });
+    expect(sha(expired.database)).toBe(before);
+
+    const wrongDirection = fixture();
+    const wrongDirectionBefore = sha(wrongDirection.database);
+    const restore = wrongDirection.grant("RESTORE", "cutover-1");
+    await expect(wrongDirection.storage.prepareArchive("cutover-1", restore.lease, restore.binding))
+      .rejects.toMatchObject({ code: "CUTOVER_STORAGE_QUIESCENCE_DIRECTION_MISMATCH" });
+    expect(sha(wrongDirection.database)).toBe(wrongDirectionBefore);
+
+    const mismatch = fixture();
+    const original = mismatch.grant("PREPARE", "cutover-1");
+    const changed: RuntimeLeaseBinding = { ...original.binding, sha: "c".repeat(40) };
+    const mismatchBefore = sha(mismatch.database);
+    await expect(mismatch.storage.prepareArchive("cutover-1", original.lease, changed))
+      .rejects.toMatchObject({ code: "RUNTIME_LEASE_BINDING_MISMATCH" });
+    expect(sha(mismatch.database)).toBe(mismatchBefore);
+  });
+
+  it("destroys the token after consume even when storage fails, and accepts a new lease for retry", async () => {
+    const { archive, database, storage, grant } = fixture();
+    copyFileSync(database, join(archive, "cutover-1.predecessor.sqlite"));
+    const consumed = grant("PREPARE", "cutover-1");
+    await expect(storage.prepareArchive("cutover-1", consumed.lease, consumed.binding))
+      .rejects.toMatchObject({ code: "CUTOVER_STORAGE_ARCHIVE_ALREADY_EXISTS" });
+    await expect(storage.prepareArchive("cutover-1", consumed.lease, consumed.binding))
+      .rejects.toMatchObject({ code: "RUNTIME_LEASE_INVALID" });
+
+    const retry = grant("PREPARE", "cutover-2");
+    await expect(storage.prepareArchive("cutover-2", retry.lease, retry.binding)).resolves.toBeDefined();
+  });
+
+  it("never crosses PREPARE and RESTORE capabilities", async () => {
+    const prepareFixture = fixture();
+    const prepare = prepareFixture.grant("PREPARE", "rollback-1");
+    await expect(prepareFixture.storage.restorePredecessor("rollback-1", { ref: join(prepareFixture.archive, "missing.sqlite"), sha256: "0".repeat(64) }, prepare.lease, prepare.binding))
+      .rejects.toMatchObject({ code: "CUTOVER_STORAGE_QUIESCENCE_DIRECTION_MISMATCH" });
+
+    const restoreFixture = fixture();
+    const restore = restoreFixture.grant("RESTORE", "cutover-1");
+    await expect(restoreFixture.storage.prepareArchive("cutover-1", restore.lease, restore.binding))
+      .rejects.toMatchObject({ code: "CUTOVER_STORAGE_QUIESCENCE_DIRECTION_MISMATCH" });
+  });
+
+  it("allows at most one parallel mutation attempt with one token", async () => {
+    const { storage, grant } = fixture();
+    const shared = grant("PREPARE", "cutover-1");
+    const results = await Promise.allSettled([
+      storage.prepareArchive("cutover-1", shared.lease, shared.binding),
+      storage.prepareArchive("cutover-1", shared.lease, shared.binding),
+    ]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    const refused = results.find((result) => result.status === "rejected");
+    expect(refused).toMatchObject({ reason: { code: "RUNTIME_LEASE_INVALID" } });
+  });
+
+  it("does not write the envelope callback before successful consume", async () => {
+    const local = fixture();
+    const predecessorIdentity = local.grant("PREPARE", "cutover-1");
+    const planned = await local.storage.prepareArchive("cutover-1", predecessorIdentity.lease, predecessorIdentity.binding);
+    const expected = local.grant("PREPARE", "cutover-1");
+    const foreignAuthority = new RuntimeQuiescenceAuthority(() => 0);
+    const foreign = foreignAuthority.acquire(expected.binding);
+    let writes = 0;
+    await expect(local.storage.ensureArchivedAndFresh(envelope(planned), foreign, expected.binding, () => { writes += 1; }))
+      .rejects.toMatchObject({ code: "RUNTIME_LEASE_INVALID" });
+    expect(writes).toBe(0);
   });
 });

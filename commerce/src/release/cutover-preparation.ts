@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { createCutoverEnvelope, type CutoverEnvelope, type PredecessorDatabase } from "./cutover-envelope";
 import { snapshotEquals, type DeploymentObservation } from "./deploy-session";
 import { isSourceCommit } from "./runtime-identity";
+import type { RuntimeLeaseGrant } from "./runtime-quiescer";
 
 /**
  * The predecessor half of the launch handoff.
@@ -27,8 +28,9 @@ export interface PredecessorSalesFence {
   isClosed(): Promise<boolean>;
 }
 
-export interface WriterQuiescer {
-  ensureQuiesced(): Promise<void>;
+export interface RuntimeQuiescer {
+  acquire(cutoverId: string): Promise<RuntimeLeaseGrant>;
+  abortBeforeArchive(grant: RuntimeLeaseGrant): Promise<void>;
 }
 
 export interface FinalCensus {
@@ -50,19 +52,19 @@ export interface PredecessorDatabaseArchiver {
    * running. They are a pre-stop restore probe, not the archive handed to the
    * successor.
    */
-  verifyOnlineBackups(cutoverId: string): Promise<void>;
+  createVerifiedBackups(cutoverId: string): Promise<void>;
   /**
    * Runs only after writers are quiet. It checkpoints the live SQLite bundle
    * and returns the archive identity it is prepared to move, but does not move
    * it yet: the envelope must become durable first.
    */
-  prepareArchive(cutoverId: string): Promise<PredecessorDatabase>;
+  prepareArchive(cutoverId: string, grant: RuntimeLeaseGrant): Promise<PredecessorDatabase>;
   /**
    * Completes an envelope that already exists. This is deliberately an ensure,
    * so a retry after the durable-envelope/before-rename crash resumes the
    * physical handoff instead of treating the old database as a fresh cutover.
    */
-  ensureArchivedAndFresh(envelope: CutoverEnvelope): Promise<void>;
+  ensureArchivedAndFresh(envelope: CutoverEnvelope, grant: RuntimeLeaseGrant, writeEnvelope?: () => void | Promise<void>): Promise<void>;
 }
 
 export interface CutoverEnvelopeWriter {
@@ -72,7 +74,7 @@ export interface CutoverEnvelopeWriter {
 
 export type PreparationPorts = {
   readonly fence: PredecessorSalesFence;
-  readonly quiescer: WriterQuiescer;
+  readonly quiescer: RuntimeQuiescer;
   readonly census: FinalCensus;
   readonly archiver: PredecessorDatabaseArchiver;
   readonly topology: { observe(): Promise<DeploymentObservation> };
@@ -96,12 +98,6 @@ export type PreparationResult = {
 export class BootstrapCutoverPreparation {
   constructor(private readonly ports: PreparationPorts) {}
 
-  /**
-   * Nothing is reopened on failure. A census blocker, a failed archive or a
-   * drifted topology all leave sales closed: an availability failure, but an
-   * unambiguous one. Resuming is a repeat of this call; abandoning the cutover
-   * is an operator's decision made outside this protocol.
-   */
   async prepare(request: PreparationRequest): Promise<PreparationResult> {
     const now = (this.ports.clock ?? (() => new Date()))();
     if (!isSourceCommit(request.targetSha)) throw new CutoverPreparationError("CUTOVER_TARGET_SHA_INVALID", request.targetSha);
@@ -128,8 +124,8 @@ export class BootstrapCutoverPreparation {
       // in the next line of a previous run must resume through the same
       // quiescence boundary before the old database can be moved.
       await this.ports.fence.ensureClosed();
-      await this.ports.quiescer.ensureQuiesced();
-      await this.ports.archiver.ensureArchivedAndFresh(existing);
+      const grant = await this.ports.quiescer.acquire(cutoverId);
+      await this.ports.archiver.ensureArchivedAndFresh(existing, grant);
       return { envelope: existing, alreadyPrepared: true };
     }
 
@@ -137,40 +133,58 @@ export class BootstrapCutoverPreparation {
 
     await this.ports.fence.ensureClosed();
     const beforeQuiesce = await this.ports.topology.observe();
-    await this.ports.archiver.verifyOnlineBackups(cutoverId);
+    await this.ports.archiver.createVerifiedBackups(cutoverId);
     // Once the real runtime is stopped there is intentionally no `/readyz` or
     // instance evidence left to read. Compare the two live observations before
     // that boundary instead; after it, quiescence plus the checkpointed SQLite
     // archive is the proof that no writer can move the frozen predecessor.
     const beforeStop = await this.ports.topology.observe();
     if (!snapshotEquals(beforeQuiesce, beforeStop)) throw new CutoverPreparationError("PREDECESSOR_TOPOLOGY_DRIFTED");
-    await this.ports.quiescer.ensureQuiesced();
-
+    // This final read remains before the quiescer, because the production
+    // quiescer closes the controller's own SQLite handle before it inspects
+    // host handles. It therefore cannot accidentally leave a runner-held
+    // connection as an exception to its "no handles" proof.
     const census = await this.ports.census.inspect();
     if (!census.admitted) throw new CutoverPreparationError("FINAL_CENSUS_BLOCKED", census.blockers.join(","));
-
-    const predecessorDatabase = await this.ports.archiver.prepareArchive(cutoverId);
-
-    // Archiving takes time, and the gate could have been opened during it. A
-    // backup taken behind a gate that is now open is not the quiet snapshot it
-    // is about to be treated as.
     if (!(await this.ports.fence.isClosed())) throw new CutoverPreparationError("PREDECESSOR_GATE_NOT_CLOSED");
 
-    const envelope = createCutoverEnvelope({
-      cutoverId, adoptionNonce,
-      targetSha: request.targetSha,
-      // A bootstrap launch is a maintenance cutover by definition; there is no
-      // rolling variant of replacing the database, so no caller may ask for one.
-      mode: "MAINTENANCE_CUTOVER",
-      preDeployTopology: beforeStop,
-      predecessorDatabase,
-      createdAt: now.toISOString(),
-      expiresAt: request.expiresAt,
-    });
-    await this.ports.envelopes.writeOnce(envelope);
-    // This must stay after writeOnce. The archive name and digest have been
-    // frozen in an fsync'd envelope before the irreversible filesystem rename.
-    await this.ports.archiver.ensureArchivedAndFresh(envelope);
-    return { envelope, alreadyPrepared: false };
+    let grant = await this.ports.quiescer.acquire(cutoverId);
+    let envelopeWritten = false;
+    try {
+      const predecessorDatabase = await this.ports.archiver.prepareArchive(cutoverId, grant);
+
+      // The checkpoint may take time. Re-read the gate and then re-establish
+      // quiescence, because the read itself briefly opens a SQLite handle and
+      // must not become an unexamined exception to the host-handle proof.
+      if (!(await this.ports.fence.isClosed())) throw new CutoverPreparationError("PREDECESSOR_GATE_NOT_CLOSED");
+      grant = await this.ports.quiescer.acquire(cutoverId);
+
+      const envelope = createCutoverEnvelope({
+        cutoverId, adoptionNonce,
+        targetSha: request.targetSha,
+        // A bootstrap launch is a maintenance cutover by definition; there is no
+        // rolling variant of replacing the database, so no caller may ask for one.
+        mode: "MAINTENANCE_CUTOVER",
+        preDeployTopology: beforeStop,
+        predecessorDatabase,
+        createdAt: now.toISOString(),
+        expiresAt: request.expiresAt,
+      });
+      // Storage consumes and revalidates the second lease before invoking this
+      // durable write, so neither the envelope nor the archive can be mutated
+      // with a stale capability.
+      await this.ports.archiver.ensureArchivedAndFresh(envelope, grant, async () => {
+        await this.ports.envelopes.writeOnce(envelope);
+        envelopeWritten = true;
+      });
+      return { envelope, alreadyPrepared: false };
+    } catch (error) {
+      // Before the intent is durable no filesystem move has permission to be
+      // completed. A normal failure therefore restores the stopped predecessor
+      // pair (but never opens its gate). A process death has no catch path; the
+      // next invocation uses the same cutover id and proves quiescence anew.
+      if (!envelopeWritten) await this.ports.quiescer.abortBeforeArchive(grant);
+      throw error;
+    }
   }
 }

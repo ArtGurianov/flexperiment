@@ -39,7 +39,14 @@ const APPLICATIONS = [
 ];
 
 const listen = async (server: Server): Promise<string> => {
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await new Promise<void>((resolve, reject) => {
+    const cleanup = () => { server.off("error", onError); server.off("listening", onListening); };
+    const onError = (error: Error) => { cleanup(); reject(error); };
+    const onListening = () => { cleanup(); resolve(); };
+    server.once("error", onError);
+    server.once("listening", onListening);
+    server.listen(0, "127.0.0.1");
+  });
   const address = server.address();
   return `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`;
 };
@@ -144,6 +151,7 @@ export const harness = async (root: string): Promise<Harness> => {
         checkoutBodyPath: join(root, "certification-checkout.json"),
       },
       coolify: { apiUrl: `${coolifyUrl}/api/v1`, token: "test-token" },
+      composeRepositories: { commerce: "repo/commerce", "commerce-worker": "repo/worker" },
       applications: APPLICATIONS.map((application) => ({ ...application, surfaces: [...application.surfaces] })),
       topology: {
         frontendReleaseUrl: `${descriptorUrl}/release.json`,
