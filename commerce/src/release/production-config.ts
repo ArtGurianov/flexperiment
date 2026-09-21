@@ -70,6 +70,15 @@ export type ProductionReleaseConfig = {
     readonly occurrenceScopePath: string;
     readonly checkoutBodyPath: string;
   };
+  /**
+   * The one predecessor a launch cutover may start from. Absent for every
+   * ordinary release, which never crosses a lineage boundary.
+   */
+  readonly predecessor?: {
+    readonly expectedSha: string;
+    readonly expectedLedgerLength: number;
+    readonly commerceReadyUrl: string;
+  };
   readonly coolify: { readonly apiUrl: string; readonly token: string };
   readonly applications: readonly SurfaceApplicationConfig[];
   readonly topology: { readonly frontendReleaseUrl: string; readonly adminReleaseUrl: string };
@@ -189,6 +198,24 @@ export const loadCandidatePublicationConfig = (env: NodeJS.ProcessEnv = process.
   };
 };
 
+/**
+ * The predecessor's identity, stated rather than discovered.
+ *
+ * All three or none: a bridge configured with two of them would be one that
+ * reads whatever legacy database it is pointed at, and this one is bound to a
+ * commit somebody reviewed.
+ */
+const predecessor = (env: NodeJS.ProcessEnv, problems: string[]): ProductionReleaseConfig["predecessor"] => {
+  const sha = (env.FLEXPERIMENT_PREDECESSOR_SHA ?? "").trim();
+  const ledger = (env.FLEXPERIMENT_PREDECESSOR_LEDGER ?? "").trim();
+  const ready = (env.FLEXPERIMENT_PREDECESSOR_READY_URL ?? "").trim();
+  if (!sha && !ledger && !ready) return undefined;
+  if (!/^[a-f0-9]{40}$/.test(sha)) problems.push("FLEXPERIMENT_PREDECESSOR_SHA is not a commit");
+  if (!/^\d{1,4}$/.test(ledger)) problems.push("FLEXPERIMENT_PREDECESSOR_LEDGER is not a migration count");
+  httpUrl(ready, "FLEXPERIMENT_PREDECESSOR_READY_URL", problems);
+  return { expectedSha: sha, expectedLedgerLength: Number(ledger), commerceReadyUrl: ready };
+};
+
 export const loadProductionReleaseConfig = (env: NodeJS.ProcessEnv = process.env): ProductionReleaseConfig => {
   const value = demand(env, REQUIRED);
   const problems: string[] = [];
@@ -234,6 +261,7 @@ export const loadProductionReleaseConfig = (env: NodeJS.ProcessEnv = process.env
       occurrenceScopePath: value("CERTIFICATION_OCCURRENCE_SCOPE"),
       checkoutBodyPath: value("CERTIFICATION_CHECKOUT_BODY"),
     },
+    predecessor: predecessor(env, problems),
     coolify: { apiUrl: value("COOLIFY_API_URL"), token: value("COOLIFY_TOKEN") },
     applications: APPLICATIONS.map(([variable, name, surfaces]) => ({ name, uuid: value(variable), surfaces })),
     topology: {

@@ -296,3 +296,30 @@ describe("looking at production is a different program from changing it", () => 
     }
   });
 });
+
+describe("the predecessor bridge is present only while there is a predecessor", () => {
+  it("is absent on a launched database, so no later release can reach for it", () => {
+    // The harness migrates the database, so the launch lineage is already
+    // there. The bridge is not gated by a flag - it is simply not in the
+    // composition.
+    const release = buildProductionRelease({ ...vps.config, predecessor: {
+      expectedSha: "7".repeat(40), expectedLedgerLength: 61,
+      commerceReadyUrl: "https://commerce.invalid/readyz",
+    } }, { now });
+    try {
+      expect(release.ports.predecessor).toBeUndefined();
+    } finally {
+      release.close();
+    }
+  });
+
+  it("is absent when no predecessor is configured at all", () => {
+    const release = buildProductionRelease(vps.config, { now });
+    try {
+      expect(release.ports.predecessor).toBeUndefined();
+      expect(vps.config.predecessor).toBeUndefined();
+    } finally {
+      release.close();
+    }
+  });
+});

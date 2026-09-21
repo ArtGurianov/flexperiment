@@ -67,7 +67,27 @@ export interface RecoveryDriver {
 
 export type ReleasePorts = {
   readonly sessions: DeploySessions;
+  /**
+   * What production is, on the lineage this release is converging onto.
+   *
+   * It cannot answer for the predecessor: the launch schema's evidence table
+   * arrives with the baseline, so on the database a cutover starts from this
+   * reader throws. See `predecessor` below.
+   */
   readonly topology: TopologyReader;
+  /**
+   * The predecessor, for the two phases that have to read the old lineage: the
+   * snapshot a cutover freezes, and the proof a bootstrap rollback restored
+   * exactly that.
+   *
+   * Chosen by phase and never by trying one reader and catching the other's
+   * failure. A reader picked by whether a table happens to exist is a
+   * compatibility branch that outlives the thing it was for; this one is named
+   * at its two call sites and is deleted with the predecessor runbook.
+   *
+   * Absent for a rolling release, which never crosses a lineage boundary.
+   */
+  readonly predecessor?: TopologyReader;
   readonly evidence: RuntimeEvidenceReader;
   readonly deployment: DeploymentDriver;
   readonly certification?: CertificationDriver;
@@ -159,7 +179,12 @@ export class ReleaseOrchestrator {
     // Captured before the gate closes and before anything is deployed, so a
     // failure can be judged against what production was actually serving. The
     // session, that snapshot and the closed gate are created together.
-    const before = await this.ports.topology.observe();
+    //
+    // Read through the predecessor bridge when one is configured: a launch
+    // cutover starts on the old lineage, where the canonical reader has no
+    // evidence table to read. An ordinary maintenance release on the launch
+    // lineage has no predecessor reader and uses the canonical one.
+    const before = await this.capturePredecessor(request.candidate.releaseClass);
     const session = sessions.acquireFenced({
       id: request.sessionId, ownerId: request.ownerId, mode: "MAINTENANCE_CUTOVER",
       targetSha: request.candidate.sha, candidateId: request.candidate.id, adoptedCutoverId: request.adoptedCutoverId,
@@ -200,6 +225,20 @@ export class ReleaseOrchestrator {
       return this.recovery(sessionId, request.ownerId, `CERTIFICATION_NOT_ISSUED:${failureCode(error)}`);
     }
     return { kind: "AWAITING_OPERATOR", session: this.ports.sessions.read(sessionId)!, capability };
+  }
+
+  /**
+   * The snapshot a cutover freezes, from the reader that can see the lineage it
+   * is leaving.
+   *
+   * A launch baseline requires the bridge rather than falling back to it: the
+   * canonical reader would throw on the predecessor database, and a cutover
+   * that began without a snapshot would have no way to prove a safe abort.
+   */
+  private async capturePredecessor(releaseClass: ReleaseCandidate["releaseClass"]): Promise<DeploymentObservation> {
+    if (releaseClass !== "LAUNCH_BASELINE") return this.ports.topology.observe();
+    if (!this.ports.predecessor) throw new ReleaseOrchestrationError("LAUNCH_CUTOVER_REQUIRES_PREDECESSOR_READER");
+    return this.ports.predecessor.observe();
   }
 
   /**

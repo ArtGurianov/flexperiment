@@ -16,6 +16,8 @@ import { openControllingTerminal } from "../certification/operator-terminal";
 import { readOperatorOccurrence } from "../certification/operator-scope";
 import { GitCommitTreeReader, type CommitTreeReader } from "./candidate-publication";
 import { activeLegalBinding } from "./legal-binding";
+import { LegacyPredecessorTopologyReader } from "./legacy-predecessor-topology";
+import { readSchemaIdentity } from "../db";
 import { DatabaseRuntimeEvidenceReader, ProductionTopologyReader } from "./topology-reader";
 
 /**
@@ -283,6 +285,27 @@ export const buildProductionRelease = (config: ProductionReleaseConfig, options:
     };
 
     const opened = db;
+    /**
+     * The predecessor bridge, or nothing.
+     *
+     * Built only against a database that is still pre-launch. After the cutover
+     * the launch lineage exists, this answers undefined, and a launch cutover
+     * against an already-launched database refuses for want of a reader rather
+     * than reading one lineage with the other's assumptions.
+     */
+    const predecessorReader = (): LegacyPredecessorTopologyReader | undefined => {
+      if (!config.predecessor) return undefined;
+      const identity = readSchemaIdentity(opened);
+      if (identity.tableNames.includes("schema_identity")) return undefined;
+      return new LegacyPredecessorTopologyReader({
+        frontendReleaseUrl: config.topology.frontendReleaseUrl,
+        adminReleaseUrl: config.topology.adminReleaseUrl,
+        commerceReadyUrl: config.predecessor.commerceReadyUrl,
+        db: opened, deployRef, now, fetch: options.fetch,
+        expectedPredecessorSha: config.predecessor.expectedSha,
+        expectedLedgerLength: config.predecessor.expectedLedgerLength,
+      });
+    };
     const authority = new SqliteReleaseAuthorityStore(opened);
     const candidatesStore = new FileReleaseCandidateStore(config.candidateDirectory);
     /** The release a session is for, read back from the session rather than restated. */
@@ -307,6 +330,11 @@ export const buildProductionRelease = (config: ProductionReleaseConfig, options:
         db, deployRef, now, fetch: options.fetch,
       }),
       evidence: new DatabaseRuntimeEvidenceReader({ db, now, legal: () => activeLegalBinding(opened) }),
+      // Present only while the database is still the predecessor's. Once the
+      // cutover has run, the launch lineage is there and this is undefined, so
+      // the bridge is not something a later release could reach for - it is
+      // absent from the composition entirely.
+      predecessor: predecessorReader(),
       deployment: new CoolifyDeploymentDriver(coolify),
       recovery: new CoolifyRecoveryDriver(coolify),
       // Built lazily, because it needs the candidate this deploy is for. The

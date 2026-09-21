@@ -38,6 +38,7 @@ const harness = (options: {
   deployFails?: string;
   certifyFails?: string;
   preflightFails?: string;
+  withoutPredecessor?: boolean;
   evidence?: ReleaseReadinessEvidence;
 } ) => {
   const log: string[] = [];
@@ -50,6 +51,11 @@ const harness = (options: {
     clock: () => now,
     topology: {
       async observe() { last = queue.shift() ?? last; log.push(`observe:${last.runtime.commerce}`); return last; },
+    },
+    // A launch cutover captures its snapshot from the lineage it is leaving,
+    // where the canonical reader has no evidence table to read.
+    predecessor: options.withoutPredecessor ? undefined : {
+      async observe() { last = queue.shift() ?? last; log.push(`predecessor:${last.runtime.commerce}`); return last; },
     },
     evidence: { async read() { log.push("readiness"); return options.evidence ?? admittedEvidence(); } },
     deployment: {
@@ -76,7 +82,7 @@ describe("maintenance cutover ordering", () => {
     const prepared = await orchestrator.runMaintenanceCutover(cutoverRequest);
 
     expect(prepared.kind).toBe("AWAITING_OPERATOR");
-    expect(log).toEqual([`observe:${old}`, `deploy:${target}`, `observe:${target}`, "readiness", "capability-issued"]);
+    expect(log).toEqual([`predecessor:${old}`, `deploy:${target}`, `observe:${target}`, "readiness", "capability-issued"]);
     // Issuing a capability is a record this system keeps about itself. Nothing
     // has left it, so the archived database is still a truthful account and a
     // rollback is still legal - which is exactly what a run the operator never
@@ -99,7 +105,7 @@ describe("maintenance cutover ordering", () => {
     // point of no return is crossed immediately before the payment, not before
     // the capability that might never be spent.
     expect(log).toEqual([
-      `observe:${old}`, `deploy:${target}`, `observe:${target}`, "readiness",
+      `predecessor:${old}`, `deploy:${target}`, `observe:${target}`, "readiness",
       // Preflight is read-only and sits before the point of no return: an
       // unreachable runtime or an absent operator is an ordinary refusal, not
       // a release that can no longer be rolled back.
@@ -164,6 +170,17 @@ describe("maintenance cutover ordering", () => {
       expect(outcome.session.rollbackAuthority).toBe("NEW_LINEAGE_ONLY");
       expect(log).toEqual(expect.arrayContaining(["preflight", "certify"]));
     });
+  });
+
+  it("refuses a launch cutover with no reader for the lineage it is leaving", async () => {
+    // Not a fallback: the canonical reader would throw on the predecessor
+    // database, and a cutover that began without a snapshot would have nothing
+    // to prove a safe abort against.
+    const { log, store, orchestrator } = harness({ topologies: [topology(old), topology(target)], withoutPredecessor: true });
+
+    await expect(orchestrator.runMaintenanceCutover(cutoverRequest)).rejects.toThrow("LAUNCH_CUTOVER_REQUIRES_PREDECESSOR_READER");
+    expect(log).toEqual([]);
+    expect(store.deploymentGate().closed).toBe(false);
   });
 
   it("safe-aborts and reopens sales when the build fails before any surface moves", async () => {
