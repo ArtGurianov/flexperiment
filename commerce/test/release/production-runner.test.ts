@@ -8,6 +8,7 @@ import { buildProductionRelease, buildReadOnlyRelease, holdSalesOnSignal, Releas
 import Database from "better-sqlite3";
 import { harness, recordInstance, type Harness } from "../support/production-runner-harness";
 import { TEST_CAPABILITY_KEY } from "../support/certification-secret";
+import type { ReleaseCandidate } from "../../src/release/candidate";
 
 const NOW = new Date("2026-09-20T12:00:00.000Z");
 const now = () => NOW;
@@ -24,6 +25,47 @@ afterEach(async () => { await vps.close(); });
 const journal = (path: string) => readFileSync(path, "utf8").trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
 
 describe("the production composition root", () => {
+  it("does not cache main before the lock and refreshes it only at consumption admission", async () => {
+    const candidate: ReleaseCandidate = {
+      id: vps.targetSha,
+      sha: vps.targetSha,
+      releaseClass: "LAUNCH_BASELINE",
+      expectation: {
+        schemaInventory: `inventory-sha256:${"1".repeat(64)}`,
+        legalVersion: "2026-08-28.1",
+        legalManifestSha256: "2".repeat(64),
+      },
+    };
+    let main = vps.targetSha;
+    const gitCalls: string[][] = [];
+    const manifest = readFileSync("commerce/legal/production-manifest.json", "utf8");
+    const git = async (args: readonly string[]) => {
+      gitCalls.push([...args]);
+      if (args[0] === "fetch" || args[0] === "merge-base") return "";
+      if (args[0] === "rev-parse") return main;
+      if (args[0] === "ls-tree") return "0001_launch_baseline.sql\n";
+      if (args[0] === "show") return manifest;
+      throw new Error(`unexpected git call: ${args.join(" ")}`);
+    };
+
+    const release = buildProductionRelease(vps.config, { now, git });
+    try {
+      // Acquiring the composition (and therefore its release lock) performs no
+      // main lookup. A value observed before the lock cannot authorize work.
+      expect(gitCalls).toEqual([]);
+      expect(release.lock.ownerId).toBeTruthy();
+      main = "d".repeat(40);
+
+      await expect(release.launchBaselineAdmission.admit(candidate))
+        .rejects.toThrow("LAUNCH_BASELINE_MUST_BE_MAIN_TIP");
+      expect(gitCalls[0]).toEqual([
+        "fetch", "--no-tags", vps.config.deployRef.remote, "main:refs/remotes/origin/main",
+      ]);
+    } finally {
+      release.close();
+    }
+  });
+
   it("builds every port and reads production through them", async () => {
     recordInstance(vps.db, "COMMERCE", "api-1", vps.preSha, NOW);
     recordInstance(vps.db, "WORKER", "worker-1", vps.preSha, NOW, NOW.toISOString());

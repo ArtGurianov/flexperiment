@@ -28,6 +28,7 @@ import { TrustedComposeRuntimeControl } from "./trusted-compose-runtime";
 import { BootstrapRollback } from "./bootstrap-rollback";
 import { FileBootstrapRollbackReceiptStore } from "./bootstrap-rollback-file-store";
 import { classifySchemaLineage } from "./schema-identity";
+import { LaunchBaselineAdmissionGuard, remoteMainTipRefresh, type LaunchBaselineAdmission } from "./launch-baseline-admission";
 
 /**
  * The production composition root.
@@ -264,6 +265,8 @@ export type ProductionRelease = {
   readonly deployRef: ProductionDeployRefStore;
   readonly deployment: CoolifyDeploymentDriver;
   readonly candidates: FileReleaseCandidateStore;
+  /** Consumption-time proof that a launch candidate is still current main. */
+  readonly launchBaselineAdmission: LaunchBaselineAdmission;
   /**
    * The certification driver for a candidate.
    *
@@ -358,6 +361,16 @@ export const buildProductionRelease = (config: ProductionReleaseConfig, options:
     };
     const authority = new SqliteReleaseAuthorityStore(opened);
     const candidatesStore = new FileReleaseCandidateStore(config.candidateDirectory);
+    const admissionTree = new GitCommitTreeReader(config.deployRef.worktree, options.git ?? defaultGit);
+    const launchBaselineAdmission = new LaunchBaselineAdmissionGuard(
+      admissionTree,
+      remoteMainTipRefresh({
+        remote: config.deployRef.remote,
+        cwd: config.deployRef.worktree,
+        tree: admissionTree,
+        git: options.git ?? defaultGit,
+      }),
+    );
     /** The release a session is for, read back from the session rather than restated. */
     const certificationForSession = (sessionId: string): ProductionCertificationDriver => {
       const session = authority.get(sessionId);
@@ -579,7 +592,7 @@ export const buildProductionRelease = (config: ProductionReleaseConfig, options:
     });
 
     return {
-      ports, sessions, journal, lock, deployRef, authority, candidates, certificationFor, database: opened,
+      ports, sessions, journal, lock, deployRef, authority, candidates, launchBaselineAdmission, certificationFor, database: opened,
       deployment: ports.deployment as CoolifyDeploymentDriver,
       envelopes: new FileCutoverEnvelopeStore(config.envelopeDirectory), storage, bootstrapPreparation, bootstrapRollback,
       orchestrator: new ReleaseOrchestrator(ports),

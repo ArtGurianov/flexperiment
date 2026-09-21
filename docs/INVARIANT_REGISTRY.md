@@ -77,7 +77,7 @@ straight against the database as well as against a defect in the domain.
 | A deploy binds to a published candidate, never to a named commit | `deploy-production.yml` | `release/deploy-workflow-contract.test.ts` |
 | Rolling is derived from a candidate's class, never chosen | `release/candidate.ts` | `release/candidate.test.ts` |
 | A candidate is published only from a commit whose own CI is green | `release-candidate.yml` | `release/deploy-workflow-contract.test.ts` |
-| A launch baseline is the current tip of `main` | `release-candidate.yml` | `release/deploy-workflow-contract.test.ts` |
+| A launch baseline is the current tip of `main` at publication and again at initial consumption | `release-candidate.yml`, `release/launch-baseline-admission.ts`, `scripts/release/cutover-runner.ts` | `release/deploy-workflow-contract.test.ts`, `release/launch-baseline-admission.test.ts`, `release/cutover-runner-admission.test.ts` |
 | Dispatch inputs never reach a shell as interpolated text | both workflows | `release/deploy-workflow-contract.test.ts` |
 | Sales do not stay shut after a deploy that touched nothing | `release/deploy-session.ts` | `release/deploy-session.test.ts` |
 | A partial deploy does not reopen sales by itself | `release/deploy-session.ts` | `release/deploy-session.test.ts` |

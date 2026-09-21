@@ -54,6 +54,7 @@ export const runCutoverCommand = async (release: ProductionRelease, argv: readon
       if (!candidate) throw new Error(`RELEASE_CANDIDATE_NOT_PUBLISHED: ${argument}`);
       if (candidate.releaseClass !== "LAUNCH_BASELINE") throw new Error("BOOTSTRAP_PREPARATION_REQUIRES_LAUNCH_BASELINE");
       if (!release.bootstrapPreparation) throw new Error("BOOTSTRAP_PREPARATION_PREDECESSOR_UNAVAILABLE");
+      await release.launchBaselineAdmission.admit(candidate);
       const prepared = await release.bootstrapPreparation.prepare({
         targetSha: candidate.sha, expiresAt: argv[2]!, cutoverId: argv[3],
       });
@@ -68,6 +69,7 @@ export const runCutoverCommand = async (release: ProductionRelease, argv: readon
       // being released, and the two could disagree.
       const candidate = release.candidates.get(argument);
       if (!candidate) throw new Error(`RELEASE_CANDIDATE_NOT_PUBLISHED: ${argument}`);
+      if (candidate.releaseClass === "LAUNCH_BASELINE") await release.launchBaselineAdmission.admit(candidate);
       release.journal.record("deploy.start", { candidate: candidate.id, sha: candidate.sha, releaseClass: candidate.releaseClass });
       const outcome = candidate.releaseClass === "ROLLING_COMPATIBLE"
         ? await release.orchestrator.runRolling({ ownerId, candidate })
