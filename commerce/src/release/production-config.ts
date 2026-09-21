@@ -41,8 +41,16 @@ export type CandidatePublicationConfig = {
   readonly deployRef: { readonly remote: string; readonly worktree: string };
 };
 
+export type PredecessorReleaseConfig = {
+  readonly expectedSha: string;
+  readonly expectedLedgerLength: number;
+  readonly commerceReadyUrl: string;
+};
+
 export type ReadOnlyReleaseConfig = {
   readonly databasePath: string;
+  /** Present only while observe is expected to read the one trusted legacy predecessor. */
+  readonly predecessor?: PredecessorReleaseConfig;
   readonly topology: { readonly frontendReleaseUrl: string; readonly adminReleaseUrl: string };
   readonly deployRef: { readonly remote: string; readonly ref: string; readonly worktree: string };
 };
@@ -78,11 +86,7 @@ export type ProductionReleaseConfig = {
    * The one predecessor a launch cutover may start from. Absent for every
    * ordinary release, which never crosses a lineage boundary.
    */
-  readonly predecessor?: {
-    readonly expectedSha: string;
-    readonly expectedLedgerLength: number;
-    readonly commerceReadyUrl: string;
-  };
+  readonly predecessor?: PredecessorReleaseConfig;
   readonly coolify: { readonly apiUrl: string; readonly token: string };
   /** Trusted repositories for the two local images in the commerce Compose application. */
   readonly composeRepositories: Readonly<Record<"commerce" | "commerce-worker", string>>;
@@ -186,9 +190,11 @@ export const loadReadOnlyReleaseConfig = (env: NodeJS.ProcessEnv = process.env):
   httpUrl(value("FLEXPERIMENT_FRONTEND_RELEASE_URL"), "FLEXPERIMENT_FRONTEND_RELEASE_URL", problems);
   httpUrl(value("FLEXPERIMENT_ADMIN_RELEASE_URL"), "FLEXPERIMENT_ADMIN_RELEASE_URL", problems);
   const ref = deployRefName(env, problems);
+  const predecessorConfig = predecessor(env, problems);
   if (problems.length) throw new ReleaseConfigError("RELEASE_RUNNER_CONFIGURATION_INVALID", problems.join("; "));
   return {
     databasePath: value("FLEXPERIMENT_RELEASE_DATABASE"),
+    ...(predecessorConfig ? { predecessor: predecessorConfig } : {}),
     topology: {
       frontendReleaseUrl: value("FLEXPERIMENT_FRONTEND_RELEASE_URL"),
       adminReleaseUrl: value("FLEXPERIMENT_ADMIN_RELEASE_URL"),
@@ -220,7 +226,7 @@ export const loadCandidatePublicationConfig = (env: NodeJS.ProcessEnv = process.
  * reads whatever legacy database it is pointed at, and this one is bound to a
  * commit somebody reviewed.
  */
-const predecessor = (env: NodeJS.ProcessEnv, problems: string[]): ProductionReleaseConfig["predecessor"] => {
+function predecessor(env: NodeJS.ProcessEnv, problems: string[]): PredecessorReleaseConfig | undefined {
   const sha = (env.FLEXPERIMENT_PREDECESSOR_SHA ?? "").trim();
   const ledger = (env.FLEXPERIMENT_PREDECESSOR_LEDGER ?? "").trim();
   const ready = (env.FLEXPERIMENT_PREDECESSOR_READY_URL ?? "").trim();
@@ -229,7 +235,7 @@ const predecessor = (env: NodeJS.ProcessEnv, problems: string[]): ProductionRele
   if (!/^\d{1,4}$/.test(ledger)) problems.push("FLEXPERIMENT_PREDECESSOR_LEDGER is not a migration count");
   httpUrl(ready, "FLEXPERIMENT_PREDECESSOR_READY_URL", problems);
   return { expectedSha: sha, expectedLedgerLength: Number(ledger), commerceReadyUrl: ready };
-};
+}
 
 export const loadProductionReleaseConfig = (env: NodeJS.ProcessEnv = process.env): ProductionReleaseConfig => {
   const value = demand(env, PRODUCTION_RELEASE_ENVIRONMENT_VARIABLES);

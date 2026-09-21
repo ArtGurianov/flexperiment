@@ -263,6 +263,39 @@ describe("looking at production is a different program from changing it", () => 
     FLEXPERIMENT_DEPLOY_REF_WORKTREE: vps.config.deployRef.worktree,
   });
 
+  const legacyDatabase = () => {
+    const path = join(root, "legacy-observe.sqlite");
+    const db = new Database(path);
+    db.exec(`CREATE TABLE schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+      CREATE TABLE legal_releases (
+        id TEXT PRIMARY KEY, version TEXT NOT NULL UNIQUE, effective_at TEXT NOT NULL,
+        manifest_json TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+      CREATE TABLE runtime_release_evidence (
+        unit TEXT PRIMARY KEY, source_commit TEXT NOT NULL, started_at TEXT NOT NULL,
+        observed_at TEXT NOT NULL, last_successful_sweep_at TEXT);`);
+    const migration = db.prepare("INSERT INTO schema_migrations(version) VALUES (?)");
+    for (let index = 1; index <= 61; index += 1) migration.run(`legacy-${index}`);
+    const evidence = db.prepare(`INSERT INTO runtime_release_evidence
+      (unit, source_commit, started_at, observed_at, last_successful_sweep_at) VALUES (?, ?, ?, ?, ?)`);
+    evidence.run("COMMERCE", vps.preSha, NOW.toISOString(), NOW.toISOString(), null);
+    evidence.run("WORKER", vps.preSha, NOW.toISOString(), NOW.toISOString(), NOW.toISOString());
+    db.close();
+    return path;
+  };
+
+  const predecessorEnv = (databasePath: string) => ({
+    ...readOnlyEnv(),
+    FLEXPERIMENT_RELEASE_DATABASE: databasePath,
+    FLEXPERIMENT_PREDECESSOR_SHA: vps.preSha,
+    FLEXPERIMENT_PREDECESSOR_LEDGER: "61",
+    FLEXPERIMENT_PREDECESSOR_READY_URL: "https://commerce.invalid/readyz",
+  });
+
+  const predecessorFetch = (async (input: string | URL | Request) => new Response(
+    String(input).includes("readyz") ? "{}" : JSON.stringify({ source_commit: vps.preSha }),
+    { status: 200 },
+  )) as typeof fetch;
+
   it("observes both layers with no writer in the composition at all", async () => {
     recordInstance(vps.db, "COMMERCE", "api-1", vps.preSha, NOW);
     recordInstance(vps.db, "WORKER", "worker-1", vps.preSha, NOW, NOW.toISOString());
@@ -280,6 +313,35 @@ describe("looking at production is a different program from changing it", () => 
     } finally {
       release.close();
     }
+  });
+
+  it("selects the trusted predecessor reader for a legacy database", async () => {
+    const config = loadReadOnlyReleaseConfig(predecessorEnv(legacyDatabase()) as unknown as NodeJS.ProcessEnv);
+    const release = buildReadOnlyRelease(config, {
+      now, fetch: predecessorFetch,
+      git: async () => `${vps.preSha}\trefs/heads/production-deploy\n`,
+    });
+    try {
+      expect(await release.topology.observe()).toEqual({
+        runtime: { frontend: vps.preSha, admin: vps.preSha, commerce: vps.preSha, worker: vps.preSha },
+        controlPlane: { productionDeployRefSha: vps.preSha },
+      });
+      expect((await release.evidence.read()).schema.lineage).toBe("LEGACY");
+      expect(Object.keys(release).sort()).toEqual(["close", "evidence", "topology"]);
+    } finally { release.close(); }
+  });
+
+  it("refuses a legacy database without an exact predecessor binding", () => {
+    const config = loadReadOnlyReleaseConfig({
+      ...readOnlyEnv(), FLEXPERIMENT_RELEASE_DATABASE: legacyDatabase(),
+    } as unknown as NodeJS.ProcessEnv);
+    expect(() => buildReadOnlyRelease(config, { now })).toThrow("READ_ONLY_PREDECESSOR_CONFIGURATION_MISSING");
+  });
+
+  it("validates the optional predecessor binding as one fail-closed tuple", () => {
+    const partial = { ...readOnlyEnv(), FLEXPERIMENT_PREDECESSOR_SHA: vps.preSha };
+    expect(() => loadReadOnlyReleaseConfig(partial as unknown as NodeJS.ProcessEnv))
+      .toThrow("FLEXPERIMENT_PREDECESSOR_LEDGER is not a migration count");
   });
 
   it("needs none of the writer configuration to start", () => {

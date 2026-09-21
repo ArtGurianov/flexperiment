@@ -167,7 +167,7 @@ export class ReleaseJournal {
  * because of what this object does not contain.
  */
 export type ReadOnlyRelease = {
-  readonly topology: ProductionTopologyReader;
+  readonly topology: ReleasePorts["topology"];
   readonly evidence: DatabaseRuntimeEvidenceReader;
   close(): void;
 };
@@ -180,18 +180,33 @@ export const buildReadOnlyRelease = (config: ReadOnlyReleaseConfig, options: Bui
   // release authority lives in.
   const db = new Database(config.databasePath, { readonly: true });
   try {
+    const deployRef = new ProductionDeployRefViewer({
+      remote: config.deployRef.remote, ref: config.deployRef.ref,
+      cwd: config.deployRef.worktree, git: options.git,
+    });
+    const lineage = classifySchemaLineage(readSchemaIdentity(db));
+    const topology = lineage === "LEGACY"
+      ? config.predecessor
+        ? new LegacyPredecessorTopologyReader({
+          frontendReleaseUrl: config.topology.frontendReleaseUrl,
+          adminReleaseUrl: config.topology.adminReleaseUrl,
+          commerceReadyUrl: config.predecessor.commerceReadyUrl,
+          db, deployRef, now, fetch: options.fetch,
+          expectedPredecessorSha: config.predecessor.expectedSha,
+          expectedLedgerLength: config.predecessor.expectedLedgerLength,
+        })
+        : (() => { throw new ReleaseConfigError("READ_ONLY_PREDECESSOR_CONFIGURATION_MISSING"); })()
+      : lineage === "SUPPORTED"
+        ? new ProductionTopologyReader({
+          frontendReleaseUrl: config.topology.frontendReleaseUrl,
+          adminReleaseUrl: config.topology.adminReleaseUrl,
+          db, now, fetch: options.fetch, deployRef,
+        })
+        : (() => { throw new ReleaseConfigError("READ_ONLY_SCHEMA_LINEAGE_UNOBSERVABLE", lineage); })();
     return {
-      topology: new ProductionTopologyReader({
-        frontendReleaseUrl: config.topology.frontendReleaseUrl,
-        adminReleaseUrl: config.topology.adminReleaseUrl,
-        db, now, fetch: options.fetch,
-        // A viewer, not the store: this composition has no object that can move
-        // the pointer, and no credential that would let one.
-        deployRef: new ProductionDeployRefViewer({
-          remote: config.deployRef.remote, ref: config.deployRef.ref,
-          cwd: config.deployRef.worktree, git: options.git,
-        }),
-      }),
+      // A viewer, not the store: this composition has no object that can move
+      // the pointer, and no credential that would let one.
+      topology,
       evidence: new DatabaseRuntimeEvidenceReader({ db, now, legal: () => activeLegalBinding(db) }),
       close() { db.close(); },
     };
