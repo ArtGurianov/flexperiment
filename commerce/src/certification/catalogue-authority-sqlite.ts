@@ -21,12 +21,22 @@ import { directionAtLeast, sameCommand, type CertificationRunStore } from "./run
  * too: create, then publish, then open.
  */
 
+/**
+ * Shutting a certification fixture is a convergence, not an armed business
+ * command: a run that failed anywhere still has to be able to close what it
+ * made. So these are admitted on the run's recorded direction rather than on a
+ * pending command, and they are recorded under the same `(run_id, kind)`
+ * identity as everything else.
+ */
+export type CleanupKind = "CLOSE_SALES" | "HIDE_OCCURRENCE";
+export type LedgerKind = CertificationCatalogueCommand["kind"] | CleanupKind;
+
 export type LedgerEntry = { readonly occurrence: OccurrenceView; readonly commandId: string };
 
 export class SqliteCatalogueMutationLedger {
   constructor(private readonly db: Database.Database, private readonly runId: string) {}
 
-  find(kind: CertificationCatalogueCommand["kind"]): LedgerEntry | undefined {
+  find(kind: LedgerKind): LedgerEntry | undefined {
     const row = this.db.prepare("SELECT command_id, occurrence_json FROM certification_catalogue_mutations WHERE run_id = ? AND command_kind = ?")
       .get(this.runId, kind) as { command_id: string; occurrence_json: string } | undefined;
     return row ? { occurrence: JSON.parse(row.occurrence_json) as OccurrenceView, commandId: row.command_id } : undefined;
@@ -39,10 +49,10 @@ export class SqliteCatalogueMutationLedger {
     return row?.occurrence_id;
   }
 
-  record(command: CertificationCatalogueCommand, occurrence: OccurrenceView): void {
+  record(kind: LedgerKind, commandId: string, occurrence: OccurrenceView): void {
     this.db.prepare(`INSERT INTO certification_catalogue_mutations(run_id, command_kind, command_id, occurrence_id, occurrence_json)
       VALUES (?, ?, ?, ?, ?)`)
-      .run(this.runId, command.kind, command.idempotencyKey, occurrence.id, JSON.stringify(occurrence));
+      .run(this.runId, kind, commandId, occurrence.id, JSON.stringify(occurrence));
   }
 }
 
@@ -59,7 +69,7 @@ export class SqliteCertificationCatalogueAuthority {
    * command for an operation this run has already performed, which is the same
    * hole one layer down.
    */
-  static commandKey(runId: string, kind: CertificationCatalogueCommand["kind"]): string {
+  static commandKey(runId: string, kind: LedgerKind): string {
     return `certification:${runId}:${kind}`;
   }
 
@@ -89,14 +99,43 @@ export class SqliteCertificationCatalogueAuthority {
       }
 
       const occurrence = perform();
-      ledger.record(command, occurrence);
+      ledger.record(command.kind, command.idempotencyKey, occurrence);
+      return occurrence;
+    });
+    return this.db.inTransaction ? work() : work.immediate();
+  }
+
+  /**
+   * Shuts the run's fixture, once, whatever else happened to the run.
+   *
+   * Admitted on the recorded direction rather than on an armed command: by the
+   * time a run is cleaning up it may have no pending command at all, and a
+   * fixture that could not be closed because the run failed is exactly the one
+   * that must be.
+   */
+  clean(runId: string, kind: CleanupKind, commandId: string, perform: (occurrenceId: string) => OccurrenceView): OccurrenceView {
+    const work = this.db.transaction(() => {
+      const ledger = new SqliteCatalogueMutationLedger(this.db, runId);
+      const existing = ledger.find(kind);
+      if (existing) return existing.occurrence;
+
+      const run = this.runs.load(runId);
+      if (!run) throw new CatalogueAuthorityError("CERTIFICATION_RUN_NOT_FOUND", runId);
+      // The record says cleanup has begun before anything is shut, so a crash
+      // in the middle leaves a run no later resume will decide to reopen.
+      if (!directionAtLeast(run.direction, "CLEANUP_STARTED")) throw new CatalogueAuthorityError("CERTIFICATION_CLEANUP_NOT_ARMED", run.direction);
+      const occurrenceId = ledger.occurrenceId();
+      if (!occurrenceId) throw new CatalogueAuthorityError("CERTIFICATION_CATALOGUE_OUT_OF_ORDER", kind);
+
+      const occurrence = perform(occurrenceId);
+      ledger.record(kind, commandId, occurrence);
       return occurrence;
     });
     return this.db.inTransaction ? work() : work.immediate();
   }
 
   /** What this run has already done, by command kind. */
-  resultFor(runId: string, kind: CertificationCatalogueCommand["kind"]): OccurrenceView | undefined {
+  resultFor(runId: string, kind: LedgerKind): OccurrenceView | undefined {
     return new SqliteCatalogueMutationLedger(this.db, runId).find(kind)?.occurrence;
   }
 }

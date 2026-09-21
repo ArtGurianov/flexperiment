@@ -162,3 +162,105 @@ describe("how a claim may reach the server", () => {
     expect(checkout).not.toMatch(/c\.req\.query\(/);
   });
 });
+
+describe("a certification fixture is never an ordinary purchase", () => {
+  /** A finished cutover: the capability's session exists, and no fence is held. */
+  const settled = (db: ConcurrencyFixture["primary"]) => session(db, SESSION, "SUCCEEDED", 0);
+
+  const ledgerRow = (db: ConcurrencyFixture["primary"], kind = "CREATE_OCCURRENCE", occurrenceId = "occ") =>
+    db.prepare(`INSERT INTO certification_catalogue_mutations(run_id, command_kind, command_id, occurrence_id, occurrence_json)
+      VALUES ('run', ?, ?, ?, '{"id":"occ"}')`).run(kind, `command-${kind}`, occurrenceId);
+
+  const order = (db: ConcurrencyFixture["primary"], occurrenceId: string, runId: string | null, id = "order-1") =>
+    db.prepare(`INSERT INTO orders(id, public_status_id, public_order_number, occurrence_id, customer_name, customer_email,
+        customer_email_hash, amount_kopecks, occurrence_material_revision, venue_disclosure_snapshot,
+        checkout_legal_release_id, legal_snapshot_json, eligibility_confirmed_at, resolution_reason, certification_run_id)
+      VALUES (?, ?, ?, ?, 'Customer', 'customer@example.invalid', 'hash', 100, 1, 'TBA',
+        'legal', '{}', '2026-09-19T00:00:00.000Z', 'DIRECT', ?)`)
+      .run(id, `status-${id}`, `FX-${id}`, occurrenceId, runId);
+
+  it("refuses an ordinary checkout of it even with every gate wide open", () => {
+    const { db, domain } = setup();
+    settled(db);
+    armRun(db);
+    ledgerRow(db);
+
+    // Both ordinary gates are open: no fence, no emergency stop. Hiding it from
+    // the catalogue and having an unguessable id are not protections once the
+    // deployment gate lifts, so the ban sits below every gate and every route.
+    expect(refusal(() => domain.assertNewOrdersOpen())).toBe("OPEN");
+    expect(() => order(db, "occ", null)).toThrow("CERTIFICATION_OCCURRENCE_REQUIRES_CLAIM");
+  });
+
+  it("still admits an ordinary checkout of an ordinary occurrence", () => {
+    const { db } = setup();
+    settled(db);
+    armRun(db);
+    ledgerRow(db);
+    db.prepare(`INSERT INTO occurrences(id, city_id, title, starts_at, ends_at, timezone, price_kopecks, capacity,
+        venue_status, venue_disclosure_text, venue_announce_by, visibility, sales_status)
+      VALUES ('real', 'city', 'A real workshop', '2026-11-01T10:00:00.000Z', '2026-11-01T12:00:00.000Z', 'Europe/Moscow', 100, 1,
+        'TO_BE_ANNOUNCED', 'Later', '2026-10-25T00:00:00.000Z', 'PUBLISHED', 'OPEN')`).run();
+
+    expect(() => order(db, "real", null)).not.toThrow();
+  });
+
+  it("refuses one run collecting another run's fixture", () => {
+    const { db } = setup();
+    settled(db);
+    armRun(db);
+    ledgerRow(db);
+    new SqliteCertificationRunStore(db).create({
+      runId: "other", revision: 1, releaseSha: SHA, phase: "NEW", direction: "NORMAL", startedAt: now.toISOString(),
+    });
+    expect(() => order(db, "occ", "other")).toThrow("CERTIFICATION_ORDER_OCCURRENCE_MISMATCH");
+  });
+
+  it("will not let a release succeed while its fixture is still for sale", () => {
+    // completeTarget settles the session and reopens public sales in one
+    // operation, so an occurrence left OPEN at that moment becomes an ordinary
+    // sellable event the instant the fence lifts.
+    const { db } = setup();
+    closeFence(db);
+    armRun(db);
+    ledgerRow(db);
+
+    const succeed = () => db.prepare("UPDATE deploy_sessions SET state = 'SUCCEEDED', deployment_gate_closed = 0 WHERE id = ?").run(SESSION);
+    expect(succeed).toThrow("CERTIFICATION_CATALOGUE_STILL_OPEN");
+
+    db.prepare("UPDATE occurrences SET sales_status = 'CLOSED', visibility = 'HIDDEN' WHERE id = 'occ'").run();
+    expect(succeed).not.toThrow();
+  });
+
+  it("reconciles a repeated close rather than recording a second one", () => {
+    const { db } = setup();
+    settled(db);
+    armRun(db);
+    ledgerRow(db);
+    ledgerRow(db, "CLOSE_SALES");
+
+    // `(run_id, kind)` is the identity, so a second close under any key is the
+    // same close.
+    expect(() => ledgerRow(db, "CLOSE_SALES")).toThrow();
+    expect(db.prepare("SELECT COUNT(*) AS n FROM certification_catalogue_mutations WHERE run_id = 'run'").get())
+      .toEqual({ n: 2 });
+  });
+
+  it("keeps the run recoverable between the refund and the close", () => {
+    // Restart after the refund: the run, its ledger and the checkout
+    // idempotency all survive, so a new process continues the same run rather
+    // than starting one.
+    const { fixture, db } = setup();
+    settled(db);
+    armRun(db);
+    ledgerRow(db);
+    const runs = new SqliteCertificationRunStore(db);
+    runs.update("run", 1, { phase: "REFUND_EMAIL_DELIVERED", direction: "CLEANUP_STARTED" });
+
+    const reopened = fixture.restart();
+    const after = new SqliteCertificationRunStore(reopened).load("run");
+    expect(after).toMatchObject({ runId: "run", phase: "REFUND_EMAIL_DELIVERED", direction: "CLEANUP_STARTED" });
+    expect(reopened.prepare("SELECT command_kind FROM certification_catalogue_mutations WHERE run_id = 'run'").all())
+      .toEqual([{ command_kind: "CREATE_OCCURRENCE" }]);
+  });
+});

@@ -589,6 +589,11 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
           price_kopecks: CERTIFICATION_PRICE_KOPECKS, capacity: 1, venue_status: "TO_BE_ANNOUNCED",
           venue_disclosure_text: draft.venueDisclosureText, venue_announce_by: draft.venueAnnounceBy,
         })).row as unknown as OccurrenceView,
+      readOccurrence: (occurrenceId) => {
+        const row = sqlite.prepare("SELECT id, admin_revision, visibility, sales_status FROM occurrences WHERE id = ?").get(occurrenceId);
+        if (!row) throw new DomainError("OCCURRENCE_NOT_FOUND", 404);
+        return row as unknown as OccurrenceView;
+      },
       patchOccurrence: (occurrenceId, patch, expectedRevision, commandId, reason) =>
         domain.patchOccurrenceCore(occurrenceId, { ...patch, expected_revision: expectedRevision, audit_context: reason }, commandId, CERTIFICATION_ADMIN_ID) as unknown as OccurrenceView,
     }, request);

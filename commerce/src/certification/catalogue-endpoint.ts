@@ -1,7 +1,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import type Database from "better-sqlite3";
 import { CertificationCapabilityError, capabilityBearerDefect, type CertificationClaim } from "./capability";
-import { SqliteCertificationCatalogueAuthority } from "./catalogue-authority-sqlite";
+import { SqliteCertificationCatalogueAuthority, type CleanupKind } from "./catalogue-authority-sqlite";
 import type { CertificationCatalogueCommand } from "./catalogue-authority";
 import type { OccurrenceView } from "./evidence";
 import { SqliteCertificationCapabilityStore, SqliteCertificationRunStore } from "./store-sqlite";
@@ -52,9 +52,14 @@ export type CatalogueCommandRequest = {
   readonly runId: string;
   readonly claim: CertificationClaim;
   readonly commandId: string;
-  readonly command: CertificationCatalogueCommand;
+  /** An armed business command, or a cleanup convergence. They are admitted differently. */
+  readonly command: CertificationCatalogueCommand | { readonly kind: CleanupKind; readonly idempotencyKey: string };
   readonly reason: string;
 };
+
+const CLEANUP_KINDS: readonly CleanupKind[] = ["CLOSE_SALES", "HIDE_OCCURRENCE"];
+const isCleanup = (command: CatalogueCommandRequest["command"]): command is { kind: CleanupKind; idempotencyKey: string } =>
+  (CLEANUP_KINDS as readonly string[]).includes(command.kind);
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3})?Z$/;
@@ -89,7 +94,7 @@ export const parseCatalogueCommandRequest = (raw: unknown): CatalogueCommandRequ
   if (claim.runId !== runId) fail("claim.run_id");
 
   const kind = String(body.kind ?? "");
-  const command = (() => {
+  const command: CatalogueCommandRequest["command"] = (() => {
     if (kind === "CREATE_OCCURRENCE") {
       const draft = (body.draft ?? {}) as Record<string, unknown>;
       for (const [field, value] of [["city_id", draft.city_id], ["starts_at", draft.starts_at], ["ends_at", draft.ends_at],
@@ -102,14 +107,20 @@ export const parseCatalogueCommandRequest = (raw: unknown): CatalogueCommandRequ
       return { kind, idempotencyKey: commandId, draft: {
         cityId: String(draft.city_id), startsAt: String(draft.starts_at), endsAt: String(draft.ends_at),
         venueDisclosureText: String(draft.venue_disclosure_text), venueAnnounceBy: String(draft.venue_announce_by),
-      } } as CertificationCatalogueCommand;
+      } } as CatalogueCommandRequest["command"];
+    }
+    if (kind === "CLOSE_SALES" || kind === "HIDE_OCCURRENCE") {
+      // Cleanup names no occurrence and no revision: both come from what this
+      // run actually created and from the catalogue as it is now. A caller
+      // that could name them could aim a close at someone else's event.
+      return { kind, idempotencyKey: commandId };
     }
     if (kind === "PUBLISH_OCCURRENCE" || kind === "OPEN_SALES") {
       const occurrenceId = String(body.occurrence_id ?? "");
       const expectedRevision = Number(body.expected_revision);
       if (!ID.test(occurrenceId)) fail("occurrence_id");
       if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) fail("expected_revision");
-      return { kind, idempotencyKey: commandId, occurrenceId, expectedRevision } as CertificationCatalogueCommand;
+      return { kind, idempotencyKey: commandId, occurrenceId, expectedRevision } as CatalogueCommandRequest["command"];
     }
     return fail("kind") as never;
   })();
@@ -122,6 +133,8 @@ export type CatalogueEndpointPorts = {
   /** Performs the mutation, synchronously, inside the authority's transaction. */
   readonly createOccurrence: (draft: { cityId: string; startsAt: string; endsAt: string; venueDisclosureText: string; venueAnnounceBy: string }, commandId: string, reason: string) => OccurrenceView;
   readonly patchOccurrence: (occurrenceId: string, patch: Record<string, unknown>, expectedRevision: number, commandId: string, reason: string) => OccurrenceView;
+  /** The occurrence as it is right now, for a cleanup that must use the current revision. */
+  readonly readOccurrence: (occurrenceId: string) => OccurrenceView;
   readonly now: () => Date;
   /** The commit this process is serving, which a certification must be for. */
   readonly runtimeReleaseSha: () => string;
@@ -171,11 +184,24 @@ export const performCertificationCatalogueCommand = (
   // Derived, never the caller's. A fresh key must not be able to open a second
   // admin command for an operation this run has already performed.
   const commandKey = SqliteCertificationCatalogueAuthority.commandKey(request.runId, request.command.kind);
-  return authority.admit(request.runId, request.command, () => {
-    if (request.command.kind === "CREATE_OCCURRENCE") {
-      return ports.createOccurrence(request.command.draft, commandKey, request.reason);
+  const command = request.command;
+
+  if (isCleanup(command)) {
+    return authority.clean(request.runId, command.kind, commandKey, (occurrenceId) => {
+      const current = ports.readOccurrence(occurrenceId);
+      const revision = Number(current.admin_revision);
+      if (!Number.isSafeInteger(revision)) throw new CertificationEndpointError("CERTIFICATION_CLEANUP_REVISION_INVALID", 409, occurrenceId);
+      const patch = command.kind === "CLOSE_SALES" ? { sales_status: "CLOSED" } : { visibility: "HIDDEN" };
+      return ports.patchOccurrence(occurrenceId, patch, revision, commandKey, request.reason);
+    });
+  }
+
+  const armed = command as CertificationCatalogueCommand;
+  return authority.admit(request.runId, armed, () => {
+    if (armed.kind === "CREATE_OCCURRENCE") {
+      return ports.createOccurrence(armed.draft, commandKey, request.reason);
     }
-    const patch = request.command.kind === "PUBLISH_OCCURRENCE" ? { visibility: "PUBLISHED" } : { sales_status: "OPEN" };
-    return ports.patchOccurrence(request.command.occurrenceId, patch, request.command.expectedRevision, commandKey, request.reason);
+    const patch = armed.kind === "PUBLISH_OCCURRENCE" ? { visibility: "PUBLISHED" } : { sales_status: "OPEN" };
+    return ports.patchOccurrence(armed.occurrenceId, patch, armed.expectedRevision, commandKey, request.reason);
   });
 };

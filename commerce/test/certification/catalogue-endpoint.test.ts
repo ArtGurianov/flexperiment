@@ -67,6 +67,7 @@ beforeEach(() => {
     now: () => now,
     runtimeReleaseSha: () => SHA,
     createOccurrence: () => { performed += 1; return occurrence; },
+    readOccurrence: () => ({ ...occurrence, admin_revision: 1 }),
     patchOccurrence: () => { performed += 1; return occurrence; },
   };
 });
