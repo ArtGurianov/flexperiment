@@ -7,8 +7,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { migrate, openDatabase } from "../src/db";
 import { CommerceDomain } from "../src/domain";
 import { MockProvider } from "../src/provider";
-import { activateAgentReferrals, suspendAgentReferrals } from "../src/agent-referrals-feature-state";
-import { AgentReferralsSuspensionPolicyError } from "../src/agent-referrals-suspension-policy";
+import { suspendAgentReferrals } from "../src/agent-referrals-feature-state";
+import { materializeInitialActiveFeatureForTest as activateAgentReferrals } from "./support/agent-referrals-feature-state";
 import { provisionPartnerOwner, submitPartnerLegalProfile, verifyPartnerLegalProfile, issueFrameworkToPartner, type AdminPrincipal, type PartnerPrincipal } from "../src/agent-referrals-partner-identity";
 import { activatePartner, getPartnerIdentity } from "../src/agent-referrals-onboarding";
 import { mintFrameworkAgreementRevision, mintDelegationTemplateRevision, FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES, DELEGATION_TEMPLATE_REQUIRED_CLAUSES } from "../src/agent-referrals-framework-delegation";
@@ -51,8 +51,8 @@ const clause = (arr: readonly string[]) => Object.fromEntries(arr.map((k) => [k,
 const readyPartner = (db: Database.Database) => {
   activateAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "test" });
   const agentId = randomUUID();
-  db.prepare(`INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
-    VALUES (?, ?, 'Agent', ?, 'PERCENT', 1000)`).run(agentId, `partner-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
+  db.prepare(`INSERT INTO partners(id, slug, display_name, email)
+    VALUES (?, ?, 'Agent', ?)`).run(agentId, `partner-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
   const { partner_identity_id: partnerIdentityId } = provisionPartnerOwner(db, admin, agentId, "p@example.test", "test");
   submitPartnerLegalProfile(db, { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: "n/a" }, "INDIVIDUAL", "NPD", { full_name: "Ivanov Ivan Ivanovich", inn: "123456789012" }, 0);
   verifyPartnerLegalProfile(db, admin, partnerIdentityId, "verified");
@@ -172,7 +172,7 @@ describe("reward registry: finalization writes R + E1 atomically", () => {
 
     const first = finalizeEngagementRewardRegistry(db, admin, engagementId, "x");
     db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, succeeded_at) VALUES (?, ?, ?, ?, 20000, 'late', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, 'h', datetime('now'))")
-      .run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID());
+.run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID());
     const correction = correctEngagementEffectiveRewardSnapshot(db, admin, engagementId, "late refund");
     expect(correction.reward_total_kopecks).toBeLessThan(first.reward_total_kopecks);
 
@@ -198,7 +198,7 @@ describe("reward registry: finalization writes R + E1 atomically", () => {
 
     expect(() => db.prepare(`INSERT INTO engagement_reward_registry_snapshot(id, engagement_id, engagement_revision_id, occurrence_id, terminal_status, reward_total_kopecks, formula_version, source_order_ids_json, source_state_hash, watermark, finalized_by_admin_id, reason)
       VALUES (?, ?, (SELECT engagement_revision_id FROM engagement_reward_registry_snapshot WHERE engagement_id = ?), ?, 'COMPLETED', 1, 1, '[]', 'h', 'w', 'admin', 'race')`)
-      .run(randomUUID(), engagementId, engagementId, occ)).toThrow(/UNIQUE constraint failed/);
+.run(randomUUID(), engagementId, engagementId, occ)).toThrow(/UNIQUE constraint failed/);
   });
 
   it("fault at the E insert rolls back the R insert too - the pair is atomic, proven with a poison trigger that forces the second insert to fail without corrupting any real data", () => {
@@ -271,7 +271,7 @@ describe("reward registry: reconciliation gates", () => {
 
     db.prepare("UPDATE refund_obligations SET status = 'FULFILLED', fulfilled_at = CURRENT_TIMESTAMP WHERE payment_id = ?").run(order.payment_id);
     db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, succeeded_at) VALUES (?, ?, ?, ?, ?, 'occurrence cancelled', 'REFUND_OBLIGATION', 'SUCCEEDED', ?, 'h', datetime('now'))")
-      .run(randomUUID(), randomUUID(), order.id, order.payment_id, order.amount_kopecks, randomUUID());
+.run(randomUUID(), randomUUID(), order.id, order.payment_id, order.amount_kopecks, randomUUID());
 
     const result = finalizeEngagementRewardRegistry(db, admin, engagementId, "x");
     expect(result.reward_total_kopecks).toBe(0); // booking CANCELLED contributes 0 regardless of any residual net-captured math
@@ -298,7 +298,7 @@ describe("reward registry: reconciliation gates", () => {
   });
 });
 
-describe("reward registry: SUSPENDED permits finalization (maturation), DORMANT refuses it", () => {
+describe("reward registry: SUSPENDED permits finalization (maturation)", () => {
   it("global SUSPENDED does not block finalizing an obligation that arose before suspension", () => {
     const { db, domain } = fresh();
     const p1 = readyPartner(db);
@@ -308,23 +308,14 @@ describe("reward registry: SUSPENDED permits finalization (maturation), DORMANT 
     purchaseAndPay(db, domain, occ, code.code, "suspended@example.test", "idem-suspended-0000001");
     closeAndComplete(db, domain, occ);
 
-    suspendAgentReferrals(db, { expected_revision: 2, owner_id: "test-owner", reason: "emergency" }); // readyPartner's own activateAgentReferrals already bumped the seeded revision 1 -> 2
+    suspendAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "emergency" }); // readyPartner's own activateAgentReferrals already bumped the seeded revision 1 -> 2
     expect(() => finalizeEngagementRewardRegistry(db, admin, engagementId, "x")).not.toThrow();
   });
 
-  it("DORMANT (Agent Referrals never activated) refuses finalization outright", () => {
+  it("a freshly seeded feature state is ACTIVE, so aggregate validation remains the next gate", () => {
     const { db } = fresh();
-    // The global-state gate (shared with every other Agent Referrals command
-    // - see agent-referrals-suspension-policy.ts) is consulted before this
-    // module's own engagement lookup, so it throws its own distinct error
-    // type here too, uncaught - the same convention offerEngagement etc.
-    // already follow, never a module-local rewrap.
-    expect(() => finalizeEngagementRewardRegistry(db, admin, "no-such-engagement", "x")).toThrow(AgentReferralsSuspensionPolicyError);
-    try {
-      finalizeEngagementRewardRegistry(db, admin, "no-such-engagement", "x");
-    } catch (error) {
-      expect((error as AgentReferralsSuspensionPolicyError).code).toBe("AGENT_REFERRALS_FEATURE_DORMANT");
-    }
+    expect(() => finalizeEngagementRewardRegistry(db, admin, "no-such-engagement", "x"))
+.toThrow(/AGENT_REFERRALS_ENGAGEMENT_NOT_FOUND/);
   });
 });
 
@@ -343,7 +334,7 @@ describe("correction lineage: E2 <= E1 is a valid correction, E2 > E1 is refused
     // Simulate a late, fully-successful refund reducing net captured by 20_000 - directly against the payment, since this test's concern is the registry/effective layer, not refund plumbing.
     const { order_id: refundOrderId, payment_id: paymentId } = db.prepare("SELECT o.id AS order_id, p.id AS payment_id FROM orders o JOIN payments p ON p.order_id = o.id WHERE o.resolved_engagement_id = ?").get(engagementId) as { order_id: string; payment_id: string };
     db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, succeeded_at) VALUES (?, ?, ?, ?, 20000, 'late adjustment', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, 'h', datetime('now'))")
-      .run(randomUUID(), randomUUID(), refundOrderId, paymentId, randomUUID());
+.run(randomUUID(), randomUUID(), refundOrderId, paymentId, randomUUID());
 
     const correction = correctEngagementEffectiveRewardSnapshot(db, admin, engagementId, "late refund");
     expect(correction.sequence).toBe(2);
@@ -402,7 +393,7 @@ describe("correction lineage: E2 <= E1 is a valid correction, E2 > E1 is refused
     // reachable payment-provider outcome elsewhere in this codebase, not a
     // contrived state.
     db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash) VALUES (?, ?, ?, ?, 1000, 'late', 'ADMIN_COMPENSATION', 'SUBMIT_UNKNOWN', ?, 'h')")
-      .run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID());
+.run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID());
     expect(() => correctEngagementEffectiveRewardSnapshot(db, admin, engagementId, "should be refused")).toThrow(/AGENT_REFERRALS_REWARD_REGISTRY_UNRESOLVED_REFUND_STATE/);
     expect(currentEffectiveRewardSnapshot(db, engagementId)!.sequence).toBe(1); // no correction minted while ambiguous
 
@@ -416,7 +407,7 @@ describe("correction lineage: E2 <= E1 is a valid correction, E2 > E1 is refused
     // Once resolved, a genuine correction (a real, reconciled refund reducing net captured) succeeds.
     db.prepare("UPDATE refund_obligations SET status = 'FULFILLED', fulfilled_at = CURRENT_TIMESTAMP WHERE payment_id = ?").run(order.payment_id);
     db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, succeeded_at) VALUES (?, ?, ?, ?, 1000, 'resolved', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, 'h', datetime('now'))")
-      .run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID());
+.run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID());
     const correction = correctEngagementEffectiveRewardSnapshot(db, admin, engagementId, "resolved, now correcting");
     expect(correction.sequence).toBe(2);
   });
@@ -460,8 +451,8 @@ describe("correction lineage: E2 <= E1 is a valid correction, E2 > E1 is refused
     // test targets.
     expect(() => db.prepare(`INSERT INTO engagement_effective_reward_snapshots(id, engagement_id, engagement_revision_id, base_registry_snapshot_id, sequence, kind, reward_total_kopecks, source_state_hash, reason, created_by_admin_id, canonical_hash)
       VALUES (?, ?, ?, ?, ?, 'INITIAL', ?, ?, 'race', 'admin', 'chx')`)
-      .run(randomUUID(), engagementId, current.engagement_revision_id, current.base_registry_snapshot_id, current.sequence, current.reward_total_kopecks, current.source_state_hash))
-      .toThrow(/UNIQUE constraint failed/);
+.run(randomUUID(), engagementId, current.engagement_revision_id, current.base_registry_snapshot_id, current.sequence, current.reward_total_kopecks, current.source_state_hash))
+.toThrow(/UNIQUE constraint failed/);
   });
 });
 

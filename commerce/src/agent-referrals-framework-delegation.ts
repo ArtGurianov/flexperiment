@@ -118,7 +118,7 @@ export const mintFrameworkAgreementRevision = (db: Database.Database, clauses: R
     const nextRevision = (current?.revision ?? 0) + 1;
     db.prepare(`INSERT INTO framework_agreement_revisions(id, revision, content_json, content_hash, supersedes_revision_id)
       VALUES (?, ?, ?, ?, ?)`)
-      .run(revisionId, nextRevision, canonical, hash, current?.id ?? null);
+.run(revisionId, nextRevision, canonical, hash, current?.id ?? null);
     return frameworkAgreementRevisionById(db, revisionId)!;
   });
   return run.immediate();
@@ -164,7 +164,7 @@ export const mintDelegationTemplateRevision = (db: Database.Database, clauses: R
     const nextRevision = (current?.revision ?? 0) + 1;
     db.prepare(`INSERT INTO delegation_template_revisions(id, revision, ord_reporting_mode, content_json, content_hash, supersedes_revision_id)
       VALUES (?, ?, 'FLEXPERIMENT_DELEGATED', ?, ?, ?)`)
-      .run(revisionId, nextRevision, canonical, hash, current?.id ?? null);
+.run(revisionId, nextRevision, canonical, hash, current?.id ?? null);
     return delegationTemplateRevisionById(db, revisionId)!;
   });
   return run.immediate();

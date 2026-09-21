@@ -74,7 +74,7 @@ export const generateSettlementAct = (db: Database.Database, admin: AdminPrincip
     const actId = id();
     db.prepare(`INSERT INTO settlement_acts(id, settlement_id, engagement_id, engagement_revision_id, effective_reward_snapshot_id, partner_identity_id, amount_kopecks, created_by_admin_id)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(actId, settlement.id, settlement.engagement_id, settlement.engagement_revision_id, settlement.effective_reward_snapshot_id, settlement.partner_identity_id, settlement.amount_kopecks, admin.admin_id);
+.run(actId, settlement.id, settlement.engagement_id, settlement.engagement_revision_id, settlement.effective_reward_snapshot_id, settlement.partner_identity_id, settlement.amount_kopecks, admin.admin_id);
     return { act: settlementActById(db, actId)!, replayed: false };
   });
   return run.immediate();
@@ -110,7 +110,7 @@ export type ActAcceptanceRow = {
 
 export const actAcceptanceForAct = (db: Database.Database, actId: string): ActAcceptanceRow | null =>
   (db.prepare("SELECT id, act_id, partner_identity_id, step_up_grant_id, accepted_amount_kopecks, accepted_engagement_revision_id, created_at FROM settlement_act_acceptances WHERE act_id = ?")
-    .get(actId) as ActAcceptanceRow | undefined) ?? null;
+.get(actId) as ActAcceptanceRow | undefined) ?? null;
 
 /**
  * Partner-only by construction: this function takes a PartnerPrincipal,
@@ -144,7 +144,7 @@ export const acceptSettlementAct = (
     const acceptanceId = id();
     db.prepare(`INSERT INTO settlement_act_acceptances(id, act_id, partner_identity_id, step_up_grant_id, accepted_amount_kopecks, accepted_engagement_revision_id)
       VALUES (?, ?, ?, ?, ?, ?)`)
-      .run(acceptanceId, actId, partner.partner_identity_id, stepUpGrantId, act.amount_kopecks, act.engagement_revision_id);
+.run(acceptanceId, actId, partner.partner_identity_id, stepUpGrantId, act.amount_kopecks, act.engagement_revision_id);
     return { acceptance: actAcceptanceForAct(db, actId)!, replayed: false };
   });
   return run.immediate();
@@ -155,7 +155,7 @@ export type DocumentDisputeReason = "AMOUNT_INCORRECT" | "PARTNER_DETAILS_INCORR
 
 export const actDisputeForAct = (db: Database.Database, actId: string): ActDisputeRow | null =>
   (db.prepare("SELECT id, act_id, partner_identity_id, reason, detail, created_at FROM settlement_act_disputes WHERE act_id = ?")
-    .get(actId) as ActDisputeRow | undefined) ?? null;
+.get(actId) as ActDisputeRow | undefined) ?? null;
 
 /** Partner-only (no step-up: an objection, not a material commitment). Blocks payment authorization structurally - see payment_authorizations' own guard. */
 export const disputeSettlementAct = (
@@ -176,7 +176,7 @@ export const disputeSettlementAct = (
 
     const disputeId = id();
     db.prepare("INSERT INTO settlement_act_disputes(id, act_id, partner_identity_id, reason, detail) VALUES (?, ?, ?, ?, ?)")
-      .run(disputeId, actId, partner.partner_identity_id, reason, detail ?? null);
+.run(disputeId, actId, partner.partner_identity_id, reason, detail ?? null);
     return { dispute: actDisputeForAct(db, actId)!, replayed: false };
   });
   return run.immediate();

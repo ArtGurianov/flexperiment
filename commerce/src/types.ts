@@ -16,44 +16,6 @@ export const checkoutRequestSchema = z.object({
   pd_consent_accepted: z.literal(true),
 }).strict();
 
-/**
- * Fence and unfence carry a CAS token and a reason. The trigger is the
- * enforcement; this command is only how an operator changes its durable input.
- */
-/**
- * `defect_code` is required only for ACTIVATION_REFUSAL. For the
- * dispatch-target class the runtime derives it from its own evidence, so a
- * caller cannot record a reason the store does not support.
- */
-export const preActivationDefectSchema = z.object({
-  release_id: z.string().trim().min(1).max(200),
-  candidate_generation: z.number().int().positive(),
-  expected_state_hash: z.string().regex(/^[a-f0-9]{64}$/),
-  defect_class: z.enum(["ACTIVATION_REFUSAL", "CERTIFICATION_DISPATCH_TARGET_INVALID"]),
-  defect_code: z.string().regex(/^[A-Z0-9_]{1,80}$/).optional(),
-}).strict().refine(
-  (value) => value.defect_class !== "ACTIVATION_REFUSAL" || Boolean(value.defect_code),
-  { message: "PRE_ACTIVATION_DEFECT_CODE_REQUIRED", path: ["defect_code"] },
-);
-
-/** No provider/order evidence is accepted over HTTP; the runtime derives it. */
-export const postActivationEmailProviderDefectSchema = z.object({
-  release_id: z.string().trim().min(1).max(200),
-  candidate_generation: z.number().int().positive(),
-  expected_state_hash: z.string().regex(/^[a-f0-9]{64}$/),
-  expected_authority_revision: z.number().int().nonnegative(),
-}).strict();
-
-export const outboxDispatchFenceSchema = z.object({
-  expected_revision: z.number().int().nonnegative(),
-  reason: z.string().trim().min(3).max(1_000),
-  // The fence is owned by the cutover that acquired it, not by whoever holds
-  // the release-control credential. Without this, a second controller could
-  // read the current revision and unfence mid-migration.
-  release_id: z.string().trim().min(1).max(200),
-  generation: z.number().int().positive().nullable().optional(),
-}).strict();
-
 export const checkoutContextSchema = z.object({
   occurrence_id: z.string().uuid(),
   promo_code: z.string().trim().max(64).optional(),
@@ -183,15 +145,11 @@ export const agentSchema = z.object({
   display_name: z.string().trim().min(2).max(200),
   email: z.string().trim().email().max(320),
   enabled: z.boolean().default(true),
-  default_reward_type: z.enum(["PERCENT", "FIXED"]),
-  default_reward_value: z.number().int().nonnegative(),
 }).strict();
 export const agentPatchSchema = z.object({
   display_name: z.string().trim().min(2).max(200).optional(),
   email: z.string().trim().email().max(320).optional(),
   enabled: z.boolean().optional(),
-  default_reward_type: z.enum(["PERCENT", "FIXED"]).optional(),
-  default_reward_value: z.number().int().nonnegative().optional(),
 }).strict();
 export const promoCodeSchema = z.string().trim().transform((value) => value.toUpperCase()).pipe(z.string().regex(/^[A-Z0-9_-]{2,64}$/));
 const promoMutableShape = {

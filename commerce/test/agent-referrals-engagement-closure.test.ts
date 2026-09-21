@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { migrate, openDatabase } from "../src/db";
-import { activateAgentReferrals } from "../src/agent-referrals-feature-state";
+import { materializeInitialActiveFeatureForTest as activateAgentReferrals } from "./support/agent-referrals-feature-state";
 import { provisionPartnerOwner, submitPartnerLegalProfile, verifyPartnerLegalProfile, issueFrameworkToPartner, type AdminPrincipal, type PartnerPrincipal } from "../src/agent-referrals-partner-identity";
 import { activatePartner, getPartnerIdentity } from "../src/agent-referrals-onboarding";
 import { mintFrameworkAgreementRevision, mintDelegationTemplateRevision, FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES, DELEGATION_TEMPLATE_REQUIRED_CLAUSES } from "../src/agent-referrals-framework-delegation";
@@ -35,8 +35,8 @@ const clause = (arr: readonly string[]) => Object.fromEntries(arr.map((k) => [k,
 const readyPartner = (db: Database.Database) => {
   activateAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "test" });
   const agentId = randomUUID();
-  db.prepare(`INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
-    VALUES (?, ?, 'Agent', ?, 'PERCENT', 1000)`).run(agentId, `partner-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
+  db.prepare(`INSERT INTO partners(id, slug, display_name, email)
+    VALUES (?, ?, 'Agent', ?)`).run(agentId, `partner-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
   const { partner_identity_id: partnerIdentityId } = provisionPartnerOwner(db, admin, agentId, "p@example.test", "test");
   submitPartnerLegalProfile(db, { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: "n/a" }, "INDIVIDUAL", "NPD", { full_name: "Ivanov Ivan Ivanovich", inn: "123456789012" }, 0);
   verifyPartnerLegalProfile(db, admin, partnerIdentityId, "verified");
@@ -62,7 +62,7 @@ const seedOccurrence = (db: Database.Database, cityId: string) => {
   const occurrenceId = randomUUID();
   db.prepare(`INSERT INTO occurrences(id, city_id, title, starts_at, ends_at, timezone, price_kopecks, capacity, visibility, venue_status, venue_name, venue_address)
     VALUES (?, ?, 'FLEXPERIMENT', '2030-10-01T10:00:00.000Z', '2030-10-01T13:00:00.000Z', 'Asia/Novosibirsk', 100000, 5, 'PUBLISHED', 'CONFIRMED', 'Studio', 'Lenina 1')`)
-    .run(occurrenceId, cityId);
+.run(occurrenceId, cityId);
   return occurrenceId;
 };
 
@@ -155,7 +155,7 @@ describe("engagement closure (§B-7): forward-authority-only, one-time, dependen
     expect(resolver).not.toHaveBeenCalled();
   });
 
-  it("resolves the authorization this engagement most recently minted (by sequence) even after a suspend/reactivate cycle re-minted a fresh one - never SQLite's storage order (Phase 5 holistic review, P1 finding 6)", async () => {
+  it("resolves the authorization this engagement most recently minted (by sequence) even after a suspend/reactivate cycle re-minted a fresh one - never SQLite's storage order", async () => {
     const db = fresh();
     const { engagementId, occurrenceId } = activatedEngagement(db, new Date(Date.now() + 500).toISOString());
     const firstAuthId = (db.prepare("SELECT id FROM engagement_promo_authorizations WHERE engagement_id = ?").get(engagementId) as { id: string }).id;

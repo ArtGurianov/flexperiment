@@ -15,7 +15,7 @@ import type { AdminPrincipal } from "./agent-referrals-partner-identity";
  * reward-registry finalized, all checked above) that a shared,
  * importable "transition to CLOSED" primitive could let a future module
  * bypass; a doc comment saying "only called after these checks" is not
- * structural enforcement (Phase 5 holistic review, P0 finding 3) - the
+ * structural enforcement - the
  * identical standard already applied to agent-referrals-promo.ts's mint
  * primitive and to audience verification's REVOKED surface. Closing does
  * not wait on act, payment, NPD, VK/ERIR reporting or removal
@@ -74,7 +74,7 @@ export const closeEngagement = (
     // The revision an admin most recently ACTIVATED governs this engagement's
     // real publication window - never the latest AUTHORED (draft) one,
     // which could carry an entirely different, not-yet-relevant window
-    // (Phase 5 review note 7).
+    //.
     const revision = lastActivatedEngagementRevision(db, engagementId);
     if (!revision) throw new EngagementClosureError("AGENT_REFERRALS_ENGAGEMENT_NOT_FOUND", 404, engagementId);
     if (new Date(revision.publication_end_at).getTime() > Date.now()) throw new EngagementClosureError("AGENT_REFERRALS_CLOSURE_PUBLICATION_WINDOW_NOT_ENDED", 409);
@@ -83,7 +83,7 @@ export const closeEngagement = (
     if (!rewardEvidence.finalized) throw new EngagementClosureError("AGENT_REFERRALS_CLOSURE_REWARD_REGISTRY_FINALIZATION_UNAVAILABLE", 409);
 
     const changed = db.prepare(`UPDATE engagements SET lifecycle_state = 'CLOSED', lifecycle_revision = lifecycle_revision + 1, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND lifecycle_revision = ?`)
-      .run(engagementId, engagement.lifecycle_revision);
+.run(engagementId, engagement.lifecycle_revision);
     if (changed.changes !== 1) throw new EngagementClosureError("AGENT_REFERRALS_ENGAGEMENT_REVISION_CONFLICT", 409, engagementId);
     revokeEngagementPromoAuthorizationInTransaction(db, engagementId, `ENGAGEMENT_CLOSED:${reason}`);
     recordPartnerIdentityEvent(db, engagement.partner_identity_id, "ENGAGEMENT_CLOSED", "ADMIN", { engagement_id: engagementId, reason });
@@ -98,7 +98,7 @@ export const closeEngagement = (
     const closureEventId = id();
     db.prepare(`INSERT INTO engagement_closure_events(id, engagement_id, occurrence_id, revoked_promo_authorization_id, reward_registry_finalization_evidence_ref, reason, closed_by_admin_id)
       VALUES (?, ?, ?, ?, ?, ?, ?)`)
-      .run(closureEventId, engagementId, occurrence.id, authorization.id, rewardEvidence.evidence_ref, reason, admin.admin_id);
+.run(closureEventId, engagementId, occurrence.id, authorization.id, rewardEvidence.evidence_ref, reason, admin.admin_id);
 
     return { closure_event_id: closureEventId, replayed: false };
   });

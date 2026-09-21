@@ -44,7 +44,7 @@ const readyForPayment = () => {
 
 describe("DURABLE_KEY: the retry replays, even though an identical body would otherwise be a legal second command", () => {
   it("legal hold: place -> release -> retried place returns the ORIGINAL hold instead of creating a second one", () => {
-    // This classification moved twice. 0044's partial unique index on
+    // This classification moved twice. the schema's partial unique index on
     // released_at IS NULL refuses a CONCURRENT second hold, and under the
     // weak obligation that read as a proof - but a release is entirely
     // ordinary work, and after it placing another hold is legal. Only the
@@ -140,7 +140,7 @@ describe("MONOTONIC_REPLAY_SAFE: no legal B* restores the precondition, so no pi
     expectCode(() => revokeCreativeAuthorization(db, admin, authorization.id, "A: revoked"), "AGENT_REFERRALS_CREATIVE_AUTHORIZATION_ALREADY_REVOKED");
 
     expect(db.prepare("SELECT revoked_reason FROM engagement_creative_authorizations WHERE id = ?").get(authorization.id))
-      .toEqual({ revoked_reason: "A: revoked" });                                  // 1: unchanged by the retry
+.toEqual({ revoked_reason: "A: revoked" });                                  // 1: unchanged by the retry
     expect(db.prepare("SELECT revoked_at FROM engagement_creative_authorizations WHERE id = ?").get(b.id)).toEqual({ revoked_at: null }); // 3: B's row still live
   });
 

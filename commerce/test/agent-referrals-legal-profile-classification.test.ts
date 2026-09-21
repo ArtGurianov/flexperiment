@@ -31,7 +31,7 @@ describe("classifyLegalProfileChange", () => {
 
   it("самозанятый -> ИП, same INN, ОГРНИП appears: CONTRACTUAL_REISSUANCE_REQUIRED, never a new identity", () => {
     const current: ComparableLegalProfile = {
-      ...base, legal_form: "INDIVIDUAL_ENTREPRENEUR", projected_contractor_type: "INDIVIDUAL_ENTREPRENEUR", registration_number: "123456789012345",
+...base, legal_form: "INDIVIDUAL_ENTREPRENEUR", projected_contractor_type: "INDIVIDUAL_ENTREPRENEUR", registration_number: "123456789012345",
     };
     expect(classifyLegalProfileChange(base, current)).toBe("CONTRACTUAL_REISSUANCE_REQUIRED");
   });
@@ -122,8 +122,8 @@ describe("applyAgentReferralsLegalProfile: fail-closed on party change at mint t
   };
   const seedAgent = (db: Database.Database) => {
     const agentId = randomUUID();
-    db.prepare(`INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
-      VALUES (?, ?, 'Agent', ?, 'PERCENT', 1000)`).run(agentId, `agent-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
+    db.prepare(`INSERT INTO partners(id, slug, display_name, email)
+      VALUES (?, ?, 'Agent', ?)`).run(agentId, `agent-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
     return agentId;
   };
 

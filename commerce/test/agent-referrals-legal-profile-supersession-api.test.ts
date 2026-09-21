@@ -35,7 +35,7 @@ const adminCookie = async (app: ReturnType<typeof createApp>) => {
  * P1 review fix: submitLegalProfileSupersession did not run the shared
  * legal-profile-matrix validator before its INSERT, so an invalid (or
  * merely out-of-union, via the route's own `as LegalForm` cast) pairing
- * reached 0051's CHECK constraint as a raw SqliteError - which the global
+ * reached the schema's CHECK constraint as a raw SqliteError - which the global
  * error handler (commerce/src/api.ts) does not recognize (no `.status`),
  * surfacing as INTERNAL_ERROR/500 for what is actually a 422. This drives
  * the REAL HTTP route, the one place the unsafe cast actually lives -
@@ -51,7 +51,7 @@ describe("POST /v1/admin/agent-referrals/partners/:id/legal-profile/change: inva
       body: JSON.stringify({
         expected_current_legal_profile_revision: db ? currentLegalProfileRevisionForPartner(db, partnerIdentityId) : 1,
         expected_request_sequence: db ? legalProfileChangeRequestHeadForPartner(db, partnerIdentityId) : 0,
-        ...body,
+...body,
       }),
     });
 

@@ -79,15 +79,15 @@ describe("registerOrdCreative: creative-registration authority (revision chain)"
       FROM ord_creative_registrations WHERE creative_revision_id = ?`).run(randomUUID(), creativeRevisionId)).toThrow(/UNIQUE constraint failed/);
   });
 
-  it("refuses under DORMANT", () => {
+  it("a freshly seeded feature state reaches ordinary creative validation", () => {
     const { db } = fresh(); open.push(db);
-    expect(() => registerOrdCreative(db, admin, "nonexistent")).toThrow(/AGENT_REFERRALS_FEATURE_DORMANT/);
+    expect(() => registerOrdCreative(db, admin, "nonexistent")).toThrow(/AGENT_REFERRALS_ORD_CREATIVE_REVISION_NOT_FOUND/);
   });
 
   it("refuses under SUSPENDED, even completing an already-DRAFT registration", () => {
     const { db, creativeRevisionId } = setup();
     const { registration } = registerOrdCreative(db, admin, creativeRevisionId);
-    suspendAgentReferrals(db, { expected_revision: 2, owner_id: "test-owner", reason: "pause" });
+    suspendAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "pause" });
     expect(() => recordOrdCreativeRegistrationSubmitted(db, registration.id, "vk-ext-1", "ev")).toThrow(/AGENT_REFERRALS_SUSPENDED_BLOCKS_NEW_AUTHORITY/);
   });
 });

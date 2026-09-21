@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import { isPromoPartnerOwned, currentEngagementPromoAuthorization } from "./agent-referrals-promo";
 import { getEngagement, engagementRevisionById } from "./agent-referrals-engagement";
-import { getPartnerIdentity, getPartnerIdentityByAgentId } from "./agent-referrals-onboarding";
+import { getPartnerIdentity } from "./agent-referrals-onboarding";
 import { agentReferralsFeatureState } from "./agent-referrals-feature-state";
 import { assertAgentReferralsOperationPermitted, AgentReferralsSuspensionPolicyError } from "./agent-referrals-suspension-policy";
 
@@ -34,21 +34,25 @@ export class AgentReferralsAttributionError extends Error {
 
 export const ATTRIBUTION_RULE_VERSION = 1;
 
-export type LegacyOrderAttribution = {
-  reward_authority_kind: "LEGACY";
-  attributed_agent_id: string | null;
+/**
+ * An ordinary order: either no promo at all, or a plain discount promo that
+ * carries no partner reward authority. A discount is a price fact, never a
+ * payable. There is exactly one way to earn a partner reward, and it is
+ * EngagementScopedOrderAttribution below.
+ */
+export type DirectOrderAttribution = {
+  attributed_agent_id: null;
   explicit_promo_id: string | null;
   resolved_partner_id: null;
   resolved_engagement_id: null;
   resolved_engagement_revision_id: null;
   resolved_promo_authorization_id: null;
-  reward_type: "PERCENT" | "FIXED" | null;
-  reward_value: number | null;
-  resolution_reason: "LEGACY_PROMO" | "LEGACY_REFERRAL_SLUG" | "DIRECT";
+  reward_type: null;
+  reward_value: null;
+  resolution_reason: "DISCOUNT_PROMO" | "DIRECT";
 };
 
 export type EngagementScopedOrderAttribution = {
-  reward_authority_kind: "ENGAGEMENT_SCOPED";
   attributed_agent_id: string;
   explicit_promo_id: string;
   resolved_partner_id: string;
@@ -60,28 +64,18 @@ export type EngagementScopedOrderAttribution = {
   resolution_reason: "EXPLICIT_PARTNER_PROMO";
 };
 
-export type OrderAttribution = LegacyOrderAttribution | EngagementScopedOrderAttribution;
-
-const legacyDefaultReward = (db: Database.Database, agentId: string | null): { reward_type: "PERCENT" | "FIXED" | null; reward_value: number | null } => {
-  if (!agentId) return { reward_type: null, reward_value: null };
-  const agent = db.prepare("SELECT default_reward_type, default_reward_value FROM agents WHERE id = ? AND enabled = 1").get(agentId) as
-    { default_reward_type: "PERCENT" | "FIXED"; default_reward_value: number } | undefined;
-  return { reward_type: agent?.default_reward_type ?? null, reward_value: agent?.default_reward_value ?? null };
-};
+export type OrderAttribution = DirectOrderAttribution | EngagementScopedOrderAttribution;
 
 /**
  * `assertAgentReferralsOperationPermitted` is consulted ONLY on the
- * partner-owned-promo branch: the legacy referral-slug / discount-only
- * promo / direct paths predate Agent Referrals entirely and must keep
- * working byte-for-byte regardless of the Agent Referrals feature state
- * (including while it is still DORMANT) - §B-8 suspension blocks "new
- * [Agent Referrals] attribution", never legacy attribution.
+ * partner-owned-promo branch: an ordinary order carries no partner reward
+ * authority at all, so a global suspension has nothing to block there.
+ * Suspension blocks new partner attribution, never an ordinary sale.
  */
 export const resolveOrderAttribution = (
   db: Database.Database,
   promo: { id: string; agent_id: string | null } | undefined,
   occurrenceId: string,
-  legacyReferralAgentId: string | null,
 ): OrderAttribution => {
   if (promo && isPromoPartnerOwned(db, promo.id)) {
     try {
@@ -116,7 +110,6 @@ export const resolveOrderAttribution = (
       throw new AgentReferralsAttributionError("AGENT_REFERRALS_ATTRIBUTION_PARTNER_IDENTITY_DESTROYED", 409, promo.id);
     }
     return {
-      reward_authority_kind: "ENGAGEMENT_SCOPED",
       attributed_agent_id: authorization.partner_id,
       explicit_promo_id: promo.id,
       resolved_partner_id: authorization.partner_id,
@@ -129,37 +122,19 @@ export const resolveOrderAttribution = (
     };
   }
 
-  // A partner-owned agent must never receive Agent Referrals conversion
-  // through the legacy path (a legacy promo whose agent_id happens to be a
-  // partner, or the legacy fx_ref/activeAgentBySlug() referral-slug marker
-  // resolving to one) - that authority exists ONLY through an explicit
-  // partner promo, resolved above. Rather than silently grant it under
-  // LEGACY authority, this simply drops the would-be agent id: no
-  // attribution occurs via that source at all (never a fallback to a
-  // discount-only reading of it either - a partner promo is never
-  // discount-only).
-  //
-  // "Partner" is decided by partner_identities.agent_id (PR4's structural
-  // identity, UNIQUE per agent) - never by whether a permanent promo has
-  // been minted yet (holistic review, P0 finding 1). A partner_identity
-  // can legitimately exist before createPartnerPromo ever runs (mid
-  // onboarding, or an admin simply hasn't minted the promo yet), and
-  // during that whole window the agent is already, truly, a partner: the
-  // legacy path must refuse them from day one, not only once their promo
-  // exists.
-  const rawLegacyAgentId = (promo?.agent_id ?? null) ?? legacyReferralAgentId;
-  const legacyAgentId = rawLegacyAgentId && !getPartnerIdentityByAgentId(db, rawLegacyAgentId) ? rawLegacyAgentId : null;
-  const reward = legacyDefaultReward(db, legacyAgentId);
+  // Everything that is not an explicit partner promo is an ordinary sale. A
+  // plain promo is a discount on the price and nothing more; it can never
+  // create a payable. The single way a partner earns is the engagement-scoped
+  // branch above, so there is no second money path to reconcile here.
   return {
-    reward_authority_kind: "LEGACY",
-    attributed_agent_id: legacyAgentId,
+    attributed_agent_id: null,
     explicit_promo_id: promo?.id ?? null,
     resolved_partner_id: null,
     resolved_engagement_id: null,
     resolved_engagement_revision_id: null,
     resolved_promo_authorization_id: null,
-    reward_type: reward.reward_type,
-    reward_value: reward.reward_value,
-    resolution_reason: promo ? "LEGACY_PROMO" : legacyReferralAgentId ? "LEGACY_REFERRAL_SLUG" : "DIRECT",
+    reward_type: null,
+    reward_value: null,
+    resolution_reason: promo ? "DISCOUNT_PROMO" : "DIRECT",
   };
 };

@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { MockProvider } from "../src/provider";
 import { generateOpaqueToken, hashOpaqueToken } from "../src/agent-referrals-partner-auth";
 import { provisionPartnerOwner } from "../src/agent-referrals-partner-identity";
-import { activateAgentReferrals } from "../src/agent-referrals-feature-state";
+import { materializeInitialActiveFeatureForTest as activateAgentReferrals } from "./support/agent-referrals-feature-state";
 import { mintCreativeRevision, authorizeCreative, currentCreativeRevision, lastCreativeAuthorization } from "../src/agent-referrals-creative";
 import type { OtpSender } from "../src/agent-referrals-otp";
 import {
@@ -31,7 +31,7 @@ class RecordingOtpSender implements OtpSender {
 const httpSessionCookie = (db: Database.Database, partnerIdentityId: string): string => {
   const rawToken = generateOpaqueToken();
   db.prepare(`INSERT INTO partner_sessions(id, partner_identity_id, token_hash, expires_at) VALUES (?, ?, ?, datetime('now', '+1 hour'))`)
-    .run(randomUUID(), partnerIdentityId, hashOpaqueToken(rawToken));
+.run(randomUUID(), partnerIdentityId, hashOpaqueToken(rawToken));
   return `fx_partner_session=${rawToken}`;
 };
 
@@ -80,8 +80,8 @@ describe("/v1/partner/*: origin and session boundary", () => {
     const { db, app } = appFixture();
     activateAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "test" });
     const agentId = randomUUID();
-    db.prepare(`INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
-      VALUES (?, 'p1', 'A', 'a@example.test', 'PERCENT', 1000)`).run(agentId);
+    db.prepare(`INSERT INTO partners(id, slug, display_name, email)
+      VALUES (?, 'p1', 'A', 'a@example.test')`).run(agentId);
     const { partner_identity_id: partnerIdentityId } = provisionPartnerOwner(db, admin, agentId, "p@example.test", "test");
     const cookie = httpSessionCookie(db, partnerIdentityId);
     const response = await app.request("http://admin.flexperiment.ru/v1/admin/agent-referrals/feature-state", {
@@ -94,8 +94,8 @@ describe("/v1/partner/*: origin and session boundary", () => {
     const { db, app, otpSender } = appFixture();
     activateAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "test" });
     const agentId = randomUUID();
-    db.prepare(`INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
-      VALUES (?, 'p2', 'A', 'a2@example.test', 'PERCENT', 1000)`).run(agentId);
+    db.prepare(`INSERT INTO partners(id, slug, display_name, email)
+      VALUES (?, 'p2', 'A', 'a2@example.test')`).run(agentId);
     const { raw_invite_token: inviteToken } = provisionPartnerOwner(db, admin, agentId, "p2@example.test", "test");
     const consume = await app.request("http://partner.flexperiment.ru/v1/partner/invite/consume", {
       method: "POST", headers: { Origin: PARTNER_ORIGIN, "Content-Type": "application/json" }, body: JSON.stringify({ token: inviteToken }),
@@ -123,8 +123,8 @@ describe("/v1/partner/*: origin and session boundary", () => {
     const { db, app } = appFixture();
     activateAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "test" });
     const agentId = randomUUID();
-    db.prepare(`INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
-      VALUES (?, 'p3', 'A', 'a3@example.test', 'PERCENT', 1000)`).run(agentId);
+    db.prepare(`INSERT INTO partners(id, slug, display_name, email)
+      VALUES (?, 'p3', 'A', 'a3@example.test')`).run(agentId);
     await provisionPartnerOwner(db, admin, agentId, "real-partner@example.test", "test");
 
     const knownEmail = await app.request("http://partner.flexperiment.ru/v1/partner/login/request", {

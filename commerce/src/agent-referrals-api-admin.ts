@@ -122,22 +122,12 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
    *
    * Passing `adminId` as `owner_id` conflated the two, and made the operator
    * kill switch unreachable for exactly the states it exists to serve: the
-   * live owner is minted by the activation contour
-   * (`activateAgentReferralsIfReady` passes `input.activation_id`), never by
-   * an admin session, so `transitionInTransaction`'s owner check refused
-   * every suspend and every reactivate with OWNER_CONFLICT once the feature
-   * was ACTIVE. Found during the D-C3 cutover preflight against production,
-   * where the live owner is an `agent-referrals-activation-*` id and the only
-   * admin ids are `singleton-admin` and `release-control-operator`.
+   * row owner is separate from the operator session, so the transition's
+   * owner check cannot be satisfied by passing an arbitrary admin id.
    *
    * So the transition PRESERVES the current owner rather than claiming it.
    * The client never gets to choose an authority owner - taking it from the
    * body would let any admin name any owner and defeat the check outright.
-   *
-   * The DORMANT fallback keeps today's behaviour: DORMANT is unowned, an
-   * unowned row passes the owner check by construction, and the only edge
-   * this adapter could aim at it - DORMANT -> SUSPENDED - stays refused by
-   * LEGAL_EDGES regardless of who asks.
    *
    * Reading the row outside the transaction is safe because it is not the
    * proof: a concurrent writer that moves the owner is still caught by the
@@ -167,7 +157,7 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
   // ---- Partner identity / onboarding --------------------------------------
   app.get("/partners", (c) => c.json({
     partners: sqlite.prepare(`SELECT pi.id, pi.agent_id, a.slug, a.display_name, pi.onboarding_state, pi.destroyed_at, pi.created_at
-      FROM partner_identities pi JOIN agents a ON a.id = pi.agent_id ORDER BY pi.created_at DESC`).all(),
+      FROM partner_identities pi JOIN partners a ON a.id = pi.agent_id ORDER BY pi.created_at DESC`).all(),
   }));
   app.get("/partners/:id", (c) => {
     const identity = getPartnerIdentity(sqlite, c.req.param("id"));
@@ -256,7 +246,7 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
       // supersession against the revision its own first attempt produced.
       expectedCurrentLegalProfileRevision: requireNumber(body, "expected_current_legal_profile_revision"),
       expectedRequestSequence: requireNumber(body, "expected_request_sequence"),
-      ...legalRequisitesFromBody(body),
+...legalRequisitesFromBody(body),
     }), 201);
   });
   app.post("/partners/:id/legal-profile/change/:requestId/verify", async (c) => {
@@ -392,7 +382,7 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
     const creative = currentCreativeRevision(sqlite, engagementId);
     const effective = currentEffectiveRewardSnapshot(sqlite, engagementId);
     const settlement = effective
-      ? sqlite.prepare(`SELECT id, status, amount_kopecks, tax_mode_snapshot FROM reward_settlements WHERE effective_reward_snapshot_id = ? AND settlement_flow = 'AGENT_REFERRALS'`).get(effective.id) as { id: string; status: string; amount_kopecks: number; tax_mode_snapshot: "NPD" | "OTHER" } | undefined
+      ? sqlite.prepare(`SELECT id, status, amount_kopecks, tax_mode_snapshot FROM reward_settlements WHERE effective_reward_snapshot_id = ?`).get(effective.id) as { id: string; status: string; amount_kopecks: number; tax_mode_snapshot: "NPD" | "OTHER" } | undefined
       : undefined;
     // Round-3 fix: the operator console's act/payment/ORD-invoice steps need
     // this in the same read as everything else - previously only exposed
@@ -412,7 +402,7 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
       // back to null on every revocation and so cannot be pinned against.
       creative_authorization_head: lastCreativeAuthorization(sqlite, engagementId),
       distributions: distributionsForEngagement(sqlite, engagementId).map((d) => ({
-        ...distributionProjection(sqlite, d.id),
+...distributionProjection(sqlite, d.id),
         reporting_periods: ordDistributionPeriodReportsForDistribution(sqlite, d.id),
       })),
       reward_registry: rewardRegistrySnapshot(sqlite, engagementId),

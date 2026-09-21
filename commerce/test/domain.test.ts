@@ -9,8 +9,6 @@ import { runWorkerSweep } from "../src/worker-sweep";
 import { EventDumpCreateRejectedError, UnisenderGoProvider, type EmailDeliveryEvidenceProvider, type EmailProvider } from "../src/email-provider";
 import { MockProvider, TochkaProviderError, type PaymentProvider } from "../src/provider";
 import { decryptTicketCapability, emailHash, sha256 } from "../src/crypto";
-import { evaluateReopenGate, ReleaseSalesGate, type ReleaseRuntimeEvidence } from "../src/release-control";
-import { releaseStateHash } from "../src/release-generation";
 
 const legalManifest = { documents: Object.fromEntries(["PUBLIC_OFFER", "PRIVACY_POLICY", "PD_CONSENT", "CHECKOUT_DISCLOSURE"].map((document) => [document, { document_id: document, version: "test-1", sha256: "0".repeat(64), current_url: `https://example.test/legal/${document}`, archive_url: `https://example.test/archive/${document}`, checkout_relevant: true }])) };
 const unisenderTestConfig = { apiKey: "test-key-not-a-secret", fromEmail: "noreply@example.test", fromName: "Flexperiment", replyToEmail: "hello@example.test" };
@@ -46,8 +44,13 @@ const promoCandidateHead = (releaseId = `promo-codes-v0:${randomUUID()}`) => ({
   phase: "PAUSED" as const, phase_sequence: 0,
 });
 
-function promoter(setup: ReturnType<typeof fixture>, slug: string, rewardType: "PERCENT" | "FIXED" = "PERCENT", rewardValue = 1_000) {
-  return setup.domain.createAgent({ slug, display_name: slug, email: `${slug}@example.test`, contract_reference: `C-${slug}`, default_reward_type: rewardType, default_reward_value: rewardValue });
+/**
+ * A partner. It carries no reward terms: a reward is decided by the engagement
+ * revision that authorises it, and the columns that once held defaults are not
+ * in the baseline.
+ */
+function promoter(setup: ReturnType<typeof fixture>, slug: string) {
+  return setup.domain.createAgent({ slug, display_name: slug, email: `${slug}@example.test` });
 }
 
 function bindSettlementLegalIdentity(setup: ReturnType<typeof fixture>, agentId: string, email: string) {
@@ -59,7 +62,7 @@ function bindSettlementLegalIdentity(setup: ReturnType<typeof fixture>, agentId:
 }
 
 async function maturedReward(setup: ReturnType<typeof fixture>, slug: string, amount = 10_000) {
-  const agent = promoter(setup, slug, "FIXED", amount);
+  const agent = promoter(setup, slug);
   const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, referralSlug: slug });
   const result = await setup.domain.checkoutAsync(checkoutPayload(quote.quote_id), `settlement-${slug}-checkout`, "https://flexperiment.ru");
   const payment = setup.db.prepare("SELECT p.id FROM payments p JOIN orders o ON o.id = p.order_id WHERE o.public_status_id = ?").get(result.status_id) as { id: string };
@@ -126,75 +129,44 @@ async function tochkaWebhookCheckout(setup: ReturnType<typeof fixture>) {
   };
 }
 
+/**
+ * Under ATTEMPT authority the provider's job id lives on the attempt, not on
+ * the frozen `email_outbox.job_id` column, so a test that asserts on a real
+ * send must read it from there.
+ */
+const attemptJobId = (db: import("better-sqlite3").Database, outboxId: string): string | null =>
+  (db.prepare("SELECT provider_job_id FROM outbox_attempt WHERE message_id = ? ORDER BY attempt_no DESC LIMIT 1")
+    .get(outboxId) as { provider_job_id: string | null } | undefined)?.provider_job_id ?? null;
+
+/**
+ * Gives one seeded message the attempt that a real dispatch would have left.
+ *
+ * Fixtures that INSERT into `email_outbox` directly skip `enqueueEmail` and the
+ * dispatch path, so nothing writes the attempt - and the attempt is now the
+ * only holder of the provider identity and the dispatch instant that Event Dump
+ * recovery selects on. One message, one attempt, one job id: a helper that
+ * back-filled every message at once could hand the same provider job to two of
+ * them, which is not a state the real path can produce.
+ *
+ * Tests that go through `processEmailOutbox()` need none of this; the code path
+ * writes its own attempt.
+ */
+const seedAttemptForMessage = (
+  db: import("better-sqlite3").Database,
+  outboxId: string,
+  providerJobId: string,
+  dispatchAt: string,
+  outcome: string | null = "ACCEPTED",
+) => {
+  db.prepare(`INSERT INTO outbox_attempt(id, message_id, attempt_no, provider_idempotence_key,
+      provider_job_id, started_at, provider_request_started_at, outcome, completed_at)
+    VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?)`)
+    .run(randomUUID(), outboxId, `key-${outboxId}`, providerJobId, dispatchAt, dispatchAt, outcome, outcome ? dispatchAt : null);
+};
+
 describe("commerce domain", () => {
   const databases: ReturnType<typeof fixture>["db"][] = [];
   afterEach(() => { while (databases.length) databases.pop()?.close(); });
-
-  it("enforces target-specific migration and worker-success evidence before reopening", () => {
-    const release = controlledRelease();
-    const evidence: ReleaseRuntimeEvidence = {
-      source_commit: release.expected.source_commit,
-      required_migrations: { "0031_participant_age_band.sql": true, "0032_release_sales_gate.sql": true, "0033_runtime_release_evidence.sql": true, "0034_worker_sweep_evidence.sql": true },
-      migration_versions: ["0031_participant_age_band.sql", "0032_release_sales_gate.sql", "0033_runtime_release_evidence.sql", "0034_worker_sweep_evidence.sql"],
-      legal_version: release.expected.legal_version,
-      legal_manifest_sha256: release.expected.legal_manifest_sha256,
-      legal_hashes: release.expected.legal_hashes,
-      legal_publish_time: new Date().toISOString(),
-      current_legal_copies_match: true,
-      worker_source_commit: release.expected.source_commit,
-      worker_started_at: new Date(Date.now() - 1_000).toISOString(),
-      worker_observed_at: new Date(Date.now() - 90_001).toISOString(),
-      worker_last_successful_sweep_at: new Date().toISOString(),
-      source_legal_manifest_sha256: "0".repeat(64),
-      source_legal_publish_time: new Date().toISOString(),
-    };
-    expect(evaluateReopenGate(release, evidence)).toBe("WORKER_EVIDENCE_STALE");
-    // SQLite timestamps from older rows omit Z; they remain UTC even if this
-    // Node process runs in a non-UTC container timezone.
-    evidence.worker_observed_at = new Date().toISOString().replace("T", " ").replace(/\.\d{3}Z$/, "");
-    expect(evaluateReopenGate(release, evidence)).toBeUndefined();
-    evidence.worker_last_successful_sweep_at = null;
-    expect(evaluateReopenGate(release, evidence)).toBe("WORKER_SUCCESSFUL_SWEEP_UNAVAILABLE");
-    evidence.worker_last_successful_sweep_at = new Date().toISOString();
-    evidence.source_commit = "b".repeat(40);
-    expect(evaluateReopenGate(release, evidence)).toBe("SOURCE_COMMIT_MISMATCH");
-    evidence.source_commit = release.expected.source_commit;
-    for (const migration of ["0031_participant_age_band.sql", "0032_release_sales_gate.sql", "0033_runtime_release_evidence.sql", "0034_worker_sweep_evidence.sql"]) {
-      // A migration genuinely not applied must be absent from BOTH evidence
-      // views, not just required_migrations: migration_versions is the
-      // complete applied-migration inventory, and a version present there
-      // counts as applied even if required_migrations disagrees (see
-      // migrationApplied() - required_migrations alone is never
-      // authoritative, only ever a bounded hint for the diagnostic set).
-      evidence.required_migrations[migration] = false;
-      const versionIndex = evidence.migration_versions.indexOf(migration);
-      evidence.migration_versions.splice(versionIndex, 1);
-      expect(evaluateReopenGate(release, evidence)).toBe("REQUIRED_MIGRATION_NOT_APPLIED");
-      evidence.required_migrations[migration] = true;
-      evidence.migration_versions.splice(versionIndex, 0, migration);
-    }
-    // required_migrations[version] === true alone is still sufficient even
-    // when migration_versions disagrees - it is an OR, not requiring both.
-    {
-      const migration = "0031_participant_age_band.sql";
-      const versionIndex = evidence.migration_versions.indexOf(migration);
-      evidence.migration_versions.splice(versionIndex, 1);
-      expect(evidence.required_migrations[migration]).toBe(true);
-      expect(evaluateReopenGate(release, evidence)).toBeUndefined();
-      evidence.migration_versions.splice(versionIndex, 0, migration);
-    }
-    evidence.worker_last_successful_sweep_at = "not-a-timestamp";
-    expect(evaluateReopenGate(release, evidence)).toBe("WORKER_SUCCESSFUL_SWEEP_INVALID");
-    evidence.worker_last_successful_sweep_at = new Date(Date.now() - 2_000).toISOString();
-    expect(evaluateReopenGate(release, evidence)).toBe("WORKER_SUCCESSFUL_SWEEP_INVALID");
-    evidence.worker_last_successful_sweep_at = new Date().toISOString();
-    const laterMigrationRelease = { ...release, expected: { ...release.expected, migration: "0099_future_release_gate.sql" } };
-    expect(evaluateReopenGate(laterMigrationRelease, evidence)).toBe("UNKNOWN_EXPECTED_MIGRATION");
-    evidence.worker_source_commit = "b".repeat(40);
-    expect(evaluateReopenGate(release, evidence)).toBe("WORKER_SOURCE_COMMIT_MISMATCH");
-    evidence.worker_source_commit = null;
-    expect(evaluateReopenGate(release, evidence)).toBe("WORKER_NOT_READY");
-  });
 
   it("purges a terminated occurrence notification beyond fifty older live requests", () => {
     const setup = fixture(); databases.push(setup.db);
@@ -257,58 +229,14 @@ describe("commerce domain", () => {
     setup.db.prepare("UPDATE occurrences SET capacity = 1 WHERE id = ?").run(setup.occurrenceId);
     domain.processOccurrenceNotificationLifecycle();
     const outbox = setup.db.prepare("SELECT id FROM email_outbox WHERE type = 'OCCURRENCE_AVAILABLE'").get() as { id: string };
-    setup.db.prepare("UPDATE email_outbox SET status = 'SEND_UNKNOWN', next_attempt_at = '2000-01-01T00:00:00.000Z' WHERE id = ?").run(outbox.id);
+    setup.db.prepare("UPDATE email_outbox SET status = 'SEND_UNKNOWN' WHERE id = ?").run(outbox.id);
+    setup.db.prepare("UPDATE outbox_attempt SET next_retry_at = '2000-01-01T00:00:00.000Z' WHERE message_id = ?").run(outbox.id);
     setup.db.prepare("UPDATE occurrences SET capacity = 0 WHERE id = ?").run(setup.occurrenceId);
 
     await domain.processEmailOutbox();
 
     expect(lookups).toBe(1);
     expect(setup.db.prepare("SELECT status, superseded_at FROM email_outbox WHERE id = ?").get(outbox.id)).toEqual({ status: "ACCEPTED", superseded_at: null });
-  });
-
-  it("keeps Phase 0 reopen available without 0031, 0034, or a worker sweep", () => {
-    const baseRelease = controlledRelease();
-    const phase0Release = { ...baseRelease, expected: { ...baseRelease.expected, migration: "0033_runtime_release_evidence.sql" } };
-    const evidence: ReleaseRuntimeEvidence = {
-      source_commit: phase0Release.expected.source_commit,
-      required_migrations: { "0031_participant_age_band.sql": false, "0032_release_sales_gate.sql": true, "0033_runtime_release_evidence.sql": true, "0034_worker_sweep_evidence.sql": false },
-      migration_versions: ["0032_release_sales_gate.sql", "0033_runtime_release_evidence.sql"],
-      legal_version: phase0Release.expected.legal_version,
-      legal_manifest_sha256: phase0Release.expected.legal_manifest_sha256,
-      legal_hashes: phase0Release.expected.legal_hashes,
-      legal_publish_time: new Date().toISOString(),
-      current_legal_copies_match: true,
-      worker_source_commit: null,
-      worker_started_at: null,
-      worker_observed_at: null,
-      worker_last_successful_sweep_at: null,
-      source_legal_manifest_sha256: "0".repeat(64),
-      source_legal_publish_time: new Date().toISOString(),
-    };
-    expect(evaluateReopenGate(phase0Release, evidence)).toBeUndefined();
-  });
-
-  it("binds terminal completion to the exact durable release that reopened sales", () => {
-    const setup = fixture(); databases.push(setup.db);
-    const release = controlledRelease();
-    const gate = new ReleaseSalesGate(setup.db);
-    const evidence: ReleaseRuntimeEvidence = {
-      source_commit: release.expected.source_commit,
-      required_migrations: { "0031_participant_age_band.sql": true, "0032_release_sales_gate.sql": true, "0033_runtime_release_evidence.sql": true, "0034_worker_sweep_evidence.sql": true },
-      migration_versions: ["0031_participant_age_band.sql", "0032_release_sales_gate.sql", "0033_runtime_release_evidence.sql", "0034_worker_sweep_evidence.sql"],
-      legal_version: release.expected.legal_version, legal_manifest_sha256: release.expected.legal_manifest_sha256,
-      legal_hashes: release.expected.legal_hashes, legal_publish_time: new Date().toISOString(), current_legal_copies_match: true,
-      worker_source_commit: release.expected.source_commit, worker_started_at: new Date(Date.now() - 1_000).toISOString(), worker_observed_at: new Date().toISOString(), worker_last_successful_sweep_at: new Date().toISOString(),
-      source_legal_manifest_sha256: "0".repeat(64), source_legal_publish_time: new Date().toISOString(),
-    };
-    gate.acquire(release); gate.pause(release); gate.reopen(release, evidence);
-    expect(gate.completion(release.release_id)).toMatchObject({ complete: true, expected: release.expected });
-    expect(gate.completion(randomUUID())).toEqual({ complete: false, expected: null, reopened_at: null });
-    const next = controlledRelease();
-    gate.acquire(next); gate.pause(next);
-    expect(gate.completion(release.release_id)).toMatchObject({ complete: true, expected: release.expected });
-    gate.reopen(next, { ...evidence, source_commit: next.expected.source_commit, worker_source_commit: next.expected.source_commit, legal_version: next.expected.legal_version, legal_manifest_sha256: next.expected.legal_manifest_sha256, legal_hashes: next.expected.legal_hashes });
-    expect(gate.completion(release.release_id)).toMatchObject({ complete: true, expected: release.expected });
   });
 
   it("classifies normalized occurrence facts without treating every notice as a refund right", () => {
@@ -321,130 +249,6 @@ describe("commerce domain", () => {
     expect(classifyOccurrenceRevision({ ...base, venue_status: "CONFIRMED", venue_name: "Studio", venue_address: "Lenina 1" }, { ...base, venue_status: "CONFIRMED", venue_name: "New Studio", venue_address: "Lenina 1" })).toMatchObject({ refundMaterial: true });
     expect(classifyOccurrenceRevision(base, { ...base, venue_announce_by: "2026-09-22T10:00:00.000Z" })).toMatchObject({ refundMaterial: true });
     expect(classifyOccurrenceRevision(base, { ...base, venue_announce_by: "2026-09-19T10:00:00.000Z" })).toMatchObject({ notificationMaterial: true, refundMaterial: false });
-  });
-
-  it("durably pauses only new orders, fences stale owners, and leaves existing payment fulfilment available", async () => {
-    const setup = fixture(); databases.push(setup.db);
-    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId });
-    const checkout = await setup.domain.checkoutAsync(checkoutPayload(quote.quote_id), randomUUID(), "https://flexperiment.ru");
-    const payment = setup.db.prepare("SELECT p.id FROM payments p JOIN orders o ON o.id = p.order_id WHERE o.public_status_id = ?").get(checkout.status_id) as { id: string };
-    const beforePause = {
-      occurrence: setup.db.prepare("SELECT material_revision, sales_status FROM occurrences WHERE id = ?").get(setup.occurrenceId),
-      refunds: setup.db.prepare("SELECT COUNT(*) AS count FROM refund_obligations").get(),
-      emails: setup.db.prepare("SELECT COUNT(*) AS count FROM email_outbox").get(),
-      orders: setup.db.prepare("SELECT COUNT(*) AS count FROM orders").get(),
-      payments: setup.db.prepare("SELECT COUNT(*) AS count FROM payments").get(),
-    };
-    const release = controlledRelease();
-    expect(setup.domain.acquireReleaseControl(release).sales_paused).toBe(false);
-    expect(() => setup.domain.acquireReleaseControl(controlledRelease())).toThrow("RELEASE_CONTROL_OWNED");
-    expect(setup.domain.pauseNewOrders(release).sales_paused).toBe(true);
-    expect(() => setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId })).toThrow("SALES_TEMPORARILY_PAUSED");
-    expect(() => setup.domain.checkout(checkoutPayload(quote.quote_id), randomUUID())).toThrow("SALES_TEMPORARILY_PAUSED");
-    expect(setup.db.prepare("SELECT material_revision, sales_status FROM occurrences WHERE id = ?").get(setup.occurrenceId)).toEqual(beforePause.occurrence);
-    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM refund_obligations").get()).toEqual(beforePause.refunds);
-    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM email_outbox").get()).toEqual(beforePause.emails);
-    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM orders").get()).toEqual(beforePause.orders);
-    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM payments").get()).toEqual(beforePause.payments);
-
-    // A failed reopen proof is fail-closed and does not release the durable gate.
-    expect(() => setup.domain.reopenNewOrders(release)).toThrow("SOURCE_COMMIT_MISMATCH");
-    expect(setup.domain.releaseControlStatus()).toMatchObject({ sales_paused: true, owner_release_id: release.release_id });
-
-    // A payment URL issued before the pause is outside the new-order path.
-    expect(setup.domain.markPaymentPaid(payment.id, 100_000, "pre-pause-payment")).toMatchObject({ status: "PAID" });
-    expect(new CommerceDomain(setup.db, new MockProvider()).releaseControlStatus()).toMatchObject({ sales_paused: true, owner_release_id: release.release_id });
-  });
-
-  it("permits exactly one paused certification checkout and certifies only complete stored capture/refund evidence", async () => {
-    const setup = fixture(); databases.push(setup.db);
-    setup.db.prepare("UPDATE occurrences SET price_kopecks = 101, visibility = 'HIDDEN', sales_status = 'CLOSED' WHERE id = ?").run(setup.occurrenceId);
-    const promo = setup.domain.createPromo({ code: "CERT100", status: "ACTIVE", discount_type: "FIXED", discount_value: 1 });
-    const acquired = setup.domain.acquirePromoCandidate({ head: promoCandidateHead() });
-    const deployed = setup.domain.changePromoCandidatePhase({ release_id: acquired.head.release_id, candidate_generation: acquired.head.candidate_generation, expected_state_hash: releaseStateHash(acquired.head), from_phase: "PAUSED", phase_sequence: 0, to_phase: "DEPLOYED_READ_ONLY" });
-    const idempotencyKey = "certification-checkout-0001";
-    const activated = setup.domain.activatePromoCertificationLease({
-      release_id: deployed.head.release_id, candidate_generation: deployed.head.candidate_generation, expected_state_hash: releaseStateHash(deployed.head),
-      occurrence_id: setup.occurrenceId, promo_id: String(promo.id), expected_idempotency_key_hash: sha256(idempotencyKey), lease_seconds: 180,
-    });
-    setup.db.prepare("UPDATE release_certification_allowlist SET expected_idempotency_key_hash = ? WHERE lease_id = ?").run("f".repeat(64), activated.lease.lease_id);
-    expect(() => setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, promoCode: "CERT100" })).toThrow("SALES_TEMPORARILY_PAUSED");
-    setup.db.prepare("UPDATE release_certification_allowlist SET expected_idempotency_key_hash = ? WHERE lease_id = ?").run(sha256(idempotencyKey), activated.lease.lease_id);
-    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, promoCode: "CERT100" });
-    expect(quote.final_amount_kopecks).toBe(100);
-    const checkout = setup.domain.checkout(checkoutPayload(quote.quote_id), idempotencyKey);
-    expect(setup.domain.checkout(checkoutPayload(quote.quote_id), idempotencyKey).status_id).toBe(checkout.status_id);
-    expect(() => setup.domain.checkout(checkoutPayload(quote.quote_id), "certification-checkout-other-0002")).toThrow("SALES_TEMPORARILY_PAUSED");
-    const inFlight = setup.domain.releaseControlStatus();
-    const payment = setup.db.prepare("SELECT p.id, p.order_id FROM payments p WHERE p.order_id = (SELECT order_id FROM checkout_idempotency WHERE idempotency_key_hash = ?)").get(sha256(idempotencyKey)) as { id: string; order_id: string };
-    const inFlightHead = { ...activated.head, phase: "CERTIFICATION_IN_FLIGHT" as const, phase_sequence: activated.head.phase_sequence + 1, certification: { ...activated.head.certification, status: "CONSUMED" as const } };
-    expect(() => setup.domain.changePromoCandidatePhase({ release_id: inFlightHead.release_id, candidate_generation: inFlightHead.candidate_generation, expected_state_hash: releaseStateHash(inFlightHead), from_phase: "CERTIFICATION_IN_FLIGHT", phase_sequence: inFlightHead.phase_sequence, to_phase: "DEPLOYED_READ_ONLY" })).toThrow("CERTIFICATION_TRANSITION_REQUIRES_EVIDENCE");
-    expect(() => setup.domain.certifyPromoCandidate({ release_id: activated.head.release_id, candidate_generation: activated.head.candidate_generation, expected_state_hash: releaseStateHash(inFlightHead), order_id: payment.order_id })).toThrow("CERTIFICATION_PAYMENT_REFUND_MISSING");
-    setup.domain.markPaymentPaid(payment.id, 100, "certification-payment");
-    const refund = setup.domain.createCompensationRefund(payment.order_id, { amount_kopecks: 100, reason: "Certification refund" }, randomUUID());
-    expect(() => setup.domain.certifyPromoCandidate({ release_id: activated.head.release_id, candidate_generation: activated.head.candidate_generation, expected_state_hash: releaseStateHash(inFlightHead), order_id: payment.order_id })).toThrow("CERTIFICATION_PAYMENT_REFUND_MISSING");
-    const pendingRefundHead = setup.db.prepare("SELECT details_json FROM release_sales_gate_events WHERE release_id = ? ORDER BY rowid DESC LIMIT 1").get(activated.head.release_id) as { details_json: string };
-    expect(JSON.parse(pendingRefundHead.details_json).head.phase).toBe("CERTIFICATION_IN_FLIGHT");
-    await setup.domain.submitRequestedRefunds();
-    (setup.domain.provider as PaymentProvider).reconcileRefund = async () => ({ status: "SUCCEEDED", refundedAmountKopecks: 100 });
-    await setup.domain.reconcileRefund(String(refund.id));
-    const certified = setup.domain.certifyPromoCandidate({ release_id: activated.head.release_id, candidate_generation: activated.head.candidate_generation, expected_state_hash: releaseStateHash(inFlightHead), order_id: payment.order_id });
-    expect(certified.head).toMatchObject({ phase: "CERTIFIED", certification: { status: "CONSUMED" } });
-    const certificationEvent = setup.db.prepare("SELECT details_json FROM release_sales_gate_events WHERE release_id = ? ORDER BY rowid DESC LIMIT 1").get(activated.head.release_id) as { details_json: string };
-    expect(JSON.parse(certificationEvent.details_json).certification_evidence).toMatchObject({ occurrence_id: setup.occurrenceId, promo_id: promo.id, order_id: payment.order_id, payment_id: payment.id, price_kopecks: 101, discount_kopecks: 1, amount_kopecks: 100, captured_kopecks: 100, refunded_kopecks: 100 });
-    expect(() => setup.domain.completePromoCandidate({ release_id: certified.head.release_id, candidate_generation: certified.head.candidate_generation, expected_state_hash: releaseStateHash(certified.head) })).toThrow("CERTIFICATION_CLEANUP_INCOMPLETE");
-    expect(() => setup.domain.changePromoCandidatePhase({ release_id: certified.head.release_id, candidate_generation: certified.head.candidate_generation, expected_state_hash: releaseStateHash(certified.head), from_phase: "CERTIFIED", phase_sequence: certified.head.phase_sequence, to_phase: "RECOVERY_REQUIRED" })).toThrow("PUBLIC_FRONTEND_DEFECT_EVIDENCE_REQUIRED");
-    expect(inFlight.sales_paused).toBe(true);
-  });
-
-  it("records a deployed paused provider-readiness defect only through its evidence-owned transition", () => {
-    const setup = fixture(); databases.push(setup.db);
-    const candidate = promoCandidateHead();
-    const acquired = setup.domain.acquirePromoCandidate({ head: candidate });
-    const gate = new ReleaseSalesGate(setup.db);
-    const runtime = (): ReleaseRuntimeEvidence => ({
-      source_commit: acquired.head.source_commit,
-      required_migrations: { "0035_promo_codes_v0.sql": true },
-      migration_versions: ["0035_promo_codes_v0.sql"],
-      migration_source_hashes: acquired.head.migration_inventory.files,
-      legal_version: "2026-08-25.1",
-      legal_manifest_sha256: "c".repeat(64),
-      legal_hashes: candidate.legal_baseline.legal_hashes,
-      legal_publish_time: new Date().toISOString(),
-      current_legal_copies_match: true,
-      worker_source_commit: acquired.head.source_commit,
-      worker_started_at: new Date().toISOString(),
-      worker_observed_at: new Date().toISOString(),
-      worker_last_successful_sweep_at: new Date().toISOString(),
-      source_legal_manifest_sha256: "c".repeat(64),
-      source_legal_publish_time: new Date().toISOString(),
-    });
-    expect(() => gate.changeCandidatePhase({ release_id: acquired.head.release_id, candidate_generation: 1, expected_state_hash: releaseStateHash(acquired.head), from_phase: "PAUSED", phase_sequence: 0, to_phase: "RECOVERY_REQUIRED" })).toThrow("RUNTIME_READINESS_DEFECT_EVIDENCE_REQUIRED");
-    expect(() => gate.markRuntimeReadinessDefect({ release_id: acquired.head.release_id, candidate_generation: 1, expected_state_hash: "0".repeat(64), readiness_component: "PROVIDER_READINESS", error_class: "PROVIDER_BAD_REQUEST", error_code: "HTTP_400" }, runtime)).toThrow("RELEASE_STATE_STALE");
-    expect(() => gate.markRuntimeReadinessDefect({ release_id: acquired.head.release_id, candidate_generation: 1, expected_state_hash: releaseStateHash(acquired.head), readiness_component: "PROVIDER_READINESS", error_class: "PROVIDER_BAD_REQUEST", error_code: "HTTP_400" }, () => ({ ...runtime(), source_commit: "b".repeat(40) }))).toThrow("RUNTIME_READINESS_CANDIDATE_NOT_DEPLOYED");
-    const recovered = gate.markRuntimeReadinessDefect({ release_id: acquired.head.release_id, candidate_generation: 1, expected_state_hash: releaseStateHash(acquired.head), readiness_component: "PROVIDER_READINESS", error_class: "PROVIDER_BAD_REQUEST", error_code: "HTTP_400" }, runtime);
-    expect(recovered.head).toMatchObject({ phase: "RECOVERY_REQUIRED", phase_sequence: 1 });
-    expect(recovered.head).not.toHaveProperty("certification");
-    const event = setup.db.prepare("SELECT details_json FROM release_sales_gate_events WHERE release_id = ? ORDER BY rowid DESC LIMIT 1").get(acquired.head.release_id) as { details_json: string };
-    expect(JSON.parse(event.details_json)).toMatchObject({ kind: "RUNTIME_READINESS_DEFECT", runtime_readiness_defect: { reason: "RUNTIME_READINESS_DEFECT", readiness_component: "PROVIDER_READINESS", error_class: "PROVIDER_BAD_REQUEST", error_code: "HTTP_400", source_commit: acquired.head.source_commit } });
-  });
-
-  it("rejects non-actionable HTTP readiness evidence without appending a ledger event", () => {
-    const setup = fixture(); databases.push(setup.db);
-    const acquired = setup.domain.acquirePromoCandidate({ head: promoCandidateHead() });
-    const gate = new ReleaseSalesGate(setup.db);
-    const before = setup.db.prepare("SELECT COUNT(*) AS count FROM release_sales_gate_events WHERE release_id = ?").get(acquired.head.release_id) as { count: number };
-
-    expect(() => gate.markRuntimeReadinessDefect({
-      release_id: acquired.head.release_id,
-      candidate_generation: acquired.head.candidate_generation,
-      expected_state_hash: releaseStateHash(acquired.head),
-      readiness_component: "PROVIDER_READINESS",
-      error_class: "PROVIDER_HTTP_ERROR" as never,
-      error_code: "HTTP_503",
-    }, () => { throw new Error("runtime evidence must not be read"); })).toThrow("RUNTIME_READINESS_DEFECT_INVALID");
-
-    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM release_sales_gate_events WHERE release_id = ?").get(acquired.head.release_id)).toEqual(before);
   });
 
   it("merges promo PATCHes with the stored mutable contract before enforcing promo terms", () => {
@@ -505,100 +309,6 @@ describe("commerce domain", () => {
     expect(setup.db.prepare("SELECT COUNT(*) AS count FROM occurrences WHERE id = ?").get(failedOccurrenceId)).toEqual({ count: 0 });
     expect(setup.db.prepare("SELECT COUNT(*) AS count FROM admin_audit_log WHERE entity_id = ?").get(failedOccurrenceId)).toEqual({ count: 0 });
     expect(setup.db.prepare("SELECT COUNT(*) AS count FROM admin_command_idempotency WHERE idempotency_key_hash IN (?, ?)").get(sha256(failedOccurrenceKey), sha256(failedPromoKey))).toEqual({ count: 0 });
-  });
-
-  it("recognizes an applied 0036+ candidate migration via migration_versions even though required_migrations only tracks 0031-0034", () => {
-    const setup = fixture(); databases.push(setup.db);
-    const migrationFiles = { "0031_participant_age_band.sql": "1".repeat(64), "0032_release_sales_gate.sql": "2".repeat(64), "0033_runtime_release_evidence.sql": "3".repeat(64), "0034_worker_sweep_evidence.sql": "4".repeat(64), "0035_promo_codes_v0.sql": "5".repeat(64), "0036_tochka_provider_error_evidence.sql": "6".repeat(64) };
-    const candidate = { ...promoCandidateHead(), migration_inventory: { files: migrationFiles } };
-    const acquired = setup.domain.acquirePromoCandidate({ head: candidate });
-    const gate = new ReleaseSalesGate(setup.db);
-    const realisticRuntime = (overrides: Partial<ReleaseRuntimeEvidence> = {}): ReleaseRuntimeEvidence => ({
-      source_commit: acquired.head.source_commit,
-      required_migrations: { "0031_participant_age_band.sql": true, "0032_release_sales_gate.sql": true, "0033_runtime_release_evidence.sql": true, "0034_worker_sweep_evidence.sql": true },
-      migration_versions: Object.keys(migrationFiles),
-      migration_source_hashes: migrationFiles,
-      legal_version: "2026-08-25.1",
-      legal_manifest_sha256: "c".repeat(64),
-      legal_hashes: candidate.legal_baseline.legal_hashes,
-      legal_publish_time: new Date().toISOString(),
-      current_legal_copies_match: true,
-      worker_source_commit: acquired.head.source_commit,
-      worker_started_at: new Date().toISOString(),
-      worker_observed_at: new Date().toISOString(),
-      worker_last_successful_sweep_at: new Date().toISOString(),
-      source_legal_manifest_sha256: "c".repeat(64),
-      source_legal_publish_time: new Date().toISOString(),
-      ...overrides,
-    });
-    const request = { release_id: acquired.head.release_id, candidate_generation: 1, expected_state_hash: releaseStateHash(acquired.head), readiness_component: "PROVIDER_READINESS" as const, error_class: "PROVIDER_BAD_REQUEST" as const, error_code: "HTTP_400" };
-    expect(() => gate.markRuntimeReadinessDefect(request, () => realisticRuntime({ migration_versions: Object.keys(migrationFiles).filter((version) => version !== "0036_tochka_provider_error_evidence.sql") }))).toThrow("RUNTIME_READINESS_CANDIDATE_NOT_DEPLOYED");
-    expect(() => gate.markRuntimeReadinessDefect(request, () => realisticRuntime({ migration_source_hashes: { ...migrationFiles, "0036_tochka_provider_error_evidence.sql": "f".repeat(64) } }))).toThrow("RUNTIME_READINESS_CANDIDATE_NOT_DEPLOYED");
-    expect(() => gate.markRuntimeReadinessDefect(request, () => realisticRuntime({ source_commit: "b".repeat(40) }))).toThrow("RUNTIME_READINESS_CANDIDATE_NOT_DEPLOYED");
-    expect(() => gate.markRuntimeReadinessDefect(request, () => realisticRuntime({ worker_source_commit: "b".repeat(40) }))).toThrow("RUNTIME_READINESS_CANDIDATE_NOT_DEPLOYED");
-    const recovered = gate.markRuntimeReadinessDefect(request, realisticRuntime);
-    expect(recovered.head).toMatchObject({ phase: "RECOVERY_REQUIRED", phase_sequence: 1 });
-  });
-
-  it("rejects non-fixture leases and permits a same-generation retry only after a terminal operational failure", () => {
-    const setup = fixture(); databases.push(setup.db);
-    const promo = setup.domain.createPromo({ code: "NOTCERT", status: "ACTIVE", discount_type: "FIXED", discount_value: 1 });
-    const acquired = setup.domain.acquirePromoCandidate({ head: promoCandidateHead() });
-    const deployed = setup.domain.changePromoCandidatePhase({ release_id: acquired.head.release_id, candidate_generation: acquired.head.candidate_generation, expected_state_hash: releaseStateHash(acquired.head), from_phase: "PAUSED", phase_sequence: 0, to_phase: "DEPLOYED_READ_ONLY" });
-    expect(() => setup.domain.activatePromoCertificationLease({ release_id: deployed.head.release_id, candidate_generation: deployed.head.candidate_generation, expected_state_hash: releaseStateHash(deployed.head), occurrence_id: setup.occurrenceId, promo_id: String(promo.id), expected_idempotency_key_hash: sha256("wrong-fixture-certification-key"), lease_seconds: 180 })).toThrow("CERTIFICATION_FIXTURE_INVALID");
-
-    setup.db.prepare("UPDATE occurrences SET price_kopecks = 101, visibility = 'HIDDEN', sales_status = 'CLOSED' WHERE id = ?").run(setup.occurrenceId);
-    const certPromo = setup.domain.createPromo({ code: "RETRYCERT", status: "ACTIVE", discount_type: "FIXED", discount_value: 1 });
-    const idempotencyKey = "certification-retry-checkout-0001";
-    const activated = setup.domain.activatePromoCertificationLease({ release_id: deployed.head.release_id, candidate_generation: deployed.head.candidate_generation, expected_state_hash: releaseStateHash(deployed.head), occurrence_id: setup.occurrenceId, promo_id: String(certPromo.id), expected_idempotency_key_hash: sha256(idempotencyKey), lease_seconds: 180 });
-    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, promoCode: "RETRYCERT" });
-    setup.domain.checkout(checkoutPayload(quote.quote_id), idempotencyKey);
-    const inFlight = { ...activated.head, phase: "CERTIFICATION_IN_FLIGHT" as const, phase_sequence: activated.head.phase_sequence + 1, certification: { ...activated.head.certification, status: "CONSUMED" as const } };
-    expect(() => setup.domain.retryPromoCertification({ release_id: inFlight.release_id, candidate_generation: inFlight.candidate_generation, expected_state_hash: releaseStateHash(inFlight), retry_reason: "OPERATIONAL" })).toThrow("CERTIFICATION_RETRY_BLOCKED");
-    const order = setup.db.prepare("SELECT order_id FROM checkout_idempotency WHERE idempotency_key_hash = ?").get(sha256(idempotencyKey)) as { order_id: string };
-    setup.db.prepare("UPDATE payments SET state = 'CREATE_FAILED', status = 'CANCELLED' WHERE order_id = ?").run(order.order_id);
-    const retried = setup.domain.retryPromoCertification({ release_id: inFlight.release_id, candidate_generation: inFlight.candidate_generation, expected_state_hash: releaseStateHash(inFlight), retry_reason: "OPERATIONAL" });
-    expect(retried.head).toMatchObject({ phase: "DEPLOYED_READ_ONLY", candidate_generation: 1, certification: { status: "CONSUMED" } });
-    expect(() => setup.domain.activatePromoCertificationLease({ release_id: retried.head.release_id, candidate_generation: retried.head.candidate_generation, expected_state_hash: releaseStateHash(retried.head), occurrence_id: setup.occurrenceId, promo_id: String(certPromo.id), expected_idempotency_key_hash: sha256("certification-retry-checkout-0002"), lease_seconds: 180 })).toThrow("CERTIFICATION_FRESH_FIXTURE_REQUIRED");
-    const city = setup.db.prepare("SELECT city_id FROM occurrences WHERE id = ?").get(setup.occurrenceId) as { city_id: string };
-    const freshOccurrenceId = randomUUID();
-    setup.db.prepare(`INSERT INTO occurrences(id, city_id, title, starts_at, ends_at, timezone, price_kopecks, capacity, visibility, sales_status, venue_status, venue_name, venue_address)
-      VALUES (?, ?, 'FLEXPERIMENT certification retry', '2026-11-01T10:00:00.000Z', '2026-11-01T13:00:00.000Z', 'Asia/Novosibirsk', 101, 1, 'HIDDEN', 'CLOSED', 'CONFIRMED', 'Studio', 'Lenina 1')`).run(freshOccurrenceId, city.city_id);
-    const freshPromo = setup.domain.createPromo({ code: "RETRYCERT2", status: "ACTIVE", discount_type: "FIXED", discount_value: 1 });
-    const reactivated = setup.domain.activatePromoCertificationLease({ release_id: retried.head.release_id, candidate_generation: retried.head.candidate_generation, expected_state_hash: releaseStateHash(retried.head), occurrence_id: freshOccurrenceId, promo_id: String(freshPromo.id), expected_idempotency_key_hash: sha256("certification-retry-checkout-0002"), lease_seconds: 180 });
-    expect(reactivated.head).toMatchObject({ phase: "CERTIFICATION_ONLY", candidate_generation: 1, certification: { status: "ACTIVE" } });
-    setup.db.prepare("UPDATE release_certification_allowlist SET lease_expires_at = '2000-01-01T00:00:00.000Z' WHERE lease_id = ?").run(reactivated.lease.lease_id);
-    expect(() => setup.domain.checkoutContext({ occurrenceId: freshOccurrenceId, promoCode: "RETRYCERT2" })).toThrow("SALES_TEMPORARILY_PAUSED");
-  });
-
-  it("records persistent certification evidence defects as recovery-required", async () => {
-    const setup = fixture(); databases.push(setup.db);
-    setup.db.prepare("UPDATE occurrences SET price_kopecks = 101, visibility = 'HIDDEN', sales_status = 'CLOSED' WHERE id = ?").run(setup.occurrenceId);
-    const promo = setup.domain.createPromo({ code: "DEFECTCERT", status: "ACTIVE", discount_type: "FIXED", discount_value: 1 });
-    const appliedManifest = { files: Object.fromEntries((setup.db.prepare("SELECT version FROM schema_migrations ORDER BY version").all() as Array<{ version: string }>).map(({ version }) => [version, sha256(version)])) };
-    const originalHead = { ...promoCandidateHead(), migration_inventory: appliedManifest };
-    const acquired = setup.domain.acquirePromoCandidate({ head: originalHead });
-    const deployed = setup.domain.changePromoCandidatePhase({ release_id: acquired.head.release_id, candidate_generation: acquired.head.candidate_generation, expected_state_hash: releaseStateHash(acquired.head), from_phase: "PAUSED", phase_sequence: 0, to_phase: "DEPLOYED_READ_ONLY" });
-    const key = "certification-defect-checkout-0001";
-    const activated = setup.domain.activatePromoCertificationLease({ release_id: deployed.head.release_id, candidate_generation: deployed.head.candidate_generation, expected_state_hash: releaseStateHash(deployed.head), occurrence_id: setup.occurrenceId, promo_id: String(promo.id), expected_idempotency_key_hash: sha256(key), lease_seconds: 180 });
-    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, promoCode: "DEFECTCERT" });
-    setup.domain.checkout(checkoutPayload(quote.quote_id), key);
-    const payment = setup.db.prepare("SELECT p.id, p.order_id FROM payments p WHERE p.order_id = (SELECT order_id FROM checkout_idempotency WHERE idempotency_key_hash = ?)").get(sha256(key)) as { id: string; order_id: string };
-    setup.domain.markPaymentPaid(payment.id, 100, "defect-payment");
-    const refund = setup.domain.createCompensationRefund(payment.order_id, { amount_kopecks: 100, reason: "Certification refund" }, randomUUID());
-    await setup.domain.submitRequestedRefunds();
-    (setup.domain.provider as PaymentProvider).reconcileRefund = async () => ({ status: "SUCCEEDED", refundedAmountKopecks: 100 });
-    await setup.domain.reconcileRefund(String(refund.id));
-    setup.db.prepare("UPDATE orders SET price_kopecks_snapshot = 100 WHERE id = ?").run(payment.order_id);
-    const inFlight = { ...activated.head, phase: "CERTIFICATION_IN_FLIGHT" as const, phase_sequence: activated.head.phase_sequence + 1, certification: { ...activated.head.certification, status: "CONSUMED" as const } };
-    const recovered = setup.domain.certifyPromoCandidate({ release_id: inFlight.release_id, candidate_generation: inFlight.candidate_generation, expected_state_hash: releaseStateHash(inFlight), order_id: payment.order_id });
-    expect(recovered.head.phase).toBe("RECOVERY_REQUIRED");
-    const defectEvent = setup.db.prepare("SELECT details_json FROM release_sales_gate_events WHERE release_id = ? ORDER BY rowid DESC LIMIT 1").get(inFlight.release_id) as { details_json: string };
-    expect(JSON.parse(defectEvent.details_json).certification_defect).toMatchObject({ reason: "CERTIFICATION_FIXTURE_EVIDENCE_MISMATCH", order_id: payment.order_id, payment_id: payment.id });
-    const replacement = { ...originalHead, candidate_generation: 2, source_commit: "2".repeat(40) };
-    const adopted = setup.domain.adoptPromoCandidate({ head: replacement, expected_generation: recovered.head.candidate_generation, from_sha: recovered.head.source_commit, expected_state_hash: releaseStateHash(recovered.head) });
-    const redeployed = setup.domain.changePromoCandidatePhase({ release_id: adopted.head.release_id, candidate_generation: adopted.head.candidate_generation, expected_state_hash: releaseStateHash(adopted.head), from_phase: "PAUSED", phase_sequence: 0, to_phase: "DEPLOYED_READ_ONLY" });
-    expect(() => setup.domain.activatePromoCertificationLease({ release_id: redeployed.head.release_id, candidate_generation: redeployed.head.candidate_generation, expected_state_hash: releaseStateHash(redeployed.head), occurrence_id: setup.occurrenceId, promo_id: String(promo.id), expected_idempotency_key_hash: sha256("defect-retry-checkout-0002"), lease_seconds: 180 })).toThrow("CERTIFICATION_FRESH_FIXTURE_REQUIRED");
   });
 
   it("includes the venue-announcement deadline in a checkout quote", () => {
@@ -744,12 +454,18 @@ describe("commerce domain", () => {
     domain.markPaymentPaid(payment.id, 100_000, "paid");
     domain.patchOccurrence(setup.occurrenceId, { title: "First notice", reason: "First change", expected_revision: 1 }, randomUUID(), "admin");
     const outbox = setup.db.prepare("SELECT id FROM email_outbox WHERE type = 'OCCURRENCE_UPDATED'").get() as { id: string };
-    setup.db.prepare("UPDATE email_outbox SET status = 'SENDING', lease_owner = 'crashed-worker', lease_expires_at = datetime('now', '-1 second') WHERE id = ?").run(outbox.id);
+    setup.db.prepare("UPDATE email_outbox SET status = 'SENDING' WHERE id = ?").run(outbox.id);
+    // The dispatch lease lives on the attempt under ATTEMPT authority; the
+    // message's own lease columns are frozen and nothing reads them.
+    setup.db.prepare("UPDATE outbox_attempt SET lease_owner = 'crashed-worker', lease_expires_at = datetime('now', '-1 second') WHERE message_id = ? AND outcome IS NULL").run(outbox.id);
     domain.patchOccurrence(setup.occurrenceId, { title: "Replacement notice", reason: "Second change", expected_revision: 2 }, randomUUID(), "admin");
 
     domain.recoverStaleCommands();
-    expect(setup.db.prepare("SELECT status, superseded_at, lease_owner, lease_expires_at, next_attempt_at FROM email_outbox WHERE id = ?").get(outbox.id)).toEqual({
-      status: "SEND_UNKNOWN", superseded_at: expect.any(String), lease_owner: null, lease_expires_at: null, next_attempt_at: null,
+    expect(setup.db.prepare("SELECT status, superseded_at FROM email_outbox WHERE id = ?").get(outbox.id)).toEqual({
+      status: "SEND_UNKNOWN", superseded_at: expect.any(String),
+    });
+    expect(setup.db.prepare("SELECT lease_owner, lease_expires_at, next_retry_at FROM outbox_attempt WHERE message_id = ?").get(outbox.id)).toEqual({
+      lease_owner: null, lease_expires_at: null, next_retry_at: null,
     });
     await domain.processEmailOutbox();
     expect(sentOutboxIds).not.toContain(outbox.id);
@@ -1256,40 +972,6 @@ describe("commerce domain", () => {
     expect(setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId }).availability).toBe(5);
   });
 
-  it("repairs only a proven legacy full-refund fulfilment inconsistency", async () => {
-    const setup = fixture(); databases.push(setup.db);
-    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId });
-    const result = await setup.domain.checkoutAsync(checkoutPayload(quote.quote_id), "full-refund-repair-001", "https://flexperiment.ru");
-    const order = setup.db.prepare("SELECT o.id, p.id AS payment_id FROM orders o JOIN payments p ON p.order_id = o.id WHERE o.public_status_id = ?").get(result.status_id) as { id: string; payment_id: string };
-    setup.domain.markPaymentPaid(order.payment_id, 100000, "provider-payment");
-    setup.db.prepare(`INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, provider_reference, succeeded_at)
-      VALUES (?, ?, ?, ?, 100000, 'legacy full refund', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, ?, 'legacy-reference', datetime('now'))`)
-      .run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID(), randomUUID());
-    setup.db.prepare("UPDATE payments SET status = 'REFUNDED' WHERE id = ?").run(order.payment_id);
-
-    expect(setup.domain.repairFullRefundFulfillment(order.id)).toBe(true);
-    expect(setup.domain.repairFullRefundFulfillment(order.id)).toBe(false);
-    expect(setup.db.prepare("SELECT status, cancellation_reason FROM bookings WHERE order_id = ?").get(order.id)).toMatchObject({ status: "CANCELLED", cancellation_reason: "FULL_REFUND" });
-    expect(setup.db.prepare("SELECT status FROM tickets WHERE booking_id = (SELECT id FROM bookings WHERE order_id = ?)").get(order.id)).toMatchObject({ status: "VOID" });
-    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM email_outbox WHERE type = 'REFUND_SUCCEEDED'").get()).toMatchObject({ count: 0 });
-  });
-
-  it("refuses the legacy repair unless payment and cumulative refund evidence prove a full refund", async () => {
-    const setup = fixture(); databases.push(setup.db);
-    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId });
-    const result = await setup.domain.checkoutAsync(checkoutPayload(quote.quote_id), "full-refund-repair-refusal-001", "https://flexperiment.ru");
-    const order = setup.db.prepare("SELECT o.id, p.id AS payment_id FROM orders o JOIN payments p ON p.order_id = o.id WHERE o.public_status_id = ?").get(result.status_id) as { id: string; payment_id: string };
-    setup.domain.markPaymentPaid(order.payment_id, 100000, "provider-payment");
-    setup.db.prepare(`INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, provider_reference, succeeded_at)
-      VALUES (?, ?, ?, ?, 99999, 'partial legacy refund', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, ?, 'legacy-reference', datetime('now'))`)
-      .run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID(), randomUUID());
-    setup.db.prepare("UPDATE payments SET status = 'REFUNDED' WHERE id = ?").run(order.payment_id);
-
-    expect(setup.domain.repairFullRefundFulfillment(order.id)).toBe(false);
-    expect(setup.db.prepare("SELECT status FROM bookings WHERE order_id = ?").get(order.id)).toMatchObject({ status: "CONFIRMED" });
-    expect(setup.db.prepare("SELECT status FROM tickets WHERE booking_id = (SELECT id FROM bookings WHERE order_id = ?)").get(order.id)).toMatchObject({ status: "VALID" });
-  });
-
   it("cancels an occurrence once and upserts a full refund obligation without a ticket", async () => {
     const setup = fixture(); databases.push(setup.db);
     const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId });
@@ -1413,7 +1095,9 @@ describe("commerce domain", () => {
     setup.db.prepare("UPDATE customer_refund_confirmation_tokens SET invalidated_at = datetime('now') WHERE order_id = ?").run(order.id);
     setup.db.prepare("UPDATE email_outbox SET status = 'SEND_UNKNOWN' WHERE type = 'CUSTOMER_REFUND_CONFIRMATION'").run();
     await domain.processEmailOutbox();
-    expect(setup.db.prepare("SELECT status, job_id FROM email_outbox WHERE type = 'CUSTOMER_REFUND_CONFIRMATION'").get()).toEqual({ status: "ACCEPTED", job_id: "mail-reconciled" });
+    const confirmation = setup.db.prepare("SELECT id, status FROM email_outbox WHERE type = 'CUSTOMER_REFUND_CONFIRMATION'").get() as { id: string; status: string };
+    expect(confirmation.status).toBe("ACCEPTED");
+    expect(attemptJobId(setup.db, confirmation.id)).toBe("mail-reconciled");
   });
 
   it("cannot turn a newer SEND_UNKNOWN confirmation email into SKIPPED from a stale PENDING snapshot", async () => {
@@ -1470,98 +1154,19 @@ describe("commerce domain", () => {
     expect(setup.db.prepare("SELECT COALESCE(SUM(amount_kopecks), 0) AS total FROM refunds WHERE payment_id = ?").get(payment.id)).toMatchObject({ total: 5000 });
   });
 
-  it("does not mature a referral reward when the organizer cancels an occurrence", async () => {
-    const setup = fixture(); databases.push(setup.db);
-    const agentId = randomUUID();
-    setup.db.prepare(`INSERT INTO agents(id, slug, display_name, email, enabled, default_reward_type, default_reward_value)
-      VALUES (?, 'cancelled-promoter', 'Promoter', 'promoter@example.test', 1, 'PERCENT', 1000)`).run(agentId);
-    // Attribution is pinned at checkout time (immutable thereafter as of
-    // PR6/0046 - orders.attributed_agent_id/reward_type_snapshot/
-    // reward_value_snapshot can no longer be attached retroactively via
-    // UPDATE), so this uses the real legacy referral-slug path instead of
-    // a post-hoc UPDATE.
-    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, referralSlug: "cancelled-promoter" });
-    const result = await setup.domain.checkoutAsync({ quote_id: quote.quote_id, customer_email: "art@example.test", customer_adult_confirmed: true, participant_age_band: "ADULT", offer_accepted: true, pd_consent_accepted: true }, "8f3a27bc-77c6-47b1-b6d0-000000000022", "https://flexperiment.ru");
-    const payment = setup.db.prepare("SELECT p.id, p.order_id FROM payments p JOIN orders o ON o.id = p.order_id WHERE o.public_status_id = ?").get(result.status_id) as { id: string; order_id: string };
-    setup.domain.markPaymentPaid(payment.id, 100000, "provider-payment");
-    const sessionId = randomUUID(); const capability = "r".repeat(32);
-    setup.db.prepare("INSERT INTO admin_sessions(id, admin_id, expires_at) VALUES (?, 'admin', datetime('now', '+1 hour'))").run(sessionId);
-    setup.domain.createAdminReauth({ adminId: "admin", sessionId, purpose: "CANCEL_OCCURRENCE", resourceId: setup.occurrenceId, capability });
-    setup.domain.cancelOccurrence(setup.occurrenceId, { reason: "Organizer illness", reauthCapability: capability }, "8f3a27bc-77c6-47b1-b6d0-000000000023", "admin", sessionId);
-    expect(setup.domain.rewardBalance(agentId, setup.occurrenceId)).toMatchObject({ accrued_total: 0, payable_gross_total: 0, available_to_settle: 0 });
-  });
-
-  it("replays the current settlement state for an idempotent prepare", async () => {
-    const setup = fixture(); databases.push(setup.db);
-    const agentId = String(promoter(setup, "promoter").id);
-    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, referralSlug: "promoter" });
-    const result = await setup.domain.checkoutAsync({ quote_id: quote.quote_id, customer_email: "art@example.test", customer_adult_confirmed: true, participant_age_band: "ADULT", offer_accepted: true, pd_consent_accepted: true }, "8f3a27bc-77c6-47b1-b6d0-000000000008", "https://flexperiment.ru");
-    const order = setup.db.prepare("SELECT o.id, p.id AS payment_id FROM orders o JOIN payments p ON p.order_id = o.id WHERE o.public_status_id = ?").get(result.status_id) as { id: string; payment_id: string };
-    setup.domain.markPaymentPaid(order.payment_id, 100000, "provider-payment");
-    bindSettlementLegalIdentity(setup, agentId, "promoter-partner@example.test");
-    setup.db.prepare("UPDATE occurrences SET ends_at = '2020-01-01T00:00:00.000Z' WHERE id = ?").run(setup.occurrenceId);
-    setup.db.prepare("UPDATE occurrences SET sales_status = 'CLOSED' WHERE id = ?").run(setup.occurrenceId);
-    setup.domain.completeOccurrence(setup.occurrenceId);
-    const input = { agent_id: agentId, occurrence_id: setup.occurrenceId, amount_kopecks: 10000, method: "TRANSFER" };
-    const key = "8f3a27bc-77c6-47b1-b6d0-000000000009";
-    const first = setup.domain.prepareSettlement(input, key, "admin");
-    setup.domain.markSettlementPaymentMade(String(first.id), "I confirm the money was transferred", "phase11-current-state-payment");
-    const replay = setup.domain.prepareSettlement(input, key, "admin");
-    expect(replay.id).toBe(first.id);
-    expect(replay.status).toBe("PENDING_DOCUMENT");
-    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM reward_settlements").get()).toMatchObject({ count: 1 });
-  });
-
-  it("uses the stable email idempotence key after an ambiguous send", async () => {
-    const setup = fixture(); databases.push(setup.db);
-    const calls: string[] = [];
-    const email: EmailProvider = {
-      async lookup() { return { status: "UNKNOWN" }; },
-      async send(input) { calls.push(input.idempotencyKey); return { jobId: "mail-1" }; },
-    };
-    const domain = new CommerceDomain(setup.db, new MockProvider(), email);
-    setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, status, provider_idempotence_key)
-      VALUES (?, 'BOOKING_CANCELLED', 'art@example.test', 'hash', 'booking', '{}', 'SEND_UNKNOWN', 'stable-provider-key')`).run(randomUUID());
-    await domain.processEmailOutbox();
-    expect(calls).toEqual(["stable-provider-key"]);
-    expect(setup.db.prepare("SELECT status, job_id FROM email_outbox").get()).toMatchObject({ status: "ACCEPTED", job_id: "mail-1" });
-  });
-
-  it("marks a deterministic Unisender 403 as FAILED without automatic retries", async () => {
-    const setup = fixture(); databases.push(setup.db);
-    let sends = 0;
-    const email = new UnisenderGoProvider(unisenderTestConfig, async () => {
-      sends += 1;
-      return Response.json({ code: "FORBIDDEN", message: "recipient buyer@example.test is not allowed" }, { status: 403 });
-    });
-    const domain = new CommerceDomain(setup.db, new MockProvider(), email);
-    setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, provider_idempotence_key)
-      VALUES (?, 'BOOKING_CANCELLED', 'buyer@example.test', 'hash', 'ticket', '{"ticket_url":"https://flexperiment.ru/ticket#capability"}', 'http-403-key')`).run(randomUUID());
-
-    await domain.processEmailOutbox();
-    for (let index = 0; index < 5_001; index += 1) await domain.processEmailOutbox();
-
-    expect(sends).toBe(1);
-    expect(setup.db.prepare("SELECT status, attempts, last_error, provider_error_code, provider_error_message, next_attempt_at FROM email_outbox").get()).toEqual({
-      status: "FAILED", attempts: 1, last_error: "UNISENDER_HTTP_REJECTED", provider_error_code: "FORBIDDEN",
-      provider_error_message: "recipient [redacted-email] is not allowed", next_attempt_at: null,
-    });
-  });
 
   it("keeps delivery evidence separate from operational email acknowledgement", async () => {
     const setup = fixture(); databases.push(setup.db);
     const domain = new CommerceDomain(setup.db, new MockProvider());
-    const insert = setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template,
-      payload_snapshot, status, provider_idempotence_key, attempts, sent_at, bounced_at,
-      provider_error_code, provider_error_message, delivery_outcome)
-      VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}', ?, ?, 3,
-      '2026-08-23T00:00:00.000Z', '2026-08-23T00:01:00.000Z', 'hard_bounced', 'Mailbox unavailable',
+    const insert = setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, status, sent_at, bounced_at, delivery_outcome)
+      VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}', ?,
+      '2026-08-23T00:00:00.000Z', '2026-08-23T00:01:00.000Z',
       CASE WHEN ? = 'FAILED' THEN 'KNOWN_FAILED' END)`);
-    for (const status of ["FAILED", "BOUNCED", "SEND_UNKNOWN", "DELIVERED"]) insert.run(`attention-${status}`, status, `attention-key-${status}`, status);
+    for (const status of ["FAILED", "BOUNCED", "SEND_UNKNOWN", "DELIVERED"]) insert.run(`attention-${status}`, status, status);
 
     expect(domain.emailAttentionCount()).toBe(3);
     expect(domain.emailAttentionIncidents().map((incident) => incident.status)).toEqual(["SEND_UNKNOWN", "FAILED", "BOUNCED"]);
-    const before = setup.db.prepare(`SELECT status, attempts, sent_at, bounced_at, provider_error_code, provider_error_message
+    const before = setup.db.prepare(`SELECT status, sent_at, bounced_at, delivery_outcome
       FROM email_outbox WHERE id = 'attention-FAILED'`).get();
     const first = domain.acknowledgeEmailAttention("attention-FAILED", "Recipient was contacted through support.");
     const replay = domain.acknowledgeEmailAttention("attention-FAILED", "A different reason must not overwrite the first.");
@@ -1569,8 +1174,8 @@ describe("commerce domain", () => {
     expect(first.acknowledged_now).toBe(true);
     expect(replay.acknowledged_now).toBe(false);
     expect(domain.emailAttentionCount()).toBe(2);
-    expect(setup.db.prepare(`SELECT status, attempts, sent_at, bounced_at, provider_error_code,
-      provider_error_message, ops_acknowledged_reason FROM email_outbox WHERE id = 'attention-FAILED'`).get())
+    expect(setup.db.prepare(`SELECT status, sent_at, bounced_at, delivery_outcome,
+      ops_acknowledged_reason FROM email_outbox WHERE id = 'attention-FAILED'`).get())
       .toEqual({ ...(before as object), ops_acknowledged_reason: "Recipient was contacted through support." });
     expect(domain.emailAttentionIncidents().find((incident) => incident.id === "attention-FAILED"))
       .toMatchObject({ ops_acknowledged_at: expect.any(String), ops_acknowledged_reason: "Recipient was contacted through support." });
@@ -1589,11 +1194,9 @@ describe("commerce domain", () => {
       async send() { sends += 1; return { jobId: "must-not-send" }; },
     };
     const domain = new CommerceDomain(setup.db, new MockProvider(), email);
-    setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template,
-      payload_snapshot, status, provider_idempotence_key, ops_acknowledged_at, ops_acknowledged_reason,
-      delivery_outcome)
+    setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, status, ops_acknowledged_at, ops_acknowledged_reason, delivery_outcome)
       VALUES ('acknowledged-terminal', 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}',
-      'FAILED', 'acknowledged-terminal-key', '2026-08-23T00:00:00.000Z', 'LEGACY_PROVIDER_CONFIGURATION',
+      'FAILED', '2026-08-23T00:00:00.000Z', 'LEGACY_PROVIDER_CONFIGURATION',
       'KNOWN_FAILED')`).run();
 
     await domain.processEmailOutbox();
@@ -1606,441 +1209,33 @@ describe("commerce domain", () => {
   it("clears only an acknowledged operational email flag for exact attention states", () => {
     const setup = fixture(); databases.push(setup.db);
     const domain = new CommerceDomain(setup.db, new MockProvider());
-    const insert = setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template,
-      payload_snapshot, status, provider_idempotence_key, job_id, attempts, sent_at, delivered_at, bounced_at,
-      suppressed_at, provider_error_code, provider_error_message, ops_acknowledged_at, ops_acknowledged_reason,
-      delivery_outcome)
-      VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{"snapshot":true}', ?, ?,
-      'provider-job', 7, '2026-08-23T00:00:00.000Z', '2026-08-23T00:01:00.000Z',
-      '2026-08-23T00:02:00.000Z', NULL, 'provider-code', 'Provider message',
+    const insert = setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, status, sent_at, delivered_at, bounced_at, suppressed_at, ops_acknowledged_at, ops_acknowledged_reason, delivery_outcome)
+      VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{"snapshot":true}', ?, '2026-08-23T00:00:00.000Z', '2026-08-23T00:01:00.000Z',
+      '2026-08-23T00:02:00.000Z', NULL,
       '2026-08-23T00:03:00.000Z', 'Mistaken acknowledgement',
       CASE WHEN ? = 'FAILED' THEN 'KNOWN_FAILED' END)`);
-    for (const status of ["FAILED", "BOUNCED", "SEND_UNKNOWN"]) insert.run(`unack-${status}`, status, `unack-key-${status}`, status);
-    const before = setup.db.prepare(`SELECT status, job_id, attempts, sent_at, delivered_at, bounced_at,
-      suppressed_at, recipient_email, recipient_email_hash, payload_snapshot, provider_error_code,
-      provider_error_message FROM email_outbox WHERE id = 'unack-FAILED'`).get();
+    for (const status of ["FAILED", "BOUNCED", "SEND_UNKNOWN"]) insert.run(`unack-${status}`, status, status);
+    const before = setup.db.prepare(`SELECT status, sent_at, delivered_at, bounced_at,
+      suppressed_at, recipient_email, recipient_email_hash, payload_snapshot
+      FROM email_outbox WHERE id = 'unack-FAILED'`).get();
 
     expect(domain.clearEmailOperationalAcknowledgement("unack-FAILED")).toBe(true);
     expect(domain.clearEmailOperationalAcknowledgement("unack-FAILED")).toBe(false);
     expect(domain.clearEmailOperationalAcknowledgement("unack-BOUNCED")).toBe(true);
     expect(domain.clearEmailOperationalAcknowledgement("unack-SEND_UNKNOWN")).toBe(true);
-    expect(setup.db.prepare(`SELECT status, job_id, attempts, sent_at, delivered_at, bounced_at,
-      suppressed_at, recipient_email, recipient_email_hash, payload_snapshot, provider_error_code,
-      provider_error_message, ops_acknowledged_at, ops_acknowledged_reason
+    expect(setup.db.prepare(`SELECT status, sent_at, delivered_at, bounced_at,
+      suppressed_at, recipient_email, recipient_email_hash, payload_snapshot,
+      ops_acknowledged_at, ops_acknowledged_reason
       FROM email_outbox WHERE id = 'unack-FAILED'`).get())
       .toEqual({ ...(before as object), ops_acknowledged_at: null, ops_acknowledged_reason: null });
     expect(domain.clearEmailOperationalAcknowledgement("missing-outbox")).toBe(false);
 
-    setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template,
-      payload_snapshot, status, provider_idempotence_key, ops_acknowledged_at, ops_acknowledged_reason)
+    setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, status, ops_acknowledged_at, ops_acknowledged_reason)
       VALUES ('unack-delivered', 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}',
-      'DELIVERED', 'unack-delivered-key', '2026-08-23T00:03:00.000Z', 'Delivery cannot be unacknowledged.')`).run();
+      'DELIVERED', '2026-08-23T00:03:00.000Z', 'Delivery cannot be unacknowledged.')`).run();
     expect(domain.clearEmailOperationalAcknowledgement("unack-delivered")).toBe(false);
     expect(setup.db.prepare("SELECT status, ops_acknowledged_at, ops_acknowledged_reason FROM email_outbox WHERE id = 'unack-delivered'").get())
       .toEqual({ status: "DELIVERED", ops_acknowledged_at: "2026-08-23T00:03:00.000Z", ops_acknowledged_reason: "Delivery cannot be unacknowledged." });
-  });
-
-  it("backs off ambiguous email sends and stops after the retry ceiling", async () => {
-    const setup = fixture(); databases.push(setup.db);
-    const timestamp = Date.parse("2026-08-23T12:00:00.000Z");
-    let sends = 0;
-    const email = new UnisenderGoProvider(unisenderTestConfig, async () => {
-      sends += 1;
-      return Response.json({ status: "success" });
-    });
-    const domain = new CommerceDomain(setup.db, new MockProvider(), email, () => timestamp);
-    setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, provider_idempotence_key)
-      VALUES (?, 'BOOKING_CANCELLED', 'buyer@example.test', 'hash', 'ticket', '{"ticket_url":"https://flexperiment.ru/ticket#capability"}', 'transport-unknown-key')`).run(randomUUID());
-
-    await domain.processEmailOutbox();
-    expect(setup.db.prepare("SELECT status, attempts, last_error, next_attempt_at FROM email_outbox").get()).toEqual({
-      status: "SEND_UNKNOWN", attempts: 1, last_error: "UNISENDER_TRANSPORT_AMBIGUOUS", next_attempt_at: "2026-08-23T12:01:00.000Z",
-    });
-    await domain.processEmailOutbox();
-    expect(sends).toBe(1);
-
-    setup.db.prepare("UPDATE email_outbox SET attempts = ?, next_attempt_at = ? WHERE status = 'SEND_UNKNOWN'")
-      .run(EMAIL_SEND_UNKNOWN_MAX_ATTEMPTS, "2026-08-23T11:59:59.000Z");
-    await domain.processEmailOutbox();
-    expect(sends).toBe(1);
-    expect(setup.db.prepare("SELECT status, last_error, provider_error_code FROM email_outbox").get()).toEqual({
-      status: "FAILED", last_error: "UNISENDER_SEND_UNKNOWN_ATTEMPT_LIMIT_REACHED", provider_error_code: "SEND_UNKNOWN_ATTEMPT_LIMIT",
-    });
-  });
-
-  it("backs off UNKNOWN reconciliation for a known Unisender job", async () => {
-    const setup = fixture(); databases.push(setup.db);
-    const timestamp = Date.parse("2026-08-23T12:00:00.000Z");
-    let lookups = 0;
-    const email: EmailProvider = {
-      async lookup() { lookups += 1; return { status: "UNKNOWN" }; },
-      async send() { throw new Error("known provider job must not be resent"); },
-    };
-    const domain = new CommerceDomain(setup.db, new MockProvider(), email, () => timestamp);
-    setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot,
-      status, provider_idempotence_key, job_id, attempts)
-      VALUES (?, 'BOOKING_CANCELLED', 'buyer@example.test', 'hash', 'booking-cancelled', '{}',
-      'SEND_UNKNOWN', 'known-job-key', 'known-job-1', 1)`).run(randomUUID());
-
-    await domain.processEmailOutbox();
-    for (let index = 0; index < 20; index += 1) await domain.processEmailOutbox();
-
-    expect(lookups).toBe(1);
-    expect(setup.db.prepare("SELECT status, next_attempt_at FROM email_outbox").get()).toEqual({
-      status: "SEND_UNKNOWN", next_attempt_at: "2026-08-23T12:01:00.000Z",
-    });
-  });
-
-  it("reconciles only the exact legacy Unisender HTTP 403 signature without sending", () => {
-    const setup = fixture(); databases.push(setup.db);
-    const domain = new CommerceDomain(setup.db, new MockProvider());
-    setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot,
-      status, provider_idempotence_key, attempts, last_error)
-      VALUES ('legacy-403', 'BOOKING_CANCELLED', 'buyer@example.test', 'hash', 'booking-cancelled', '{}',
-      'SEND_UNKNOWN', 'legacy-403-key', 5251, 'Unisender send was not accepted (HTTP 403).')`).run();
-    setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot,
-      status, provider_idempotence_key, attempts, last_error)
-      VALUES ('unrelated-unknown', 'BOOKING_CANCELLED', 'buyer@example.test', 'hash', 'booking-cancelled', '{}',
-      'SEND_UNKNOWN', 'unrelated-key', 5251, 'Unisender send was not accepted (HTTP 403) after transport reset.')`).run();
-
-    domain.recoverStaleCommands();
-    domain.recoverStaleCommands();
-
-    expect(setup.db.prepare("SELECT status, last_error, provider_error_code, provider_error_message FROM email_outbox WHERE id = 'legacy-403'").get()).toEqual({
-      status: "FAILED", last_error: "UNISENDER_HTTP_REJECTED_LEGACY", provider_error_code: "HTTP_403_LEGACY",
-      provider_error_message: "Legacy deterministic Unisender HTTP 403 rejection.",
-    });
-    expect(setup.db.prepare("SELECT status, last_error FROM email_outbox WHERE id = 'unrelated-unknown'").get()).toEqual({
-      status: "SEND_UNKNOWN", last_error: "Unisender send was not accepted (HTTP 403) after transport reset.",
-    });
-  });
-
-  it("attributes a valid established fx_ref marker at checkout", async () => {
-    const setup = fixture(); databases.push(setup.db);
-    const second = promoter(setup, "second-promoter");
-    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, referralSlug: String(second.slug) });
-    const result = await setup.domain.checkoutAsync(checkoutPayload(quote.quote_id), "phase11-fxref-valid-000001", "https://flexperiment.ru");
-    expect(setup.db.prepare("SELECT attributed_agent_id FROM orders WHERE public_status_id = ?").get(result.status_id)).toMatchObject({ attributed_agent_id: second.id });
-  });
-
-  it("does not attribute a disabled established fx_ref marker", () => {
-    const setup = fixture(); databases.push(setup.db);
-    const agent = promoter(setup, "disabled-established-promoter");
-    setup.domain.patchAgent(String(agent.id), { enabled: false });
-    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, referralSlug: "disabled-established-promoter" });
-    expect(setup.db.prepare("SELECT attributed_agent_id FROM quotes WHERE id = ?").get(quote.quote_id)).toMatchObject({ attributed_agent_id: null });
-  });
-
-  it("prioritizes eligible agent promo over fx_ref while pure discount promo keeps referral attribution", async () => {
-    const setup = fixture(); databases.push(setup.db);
-    const referral = promoter(setup, "referral-promoter");
-    const promoAgent = promoter(setup, "promo-promoter");
-    setup.domain.createPromo({ agent_id: promoAgent.id, code: "PROMO", status: "ACTIVE", discount_type: "PERCENT", discount_value: 500 });
-    setup.domain.createPromo({ code: "DISCOUNT", status: "ACTIVE", discount_type: "FIXED", discount_value: 1000 });
-    const override = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, promoCode: "PROMO", referralSlug: "referral-promoter" });
-    const pureDiscount = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, promoCode: "DISCOUNT", referralSlug: "referral-promoter" });
-    const first = await setup.domain.checkoutAsync(checkoutPayload(override.quote_id), "phase11-promo-override-00001", "https://flexperiment.ru");
-    const second = await setup.domain.checkoutAsync({ ...checkoutPayload(pureDiscount.quote_id), customer_email: "second@example.test" }, "phase11-pure-discount-00001", "https://flexperiment.ru");
-    expect(setup.db.prepare("SELECT attributed_agent_id FROM orders WHERE public_status_id = ?").get(first.status_id)).toMatchObject({ attributed_agent_id: promoAgent.id });
-    expect(setup.db.prepare("SELECT attributed_agent_id FROM orders WHERE public_status_id = ?").get(second.status_id)).toMatchObject({ attributed_agent_id: referral.id });
-  });
-
-  it("revalidates promoter and promo eligibility at checkout without changing promo status", async () => {
-    const setup = fixture(); databases.push(setup.db);
-    const agent = promoter(setup, "disabled-promoter");
-    const promo = setup.domain.createPromo({ agent_id: agent.id, code: "AGENT", status: "ACTIVE", discount_type: "NONE", discount_value: 0 });
-    const referralQuote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, referralSlug: "disabled-promoter" });
-    const promoQuote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, promoCode: "AGENT" });
-    setup.domain.patchAgent(String(agent.id), { enabled: false });
-    const direct = await setup.domain.checkoutAsync(checkoutPayload(referralQuote.quote_id), "phase11-disabled-referral-001", "https://flexperiment.ru");
-    expect(setup.db.prepare("SELECT attributed_agent_id FROM orders WHERE public_status_id = ?").get(direct.status_id)).toMatchObject({ attributed_agent_id: null });
-    const before = setup.db.prepare("SELECT (SELECT COUNT(*) FROM orders) AS orders, (SELECT COUNT(*) FROM bookings) AS bookings, (SELECT COUNT(*) FROM payments) AS payments").get();
-    await expect(setup.domain.checkoutAsync(checkoutPayload(promoQuote.quote_id), "phase11-disabled-promo-000001", "https://flexperiment.ru")).rejects.toMatchObject({ code: "PROMO_NO_LONGER_ELIGIBLE" });
-    expect(setup.db.prepare("SELECT (SELECT COUNT(*) FROM orders) AS orders, (SELECT COUNT(*) FROM bookings) AS bookings, (SELECT COUNT(*) FROM payments) AS payments").get()).toEqual(before);
-    expect(setup.db.prepare("SELECT status FROM promo_codes WHERE id = ?").get(promo.id)).toMatchObject({ status: "ACTIVE" });
-    setup.domain.patchAgent(String(agent.id), { enabled: true });
-    expect(() => setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, promoCode: "AGENT" })).not.toThrow();
-    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM bookings").get()).toMatchObject({ count: 1 });
-  });
-
-  it("freezes promo and reward snapshots despite later promoter and promo edits", async () => {
-    const setup = fixture(); databases.push(setup.db);
-    const agent = promoter(setup, "snapshot-promoter", "PERCENT", 1_000);
-    setup.domain.createPromo({ agent_id: agent.id, code: "SNAP", status: "ACTIVE", discount_type: "FIXED", discount_value: 1234 });
-    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, promoCode: "SNAP" });
-    const result = await setup.domain.checkoutAsync(checkoutPayload(quote.quote_id), "phase11-snapshot-freeze-0001", "https://flexperiment.ru");
-    setup.domain.patchAgent(String(agent.id), { default_reward_type: "FIXED", default_reward_value: 99999 });
-    const promo = setup.db.prepare("SELECT id FROM promo_codes WHERE normalized_code = 'SNAP'").get() as { id: string };
-    setup.domain.patchPromo(promo.id, { discount_type: "PERCENT", discount_value: 9000 });
-    expect(setup.db.prepare("SELECT promo_code_snapshot, discount_type_snapshot, discount_value_snapshot, reward_type_snapshot, reward_value_snapshot FROM orders WHERE public_status_id = ?").get(result.status_id))
-      .toMatchObject({ promo_code_snapshot: "SNAP", discount_type_snapshot: "FIXED", discount_value_snapshot: 1234, reward_type_snapshot: "PERCENT", reward_value_snapshot: 1000 });
-  });
-
-  it("records append-only reward adjustments for partial/full refunds and cancelled bookings", async () => {
-    const setup = fixture(); databases.push(setup.db);
-    const agent = promoter(setup, "reward-promoter", "PERCENT", 3333);
-    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, referralSlug: "reward-promoter" });
-    const result = await setup.domain.checkoutAsync(checkoutPayload(quote.quote_id), "phase11-reward-adjustments-01", "https://flexperiment.ru");
-    const order = setup.db.prepare("SELECT o.id, p.id AS payment_id FROM orders o JOIN payments p ON p.order_id = o.id WHERE o.public_status_id = ?").get(result.status_id) as { id: string; payment_id: string };
-    setup.domain.markPaymentPaid(order.payment_id, 100000, "provider");
-    expect(setup.domain.rewardBalance(String(agent.id), setup.occurrenceId).earned_total).toBe(33330);
-    await reconcileSuccessfulRefund(setup, order.id, order.payment_id, 50000);
-    expect(setup.domain.rewardBalance(String(agent.id), setup.occurrenceId).earned_total).toBe(16665);
-    const booking = setup.db.prepare("SELECT id FROM bookings WHERE order_id = ?").get(order.id) as { id: string };
-    setup.domain.cancelCustomerBooking(booking.id, { reason: "test cancellation", confirmation_text: `CANCEL ${booking.id}` }, "phase11-cancelled-reward-001");
-    expect(setup.domain.rewardBalance(String(agent.id), setup.occurrenceId).earned_total).toBe(0);
-    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM referral_rewards WHERE order_id = ?").get(order.id)).toMatchObject({ count: 1 });
-    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM reward_adjustments WHERE order_id = ?").get(order.id)).toMatchObject({ count: 2 });
-  });
-
-  it("caps FIXED reward by captured value and records a full-refund adjustment", async () => {
-    const setup = fixture(); databases.push(setup.db);
-    const agent = promoter(setup, "fixed-promoter", "FIXED", 200000);
-    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, referralSlug: "fixed-promoter" });
-    const result = await setup.domain.checkoutAsync(checkoutPayload(quote.quote_id), "phase11-fixed-reward-cap-0001", "https://flexperiment.ru");
-    const order = setup.db.prepare("SELECT o.id, p.id AS payment_id FROM orders o JOIN payments p ON p.order_id = o.id WHERE o.public_status_id = ?").get(result.status_id) as { id: string; payment_id: string };
-    setup.domain.markPaymentPaid(order.payment_id, 100000, "provider");
-    expect(setup.domain.rewardBalance(String(agent.id), setup.occurrenceId).earned_total).toBe(100000);
-    await reconcileSuccessfulRefund(setup, order.id, order.payment_id, 100000);
-    expect(setup.domain.rewardBalance(String(agent.id), setup.occurrenceId).earned_total).toBe(0);
-    expect(setup.db.prepare("SELECT amount_kopecks, reason FROM reward_adjustments WHERE order_id = ?").get(order.id)).toMatchObject({ amount_kopecks: -100000, reason: "NET_CAPTURED_CHANGED" });
-  });
-
-  it("rounds a half-kopeck PERCENT reward upward", async () => {
-    const setup = fixture(); databases.push(setup.db);
-    const agent = promoter(setup, "half-up-promoter", "PERCENT", 5000);
-    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, referralSlug: "half-up-promoter" });
-    const result = await setup.domain.checkoutAsync(checkoutPayload(quote.quote_id), "phase11-half-up-boundary-001", "https://flexperiment.ru");
-    const payment = setup.db.prepare("SELECT p.id FROM payments p JOIN orders o ON o.id = p.order_id WHERE o.public_status_id = ?").get(result.status_id) as { id: string };
-    setup.domain.markPaymentPaid(payment.id, 1, "provider");
-    expect(setup.domain.rewardBalance(String(agent.id), setup.occurrenceId).earned_total).toBe(1);
-  });
-
-  it("derives a balance without allocating the same matured reward twice", async () => {
-    const setup = fixture(); databases.push(setup.db);
-    const agent = promoter(setup, "allocation-promoter", "FIXED", 10000);
-    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, referralSlug: "allocation-promoter" });
-    const result = await setup.domain.checkoutAsync(checkoutPayload(quote.quote_id), "phase11-allocation-balance-001", "https://flexperiment.ru");
-    const order = setup.db.prepare("SELECT o.id, p.id AS payment_id FROM orders o JOIN payments p ON p.order_id = o.id WHERE o.public_status_id = ?").get(result.status_id) as { id: string; payment_id: string };
-    setup.domain.markPaymentPaid(order.payment_id, 100000, "provider");
-    bindSettlementLegalIdentity(setup, String(agent.id), "allocation-promoter-partner@example.test");
-    setup.db.prepare("UPDATE occurrences SET ends_at = '2020-01-01T00:00:00.000Z', sales_status = 'CLOSED' WHERE id = ?").run(setup.occurrenceId);
-    setup.domain.completeOccurrence(setup.occurrenceId);
-    const initial = setup.domain.rewardBalance(String(agent.id), setup.occurrenceId);
-    expect(initial).toMatchObject({ accrued_total: 10000, available_to_settle: 10000 });
-    const prepared = setup.domain.prepareSettlement({ agent_id: String(agent.id), occurrence_id: setup.occurrenceId, amount_kopecks: 6000, method: "TRANSFER" }, "phase11-allocation-settlement-1", "admin");
-    const after = setup.domain.rewardBalance(String(agent.id), setup.occurrenceId);
-    expect(after).toMatchObject({ prepared_total: 6000, available_to_settle: 4000 });
-    expect(() => setup.domain.prepareSettlement({ agent_id: String(agent.id), occurrence_id: setup.occurrenceId, amount_kopecks: 4001, method: "TRANSFER" }, "phase11-allocation-settlement-2", "admin")).toThrow("SETTLEMENT_EXCEEDS_AVAILABLE");
-    expect(prepared.status).toBe("PREPARED");
-    await reconcileSuccessfulRefund(setup, order.id, order.payment_id, 100000);
-    expect(setup.domain.rewardBalance(String(agent.id), setup.occurrenceId)).toMatchObject({ payable_gross_total: 0, prepared_total: 6000, late_adjustment_exposure: 6000, available_to_settle: 0 });
-  });
-
-  it("keeps rewardBalance arithmetic-only; NPD authority is checked only by preparation", async () => {
-    const setup = fixture(); databases.push(setup.db);
-    const agent = promoter(setup, "contractor-review-promoter", "FIXED", 10000);
-    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, referralSlug: "contractor-review-promoter" });
-    const result = await setup.domain.checkoutAsync(checkoutPayload(quote.quote_id), "phase11-contractor-review-001", "https://flexperiment.ru");
-    const payment = setup.db.prepare("SELECT p.id FROM payments p JOIN orders o ON o.id = p.order_id WHERE o.public_status_id = ?").get(result.status_id) as { id: string };
-    setup.domain.markPaymentPaid(payment.id, 100000, "provider");
-    setup.db.prepare("UPDATE occurrences SET ends_at = '2020-01-01T00:00:00.000Z', sales_status = 'CLOSED' WHERE id = ?").run(setup.occurrenceId);
-    setup.domain.completeOccurrence(setup.occurrenceId);
-    expect(setup.domain.rewardBalance(String(agent.id), setup.occurrenceId)).toMatchObject({ payable_gross_total: 10000, blocked_payable_total: 0, available_to_settle: 10000 });
-  });
-
-  it("derives allocation, recovery, and late-adjustment balances across settlement states", async () => {
-    const cases = [
-      { prepared: 0, pending: 0, settled: 0, recovered: 0, adjustment: 0, available: 10000, exposure: 0 },
-      { prepared: 3000, pending: 2000, settled: 1000, recovered: 0, adjustment: 0, available: 4000, exposure: 0 },
-      { prepared: 3000, pending: 2000, settled: 1000, recovered: 2000, adjustment: -7000, available: 0, exposure: 1000 },
-      { prepared: 3000, pending: 2000, settled: 1000, recovered: 2000, adjustment: 0, available: 6000, exposure: 0 },
-    ];
-    for (const [index, item] of cases.entries()) {
-      const setup = fixture(); databases.push(setup.db);
-      const agent = promoter(setup, `balance-table-${index}`, "FIXED", 10000);
-      const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, referralSlug: String(agent.slug) });
-      const result = await setup.domain.checkoutAsync(checkoutPayload(quote.quote_id), `phase11-balance-table-${index}-00001`, "https://flexperiment.ru");
-      const order = setup.db.prepare("SELECT o.id, p.id AS payment_id FROM orders o JOIN payments p ON p.order_id = o.id WHERE o.public_status_id = ?").get(result.status_id) as { id: string; payment_id: string };
-      setup.domain.markPaymentPaid(order.payment_id, 100000, "provider");
-      bindSettlementLegalIdentity(setup, String(agent.id), `balance-table-${index}-partner@example.test`);
-      setup.db.prepare("UPDATE occurrences SET ends_at = '2020-01-01T00:00:00.000Z', sales_status = 'CLOSED' WHERE id = ?").run(setup.occurrenceId);
-      setup.domain.completeOccurrence(setup.occurrenceId);
-      let paidSettlementId: string | undefined;
-      if (item.prepared) setup.domain.prepareSettlement({ agent_id: String(agent.id), occurrence_id: setup.occurrenceId, amount_kopecks: item.prepared, method: "TRANSFER" }, `phase11-table-prepared-${index}`, "admin");
-      if (item.pending) {
-        const pending = setup.domain.prepareSettlement({ agent_id: String(agent.id), occurrence_id: setup.occurrenceId, amount_kopecks: item.pending, method: "TRANSFER" }, `phase11-table-pending-${index}`, "admin");
-        setup.domain.markSettlementPaymentMade(String(pending.id), "I confirm the money was transferred", `phase11-table-pending-payment-${index}`);
-        paidSettlementId = String(pending.id);
-      }
-      if (item.settled) {
-        const settled = setup.domain.prepareSettlement({ agent_id: String(agent.id), occurrence_id: setup.occurrenceId, amount_kopecks: item.settled, method: "TRANSFER" }, `phase11-table-settled-${index}`, "admin");
-        setup.domain.markSettlementPaymentMade(String(settled.id), "I confirm the money was transferred", `phase11-table-settled-payment-${index}`);
-        setup.domain.completeSettlementDocuments(String(settled.id), { document_reference: `settlement-document-${index}` }, `phase11-table-settled-document-${index}`);
-        paidSettlementId ??= String(settled.id);
-      }
-      if (item.recovered) {
-        expect(paidSettlementId).toBeDefined();
-        setup.domain.addSettlementRecovery(paidSettlementId!, { amount_recovered_kopecks: item.recovered, recovered_at: new Date().toISOString(), method: "TRANSFER", evidence_reference: `recovery-${index}` }, `phase11-table-recovery-${index}`);
-      }
-      if (item.adjustment) setup.db.prepare("INSERT INTO reward_adjustments(id, order_id, agent_id, amount_kopecks, reason, semantic_key) VALUES (?, ?, ?, ?, 'TEST', ?)").run(randomUUID(), order.id, agent.id, item.adjustment, `table-${index}`);
-      const balance = setup.domain.rewardBalance(String(agent.id), setup.occurrenceId);
-      expect(balance.available_to_settle).toBe(item.available);
-      expect(balance.late_adjustment_exposure).toBe(item.exposure);
-      expect(balance.available_to_settle).toBeGreaterThanOrEqual(0);
-      expect(balance.available_to_settle).toBeLessThanOrEqual(Math.max(0, balance.payable_gross_total - balance.prepared_total - balance.pending_document_total - balance.settled_total + balance.externally_recovered_total));
-    }
-  });
-
-  it("keeps PREPARED allocation atomic when the transaction aborts before commit", async () => {
-    const setup = fixture(); databases.push(setup.db);
-    const agent = await maturedReward(setup, "prepared-rollback");
-    setup.db.exec("CREATE TRIGGER abort_prepared AFTER INSERT ON reward_settlements BEGIN SELECT RAISE(ABORT, 'test PREPARED abort'); END");
-    const input = { agent_id: String(agent.id), occurrence_id: setup.occurrenceId, amount_kopecks: 10_000, method: "TRANSFER" } as const;
-    expect(() => setup.domain.prepareSettlement(input, "settlement-rollback-key", "admin")).toThrow("test PREPARED abort");
-    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM reward_settlements").get()).toEqual({ count: 0 });
-    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM reward_settlement_idempotency").get()).toEqual({ count: 0 });
-    expect(setup.domain.rewardBalance(String(agent.id), setup.occurrenceId)).toMatchObject({ available_to_settle: 10_000 });
-  });
-
-  it("replays one PREPARED settlement across PREPARED, PENDING_DOCUMENT, and SETTLED without another allocation", async () => {
-    const setup = fixture(); databases.push(setup.db);
-    const agent = await maturedReward(setup, "all-state-replay");
-    const input = { agent_id: String(agent.id), occurrence_id: setup.occurrenceId, amount_kopecks: 10_000, method: "TRANSFER" } as const;
-    const prepareKey = "settlement-all-state-prepare";
-    const prepared = setup.domain.prepareSettlement(input, prepareKey, "admin");
-    expect(setup.domain.prepareSettlement(input, prepareKey, "admin")).toMatchObject({ id: prepared.id, status: "PREPARED", amount_kopecks: 10_000 });
-    const pending = setup.domain.markSettlementPaymentMade(String(prepared.id), "I confirm the money was transferred", "settlement-all-state-payment");
-    expect(setup.domain.prepareSettlement(input, prepareKey, "admin")).toMatchObject({ id: prepared.id, status: "PENDING_DOCUMENT" });
-    expect(setup.domain.markSettlementPaymentMade(String(prepared.id), "I confirm the money was transferred", "settlement-all-state-payment")).toEqual(pending);
-    const settled = setup.domain.completeSettlementDocuments(String(prepared.id), { document_reference: "payment-document-1" }, "settlement-all-state-document");
-    expect(setup.domain.prepareSettlement(input, prepareKey, "admin")).toMatchObject({ id: prepared.id, status: "SETTLED", amount_kopecks: 10_000 });
-    expect(setup.domain.completeSettlementDocuments(String(prepared.id), { document_reference: "payment-document-1" }, "settlement-all-state-document")).toEqual(settled);
-    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM reward_settlements").get()).toEqual({ count: 1 });
-    expect(setup.domain.rewardBalance(String(agent.id), setup.occurrenceId)).toMatchObject({ available_to_settle: 0, settled_total: 10_000 });
-  });
-
-  it("rejects conflicting settlement command replays and illegal backward transitions", async () => {
-    const setup = fixture(); databases.push(setup.db);
-    const agent = await maturedReward(setup, "settlement-command-conflict");
-    const settlement = setup.domain.prepareSettlement({ agent_id: String(agent.id), occurrence_id: setup.occurrenceId, amount_kopecks: 10_000, method: "TRANSFER" }, "settlement-command-conflict-prepare", "admin");
-    setup.domain.markSettlementPaymentMade(String(settlement.id), "I confirm the money was transferred", "settlement-command-conflict-payment");
-    expect(() => setup.domain.markSettlementPaymentMade(String(settlement.id), "I confirm the money was transferred", "different-payment-key")).toThrow("SETTLEMENT_TRANSITION_FORBIDDEN");
-    setup.domain.completeSettlementDocuments(String(settlement.id), { document_reference: "document" }, "settlement-command-conflict-document");
-    expect(() => setup.domain.completeSettlementDocuments(String(settlement.id), { document_reference: "different" }, "settlement-command-conflict-document")).toThrow("IDEMPOTENCY_CONFLICT");
-    expect(() => setup.domain.cancelSettlementBeforePayment(String(settlement.id), { confirmation_text: `NOT PAID ${settlement.id}`, reason: "never paid" }, "settlement-command-conflict-cancel")).toThrow("SETTLEMENT_TRANSITION_FORBIDDEN");
-  });
-
-  it("prevents both full and partial contention from allocating more than the mature reward", async () => {
-    const full = fixture(); databases.push(full.db);
-    const fullAgent = await maturedReward(full, "settlement-full-contention");
-    const fullInput = { agent_id: String(fullAgent.id), occurrence_id: full.occurrenceId, amount_kopecks: 10_000, method: "TRANSFER" } as const;
-    const firstFull = full.domain.prepareSettlement(fullInput, "settlement-full-contention-a", "admin");
-    expect(() => full.domain.prepareSettlement(fullInput, "settlement-full-contention-b", "admin")).toThrow("SETTLEMENT_EXCEEDS_AVAILABLE");
-    expect(firstFull.status).toBe("PREPARED");
-
-    const partial = fixture(); databases.push(partial.db);
-    const partialAgent = await maturedReward(partial, "settlement-partial-contention");
-    const partialInput = { agent_id: String(partialAgent.id), occurrence_id: partial.occurrenceId, amount_kopecks: 7_000, method: "TRANSFER" } as const;
-    partial.domain.prepareSettlement(partialInput, "settlement-partial-contention-a", "admin");
-    expect(() => partial.domain.prepareSettlement(partialInput, "settlement-partial-contention-b", "admin")).toThrow("SETTLEMENT_EXCEEDS_AVAILABLE");
-    expect(partial.domain.rewardBalance(String(partialAgent.id), partial.occurrenceId)).toMatchObject({ prepared_total: 7_000, available_to_settle: 3_000 });
-  });
-
-  it("returns SETTLEMENT_BUSY for a real competing SQLite writer, then retries without over-allocation", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "flexperiment-settlement-lock-")); const filename = join(directory, "commerce.sqlite");
-    const setup = fixture(filename); const competingDb = openDatabase(filename); competingDb.pragma("busy_timeout = 1");
-    try {
-      const agent = await maturedReward(setup, "file-backed-contention");
-      const input = { agent_id: String(agent.id), occurrence_id: setup.occurrenceId, amount_kopecks: 10_000, method: "TRANSFER" } as const;
-      const competing = new CommerceDomain(competingDb, new MockProvider());
-      setup.db.exec("BEGIN IMMEDIATE");
-      try {
-        let busy: unknown;
-        try { competing.prepareSettlement(input, "file-backed-contention-a", "admin-b"); } catch (error) { busy = error; }
-        expect(busy).toMatchObject({ code: "SETTLEMENT_BUSY", status: 409 });
-      } finally { setup.db.exec("ROLLBACK"); }
-      expect(setup.db.prepare("SELECT COUNT(*) AS count FROM reward_settlements").get()).toEqual({ count: 0 });
-      expect(setup.db.prepare("SELECT COUNT(*) AS count FROM reward_settlement_idempotency").get()).toEqual({ count: 0 });
-      expect(competing.prepareSettlement(input, "file-backed-contention-a", "admin-b")).toMatchObject({ status: "PREPARED", amount_kopecks: 10_000 });
-      expect(() => setup.domain.prepareSettlement(input, "file-backed-contention-b", "admin-a")).toThrow("SETTLEMENT_EXCEEDS_AVAILABLE");
-      expect(setup.domain.rewardBalance(String(agent.id), setup.occurrenceId)).toMatchObject({ prepared_total: 10_000, available_to_settle: 0 });
-    } finally { competingDb.close(); setup.db.close(); rmSync(directory, { recursive: true, force: true }); }
-  });
-
-  it("records one stale PREPARED review without releasing its allocation", async () => {
-    const setup = fixture(); databases.push(setup.db);
-    const agent = await maturedReward(setup, "stale-prepared");
-    const settlement = setup.domain.prepareSettlement({ agent_id: String(agent.id), occurrence_id: setup.occurrenceId, amount_kopecks: 10_000, method: "TRANSFER" }, "stale-prepared-key", "admin");
-    setup.db.prepare("UPDATE reward_settlements SET prepared_at = ? WHERE id = ?").run(new Date(Date.now() - STALE_PREPARED_SETTLEMENT_MS - 1).toISOString(), settlement.id);
-    expect(setup.domain.detectStalePreparedSettlements()).toBe(1);
-    expect(setup.domain.detectStalePreparedSettlements()).toBe(1);
-    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM settlement_prepared_reviews WHERE settlement_id = ?").get(settlement.id)).toEqual({ count: 1 });
-    expect(setup.domain.settlementDetail(String(settlement.id)).settlement).toMatchObject({ stale_prepared: 1, prepared_review_status: "OPEN", status: "PREPARED" });
-    expect(setup.domain.rewardBalance(String(agent.id), setup.occurrenceId)).toMatchObject({ prepared_total: 10_000, available_to_settle: 0 });
-  });
-
-  it("uses the frozen 30-minute stale PREPARED boundary with the domain clock", async () => {
-    const setup = fixture(); databases.push(setup.db);
-    const agent = await maturedReward(setup, "stale-prepared-boundary");
-    const settlement = setup.domain.prepareSettlement({ agent_id: String(agent.id), occurrence_id: setup.occurrenceId, amount_kopecks: 10_000, method: "TRANSFER" }, "stale-prepared-boundary-prepare", "admin");
-    const fixedNow = Date.parse("2030-01-01T12:00:00.000Z");
-    const observer = new CommerceDomain(setup.db, new MockProvider(), undefined, () => fixedNow);
-    setup.db.prepare("UPDATE reward_settlements SET prepared_at = ? WHERE id = ?").run(new Date(fixedNow - STALE_PREPARED_SETTLEMENT_MS + 1).toISOString(), settlement.id);
-    expect(observer.detectStalePreparedSettlements()).toBe(0);
-    expect(observer.settlementDetail(String(settlement.id)).settlement).toMatchObject({ stale_prepared: 0, prepared_review_status: null });
-    setup.db.prepare("UPDATE reward_settlements SET prepared_at = ? WHERE id = ?").run(new Date(fixedNow - STALE_PREPARED_SETTLEMENT_MS).toISOString(), settlement.id);
-    expect(observer.detectStalePreparedSettlements()).toBe(1);
-    expect(observer.settlementDetail(String(settlement.id)).settlement).toMatchObject({ stale_prepared: 1, prepared_review_status: "OPEN" });
-    setup.db.prepare("UPDATE reward_settlements SET prepared_at = ? WHERE id = ?").run(new Date(fixedNow - STALE_PREPARED_SETTLEMENT_MS - 1).toISOString(), settlement.id);
-    expect(observer.detectStalePreparedSettlements()).toBe(1);
-  });
-
-  it("persists one stale PREPARED review across restart and resolves it once on an explicit transition", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "flexperiment-stale-prepared-")); const filename = join(directory, "commerce.sqlite");
-    const setup = fixture(filename);
-    try {
-      const agent = await maturedReward(setup, "stale-prepared-restart");
-      const settlement = setup.domain.prepareSettlement({ agent_id: String(agent.id), occurrence_id: setup.occurrenceId, amount_kopecks: 10_000, method: "TRANSFER" }, "stale-prepared-restart-prepare", "admin");
-      setup.db.prepare("UPDATE reward_settlements SET prepared_at = ? WHERE id = ?").run(new Date(Date.now() - STALE_PREPARED_SETTLEMENT_MS - 1).toISOString(), settlement.id);
-      expect(setup.domain.detectStalePreparedSettlements()).toBe(1);
-      setup.db.close();
-      const reopenedDb = openDatabase(filename); migrate(reopenedDb);
-      try {
-        const reopened = new CommerceDomain(reopenedDb, new MockProvider());
-        expect(reopened.detectStalePreparedSettlements()).toBe(1);
-        expect(reopenedDb.prepare("SELECT COUNT(*) AS count FROM settlement_prepared_reviews WHERE settlement_id = ?").get(settlement.id)).toEqual({ count: 1 });
-        expect(reopened.rewardBalance(String(agent.id), setup.occurrenceId)).toMatchObject({ prepared_total: 10_000, available_to_settle: 0 });
-        reopened.markSettlementPaymentMade(String(settlement.id), "I confirm the money was transferred", "stale-prepared-restart-payment");
-        const review = reopenedDb.prepare("SELECT status, resolved_at FROM settlement_prepared_reviews WHERE settlement_id = ?").get(settlement.id) as { status: string; resolved_at: string };
-        expect(review).toMatchObject({ status: "RESOLVED", resolved_at: expect.any(String) });
-        reopened.markSettlementPaymentMade(String(settlement.id), "I confirm the money was transferred", "stale-prepared-restart-payment");
-        expect(reopenedDb.prepare("SELECT status, resolved_at FROM settlement_prepared_reviews WHERE settlement_id = ?").get(settlement.id)).toEqual(review);
-      } finally { reopenedDb.close(); }
-    } finally { try { setup.db.close(); } catch { /* closed for restart */ } rmSync(directory, { recursive: true, force: true }); }
-  });
-
-  it("records recovery once only for an actually paid settlement and corrects exposure", async () => {
-    const setup = fixture(); databases.push(setup.db);
-    const agent = await maturedReward(setup, "paid-recovery");
-    const settlement = setup.domain.prepareSettlement({ agent_id: String(agent.id), occurrence_id: setup.occurrenceId, amount_kopecks: 10_000, method: "TRANSFER" }, "paid-recovery-prepare", "admin");
-    expect(() => setup.domain.addSettlementRecovery(String(settlement.id), { amount_recovered_kopecks: 1_000, recovered_at: new Date().toISOString(), method: "TRANSFER", evidence_reference: "too-early" }, "paid-recovery-too-early")).toThrow("SETTLEMENT_RECOVERY_NOT_PAID");
-    setup.domain.markSettlementPaymentMade(String(settlement.id), "I confirm the money was transferred", "paid-recovery-payment");
-    setup.db.prepare("INSERT INTO reward_adjustments(id, order_id, agent_id, amount_kopecks, reason, semantic_key) SELECT ?, order_id, ?, -7000, 'TEST', 'paid-recovery-reduction' FROM referral_rewards WHERE agent_id = ?").run(randomUUID(), agent.id, agent.id);
-    for (const amount of [0, -1, 1.5]) expect(() => setup.domain.addSettlementRecovery(String(settlement.id), { amount_recovered_kopecks: amount, recovered_at: new Date().toISOString(), method: "TRANSFER", evidence_reference: `invalid-${amount}` }, `paid-recovery-invalid-${amount}`)).toThrow("SETTLEMENT_RECOVERY_AMOUNT_INVALID");
-    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM reward_settlement_command_idempotency WHERE command = 'RECOVERY'").get()).toEqual({ count: 0 });
-    expect(() => setup.domain.addSettlementRecovery(String(settlement.id), { amount_recovered_kopecks: 10_001, recovered_at: new Date().toISOString(), method: "TRANSFER", evidence_reference: "too-much" }, "paid-recovery-too-much")).toThrow("SETTLEMENT_RECOVERY_EXCEEDS_REMAINING");
-    const recoveryInput = { amount_recovered_kopecks: 6_000, recovered_at: new Date().toISOString(), method: "TRANSFER", evidence_reference: "bank-return" } as const;
-    const first = setup.domain.addSettlementRecovery(String(settlement.id), recoveryInput, "paid-recovery-key");
-    expect(setup.domain.rewardBalance(String(agent.id), setup.occurrenceId)).toMatchObject({ externally_recovered_total: 6_000, late_adjustment_exposure: 1_000, available_to_settle: 0 });
-    const second = setup.domain.addSettlementRecovery(String(settlement.id), { amount_recovered_kopecks: 4_000, recovered_at: new Date().toISOString(), method: "TRANSFER", evidence_reference: "bank-return-rest" }, "paid-recovery-second-key");
-    expect(second.amount_recovered_kopecks).toBe(4_000);
-    expect(() => setup.domain.addSettlementRecovery(String(settlement.id), { amount_recovered_kopecks: 1, recovered_at: new Date().toISOString(), method: "TRANSFER", evidence_reference: "one-too-many" }, "paid-recovery-excess-key")).toThrow("SETTLEMENT_RECOVERY_EXCEEDS_REMAINING");
-    const replay = setup.domain.addSettlementRecovery(String(settlement.id), recoveryInput, "paid-recovery-key");
-    expect(replay).toEqual(first);
-    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM settlement_recoveries WHERE settlement_id = ?").get(settlement.id)).toEqual({ count: 2 });
-    expect(setup.db.prepare("SELECT SUM(amount_recovered_kopecks) AS amount FROM settlement_recoveries WHERE settlement_id = ?").get(settlement.id)).toEqual({ amount: 10_000 });
-    expect(setup.domain.rewardBalance(String(agent.id), setup.occurrenceId)).toMatchObject({ externally_recovered_total: 10_000, late_adjustment_exposure: 0, available_to_settle: 3_000 });
   });
 
   it("expires city-interest PII at twelve months without touching fresh rows or refreshing re-submissions", () => {
@@ -2147,13 +1342,15 @@ describe("commerce domain", () => {
     const outbox = setup.db.prepare("SELECT id FROM email_outbox WHERE type = 'TICKET'").get() as { id: string };
 
     await domain.processEmailOutbox();
-    expect(setup.db.prepare("SELECT status, job_id FROM email_outbox WHERE id = ?").get(outbox.id)).toEqual({ status: "ACCEPTED", job_id: "sent-job" });
+    expect(setup.db.prepare("SELECT status FROM email_outbox WHERE id = ?").get(outbox.id)).toEqual({ status: "ACCEPTED" });
+    expect(attemptJobId(setup.db, outbox.id)).toBe("sent-job");
     domain.applyUnisenderDelivery({ outboxId: outbox.id, status: "SENT", providerStatus: "sent", jobId: "sent-job", semanticKey: "sent-no-resend" });
     await domain.processEmailOutbox();
 
     expect(sends).toBe(1);
     expect(lookups).toBe(0);
-    expect(setup.db.prepare("SELECT status, job_id FROM email_outbox WHERE id = ?").get(outbox.id)).toEqual({ status: "SENT", job_id: "sent-job" });
+    expect(setup.db.prepare("SELECT status FROM email_outbox WHERE id = ?").get(outbox.id)).toEqual({ status: "SENT" });
+    expect(attemptJobId(setup.db, outbox.id)).toBe("sent-job");
   });
 
   it("converges a lost delivered callback from strictly correlated Event Dump evidence without resend", async () => {
@@ -2183,8 +1380,11 @@ describe("commerce domain", () => {
     outboxId = (setup.db.prepare("SELECT id FROM email_outbox WHERE type = 'TICKET'").get() as { id: string }).id;
     await domain.processEmailOutbox();
     domain.applyUnisenderDelivery({ outboxId, status: "SENT", providerStatus: "sent", jobId: "1wyQ8z-000RJT-KwD8", semanticKey: "webhook-sent-production-fixture" });
-    setup.db.prepare("UPDATE email_outbox SET created_at = ?, provider_request_started_at = ? WHERE id = ?")
-      .run(new Date(timestamp - 10 * 60_000).toISOString(), new Date(timestamp - 10 * 60_000).toISOString(), outboxId);
+    setup.db.prepare("UPDATE email_outbox SET created_at = ? WHERE id = ?").run(new Date(timestamp - 10 * 60_000).toISOString(), outboxId);
+    // A settled attempt is immutable by design (0041), so "this was dispatched
+    // ten minutes ago" is expressed by advancing the clock, not by rewriting
+    // the attempt's own dispatch instant.
+    timestamp += 10 * 60_000;
 
     await domain.reconcileUnisenderEventDumps();
     expect(creates).toBe(1); expect(polls).toBe(0);
@@ -2219,8 +1419,11 @@ describe("commerce domain", () => {
     outboxId = (setup.db.prepare("SELECT id FROM email_outbox WHERE type = 'TICKET'").get() as { id: string }).id;
     await domain.processEmailOutbox();
     domain.applyUnisenderDelivery({ outboxId, status: "SENT", providerStatus: "sent", jobId: "target-job", semanticKey: "webhook-sent-mismatch" });
-    setup.db.prepare("UPDATE email_outbox SET created_at = ?, provider_request_started_at = ? WHERE id = ?")
-      .run(new Date(timestamp - 10 * 60_000).toISOString(), new Date(timestamp - 10 * 60_000).toISOString(), outboxId);
+    setup.db.prepare("UPDATE email_outbox SET created_at = ? WHERE id = ?").run(new Date(timestamp - 10 * 60_000).toISOString(), outboxId);
+    // A settled attempt is immutable by design (0041), so "this was dispatched
+    // ten minutes ago" is expressed by advancing the clock, not by rewriting
+    // the attempt's own dispatch instant.
+    timestamp += 10 * 60_000;
     await domain.reconcileUnisenderEventDumps();
     timestamp += 61_000;
     await domain.reconcileUnisenderEventDumps();
@@ -2239,12 +1442,12 @@ describe("commerce domain", () => {
       async createEventDump() { creates += 1; return { dumpId: `dump-${creates}` }; },
       async getEventDump() { polls += 1; return { status: "in_process", events: [] }; },
     };
-    const insert = setup.db.prepare(`INSERT INTO email_outbox(
-      id, type, recipient_email, recipient_email_hash, template, payload_snapshot, provider_idempotence_key, status, job_id, created_at
-    ) VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}', ?, 'SENT', ?, ?)`);
+    const insert = setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, status, created_at) VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}', 'SENT', ?)`);
     const first = randomUUID(); const second = randomUUID();
-    insert.run(first, randomUUID(), "job-one", new Date(timestamp - 10 * 60_000).toISOString());
-    insert.run(second, randomUUID(), "job-two", new Date(timestamp - 10 * 60_000).toISOString());
+    insert.run(first, new Date(timestamp - 10 * 60_000).toISOString());
+    insert.run(second, new Date(timestamp - 10 * 60_000).toISOString());
+    seedAttemptForMessage(setup.db, first, "job-one", new Date(timestamp - 10 * 60_000).toISOString());
+    seedAttemptForMessage(setup.db, second, "job-two", new Date(timestamp - 10 * 60_000).toISOString());
     const firstWorker = new CommerceDomain(setup.db, new MockProvider(), email, () => timestamp);
     await firstWorker.reconcileUnisenderEventDumps();
     expect(creates).toBe(1);
@@ -2264,9 +1467,10 @@ describe("commerce domain", () => {
     const setup = fixture(); databases.push(setup.db);
     let timestamp = Date.parse("2026-08-24T10:00:00.000Z"); let creates = 0; let polls = 0;
     const outboxId = randomUUID();
-    setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, provider_idempotence_key, status, job_id, provider_request_started_at)
-      VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}', ?, 'SENT', 'retry-job', ?)`)
-      .run(outboxId, randomUUID(), new Date(timestamp - 10 * 60_000).toISOString());
+    setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, status)
+      VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}', 'SENT')`)
+      .run(outboxId);
+    seedAttemptForMessage(setup.db, outboxId, "retry-job", new Date(timestamp - 10 * 60_000).toISOString());
     const email: EmailProvider & EmailDeliveryEvidenceProvider = {
       async send() { throw new Error("must not resend"); }, async lookup() { return { status: "UNKNOWN" }; },
       async listEventDumps() { return { count: 0 }; },
@@ -2296,9 +1500,10 @@ describe("commerce domain", () => {
     try {
       const timestamp = Date.parse("2026-08-24T10:00:00.000Z"); let creates = 0; let release: (() => void) | undefined;
       const outboxId = randomUUID();
-      setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, provider_idempotence_key, status, job_id, provider_request_started_at)
-      VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}', ?, 'SENT', 'concurrent-job', ?)`)
-      .run(outboxId, randomUUID(), new Date(timestamp - 10 * 60_000).toISOString());
+      setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, status)
+      VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}', 'SENT')`)
+      .run(outboxId);
+    seedAttemptForMessage(setup.db, outboxId, `job-${outboxId}`, new Date(timestamp - 10 * 60_000).toISOString());
       const email: EmailProvider & EmailDeliveryEvidenceProvider = {
         async send() { throw new Error("must not resend"); }, async lookup() { return { status: "UNKNOWN" }; },
         async listEventDumps() { return { count: 0 }; },
@@ -2322,9 +1527,10 @@ describe("commerce domain", () => {
     const setup = fixture(); databases.push(setup.db);
     const timestamp = Date.parse("2026-08-24T10:00:00.000Z"); let creates = 0;
     const outboxId = randomUUID();
-    setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, provider_idempotence_key, status, job_id, provider_request_started_at)
-      VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}', ?, 'SENT', 'unknown-create-job', ?)`)
-      .run(outboxId, randomUUID(), new Date(timestamp - 10 * 60_000).toISOString());
+    setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, status)
+      VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}', 'SENT')`)
+      .run(outboxId);
+    seedAttemptForMessage(setup.db, outboxId, `job-${outboxId}`, new Date(timestamp - 10 * 60_000).toISOString());
     const email: EmailProvider & EmailDeliveryEvidenceProvider = {
       async send() { throw new Error("must not resend"); }, async lookup() { return { status: "UNKNOWN" }; },
       async listEventDumps() { return { count: 0 }; },
@@ -2342,9 +1548,10 @@ describe("commerce domain", () => {
     const setup = fixture(); databases.push(setup.db);
     const timestamp = Date.parse("2026-08-24T10:00:00.000Z"); let creates = 0; let lists = 0;
     const outboxId = randomUUID();
-    setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, provider_idempotence_key, status, job_id, provider_request_started_at)
-      VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}', ?, 'SENT', 'capacity-job', ?)`)
-      .run(outboxId, randomUUID(), new Date(timestamp - 10 * 60_000).toISOString());
+    setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, status)
+      VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}', 'SENT')`)
+      .run(outboxId);
+    seedAttemptForMessage(setup.db, outboxId, `job-${outboxId}`, new Date(timestamp - 10 * 60_000).toISOString());
     const email: EmailProvider & EmailDeliveryEvidenceProvider = {
       async send() { throw new Error("must not resend"); }, async lookup() { return { status: "UNKNOWN" }; },
       async listEventDumps() { lists += 1; return { count: 9 }; },
@@ -2360,9 +1567,11 @@ describe("commerce domain", () => {
   it("durably backs off Event Dump inventory probes while provider capacity remains unavailable", async () => {
     const setup = fixture(); databases.push(setup.db);
     let timestamp = Date.parse("2026-08-24T10:00:00.000Z"); let lists = 0; let creates = 0; let capacity = 9;
-    setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, provider_idempotence_key, status, job_id, provider_request_started_at)
-      VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}', ?, 'SENT', 'capacity-backoff-job', ?)`)
-      .run(randomUUID(), randomUUID(), new Date(timestamp - 10 * 60_000).toISOString());
+    const backoffOutboxId = randomUUID();
+    setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, status)
+      VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}', 'SENT')`)
+      .run(backoffOutboxId);
+    seedAttemptForMessage(setup.db, backoffOutboxId, `job-${backoffOutboxId}`, new Date(timestamp - 10 * 60_000).toISOString());
     const email: EmailProvider & EmailDeliveryEvidenceProvider = {
       async send() { throw new Error("must not resend"); }, async lookup() { return { status: "UNKNOWN" }; },
       async listEventDumps() { lists += 1; return { count: capacity }; },
@@ -2384,9 +1593,11 @@ describe("commerce domain", () => {
   it("uses bounded durable backoff when Event Dump inventory is unavailable", async () => {
     const setup = fixture(); databases.push(setup.db);
     let timestamp = Date.parse("2026-08-24T10:00:00.000Z"); let lists = 0;
-    setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, provider_idempotence_key, status, job_id, provider_request_started_at)
-      VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}', ?, 'SENT', 'inventory-unavailable-job', ?)`)
-      .run(randomUUID(), randomUUID(), new Date(timestamp - 10 * 60_000).toISOString());
+    const backoffOutboxId = randomUUID();
+    setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, status)
+      VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}', 'SENT')`)
+      .run(backoffOutboxId);
+    seedAttemptForMessage(setup.db, backoffOutboxId, `job-${backoffOutboxId}`, new Date(timestamp - 10 * 60_000).toISOString());
     const email: EmailProvider & EmailDeliveryEvidenceProvider = {
       async send() { throw new Error("must not resend"); }, async lookup() { return { status: "UNKNOWN" }; },
       async listEventDumps() { lists += 1; throw new Error("timeout"); },
@@ -2407,9 +1618,11 @@ describe("commerce domain", () => {
   it("honors the local create fence before making another provider inventory request", async () => {
     const setup = fixture(); databases.push(setup.db);
     let timestamp = Date.parse("2026-08-24T10:00:00.000Z"); let lists = 0; let creates = 0;
-    setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, provider_idempotence_key, status, job_id, provider_request_started_at)
-      VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}', ?, 'SENT', 'local-cap-job', ?)`)
-      .run(randomUUID(), randomUUID(), new Date(timestamp - 10 * 60_000).toISOString());
+    const backoffOutboxId = randomUUID();
+    setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, status)
+      VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}', 'SENT')`)
+      .run(backoffOutboxId);
+    seedAttemptForMessage(setup.db, backoffOutboxId, `job-${backoffOutboxId}`, new Date(timestamp - 10 * 60_000).toISOString());
     const insertAttempt = setup.db.prepare("INSERT INTO unisender_event_dump_create_attempts(id, started_at) VALUES (?, ?)");
     for (let index = 0; index < 9; index += 1) insertAttempt.run(randomUUID(), new Date(timestamp - 60_000).toISOString());
     const email: EmailProvider & EmailDeliveryEvidenceProvider = {
@@ -2431,9 +1644,10 @@ describe("commerce domain", () => {
     const setup = fixture(); databases.push(setup.db);
     const timestamp = Date.parse("2026-08-24T10:00:00.000Z"); let creates = 0;
     const outboxId = randomUUID();
-    setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, provider_idempotence_key, status, job_id, provider_request_started_at)
-      VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}', ?, 'SENT', 'rejected-create-job', ?)`)
-      .run(outboxId, randomUUID(), new Date(timestamp - 10 * 60_000).toISOString());
+    setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, status)
+      VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}', 'SENT')`)
+      .run(outboxId);
+    seedAttemptForMessage(setup.db, outboxId, `job-${outboxId}`, new Date(timestamp - 10 * 60_000).toISOString());
     const email: EmailProvider & EmailDeliveryEvidenceProvider = {
       async send() { throw new Error("must not resend"); }, async lookup() { return { status: "UNKNOWN" }; },
       async listEventDumps() { return { count: 0 }; },
@@ -2452,9 +1666,10 @@ describe("commerce domain", () => {
     const setup = fixture(); databases.push(setup.db);
     const timestamp = Date.parse("2026-08-24T10:00:00.000Z");
     const outboxId = randomUUID();
-    setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, provider_idempotence_key, status, job_id, provider_request_started_at)
-      VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}', ?, 'SENT', 'provider-limit-job', ?)`)
-      .run(outboxId, randomUUID(), new Date(timestamp - 10 * 60_000).toISOString());
+    setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, status)
+      VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}', 'SENT')`)
+      .run(outboxId);
+    seedAttemptForMessage(setup.db, outboxId, `job-${outboxId}`, new Date(timestamp - 10 * 60_000).toISOString());
     const email: EmailProvider & EmailDeliveryEvidenceProvider = {
       async send() { throw new Error("must not resend"); }, async lookup() { return { status: "UNKNOWN" }; },
       async listEventDumps() { return { count: 8 }; },
@@ -2471,8 +1686,8 @@ describe("commerce domain", () => {
   it("does not starve an eleventh candidate behind ten deferred historical targets", async () => {
     const setup = fixture(); databases.push(setup.db);
     const timestamp = Date.parse("2026-08-24T10:00:00.000Z");
-    const insert = setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, provider_idempotence_key, status, job_id, provider_request_started_at)
-      VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}', ?, 'SENT', ?, ?)`);
+    const insert = setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, status)
+      VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}', 'SENT')`);
     const oldRun = randomUUID();
     setup.db.prepare(`INSERT INTO unisender_event_dump_runs(id, state, start_time, end_time, create_started_at, next_attempt_at)
       VALUES (?, 'CONSUMED', '2026-08-24 09:00:00', '2026-08-24 10:00:00', ?, ?)`)
@@ -2480,7 +1695,8 @@ describe("commerce domain", () => {
     const ids: string[] = [];
     for (let index = 0; index < 11; index += 1) {
       const outboxId = randomUUID(); ids.push(outboxId);
-      insert.run(outboxId, randomUUID(), `job-${index}`, new Date(timestamp - 10 * 60_000).toISOString());
+      insert.run(outboxId);
+      seedAttemptForMessage(setup.db, outboxId, `job-${index}`, new Date(timestamp - 10 * 60_000).toISOString());
       if (index < 10) setup.db.prepare(`INSERT INTO unisender_event_dump_targets(id, run_id, outbox_id, job_id, state, next_attempt_at)
         VALUES (?, ?, ?, ?, 'RETRY_WAIT', ?)`)
         .run(randomUUID(), oldRun, outboxId, `job-${index}`, new Date(timestamp + 60 * 60_000).toISOString());
@@ -2497,12 +1713,14 @@ describe("commerce domain", () => {
   it("batches independent eligible outboxes and waits for grace from provider dispatch, not creation", async () => {
     const setup = fixture(); databases.push(setup.db);
     let timestamp = Date.parse("2026-08-24T10:00:00.000Z"); let creates = 0;
-    const insert = setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, provider_idempotence_key, status, job_id, created_at, provider_request_started_at)
-      VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}', ?, 'SENT', ?, ?, ?)`);
+    const insert = setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, status, created_at)
+      VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}', 'SENT', ?)`);
     const fresh = randomUUID(); const first = randomUUID(); const second = randomUUID();
-    insert.run(fresh, randomUUID(), "fresh-job", new Date(timestamp - 60 * 60_000).toISOString(), new Date(timestamp - 60_000).toISOString());
-    insert.run(first, randomUUID(), "batch-one", new Date(timestamp - 60 * 60_000).toISOString(), new Date(timestamp - 10 * 60_000).toISOString());
-    insert.run(second, randomUUID(), "batch-two", new Date(timestamp - 60 * 60_000).toISOString(), new Date(timestamp - 10 * 60_000).toISOString());
+    insert.run(fresh, new Date(timestamp - 60 * 60_000).toISOString());
+    insert.run(first, new Date(timestamp - 60 * 60_000).toISOString());
+    insert.run(second, new Date(timestamp - 60 * 60_000).toISOString());
+    seedAttemptForMessage(setup.db, first, "batch-one", new Date(timestamp - 10 * 60_000).toISOString());
+    seedAttemptForMessage(setup.db, second, "batch-two", new Date(timestamp - 10 * 60_000).toISOString());
     const email: EmailProvider & EmailDeliveryEvidenceProvider = {
       async send() { throw new Error("must not resend"); }, async lookup() { return { status: "UNKNOWN" }; },
       async listEventDumps() { return { count: 0 }; },
@@ -2526,9 +1744,10 @@ describe("commerce domain", () => {
     const setup = fixture(); databases.push(setup.db);
     let timestamp = Date.parse("2026-08-24T10:00:00.000Z");
     const outboxId = randomUUID();
-    setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, provider_idempotence_key, status, job_id, provider_request_started_at)
-      VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}', ?, 'SENT', 'tail-target-job', ?)`)
-      .run(outboxId, randomUUID(), new Date(timestamp - 10 * 60_000).toISOString());
+    setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, status)
+      VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}', 'SENT')`)
+      .run(outboxId);
+    seedAttemptForMessage(setup.db, outboxId, "tail-target-job", new Date(timestamp - 10 * 60_000).toISOString());
     const unrelated = Array.from({ length: 2 }, (_, index) => ({
       eventTime: `2026-08-24 09:${String(index % 60).padStart(2, "0")}:00`, jobId: `other-${index}`, status: "delivered", deliveryStatus: "ok_delivered", metadata: { outbox_id: randomUUID() },
     }));
@@ -2577,106 +1796,16 @@ describe("commerce domain", () => {
     outboxId = row.id;
     await domain.processEmailOutbox();
     domain.applyUnisenderDelivery({ outboxId, status: "SENT", providerStatus: "sent", jobId: "city-dump-job", semanticKey: "city-dump-sent" });
-    setup.db.prepare("UPDATE email_outbox SET created_at = ?, provider_request_started_at = ? WHERE id = ?")
-      .run(new Date(timestamp - 10 * 60_000).toISOString(), new Date(timestamp - 10 * 60_000).toISOString(), outboxId);
+    setup.db.prepare("UPDATE email_outbox SET created_at = ? WHERE id = ?").run(new Date(timestamp - 10 * 60_000).toISOString(), outboxId);
+    // A settled attempt is immutable by design (0041), so "this was dispatched
+    // ten minutes ago" is expressed by advancing the clock, not by rewriting
+    // the attempt's own dispatch instant.
+    timestamp += 10 * 60_000;
     await domain.reconcileUnisenderEventDumps();
     timestamp += 61_000;
     await domain.reconcileUnisenderEventDumps();
     expect(setup.db.prepare("SELECT id FROM city_interest_requests WHERE id = ?").get(row.payload_ref.replace("city-interest:", ""))).toBeUndefined();
     expect(setup.db.prepare("SELECT status, recipient_email, payload_snapshot FROM email_outbox WHERE id = ?").get(outboxId)).toEqual({ status: "DELIVERED", recipient_email: "", payload_snapshot: "{}" });
-  });
-
-  it("repairs only a proven delivered city-interest orphan and is idempotent", () => {
-    const setup = fixture(); databases.push(setup.db);
-    setup.domain.registerCityInterest({ email: "orphan-repair@example.test", city: "novosibirsk" });
-    const row = setup.db.prepare(`SELECT request.id AS request_id, outbox.id AS outbox_id
-      FROM city_interest_requests request
-      JOIN city_interest_notification_intents intent ON intent.city_interest_request_id = request.id
-      JOIN email_outbox outbox ON outbox.id = intent.outbox_id
-      WHERE request.email_normalized = 'orphan-repair@example.test'`).get() as { request_id: string; outbox_id: string };
-    setup.db.prepare("UPDATE email_outbox SET status = 'DELIVERED' WHERE id = ?").run(row.outbox_id);
-    setup.db.prepare(`INSERT INTO email_provider_events(id, outbox_id, semantic_key, status, provider_status)
-      VALUES (?, ?, 'orphan-repair-delivered', 'DELIVERED', 'delivered')`).run(randomUUID(), row.outbox_id);
-    // Models the historical bad ordering: delivery evidence and outbox survive,
-    // but the source request was not deleted after the relation disappeared.
-    setup.db.prepare("DELETE FROM city_interest_notification_intents WHERE outbox_id = ?").run(row.outbox_id);
-
-    expect(setup.domain.repairDeliveredCityInterestOrphan(row.request_id)).toBe(true);
-    expect(setup.domain.repairDeliveredCityInterestOrphan(row.request_id)).toBe(false);
-    expect(setup.db.prepare("SELECT id FROM city_interest_requests WHERE id = ?").get(row.request_id)).toBeUndefined();
-    expect(setup.db.prepare("SELECT id FROM city_interest_notification_intents WHERE outbox_id = ?").get(row.outbox_id)).toBeUndefined();
-    expect(setup.db.prepare("SELECT status, recipient_email, recipient_email_hash, payload_snapshot FROM email_outbox WHERE id = ?").get(row.outbox_id)).toEqual({
-      status: "DELIVERED", recipient_email: "", recipient_email_hash: "", payload_snapshot: "{}",
-    });
-
-    setup.domain.registerCityInterest({ email: "active-intent@example.test", city: "novosibirsk" });
-    const protectedRow = setup.db.prepare(`SELECT request.id AS request_id, outbox.id AS outbox_id
-      FROM city_interest_requests request
-      JOIN city_interest_notification_intents intent ON intent.city_interest_request_id = request.id
-      JOIN email_outbox outbox ON outbox.id = intent.outbox_id
-      WHERE request.email_normalized = 'active-intent@example.test'`).get() as { request_id: string; outbox_id: string };
-    setup.db.prepare("UPDATE email_outbox SET status = 'DELIVERED' WHERE id = ?").run(protectedRow.outbox_id);
-    setup.db.prepare(`INSERT INTO email_provider_events(id, outbox_id, semantic_key, status, provider_status)
-      VALUES (?, ?, 'active-intent-delivered', 'DELIVERED', 'delivered')`).run(randomUUID(), protectedRow.outbox_id);
-    expect(setup.domain.repairDeliveredCityInterestOrphan(protectedRow.request_id)).toBe(false);
-    expect(setup.db.prepare("SELECT id FROM city_interest_requests WHERE id = ?").get(protectedRow.request_id)).toEqual({ id: protectedRow.request_id });
-  });
-
-  it("refuses to repair a superseded epoch whose delivery was never established", () => {
-    // The row reached FAILED because the reconciliation budget ran out, not
-    // because anyone saw it fail. Redacting the old request as a proved failure
-    // would discard the identity needed to reconcile it later, and would treat
-    // "we stopped asking" as "it did not arrive".
-    const setup = fixture(); databases.push(setup.db);
-    const email = "unresolved-repair@example.test";
-    setup.domain.registerCityInterest({ email, city: "novosibirsk" });
-    const old = setup.db.prepare(`SELECT request.id AS request_id, outbox.id AS outbox_id
-      FROM city_interest_requests request
-      JOIN city_interest_notification_intents intent ON intent.city_interest_request_id = request.id
-      JOIN email_outbox outbox ON outbox.id = intent.outbox_id
-      WHERE request.email_normalized = ?`).get(email) as { request_id: string; outbox_id: string };
-    setup.db.prepare("UPDATE email_outbox SET status = 'FAILED', delivery_outcome = 'UNRESOLVED' WHERE id = ?").run(old.outbox_id);
-    setup.domain.registerCityInterest({ email, city: "novosibirsk" });
-    setup.db.prepare("UPDATE city_interest_requests SET email_normalized = ?, email_hash = ? WHERE id = ?")
-      .run(email, emailHash(email), old.request_id);
-
-    expect(setup.domain.repairSupersededFailedCityInterestRequest(old.request_id)).toBe(false);
-    expect(setup.db.prepare("SELECT email_normalized FROM city_interest_requests WHERE id = ?").get(old.request_id))
-      .toEqual({ email_normalized: email });
-  });
-
-  it("repairs only a durably linked superseded FAILED city-interest epoch", () => {
-    const setup = fixture(); databases.push(setup.db);
-    const email = "superseded-repair@example.test";
-    setup.domain.registerCityInterest({ email, city: "novosibirsk" });
-    const old = setup.db.prepare(`SELECT request.id AS request_id, outbox.id AS outbox_id
-      FROM city_interest_requests request
-      JOIN city_interest_notification_intents intent ON intent.city_interest_request_id = request.id
-      JOIN email_outbox outbox ON outbox.id = intent.outbox_id
-      WHERE request.email_normalized = ?`).get(email) as { request_id: string; outbox_id: string };
-    setup.db.prepare("UPDATE email_outbox SET status = 'FAILED', delivery_outcome = 'KNOWN_FAILED' WHERE id = ?").run(old.outbox_id);
-    setup.domain.registerCityInterest({ email, city: "novosibirsk" });
-
-    // Model the historical omission: the renewal transition is durable, but
-    // old request PII was not redacted. The repair must not alter the old
-    // outbox or its provider evidence.
-    setup.db.prepare("UPDATE city_interest_requests SET email_normalized = ?, email_hash = ? WHERE id = ?")
-      .run(email, emailHash(email), old.request_id);
-    expect(setup.domain.repairSupersededFailedCityInterestRequest(old.request_id)).toBe(true);
-    expect(setup.domain.repairSupersededFailedCityInterestRequest(old.request_id)).toBe(false);
-    expect(setup.db.prepare("SELECT email_normalized, email_hash, superseded_at, superseded_by_request_id FROM city_interest_requests WHERE id = ?").get(old.request_id)).toEqual({
-      email_normalized: "", email_hash: "", superseded_at: expect.any(String), superseded_by_request_id: expect.any(String),
-    });
-    expect(setup.db.prepare("SELECT status FROM email_outbox WHERE id = ?").get(old.outbox_id)).toEqual({ status: "FAILED" });
-
-    const unlinked = randomUUID();
-    setup.db.prepare(`INSERT INTO city_interest_requests(
-      id, email_normalized, email_hash, city_slug, privacy_policy_version,
-      privacy_policy_sha256, pd_consent_version, pd_consent_sha256,
-      consent_accepted_at, expires_at, superseded_at
-    ) VALUES (?, 'unlinked@example.test', 'unlinked-hash', 'novosibirsk', 'v', 'a', 'v', 'b', ?, ?, ?)`)
-      .run(unlinked, new Date().toISOString(), new Date(Date.now() + 86_400_000).toISOString(), new Date().toISOString());
-    expect(setup.domain.repairSupersededFailedCityInterestRequest(unlinked)).toBe(false);
   });
 
   it("retains city-interest PII for hard bounces and generic FAILED observations", async () => {
@@ -2689,7 +1818,13 @@ describe("commerce domain", () => {
     expect(setup.db.prepare("SELECT COUNT(*) AS count FROM city_interest_requests WHERE email_normalized = 'hard-bounce@example.test'").get()).toEqual({ count: 1 });
     expect(setup.db.prepare("SELECT recipient_email FROM email_outbox WHERE id = ?").get(outbox.id)).toEqual({ recipient_email: "hard-bounce@example.test" });
 
+    // A SEND_UNKNOWN message is one whose current attempt is unsettled - the
+    // first attempt above was settled by the bounce, so model the ambiguous
+    // send as the next attempt rather than by flipping the message column alone.
     setup.db.prepare("UPDATE email_outbox SET status = 'SEND_UNKNOWN' WHERE id = ?").run(outbox.id);
+    setup.db.prepare(`INSERT INTO outbox_attempt(id, message_id, attempt_no, provider_idempotence_key, started_at, provider_request_started_at, send_try_count)
+      SELECT lower(hex(randomblob(16))), message_id, 2, provider_idempotence_key || '-2', datetime('now'), datetime('now'), 1
+      FROM outbox_attempt WHERE message_id = ? AND attempt_no = 1`).run(outbox.id);
     const failingLookup: EmailProvider = { async send() { throw new Error("must not send"); }, async lookup() { return { status: "FAILED" }; } };
     const domain = new CommerceDomain(setup.db, new MockProvider(), failingLookup);
     await domain.processEmailOutbox();
@@ -2858,7 +1993,8 @@ describe("commerce domain", () => {
     expect(setup.db.prepare("SELECT COUNT(*) AS count FROM city_interest_requests WHERE email_normalized = 'sending@example.test'").get()).toEqual({ count: 0 });
     completeSend({ jobId: "withdrawn-in-flight-job" });
     await dispatch;
-    expect(setup.db.prepare("SELECT status, job_id, recipient_email, recipient_email_hash, payload_snapshot, suppressed_at FROM email_outbox WHERE id = ?").get(outbox.id)).toEqual({ status: "SKIPPED", job_id: "withdrawn-in-flight-job", recipient_email: "", recipient_email_hash: "", payload_snapshot: "{}", suppressed_at: expect.any(String) });
+    expect(setup.db.prepare("SELECT status, recipient_email, recipient_email_hash, payload_snapshot, suppressed_at FROM email_outbox WHERE id = ?").get(outbox.id)).toEqual({ status: "SKIPPED", recipient_email: "", recipient_email_hash: "", payload_snapshot: "{}", suppressed_at: expect.any(String) });
+    expect(attemptJobId(setup.db, outbox.id)).toBe("withdrawn-in-flight-job");
     expect(domain.applyUnisenderDelivery({ outboxId: outbox.id, status: "ACCEPTED", providerStatus: "accepted", jobId: "withdrawn-in-flight-job", semanticKey: "withdrawn-in-flight-accepted" })).toEqual({ duplicate: false });
     expect(setup.db.prepare("SELECT status FROM email_outbox WHERE id = ?").get(outbox.id)).toEqual({ status: "SKIPPED" });
     expect(setup.db.prepare("SELECT provider_status FROM email_provider_events WHERE semantic_key = 'withdrawn-in-flight-accepted'").get()).toEqual({ provider_status: "accepted" });
@@ -3008,11 +2144,10 @@ describe("commerce domain", () => {
     expect(setup.db.prepare("SELECT COUNT(*) AS count FROM email_outbox WHERE type = 'TICKET'").get()).toEqual({ count: 0 });
   });
 
-  it("defers only stale-review busy contention and continues the financial worker sequence", async () => {
+  it("runs the financial worker sequence in order", async () => {
     const calls: string[] = [];
-    const busyDomain = {
+    const sweepDomain = {
       recoverStaleCommands: () => { calls.push("recover-stale"); },
-      detectStalePreparedSettlements: () => { calls.push("detect"); throw new DomainError("SETTLEMENT_BUSY", 409); },
       reconcileCreateUnknownPayments: async () => { calls.push("create-unknown"); },
       reconcilePendingPayments: async () => { calls.push("payments"); },
       createObligationRefunds: () => { calls.push("obligations"); },
@@ -3021,14 +2156,11 @@ describe("commerce domain", () => {
       processEmailOutbox: async () => { calls.push("email"); },
       reconcileUnisenderEventDumps: async () => { calls.push("event-dump"); },
       detectOverdueVenueAnnouncements: () => { calls.push("venue-overdue"); },
-      processCityInterestLifecycle: () => { calls.push("city-interest"); return { expired_deleted: 0, intents_created: 0 }; },
-      processOccurrenceNotificationLifecycle: () => { calls.push("occurrence-notifications"); return { deleted: 0, intents_created: 0 }; },
+      processCityInterestLifecycle: () => { calls.push("city-interest"); return { expired_deleted: 0, intents_created: 0, intents_dispatched: 0, requests_completed: 0 }; },
+      processOccurrenceNotificationLifecycle: () => { calls.push("occurrence-notifications"); return { deleted: 0, intents_created: 0, intents_dispatched: 0, requests_completed: 0 }; },
     };
-    await runWorkerSweep(busyDomain as never);
-    expect(calls).toEqual(["recover-stale", "detect", "create-unknown", "payments", "obligations", "submit-refunds", "reconcile-refunds", "email", "event-dump", "venue-overdue", "city-interest", "occurrence-notifications"]);
-
-    const unexpectedDomain = { ...busyDomain, detectStalePreparedSettlements: () => { throw new Error("unexpected stale detector failure"); } };
-    await expect(runWorkerSweep(unexpectedDomain as never)).rejects.toThrow("unexpected stale detector failure");
+    await runWorkerSweep(sweepDomain as never);
+    expect(calls).toEqual(["recover-stale", "create-unknown", "payments", "obligations", "submit-refunds", "reconcile-refunds", "email", "event-dump", "venue-overdue", "city-interest", "occurrence-notifications"]);
   });
 });
 

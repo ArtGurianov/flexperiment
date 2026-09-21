@@ -5,7 +5,7 @@ import { createHash, randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { migrate, openDatabase } from "../src/db";
-import { activateAgentReferrals } from "../src/agent-referrals-feature-state";
+import { materializeInitialActiveFeatureForTest as activateAgentReferrals } from "./support/agent-referrals-feature-state";
 import { provisionPartnerOwner, type AdminPrincipal } from "../src/agent-referrals-partner-identity";
 import { effectiveOtpSendOutcome, getOtpChallenge, issueAndDispatchOtpChallenge, loginWithOtp, recoverOtpChallengeState, verifyOtpChallenge, type OtpSender } from "../src/agent-referrals-otp";
 
@@ -27,8 +27,8 @@ const fresh = () => {
 
 const provisionedPartner = (db: Database.Database) => {
   const agentId = randomUUID();
-  db.prepare(`INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
-    VALUES (?, ?, 'Agent', ?, 'PERCENT', 1000)`).run(agentId, `partner-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
+  db.prepare(`INSERT INTO partners(id, slug, display_name, email)
+    VALUES (?, ?, 'Agent', ?)`).run(agentId, `partner-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
   activateAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "test" });
   const { partner_identity_id } = provisionPartnerOwner(db, admin, agentId, "partner@example.test", "test");
   return partner_identity_id;

@@ -29,8 +29,7 @@ import { PartnerCommandIdempotencyError, withPartnerCommandInTransaction } from 
 import type { RawLegalRequisitesInput } from "./agent-referrals-legal-profile";
 
 /**
- * `/v1/partner/*` - the entire HTTP surface for the PARTNER realm (Phase 9
- * amendment). A logically separate API surface from `/v1/admin/*`: no
+ * `/v1/partner/*` - the entire HTTP surface for the PARTNER realm . A logically separate API surface from `/v1/admin/*`: no
  * handler in this file ever accepts a caller-supplied partner_identity_id,
  * agent_id or engagement_id as AUTHORITY - the partner_identity_id used by
  * every protected route below is resolved exclusively from the session
@@ -192,7 +191,7 @@ export function createAgentReferralsPartnerRouter(sqlite: Database.Database, otp
       legalForm, taxMode, reason: requireString(body, "reason"),
       expectedCurrentLegalProfileRevision: requireNumber(body, "expected_current_legal_profile_revision"),
       expectedRequestSequence: requireNumber(body, "expected_request_sequence"),
-      ...legalRequisitesFromBody(body),
+...legalRequisitesFromBody(body),
     }), 201);
   });
 
@@ -286,7 +285,7 @@ export function createAgentReferralsPartnerRouter(sqlite: Database.Database, otp
    * npd_receipts (recordNpdReceipt takes only an AdminPrincipal; widening
    * it to accept a PartnerPrincipal would let a partner self-confirm their
    * own tax-authorization payout gate, which is exactly the operator
-   * confirmation §B-6/Phase 7 requires). This records the partner's
+   * confirmation requires). This records the partner's
    * evidence as a partner-realm audit event only - the operator reviews it
    * in the admin queue and, if it checks out, calls the real
    * recordNpdReceipt themselves. No new authority is created here.

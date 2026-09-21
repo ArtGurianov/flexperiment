@@ -6,7 +6,7 @@ import type Database from "better-sqlite3";
 import { migrate, openDatabase } from "../../src/db";
 import { CommerceDomain } from "../../src/domain";
 import { MockProvider } from "../../src/provider";
-import { activateAgentReferrals } from "../../src/agent-referrals-feature-state";
+import { materializeInitialActiveFeatureForTest as activateAgentReferrals } from "./agent-referrals-feature-state";
 import { provisionPartnerOwner, submitPartnerLegalProfile, verifyPartnerLegalProfile, issueFrameworkToPartner, type AdminPrincipal, type PartnerPrincipal } from "../../src/agent-referrals-partner-identity";
 import { activatePartner, getPartnerIdentity } from "../../src/agent-referrals-onboarding";
 import { mintFrameworkAgreementRevision, mintDelegationTemplateRevision, FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES, DELEGATION_TEMPLATE_REQUIRED_CLAUSES } from "../../src/agent-referrals-framework-delegation";
@@ -30,7 +30,7 @@ import { recordVerifiedTaxTreatment } from "../../src/agent-referrals-tax-treatm
  * agent-referrals-reward-registry.test.ts's local helper set exactly
  * (readyPartner/seedOccurrence/nearTermTerms/offerAcceptActivate/
  * purchaseAndPay/closeAndComplete/checkoutInput/wait) plus the additional
- * steps Phase 7 needs on top (payout profile, NPD status check, settlement/
+ * the settlement path needs on top (payout profile, NPD status check, settlement/
  * act). Factored out here (commerce/test/support/, precedent:
  * concurrency-fixture.ts) rather than duplicated four times across the
  * PR7 test files, since the full chain from a fresh database to an
@@ -66,8 +66,8 @@ export type ReadyPartner = { partner: PartnerPrincipal; agentId: string; partner
 export const readyPartner = (db: Database.Database, taxMode: "NPD" | "OTHER" = "NPD"): ReadyPartner => {
   activateAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "test" });
   const agentId = randomUUID();
-  db.prepare(`INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
-    VALUES (?, ?, 'Agent', ?, 'PERCENT', 1000)`).run(agentId, `partner-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
+  db.prepare(`INSERT INTO partners(id, slug, display_name, email)
+    VALUES (?, ?, 'Agent', ?)`).run(agentId, `partner-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
   const { partner_identity_id: partnerIdentityId } = provisionPartnerOwner(db, admin, agentId, "p@example.test", "test");
   const legalForm = taxMode === "NPD" ? "INDIVIDUAL" : "INDIVIDUAL_ENTREPRENEUR";
   submitPartnerLegalProfile(db, { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: "n/a" }, legalForm, taxMode,
@@ -147,24 +147,11 @@ export const closeAndComplete = (db: Database.Database, domain: CommerceDomain, 
 export const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * A minimal, genuinely LEGACY referral_rewards row: order_id is NOT NULL
- * UNIQUE REFERENCES orders(id), so a real (if minimal) order must exist
- * first - direct SQL only, since the point of the F9 partition tests is to
- * prove the DATABASE READ FILTER, not to exercise checkout again.
+ * A minimal referral_rewards row: order_id is NOT NULL UNIQUE REFERENCES
+ * orders(id), so a real (if minimal) order must exist first - direct SQL only,
+ * since the point is to prove the database read filter, not to exercise
+ * checkout again.
  */
-export const seedLegacyReferralReward = (db: Database.Database, agentId: string, occurrenceId: string, amountKopecks: number) => {
-  const release = db.prepare("SELECT id FROM legal_releases WHERE active = 1").get() as { id: string };
-  const orderId = randomUUID();
-  db.prepare(`INSERT INTO orders(id, public_status_id, public_order_number, occurrence_id, customer_name, customer_email, customer_email_hash, amount_kopecks, occurrence_material_revision, venue_disclosure_snapshot, checkout_legal_release_id, legal_snapshot_json, eligibility_confirmed_at)
-    VALUES (?, ?, ?, ?, '', 'c@example.test', 'h', ?, 1, 'd', ?, '{}', 'x')`)
-    .run(orderId, `${orderId}-status`, `FX-${orderId.slice(0, 8)}`, occurrenceId, amountKopecks, release.id);
-  // reward_authority_kind must match the order's own (0046's referral_rewards_authority_kind_matches_order_guard) - a fresh order defaults to
-  // 'LEGACY', so this row must too; historical NULL is only reachable pre-0046, already proven in agent-referrals-attribution-reward-migration.test.ts.
-  db.prepare("INSERT INTO referral_rewards(id, order_id, agent_id, occurrence_id, amount_kopecks, reward_authority_kind) VALUES (?, ?, ?, ?, ?, 'LEGACY')")
-    .run(randomUUID(), orderId, agentId, occurrenceId, amountKopecks);
-  return orderId;
-};
-
 /** Closes sales, completes the occurrence, finalizes R/E1, and mints the PREPARED AGENT_REFERRALS settlement derived from E1. */
 export const finalizedSettlement = (db: Database.Database, domain: CommerceDomain, occurrenceId: string, engagementId: string): AgentReferralsSettlementRow => {
   closeAndComplete(db, domain, occurrenceId);

@@ -4,8 +4,14 @@ import { parseLegalManifest } from "../src/legal-manifest";
 import { parseCanonicalLegalRelease } from "../src/legal-release";
 import { occurrenceNotificationsCapabilityActive } from "../src/occurrence-notification-capability";
 
-const runtimeBeforePromotion = parseCanonicalLegalRelease(JSON.parse(readFileSync("commerce/legal/production-manifest.json", "utf8")));
-const publishedNotificationRelease = parseCanonicalLegalRelease(JSON.parse(readFileSync("commerce/legal/production-manifest.2026-08-28.1.draft.json", "utf8")));
+const activeRelease = parseCanonicalLegalRelease(JSON.parse(readFileSync("commerce/legal/production-manifest.json", "utf8")));
+/**
+ * The capability never reads `publish_time`, which was the only thing that
+ * distinguished the promoted draft from the active release - so one fixture
+ * answers for both, and the cases below vary the arguments rather than the file.
+ */
+const runtimeBeforePromotion = activeRelease;
+const publishedNotificationRelease = activeRelease;
 
 describe("occurrence notification legal capability", () => {
   it("recognizes the forward-ported, already-published notification release", () => {

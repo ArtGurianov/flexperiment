@@ -11,7 +11,7 @@ import { canonicalizeOrdParticipantV1 } from "./agent-referrals-ord-canonical";
 import type { AdminPrincipal } from "./agent-referrals-partner-identity";
 
 /**
- * VKPaidInvoicePayload (plan Phase 8): constructible only from an exact
+ * VKPaidInvoicePayload : constructible only from an exact
  * ACT_ACCEPTED authority - every field copied from ALREADY-immutable pinned
  * sources (the act's own columns, its acceptance's own accepted_amount/
  * accepted_engagement_revision_id, the settlement's own frozen tax/legal/
@@ -94,7 +94,7 @@ export const mintOrdPaidInvoicePayload = (
     const act = settlementActById(db, actId);
     if (!act) throw new OrdPaidInvoiceError("AGENT_REFERRALS_SETTLEMENT_ACT_NOT_FOUND", 404, actId);
     const acceptance = db.prepare("SELECT accepted_amount_kopecks, accepted_engagement_revision_id FROM settlement_act_acceptances WHERE act_id = ?")
-      .get(actId) as { accepted_amount_kopecks: number; accepted_engagement_revision_id: string } | undefined;
+.get(actId) as { accepted_amount_kopecks: number; accepted_engagement_revision_id: string } | undefined;
     if (!acceptance) throw new OrdPaidInvoiceError("AGENT_REFERRALS_ORD_PAID_INVOICE_ACT_NOT_ACCEPTED", 409, actId);
 
     const settlement = agentReferralsSettlementById(db, act.settlement_id)!;
@@ -141,7 +141,7 @@ export const mintOrdPaidInvoicePayload = (
         tax_treatment_revision_id_snapshot, ord_participant_canonicalization_version, partner_participant_json, partner_participant_hash,
         tax_canonicalization_version, tax_canonical_json, tax_canonical_hash, created_by_admin_id)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(payloadId, actId, settlement.id, act.engagement_id, act.partner_identity_id, acceptance.accepted_amount_kopecks, acceptance.accepted_engagement_revision_id,
+.run(payloadId, actId, settlement.id, act.engagement_id, act.partner_identity_id, acceptance.accepted_amount_kopecks, acceptance.accepted_engagement_revision_id,
         settlement.tax_mode_snapshot, settlement.legal_profile_revision_id_snapshot, contractorType, contract.id, operationKey, canonicalHash,
         settlement.tax_treatment_revision_id_snapshot, participantCanonical.version, participantCanonical.canonical_json, participantCanonical.canonical_hash,
         settlement.tax_canonicalization_version, settlement.tax_canonical_json, settlement.tax_canonical_hash, admin.admin_id);
@@ -162,7 +162,7 @@ export const recordOrdPaidInvoiceSubmission = (db: Database.Database, payloadId:
       throw new OrdPaidInvoiceError("AGENT_REFERRALS_ORD_PAID_INVOICE_PAYLOAD_SUBMISSION_CONFLICT", 409, payloadId);
     }
     db.prepare(`UPDATE ord_paid_invoice_payloads SET submission_state = 'SUBMITTED', vk_operation_external_id = ?, evidence_ref = ? WHERE id = ? AND lock_state = 'MUTABLE'`)
-      .run(vkOperationExternalId, evidenceRef, payloadId);
+.run(vkOperationExternalId, evidenceRef, payloadId);
     return ordPaidInvoicePayloadById(db, payloadId)!;
   });
   return run.immediate();

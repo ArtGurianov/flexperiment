@@ -6,7 +6,8 @@ import { randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { migrate, openDatabase } from "../src/db";
-import { activateAgentReferrals, suspendAgentReferrals } from "../src/agent-referrals-feature-state";
+import { reactivateAgentReferrals, suspendAgentReferrals } from "../src/agent-referrals-feature-state";
+import { materializeInitialActiveFeatureForTest as activateAgentReferrals } from "./support/agent-referrals-feature-state";
 import { provisionPartnerOwner, submitPartnerLegalProfile, verifyPartnerLegalProfile, issueFrameworkToPartner, type AdminPrincipal, type PartnerPrincipal } from "../src/agent-referrals-partner-identity";
 import { activatePartner, getPartnerIdentity } from "../src/agent-referrals-onboarding";
 import { mintFrameworkAgreementRevision, mintDelegationTemplateRevision, FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES, DELEGATION_TEMPLATE_REQUIRED_CLAUSES } from "../src/agent-referrals-framework-delegation";
@@ -52,8 +53,8 @@ const clause = (arr: readonly string[]) => Object.fromEntries(arr.map((k) => [k,
 const readyPartner = (db: Database.Database) => {
   activateAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "test" });
   const agentId = randomUUID();
-  db.prepare(`INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
-    VALUES (?, ?, 'Agent', ?, 'PERCENT', 1000)`).run(agentId, `partner-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
+  db.prepare(`INSERT INTO partners(id, slug, display_name, email)
+    VALUES (?, ?, 'Agent', ?)`).run(agentId, `partner-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
   const { partner_identity_id: partnerIdentityId } = provisionPartnerOwner(db, admin, agentId, "p@example.test", "test");
   submitPartnerLegalProfile(db, { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: "n/a" }, "INDIVIDUAL", "NPD", { full_name: "Ivanov Ivan Ivanovich", inn: "123456789012" }, 0);
   verifyPartnerLegalProfile(db, admin, partnerIdentityId, "verified");
@@ -180,18 +181,18 @@ describe("engagement offer / accept / activate: four separate authorities, never
     const db = fresh();
     const { partner, partnerIdentityId, cityId } = readyPartner(db);
     const occurrenceId = seedOccurrence(db, cityId);
-    suspendAgentReferrals(db, { expected_revision: 2, owner_id: "test-owner", reason: "emergency" });
+    suspendAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "emergency" });
     expect(() => offerEngagement(db, admin, partnerIdentityId, occurrenceId, terms1, "offer")).toThrow(/AGENT_REFERRALS_SUSPENDED_BLOCKS_NEW_AUTHORITY/);
 
-    activateAgentReferrals(db, { expected_revision: 3, owner_id: "test-owner", reason: "resume" });
+    reactivateAgentReferrals(db, { expected_revision: 2, owner_id: "test-owner", reason: "resume" });
     const { engagement_id: engagementId, engagement_revision_id: revisionId } = offerEngagement(db, admin, partnerIdentityId, occurrenceId, terms1, "offer");
     const grant = mintEngagementStepUpGrant(db, partner, "ENGAGEMENT_ACCEPTANCE", { engagement_id: engagementId, engagement_revision_id: revisionId }).grant_id;
-    suspendAgentReferrals(db, { expected_revision: 4, owner_id: "test-owner", reason: "emergency 2" });
+    suspendAgentReferrals(db, { expected_revision: 3, owner_id: "test-owner", reason: "emergency 2" });
     expect(() => acceptEngagement(db, partner, engagementId, revisionId, grant)).toThrow(/AGENT_REFERRALS_SUSPENDED_BLOCKS_NEW_AUTHORITY/);
 
-    activateAgentReferrals(db, { expected_revision: 5, owner_id: "test-owner", reason: "resume 2" });
+    reactivateAgentReferrals(db, { expected_revision: 4, owner_id: "test-owner", reason: "resume 2" });
     acceptEngagement(db, partner, engagementId, revisionId, grant);
-    suspendAgentReferrals(db, { expected_revision: 6, owner_id: "test-owner", reason: "emergency 3" });
+    suspendAgentReferrals(db, { expected_revision: 5, owner_id: "test-owner", reason: "emergency 3" });
     expect(() => activateEngagement(db, admin, engagementId, revisionId)).toThrow(/AGENT_REFERRALS_SUSPENDED_BLOCKS_NEW_AUTHORITY/);
   });
 });
@@ -233,8 +234,8 @@ describe("engagement suspend / reactivate", () => {
     const occ = seedOccurrence(db, p1.cityId);
     const eng = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occ);
     suspendEngagement(db, admin, eng.engagementId, "pause", getEngagement(db, eng.engagementId)!.lifecycle_revision);
-    suspendAgentReferrals(db, { expected_revision: 2, owner_id: "test-owner", reason: "unrelated global pause" });
-    activateAgentReferrals(db, { expected_revision: 3, owner_id: "test-owner", reason: "global resume" });
+    suspendAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "unrelated global pause" });
+    reactivateAgentReferrals(db, { expected_revision: 2, owner_id: "test-owner", reason: "global resume" });
     expect(getEngagement(db, eng.engagementId)).toMatchObject({ lifecycle_state: "SUSPENDED" });
   });
 });
@@ -404,7 +405,7 @@ describe("lastActivatedEngagementRevision (P1.1): resolves by the maximum ACTIVA
   });
 });
 
-describe("re-verification cascade (Phase 5 holistic review, P0 finding 2): a replacement VERIFIED with a NARROWER valid_until must not leave an ACTIVE engagement with audience authority that no longer covers its own publication window", () => {
+describe("re-verification cascade: a replacement VERIFIED with a NARROWER valid_until must not leave an ACTIVE engagement with audience authority that no longer covers its own publication window", () => {
   it("suspends an ACTIVE engagement (and revokes its promo authorization) when the replacement valid_until no longer reaches the engagement's publication_end_at", () => {
     const db = fresh();
     const p1 = readyPartner(db);
@@ -488,7 +489,7 @@ describe("integration-hardening #5: a destroyed identity cannot receive NEW comm
   });
 });
 
-describe("structural authority bypass surfaces (Phase 5 holistic review, P0 finding 3): no generic exported primitive can grant or transition authority outside its one privileged caller", () => {
+describe("structural authority bypass surfaces: no generic exported primitive can grant or transition authority outside its one privileged caller", () => {
   it("this module exports no generic transitionEngagementLifecycle capable of targeting CLOSED - only a SUSPENDED-only primitive", () => {
     expect(engagementModule).not.toHaveProperty("transitionEngagementLifecycle");
     expect(engagementModule).toHaveProperty("suspendEngagementLifecycle");

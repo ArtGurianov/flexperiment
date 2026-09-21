@@ -5,7 +5,8 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { migrate, openDatabase } from "../src/db";
-import { activateAgentReferrals, suspendAgentReferrals } from "../src/agent-referrals-feature-state";
+import { suspendAgentReferrals } from "../src/agent-referrals-feature-state";
+import { materializeInitialActiveFeatureForTest as activateAgentReferrals } from "./support/agent-referrals-feature-state";
 import { mintOrdProviderProfile, currentOrdProviderProfile } from "../src/agent-referrals-ord-provider-profile";
 import {
   openOrdProviderOperation, recordOrdProviderOperationSubmitted, confirmOrdProviderOperation, recordOrdProviderOperationErirReconciliation, lockOrdProviderOperation,
@@ -61,17 +62,18 @@ describe("openOrdProviderOperation: provider-operation authority (revision chain
     expect(second.operation.id).toBe(first.operation.id);
   });
 
-  it("refuses under DORMANT", () => {
+  it("a freshly seeded feature state reaches ordinary provider-profile validation", () => {
     const file = join(mkdtempSync(join(tmpdir(), "ord-provider-operation-dormant-")), "commerce.sqlite");
     const db = openDatabase(file); migrate(db); open.push(db);
-    expect(() => openOrdProviderOperation(db, admin, "COUNTERPARTY", currentOrdProviderOperation(db, "COUNTERPARTY")?.id ?? null)).toThrow(/AGENT_REFERRALS_FEATURE_DORMANT/);
+    expect(() => openOrdProviderOperation(db, admin, "COUNTERPARTY", currentOrdProviderOperation(db, "COUNTERPARTY")?.id ?? null))
+      .toThrow(/AGENT_REFERRALS_ORD_PROVIDER_PROFILE_MISSING/);
   });
 
   it("refuses under SUSPENDED, even completing an already-DRAFT operation", () => {
     const db = fresh();
     mintOrdProviderProfile(db, admin, "MEDIA", { media_ref: "site" }, "seed", currentOrdProviderProfile(db, "MEDIA")?.id ?? null);
     const { operation } = openOrdProviderOperation(db, admin, "MEDIA", currentOrdProviderOperation(db, "MEDIA")?.id ?? null);
-    suspendAgentReferrals(db, { expected_revision: 2, owner_id: "test-owner", reason: "pause" });
+    suspendAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "pause" });
     expect(() => recordOrdProviderOperationSubmitted(db, operation.id, "vk-ext-1", "ev")).toThrow(/AGENT_REFERRALS_SUSPENDED_BLOCKS_NEW_AUTHORITY/);
   });
 });

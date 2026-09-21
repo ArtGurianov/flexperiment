@@ -50,8 +50,7 @@ export type CreativeReadyToPublishEvidence = { engagement_id: string; creative_r
 export const assessCreativeReadyToPublish = (db: Database.Database, engagementId: string): CreativeReadyToPublishEvidence => {
   // Readiness IS an assertion of NEW_PUBLICATION_AUTHORITY (identical class
   // to authorizeCreative's own gate) - global SUSPENDED must refuse it even
-  // when every per-engagement prerequisite below still holds (Phase 5
-  // holistic review, P0 finding 1): SUSPENDED blocks new publication
+  // when every per-engagement prerequisite below still holds : SUSPENDED blocks new publication
   // authority while still permitting the reporting tail for publications
   // that already exist.
   assertAgentReferralsOperationPermitted(agentReferralsFeatureState(db).state, "NEW_PUBLICATION_AUTHORITY");
@@ -71,7 +70,7 @@ export const assessCreativeReadyToPublish = (db: Database.Database, engagementId
 
   // The revision an admin most recently ACTIVATED, never the latest
   // AUTHORED (draft) one - a simple admin draft R2 must not break
-  // publication readiness for the still-live R1 (Phase 5 review note 7).
+  // publication readiness for the still-live R1.
   const revision = lastActivatedEngagementRevision(db, engagementId);
   if (!revision) throw new CreativeReadinessError("AGENT_REFERRALS_READINESS_ENGAGEMENT_NOT_ACTIVE", 409, engagementId);
   const now = Date.now();

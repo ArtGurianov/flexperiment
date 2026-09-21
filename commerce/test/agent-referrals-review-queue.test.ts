@@ -9,7 +9,7 @@ import { beginPayment, recordPayoutUnknown } from "../src/agent-referrals-paymen
 import { recordNpdStatusCheck } from "../src/agent-referrals-npd";
 import { provisionPartnerOwner, submitPartnerLegalProfile, verifyPartnerLegalProfile, issueFrameworkToPartner } from "../src/agent-referrals-partner-identity";
 import { mintFrameworkAgreementRevision, mintDelegationTemplateRevision, FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES, DELEGATION_TEMPLATE_REQUIRED_CLAUSES } from "../src/agent-referrals-framework-delegation";
-import { activateAgentReferrals } from "../src/agent-referrals-feature-state";
+import { materializeInitialActiveFeatureForTest as activateAgentReferrals } from "./support/agent-referrals-feature-state";
 import type { PartnerPrincipal } from "../src/agent-referrals-partner-identity";
 import { fresh, admin, readyPartner, seedOccurrence, nearTermTerms, offerAcceptActivate, purchaseAndPay, finalizedSettlement, acceptedAct } from "./support/agent-referrals-settlement-fixtures";
 
@@ -19,7 +19,7 @@ const track = (db: Database.Database) => { open.push(db); return db; };
 const clause = (arr: readonly string[]) => Object.fromEntries(arr.map((k) => [k, `${k} v1`])) as Record<string, string>;
 
 describe("agent-referrals-review-queue.ts: live-derived operator findings, never a stored table", () => {
-  it("returns every category empty (total 0, no items, not truncated) on a fresh, all-DORMANT database", () => {
+  it("returns every category empty (total 0, no items, not truncated) on a fresh, freshly seeded database", () => {
     const { db } = fresh();
     track(db);
     const queue = agentReferralsReviewQueue(db, new Date().toISOString());
@@ -116,8 +116,8 @@ describe("agent-referrals-review-queue.ts: live-derived operator findings, never
     track(db);
     activateAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "test" });
     const agentId = randomUUID();
-    db.prepare(`INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
-      VALUES (?, 'p1', 'A', 'a@example.test', 'PERCENT', 1000)`).run(agentId);
+    db.prepare(`INSERT INTO partners(id, slug, display_name, email)
+      VALUES (?, 'p1', 'A', 'a@example.test')`).run(agentId);
     const { partner_identity_id: partnerIdentityId } = provisionPartnerOwner(db, admin, agentId, "p@example.test", "test");
     const asPartner: PartnerPrincipal = { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: "n/a" };
     submitPartnerLegalProfile(db, asPartner, "INDIVIDUAL", "NPD", { full_name: "Ivanov Ivan Ivanovich", inn: "123456789012" }, 0);

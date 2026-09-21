@@ -39,7 +39,7 @@ describe("identical content does not mint a second revision", () => {
     const replay = mintEngagementRevision(db, admin, engagementId, terms, "retry after a lost response", currentEngagementRevision(db, engagementId)?.id ?? null);
     expect(replay.id).toBe(first.id);
     expect(db.prepare("SELECT COUNT(*) AS n FROM engagement_revisions WHERE engagement_id = ?").get(engagementId))
-      .toEqual({ n: before.n + 1 });
+.toEqual({ n: before.n + 1 });
 
     // Genuinely different terms still mint: the branch is a no-change check,
     // not a lock.
@@ -66,7 +66,7 @@ describe("identical content does not mint a second revision", () => {
 
     expect(replay.revision.id).toBe(corrected.revision.id);
     expect(db.prepare("SELECT COUNT(*) AS n FROM engagement_distribution_revisions WHERE distribution_id = ?").get(distributionId))
-      .toEqual({ n: 2 });
+.toEqual({ n: 2 });
     // And no classification events either: the old path appended a fresh
     // classification on every call, so the count is compared against the
     // state right before the replay rather than against a guessed absolute.

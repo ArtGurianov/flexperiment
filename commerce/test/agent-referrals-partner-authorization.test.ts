@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { migrate, openDatabase } from "../src/db";
-import { activateAgentReferrals } from "../src/agent-referrals-feature-state";
+import { materializeInitialActiveFeatureForTest as activateAgentReferrals } from "./support/agent-referrals-feature-state";
 
 // Explicit test key - there is deliberately no source-level fallback.
 process.env.COMMERCE_AGENT_REFERRALS_PAYOUT_KEY_ID ??= "test-payout-key-for-agent-referrals-partner-authorization-test";
@@ -46,8 +46,8 @@ const fresh = () => {
 const provisionedActive = (db: Database.Database) => {
   activateAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "test" });
   const agentId = randomUUID();
-  db.prepare(`INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
-    VALUES (?, ?, 'A', ?, 'PERCENT', 1000)`).run(agentId, `p-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
+  db.prepare(`INSERT INTO partners(id, slug, display_name, email)
+    VALUES (?, ?, 'A', ?)`).run(agentId, `p-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
   return provisionPartnerOwner(db, admin, agentId, "p@example.test", "test");
 };
 
@@ -75,7 +75,7 @@ describe("partner authorization: the plan's may/may-not matrix", () => {
       const partner = asPartner(partner_identity_id, sessionId);
       const grant = mintStepUpGrant(db, partner, "PAYOUT_PROFILE_SUPERSESSION", { supersedes_revision_id: null }).grant_id;
       expect(() => setPartnerPayoutDestination(db, partner, { step_up_grant_id: grant, destination_kind: "BANK_CARD", destination_plaintext: "4111111111111111", destination_last4: "1111" }))
-        .not.toThrow();
+.not.toThrow();
     });
 
     // Framework/delegation acceptance is proven in agent-referrals-framework-acceptance.test.ts;
@@ -95,19 +95,18 @@ describe("partner authorization: the plan's may/may-not matrix", () => {
       const source = readFileSync(join(process.cwd(), "commerce", "src", "agent-referrals-partner-identity.ts"), "utf8");
       expect(source).toMatch(/export const verifyPartnerLegalProfile = \(db: Database\.Database, admin: AdminPrincipal/);
       expect(() => verifyPartnerLegalProfile(db, { realm: "ADMIN", admin_id: partner_identity_id }, partner_identity_id, "self-verify attempt"))
-        .not.toThrow(); // admin authority genuinely can verify ANY identity - the point is a partner has no path to this function at all, proven structurally above.
+.not.toThrow(); // admin authority genuinely can verify ANY identity - the point is a partner has no path to this function at all, proven structurally above.
     });
 
-    it("activate the global feature - activateAgentReferrals (DORMANT->ACTIVE) takes no partner-reachable authority parameter and is never imported by any HTTP-reachable module, in Phase 9 or any earlier phase", () => {
+    it("the feature state is moved by an opaque operator id, and by nothing a partner can reach", () => {
       const source = readFileSync(join(process.cwd(), "commerce", "src", "agent-referrals-feature-state.ts"), "utf8");
       expect(source).toMatch(/owner_id: string/); // opaque operator id, not a PartnerPrincipal
       expect(source).not.toContain("PartnerPrincipal");
-      // Phase 9 wires suspendAgentReferrals/reactivateAgentReferrals (and a
+      // The runtime wires suspendAgentReferrals/reactivateAgentReferrals (and a
       // read of the current state) to /v1/admin/agent-referrals/feature-state
-      // as an operational safety valve - deliberately NOT activateAgentReferrals
-      // itself: DORMANT -> ACTIVE stays reachable only through the separate,
-      // readiness-gated production cutover (Phase 10B), never through this or
-      // any other ad hoc admin action. Checked by literal name (not module
+      // as an operational safety valve. There is no activation command to
+      // expose: the feature is ACTIVE from the moment the database exists, so
+      // the only edges are suspend and resume. Checked by literal name (not module
       // name, which the admin surface now legitimately imports) against every
       // file an HTTP request can reach.
       for (const file of ["api.ts", "agent-referrals-api-admin.ts", "agent-referrals-api-partner.ts"]) {
@@ -124,7 +123,7 @@ describe("partner authorization: the plan's may/may-not matrix", () => {
     it("mutate channel policy - setAgentReferralsChannelPolicy takes no partner-reachable authority parameter, and the PARTNER HTTP surface never imports it (only the admin surface may)", () => {
       const source = readFileSync(join(process.cwd(), "commerce", "src", "agent-referrals-channel-policy.ts"), "utf8");
       expect(source).not.toContain("PartnerPrincipal");
-      // Phase 9 wires channel-policy read/write to /v1/admin/agent-referrals/*
+      // The runtime wires channel-policy read/write to /v1/admin/agent-referrals/*
       // (an ordinary admin operational action) - this asserts only that the
       // PARTNER-realm router never reaches it, which is the actual invariant
       // the plan (§B-2: partner may not "approve a channel") requires.
@@ -147,7 +146,7 @@ describe("partner authorization: the plan's may/may-not matrix", () => {
     });
   });
 
-  describe("Phase 9: the partner HTTP surface is wired, but only through its own file, on its own realm boundary", () => {
+  describe("the partner HTTP surface is wired, but only through its own file, on its own realm boundary", () => {
     it("api.ts mounts the partner router at /v1/partner (never /v1/admin) and the admin router inside admin's own authenticated sub-app (never directly on app)", () => {
       const apiSource = readFileSync(join(process.cwd(), "commerce", "src", "api.ts"), "utf8");
       expect(apiSource).toMatch(/app\.route\("\/v1\/partner",\s*createAgentReferralsPartnerRouter\(/);
@@ -161,7 +160,7 @@ describe("partner authorization: the plan's may/may-not matrix", () => {
 
     it("the partner router (agent-referrals-api-partner.ts) never IMPORTS an admin-only provisioning/activation function", () => {
       const importLines = readFileSync(join(process.cwd(), "commerce", "src", "agent-referrals-api-partner.ts"), "utf8")
-        .split("\n").filter((line) => line.trimStart().startsWith("import ")).join("\n");
+.split("\n").filter((line) => line.trimStart().startsWith("import ")).join("\n");
       // recordNpdReceipt is deliberately named in this file's own prose
       // (explaining why the partner route does NOT call the real admin
       // command - see /npd-receipts/submit's header comment above), so this
@@ -173,7 +172,7 @@ describe("partner authorization: the plan's may/may-not matrix", () => {
 
     it("the admin router (agent-referrals-api-admin.ts) never IMPORTS a partner-session-authenticated command", () => {
       const importLines = readFileSync(join(process.cwd(), "commerce", "src", "agent-referrals-api-admin.ts"), "utf8")
-        .split("\n").filter((line) => line.trimStart().startsWith("import ")).join("\n");
+.split("\n").filter((line) => line.trimStart().startsWith("import ")).join("\n");
       // acceptEngagement/acceptSettlementAct/setPartnerPayoutDestination etc.
       // each take only a PartnerPrincipal - TypeScript itself refuses an
       // AdminPrincipal there, so this is a structural guarantee already, not

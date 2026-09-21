@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { migrate, openDatabase } from "../src/db";
-import { activateAgentReferrals } from "../src/agent-referrals-feature-state";
+import { materializeInitialActiveFeatureForTest as activateAgentReferrals } from "./support/agent-referrals-feature-state";
 import { provisionPartnerOwner, submitPartnerLegalProfile, verifyPartnerLegalProfile, issueFrameworkToPartner, type AdminPrincipal, type PartnerPrincipal } from "../src/agent-referrals-partner-identity";
 import { activatePartner, getPartnerIdentity } from "../src/agent-referrals-onboarding";
 import { mintFrameworkAgreementRevision, mintDelegationTemplateRevision, FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES, DELEGATION_TEMPLATE_REQUIRED_CLAUSES } from "../src/agent-referrals-framework-delegation";
@@ -36,8 +36,8 @@ const clause = (arr: readonly string[]) => Object.fromEntries(arr.map((k) => [k,
 const readyPartner = (db: Database.Database) => {
   activateAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "test" });
   const agentId = randomUUID();
-  db.prepare(`INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
-    VALUES (?, ?, 'Agent', ?, 'PERCENT', 1000)`).run(agentId, `partner-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
+  db.prepare(`INSERT INTO partners(id, slug, display_name, email)
+    VALUES (?, ?, 'Agent', ?)`).run(agentId, `partner-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
   const { partner_identity_id: partnerIdentityId } = provisionPartnerOwner(db, admin, agentId, "p@example.test", "test");
   submitPartnerLegalProfile(db, { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: "n/a" }, "INDIVIDUAL", "NPD", { full_name: "Ivanov Ivan Ivanovich", inn: "123456789012" }, 0);
   verifyPartnerLegalProfile(db, admin, partnerIdentityId, "verified");
@@ -132,22 +132,11 @@ describe("delegation revocation: one transaction, forward-only, preserves the re
     expect(() => revokeDelegationAsAdmin(db, admin, p1.delegationId, "second")).toThrow(/AGENT_REFERRALS_DELEGATION_ALREADY_REVOKED/);
   });
 
-  it("remains permitted under global SUSPENDED (MATURATION_RECOVERY_REPORTING_TAIL), blocked only under DORMANT", () => {
+  it("remains permitted under global SUSPENDED (MATURATION_RECOVERY_REPORTING_TAIL)", () => {
     const db = fresh();
     const p1 = readyPartner(db);
-    suspendAgentReferrals(db, { expected_revision: 2, owner_id: "test-owner", reason: "emergency" });
+    suspendAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "emergency" });
     expect(() => revokeDelegationAsAdmin(db, admin, p1.delegationId, "still allowed under suspension")).not.toThrow();
-  });
-
-  it("blocked under DORMANT (the feature never activated, so there is no prior obligation to continue)", () => {
-    const db = fresh();
-    const p1 = readyPartner(db);
-    // There is no legal runtime path back to DORMANT (agent-referrals-feature-state.ts's
-    // LEGAL_EDGES has no such edge) - direct row manipulation is the only way to reach
-    // it in a test, exactly like agent-referrals-suspension-policy.test.ts's own proof
-    // that DORMANT blocks every operation class, including MATURATION_RECOVERY_REPORTING_TAIL.
-    db.prepare("UPDATE agent_referrals_feature_state SET state = 'DORMANT', owner_id = NULL WHERE singleton = 1").run();
-    expect(() => revokeDelegationAsAdmin(db, admin, p1.delegationId, "x")).toThrow(/AGENT_REFERRALS_FEATURE_DORMANT/);
   });
 
   describe("fault injection", () => {

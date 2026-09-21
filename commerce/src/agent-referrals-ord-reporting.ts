@@ -3,7 +3,7 @@ import { requireObservedVersion } from "./agent-referrals-command-precondition";
 import { canonicalV2, id, sha256 } from "./crypto";
 import { agentReferralsFeatureState } from "./agent-referrals-feature-state";
 import { assertAgentReferralsOperationPermitted } from "./agent-referrals-suspension-policy";
-import { agentReferralsActivationEvidence } from "./agent-referrals-activation";
+import { agentReferralsEvidence } from "./agent-referrals-schema-evidence";
 import { getDistribution, currentDistributionRevision, type DistributionRevisionRow } from "./agent-referrals-distribution";
 import { ordDistributionPeriodReportOperationKey } from "./agent-referrals-ord-operation-key";
 import type { AdminPrincipal } from "./agent-referrals-partner-identity";
@@ -39,7 +39,7 @@ export const ORD_PROVIDER_SPECIAL_PERIOD_CONFIRMED_KEY = "ORD_PROVIDER_SPECIAL_P
 export const resolveOrdReportingBasis = (db: Database.Database, formatKind: CreativeFormatKind, atInstant: string): ReportingBasis => {
   const row = db.prepare(`SELECT reporting_basis FROM ord_reporting_period_policy
     WHERE format_kind = ? AND effective_from <= ? ORDER BY effective_from DESC, policy_revision DESC LIMIT 1`)
-    .get(formatKind, atInstant) as { reporting_basis: ReportingBasis } | undefined;
+.get(formatKind, atInstant) as { reporting_basis: ReportingBasis } | undefined;
   if (!row) throw new OrdReportingError("AGENT_REFERRALS_ORD_REPORTING_POLICY_NOT_FOUND", 500, formatKind);
   return row.reporting_basis;
 };
@@ -79,7 +79,7 @@ const COLUMNS = `id, distribution_id, distribution_revision_id, reporting_basis,
 /** The current (highest-revision) report for an exact (distribution, period) - never rowid or created_at. */
 export const currentOrdDistributionPeriodReport = (db: Database.Database, distributionId: string, reportingPeriodKey: string): OrdDistributionPeriodReportRow | null =>
   (db.prepare(`SELECT ${COLUMNS} FROM ord_distribution_period_reports WHERE distribution_id = ? AND reporting_period_key = ? ORDER BY revision DESC LIMIT 1`)
-    .get(distributionId, reportingPeriodKey) as OrdDistributionPeriodReportRow | undefined) ?? null;
+.get(distributionId, reportingPeriodKey) as OrdDistributionPeriodReportRow | undefined) ?? null;
 
 export const ordDistributionPeriodReportsForDistribution = (db: Database.Database, distributionId: string): OrdDistributionPeriodReportRow[] =>
   db.prepare(`SELECT ${COLUMNS} FROM ord_distribution_period_reports WHERE distribution_id = ? ORDER BY reporting_period_key ASC, revision ASC`).all(distributionId) as OrdDistributionPeriodReportRow[];
@@ -88,7 +88,7 @@ export const ordDistributionPeriodReportsForDistribution = (db: Database.Databas
 const currentZeroRewardClosureForDistribution = (db: Database.Database, distributionId: string): { id: string; service_period_start_at: string; service_period_end_at: string } | null =>
   (db.prepare(`SELECT z.id AS id, z.service_period_start_at AS service_period_start_at, z.service_period_end_at AS service_period_end_at
     FROM engagement_zero_reward_closures z JOIN engagement_distributions d ON d.engagement_id = z.engagement_id WHERE d.id = ?`)
-    .get(distributionId) as { id: string; service_period_start_at: string; service_period_end_at: string } | undefined) ?? null;
+.get(distributionId) as { id: string; service_period_start_at: string; service_period_end_at: string } | undefined) ?? null;
 
 const formatKindForDistributionRevision = (revision: DistributionRevisionRow, db: Database.Database): CreativeFormatKind => {
   if (!revision.creative_revision_id) throw new OrdReportingError("AGENT_REFERRALS_ORD_REPORTING_FORMAT_UNRESOLVED", 409, revision.id);
@@ -258,7 +258,7 @@ const insertReport = (
       // who has actually confirmed VK's real representation - asserts the
       // ordering directly via special_period_is_service_period, never a
       // calendar-shaped string comparison this code cannot safely make.
-      if (agentReferralsActivationEvidence(db, ORD_PROVIDER_SPECIAL_PERIOD_CONFIRMED_KEY) !== true) {
+      if (agentReferralsEvidence(db, ORD_PROVIDER_SPECIAL_PERIOD_CONFIRMED_KEY) !== true) {
         throw new OrdReportingError("AGENT_REFERRALS_ORD_REPORTING_ZERO_REWARD_SPECIAL_PERIOD_UNCONFIRMED", 409, reportingBasis);
       }
       if (input.special_period_is_service_period === undefined) {
@@ -342,7 +342,7 @@ const insertReport = (
   db.prepare(`INSERT INTO ord_distribution_period_reports(id, distribution_id, distribution_revision_id, reporting_basis, reporting_period_key, revision, supersedes_report_id,
       statistics_state, statistics_json, statistics_reason, zero_reward_closure_id, operation_key, evidence_ref, submission_state, vk_operation_external_id, erir_code, submission_evidence_ref, correction_reason, canonical_hash, created_by_admin_id)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(reportId, input.distribution_id, distributionRevision.id, reportingBasis, input.reporting_period_key, nextRevision, current?.id ?? null,
+.run(reportId, input.distribution_id, distributionRevision.id, reportingBasis, input.reporting_period_key, nextRevision, current?.id ?? null,
       input.statistics.statistics_state, statisticsJson, statisticsReason, zeroRewardClosureId, operationKey, input.evidence_ref, submissionState,
       input.submission?.vk_operation_external_id ?? null, input.submission?.erir_code ?? null, input.submission?.submission_evidence_ref ?? null, input.correction_reason ?? null, canonicalHash, admin.admin_id);
   return currentOrdDistributionPeriodReport(db, input.distribution_id, input.reporting_period_key)!;
@@ -384,7 +384,7 @@ export const fileOrdDistributionPeriodReport = (db: Database.Database, admin: Ad
     const formatKind = formatKindForDistributionRevision(distributionRevision, db);
     const reportingBasis = resolveOrdReportingBasis(db, formatKind, distributionRevision.published_at);
     if (reportingBasis === "PROVIDER_SPECIAL_PERIOD" && input.statistics.statistics_state === "ACTUAL") {
-      if (agentReferralsActivationEvidence(db, ORD_PROVIDER_SPECIAL_PERIOD_CONFIRMED_KEY) !== true) {
+      if (agentReferralsEvidence(db, ORD_PROVIDER_SPECIAL_PERIOD_CONFIRMED_KEY) !== true) {
         throw new OrdReportingError("AGENT_REFERRALS_ORD_REPORTING_SPECIAL_PERIOD_UNCONFIRMED", 409, formatKind);
       }
     }

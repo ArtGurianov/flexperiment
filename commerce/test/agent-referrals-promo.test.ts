@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { migrate, openDatabase } from "../src/db";
-import { activateAgentReferrals } from "../src/agent-referrals-feature-state";
+import { materializeInitialActiveFeatureForTest as activateAgentReferrals } from "./support/agent-referrals-feature-state";
 import { provisionPartnerOwner, submitPartnerLegalProfile, verifyPartnerLegalProfile, issueFrameworkToPartner, type AdminPrincipal, type PartnerPrincipal } from "../src/agent-referrals-partner-identity";
 import { activatePartner, getPartnerIdentity } from "../src/agent-referrals-onboarding";
 import { mintFrameworkAgreementRevision, mintDelegationTemplateRevision, FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES, DELEGATION_TEMPLATE_REQUIRED_CLAUSES } from "../src/agent-referrals-framework-delegation";
@@ -37,8 +37,8 @@ const fresh = () => {
 };
 
 const seedAgent = (db: Database.Database, agentId = randomUUID()) => {
-  db.prepare(`INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
-    VALUES (?, ?, 'A', ?, 'PERCENT', 1000)`).run(agentId, `s-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
+  db.prepare(`INSERT INTO partners(id, slug, display_name, email)
+    VALUES (?, ?, 'A', ?)`).run(agentId, `s-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
   return agentId;
 };
 
@@ -49,7 +49,7 @@ const clause = (arr: readonly string[]) => Object.fromEntries(arr.map((k) => [k,
  * city, through the real production onboarding path - the per-occurrence
  * authorization tests below exercise mint/supersede/revoke ONLY through
  * activateEngagement/suspendEngagement/reactivateEngagement, never a raw
- * "mint" primitive (Phase 5 holistic review, P0 finding 3): promo.ts
+ * "mint" primitive: promo.ts
  * exports no function capable of minting a new authorization at any
  * visibility level, since a bare mint primitive is itself unearned
  * publication authority - see that module's own header.
@@ -57,8 +57,8 @@ const clause = (arr: readonly string[]) => Object.fromEntries(arr.map((k) => [k,
 const readyPartner = (db: Database.Database) => {
   activateAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "test" });
   const agentId = randomUUID();
-  db.prepare(`INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
-    VALUES (?, ?, 'Agent', ?, 'PERCENT', 1000)`).run(agentId, `partner-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
+  db.prepare(`INSERT INTO partners(id, slug, display_name, email)
+    VALUES (?, ?, 'Agent', ?)`).run(agentId, `partner-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
   const { partner_identity_id: partnerIdentityId } = provisionPartnerOwner(db, admin, agentId, "p@example.test", "test");
   submitPartnerLegalProfile(db, { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: "n/a" }, "INDIVIDUAL", "NPD", { full_name: "Ivanov Ivan Ivanovich", inn: "123456789012" }, 0);
   verifyPartnerLegalProfile(db, admin, partnerIdentityId, "verified");
@@ -208,7 +208,7 @@ describe("AgentReferralsPromoError export", () => {
   });
 });
 
-describe("structural authority bypass surface (Phase 5 holistic review, P0 finding 3): this module exports no function capable of MINTING a promo authorization", () => {
+describe("structural authority bypass surface: this module exports no function capable of MINTING a promo authorization", () => {
   it("has no mint primitive at any visibility level - only read accessors and the revoke primitive", () => {
     expect(promoModule).not.toHaveProperty("mintEngagementPromoAuthorization");
     expect(promoModule).not.toHaveProperty("mintEngagementPromoAuthorizationInTransaction");

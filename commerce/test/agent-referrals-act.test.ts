@@ -117,7 +117,7 @@ describe("act lifecycle: ACT_PREPARED -> ACT_PRESENTED -> ACT_ACCEPTED | DOCUMEN
     // A second engagement for the same partner produces act2.
     const occ2 = seedOccurrence(db, p1.cityId, 50_000);
     const engagement2 = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occ2, {
-      ...nearTermTerms(1000, "PERCENT", 5000),
+...nearTermTerms(1000, "PERCENT", 5000),
       // This scenario creates a second act; it does not test the expiry path.
       publication_end_at: FAR_FUTURE,
     });
@@ -187,7 +187,7 @@ describe("act generation/presentation/acceptance rechecks the settlement is stil
     const { p1, engagementId, order, settlement } = preparedWithOrder(db, domain);
     void p1;
     db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, succeeded_at) VALUES (?, ?, ?, ?, 20000, 'late', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, 'h', datetime('now'))")
-      .run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID());
+.run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID());
     correctPartnerRewardWithSettlement(db, admin, engagementId, "late refund", currentEffectiveRewardSnapshot(db, engagementId)!.id);
     expect(db.prepare("SELECT status FROM reward_settlements WHERE id = ?").get(settlement.id)).toEqual({ status: "CANCELLED_BEFORE_PAYMENT" });
     expect(() => generateSettlementAct(db, admin, settlement.id)).toThrow(/AGENT_REFERRALS_SETTLEMENT_ACT_SETTLEMENT_NOT_PREPARED/);
@@ -197,7 +197,7 @@ describe("act generation/presentation/acceptance rechecks the settlement is stil
     const { db, domain } = fresh(); track(db);
     const { engagementId, order, settlement } = preparedWithOrder(db, domain);
     db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, succeeded_at) VALUES (?, ?, ?, ?, 20000, 'late', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, 'h', datetime('now'))")
-      .run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID());
+.run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID());
     correctEngagementEffectiveRewardSnapshot(db, admin, engagementId, "direct correction, bypassing settlement orchestration");
     expect(db.prepare("SELECT status FROM reward_settlements WHERE id = ?").get(settlement.id)).toEqual({ status: "PREPARED" }); // untouched by the bypass
     expect(() => generateSettlementAct(db, admin, settlement.id)).toThrow(/AGENT_REFERRALS_SETTLEMENT_ACT_SETTLEMENT_STALE/);
@@ -208,7 +208,7 @@ describe("act generation/presentation/acceptance rechecks the settlement is stil
     const { engagementId, order, settlement } = preparedWithOrder(db, domain);
     const { act } = generateSettlementAct(db, admin, settlement.id);
     db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, succeeded_at) VALUES (?, ?, ?, ?, 20000, 'late', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, 'h', datetime('now'))")
-      .run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID());
+.run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID());
     correctPartnerRewardWithSettlement(db, admin, engagementId, "late refund", currentEffectiveRewardSnapshot(db, engagementId)!.id);
     expect(() => presentSettlementAct(db, admin, act.id)).toThrow(/AGENT_REFERRALS_SETTLEMENT_ACT_SETTLEMENT_NOT_PREPARED/);
   });
@@ -220,7 +220,7 @@ describe("act generation/presentation/acceptance rechecks the settlement is stil
     presentSettlementAct(db, admin, act.id);
     const grant = mintSettlementStepUpGrant(db, p1.partner, "ACT_ACCEPTANCE", { act_id: act.id, amount_kopecks: act.amount_kopecks, engagement_revision_id: act.engagement_revision_id });
     db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, succeeded_at) VALUES (?, ?, ?, ?, 20000, 'late', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, 'h', datetime('now'))")
-      .run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID());
+.run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID());
     correctPartnerRewardWithSettlement(db, admin, engagementId, "late refund", currentEffectiveRewardSnapshot(db, engagementId)!.id);
     expect(() => acceptSettlementAct(db, p1.partner, act.id, grant.grant_id)).toThrow(/AGENT_REFERRALS_SETTLEMENT_ACT_SETTLEMENT_NOT_PREPARED/);
   });
@@ -231,7 +231,7 @@ describe("act generation/presentation/acceptance rechecks the settlement is stil
     const { act } = generateSettlementAct(db, admin, settlement.id);
     presentSettlementAct(db, admin, act.id);
     db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, succeeded_at) VALUES (?, ?, ?, ?, 20000, 'late', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, 'h', datetime('now'))")
-      .run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID());
+.run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID());
     correctPartnerRewardWithSettlement(db, admin, engagementId, "late refund", currentEffectiveRewardSnapshot(db, engagementId)!.id);
     expect(() => disputeSettlementAct(db, p1.partner, act.id, "AMOUNT_INCORRECT")).not.toThrow();
   });

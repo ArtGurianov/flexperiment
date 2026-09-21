@@ -60,9 +60,10 @@ export class AgentReferralsLegalProfileError extends Error {
  * never derived from another (full_name is never built from opf+short_name
  * or vice versa). TEXT throughout, including every identifier (inn/kpp/
  * registration_number): these are never arithmetic values, and a leading
- * zero is significant. Mirrors 0052's own per-legal_form shape/format CHECKs
- * exactly - see that migration for the authoritative matrix this type and
- * normalizeAndValidateLegalProfile below both reproduce.
+ * zero is significant. Mirrors the per-legal_form shape/format CHECKs on
+ * `agent_referrals_legal_profile_revisions` exactly; those CHECKs are the
+ * authoritative matrix, and this type and normalizeAndValidateLegalProfile
+ * below both reproduce it.
  *
  * legal_address deliberately has no INDIVIDUAL/INDIVIDUAL_ENTREPRENEUR
  * counterpart in PR-E: collecting a natural person's address is real PII
@@ -106,7 +107,7 @@ const requireDigits = (value: string, length: number, field: string, legalForm: 
 };
 
 /**
- * The one shared validator every caller that will eventually reach 0052's
+ * The one shared validator every caller that will eventually reach the schema's
  * CHECK constraints must call FIRST, domain-side - not just
  * applyAgentReferralsLegalProfile's own mint path (mirrors
  * resolveProjectedContractorType's own role for the legal_form x tax_mode
@@ -316,7 +317,7 @@ export const allAgentReferralsLegalProfileRevisions = (db: Database.Database, ag
 /** A single revision by its own id, independent of whether it is anyone's current one - resolveActivatedLegalProfileBinding's own reader. */
 export const agentReferralsLegalProfileRevisionById = (db: Database.Database, revisionId: string): AgentReferralsLegalProfileRevision | null =>
   (db.prepare(`SELECT ${REVISION_COLUMNS} FROM agent_referrals_legal_profile_revisions WHERE id = ?`)
-    .get(revisionId) as AgentReferralsLegalProfileRevision | undefined) ?? null;
+.get(revisionId) as AgentReferralsLegalProfileRevision | undefined) ?? null;
 
 /**
  * MAX(revision) is the sole semantic authority; partner_identities.legal_
@@ -412,7 +413,7 @@ export const applyAgentReferralsLegalProfile = (
     const revisionId = id();
     db.prepare(`INSERT INTO agent_referrals_legal_profile_revisions(id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, opf, full_name, short_name, inn, kpp, registration_number, legal_address, supersedes_revision_id, reason, assertion_source, evidence_ref)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(revisionId, input.agent_id, nextRevision, input.legal_form, input.tax_mode, projected,
+.run(revisionId, input.agent_id, nextRevision, input.legal_form, input.tax_mode, projected,
         requisites.opf, requisites.full_name, requisites.short_name, requisites.inn, requisites.kpp, requisites.registration_number, requisites.legal_address,
         current?.id ?? null, input.reason, input.assertion_source, evidenceRef);
 

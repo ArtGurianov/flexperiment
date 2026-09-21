@@ -25,7 +25,7 @@ const INVITE_TTL_MS = 7 * 24 * 60 * 60_000;
 
 /**
  * Admin-only provisioning, gated on the existing PR3 foundation authority:
- * NEW_PARTNER_PROVISIONING is refused under global DORMANT/SUSPENDED. The
+ * NEW_PARTNER_PROVISIONING is refused under global SUSPENDED. The
  * "exactly one OWNER per partner" concurrency property comes structurally
  * from `agents.id` -> `partner_identities.agent_id` UNIQUE: two concurrent
  * provisioning attempts for the same agent serialize on SQLite's write lock,
@@ -49,7 +49,7 @@ export const provisionPartnerOwner = (db: Database.Database, admin: AdminPrincip
     const partnerIdentityId = id();
     try {
       db.prepare(`INSERT INTO partner_identities(id, agent_id, email, email_hash, created_by_admin_id) VALUES (?, ?, ?, ?, ?)`)
-        .run(partnerIdentityId, agentId, email.trim().toLowerCase(), emailHash(email), admin.admin_id);
+.run(partnerIdentityId, agentId, email.trim().toLowerCase(), emailHash(email), admin.admin_id);
     } catch (error) {
       // PR-C idempotency audit: this command carries no durable key, so the
       // ONLY thing a retry after an ambiguous network failure meets is the
@@ -68,7 +68,7 @@ export const provisionPartnerOwner = (db: Database.Database, admin: AdminPrincip
     const inviteId = id();
     db.prepare(`INSERT INTO partner_invite_capabilities(id, partner_identity_id, purpose, verifier_hash, expires_at, created_by_admin_id)
       VALUES (?, ?, 'ONBOARDING', ?, ?, ?)`)
-      .run(inviteId, partnerIdentityId, hashOpaqueToken(rawToken), new Date(Date.now() + INVITE_TTL_MS).toISOString(), admin.admin_id);
+.run(inviteId, partnerIdentityId, hashOpaqueToken(rawToken), new Date(Date.now() + INVITE_TTL_MS).toISOString(), admin.admin_id);
 
     recordPartnerIdentityEvent(db, partnerIdentityId, "PARTNER_PROVISIONED", "ADMIN", { agent_id: agentId, reason });
     recordPartnerIdentityEvent(db, partnerIdentityId, "INVITE_ISSUED", "ADMIN", { invite_id: inviteId });
@@ -80,7 +80,7 @@ export const provisionPartnerOwner = (db: Database.Database, admin: AdminPrincip
 
 /**
  * The HEAD of a partner's invite mint chain - the last capability minted,
- * whether or not it is still usable. 0057's partial unique index makes it at
+ * whether or not it is still usable. the schema's partial unique index makes it at
  * most one.
  *
  * This is what a rotation is pinned against, and the distinction from "the
@@ -99,7 +99,7 @@ export const provisionPartnerOwner = (db: Database.Database, admin: AdminPrincip
 export const inviteCapabilityHeadId = (db: Database.Database, partnerIdentityId: string): string | null =>
   ((db.prepare(`SELECT id FROM partner_invite_capabilities
     WHERE partner_identity_id = ? AND superseded_by_id IS NULL`)
-    .get(partnerIdentityId) as { id: string } | undefined)?.id) ?? null;
+.get(partnerIdentityId) as { id: string } | undefined)?.id) ?? null;
 
 /**
  * PR-C3: rotating a partner's invite capability - the ONE operation, with a
@@ -116,7 +116,7 @@ export const inviteCapabilityHeadId = (db: Database.Database, partnerIdentityId:
  * capability it replaces. Before this, reissue read whatever was live and
  * superseded it, so a retry minted a THIRD capability and destroyed the
  * second - whose raw token nobody held either. At every instant exactly one
- * capability was live, so 0044's partial unique index was satisfied and
+ * capability was live, so the schema's partial unique index was satisfied and
  * nothing looked wrong.
  *
  * Recovery is NOT a second mechanism. The raw token is never persisted, so
@@ -164,13 +164,13 @@ export const rotatePartnerInvite = (
     // the only order the unique index permits.
     db.pragma("defer_foreign_keys = ON");
     // The head is superseded even when it is already consumed or revoked:
-    // that is what keeps the chain single-headed, and 0057's unique index
+    // that is what keeps the chain single-headed, and the schema's unique index
     // refuses the alternative structurally.
     if (current) db.prepare(`UPDATE partner_invite_capabilities SET superseded_by_id = ? WHERE id = ?`).run(inviteId, current);
 
     db.prepare(`INSERT INTO partner_invite_capabilities(id, partner_identity_id, purpose, verifier_hash, expires_at, created_by_admin_id)
       VALUES (?, ?, 'ONBOARDING', ?, ?, ?)`)
-      .run(inviteId, partnerIdentityId, hashOpaqueToken(rawToken), new Date(Date.now() + INVITE_TTL_MS).toISOString(), admin.admin_id);
+.run(inviteId, partnerIdentityId, hashOpaqueToken(rawToken), new Date(Date.now() + INVITE_TTL_MS).toISOString(), admin.admin_id);
 
     // One audit stream, and the reason is what makes a recovery
     // distinguishable from a deliberate reissue. Never the raw token, which
@@ -291,7 +291,7 @@ export const submitPartnerLegalProfile = (
         submitted_opf = ?, submitted_full_name = ?, submitted_short_name = ?, submitted_inn = ?, submitted_kpp = ?, submitted_registration_number = ?, submitted_legal_address = ?,
         legal_profile_draft_revision = legal_profile_draft_revision + 1,
         updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
-      .run(legalForm, taxMode, validated.opf, validated.full_name, validated.short_name, validated.inn, validated.kpp, validated.registration_number, validated.legal_address, partner.partner_identity_id);
+.run(legalForm, taxMode, validated.opf, validated.full_name, validated.short_name, validated.inn, validated.kpp, validated.registration_number, validated.legal_address, partner.partner_identity_id);
     recordPartnerIdentityEvent(db, partner.partner_identity_id, "LEGAL_PROFILE_SUBMITTED", "PARTNER", { legal_form: legalForm, tax_mode: taxMode });
     if (identity.onboarding_state === "INVITED") {
       transitionOnboardingStateInTransaction(db, partner.partner_identity_id, "PROFILE_SUBMITTED", identity.onboarding_revision, "PARTNER", "legal profile submitted");
@@ -394,13 +394,13 @@ export const issueFrameworkToPartner = (
     }
 
     const currentMax = db.prepare(`SELECT MAX(sequence) AS seq FROM framework_issuances WHERE partner_identity_id = ?`)
-      .get(partnerIdentityId) as { seq: number | null };
+.get(partnerIdentityId) as { seq: number | null };
     const nextSequence = (currentMax.seq ?? 0) + 1;
 
     const issuanceId = id();
     db.prepare(`INSERT INTO framework_issuances(id, partner_identity_id, sequence, framework_agreement_revision_id, delegation_template_revision_id, issued_by_admin_id, reason)
       VALUES (?, ?, ?, ?, ?, ?, ?)`)
-      .run(issuanceId, partnerIdentityId, nextSequence, frameworkAgreementRevisionId, delegationTemplateRevisionId, admin.admin_id, reason);
+.run(issuanceId, partnerIdentityId, nextSequence, frameworkAgreementRevisionId, delegationTemplateRevisionId, admin.admin_id, reason);
 
     if (identity.onboarding_state === "PROFILE_VERIFIED") {
       transitionOnboardingStateInTransaction(db, partnerIdentityId, "FRAMEWORK_ISSUED", identity.onboarding_revision, "ADMIN", reason);

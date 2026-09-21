@@ -209,7 +209,7 @@ export const partnerAgreementsProjection = (db: Database.Database, partnerIdenti
   const delegation = effective
     ? (db.prepare(`SELECT d.id AS id, r.created_at AS revoked_at FROM ord_reporting_delegations d
         LEFT JOIN ord_reporting_delegation_revocations r ON r.ord_reporting_delegation_id = d.id WHERE d.framework_acceptance_id = ?`)
-        .get(effective.acceptance.id) as { id: string; revoked_at: string | null } | undefined)
+.get(effective.acceptance.id) as { id: string; revoked_at: string | null } | undefined)
     : undefined;
 
   return {
@@ -265,7 +265,7 @@ type OccurrenceSummary = { id: string; title: string; starts_at: string; fulfill
 
 const occurrenceSummary = (db: Database.Database, occurrenceId: string): OccurrenceSummary =>
   db.prepare(`SELECT o.id, o.title, o.starts_at, o.fulfillment_status, c.title AS city_title FROM occurrences o JOIN cities c ON c.id = o.city_id WHERE o.id = ?`)
-    .get(occurrenceId) as OccurrenceSummary;
+.get(occurrenceId) as OccurrenceSummary;
 
 /** §B-11: "own engagements (active and closed)" - a summary list, never the full detail projection (that is partnerEngagementDetail, one call per engagement). */
 export const partnerEngagementSummaries = (db: Database.Database, partnerIdentityId: string) =>

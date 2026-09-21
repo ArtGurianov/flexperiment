@@ -1,23 +1,24 @@
 import { Hono } from "hono";
 import { ZodError } from "zod";
 import type { Sqlite } from "./db";
-import { assertAdminOrigin, issueAdminSession, parseSession, verifyAdminPassword, verifyReleaseControlToken } from "./auth";
+import { assertAdminOrigin, issueAdminSession, parseSession, verifyAdminPassword } from "./auth";
 import { emailHash, publicId, sha256 } from "./crypto";
+import { admitCertificationCheckout, CERTIFICATION_CLAIM_HEADER, parseCertificationClaim } from "./certification/checkout-admission";
+import { createCertificationServiceRouter } from "./certification/service-router";
 import { CommerceDomain, DomainError } from "./domain";
+import type { CertificationContext } from "./domain/checkout";
 import { availableSeatsSql, seatCommitmentsSql } from "./occurrence-inventory";
 import { type EmailProvider, UnconfiguredEmailProvider, UnisenderGoProvider } from "./email-provider";
 import { TochkaProvider, type PaymentProvider } from "./provider";
 import { clientIpRateLimitKey, rateLimit, trustedClientIp } from "./rate-limit";
 import { TochkaWebhookVerifier, webhookAmountKopecks } from "./tochka-webhook";
 import { verifyUnisenderWebhook } from "./unisender-webhook";
+import { normalizeUnisenderReconciliationEvent } from "./email-provider-reconciliation";
 import { type SmartCaptchaVerifier, UnconfiguredSmartCaptchaVerifier } from "./smartcaptcha";
-import { adminReauthSchema, agentPatchSchema, agentSchema, checkoutContextSchema, checkoutRequestSchema, cityCreateSchema, cityInterestSchema, cityInterestWithdrawalSchema, cityPatchSchema, compensationRefundSchema, customerCancellationSchema, customerRefundRequestSchema, customerRefundTokenSchema, emailAttentionAcknowledgeSchema, emergencySalesCommandSchema, occurrenceCancelSchema, occurrenceCompleteSchema, occurrenceCreateSchema, occurrenceNotificationSchema, occurrencePatchSchema, outboxDispatchFenceSchema, postActivationEmailProviderDefectSchema, preActivationDefectSchema, promoPatchSchema, promoSchema, providerReferenceSchema, reservationAbandonSchema, settlementCancelSchema, settlementDocumentSchema, settlementPaymentMadeSchema, settlementPrepareSchema, settlementRecoverySchema } from "./types";
+import { adminReauthSchema, agentPatchSchema, agentSchema, checkoutContextSchema, checkoutRequestSchema, cityCreateSchema, cityInterestSchema, cityInterestWithdrawalSchema, cityPatchSchema, compensationRefundSchema, customerCancellationSchema, customerRefundRequestSchema, customerRefundTokenSchema, emailAttentionAcknowledgeSchema, emergencySalesCommandSchema, occurrenceCancelSchema, occurrenceCompleteSchema, occurrenceCreateSchema, occurrenceNotificationSchema, occurrencePatchSchema, promoPatchSchema, promoSchema, providerReferenceSchema, reservationAbandonSchema, settlementCancelSchema, settlementDocumentSchema, settlementPaymentMadeSchema, settlementPrepareSchema, settlementRecoverySchema } from "./types";
 import { createAgentReferralsPartnerRouter } from "./agent-referrals-api-partner";
 import { createAgentReferralsAdminRouter } from "./agent-referrals-api-admin";
 import { UnconfiguredOtpSender, type OtpSender } from "./agent-referrals-otp";
-import { agentReferralsActivationReconciliationEvidence } from "./agent-referrals-activation-reconciliation";
-import { agentReferralsDormantReady, agentReferralsDormantReadinessEvidence } from "./agent-referrals-dormant-readiness";
-import { agentReferralsActivationSchema, agentReferralsStrandedRollingSupersedeSchema, completeRollingSchema, releaseControlSchema } from "./release-control-schema";
 
 type AppBindings = { Variables: { adminId?: string; adminSessionId?: string } };
 const noStore = (headers: Headers) => headers.set("Cache-Control", "no-store");
@@ -180,7 +181,7 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
     rateLimit(clientIpRateLimitKey("referral", c.req.raw.headers), 60, 60_000);
     const input = await jsonBody(c.req.raw) as { slug?: string };
     const slug = input.slug?.trim() ?? ""; rateLimit(`referral-slug:${slug}`, 20, 60_000);
-    const agent = sqlite.prepare("SELECT slug, display_name FROM agents WHERE slug = ? AND enabled = 1").get(slug);
+    const agent = sqlite.prepare("SELECT slug, display_name FROM partners WHERE slug = ? AND enabled = 1").get(slug);
     return c.json({ eligible: Boolean(agent), agent: agent ?? null });
   });
   publicApi.post("/checkout-context", async (c) => {
@@ -196,14 +197,25 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
     const keyHash = sha256(idempotencyKey);
     const existing = sqlite.prepare("SELECT 1 FROM checkout_idempotency WHERE idempotency_key_hash = ?").get(keyHash);
     const raw = await jsonBody(c.req.raw);
-    // Keep the durable pause ahead of request-schema validation, while allowing
-    // only the server-verified lease scope to reach the normal checkout path.
-    const quoteId = raw && typeof raw === "object" && !Array.isArray(raw) && typeof (raw as { quote_id?: unknown }).quote_id === "string"
-      ? (raw as { quote_id: string }).quote_id : undefined;
-    const leaseScope = quoteId ? sqlite.prepare("SELECT occurrence_id, promo_id FROM quotes WHERE id = ?").get(quoteId) as { occurrence_id: string; promo_id: string | null } | undefined : undefined;
-    if (!existing) domain.assertNewOrdersOpen(leaseScope ? { occurrence_id: leaseScope.occurrence_id, promo_id: leaseScope.promo_id, idempotency_key_hash: keyHash } : undefined);
-    if (existing) return c.json(domain.replayCheckout(raw, idempotencyKey), 200);
+    // The claim rides in a header, never the query string: a query parameter
+    // lands in access logs, proxy logs and browser history, and this one opens
+    // a fence. It is read before the ordinary gate check, because the whole
+    // point of a certification is to pass a gate the release itself closed.
+    const claim = parseCertificationClaim(c.req.header(CERTIFICATION_CLAIM_HEADER));
+    // Keep the operator-owned emergency stop ahead of request-schema validation.
+    if (!existing && !claim) domain.assertNewOrdersOpen();
+    if (existing && !claim) return c.json(domain.replayCheckout(raw, idempotencyKey), 200);
     const input = checkoutRequestSchema.parse(raw);
+    if (claim) {
+      const origin = process.env.COMMERCE_PUBLIC_ORIGIN ?? "https://flexperiment.ru";
+      const admitted = admitCertificationCheckout(sqlite, claim, input.quote_id, idempotencyKey, new Date(), (certification: CertificationContext) =>
+        domain.checkout(input, idempotencyKey, { ip: trustedClientIp(c.req.raw.headers), userAgent: c.req.header("User-Agent") ?? undefined }, certification));
+      // A replayed certification returns the checkout its key already made,
+      // having spent nothing a second time. The payment creation that follows a
+      // fresh admission is idempotent at the provider by its own key.
+      if (admitted.kind === "REPLAY") return c.json(domain.checkoutStatus(admitted.statusId), 200);
+      return c.json(await domain.settleCheckoutPayment(String(admitted.result.status_id), origin), 201);
+    }
     rateLimit(clientIpRateLimitKey("checkout-new", c.req.raw.headers), 3, 10 * 60_000);
     const quoteForLimit = sqlite.prepare("SELECT occurrence_id FROM quotes WHERE id = ?").get(input.quote_id) as { occurrence_id: string } | undefined;
     rateLimit(`checkout-email:${emailHash(input.customer_email)}:${quoteForLimit?.occurrence_id ?? input.quote_id}`, 2, 30 * 60_000);
@@ -276,13 +288,10 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
         if (eventRecord.event_name !== "transactional_email_status" || !eventRecord.event_data || typeof eventRecord.event_data !== "object") continue;
         const data = eventRecord.event_data as Record<string, unknown>;
         const metadata = data.metadata as Record<string, unknown> | undefined;
-        const outboxId = typeof metadata?.outbox_id === "string" ? metadata.outbox_id : undefined;
-        const providerStatus = typeof data.status === "string" ? data.status : undefined;
-        const status = providerStatus === "accepted" ? "ACCEPTED" : providerStatus === "sent" ? "SENT" : providerStatus === "delivered" ? "DELIVERED" : ["soft_bounced", "hard_bounced", "spam"].includes(providerStatus ?? "") ? "BOUNCED" : undefined;
-        if (!outboxId || !status || !providerStatus || !["accepted", "sent", "delivered", "soft_bounced", "hard_bounced", "spam"].includes(providerStatus)) continue;
-        const jobId = typeof data.job_id === "string" ? data.job_id : undefined;
         const semanticKey = `unisender:${sha256(canonicalWebhookPayload(data))}`;
-        try { domain.applyUnisenderDelivery({ outboxId, status, providerStatus: providerStatus as "accepted" | "sent" | "delivered" | "soft_bounced" | "hard_bounced" | "spam", jobId, semanticKey }); handled += 1; } catch (error) { if (!(error instanceof DomainError) || error.code !== "UNISENDER_OUTBOX_NOT_FOUND") throw error; }
+        const observation = normalizeUnisenderReconciliationEvent({ outboxId: metadata?.outbox_id, providerStatus: data.status, jobId: data.job_id, semanticKey });
+        if (!observation) continue;
+        try { domain.applyUnisenderDelivery(observation); handled += 1; } catch (error) { if (!(error instanceof DomainError) || error.code !== "UNISENDER_OUTBOX_NOT_FOUND") throw error; }
       }
     }
     return c.json({ accepted: true, handled }, 200);
@@ -313,7 +322,6 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
       migration_evidence: migration ? "machine" : "unavailable",
       migration_versions: sqlite.prepare("SELECT version FROM schema_migrations ORDER BY version").all(),
       active_legal_release: domain.legalConfig(),
-      release_control: domain.releaseControlStatus(),
     });
   });
   admin.post("/logout", (c) => {
@@ -350,7 +358,6 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
       email_attention: { count: domain.emailAttentionCount() },
       operational_incidents: { count: domain.operationalIncidentCount() },
       provider_drift: sqlite.prepare("SELECT COUNT(*) AS count FROM provider_drift_reviews WHERE status = 'OPEN'").get(),
-      stale_prepared_settlements: sqlite.prepare("SELECT COUNT(*) AS count FROM settlement_prepared_reviews WHERE status = 'OPEN'").get(),
     },
     sales_control: domain.salesControl(),
     upcoming: sqlite.prepare(`SELECT o.id, o.title, o.starts_at, o.capacity, o.admin_reserved_seats, o.sales_status, o.visibility, c.title AS city_title,
@@ -508,7 +515,6 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
     const agent = domain.patchAgentCommand(c.req.param("id"), payload, key, c.var.adminId!, typeof audit_context === "string" ? audit_context : undefined);
     return c.json(agent);
   });
-  admin.get("/agents/:id/balances", (c) => { const occurrenceId = c.req.query("occurrence_id"); if (!occurrenceId) throw new DomainError("OCCURRENCE_ID_REQUIRED", 400); return c.json(domain.rewardBalance(c.req.param("id"), occurrenceId)); });
   admin.get("/promo-codes", (c) => c.json({ promo_codes: domain.promoList() }));
   admin.post("/promo-codes", async (c) => {
     const key = c.req.header("Idempotency-Key"); if (!key) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", 400);
@@ -523,13 +529,6 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
     const promo = domain.patchPromoCommand(c.req.param("id"), payload, key, c.var.adminId!, typeof audit_context === "string" ? audit_context : undefined);
     return c.json(promo);
   });
-  admin.post("/reward-settlements", async (c) => { const key = c.req.header("Idempotency-Key"); if (!key) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", 400); const payload = settlementPrepareSchema.parse(await jsonBody(c.req.raw)); const settlement = domain.prepareSettlement(payload, key, c.var.adminId!); audit(c.var.adminId!, "SETTLEMENT_PREPARED", "reward_settlement", String(settlement.id), payload); return c.json(settlement, 201); });
-  admin.get("/reward-settlements", (c) => c.json({ settlements: domain.settlementList({ stalePrepared: c.req.query("stale_prepared") === "1" ? true : undefined }) }));
-  admin.get("/reward-settlements/:id", (c) => c.json(domain.settlementDetail(c.req.param("id"))));
-  admin.post("/reward-settlements/:id/payment-made", async (c) => { const key = c.req.header("Idempotency-Key"); if (!key) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", 400); const payload = settlementPaymentMadeSchema.parse(await jsonBody(c.req.raw)); const settlement = domain.markSettlementPaymentMade(c.req.param("id"), payload.confirmation_text, key, payload.reason); audit(c.var.adminId!, "SETTLEMENT_PAYMENT_MADE", "reward_settlement", c.req.param("id"), { reason: payload.reason }); return c.json(settlement); });
-  admin.post("/reward-settlements/:id/documents-complete", async (c) => { const key = c.req.header("Idempotency-Key"); if (!key) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", 400); const payload = settlementDocumentSchema.parse(await jsonBody(c.req.raw)); const settlement = domain.completeSettlementDocuments(c.req.param("id"), payload, key); audit(c.var.adminId!, "SETTLEMENT_DOCUMENTS_COMPLETE", "reward_settlement", c.req.param("id"), {}); return c.json(settlement); });
-  admin.post("/reward-settlements/:id/cancel-before-payment", async (c) => { const key = c.req.header("Idempotency-Key"); if (!key) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", 400); const payload = settlementCancelSchema.parse(await jsonBody(c.req.raw)); const settlement = domain.cancelSettlementBeforePayment(c.req.param("id"), payload, key); audit(c.var.adminId!, "SETTLEMENT_CANCELLED_BEFORE_PAYMENT", "reward_settlement", c.req.param("id"), { reason: payload.reason }); return c.json(settlement); });
-  admin.post("/reward-settlements/:id/recoveries", async (c) => { const key = c.req.header("Idempotency-Key"); if (!key) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", 400); const payload = settlementRecoverySchema.parse(await jsonBody(c.req.raw)); const recovery = domain.addSettlementRecovery(c.req.param("id"), payload, key); audit(c.var.adminId!, "SETTLEMENT_RECOVERY_RECORDED", "reward_settlement", c.req.param("id"), { amount_kopecks: payload.amount_recovered_kopecks, reason: payload.reason }); return c.json(recovery, 201); });
   admin.get("/provider-drift-reviews", (c) => c.json({ reviews: sqlite.prepare(`SELECT review.*, drift_refund.id AS refund_id, drift_refund.source AS refund_source,
     payment.id AS payment_id, payment.status AS payment_status, order_row.id AS order_id, order_row.public_order_number
     FROM provider_drift_reviews review
@@ -556,135 +555,18 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
     })();
     c.header("Set-Cookie", adminSessionCookie(cookieValue, 43_200)); return c.json({ ok: true });
   });
-  const releaseControl = new Hono();
-  releaseControl.use("*", async (c, next) => {
-    if (!verifyReleaseControlToken(c.req.header("Authorization"))) throw new DomainError("RELEASE_CONTROL_AUTH_REQUIRED", 401);
-    noStore(c.res.headers);
-    await next();
-    noStore(c.res.headers);
-  });
-  releaseControl.get("/status", (c) => c.json({ ...domain.releaseControlStatus(), emergency_sales_paused: domain.emergencySalesPaused(), outbox_authority: domain.outboxAuthority(), runtime: domain.releaseRuntimeEvidence() }));
-  releaseControl.get("/provider-readiness", async (c) => c.json(await domain.providerReadiness()));
-  releaseControl.get("/outbox-authority", (c) => c.json(domain.outboxAuthority()));
-  releaseControl.post("/outbox-dispatch/fence", async (c) => {
-    const input = outboxDispatchFenceSchema.parse(await jsonBody(c.req.raw));
-    return c.json(domain.fenceEmailDispatch(input, { release_id: input.release_id, generation: input.generation ?? null }));
-  });
-  releaseControl.post("/outbox-authority/activate", async (c) => {
-    const input = outboxDispatchFenceSchema.parse(await jsonBody(c.req.raw));
-    return c.json(domain.activateAttemptAuthority(input, { release_id: input.release_id, generation: input.generation ?? null }));
-  });
-  releaseControl.post("/outbox-dispatch/unfence", async (c) => {
-    const input = outboxDispatchFenceSchema.parse(await jsonBody(c.req.raw));
-    return c.json(domain.unfenceEmailDispatch(input, { release_id: input.release_id, generation: input.generation ?? null }));
-  });
-  releaseControl.get("/completion/:releaseId", (c) => c.json(domain.releaseControlCompletion(c.req.param("releaseId"))));
-  // Separate from completion so existing consumers retain their exact
-  // successful-completion contract while recovery controllers can prove the
-  // durable, non-success terminal resolution of the stranded Q2 owner.
-  releaseControl.get("/resolution/:releaseId", (c) => c.json(domain.releaseControlResolution(c.req.param("releaseId"))));
-  releaseControl.post("/candidates/acquire", async (c) => c.json(domain.acquirePromoCandidate(await jsonBody(c.req.raw) as { head: import("./release-generation").GenerationHead })));
-  releaseControl.post("/candidates/adopt", async (c) => c.json(domain.adoptPromoCandidate(await jsonBody(c.req.raw) as import("./release-control").CandidateAdoptRequest)));
-  releaseControl.post("/candidates/phase", async (c) => c.json(domain.changePromoCandidatePhase(await jsonBody(c.req.raw) as import("./release-control").CandidatePhaseRequest)));
-  releaseControl.post("/candidates/runtime-readiness-defect", async (c) => c.json(domain.markPromoCandidateRuntimeReadinessDefect(await jsonBody(c.req.raw) as import("./release-control").RuntimeReadinessDefectRequest)));
-  releaseControl.get("/candidates/head/:releaseId", (c) => c.json(domain.releaseCandidateHead(c.req.param("releaseId"))));
-  releaseControl.get("/certification-dispatch/:releaseId", (c) => c.json(domain.certificationDispatchEvidence(c.req.param("releaseId"))));
-  releaseControl.get("/post-activation-email-provider-defect/:releaseId", (c) => c.json(domain.postActivationEmailProviderDefectEvidence(c.req.param("releaseId"))));
-  releaseControl.post("/candidates/post-activation-email-provider-defect", async (c) =>
-    c.json(domain.markPostActivationEmailProviderDefect(postActivationEmailProviderDefectSchema.parse(await jsonBody(c.req.raw)))));
-  releaseControl.post("/candidates/pre-activation-defect", async (c) => {
-    const input = preActivationDefectSchema.parse(await jsonBody(c.req.raw));
-    return c.json(domain.markPreActivationDefect({ ...input, defect_code: input.defect_code ?? "" }));
-  });
-  releaseControl.post("/candidates/certification/activate", async (c) => c.json(domain.activatePromoCertificationLease(await jsonBody(c.req.raw) as import("./release-control").CertificationLeaseRequest)));
-  releaseControl.post("/candidates/certification/certify", async (c) => c.json(domain.certifyPromoCandidate(await jsonBody(c.req.raw) as import("./release-control").CertificationEvidenceRequest)));
-  releaseControl.post("/candidates/certification/retry", async (c) => c.json(domain.retryPromoCertification(await jsonBody(c.req.raw) as import("./release-control").CertificationRetryRequest)));
-  releaseControl.post("/candidates/abort", async (c) => c.json(domain.abortPromoCandidate(await jsonBody(c.req.raw) as import("./release-control").CandidateAbortRequest)));
-  releaseControl.post("/candidates/complete", async (c) => c.json(domain.completePromoCandidate(await jsonBody(c.req.raw) as import("./release-control").CandidateCompleteRequest)));
-  releaseControl.post("/acquire", async (c) => c.json(domain.acquireReleaseControl(releaseControlSchema.parse(await jsonBody(c.req.raw)))));
-  releaseControl.post("/pause", async (c) => c.json(domain.pauseNewOrders(releaseControlSchema.parse(await jsonBody(c.req.raw)))));
-  releaseControl.post("/expectations", async (c) => c.json(domain.updateReleaseControlExpectations(releaseControlSchema.parse(await jsonBody(c.req.raw)))));
-  releaseControl.post("/legal-publish", async (c) => c.json(domain.publishCandidateLegalRelease(releaseControlSchema.parse(await jsonBody(c.req.raw)))));
-  releaseControl.post("/verify", async (c) => {
-    const input = releaseControlSchema.parse(await jsonBody(c.req.raw));
-    return c.json({ release_id: input.release_id, status: domain.releaseControlStatus(), runtime: domain.releaseRuntimeEvidence() });
-  });
-  releaseControl.get("/contract", (c) => c.json({
-    participant_age_bands: ["ADULT", "MINOR_14_17", "MINOR_UNDER_14"],
-    deprecated_date_of_birth_rejected: !checkoutRequestSchema.safeParse({
-      quote_id: "00000000-0000-4000-8000-000000000000", customer_email: "buyer@example.test",
-      customer_adult_confirmed: true, participant_age_band: "ADULT", participant: { date_of_birth: "1990-01-01" }, offer_accepted: true, pd_consent_accepted: true,
-    }).success,
-    deprecated_name_rejected: !checkoutRequestSchema.safeParse({
-      quote_id: "00000000-0000-4000-8000-000000000000", customer_name: "Покупатель", customer_email: "buyer@example.test",
-      customer_adult_confirmed: true, participant_age_band: "ADULT", offer_accepted: true, pd_consent_accepted: true,
-    }).success,
-  }));
-  releaseControl.post("/reopen", async (c) => c.json(domain.reopenNewOrders(releaseControlSchema.parse(await jsonBody(c.req.raw)))));
-  releaseControl.post("/complete-rolling", async (c) => {
-    const input = completeRollingSchema.parse(await jsonBody(c.req.raw));
-    // Agent Referrals (PR3-PR9) is the only ROLLING candidate that exists,
-    // so its own dormant-readiness evidence is the real readiness reader
-    // this predicate was always meant to become. Round-9 P1.2 fix: the
-    // reader now receives the request's own pinned `expected` object, so
-    // completion refuses on ANY mismatch between what actually deployed and
-    // what was pinned at acquire time - runtime/worker source, exact
-    // migration inventory, legal expectations, and surface-contract
-    // versions - never merely on runtime-vs-worker self-consistency while
-    // both silently disagree with the pinned target. This is the fail-
-    // closed authority itself, not merely a reflection of whatever a
-    // calling workflow separately checked beforehand - any caller of this
-    // route gets the same refusal a partially-checked workflow would. A
-    // future second ROLLING feature would need this predicate to become
-    // release_id-aware; nothing here forecloses that, it simply is not
-    // needed while Agent Referrals is the only caller.
-    return c.json(domain.completeRolling(input, () => agentReferralsDormantReady(sqlite, domain.releaseRuntimeEvidence(), input.expected)));
-  });
-  releaseControl.post("/agent-referrals/stranded-rolling-supersede", async (c) => {
-    const input = agentReferralsStrandedRollingSupersedeSchema.parse(await jsonBody(c.req.raw));
-    return c.json(domain.supersedeAgentReferralsStrandedRolling(input, () =>
-      agentReferralsDormantReady(sqlite, domain.releaseRuntimeEvidence(), input.replacement_expected)));
-  });
-  // Phase 10B production-controller precondition, bearer-token gated like
-  // every other /v1/internal/release-control/* route - never the admin-
-  // session-gated surface, so a CI controller can read it without a browser
-  // session. Read-only: this route mutates nothing. Exposes the exact same
-  // evidence /complete-rolling's own predicate is fail-closed against, so a
-  // controller's own preflight/postflight checks can never disagree with
-  // what completion itself will actually enforce. POST, not GET (round-9
-  // fix): the full frozen predicate needs the exact pinned `expected`
-  // object to check against, so this accepts the same
-  // completeRollingSchema-shaped body /complete-rolling itself takes -
-  // never a second, looser evidence shape.
-  releaseControl.post("/agent-referrals/dormant-readiness", async (c) => {
-    const input = completeRollingSchema.parse(await jsonBody(c.req.raw));
-    return c.json(agentReferralsDormantReadinessEvidence(sqlite, domain.releaseRuntimeEvidence(), input.expected));
-  });
-  // Q5's only addition: a bearer-gated, parameterless, read-only snapshot of
-  // the exact durable evidence Q4's activation command seals.  It is solely
-  // for post-request reconciliation; it is not an activation authority.
-  releaseControl.get("/agent-referrals/activation-state", (c) => c.json(agentReferralsActivationReconciliationEvidence(sqlite)));
-  // Q4's only DORMANT -> ACTIVE surface.  It is deliberately internal and
-  // bearer-gated by the shared release-control middleware above: no browser
-  // or admin-session route can invoke the combined readiness/CAS authority.
-  releaseControl.post("/agent-referrals/activate", async (c) =>
-    c.json(domain.activateAgentReferralsIfReady(agentReferralsActivationSchema.parse(await jsonBody(c.req.raw)))));
-  const releaseControlHead = new Hono();
-  releaseControlHead.use("*", async (c, next) => {
-    if (!verifyReleaseControlToken(c.req.header("Authorization"))) throw new DomainError("RELEASE_CONTROL_AUTH_REQUIRED", 401);
-    noStore(c.res.headers);
-    await next();
-    noStore(c.res.headers);
-  });
-  releaseControlHead.get("/candidates/head", (c) => c.json(domain.promoCandidateHead()));
-  app.route("/v1/internal/release-control", releaseControl);
-  app.route("/v1/admin/release-control", releaseControlHead);
   // Mounted on `admin` (not `app`) so it inherits admin's own
   // fx_admin_session + admin-origin + rate-limit middleware exactly like
   // every other /v1/admin/* route - see agent-referrals-api-admin.ts's own
   // header. A logically separate surface from /v1/partner/* below, never a
   // shared handler with conditional field projection.
   admin.route("/agent-referrals", createAgentReferralsAdminRouter(sqlite));
+  // The certification service surface: its own machine credential, every route
+  // scoped to a run, and no part of the admin session middleware. See
+  // certification/service-router.ts for why it is mounted beside /v1/admin
+  // rather than inside it.
+  app.route("/v1/certification", createCertificationServiceRouter(sqlite, domain));
+
   app.route("/v1/admin", admin);
   // A structurally separate API surface from /v1/admin/* - its own origin
   // check (partner.flexperiment.ru, never admin.flexperiment.ru) and its

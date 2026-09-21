@@ -13,7 +13,7 @@
  * rather than deciding it locally.
  */
 
-export type AgentReferralsFeatureStateName = "DORMANT" | "ACTIVE" | "SUSPENDED";
+export type AgentReferralsFeatureStateName = "ACTIVE" | "SUSPENDED";
 
 export type AgentReferralsOperationClass =
   // NEW_AUTHORITY - blocked by SUSPENDED.
@@ -86,8 +86,7 @@ export const AGENT_REFERRALS_OPERATION_POLICY: Readonly<Record<AgentReferralsOpe
   // creative with the ORD provider is still minting authority that does not
   // yet exist as a filed fact - the same class as authorizeCreative itself.
   // SUSPENDED must not let an in-progress registration silently complete
-  // into a locked, ERID-bearing fact (plan Phase 8 / §B-4: "the first real
-  // VK/ERIR business fact stays prohibited before global ACTIVE").
+  // into a locked, ERID-bearing fact .
   ORD_CREATIVE_REGISTRATION: "NEW_AUTHORITY",
   INITIAL_LEGAL_PROFILE_VERIFICATION: "NEW_AUTHORITY",
   LEGAL_PROFILE_CHANGE_VERIFICATION: "NEW_AUTHORITY",
@@ -134,16 +133,14 @@ export class AgentReferralsSuspensionPolicyError extends Error {
 }
 
 /**
- * DORMANT permits nothing - the feature has not activated, so no production
- * Agent Referrals authority of any class exists yet. ACTIVE permits every
- * class. SUSPENDED permits only MATURATION_RECOVERY_REPORTING_TAIL classes.
+ * ACTIVE permits every class. SUSPENDED permits only
+ * MATURATION_RECOVERY_REPORTING_TAIL classes. There is no third state.
  */
 export const isAgentReferralsOperationPermitted = (
   state: AgentReferralsFeatureStateName,
   operationClass: AgentReferralsOperationClass,
 ): boolean => {
-  if (state === "DORMANT") return false;
-  if (state === "ACTIVE") return true;
+  if (state !== "SUSPENDED") return true;
   return AGENT_REFERRALS_OPERATION_POLICY[operationClass] === "MATURATION_RECOVERY_REPORTING_TAIL";
 };
 
@@ -152,6 +149,5 @@ export const assertAgentReferralsOperationPermitted = (
   operationClass: AgentReferralsOperationClass,
 ): void => {
   if (isAgentReferralsOperationPermitted(state, operationClass)) return;
-  const code = state === "DORMANT" ? "AGENT_REFERRALS_FEATURE_DORMANT" : "AGENT_REFERRALS_SUSPENDED_BLOCKS_NEW_AUTHORITY";
-  throw new AgentReferralsSuspensionPolicyError(code, 409, operationClass);
+  throw new AgentReferralsSuspensionPolicyError("AGENT_REFERRALS_SUSPENDED_BLOCKS_NEW_AUTHORITY", 409, operationClass);
 };

@@ -6,36 +6,30 @@ import { id } from "./crypto";
 /**
  * Outbox authority control.
  *
- * Two capabilities, and deliberately not a third:
+ * One operational capability: fence or unfence email dispatch.
  *
- *   fence / unfence email dispatch   here
- *   observe the control state        here
- *   LEGACY -> ATTEMPT activation     ./outbox-activation.ts
- *
- * The separation is not tidiness. 0040 shipped to production alone, with the
- * activation transition deliberately absent and `attempt_authority` structurally
- * pinned to LEGACY, so that the fence could be proven against the worker already
- * running there before any authority could move. Activation arrived only with
- * the attempt table and the attempt-aware writers that can receive it, and it
- * stays out of this module so that reviewing the fence never means reviewing the
- * flip.
+ * Attempt records are the sole dispatch authority; the selector that used to
+ * choose between two is gone, and so is the second authority.
  */
 
 export type OutboxAuthorityState = {
-  attempt_authority: "LEGACY" | "ATTEMPT";
   email_dispatch_paused: boolean;
-  dispatch_owner_release_id: string | null;
-  dispatch_owner_generation: number | null;
+  dispatch_owner_session_id: string | null;
   revision: number;
 };
 
 /**
- * The epoch that holds the fence. Without it the durable authority belongs to
+ * The owner that holds the fence. Without it the durable authority belongs to
  * whoever holds the release-control credential rather than to the cutover that
  * acquired it, and CAS does not help: a second controller can read the current
  * revision and unfence in the middle of the first one's migration.
  */
-export type DispatchEpoch = { release_id: string; generation: number | null };
+/**
+ * Who holds the fence. It used to be a release id and a generation, from the
+ * release-generation model this release dismantles; the fence belongs to
+ * release control, so its owner is now the deploy session itself.
+ */
+export type DispatchOwner = { session_id: string };
 
 /**
  * Sub-second precision, deliberately not the column's CURRENT_TIMESTAMP default.
@@ -62,24 +56,21 @@ export class OutboxAuthorityError extends Error {
 
 /** Fail closed: a missing control row means dispatch is fenced, never open. */
 export const outboxAuthority = (db: Database.Database): OutboxAuthorityState => {
-  const row = db.prepare(`SELECT attempt_authority, email_dispatch_paused, dispatch_owner_release_id,
-    dispatch_owner_generation, revision FROM outbox_authority WHERE singleton = 1`).get() as Record<string, unknown> | undefined;
+  const row = db.prepare(`SELECT email_dispatch_paused, dispatch_owner_session_id,
+    revision FROM outbox_authority WHERE singleton = 1`).get() as Record<string, unknown> | undefined;
   // Fail closed, and identically to the database trigger, which COALESCEs a
   // missing row to fenced for exactly the same reason.
-  if (!row) return { attempt_authority: "LEGACY", email_dispatch_paused: true, dispatch_owner_release_id: null, dispatch_owner_generation: null, revision: 0 };
+  if (!row) return { email_dispatch_paused: true, dispatch_owner_session_id: null, revision: 0 };
   return {
-    attempt_authority: row.attempt_authority === "ATTEMPT" ? "ATTEMPT" : "LEGACY",
     email_dispatch_paused: Number(row.email_dispatch_paused ?? 1) === 1,
-    dispatch_owner_release_id: row.dispatch_owner_release_id === null || row.dispatch_owner_release_id === undefined ? null : String(row.dispatch_owner_release_id),
-    dispatch_owner_generation: row.dispatch_owner_generation === null || row.dispatch_owner_generation === undefined ? null : Number(row.dispatch_owner_generation),
+    dispatch_owner_session_id: row.dispatch_owner_session_id === null || row.dispatch_owner_session_id === undefined ? null : String(row.dispatch_owner_session_id),
     revision: Number(row.revision ?? 0),
   };
 };
 
 export type AuthorityEvent = {
   action: string;
-  owner_release_id: string;
-  owner_generation: number | null;
+  owner_session_id: string;
   reason: string;
   revision: number;
   created_at: string;
@@ -93,55 +84,54 @@ export type AuthorityEvent = {
  * is supposed to be verifying from outside.
  */
 export const lastAuthorityEvent = (db: Database.Database): AuthorityEvent | null =>
-  (db.prepare(`SELECT action, owner_release_id, owner_generation, reason, revision, created_at
+  (db.prepare(`SELECT action, owner_session_id, reason, revision, created_at
     FROM outbox_authority_events ORDER BY revision DESC, created_at DESC LIMIT 1`).get() as AuthorityEvent | undefined) ?? null;
 
 export const emailDispatchFenced = (db: Database.Database): boolean => outboxAuthority(db).email_dispatch_paused;
 
-const sameEpoch = (state: OutboxAuthorityState, epoch: DispatchEpoch) =>
-  state.dispatch_owner_release_id === epoch.release_id
-  && (state.dispatch_owner_generation ?? null) === (epoch.generation ?? null);
+const sameOwner = (state: OutboxAuthorityState, owner: DispatchOwner) =>
+  state.dispatch_owner_session_id === owner.session_id;
 
 const setDispatchFence = (
   db: Database.Database,
   paused: boolean,
   input: { expected_revision: number; reason: string },
-  epoch: DispatchEpoch,
+  owner: DispatchOwner,
 ): OutboxAuthorityState => {
   const current = outboxAuthority(db);
 
-  // A fence held by another epoch is never touched, in either direction. This
+  // A fence held by another owner is never touched, in either direction. This
   // is the case CAS cannot cover: a second controller reading the current
   // revision would otherwise be able to unfence in the middle of the first
   // one's migration.
-  if (current.email_dispatch_paused && !sameEpoch(current, epoch)) {
+  if (current.email_dispatch_paused && !sameOwner(current, owner)) {
     throw new OutboxAuthorityError("OUTBOX_DISPATCH_OWNER_CONFLICT", 409);
   }
 
-  // Idempotent replay: the same epoch asking for the state it already holds is
+  // Idempotent replay: the same owner asking for the state it already holds is
   // reconciliation, not a conflict, and must not consume a revision.
-  if (current.email_dispatch_paused === paused && (!paused || sameEpoch(current, epoch))) return current;
+  if (current.email_dispatch_paused === paused && (!paused || sameOwner(current, owner))) return current;
 
   const changed = db.prepare(`UPDATE outbox_authority
     SET email_dispatch_paused = ?,
-        dispatch_owner_release_id = ?, dispatch_owner_generation = ?,
+        dispatch_owner_session_id = ?,
         revision = revision + 1, updated_at = CURRENT_TIMESTAMP
     WHERE singleton = 1 AND revision = ?`)
-    .run(paused ? 1 : 0, paused ? epoch.release_id : null, paused ? epoch.generation ?? null : null, input.expected_revision);
+    .run(paused ? 1 : 0, paused ? owner.session_id : null, input.expected_revision);
   if (changed.changes !== 1) throw new OutboxAuthorityError("OUTBOX_AUTHORITY_REVISION_CONFLICT", 409);
 
   const next = outboxAuthority(db);
-  db.prepare(`INSERT INTO outbox_authority_events(id, action, owner_release_id, owner_generation, reason, revision, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ${AUTHORITY_EVENT_NOW})`)
-    .run(id(), paused ? "DISPATCH_FENCED" : "DISPATCH_UNFENCED", epoch.release_id, epoch.generation ?? null, input.reason, next.revision);
+  db.prepare(`INSERT INTO outbox_authority_events(id, action, owner_session_id, reason, revision, created_at)
+    VALUES (?, ?, ?, ?, ?, ${AUTHORITY_EVENT_NOW})`)
+    .run(id(), paused ? "DISPATCH_FENCED" : "DISPATCH_UNFENCED", owner.session_id, input.reason, next.revision);
   return next;
 };
 
-export const fenceEmailDispatch = (db: Database.Database, input: { expected_revision: number; reason: string }, epoch: DispatchEpoch) =>
-  setDispatchFence(db, true, input, epoch);
+export const fenceEmailDispatch = (db: Database.Database, input: { expected_revision: number; reason: string }, owner: DispatchOwner) =>
+  setDispatchFence(db, true, input, owner);
 
-export const unfenceEmailDispatch = (db: Database.Database, input: { expected_revision: number; reason: string }, epoch: DispatchEpoch) =>
-  setDispatchFence(db, false, input, epoch);
+export const unfenceEmailDispatch = (db: Database.Database, input: { expected_revision: number; reason: string }, owner: DispatchOwner) =>
+  setDispatchFence(db, false, input, owner);
 
 /**
  * Drain evidence, separate from exclusion evidence.
@@ -150,10 +140,12 @@ export const unfenceEmailDispatch = (db: Database.Database, input: { expected_re
  * can start - that is what the database trigger establishes. Reporting them as
  * one fact is the mistake this pair exists to prevent.
  */
-export const emailDispatchDrained = (db: Database.Database): { drained: boolean; sending: number; leased: number } => {
+export const emailDispatchDrained = (db: Database.Database): { drained: boolean; sending: number } => {
+  // `leased` used to be counted here from `email_outbox.lease_owner`, a column
+  // with no writer at all - so the term was structurally always zero and the
+  // conjunction had one live half. The column is gone and so is the pretence.
   const sending = Number((db.prepare("SELECT COUNT(*) AS n FROM email_outbox WHERE status = 'SENDING'").get() as { n: number }).n);
-  const leased = Number((db.prepare("SELECT COUNT(*) AS n FROM email_outbox WHERE lease_owner IS NOT NULL").get() as { n: number }).n);
-  return { drained: sending === 0 && leased === 0, sending, leased };
+  return { drained: sending === 0, sending };
 };
 
 /**

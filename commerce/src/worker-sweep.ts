@@ -1,7 +1,7 @@
 import { CommerceDomain, DomainError } from "./domain";
 
 export type WorkerSweepDomain = Pick<CommerceDomain,
-  "recoverStaleCommands" | "detectStalePreparedSettlements" | "reconcileCreateUnknownPayments" | "reconcilePendingPayments" |
+  "recoverStaleCommands" | "reconcileCreateUnknownPayments" | "reconcilePendingPayments" |
   "createObligationRefunds" | "submitRequestedRefunds" | "reconcilePendingRefunds" | "processEmailOutbox" |
   "reconcileUnisenderEventDumps" | "processCityInterestLifecycle" | "processOccurrenceNotificationLifecycle" | "detectOverdueVenueAnnouncements">;
 
@@ -12,10 +12,6 @@ export type WorkerSweepDomain = Pick<CommerceDomain,
  */
 export async function runWorkerSweep(domain: WorkerSweepDomain) {
   domain.recoverStaleCommands();
-  try { domain.detectStalePreparedSettlements(); }
-  catch (error) {
-    if (!(error instanceof DomainError) || error.code !== "SETTLEMENT_BUSY") throw error;
-  }
   await domain.reconcileCreateUnknownPayments();
   await domain.reconcilePendingPayments();
   domain.createObligationRefunds();

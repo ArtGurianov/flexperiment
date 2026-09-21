@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { migrate, openDatabase } from "../src/db";
-import { activateAgentReferrals } from "../src/agent-referrals-feature-state";
+import { materializeInitialActiveFeatureForTest as activateAgentReferrals } from "./support/agent-referrals-feature-state";
 import { currentAgentReferralsLegalProfile } from "../src/agent-referrals-legal-profile";
 import { currentPayoutProfile } from "../src/agent-referrals-payout-profile";
 import { DELEGATION_TEMPLATE_REQUIRED_CLAUSES, FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES, mintDelegationTemplateRevision, mintFrameworkAgreementRevision } from "../src/agent-referrals-framework-delegation";
@@ -33,8 +33,8 @@ const fresh = () => {
 
 const provision = (db: Database.Database) => {
   const agentId = randomUUID();
-  db.prepare(`INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
-    VALUES (?, ?, 'Agent', ?, 'PERCENT', 1000)`).run(agentId, `p-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
+  db.prepare(`INSERT INTO partners(id, slug, display_name, email)
+    VALUES (?, ?, 'Agent', ?)`).run(agentId, `p-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
   return provisionPartnerOwner(db, admin, agentId, "p@example.test", "test");
 };
 
@@ -84,7 +84,7 @@ describe("onboarding state authority", () => {
       activateFeature(db);
       const { partner_identity_id } = provision(db);
       expect(() => transitionOnboardingState(db, partner_identity_id, "PROFILE_VERIFIED", 1, "ADMIN", "skip"))
-        .toThrow(/AGENT_REFERRALS_ONBOARDING_ILLEGAL_TRANSITION/);
+.toThrow(/AGENT_REFERRALS_ONBOARDING_ILLEGAL_TRANSITION/);
     });
 
     it("refuses skipping straight to PARTNER_ACTIVE from INVITED", () => {
@@ -92,7 +92,7 @@ describe("onboarding state authority", () => {
       activateFeature(db);
       const { partner_identity_id } = provision(db);
       expect(() => transitionOnboardingState(db, partner_identity_id, "PARTNER_ACTIVE", 1, "ADMIN", "skip"))
-        .toThrow(/AGENT_REFERRALS_ONBOARDING_ILLEGAL_TRANSITION/);
+.toThrow(/AGENT_REFERRALS_ONBOARDING_ILLEGAL_TRANSITION/);
     });
 
     it("refuses any backward transition (no in-place backward mutation)", () => {
@@ -102,7 +102,7 @@ describe("onboarding state authority", () => {
       submitPartnerLegalProfile(db, asPartner(partner_identity_id), "INDIVIDUAL", "NPD", individualRequisites, 0);
       const identity = getPartnerIdentity(db, partner_identity_id)!;
       expect(() => transitionOnboardingState(db, partner_identity_id, "INVITED", identity.onboarding_revision, "ADMIN", "backward"))
-        .toThrow(/AGENT_REFERRALS_ONBOARDING_ILLEGAL_TRANSITION/);
+.toThrow(/AGENT_REFERRALS_ONBOARDING_ILLEGAL_TRANSITION/);
     });
 
     it("PARTNER_ACTIVE has no further legal edge", () => {
@@ -110,7 +110,7 @@ describe("onboarding state authority", () => {
       const partnerIdentityId = advanceToFrameworkAccepted(db);
       const activated = activatePartner(db, partnerIdentityId, getPartnerIdentity(db, partnerIdentityId)!.onboarding_revision, "SYSTEM", "activate");
       expect(() => transitionOnboardingState(db, partnerIdentityId, "PARTNER_ACTIVE", activated.onboarding_revision, "SYSTEM", "again"))
-        .toThrow(/AGENT_REFERRALS_ONBOARDING_ILLEGAL_TRANSITION/);
+.toThrow(/AGENT_REFERRALS_ONBOARDING_ILLEGAL_TRANSITION/);
     });
   });
 
@@ -121,7 +121,7 @@ describe("onboarding state authority", () => {
     submitPartnerLegalProfile(db, asPartner(partner_identity_id), "INDIVIDUAL", "NPD", individualRequisites, 0);
     const before = getPartnerIdentity(db, partner_identity_id)!;
     expect(() => transitionOnboardingState(db, partner_identity_id, "PROFILE_VERIFIED", 1 /* stale, real revision is 2 */, "ADMIN", "stale"))
-      .toThrow(/AGENT_REFERRALS_ONBOARDING_REVISION_CONFLICT/);
+.toThrow(/AGENT_REFERRALS_ONBOARDING_REVISION_CONFLICT/);
     expect(getPartnerIdentity(db, partner_identity_id)).toEqual(before);
   });
 
@@ -151,7 +151,7 @@ describe("onboarding state authority", () => {
       submitPartnerLegalProfile(db, asPartner(partner_identity_id), "INDIVIDUAL", "NPD", individualRequisites, 0);
       verifyPartnerLegalProfile(db, admin, partner_identity_id, "verified");
       expect(() => submitPartnerLegalProfile(db, asPartner(partner_identity_id), "LEGAL_ENTITY", "OTHER", legalEntityRequisites, 0))
-        .toThrow(/AGENT_REFERRALS_LEGAL_PROFILE_SUBMISSION_LOCKED/);
+.toThrow(/AGENT_REFERRALS_LEGAL_PROFILE_SUBMISSION_LOCKED/);
     });
 
     it("the frozen 4/2 legal-form matrix is enforced at submit time, and verify projects the current legal profile", () => {
@@ -163,7 +163,7 @@ describe("onboarding state authority", () => {
       // before ever writing the draft - a rejected combination is refused
       // here, not deferred to verify() the way PR3/PR4 originally left it.
       expect(() => submitPartnerLegalProfile(db, asPartner(partner_identity_id), "LEGAL_ENTITY", "NPD" as never, legalEntityRequisites, 0))
-        .toThrow(/AGENT_REFERRALS_LEGAL_PROFILE_REJECTED_COMBINATION/);
+.toThrow(/AGENT_REFERRALS_LEGAL_PROFILE_REJECTED_COMBINATION/);
       expect(getPartnerIdentity(db, partner_identity_id)!.submitted_legal_form).toBeNull();
       expect(getPartnerIdentity(db, partner_identity_id)!.onboarding_state).toBe("INVITED");
 
@@ -210,6 +210,6 @@ describe("onboarding state authority", () => {
     const winner = transitionOnboardingState(db, partner_identity_id, "PROFILE_VERIFIED", identity.onboarding_revision, "ADMIN", "winner");
     expect(winner.onboarding_state).toBe("PROFILE_VERIFIED");
     expect(() => transitionOnboardingState(db, partner_identity_id, "FRAMEWORK_ISSUED", identity.onboarding_revision /* stale */, "ADMIN", "loser"))
-      .toThrow(/AGENT_REFERRALS_ONBOARDING_REVISION_CONFLICT/);
+.toThrow(/AGENT_REFERRALS_ONBOARDING_REVISION_CONFLICT/);
   });
 });

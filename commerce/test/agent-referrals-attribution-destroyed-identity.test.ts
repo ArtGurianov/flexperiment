@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { migrate, openDatabase } from "../src/db";
-import { activateAgentReferrals } from "../src/agent-referrals-feature-state";
+import { materializeInitialActiveFeatureForTest as activateAgentReferrals } from "./support/agent-referrals-feature-state";
 import { provisionPartnerOwner, submitPartnerLegalProfile, verifyPartnerLegalProfile, issueFrameworkToPartner, type AdminPrincipal, type PartnerPrincipal } from "../src/agent-referrals-partner-identity";
 import { activatePartner, getPartnerIdentity } from "../src/agent-referrals-onboarding";
 import { mintFrameworkAgreementRevision, mintDelegationTemplateRevision, FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES, DELEGATION_TEMPLATE_REQUIRED_CLAUSES } from "../src/agent-referrals-framework-delegation";
@@ -47,8 +47,8 @@ const clause = (arr: readonly string[]) => Object.fromEntries(arr.map((k) => [k,
 const readyPartner = (db: Database.Database) => {
   activateAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "test" });
   const agentId = randomUUID();
-  db.prepare(`INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
-    VALUES (?, ?, 'Agent', ?, 'PERCENT', 1000)`).run(agentId, `partner-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
+  db.prepare(`INSERT INTO partners(id, slug, display_name, email)
+    VALUES (?, ?, 'Agent', ?)`).run(agentId, `partner-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
   const { partner_identity_id: partnerIdentityId } = provisionPartnerOwner(db, admin, agentId, "p@example.test", "test");
   submitPartnerLegalProfile(db, { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: "n/a" }, "INDIVIDUAL", "NPD", { full_name: "Ivanov Ivan Ivanovich", inn: "123456789012" }, 0);
   verifyPartnerLegalProfile(db, admin, partnerIdentityId, "verified");
@@ -96,8 +96,8 @@ describe("resolveOrderAttribution: destroyed identity refusal (integration-harde
     const p1 = readyPartner(db);
     const occ = seedOccurrence(db, p1.cityId);
     activatedEngagement(db, p1.partner, p1.partnerIdentityId, occ);
-    const attribution = resolveOrderAttribution(db, { id: p1.promo.promo_code_id, agent_id: p1.agentId }, occ, null);
-    expect(attribution.reward_authority_kind).toBe("ENGAGEMENT_SCOPED");
+    const attribution = resolveOrderAttribution(db, { id: p1.promo.promo_code_id, agent_id: p1.agentId }, occ);
+    expect(attribution.resolution_reason).toBe("EXPLICIT_PARTNER_PROMO");
   });
 
   it("refuses once the owning partner identity is destroyed, even though the engagement remains ACTIVE with a live promo authorization", () => {
@@ -110,10 +110,10 @@ describe("resolveOrderAttribution: destroyed identity refusal (integration-harde
     destroyPartnerIdentity(db, admin, p1.partnerIdentityId, "erasure request");
     expect(getPartnerIdentity(db, p1.partnerIdentityId)!.onboarding_state).toBe("PARTNER_ACTIVE");
 
-    expect(() => resolveOrderAttribution(db, { id: p1.promo.promo_code_id, agent_id: p1.agentId }, occ, null))
+    expect(() => resolveOrderAttribution(db, { id: p1.promo.promo_code_id, agent_id: p1.agentId }, occ))
       .toThrow(AgentReferralsAttributionError);
     try {
-      resolveOrderAttribution(db, { id: p1.promo.promo_code_id, agent_id: p1.agentId }, occ, null);
+      resolveOrderAttribution(db, { id: p1.promo.promo_code_id, agent_id: p1.agentId }, occ);
       throw new Error("expected a throw");
     } catch (error) {
       expect((error as AgentReferralsAttributionError).code).toBe("AGENT_REFERRALS_ATTRIBUTION_PARTNER_IDENTITY_DESTROYED");

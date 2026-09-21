@@ -5,7 +5,8 @@ import { randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { migrate, openDatabase } from "../src/db";
-import { activateAgentReferrals, suspendAgentReferrals, reactivateAgentReferrals } from "../src/agent-referrals-feature-state";
+import { suspendAgentReferrals, reactivateAgentReferrals } from "../src/agent-referrals-feature-state";
+import { materializeInitialActiveFeatureForTest as activateAgentReferrals } from "./support/agent-referrals-feature-state";
 import { provisionPartnerOwner, submitPartnerLegalProfile, verifyPartnerLegalProfile, issueFrameworkToPartner, type AdminPrincipal, type PartnerPrincipal } from "../src/agent-referrals-partner-identity";
 import { activatePartner, getPartnerIdentity } from "../src/agent-referrals-onboarding";
 import { mintFrameworkAgreementRevision, mintDelegationTemplateRevision, FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES, DELEGATION_TEMPLATE_REQUIRED_CLAUSES } from "../src/agent-referrals-framework-delegation";
@@ -48,8 +49,8 @@ const clause = (arr: readonly string[]) => Object.fromEntries(arr.map((k) => [k,
 const readyPartner = (db: Database.Database) => {
   activateAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "test" });
   const agentId = randomUUID();
-  db.prepare(`INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
-    VALUES (?, ?, 'Agent', ?, 'PERCENT', 1000)`).run(agentId, `partner-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
+  db.prepare(`INSERT INTO partners(id, slug, display_name, email)
+    VALUES (?, ?, 'Agent', ?)`).run(agentId, `partner-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
   const { partner_identity_id: partnerIdentityId } = provisionPartnerOwner(db, admin, agentId, "p@example.test", "test");
   submitPartnerLegalProfile(db, { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: "n/a" }, "INDIVIDUAL", "NPD", { full_name: "Ivanov Ivan Ivanovich", inn: "123456789012" }, 0);
   verifyPartnerLegalProfile(db, admin, partnerIdentityId, "verified");
@@ -374,11 +375,11 @@ describe("historical authority (§B-5c/§B-5d): a distribution pins the creative
   it("a publication reported with published_at inside a window where the feature was GLOBALLY SUSPENDED at that instant is INVALID_AUTHORITY, even though the feature is ACTIVE again by the time it is reported", async () => {
     const db = fresh();
     const engaged = readyEngagementWithCreative(db); // feature state revision 2 (ACTIVE)
-    suspendAgentReferrals(db, { expected_revision: 2, owner_id: "test-owner", reason: "global pause" });
+    suspendAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "global pause" });
     await new Promise((resolve) => setTimeout(resolve, 50)); // guarantee millisecond separation from the SUSPENDED transition's own timestamp
     const publishedDuringSuspension = new Date().toISOString();
     await new Promise((resolve) => setTimeout(resolve, 50)); // guarantee millisecond separation before the REACTIVATE transition's own timestamp
-    reactivateAgentReferrals(db, { expected_revision: 3, owner_id: "test-owner", reason: "resume" });
+    reactivateAgentReferrals(db, { expected_revision: 2, owner_id: "test-owner", reason: "resume" });
 
     // The report itself is still permitted (DISTRIBUTION_FACT_REPORTING is a
     // reporting-tail class, permitted even under SUSPENDED) - it is the
@@ -416,7 +417,7 @@ describe("historical authority (§B-5c/§B-5d): a distribution pins the creative
   });
 });
 
-describe("projection folds only the CURRENT revision's own events, never the whole distribution history (Phase 5 holistic review, P0 finding 4)", () => {
+describe("projection folds only the CURRENT revision's own events, never the whole distribution history", () => {
   it("a correction that fixes an INVALID_AUTHORITY report into an AUTHORIZED one clears the stale REMOVAL_REQUIRED - it does not linger from the superseded revision", () => {
     const db = fresh();
     const engaged = readyEngagementWithCreative(db); // publication_start_at = 2020-01-01, publication_end_at = 2035-01-01
@@ -456,7 +457,7 @@ describe("projection folds only the CURRENT revision's own events, never the who
   });
 });
 
-describe("removal/compliance lifecycle transition matrix - fail-closed on illegal sequences (Phase 5 holistic review, P1 finding 5)", () => {
+describe("removal/compliance lifecycle transition matrix - fail-closed on illegal sequences", () => {
   it("refuses REMOVAL_CONFIRMED with no REMOVAL_REQUIRED/CLAIMED/OVERDUE/UNVERIFIED ever recorded for the current revision", () => {
     const db = fresh();
     const engaged = readyEngagementWithCreative(db);
@@ -523,6 +524,6 @@ describe("event_sequence: explicit durable canonical fold order, not SQLite's im
     expect(events.map((e) => e.event_kind)).toEqual(["DECLARED", "MARKED_REPORTABLE", "REMOVAL_CLAIMED", "REMOVAL_CONFIRMED"]);
     // Structural backstop: no two events for the same distribution can ever share a sequence number.
     expect(() => db.prepare(`INSERT INTO engagement_distribution_events(id, distribution_id, event_sequence, event_kind, actor_realm) VALUES (?, ?, 1, 'DECLARED', 'SYSTEM')`).run(randomUUID(), d.distribution_id))
-      .toThrow(/UNIQUE constraint failed/);
+.toThrow(/UNIQUE constraint failed/);
   });
 });

@@ -40,7 +40,7 @@ export type OrdParticipantCanonicalV1 =
 export type Canonicalized<T> = { version: string; value: T; canonical_json: string; canonical_hash: string };
 
 /**
- * Requisites shape/nullability is already fully proven by 0052's own
+ * Requisites shape/nullability is already fully proven by the schema's own
  * per-legal_form CHECK matrix on agent_referrals_legal_profile_revisions -
  * the non-null assertions below (`!`) rely on that structural guarantee,
  * never re-validate it.

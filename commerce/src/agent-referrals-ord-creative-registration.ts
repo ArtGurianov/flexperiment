@@ -69,7 +69,7 @@ export const ordCreativeRegistrationById = (db: Database.Database, registrationI
 /** "Current" (active) registration for a creative revision - MAX(revision), never a bare "the one row that exists". */
 export const currentOrdCreativeRegistrationForCreativeRevision = (db: Database.Database, creativeRevisionId: string): OrdCreativeRegistrationRow | null =>
   (db.prepare(`SELECT ${COLUMNS} FROM ord_creative_registrations WHERE creative_revision_id = ? ORDER BY revision DESC LIMIT 1`)
-    .get(creativeRevisionId) as OrdCreativeRegistrationRow | undefined) ?? null;
+.get(creativeRevisionId) as OrdCreativeRegistrationRow | undefined) ?? null;
 
 /** Back-compat name some callers/tests use for "the current registration". */
 export const ordCreativeRegistrationForCreativeRevision = currentOrdCreativeRegistrationForCreativeRevision;
@@ -116,7 +116,7 @@ export const registerOrdCreative = (
     });
     db.prepare(`INSERT INTO ord_creative_registrations(id, creative_revision_id, engagement_id, revision, operation_key, provider_counterparty_profile_id, provider_contract_profile_id, registered_creative_target_url, created_by_admin_id)
       VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?)`)
-      .run(registrationId, creativeRevisionId, creative.engagement_id, operationKey, counterparty.id, contract.id, creative.creative_target_url, admin.admin_id);
+.run(registrationId, creativeRevisionId, creative.engagement_id, operationKey, counterparty.id, contract.id, creative.creative_target_url, admin.admin_id);
     return { registration: ordCreativeRegistrationById(db, registrationId)!, replayed: false };
   });
   return run.immediate();
@@ -130,7 +130,7 @@ export const recordOrdCreativeRegistrationSubmitted = (db: Database.Database, re
     if (!registration) throw new OrdCreativeRegistrationError("AGENT_REFERRALS_ORD_CREATIVE_REGISTRATION_NOT_FOUND", 404, registrationId);
     if (registration.lock_state !== "MUTABLE") throw new OrdCreativeRegistrationError("AGENT_REFERRALS_ORD_CREATIVE_REGISTRATION_NOT_MUTABLE", 409, registrationId);
     // PR-C2 MONOTONIC_REPLAY_SAFE, exactly as the provider operation's own
-    // submission: 0048's observed-id guard makes a non-null vk_external_id
+    // submission: the schema's observed-id guard makes a non-null vk_external_id
     // unchangeable in place, so no legal B* can replace it and a correction
     // must mint a new revision instead. evidence_ref alone stayed writable,
     // which is what this branch closes - an exact restatement replays, and
@@ -213,7 +213,7 @@ export const correctOrdCreativeRegistration = (db: Database.Database, admin: Adm
         id, creative_revision_id, engagement_id, revision, supersedes_registration_id, operation_key, provider_counterparty_profile_id, provider_contract_profile_id, registered_creative_target_url,
         local_state, vk_submission_state, vk_external_id, vk_object_id, erid, evidence_ref, lock_state, correction_reason, created_by_admin_id)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'CONFIRMED', 'SUBMITTED', ?, ?, ?, ?, 'CORRECTION_ONLY', ?, ?)`)
-      .run(nextRegistrationId, current.creative_revision_id, current.engagement_id, nextRevision, current.id, operationKey, counterparty.id, contract.id,
+.run(nextRegistrationId, current.creative_revision_id, current.engagement_id, nextRevision, current.id, operationKey, counterparty.id, contract.id,
         current.registered_creative_target_url, current.vk_external_id, input.vk_object_id, input.erid, input.evidence_ref, input.reason, admin.admin_id);
     return ordCreativeRegistrationById(db, nextRegistrationId)!;
   });

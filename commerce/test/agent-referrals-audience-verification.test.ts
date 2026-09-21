@@ -30,8 +30,8 @@ const fresh = () => {
 
 const seedPartnerAndCity = (db: Database.Database, partnerId = randomUUID(), cityId = randomUUID()) => {
   const agentId = randomUUID();
-  db.prepare(`INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
-    VALUES (?, ?, 'A', ?, 'PERCENT', 1000)`).run(agentId, `p-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
+  db.prepare(`INSERT INTO partners(id, slug, display_name, email)
+    VALUES (?, ?, 'A', ?)`).run(agentId, `p-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
   db.prepare(`INSERT INTO partner_identities(id, agent_id, email, email_hash, created_by_admin_id) VALUES (?, ?, 'a@example.test', 'h', 'admin')`).run(partnerId, agentId);
   db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, ?, 'City')").run(cityId, `city-${cityId.slice(0, 8)}`);
   return { partnerId, cityId };
@@ -43,8 +43,7 @@ const seedPartnerAndCity = (db: Database.Database, partnerId = randomUUID(), cit
  * revokeAudienceVerificationForPartnerCity (REVOKED), both from
  * agent-referrals-engagement.ts - never a low-level primitive, because
  * agent-referrals-audience-verification.ts exports none, at any
- * visibility level, for either event kind (Phase 5 holistic review,
- * final pass). Both cascade functions return only
+ * visibility level, for either event kind. Both cascade functions return only
  * `{ verification_event_id, suspended_engagement_ids }`, not the full
  * event row, so these helpers fetch the row separately via the exported
  * read-only currentAudienceVerification - exactly what production code

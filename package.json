@@ -16,28 +16,11 @@
     "commerce:legal-release:publish": "tsx commerce/src/publish-legal-release.ts",
     "commerce:legal-release:preflight": "tsx commerce/src/verify-active-legal-archives.ts",
     "commerce:legal-release:promote": "tsx commerce/src/promote-legal-release.ts",
-    "commerce:release-cutover:payload": "tsx commerce/src/release-cutover-payload.ts",
-    "commerce:release-cutover:reconcile": "tsx commerce/src/reconcile-cutover.ts",
-    "commerce:release-cutover:assert-candidate-ready": "tsx commerce/src/assert-candidate-runtime-ready.ts",
-    "commerce:production-deploy:reconcile": "tsx commerce/src/reconcile-generic-production-deploy.ts",
-    "commerce:production-deploy:assert-ready": "tsx commerce/src/assert-generic-production-deploy-ready.ts",
-    "commerce:production-deploy:assert-boundary": "tsx commerce/src/assert-generic-production-deploy-boundary.ts",
-    "commerce:ordinary-schema:admit": "tsx commerce/src/ordinary-schema-release.ts",
-    "commerce:release-semantics-cutover:assert-boundary": "tsx commerce/src/assert-release-semantics-cutover-boundary.ts",
-    "commerce:release-control-v2:materialize": "tsx commerce/src/materialize-release-control-v2-candidate.ts",
-    "commerce:promo:audit": "tsx commerce/src/audit-promo-legacy-contract.ts",
     "seo:prune-placeholders": "tsx commerce/src/prune-seo-placeholder-routes.ts",
     "commerce:seo-snapshot:generate": "tsx commerce/src/generate-seo-snapshot.ts",
     "commerce:seo-snapshot:validate": "tsx commerce/src/validate-seo-snapshot.ts",
     "release:static-descriptor": "tsx commerce/src/write-static-release-descriptor.ts",
-    "commerce:city-interest:repair-delivered": "tsx commerce/src/repair-delivered-city-interest.ts",
-    "commerce:city-interest:repair-superseded": "tsx commerce/src/repair-superseded-city-interest.ts",
-    "commerce:full-refund:repair": "tsx commerce/src/repair-full-refund-fulfillment.ts",
     "commerce:create-unknown:repair": "tsx commerce/src/repair-create-unknown-payment.ts",
-    "commerce:promo:gen2-bootstrap-adopt": "tsx commerce/src/gen2-bootstrap-adopt.ts",
-    "commerce:promo:gen3-classify-readiness-defect": "tsx commerce/src/gen3-classify-readiness-defect.ts",
-    "commerce:promo:gen4-to-gen5-public-frontend-bridge": "tsx commerce/src/gen4-to-gen5-public-frontend-bridge.ts",
-    "commerce:certification:create-fixture": "tsx commerce/src/create-certification-fixture.ts",
     "commerce:email:unack": "tsx commerce/src/clear-email-operational-acknowledgement.ts",
     "commerce:test:image": "bash commerce/test/docker-image-smoke.sh",
     "admin:build": "pnpm --filter @flexperiment/admin build",
@@ -49,7 +32,10 @@
     "test": "COMMERCE_TEST_DB_SNAPSHOT=1 vitest run --project '!export'",
     "test:export": "vitest run --project export",
     "test:watch": "vitest",
-    "test:temp:gc": "bash scripts/test-temp-gc.sh"
+    "test:temp:gc": "bash scripts/test-temp-gc.sh",
+    "commerce:launch-seed": "tsx commerce/src/launch-seed-cli.ts",
+    "release:coolify-probe": "tsx scripts/release/coolify-capability-probe.ts",
+    "release:runner": "tsx scripts/release/cutover-runner.ts"
   },
   "dependencies": {
     "@hono/node-server": "^2.1.1",
@@ -82,7 +68,8 @@
     "tailwindcss": "^4",
     "tsx": "^4.23.12",
     "typescript": "^5",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.11",
+    "yaml": "^2.9.1"
   },
   "packageManager": "pnpm@10.29.3"
 }

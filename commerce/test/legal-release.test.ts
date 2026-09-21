@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import { migrate, openDatabase } from "../src/db";
-import { canonicalLegalManifest, type LegalManifest } from "../src/legal-manifest";
+import { type LegalManifest } from "../src/legal-manifest";
 import { LegalReleasePublishError, loadCanonicalLegalRelease, publishLegalRelease, verifyCurrentLegalSourceHashes, verifyLegalArchiveHashes } from "../src/legal-release";
 
 const manifest = (offerHash = "a".repeat(64)): LegalManifest => ({ documents: {
@@ -51,127 +51,13 @@ describe("production legal-release publisher", () => {
     expect(db.prepare("SELECT COUNT(*) AS count FROM legal_releases").get()).toEqual({ count: 1 });
   });
 
-  it("verifies the active archive release and a prepared historical candidate", () => {
-    expect(loadCanonicalLegalRelease("commerce/legal/production-manifest.json").version).toBe("2026-08-28.1");
-    expect(JSON.parse(readFileSync("commerce/legal/production-manifest.2026-08-21.2.draft.json", "utf8"))).toMatchObject({
-      version: "2026-08-21.2",
-    });
-  });
-
-  it("preserves the four-document analytics legal candidate as an immutable historical release", () => {
-    const candidate = loadCanonicalLegalRelease("commerce/legal/production-manifest.2026-08-22.1.draft.json");
-    expect(candidate.version).toBe("2026-08-22.1");
-    expect(Object.keys(candidate.manifest.documents)).toEqual([
-      "PUBLIC_OFFER",
-      "PRIVACY_POLICY",
-      "PD_CONSENT",
-      "CHECKOUT_DISCLOSURE",
-    ]);
-    expect(candidate.manifest.documents.PRIVACY_POLICY.version).toBe("2026-08-22");
-    expect(candidate.manifest.documents.PD_CONSENT).toMatchObject({
-      version: "2026-08-12",
-      sha256: "8ef14cdd772813635f6bf1f43d758b9f2383283df3d905fd2d43965e671f1b11",
-      archive_url: "https://flexperiment.ru/legal/archive/privacy/2026-08-22.1/personal-data-consent.md",
-    });
-    expect(readFileSync("public/legal/archive/privacy/2026-08-22.1/privacy-policy.md")).not.toEqual(
-      readFileSync("public/legal/archive/privacy/2026-08-21.2/privacy-policy.md"),
-    );
-    const active = loadCanonicalLegalRelease("commerce/legal/production-manifest.2026-08-23.2.draft.json");
-    expect(active.version).toBe("2026-08-23.2");
-    expect(active.manifest.documents.PRIVACY_POLICY.sha256).toBe("97ac1add022f8ca4f870647c7abc525cf9b32a6edcc12fcd2484339769497864");
-    expect(createHash("sha256").update(readFileSync("public/legal/archive/privacy/2026-08-23.2/privacy-policy.md")).digest("hex"))
-      .toBe("97ac1add022f8ca4f870647c7abc525cf9b32a6edcc12fcd2484339769497864");
-  });
-
-  it("prepares the city-interest legal candidate without changing the active release", () => {
-    const candidate = loadCanonicalLegalRelease("commerce/legal/production-manifest.2026-08-23.1.draft.json");
-    expect(candidate.version).toBe("2026-08-23.1");
-    expect(candidate.manifest.documents.PRIVACY_POLICY).toMatchObject({
-      version: "2026-08-23",
-      archive_url: "https://flexperiment.ru/legal/archive/privacy/2026-08-23.1/privacy-policy.md",
-    });
-    expect(candidate.manifest.documents.PD_CONSENT).toMatchObject({
-      version: "2026-08-23",
-      archive_url: "https://flexperiment.ru/legal/archive/privacy/2026-08-23.1/personal-data-consent.md",
-    });
-    expect(readFileSync("public/legal/archive/privacy/2026-08-23.1/privacy-policy.md", "utf8")).toContain(
-      "уведомления о появлении мастер-класса Flexperiment в выбранном им городе",
-    );
-    expect(readFileSync("public/legal/archive/privacy/2026-08-23.1/personal-data-consent.md", "utf8")).toContain(
-      "если я направил соответствующий запрос через форму на Сайте",
-    );
-    expect(createHash("sha256").update(canonicalLegalManifest(candidate.manifest)).digest("hex")).toBe(
-      "c62da8ac3ed8f119f4d46b1aa7864d7df2494bd7a3499fab2080bb696e8739cb",
-    );
+  it("loads the active release the runtime will actually publish", () => {
     expect(loadCanonicalLegalRelease("commerce/legal/production-manifest.json").version).toBe("2026-08-28.1");
   });
 
-  it("keeps the booking-time age-band draft immutable after promotion", () => {
-    const candidate = loadCanonicalLegalRelease("commerce/legal/production-manifest.2026-08-25.1.draft.json");
-    expect(candidate.version).toBe("2026-08-25.1");
-    expect(candidate.manifest.documents).toMatchObject({
-      PUBLIC_OFFER: {
-        version: "2026-08-25",
-        archive_url: "https://flexperiment.ru/legal/archive/offer/2026-08-25.1/public-offer.md",
-      },
-      PRIVACY_POLICY: {
-        archive_url: "https://flexperiment.ru/legal/archive/privacy/2026-08-25.1/privacy-policy.md",
-      },
-      PD_CONSENT: {
-        archive_url: "https://flexperiment.ru/legal/archive/personal-data-consent/2026-08-25.1/personal-data-consent.md",
-      },
-      CHECKOUT_DISCLOSURE: {
-        archive_url: "https://flexperiment.ru/legal/archive/checkout-disclosure/2026-08-25.1/disclaimer.md",
-      },
-    });
-    const offer = readFileSync("public/legal/archive/offer/2026-08-25.1/public-offer.md", "utf8");
-    const privacy = readFileSync("public/legal/archive/privacy/2026-08-25.1/privacy-policy.md", "utf8");
-    const consent = readFileSync("public/legal/archive/personal-data-consent/2026-08-25.1/personal-data-consent.md", "utf8");
-    const disclosure = readFileSync("public/legal/archive/checkout-disclosure/2026-08-25.1/disclaimer.md", "utf8");
-    expect(offer).toContain("лицу, в пользу которого заключён договор");
-    expect(offer).toContain("пункта 2 статьи 430 ГК РФ");
-    expect(offer).toContain("Заказчик как его законный представитель");
-    expect(offer).not.toContain("приобретает участие исключительно для себя");
-    expect(privacy).toContain("пунктом 5 части 1 статьи 6 Федерального закона № 152-ФЗ");
-    expect(consent).toContain("не является согласием, данным мною от имени Участника");
-    expect(consent).toContain("Если обработка осуществляется лицом по поручению Оператора");
-    expect(privacy).toContain("категорию возраста");
-    expect(privacy).toContain("не запрашивается и не сохраняется в заказе; запрос с таким полем отклоняется");
-    expect(consent).toContain("Категория возраста фиксируется на момент оформления заказа");
-    for (const document of [offer, disclosure]) {
-      expect(document).toContain("не исполнилось 14 лет");
-      expect(document).toContain("сопровождении совершеннолетнего взрослого");
-      expect(document).not.toMatch(/0\+|14\+|16\+|18\+ участия/);
-    }
-    expect(createHash("sha256").update(canonicalLegalManifest(candidate.manifest)).digest("hex")).toBe(
-      "b839689ec7fed1e0b899c4d6298d32297f0142b6e572985cf9eb47a4830ebb47",
-    );
-    expect(JSON.parse(readFileSync("commerce/legal/production-manifest.2026-08-25.1.draft.json", "utf8"))).toMatchObject({
-      publish_time: "PENDING_AUTHORITATIVE_PUBLISH_TIMESTAMP",
-    });
-    const active = loadCanonicalLegalRelease("commerce/legal/production-manifest.json");
-    expect(active.version).toBe("2026-08-28.1");
-    expect(() => verifyCurrentLegalSourceHashes(active.manifest)).not.toThrow();
-  });
 
-  it("keeps the anonymous checkout legal candidate immutable after promotion", () => {
-    const candidate = loadCanonicalLegalRelease("commerce/legal/production-manifest.2026-08-26.1.draft.json");
-    expect(candidate.version).toBe("2026-08-26.1");
-    expect(candidate.manifest.documents.PRIVACY_POLICY).toMatchObject({
-      version: "2026-08-26",
-      archive_url: "https://flexperiment.ru/legal/archive/privacy/2026-08-26.1/privacy-policy.md",
-    });
-    expect(candidate.manifest.documents.PD_CONSENT).toMatchObject({
-      version: "2026-08-26",
-      archive_url: "https://flexperiment.ru/legal/archive/personal-data-consent/2026-08-26.1/personal-data-consent.md",
-    });
-    const privacy = readFileSync("public/legal/archive/privacy/2026-08-26.1/privacy-policy.md", "utf8");
-    const consent = readFileSync("public/legal/archive/personal-data-consent/2026-08-26.1/personal-data-consent.md", "utf8");
-    expect(privacy).toContain("Оператор не собирает имя Заказчика или Участника через форму оформления заказа");
-    expect(consent).toContain("Оператор не собирает имя Участника");
-    expect(privacy).toContain("исторические сведения заказа");
-    expect(loadCanonicalLegalRelease("commerce/legal/production-manifest.json").version).toBe("2026-08-28.1");
-  });
+
+
 
   it("keeps current Flexperiment legal documents free of legacy operator contacts", () => {
     const currentDocuments = [
@@ -200,5 +86,26 @@ describe("production legal-release publisher", () => {
     await expect(verifyLegalArchiveHashes(active, async () => new Response(bytes, { status: 200 }))).resolves.toBeUndefined();
     await expect(verifyLegalArchiveHashes(active, async () => new Response("changed", { status: 200 }))).rejects.toThrow("Archive hash does not match");
     await expect(verifyLegalArchiveHashes(active, async () => new Response(null, { status: 404 }))).rejects.toThrow("returned HTTP 404");
+  });
+
+  it("refuses a second active legal release, even through direct SQL", () => {
+    // The publisher promotes by deactivating the incumbent and activating the
+    // successor, so the application path never produces two. This index is what
+    // holds when the writer is not the application - a restore, a repair, a
+    // hand-run UPDATE - because two active releases means two different sets of
+    // terms are simultaneously the ones a customer agreed to.
+    const db = openDatabase(":memory:"); databases.push(db); migrate(db);
+    const insert = (id: string, version: string, active: number) => db
+      .prepare("INSERT INTO legal_releases(id, version, effective_at, manifest_json, active) VALUES (?, ?, '2026-09-20T00:00:00Z', '{}', ?)")
+      .run(id, version, active);
+
+    insert("first", "2026-09-20.1", 1);
+    expect(() => insert("second", "2026-09-20.2", 1)).toThrow(/UNIQUE constraint failed: legal_releases.active/);
+    // An inactive successor is fine; it is only ever one at a time that is live.
+    expect(() => insert("second", "2026-09-20.2", 0)).not.toThrow();
+
+    // Deactivating the incumbent is the only way the successor becomes active.
+    db.prepare("UPDATE legal_releases SET active = 0 WHERE id = 'first'").run();
+    expect(() => db.prepare("UPDATE legal_releases SET active = 1 WHERE id = 'second'").run()).not.toThrow();
   });
 });

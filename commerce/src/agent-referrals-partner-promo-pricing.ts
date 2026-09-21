@@ -3,14 +3,13 @@ import { isPromoPartnerOwned, currentEngagementPromoAuthorization } from "./agen
 
 /**
  * The minimal QUOTE_STALE compatibility seam plan section B-9 requires for
- * Phase 5: for a PARTNER-owned promo, promo_codes.discount_type/value are
+ * for a PARTNER-owned promo, promo_codes.discount_type/value are
  * frozen NONE/0 placeholders (never pricing authority - the customer
  * discount lives in the accepted engagement revision). Checkout must
  * therefore price and detect staleness against the ENGAGEMENT REVISION's
  * terms, not the frozen promo row. For a legacy/non-partner promo this is
  * a pure pass-through - zero behavior change, and this module never
- * touches attribution, order authority columns or reward computation
- * (PR6/§B-9's Phase 6 concern).
+ * touches attribution, order authority columns or reward computation.
  */
 
 export class PartnerPromoPricingError extends Error {
@@ -41,6 +40,6 @@ export const resolveCheckoutPromoTerms = (
   const authorization = currentEngagementPromoAuthorization(db, promo.id, occurrenceId);
   if (!authorization) throw new PartnerPromoPricingError(notEligibleCode, 409);
   const revision = db.prepare("SELECT customer_discount_type, customer_discount_value FROM engagement_revisions WHERE id = ?")
-    .get(authorization.engagement_revision_id) as { customer_discount_type: string; customer_discount_value: number };
+.get(authorization.engagement_revision_id) as { customer_discount_type: string; customer_discount_value: number };
   return { discount_type: revision.customer_discount_type as ResolvedPromoTerms["discount_type"], discount_value: Number(revision.customer_discount_value) };
 };

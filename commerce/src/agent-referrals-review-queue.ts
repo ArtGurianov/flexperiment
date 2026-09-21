@@ -4,11 +4,11 @@ import { isOrdReportingTailComplete, OrdReportingError } from "./agent-referrals
 import { currentUsableNpdCheck } from "./agent-referrals-npd";
 
 /**
- * Phase 9 amendment round-2 fix (finding #4), tightened again in round 3
+ * tightened again in round 3
  * (finding #4: totals must never be silently truncated, item ordering must
  * be deterministic, and every item must carry enough context to navigate to
  * it - not just a bare id an operator has no way to act on): the operator
- * review surface the original Phase 9 plan calls "reporting-tail queues,
+ * review surface the plan calls "reporting-tail queues,
  * missing-evidence sweeps, NPD reconciliation, operator review reminders".
  *
  * Every item here is a LIVE derived read, never a second stored queue table
@@ -115,7 +115,7 @@ const npdReconciliationNeeded = (db: Database.Database, atIso: string): NpdRecon
     JOIN settlement_acts act ON act.settlement_id = rs.id
     JOIN settlement_act_acceptances acc ON acc.act_id = act.id
     LEFT JOIN settlement_act_disputes dis ON dis.act_id = act.id
-    WHERE rs.settlement_flow = 'AGENT_REFERRALS' AND rs.status = 'PREPARED' AND rs.tax_mode_snapshot = 'NPD'
+    WHERE rs.status = 'PREPARED' AND rs.tax_mode_snapshot = 'NPD'
       AND act.presented_at IS NOT NULL AND dis.id IS NULL
     ORDER BY rs.prepared_at ASC, rs.id ASC
   `).all() as NpdReconciliationItem[];

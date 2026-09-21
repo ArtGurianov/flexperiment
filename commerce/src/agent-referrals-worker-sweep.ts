@@ -2,12 +2,11 @@ import type Database from "better-sqlite3";
 import { lastActivatedEngagementRevision } from "./agent-referrals-engagement";
 import { distributionsForEngagement, distributionProjection, requireRemoval, markOverdueRemoval, DistributionError } from "./agent-referrals-distribution";
 import { recoverStuckPaymentAttempts } from "./agent-referrals-payment";
-import { agentReferralsFeatureState } from "./agent-referrals-feature-state";
 import { agentReferralsReviewQueue, agentReferralsReviewQueueTotals, type AgentReferralsReviewQueueTotals } from "./agent-referrals-review-queue";
 import type { AdminPrincipal } from "./agent-referrals-partner-identity";
 
 /**
- * Worker deadline sweeps (Phase 9 amendment §11): deterministic, idempotent,
+ * Worker deadline sweeps (the plan): deterministic, idempotent,
  * NO VK network call of any kind, and no new commercial/provider authority
  * of its own - every write here calls an existing, already-reviewed admin
  * command (agent-referrals-distribution.ts / agent-referrals-payment.ts)
@@ -59,16 +58,10 @@ export type AgentReferralsWorkerSweepResult = {
   review_queue_totals: AgentReferralsReviewQueueTotals;
 };
 
-const ZERO_REVIEW_QUEUE_TOTALS: AgentReferralsReviewQueueTotals = {
-  distributions_review_required: 0, distributions_removal_overdue: 0, distributions_reporting_tail_incomplete: 0,
-  acts_awaiting_presentation: 0, payment_attempts_payout_unknown: 0, npd_reconciliation_needed: 0,
-  partners_profile_pending_verification: 0, partners_framework_not_issued: 0,
-};
-
 const engagementIdsWithEndedPublication = (db: Database.Database): string[] =>
   (db.prepare(`SELECT DISTINCT e.id FROM engagements e
     WHERE e.lifecycle_state IN ('ACTIVE', 'SUSPENDED', 'CLOSED')`).all() as { id: string }[])
-    .map((row) => row.id);
+.map((row) => row.id);
 
 /**
  * Every distribution belonging to an engagement whose ACTIVE (last-activated)
@@ -111,7 +104,7 @@ const sweepRemovalOverdue = (db: Database.Database, atMs: number): number => {
     const projection = distributionProjection(db, distributionId);
     if (projection.removal_state !== "REMOVAL_REQUIRED" && projection.removal_state !== "REMOVAL_CLAIMED") continue;
     const lastEvent = db.prepare(`SELECT occurred_at FROM engagement_distribution_events WHERE distribution_id = ? AND event_kind = ? ORDER BY event_sequence DESC LIMIT 1`)
-      .get(distributionId, projection.removal_state) as { occurred_at: string } | undefined;
+.get(distributionId, projection.removal_state) as { occurred_at: string } | undefined;
     if (!lastEvent) continue;
     const ageMs = atMs - new Date(lastEvent.occurred_at).getTime();
     if (ageMs < REMOVAL_OVERDUE_GRACE_MS) continue;
@@ -125,21 +118,7 @@ const sweepRemovalOverdue = (db: Database.Database, atMs: number): number => {
   return marked;
 };
 
-/**
- * DORMANT short-circuits to an all-zero no-op before touching any of the
- * three gated commands below - `dormant-ready` requires zero Agent
- * Referrals business records to exist at all, so there is provably nothing
- * for any of them to find, and each one's own suspension-policy gate would
- * otherwise throw AGENT_REFERRALS_FEATURE_DORMANT on every single tick
- * (MATURATION_RECOVERY_REPORTING_TAIL classes are permitted under ACTIVE
- * and SUSPENDED, refused only under DORMANT). Checked once here rather than
- * relying on each command's own internal gate to no-op, so a DORMANT
- * deployment's worker log stays silent instead of one exception per cycle.
- */
 export const runAgentReferralsWorkerSweep = (db: Database.Database, atMs = Date.now()): AgentReferralsWorkerSweepResult => {
-  if (agentReferralsFeatureState(db).state === "DORMANT") {
-    return { removal_required_marked: 0, removal_overdue_marked: 0, payment_attempts_recovered: 0, review_queue_totals: ZERO_REVIEW_QUEUE_TOTALS };
-  }
   return {
     removal_required_marked: sweepRemovalRequired(db, atMs),
     removal_overdue_marked: sweepRemovalOverdue(db, atMs),

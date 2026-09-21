@@ -6,8 +6,8 @@ fail loudly: a provider-side change lands on production without a deploy, and
 without a diff.
 
 This file is where they are written down. It is an acceptance checklist, not a
-dispatch input — promoting any of it to a required input of
-`controlled-production-deploy` is a separate decision.
+dispatch input — promoting any of it to a required input of the production
+deploy is a separate decision.
 
 ## Provider configuration this release depends on
 

@@ -1,8 +1,7 @@
 import Database from "better-sqlite3";
-import { drizzle } from "drizzle-orm/better-sqlite3";
-import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { assertSupportedSchemaLineage, classifySchemaLineage, SchemaLineageError, type SchemaIdentitySnapshot } from "./release/schema-identity";
 
 const defaultPath = join(process.cwd(), "commerce-data", "commerce.sqlite");
 const defaultMigrationsDir = () => join(process.cwd(), "commerce", "migrations");
@@ -46,62 +45,31 @@ export function openReadOnlyDatabase(filename = process.env.COMMERCE_DATABASE_PA
   return sqlite;
 }
 
-/**
- * Migrations permitted to run with `foreign_keys` temporarily OFF, keyed by
- * the exact `(filename, sha256)` pair reviewed for that procedure - never by
- * filename alone, so touching a migration's bytes without a matching reviewed
- * registry update can never silently keep it privileged. `PRAGMA foreign_keys`
- * is a no-op once a transaction is open, so this table exists specifically to
- * admit the disable-then-BEGIN ordering in applyFkOffMigration() below for a
- * migration that genuinely needs it (an in-place CHECK-constraint rebuild that
- * SQLite cannot do without recreating the table), and nothing else.
- *
- * Deliberately empty in PR1: the first entry (0042) could not exist before
- * the migration file did. PR2 adds `0042_agent_referrals_agents_rebuild.sql`
- * - the `agents` table rebuild that widens `contractor_type` to admit
- * `ORGANIZATION` - and this entry in the same reviewed commit, so both enter
- * the release together.
- *
- * The PR-D foundation adds the second entry (0050) the same way:
- * `0050_agent_referrals_legal_profile_provenance_rebuild.sql` rebuilds
- * `agent_referrals_legal_profile_revisions` to add the `assertion_source`/
- * `evidence_ref` provenance columns and their CHECK, which - like 0042 -
- * SQLite cannot add without recreating the table.
- *
- * Phase 1 adds 0058: an `agents` rebuild that removes the legacy legal
- * identity shadow through the same temporary-table swap procedure as 0042.
- *
- * PR1 of the reissuance/evidence program adds 0059: an `agents` rebuild that
- * drops the dead, disconnected `contract_reference` field, through the same
- * procedure.
- *
- * `commerce/src/db.ts` is runtime-reachable from server.ts and is in no
- * boundary list of its own (see docs/release/DEPLOYMENT_INVARIANTS.md and
- * finding A4-3 in the Agent Referrals plan). The registry is therefore
- * inlined here rather than imported from a separate module, so adding an
- * entry never gives this file a new local import edge that would need its
- * own boundary classification.
- */
-export const FK_OFF_MIGRATIONS: ReadonlyArray<{ readonly filename: string; readonly sha256: string }> = [
-  { filename: "0042_agent_referrals_agents_rebuild.sql", sha256: "d9b5ecbf496993669201b45440ea5213ba0e52af778e2094d569f772adfee6ab" },
-  { filename: "0050_agent_referrals_legal_profile_provenance_rebuild.sql", sha256: "e1cbd9ce177546ea621fb4a9da861f63e69e999e8bf6a5c159d1c967761349f0" },
-  { filename: "0052_agent_referrals_unified_legal_requisites.sql", sha256: "bcc44feaa37acb5930a8b9d7fe4a1bd4e711306e2640b9cb04ff78844cec9104" },
-  { filename: "0058_agents_legal_identity_cleanup.sql", sha256: "c8f711ace8ebf169fb492aa4b3cd5c745f98a8ed9be03ff1cf76d1ef6a184637" },
-  { filename: "0059_agents_contract_reference_removal.sql", sha256: "f0c338922b8a09ea218be5fb26c0934a8689a8a7f424023396420c8d3c40777e" },
-];
+const LEDGER_DDL = "CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)";
 
-export const isFkOffMigration = (filename: string, sha256Hex: string): boolean =>
-  FK_OFF_MIGRATIONS.some((entry) => entry.filename === filename && entry.sha256 === sha256Hex);
+const tableExists = (sqlite: Database.Database, name: string): boolean =>
+  Boolean(sqlite.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
 
 /**
- * A post-commit `foreign_key_check` failure cannot be undone by rollback -
- * the transaction already committed - so it is surfaced as this distinct,
- * unrecoverable class rather than an ordinary thrown Error. A caller must
- * never report the runtime ready after catching one of these.
+ * What the lineage decision is made from. Read straight off the database,
+ * because the question is what this file actually is - not what a caller
+ * believes it opened.
  */
-export class MigrationFatalError extends Error {
-  constructor(readonly code: string) { super(code); }
-}
+export const readSchemaIdentity = (sqlite: Database.Database): SchemaIdentitySnapshot => {
+  const tableNames = (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all() as { name: string }[])
+    .map((row) => row.name);
+  const schemaIdentity = tableNames.includes("schema_identity")
+    ? (sqlite.prepare("SELECT lineage FROM schema_identity WHERE singleton = 1").get() as { lineage: string } | undefined) ?? null
+    : null;
+  const appliedVersionCount = tableNames.includes("schema_migrations")
+    ? Number((sqlite.prepare("SELECT COUNT(*) AS n FROM schema_migrations").get() as { n: number }).n)
+    : 0;
+  return { tableNames, schemaIdentity, appliedVersionCount };
+};
+
+/** Every entry point that opens a database without migrating it owes this call. */
+export const assertSupportedDatabase = (sqlite: Database.Database): void =>
+  assertSupportedSchemaLineage(readSchemaIdentity(sqlite));
 
 const alreadyApplied = (sqlite: Database.Database, version: string): boolean =>
   Boolean(sqlite.prepare("SELECT 1 FROM schema_migrations WHERE version = ?").get(version));
@@ -109,20 +77,22 @@ const alreadyApplied = (sqlite: Database.Database, version: string): boolean =>
 const recordApplied = (sqlite: Database.Database, version: string) =>
   sqlite.prepare("INSERT INTO schema_migrations(version) VALUES (?)").run(version);
 
-const foreignKeyViolations = (sqlite: Database.Database): unknown[] => {
-  const result = sqlite.pragma("foreign_key_check");
-  return Array.isArray(result) ? result : [];
-};
-
 /**
- * Ordinary path: `BEGIN IMMEDIATE` acquires the write lock before this
- * connection decides anything, then the ledger is re-checked from inside that
- * lock - never from a set built before acquiring it - so a second concurrent
- * runner that raced to the same version becomes a no-op instead of a double
- * apply or a UNIQUE-constraint crash on `schema_migrations`.
+ * `BEGIN IMMEDIATE` acquires the write lock before this connection decides
+ * anything, then the ledger is re-checked from inside that lock - never from a
+ * set built before acquiring it - so a second concurrent runner that raced to
+ * the same version becomes a no-op instead of a double apply or a
+ * UNIQUE-constraint crash on `schema_migrations`.
+ *
+ * The ledger table is created inside that same transaction. Creating it first
+ * and separately would leave a crashed bootstrap holding a database whose only
+ * table is `schema_migrations` - which classifies as LEGACY, and would refuse
+ * to start forever. Either the baseline and its ledger row are both there, or
+ * the database is still empty.
  */
-export const applyOrdinaryMigration = (sqlite: Database.Database, version: string, sql: string) => {
+export const applyMigration = (sqlite: Database.Database, version: string, sql: string) => {
   const run = sqlite.transaction(() => {
+    sqlite.exec(LEDGER_DDL);
     if (alreadyApplied(sqlite, version)) return;
     sqlite.exec(sql);
     recordApplied(sqlite, version);
@@ -131,52 +101,33 @@ export const applyOrdinaryMigration = (sqlite: Database.Database, version: strin
 };
 
 /**
- * The one procedure allowed to run with `foreign_keys` OFF, and only for a
- * migration whose exact bytes are pinned in FK_OFF_MIGRATIONS.
+ * Classification happens BEFORE anything is applied, and that ordering is the
+ * whole point: a pre-launch database must be refused, never brought forward.
+ * The launch baseline is not a step the old ledger can take - it is a
+ * different lineage - so incompatibility is a property this runtime enforces
+ * rather than something a cutover procedure is trusted to arrange.
  *
- * Ordering: assert not already in a transaction and foreign_keys is ON ->
- * disable FK -> BEGIN IMMEDIATE -> re-check ledger, execute, insert ledger ->
- * foreign_key_check -> commit -> re-enable FK -> foreign_key_check again.
- *
- * A pre-commit failure (the exec itself, or a violation found before commit)
- * rolls back exactly like the ordinary path; foreign_keys is restored in the
- * finally below regardless of how the transaction ended. A violation found
- * only after commit is the unrecoverable case and raises MigrationFatalError.
+ *   empty              -> bootstrap the launch baseline
+ *   launch lineage     -> apply whatever 0002+ is pending
+ *   pre-launch ledger  -> refuse
+ *   anything else      -> refuse
  */
-export const applyFkOffMigration = (sqlite: Database.Database, version: string, sql: string) => {
-  if (sqlite.inTransaction) throw new MigrationFatalError("MIGRATION_FK_OFF_ALREADY_IN_TRANSACTION");
-  if (sqlite.pragma("foreign_keys", { simple: true }) !== 1) throw new MigrationFatalError("MIGRATION_FK_OFF_REQUIRES_FOREIGN_KEYS_ON");
-  sqlite.pragma("foreign_keys = OFF");
-  try {
-    const run = sqlite.transaction(() => {
-      if (alreadyApplied(sqlite, version)) return;
-      sqlite.exec(sql);
-      recordApplied(sqlite, version);
-      if (foreignKeyViolations(sqlite).length) throw new MigrationFatalError("MIGRATION_FK_OFF_PRE_COMMIT_FOREIGN_KEY_CHECK_FAILED");
-    });
-    run.immediate();
-  } finally {
-    sqlite.pragma("foreign_keys = ON");
-  }
-  if (foreignKeyViolations(sqlite).length) throw new MigrationFatalError("MIGRATION_FK_OFF_POST_COMMIT_FOREIGN_KEY_CHECK_FAILED");
-};
-
 export function migrate(sqlite: Database.Database, migrationsDir = defaultMigrationsDir()) {
   if (!existsSync(migrationsDir)) throw new Error("Commerce migrations directory is missing.");
-  sqlite.exec("CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)");
+  const lineage = classifySchemaLineage(readSchemaIdentity(sqlite));
+  if (lineage === "LEGACY") throw new SchemaLineageError("LEGACY_PRELAUNCH_DATABASE_NOT_SUPPORTED");
+  if (lineage === "UNKNOWN") throw new SchemaLineageError("UNKNOWN_SCHEMA_LINEAGE");
+
   for (const version of readdirSync(migrationsDir).filter((file) => file.endsWith(".sql")).sort()) {
-    // Fast unlocked skip for the common case (already applied); the
-    // authoritative recheck that actually matters under concurrency happens
-    // again inside the acquired IMMEDIATE transaction below. Any failure here
-    // - SQL error, pre-commit or post-commit foreign_key_check violation -
-    // propagates out of migrate() and stops every further migration in this
-    // call; there is no catch-and-continue.
-    if (alreadyApplied(sqlite, version)) continue;
-    const sql = readFileSync(join(migrationsDir, version), "utf8");
-    if (isFkOffMigration(version, createHash("sha256").update(sql).digest("hex"))) applyFkOffMigration(sqlite, version, sql);
-    else applyOrdinaryMigration(sqlite, version, sql);
+    // Fast unlocked skip for the common case; the authoritative recheck that
+    // matters under concurrency happens again inside the IMMEDIATE transaction.
+    // Any failure propagates and stops every further migration in this call.
+    if (tableExists(sqlite, "schema_migrations") && alreadyApplied(sqlite, version)) continue;
+    applyMigration(sqlite, version, readFileSync(join(migrationsDir, version), "utf8"));
   }
-  return drizzle(sqlite);
+
+  // A database that came out of this still has to be one this runtime trusts.
+  assertSupportedDatabase(sqlite);
 }
 
 export type Sqlite = Database.Database;

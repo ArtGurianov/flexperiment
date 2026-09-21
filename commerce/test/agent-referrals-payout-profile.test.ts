@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { migrate, openDatabase } from "../src/db";
-import { agentReferralsActivationEvidence } from "../src/agent-referrals-activation";
+import { agentReferralsEvidence } from "../src/agent-referrals-schema-evidence";
 import { decryptPayoutDestination, encryptPayoutDestination, PayoutEncryptionError, pinPayoutEncryptionKeyId } from "../src/agent-referrals-payout-encryption";
 import { allPayoutProfileRevisions, currentPayoutProfile, revokePartnerPayoutDestination, setPartnerPayoutDestination } from "../src/agent-referrals-payout-profile";
 import { mintStepUpGrant } from "../src/agent-referrals-step-up";
@@ -48,8 +48,8 @@ const seedPartnerWithSession = (db: Database.Database): PartnerPrincipal => {
   const agentId = randomUUID();
   const partnerIdentityId = randomUUID();
   const sessionId = randomUUID();
-  db.prepare(`INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
-    VALUES (?, ?, 'A', ?, 'PERCENT', 1000)`).run(agentId, `p-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
+  db.prepare(`INSERT INTO partners(id, slug, display_name, email)
+    VALUES (?, ?, 'A', ?)`).run(agentId, `p-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
   db.prepare(`INSERT INTO partner_identities(id, agent_id, email, email_hash, created_by_admin_id) VALUES (?, ?, 'p@example.test', 'h', 'admin')`).run(partnerIdentityId, agentId);
   db.prepare(`INSERT INTO partner_sessions(id, partner_identity_id, token_hash, expires_at) VALUES (?, ?, ?, datetime('now', '+1 hour'))`).run(sessionId, partnerIdentityId, randomUUID());
   return { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: sessionId };
@@ -67,7 +67,7 @@ describe("payout-profile revisions", () => {
       const encrypted = encryptPayoutDestination(db, SENSITIVE_CARD);
       expect(encrypted.key_id).toBeTruthy();
       expect(encrypted.ciphertext).not.toContain(SENSITIVE_CARD);
-      expect(agentReferralsActivationEvidence(db, "payout_profile_encryption_key_id")).toBe(encrypted.key_id);
+      expect(agentReferralsEvidence(db, "payout_profile_encryption_key_id")).toBe(encrypted.key_id);
       expect(decryptPayoutDestination(encrypted.key_id, encrypted.ciphertext, encrypted.nonce)).toBe(SENSITIVE_CARD);
     });
 
@@ -76,7 +76,7 @@ describe("payout-profile revisions", () => {
       const first = encryptPayoutDestination(db, "card-a");
       const second = encryptPayoutDestination(db, "card-b");
       expect(second.key_id).toBe(first.key_id);
-      expect(agentReferralsActivationEvidence(db, "payout_profile_encryption_key_id")).toBe(first.key_id);
+      expect(agentReferralsEvidence(db, "payout_profile_encryption_key_id")).toBe(first.key_id);
     });
 
     it("fails closed if a different key id is already pinned in the manifest (PR3's insert-only semantics, not weakened; 0049 makes the manifest structurally insert-only too, so this now pins the differing fact via INSERT rather than an UPDATE the table no longer accepts)", () => {
@@ -86,7 +86,7 @@ describe("payout-profile revisions", () => {
       // deployment - planted before any real evidence is ever pinned, since
       // the table accepts no UPDATE at all once a row exists.
       db.prepare("INSERT INTO agent_referrals_activation_manifest(key, value_json) VALUES ('payout_profile_encryption_key_id', ?)").run(JSON.stringify("some-other-key-id"));
-      expect(() => encryptPayoutDestination(db, "card-a")).toThrow(/AGENT_REFERRALS_ACTIVATION_EVIDENCE_CONFLICT/);
+      expect(() => encryptPayoutDestination(db, "card-a")).toThrow(/AGENT_REFERRALS_SCHEMA_EVIDENCE_CONFLICT/);
     });
 
     it("decrypt refuses a mismatched key id", () => {
@@ -100,28 +100,28 @@ describe("payout-profile revisions", () => {
         const db = fresh();
         delete process.env.COMMERCE_AGENT_REFERRALS_PAYOUT_KEY_ID;
         expect(() => encryptPayoutDestination(db, SENSITIVE_CARD)).toThrow(/AGENT_REFERRALS_PAYOUT_KEY_ID_MISSING/);
-        expect(agentReferralsActivationEvidence(db, "payout_profile_encryption_key_id")).toBeUndefined();
+        expect(agentReferralsEvidence(db, "payout_profile_encryption_key_id")).toBeUndefined();
       });
 
       it("missing key bytes: encryption impossible, no manifest evidence", () => {
         const db = fresh();
         delete process.env.COMMERCE_AGENT_REFERRALS_PAYOUT_KEY_BASE64;
         expect(() => encryptPayoutDestination(db, SENSITIVE_CARD)).toThrow(/AGENT_REFERRALS_PAYOUT_KEY_MISSING/);
-        expect(agentReferralsActivationEvidence(db, "payout_profile_encryption_key_id")).toBeUndefined();
+        expect(agentReferralsEvidence(db, "payout_profile_encryption_key_id")).toBeUndefined();
       });
 
       it("wrong-length key bytes: encryption impossible, no manifest evidence", () => {
         const db = fresh();
         process.env.COMMERCE_AGENT_REFERRALS_PAYOUT_KEY_BASE64 = Buffer.from("too-short").toString("base64");
         expect(() => encryptPayoutDestination(db, SENSITIVE_CARD)).toThrow(/AGENT_REFERRALS_PAYOUT_KEY_INVALID/);
-        expect(agentReferralsActivationEvidence(db, "payout_profile_encryption_key_id")).toBeUndefined();
+        expect(agentReferralsEvidence(db, "payout_profile_encryption_key_id")).toBeUndefined();
       });
 
       it("invalid config never reaches pinPayoutEncryptionKeyId's pin step either", () => {
         const db = fresh();
         delete process.env.COMMERCE_AGENT_REFERRALS_PAYOUT_KEY_ID;
         expect(() => pinPayoutEncryptionKeyId(db)).toThrow(PayoutEncryptionError);
-        expect(agentReferralsActivationEvidence(db, "payout_profile_encryption_key_id")).toBeUndefined();
+        expect(agentReferralsEvidence(db, "payout_profile_encryption_key_id")).toBeUndefined();
       });
 
       it("a valid explicit 32-byte test key succeeds with real AES-256-GCM round-tripping", () => {
@@ -146,7 +146,7 @@ describe("payout-profile revisions", () => {
       const db = fresh();
       const partner = seedPartnerWithSession(db);
       expect(() => setPartnerPayoutDestination(db, partner, { step_up_grant_id: "nonexistent", destination_kind: "BANK_CARD", destination_plaintext: SENSITIVE_CARD, destination_last4: "1111" }))
-        .toThrow(/AGENT_REFERRALS_STEP_UP_GRANT_INVALID/);
+.toThrow(/AGENT_REFERRALS_STEP_UP_GRANT_INVALID/);
       expect(currentPayoutProfile(db, partner.partner_identity_id)).toBeNull();
     });
 
@@ -216,7 +216,7 @@ describe("payout-profile revisions", () => {
         BEGIN SELECT RAISE(ABORT, 'INJECTED_PAYOUT_FAILURE'); END;`);
 
       expect(() => setPartnerPayoutDestination(db, partner, { step_up_grant_id: grant, destination_kind: "BANK_CARD", destination_plaintext: SENSITIVE_CARD, destination_last4: "1111" }))
-        .toThrow(/INJECTED_PAYOUT_FAILURE/);
+.toThrow(/INJECTED_PAYOUT_FAILURE/);
       db.exec("DROP TRIGGER poison_payout_insert");
 
       expect(currentPayoutProfile(db, partner.partner_identity_id)).toBeNull();

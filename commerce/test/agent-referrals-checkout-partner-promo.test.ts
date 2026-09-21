@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { migrate, openDatabase } from "../src/db";
 import { CommerceDomain, DomainError } from "../src/domain";
 import { MockProvider } from "../src/provider";
-import { activateAgentReferrals } from "../src/agent-referrals-feature-state";
+import { materializeInitialActiveFeatureForTest as activateAgentReferrals } from "./support/agent-referrals-feature-state";
 import { provisionPartnerOwner, submitPartnerLegalProfile, verifyPartnerLegalProfile, issueFrameworkToPartner, type AdminPrincipal, type PartnerPrincipal } from "../src/agent-referrals-partner-identity";
 import { activatePartner, getPartnerIdentity } from "../src/agent-referrals-onboarding";
 import { mintFrameworkAgreementRevision, mintDelegationTemplateRevision, FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES, DELEGATION_TEMPLATE_REQUIRED_CLAUSES } from "../src/agent-referrals-framework-delegation";
@@ -42,8 +42,8 @@ const clause = (arr: readonly string[]) => Object.fromEntries(arr.map((k) => [k,
 const readyPartner = (db: Database.Database) => {
   activateAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "test" });
   const agentId = randomUUID();
-  db.prepare(`INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
-    VALUES (?, ?, 'Agent', ?, 'PERCENT', 1000)`).run(agentId, `partner-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
+  db.prepare(`INSERT INTO partners(id, slug, display_name, email)
+    VALUES (?, ?, 'Agent', ?)`).run(agentId, `partner-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
   const { partner_identity_id: partnerIdentityId } = provisionPartnerOwner(db, admin, agentId, "p@example.test", "test");
   submitPartnerLegalProfile(db, { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: "n/a" }, "INDIVIDUAL", "NPD", { full_name: "Ivanov Ivan Ivanovich", inn: "123456789012" }, 0);
   verifyPartnerLegalProfile(db, admin, partnerIdentityId, "verified");
@@ -97,7 +97,7 @@ const checkoutInput = (quoteId: string, email: string) =>
   ({ quote_id: quoteId, customer_email: email, customer_adult_confirmed: true as const, participant_age_band: "ADULT", offer_accepted: true as const, pd_consent_accepted: true as const });
 
 const orderAuthorityRow = (db: Database.Database, orderId: string) =>
-  db.prepare(`SELECT reward_authority_kind, explicit_promo_id, resolved_partner_id, resolved_engagement_id, resolved_engagement_revision_id, resolved_promo_authorization_id, attribution_rule_version, resolution_reason, attributed_agent_id, reward_type_snapshot, reward_value_snapshot
+  db.prepare(`SELECT explicit_promo_id, resolved_partner_id, resolved_engagement_id, resolved_engagement_revision_id, resolved_promo_authorization_id, attribution_rule_version, resolution_reason, attributed_agent_id, reward_type_snapshot, reward_value_snapshot
     FROM orders WHERE id = ?`).get(orderId) as Record<string, unknown>;
 
 const latestOrder = (db: Database.Database) => (db.prepare("SELECT id FROM orders ORDER BY created_at DESC, rowid DESC LIMIT 1").get() as { id: string }).id;
@@ -117,7 +117,7 @@ describe("checkout with a partner-owned promo: real §B-9 attribution now resolv
     const auth1 = db.prepare("SELECT id FROM engagement_promo_authorizations WHERE engagement_id = ? AND revoked_at IS NULL").get(engagementId) as { id: string };
     const rev1 = db.prepare("SELECT id FROM engagement_revisions WHERE engagement_id = ? AND revision = 1").get(engagementId) as { id: string };
     expect(orderAuthorityRow(db, order1Id)).toMatchObject({
-      reward_authority_kind: "ENGAGEMENT_SCOPED", explicit_promo_id: p1.promo.promo_code_id, resolved_partner_id: p1.agentId,
+      explicit_promo_id: p1.promo.promo_code_id, resolved_partner_id: p1.agentId,
       resolved_engagement_id: engagementId, resolved_engagement_revision_id: rev1.id, resolved_promo_authorization_id: auth1.id,
       attribution_rule_version: 1, resolution_reason: "EXPLICIT_PARTNER_PROMO", attributed_agent_id: p1.agentId,
       reward_type_snapshot: "PERCENT", reward_value_snapshot: 1000,
@@ -136,7 +136,7 @@ describe("checkout with a partner-owned promo: real §B-9 attribution now resolv
     const auth2 = db.prepare("SELECT id FROM engagement_promo_authorizations WHERE engagement_id = ? AND revoked_at IS NULL").get(engagementId) as { id: string };
     expect(auth2.id).not.toBe(auth1.id); // the authorization was genuinely superseded
     expect(orderAuthorityRow(db, order2Id)).toMatchObject({
-      reward_authority_kind: "ENGAGEMENT_SCOPED", resolved_engagement_revision_id: revision2.id, resolved_promo_authorization_id: auth2.id,
+      resolved_engagement_revision_id: revision2.id, resolved_promo_authorization_id: auth2.id,
       reward_type_snapshot: "FIXED", reward_value_snapshot: 5_000,
     });
 
@@ -230,7 +230,7 @@ describe("checkout with a partner-owned promo: real §B-9 attribution now resolv
     const code = db.prepare("SELECT code FROM promo_codes WHERE id = ?").get(p1.promo.promo_code_id) as { code: string };
     const quote = domain.checkoutContext({ occurrenceId: occ, promoCode: code.code });
 
-    suspendAgentReferrals(db, { expected_revision: 2, owner_id: "test-owner", reason: "emergency" }); // readyPartner's own activateAgentReferrals already bumped the seeded revision 1 -> 2
+    suspendAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "emergency" }); // readyPartner's own activateAgentReferrals already bumped the seeded revision 1 -> 2
 
     expect(() => domain.checkout(checkoutInput(quote.quote_id, "suspended@example.test"), "idem-global-suspend-0000001")).toThrow(DomainError);
     try {
@@ -242,147 +242,13 @@ describe("checkout with a partner-owned promo: real §B-9 attribution now resolv
   });
 });
 
-describe("legacy isolation: the legacy fx_ref/discount-only/direct paths are unaffected, and a partner-owned agent can never receive attribution through them", () => {
-  const seedLegacyAgent = (db: Database.Database, slug: string, defaultRewardValue = 500) => {
-    const agentId = randomUUID();
-    db.prepare(`INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
-      VALUES (?, ?, 'Legacy', ?, 'PERCENT', ?)`).run(agentId, slug, `${slug}@example.test`, defaultRewardValue);
-    return agentId;
-  };
-
-  it("a partner_identity that exists but has NO permanent promo yet is already suppressed from legacy attribution - partner ownership is decided by partner_identities.agent_id, never by whether createPartnerPromo has run (holistic review, P0 finding 1)", () => {
-    const { db, domain } = fresh();
-    activateAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "test" });
-    const cityId = randomUUID();
-    db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, ?, 'City')").run(cityId, `city-${cityId.slice(0, 8)}`);
-    const occurrenceId = seedOccurrence(db, cityId);
-
-    const agentId = randomUUID();
-    const slug = `mid-onboarding-${agentId.slice(0, 8)}`;
-    db.prepare(`INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
-      VALUES (?, ?, 'Agent', ?, 'PERCENT', 900)`).run(agentId, slug, `${slug}@example.test`);
-    // A real partner_identity, admin-provisioned - but onboarding stops
-    // here: no legal profile, no framework acceptance, and critically no
-    // createPartnerPromo call, so partnerPromoByPartnerId(agentId) is null
-    // even though this agent is already, truly, a partner.
-    provisionPartnerOwner(db, admin, agentId, "mid-onboarding@example.test", "test");
-
-    // Via legacy referral slug:
-    const quoteBySlug = domain.checkoutContext({ occurrenceId, referralSlug: slug });
-    domain.checkout(checkoutInput(quoteBySlug.quote_id, "via-slug@example.test"), "idem-mid-onboarding-slug-0000001");
-    expect(orderAuthorityRow(db, latestOrder(db))).toMatchObject({ reward_authority_kind: "LEGACY", attributed_agent_id: null });
-
-    // Via a legacy (non-partner) promo whose agent_id happens to point at the same mid-onboarding partner:
-    domain.createPromoCommand({ code: "MIDONBOARD", agent_id: agentId, status: "ACTIVE", discount_type: "PERCENT", discount_value: 500 }, "idem-mid-onboarding-promo-create", "admin-1");
-    const quoteByPromo = domain.checkoutContext({ occurrenceId, promoCode: "MIDONBOARD" });
-    domain.checkout(checkoutInput(quoteByPromo.quote_id, "via-promo@example.test"), "idem-mid-onboarding-promo-0000001");
-    expect(orderAuthorityRow(db, latestOrder(db))).toMatchObject({ reward_authority_kind: "LEGACY", attributed_agent_id: null });
-  });
-
-  it("genuine legacy fx_ref referral-slug attribution is unaffected: attributed_agent_id/reward_type/value come from agents.default_reward_*, reward_authority_kind is LEGACY", () => {
-    const { db, domain } = fresh();
-    const occurrenceId = seedOccurrence(db, (() => { const c = randomUUID(); db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, ?, 'City')").run(c, `city-${c.slice(0, 8)}`); return c; })());
-    const legacyAgentId = seedLegacyAgent(db, "legacy-referral", 700);
-    const quote = domain.checkoutContext({ occurrenceId, referralSlug: "legacy-referral" });
-    domain.checkout(checkoutInput(quote.quote_id, "legacy-ref@example.test"), "idem-legacy-ref-0000001");
-    const orderId = latestOrder(db);
-    expect(orderAuthorityRow(db, orderId)).toMatchObject({
-      reward_authority_kind: "LEGACY", attributed_agent_id: legacyAgentId, reward_type_snapshot: "PERCENT", reward_value_snapshot: 700,
-      resolved_partner_id: null, resolved_engagement_id: null, resolution_reason: "LEGACY_REFERRAL_SLUG",
-    });
-  });
-
-  it("legacy promo with an agent attached is unaffected: still LEGACY authority, reward from the agent's own default", () => {
-    const { db, domain } = fresh();
-    const occurrenceId = seedOccurrence(db, (() => { const c = randomUUID(); db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, ?, 'City')").run(c, `city-${c.slice(0, 8)}`); return c; })());
-    const legacyAgentId = seedLegacyAgent(db, "legacy-promo-agent", 800);
-    domain.createPromoCommand({ code: "LEGACYPROMO", agent_id: legacyAgentId, status: "ACTIVE", discount_type: "PERCENT", discount_value: 500 }, "idem-create-legacy-promo", "admin-1");
-    const quote = domain.checkoutContext({ occurrenceId, promoCode: "LEGACYPROMO" });
-    domain.checkout(checkoutInput(quote.quote_id, "legacy-promo@example.test"), "idem-legacy-promo-0000001");
-    const orderId = latestOrder(db);
-    expect(orderAuthorityRow(db, orderId)).toMatchObject({ reward_authority_kind: "LEGACY", attributed_agent_id: legacyAgentId, reward_type_snapshot: "PERCENT", reward_value_snapshot: 800, resolution_reason: "LEGACY_PROMO" });
-  });
-
-  it("legacy discount-only promo (no agent at all) is unaffected: no attribution, discount still applies", () => {
-    const { db, domain } = fresh();
-    const occurrenceId = seedOccurrence(db, (() => { const c = randomUUID(); db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, ?, 'City')").run(c, `city-${c.slice(0, 8)}`); return c; })());
-    domain.createPromoCommand({ code: "DISCOUNTONLY", status: "ACTIVE", discount_type: "PERCENT", discount_value: 500 }, "idem-create-discount-only", "admin-1");
-    const quote = domain.checkoutContext({ occurrenceId, promoCode: "DISCOUNTONLY" });
-    expect(quote.discount_kopecks).toBe(5_000);
-    domain.checkout(checkoutInput(quote.quote_id, "discount-only@example.test"), "idem-discount-only-0000001");
-    const orderId = latestOrder(db);
-    expect(orderAuthorityRow(db, orderId)).toMatchObject({ reward_authority_kind: "LEGACY", attributed_agent_id: null, resolution_reason: "LEGACY_PROMO" });
-  });
-
-  it("direct (no promo, no referral slug) is unaffected: LEGACY/DIRECT, no attribution", () => {
-    const { db, domain } = fresh();
-    const occurrenceId = seedOccurrence(db, (() => { const c = randomUUID(); db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, ?, 'City')").run(c, `city-${c.slice(0, 8)}`); return c; })());
-    const quote = domain.checkoutContext({ occurrenceId });
-    domain.checkout(checkoutInput(quote.quote_id, "direct@example.test"), "idem-direct-0000001");
-    const orderId = latestOrder(db);
-    expect(orderAuthorityRow(db, orderId)).toMatchObject({ reward_authority_kind: "LEGACY", attributed_agent_id: null, resolution_reason: "DIRECT" });
-  });
-
-  it("an invalid explicit legacy promo code keeps its existing fail-closed behavior (PROMO_NOT_FOUND)", () => {
-    const { db, domain } = fresh();
-    const occurrenceId = seedOccurrence(db, (() => { const c = randomUUID(); db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, ?, 'City')").run(c, `city-${c.slice(0, 8)}`); return c; })());
-    expect(() => domain.checkoutContext({ occurrenceId, promoCode: "NOSUCHCODE" })).toThrow(DomainError);
-    try {
-      domain.checkoutContext({ occurrenceId, promoCode: "NOSUCHCODE" });
-    } catch (error) {
-      expect((error as DomainError).code).toBe("PROMO_NOT_FOUND");
-    }
-  });
-
-  it("a partner promo is never treated as discount-only: with no live authorization, checkout resolves nothing (no discount, no attribution) rather than granting the discount alone", () => {
-    const { db, domain } = fresh();
-    const p1 = readyPartner(db);
-    const occ = seedOccurrence(db, p1.cityId); // never engaged
-    const code = db.prepare("SELECT code FROM promo_codes WHERE id = ?").get(p1.promo.promo_code_id) as { code: string };
-    try {
-      domain.checkoutContext({ occurrenceId: occ, promoCode: code.code });
-      throw new Error("expected a refusal");
-    } catch (error) {
-      expect((error as DomainError).code).toBe("PROMO_NOT_ELIGIBLE"); // never a discount-only success
-    }
-  });
-
-  it("a partner-owned agent's own legacy slug never grants LEGACY attribution to themselves - the slug is matched (resolution_reason still names it) but yields no attributed agent at all, exactly as if it had matched nothing", () => {
-    const { db, domain } = fresh();
-    const p1 = readyPartner(db);
-    const occ = seedOccurrence(db, p1.cityId);
-    // The partner's own underlying `agents` row still has a `slug` (it predates and coexists with Agent Referrals identity) - using it as a legacy referralSlug must never grant attribution through activeAgentBySlug().
-    const partnerSlug = (db.prepare("SELECT slug FROM agents WHERE id = ?").get(p1.agentId) as { slug: string }).slug;
-    const quote = domain.checkoutContext({ occurrenceId: occ, referralSlug: partnerSlug });
-    domain.checkout(checkoutInput(quote.quote_id, "partner-via-slug@example.test"), "idem-partner-slug-0000001");
-    const orderId = latestOrder(db);
-    expect(orderAuthorityRow(db, orderId)).toMatchObject({ reward_authority_kind: "LEGACY", attributed_agent_id: null, resolved_partner_id: null, resolved_engagement_id: null, resolution_reason: "LEGACY_REFERRAL_SLUG" });
-  });
-
-  it("an explicit partner promo always wins as the sole authority and never degrades to legacy referral-slug attribution when it is itself unavailable", () => {
-    const { db, domain } = fresh();
-    const p1 = readyPartner(db);
-    const occ = seedOccurrence(db, p1.cityId); // no engagement - promo is not eligible
-    seedLegacyAgent(db, "some-other-legacy-agent", 600);
-    const code = db.prepare("SELECT code FROM promo_codes WHERE id = ?").get(p1.promo.promo_code_id) as { code: string };
-    // Even carrying a VALID legacy referralSlug alongside the (currently ineligible) partner promo, the explicit promo governs the refusal outright - no silent fallback to the legacy slug's agent.
-    try {
-      domain.checkoutContext({ occurrenceId: occ, promoCode: code.code, referralSlug: "some-other-legacy-agent" });
-      throw new Error("expected a refusal");
-    } catch (error) {
-      expect((error as DomainError).code).toBe("PROMO_NOT_ELIGIBLE");
-    }
-    expect(db.prepare("SELECT COUNT(*) AS n FROM orders").get()).toEqual({ n: 0 });
-  });
-});
-
 describe("legacy promo endpoint hardening: PROMO_OWNED_BY_PARTNER", () => {
   it("refuses agent_id, discount_type and discount_value mutation; permits the status toggle", () => {
     const { db, domain } = fresh();
     const p1 = readyPartner(db);
     const otherAgent = randomUUID();
-    db.prepare(`INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
-      VALUES (?, 'other', 'Other', 'other@example.test', 'PERCENT', 500)`).run(otherAgent);
+    db.prepare(`INSERT INTO partners(id, slug, display_name, email)
+      VALUES (?, 'other', 'Other', 'other@example.test')`).run(otherAgent);
 
     for (const patch of [{ agent_id: otherAgent }, { discount_type: "PERCENT", discount_value: 500 }, { discount_value: 999 }]) {
       expect(() => domain.patchPromoCommand(p1.promo.promo_code_id, patch, `idem-refuse-${JSON.stringify(patch)}`, "admin-1")).toThrow(DomainError);
@@ -422,15 +288,15 @@ describe("legacy promo endpoint hardening: PROMO_OWNED_BY_PARTNER", () => {
   it("legacy discount-only promos are completely unaffected by this hardening", () => {
     const { db, domain } = fresh();
     const agentId = randomUUID();
-    db.prepare(`INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
-      VALUES (?, 'legacy-agent', 'Legacy', 'legacy@example.test', 'PERCENT', 500)`).run(agentId);
+    db.prepare(`INSERT INTO partners(id, slug, display_name, email)
+      VALUES (?, 'legacy-agent', 'Legacy', 'legacy@example.test')`).run(agentId);
     const legacyPromo = domain.createPromoCommand({ code: "LEGACY10", agent_id: agentId, status: "ACTIVE", discount_type: "PERCENT", discount_value: 1000 }, "idem-legacy-create", "admin-1");
     const patched = domain.patchPromoCommand(String(legacyPromo.id), { discount_value: 1500 }, "idem-legacy-patch", "admin-1");
     expect(patched.discount_value).toBe(1500); // freely repriceable - never PROMO_OWNED_BY_PARTNER
   });
 });
 
-describe("occurrence material revision (§ Phase 5 review note 6): occurrence date/time is itself material engagement authority", () => {
+describe("occurrence material revision: an occurrence's date and time are themselves material engagement authority", () => {
   it("a real schedule change (via the legacy patchOccurrence path) suspends the already-ACTIVE engagement and revokes its promo authorization", () => {
     const { db, domain } = fresh();
     const p1 = readyPartner(db);

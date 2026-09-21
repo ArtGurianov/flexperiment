@@ -1,23 +1,22 @@
-import { openDatabase } from "./db";
+import { assertSupportedDatabase, openDatabase } from "./db";
 import { CommerceDomain } from "./domain";
 import { emailProviderFromEnvironment } from "./email-provider";
 import { providerFromEnvironment } from "./provider";
+import { startRuntimeInstance } from "./release/runtime-instance";
 import { runWorkerCycle } from "./worker-cycle";
-import { recordRuntimeHeartbeatEvidence, recordRuntimeStartupEvidence } from "./runtime-release-evidence";
 
 const sqlite = openDatabase();
+// The worker never migrates - the API owns that - but it must not trust a
+// database whose lineage it has not checked.
+assertSupportedDatabase(sqlite);
+const instance = startRuntimeInstance(sqlite, "WORKER");
 const domain = new CommerceDomain(sqlite, providerFromEnvironment(), emailProviderFromEnvironment());
-const sourceCommit = process.env.SOURCE_COMMIT?.trim() || "UNAVAILABLE";
-// Do not advertise readiness until the worker's required dependencies have
-// initialized. Liveness is deliberately distinct from successful work.
-const recordReadyHeartbeat = () => recordRuntimeHeartbeatEvidence(sqlite, "WORKER", sourceCommit);
-recordRuntimeStartupEvidence(sqlite, "WORKER", sourceCommit);
 let nextDriftSweepAt = 0;
 let sweeping = false;
 
 const sweep = async () => {
   const driftDue = Date.now() >= nextDriftSweepAt;
-  const cityInterest = await runWorkerCycle({ domain, db: sqlite, sourceCommit, collectProviderDrift: driftDue });
+  const cityInterest = await runWorkerCycle({ domain, db: sqlite, collectProviderDrift: driftDue });
   if (cityInterest.expired_deleted || cityInterest.intents_created) {
     console.log(`Commerce city-interest lifecycle expired_deleted=${cityInterest.expired_deleted} intents_created=${cityInterest.intents_created}`);
   }
@@ -36,12 +35,15 @@ const sweep = async () => {
 const runSweep = async () => {
   if (sweeping) return;
   sweeping = true;
-  try { await sweep(); }
-  catch (error) { console.error("Commerce worker sweep failed", error instanceof Error ? error.message : "unknown error"); }
+  try {
+    await sweep();
+    // Recorded only on success: readiness treats a stale sweep as not
+    // converged, and a sweep that threw has not proved the worker is working.
+    instance?.recorder.recordSuccessfulSweep();
+  } catch (error) { console.error("Commerce worker sweep failed", error instanceof Error ? error.message : "unknown error"); }
   finally { sweeping = false; }
 };
 
 void runSweep();
 setInterval(() => void runSweep(), 30_000);
-setInterval(recordReadyHeartbeat, 30_000);
 console.log("Commerce recovery worker running.");

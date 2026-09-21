@@ -11,9 +11,9 @@ import {
 
 /**
  * PR-B: the database is a deliberate SECOND representation of the
- * legal-profile shape - migrations must not become runtime-dependent on
+ * legal-profile shape - the schema must not become runtime-dependent on
  * TypeScript, so `lib/legal-profile-rules.ts` cannot simply be imported by
- * `0043`/`0052`. What keeps the two honest is this test: it walks every cell
+ * the migration that builds those CHECKs. What keeps the two honest is this test: it walks every cell
  * of the shared tables and proves the DB accepts EXACTLY what the domain
  * accepts, so changing one side without the other fails loudly here instead
  * of drifting until some caller meets a raw SqliteError in production.
@@ -30,9 +30,9 @@ const fresh = () => {
 
 const seedAgent = (db: Database.Database) => {
   const agentId = `agent-${randomUUID()}`;
-  db.prepare(`INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
-    VALUES (?, ?, 'Agent', ?, 'PERCENT', 1000)`)
-    .run(agentId, agentId, `${agentId}@example.test`);
+  db.prepare(`INSERT INTO partners(id, slug, display_name, email)
+    VALUES (?, ?, 'Agent', ?)`)
+.run(agentId, agentId, `${agentId}@example.test`);
   return agentId;
 };
 
@@ -63,7 +63,7 @@ const databaseAccepts = (
     db.prepare(`INSERT INTO agent_referrals_legal_profile_revisions
       (id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, opf, full_name, short_name, inn, kpp, registration_number, legal_address, reason, assertion_source)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'conformance', 'PARTNER_ASSERTED')`)
-      .run(randomUUID(), agentId, revision, legalForm, taxMode, projected,
+.run(randomUUID(), agentId, revision, legalForm, taxMode, projected,
         raw.opf ?? null, raw.full_name, raw.short_name ?? null, raw.inn, raw.kpp ?? null,
         raw.registration_number ?? null, raw.legal_address ?? null);
     return true;

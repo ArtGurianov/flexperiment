@@ -12,7 +12,6 @@
 #   grep -rhoE 'mkdtempSync\(join\(tmpdir\(\), *"[^"]+"' --include='*.ts' commerce apps lib \
 #     | sed -E 's/.*"([^"]+)".*/\1/' | sed -E 's/-$//' | sort -u
 accept-seam
-accept-seam
 accept-seam-template
 act-payment-settlement
 act-payment-settlement-template
@@ -68,11 +67,14 @@ ambiguity-seam
 ambiguity-seam-template
 attribution-reward
 attribution-reward-template
+baseline-frozen
+bootstrap-root
 bootstrap-promotion-compat
 candidate-author-fixture
 candidate-threeway
 cert-dispatch
 cert-dispatch-template
+certification-operator
 claim-seam
 claim-seam-template
 commerce-test-db-snapshot
@@ -80,15 +82,20 @@ controlled-candidate-apply
 controlled-candidate-index
 controlled-candidate-test-objects
 controlled-schema-pre-cas
+cutover-envelope
 cutover-shell
+cutover-volume
 db-migrate
 db-migrate-fixtures
 deploy-classification
+deploy-ref-clone
+deploy-ref-origin
+deployment-clone
+deployment-origin
 engagement-publication
 engagement-publication-template
 epoch-b-request-builders
 flexperiment-coolify-capture
-flexperiment-deploy-ref
 flexperiment-epoch-a-deploy-credential
 flexperiment-epoch-b-index
 flexperiment-epoch-b-test-objects
@@ -101,7 +108,6 @@ flexperiment-readiness-test
 flexperiment-recovery-state
 flexperiment-release-descriptor
 flexperiment-release-topology
-flexperiment-runtime-candidate-topology
 flexperiment-settlement-lock
 flexperiment-stale-prepared
 framework-reissuance-migration
@@ -147,11 +153,16 @@ q6-activation-terminal-identity
 q7-activation-http-schema
 q7-release-semantics
 r5-compat
+release-candidates
 release-control-v2-index
 release-control-v2-materializer
 release-control-v2-materializer-rename
 release-control-v2-shadow
+release-runner
 release-semantics-boundary
+rollback-receipt
+seo-snapshot
+sqlite-cutover
 suppression
 suppression-template
 tax-treatment-ord-canon
@@ -162,4 +173,3 @@ unified-legal-requisites
 unified-legal-requisites-only-0052
 unified-legal-requisites-tampered
 unified-legal-requisites-template
-seo-snapshot

@@ -1,6 +1,6 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import type Database from "better-sqlite3";
-import { recordAgentReferralsActivationEvidence } from "./agent-referrals-activation";
+import { recordAgentReferralsEvidence } from "./agent-referrals-schema-evidence";
 
 /**
  * Dedicated, versioned encryption key for payout-profile destinations -
@@ -19,8 +19,8 @@ import { recordAgentReferralsActivationEvidence } from "./agent-referrals-activa
  *
  * The key id is pinned on every encryption call: idempotent if the
  * configured id matches what is already pinned, fail-closed
- * (AGENT_REFERRALS_ACTIVATION_EVIDENCE_CONFLICT, from
- * agent-referrals-activation.ts) if the environment now resolves to a
+ * (AGENT_REFERRALS_SCHEMA_EVIDENCE_CONFLICT, from
+ * agent-referrals-schema-evidence.ts) if the environment now resolves to a
  * different id than the one already durably pinned. Rotation is
  * deliberately unsupported here - a future PR that needs it gets its own
  * explicit version/supersession semantics rather than this module silently
@@ -56,7 +56,7 @@ const resolvePayoutKeyBytes = (): Buffer => {
 export const pinPayoutEncryptionKeyId = (db: Database.Database): string => {
   const keyId = resolvePayoutKeyId();
   resolvePayoutKeyBytes();
-  recordAgentReferralsActivationEvidence(db, "payout_profile_encryption_key_id", keyId);
+  recordAgentReferralsEvidence(db, "payout_profile_encryption_key_id", keyId);
   return keyId;
 };
 
@@ -65,7 +65,7 @@ export type EncryptedPayoutDestination = { key_id: string; ciphertext: string; n
 export const encryptPayoutDestination = (db: Database.Database, plaintext: string): EncryptedPayoutDestination => {
   const keyId = resolvePayoutKeyId();
   const keyBytes = resolvePayoutKeyBytes();
-  recordAgentReferralsActivationEvidence(db, "payout_profile_encryption_key_id", keyId);
+  recordAgentReferralsEvidence(db, "payout_profile_encryption_key_id", keyId);
 
   const nonce = randomBytes(12);
   const cipher = createCipheriv("aes-256-gcm", keyBytes, nonce);

@@ -75,7 +75,7 @@ export const withAdminCommandInTransaction = <T>(input: AdminCommandInput<T>): A
   // destruction, a supersession - may turn that into a failure or into a
   // different mutation.
   const existing = db.prepare("SELECT canonical_request_hash, response_json FROM admin_command_idempotency WHERE command = ? AND idempotency_key_hash = ?")
-    .get(command, keyHash) as { canonical_request_hash: string; response_json: string | null } | undefined;
+.get(command, keyHash) as { canonical_request_hash: string; response_json: string | null } | undefined;
   if (existing) {
     if (existing.canonical_request_hash !== fingerprint) throw new AdminCommandIdempotencyError("IDEMPOTENCY_CONFLICT", 409, command);
     if (!existing.response_json) throw new AdminCommandIdempotencyError("IDEMPOTENCY_CONTRACT_SUPERSEDED", 409, command);
@@ -90,6 +90,6 @@ export const withAdminCommandInTransaction = <T>(input: AdminCommandInput<T>): A
   if (!entityId.trim()) throw new AdminCommandIdempotencyError("ADMIN_COMMAND_ENTITY_ID_MISSING", 500, command);
 
   db.prepare("INSERT INTO admin_command_idempotency(command, idempotency_key_hash, canonical_request_hash, entity_id, response_json) VALUES (?, ?, ?, ?, ?)")
-    .run(command, keyHash, fingerprint, entityId, JSON.stringify(response));
+.run(command, keyHash, fingerprint, entityId, JSON.stringify(response));
   return { response, replayed: false };
 };

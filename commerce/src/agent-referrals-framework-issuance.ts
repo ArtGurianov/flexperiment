@@ -5,7 +5,7 @@ import { classifyLegalProfileChange, currentAgentReferralsLegalProfile, agentRef
  * PR2 of the reissuance/evidence program: the resolvers every caller that
  * needs "the required issuance" or "the effective acceptance" for a
  * partner must go through - never a bare, unqualified lookup by
- * partner_identity_id alone (0044's original single-row-per-partner shape
+ * partner_identity_id alone (the schema's original single-row-per-partner shape
  * made that safe; it no longer is).
  *
  * Resolution is derived, never a stored pointer, exactly PR3's own
@@ -37,7 +37,7 @@ const ISSUANCE_COLUMNS = "id, partner_identity_id, sequence, framework_agreement
 /** The latest (and only meaningful) issuance for a partner - never a stored pointer. Null for a partner never issued anything. */
 export const requiredFrameworkIssuance = (db: Database.Database, partnerIdentityId: string): FrameworkIssuanceRow | null =>
   (db.prepare(`SELECT ${ISSUANCE_COLUMNS} FROM framework_issuances WHERE partner_identity_id = ? ORDER BY sequence DESC LIMIT 1`)
-    .get(partnerIdentityId) as FrameworkIssuanceRow | undefined) ?? null;
+.get(partnerIdentityId) as FrameworkIssuanceRow | undefined) ?? null;
 
 export const frameworkIssuanceById = (db: Database.Database, issuanceId: string): FrameworkIssuanceRow | null =>
   (db.prepare(`SELECT ${ISSUANCE_COLUMNS} FROM framework_issuances WHERE id = ?`).get(issuanceId) as FrameworkIssuanceRow | undefined) ?? null;
@@ -91,7 +91,7 @@ export const effectiveFrameworkAcceptance = (db: Database.Database, partnerIdent
 export const frameworkAcceptanceByPartnerAndIssuance = (db: Database.Database, partnerIdentityId: string, issuanceId: string): FrameworkAcceptanceRow | null =>
   (db.prepare(`SELECT id, partner_identity_id, issuance_id, legal_profile_revision_id, step_up_grant_id, created_at
     FROM framework_acceptances WHERE partner_identity_id = ? AND issuance_id = ?`)
-    .get(partnerIdentityId, issuanceId) as FrameworkAcceptanceRow | undefined) ?? null;
+.get(partnerIdentityId, issuanceId) as FrameworkAcceptanceRow | undefined) ?? null;
 
 export type AgreementStatus = "NOT_ISSUED" | "INITIAL_ACCEPTANCE_REQUIRED" | "CURRENT" | "REISSUANCE_REQUIRED" | "REACCEPTANCE_REQUIRED";
 

@@ -26,7 +26,8 @@ import {
   legalProfileChangeRequestById, pendingLegalProfileChangeRequestForPartner,
   currentLegalProfileRevisionForPartner, legalProfileChangeRequestHeadForPartner,
 } from "../src/agent-referrals-legal-profile-supersession";
-import { suspendAgentReferrals, reactivateAgentReferrals, agentReferralsFeatureState, activateAgentReferrals } from "../src/agent-referrals-feature-state";
+import { suspendAgentReferrals, reactivateAgentReferrals, agentReferralsFeatureState } from "../src/agent-referrals-feature-state";
+import { materializeInitialActiveFeatureForTest as activateAgentReferrals } from "./support/agent-referrals-feature-state";
 
 /**
  * PR-C2: the regression suite behind every STALE_BOUND classification in
@@ -294,7 +295,7 @@ describe("STALE_BOUND: a retry that arrives after a legal B* is refused, not app
   });
 
   it("ORD submission is MONOTONIC, not pinned: the observed id cannot be replaced, and evidence_ref is first-writer-wins", () => {
-    // Classified STALE_BOUND in the first pass and corrected here: 0048's
+    // Classified STALE_BOUND in the first pass and corrected here: the schema's
     // ord_provider_operations_observed_id_immutable_guard already makes a
     // non-null vk_external_id unchangeable, so no legal B* exists to pin
     // against. What WAS reachable is an evidence_ref overwrite, which the
@@ -330,9 +331,9 @@ describe("STALE_BOUND: a retry that arrives after a legal B* is refused, not app
     // A fresh identity, still in the draft phase - readyPartner's own is
     // already verified and therefore locked.
     const agentId = randomUUID();
-    db.prepare(`INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
-      VALUES (?, ?, 'Agent', ?, 'PERCENT', 1000)`)
-      .run(agentId, `draft-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
+    db.prepare(`INSERT INTO partners(id, slug, display_name, email)
+      VALUES (?, ?, 'Agent', ?)`)
+.run(agentId, `draft-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
     const { partner_identity_id: identityId } = provisionPartnerOwner(db, admin, agentId, `${agentId.slice(0, 8)}@example.test`, "test");
     const principal = { realm: "PARTNER" as const, partner_identity_id: identityId, partner_session_id: "n/a" };
     void p1;
@@ -401,7 +402,7 @@ describe("STALE_BOUND: a retry that arrives after a legal B* is refused, not app
     // the pin refuses a stale retry, it does not close the door on a real
     // second decision.
     const deliberate = submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, {
-      ...requestA, reason: "actually yes, re-filing after review",
+...requestA, reason: "actually yes, re-filing after review",
       expectedRequestSequence: legalProfileChangeRequestHeadForPartner(db, p1.partnerIdentityId),
     });
     expect(deliberate.id).not.toBe(a.id);

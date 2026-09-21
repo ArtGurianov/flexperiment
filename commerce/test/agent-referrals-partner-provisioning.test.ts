@@ -5,7 +5,8 @@ import { randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { migrate, openDatabase } from "../src/db";
-import { activateAgentReferrals, suspendAgentReferrals } from "../src/agent-referrals-feature-state";
+import { suspendAgentReferrals } from "../src/agent-referrals-feature-state";
+import { materializeInitialActiveFeatureForTest as activateAgentReferrals } from "./support/agent-referrals-feature-state";
 import {
   consumePartnerInvite,
   PartnerIdentityError,
@@ -29,8 +30,8 @@ const fresh = () => {
 };
 
 const seedAgent = (db: Database.Database, agentId = randomUUID()) => {
-  db.prepare(`INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
-    VALUES (?, ?, 'Agent', ?, 'PERCENT', 1000)`).run(agentId, `partner-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
+  db.prepare(`INSERT INTO partners(id, slug, display_name, email)
+    VALUES (?, ?, 'Agent', ?)`).run(agentId, `partner-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
   return agentId;
 };
 
@@ -38,18 +39,18 @@ const activated = (db: Database.Database) => activateAgentReferrals(db, { expect
 
 describe("partner provisioning", () => {
   describe("gated on the global feature-state authority", () => {
-    it("refuses NEW_PARTNER_PROVISIONING while DORMANT", () => {
+    it("starts ACTIVE, with no genesis transition to perform", () => {
       const { db } = fresh();
       const agentId = seedAgent(db);
-      expect(() => provisionPartnerOwner(db, admin, agentId, "partner@example.test", "test")).toThrow(/AGENT_REFERRALS_FEATURE_DORMANT/);
-      expect(db.prepare("SELECT COUNT(*) AS n FROM partner_identities").get()).toEqual({ n: 0 });
+      expect(() => provisionPartnerOwner(db, admin, agentId, "partner@example.test", "test")).not.toThrow();
+      expect(db.prepare("SELECT COUNT(*) AS n FROM partner_identities").get()).toEqual({ n: 1 });
     });
 
     it("refuses NEW_PARTNER_PROVISIONING while SUSPENDED", () => {
       const { db } = fresh();
       const agentId = seedAgent(db);
       activated(db);
-      suspendAgentReferrals(db, { expected_revision: 2, owner_id: "test-owner", reason: "test" });
+      suspendAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "test" });
       expect(() => provisionPartnerOwner(db, admin, agentId, "partner@example.test", "test")).toThrow(/AGENT_REFERRALS_SUSPENDED_BLOCKS_NEW_AUTHORITY/);
     });
 

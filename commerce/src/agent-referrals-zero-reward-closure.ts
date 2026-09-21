@@ -94,8 +94,8 @@ export const closeEngagementZeroReward = (
     // fine and does not block closure. The migration's own relational
     // guard re-proves this identically; this is the clean-error-code
     // early exit.
-    const liveSettlement = db.prepare(`SELECT id, status FROM reward_settlements WHERE engagement_id = ? AND settlement_flow = 'AGENT_REFERRALS' AND status != 'CANCELLED_BEFORE_PAYMENT'`)
-      .get(engagementId) as { id: string; status: string } | undefined;
+    const liveSettlement = db.prepare(`SELECT id, status FROM reward_settlements WHERE engagement_id = ? AND status != 'CANCELLED_BEFORE_PAYMENT'`)
+.get(engagementId) as { id: string; status: string } | undefined;
     if (liveSettlement) throw new ZeroRewardClosureError("AGENT_REFERRALS_ZERO_CLOSURE_SETTLEMENT_EXISTS", 409, `${liveSettlement.id}:${liveSettlement.status}`);
 
     const engagement = getEngagement(db, engagementId)!;
@@ -111,7 +111,7 @@ export const closeEngagementZeroReward = (
         closure_reason, occurrence_fulfillment_status, service_period_start_at, service_period_end_at, reporting_policy_version,
         command_id, canonical_hash, closed_by_admin_id)
       VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(
+.run(
         closureId, engagementId, effective.engagement_revision_id, effective.base_registry_snapshot_id, effective.id,
         closureReason, occurrence.fulfillment_status, revision.publication_start_at, revision.publication_end_at, ZERO_REWARD_REPORTING_POLICY_VERSION,
         commandId, canonicalHash, admin.admin_id,

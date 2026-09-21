@@ -2,7 +2,7 @@ import { randomUUID, scryptSync } from "node:crypto";
 import type Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { MockProvider } from "../src/provider";
-import { activateAgentReferrals, agentReferralsFeatureState } from "../src/agent-referrals-feature-state";
+import { agentReferralsFeatureState, reactivateAgentReferrals, suspendAgentReferrals } from "../src/agent-referrals-feature-state";
 import { fresh, readyPartner, seedOccurrence, nearTermTerms, offerAcceptActivate, purchaseAndPay, finalizedSettlement, acceptedAct } from "./support/agent-referrals-settlement-fixtures";
 
 process.env.COMMERCE_SESSION_SECRET ??= "test-session-secret-agent-referrals-admin-api";
@@ -65,32 +65,27 @@ describe("/v1/admin/agent-referrals/*: authentication boundary", () => {
     const cookie = await adminCookie(app);
     const headers = { Origin: ADMIN_ORIGIN, Cookie: cookie, "Content-Type": "application/json" };
 
-    const suspendBeforeActivation = await app.request("http://admin.flexperiment.ru/v1/admin/agent-referrals/feature-state/suspend", {
+    const suspendFromPrebaseline = await app.request("http://admin.flexperiment.ru/v1/admin/agent-referrals/feature-state/suspend", {
       method: "POST", headers, body: JSON.stringify({ expected_revision: 1, reason: "test" }),
     });
-    // DORMANT -> SUSPENDED is not a legal edge (only DORMANT -> ACTIVE, ACTIVE <-> SUSPENDED) - proves this admin route
-    // reaches the real suspendAgentReferrals gate, not a stub.
-    expect(suspendBeforeActivation.status).toBe(409);
+    expect(suspendFromPrebaseline.status).toBe(200);
 
     const agentId = randomUUID();
-    db.prepare(`INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
-      VALUES (?, 'p1', 'A', 'a@example.test', 'PERCENT', 1000)`).run(agentId);
+    db.prepare(`INSERT INTO partners(id, slug, display_name, email)
+      VALUES (?, 'p1', 'A', 'a@example.test')`).run(agentId);
 
-    // Feature is still DORMANT (no HTTP route can activate it - see agent-referrals-partner-authorization.test.ts) - provisioning
-    // therefore refuses, proving this route reaches the real suspension-policy gate rather than a stub that always succeeds.
-    const provisionWhileDormant = await app.request("http://admin.flexperiment.ru/v1/admin/agent-referrals/partners", {
+    const provisionWhileSuspended = await app.request("http://admin.flexperiment.ru/v1/admin/agent-referrals/partners", {
       method: "POST", headers, body: JSON.stringify({ agent_id: agentId, email: "p@example.test", reason: "test" }),
     });
-    expect(provisionWhileDormant.status).toBe(409);
-    expect((await provisionWhileDormant.json()).error.code).toBe("AGENT_REFERRALS_FEATURE_DORMANT");
+    expect(provisionWhileSuspended.status).toBe(409);
+    expect((await provisionWhileSuspended.json()).error.code).toBe("AGENT_REFERRALS_SUSPENDED_BLOCKS_NEW_AUTHORITY");
   });
 
   /**
    * The operator kill switch, against an owner the operator does not hold.
    *
-   * Production activates through `activateAgentReferralsIfReady`, which mints
-   * the owner from `input.activation_id` - an `agent-referrals-activation-*`
-   * id, never an admin session subject. The adapter used to pass `adminId` as
+   * The owner is durable feature-state authority, never an admin session
+   * subject. The adapter used to pass `adminId` as
    * `owner_id`, so `transitionInTransaction`'s owner check refused every
    * suspend and every reactivate with OWNER_CONFLICT the moment the feature
    * was ACTIVE: the kill switch was unreachable in exactly the state it
@@ -98,62 +93,70 @@ describe("/v1/admin/agent-referrals/*: authentication boundary", () => {
    * adapter fix.
    */
   describe("feature-state operator routes: the actor is the admin, the authority is the row's own owner", () => {
-    const ACTIVATION_OWNER = "agent-referrals-activation-ce66d23fdcea5fc84018be43cf428270ea889ee8";
+    const FEATURE_OWNER = "feature-state-owner";
 
-    it("suspends and reactivates a feature owned by the activation contour, preserving that owner throughout", async () => {
+    it("suspends and reactivates a feature while preserving its durable owner", async () => {
       const { db, app } = appFixture();
-      activateAgentReferrals(db, { expected_revision: 1, owner_id: ACTIVATION_OWNER, reason: "AGENT_REFERRALS_ACTIVATION_V1" });
+      // These cases are about an owner the admin routes must preserve, so one
+      // has to exist first. The seeded row is unowned, and ownership is taken
+      // by a real operation rather than manufactured - a round trip through
+      // suspend and resume leaves the feature ACTIVE and durably owned.
+      suspendAgentReferrals(db, { expected_revision: 1, owner_id: FEATURE_OWNER, reason: "establish owner" });
+      reactivateAgentReferrals(db, { expected_revision: 2, owner_id: FEATURE_OWNER, reason: "establish owner" });
       const cookie = await adminCookie(app, "203.0.113.10");
       const headers = { Origin: ADMIN_ORIGIN, Cookie: cookie, "Content-Type": "application/json" };
-      expect(agentReferralsFeatureState(db)).toEqual({ state: "ACTIVE", owner_id: ACTIVATION_OWNER, revision: 2 });
+      // Seeded ACTIVE and unowned: the first real operation is what takes
+      // ownership, so the owner this test is about is established by the
+      // suspension rather than manufactured before it.
+      expect(agentReferralsFeatureState(db)).toEqual({ state: "ACTIVE", owner_id: FEATURE_OWNER, revision: 3 });
 
       const suspend = await app.request("http://admin.flexperiment.ru/v1/admin/agent-referrals/feature-state/suspend", {
-        method: "POST", headers, body: JSON.stringify({ expected_revision: 2, reason: "controlled cutover" }),
+        method: "POST", headers, body: JSON.stringify({ expected_revision: 3, reason: "controlled cutover" }),
       });
       expect(suspend.status).toBe(200);
-      expect(await suspend.json()).toEqual({ state: "SUSPENDED", owner_id: ACTIVATION_OWNER, revision: 3 });
+      expect(await suspend.json()).toEqual({ state: "SUSPENDED", owner_id: FEATURE_OWNER, revision: 4 });
 
       const reactivate = await app.request("http://admin.flexperiment.ru/v1/admin/agent-referrals/feature-state/reactivate", {
-        method: "POST", headers, body: JSON.stringify({ expected_revision: 3, reason: "cutover complete" }),
+        method: "POST", headers, body: JSON.stringify({ expected_revision: 4, reason: "cutover complete" }),
       });
       expect(reactivate.status).toBe(200);
-      expect(await reactivate.json()).toEqual({ state: "ACTIVE", owner_id: ACTIVATION_OWNER, revision: 4 });
+      expect(await reactivate.json()).toEqual({ state: "ACTIVE", owner_id: FEATURE_OWNER, revision: 5 });
 
       // The projection is not the evidence. The audit chain must agree with it,
       // and must attribute both transitions to the preserved owner - an event
       // naming the admin would be a second, competing authority record.
       expect(db.prepare("SELECT from_state, to_state, owner_id, revision FROM agent_referrals_feature_state_events ORDER BY revision").all()).toEqual([
-        { from_state: "DORMANT", to_state: "ACTIVE", owner_id: ACTIVATION_OWNER, revision: 2 },
-        { from_state: "ACTIVE", to_state: "SUSPENDED", owner_id: ACTIVATION_OWNER, revision: 3 },
-        { from_state: "SUSPENDED", to_state: "ACTIVE", owner_id: ACTIVATION_OWNER, revision: 4 },
+        { from_state: "ACTIVE", to_state: "SUSPENDED", owner_id: FEATURE_OWNER, revision: 2 },
+        { from_state: "SUSPENDED", to_state: "ACTIVE", owner_id: FEATURE_OWNER, revision: 3 },
+        { from_state: "ACTIVE", to_state: "SUSPENDED", owner_id: FEATURE_OWNER, revision: 4 },
+        { from_state: "SUSPENDED", to_state: "ACTIVE", owner_id: FEATURE_OWNER, revision: 5 },
       ]);
     });
 
-    it("still refuses a stale expected_revision, and still refuses an illegal edge out of unowned DORMANT", async () => {
+    it("refuses a stale expected_revision", async () => {
       const { db, app } = appFixture();
-      activateAgentReferrals(db, { expected_revision: 1, owner_id: ACTIVATION_OWNER, reason: "AGENT_REFERRALS_ACTIVATION_V1" });
+      // These cases are about an owner the admin routes must preserve, so one
+      // has to exist first. The seeded row is unowned, and ownership is taken
+      // by a real operation rather than manufactured - a round trip through
+      // suspend and resume leaves the feature ACTIVE and durably owned.
+      suspendAgentReferrals(db, { expected_revision: 1, owner_id: FEATURE_OWNER, reason: "establish owner" });
+      reactivateAgentReferrals(db, { expected_revision: 2, owner_id: FEATURE_OWNER, reason: "establish owner" });
       const cookie = await adminCookie(app, "203.0.113.11");
       const headers = { Origin: ADMIN_ORIGIN, Cookie: cookie, "Content-Type": "application/json" };
 
-      // Preserving the owner must not soften the CAS: revision 1 is already spent.
-      const stale = await app.request("http://admin.flexperiment.ru/v1/admin/agent-referrals/feature-state/suspend", {
-        method: "POST", headers, body: JSON.stringify({ expected_revision: 1, reason: "stale" }),
+      const suspended = await app.request("http://admin.flexperiment.ru/v1/admin/agent-referrals/feature-state/suspend", {
+        method: "POST", headers, body: JSON.stringify({ expected_revision: 3, reason: "controlled" }),
+      });
+      expect(suspended.status).toBe(200);
+      expect(await suspended.json()).toMatchObject({ state: "SUSPENDED", revision: 4 });
+
+      // Preserving the owner must not soften the CAS: revision 1 is now spent.
+      const stale = await app.request("http://admin.flexperiment.ru/v1/admin/agent-referrals/feature-state/reactivate", {
+        method: "POST", headers, body: JSON.stringify({ expected_revision: 3, reason: "stale" }),
       });
       expect(stale.status).toBe(409);
       expect((await stale.json()).error.code).toBe("AGENT_REFERRALS_FEATURE_REVISION_CONFLICT");
-      expect(agentReferralsFeatureState(db)).toEqual({ state: "ACTIVE", owner_id: ACTIVATION_OWNER, revision: 2 });
-
-      // The DORMANT fallback is a fallback, not a new edge: unowned DORMANT
-      // passes the owner check by construction and is then refused by
-      // LEGAL_EDGES, exactly as before the fix.
-      const { app: dormantApp } = appFixture();
-      const dormantCookie = await adminCookie(dormantApp, "203.0.113.12");
-      const illegal = await dormantApp.request("http://admin.flexperiment.ru/v1/admin/agent-referrals/feature-state/suspend", {
-        method: "POST", headers: { Origin: ADMIN_ORIGIN, Cookie: dormantCookie, "Content-Type": "application/json" },
-        body: JSON.stringify({ expected_revision: 1, reason: "not a legal edge" }),
-      });
-      expect(illegal.status).toBe(409);
-      expect((await illegal.json()).error.code).toBe("AGENT_REFERRALS_FEATURE_ILLEGAL_TRANSITION");
+      expect(agentReferralsFeatureState(db)).toEqual({ state: "SUSPENDED", owner_id: FEATURE_OWNER, revision: 4 });
     });
   });
 
