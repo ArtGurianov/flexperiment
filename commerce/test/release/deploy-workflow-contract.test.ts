@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
+import { PRODUCTION_RELEASE_ENVIRONMENT_VARIABLES } from "../../src/release/production-config";
 
 /**
  * Properties, not text. The old suite asserted that workflow files contained
@@ -21,6 +22,12 @@ const scriptOf = (name: string) =>
   Object.values(workflow(name).jobs).flatMap((job) => job.steps ?? []).map((step) => step.run ?? "").join("\n");
 
 const deployments = ["deploy-production.yml", "release-candidate.yml"] as const;
+const runnerWrapper = () => {
+  const document = readFileSync("docs/release/DEPLOYMENT_INVARIANTS.md", "utf8");
+  const match = document.match(/```sh\n# \/usr\/local\/bin\/flexperiment-release[^\n]*\n([\s\S]*?)```/);
+  if (!match) throw new Error("RELEASE_RUNNER_WRAPPER_DOCUMENTATION_MISSING");
+  return match[1];
+};
 
 describe("production workflow contract", () => {
   it.each(deployments)("%s runs only behind the production environment gate", (name) => {
@@ -167,6 +174,21 @@ describe("production workflow contract", () => {
     expect(script).toContain("LAUNCH_BASELINE");
     expect(script).toContain("git rev-parse origin/main");
     expect(script).toContain("LAUNCH_BASELINE_MUST_BE_MAIN_HEAD");
+  });
+
+  it("exports the entire production runner configuration contract", () => {
+    // `set -a` around the source is intentionally stronger than a second list
+    // of names in documentation: every required future configuration input,
+    // including credentials, reaches the child process without inventing a
+    // placeholder or a default. The actual required-name list remains the
+    // only enumerated contract.
+    const wrapper = runnerWrapper();
+    expect(PRODUCTION_RELEASE_ENVIRONMENT_VARIABLES.length).toBeGreaterThan(0);
+    expect(wrapper).toMatch(/set -a\s*\n\. \/etc\/flexperiment\/release-runner\.env\s*# root:root, 0600\s*\nset \+a/);
+    expect(wrapper).toContain('exec pnpm --dir /srv/flexperiment release:runner "$@"');
+    for (const variable of PRODUCTION_RELEASE_ENVIRONMENT_VARIABLES) {
+      expect(wrapper).not.toMatch(new RegExp(`(?:${variable})=`));
+    }
   });
 
   it("runs the suite for pull requests, main integration and manual dispatch only", () => {

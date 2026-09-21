@@ -9,6 +9,7 @@
  */
 
 export type CoolifyApplication = {
+  readonly id: string;
   readonly uuid: string;
   readonly name: string;
   readonly buildPack: string;
@@ -66,6 +67,7 @@ export class CoolifyClient {
   async application(uuid: string): Promise<CoolifyApplication> {
     const body = await this.request("GET", `/applications/${encodeURIComponent(uuid)}`);
     return {
+      id: String(body.id ?? ""),
       uuid: String(body.uuid ?? uuid),
       name: String(body.name ?? ""),
       buildPack: String(body.build_pack ?? ""),

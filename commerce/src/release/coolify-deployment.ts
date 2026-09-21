@@ -1,4 +1,5 @@
 import { CoolifyClient, CoolifyError, type CoolifyDeployment } from "./coolify";
+import { DockerComposeRollbackEvidence, type ComposeRollbackEvidence } from "./compose-rollback-evidence";
 import { ProductionDeployRefStore } from "./deploy-ref";
 import type { DeploymentDriver, RecoveryDriver } from "./orchestrator";
 import type { PreDeploySnapshot, RuntimeTopology } from "./deploy-session";
@@ -27,6 +28,7 @@ export type CoolifyDeploymentOptions = {
   readonly client: CoolifyClient;
   readonly refs: ProductionDeployRefStore;
   readonly applications: readonly SurfaceApplication[];
+  readonly composeRollbackEvidence?: ComposeRollbackEvidence;
   readonly onProgress?: (message: string) => void;
 };
 
@@ -53,6 +55,11 @@ export class CoolifyDeploymentDriver implements DeploymentDriver {
    */
   async assertRecoverable(sha: string): Promise<void> {
     for (const application of this.options.applications) {
+      const configured = await this.options.client.application(application.uuid);
+      if (configured.buildPack === "dockercompose") {
+        await (this.options.composeRollbackEvidence ?? new DockerComposeRollbackEvidence()).assertRecoverable(configured, sha);
+        continue;
+      }
       const images = await this.options.client.rollbackImages(application.uuid);
       if (!images.some((image) => image.includes(sha))) {
         throw new DeploymentError("DEPLOYMENT_ROLLBACK_IMAGE_MISSING", `${application.name}: no retained image for ${sha}`);

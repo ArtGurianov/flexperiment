@@ -100,7 +100,7 @@ const APPLICATIONS: readonly (readonly [string, string, SurfaceApplicationConfig
   ["COOLIFY_APPLICATION_COMMERCE", "commerce", ["commerce", "worker"]],
 ];
 
-const READ_ONLY_REQUIRED = [
+export const READ_ONLY_RELEASE_ENVIRONMENT_VARIABLES = [
   "FLEXPERIMENT_RELEASE_DATABASE",
   "FLEXPERIMENT_FRONTEND_RELEASE_URL",
   "FLEXPERIMENT_ADMIN_RELEASE_URL",
@@ -108,7 +108,12 @@ const READ_ONLY_REQUIRED = [
   "FLEXPERIMENT_DEPLOY_REF_WORKTREE",
 ] as const;
 
-const REQUIRED = [
+/**
+ * The production wrapper exports these names en masse after sourcing its
+ * root-owned environment file. Keep the contract public: the installation
+ * contract test reads this list rather than carrying a stale second copy.
+ */
+export const PRODUCTION_RELEASE_ENVIRONMENT_VARIABLES = [
   "FLEXPERIMENT_RELEASE_DATABASE",
   "FLEXPERIMENT_RELEASE_ARCHIVE_DIR",
   "FLEXPERIMENT_RELEASE_ENVELOPE_DIR",
@@ -166,7 +171,7 @@ const deployRefName = (env: NodeJS.ProcessEnv, problems: string[]) => {
  * that could have written.
  */
 export const loadReadOnlyReleaseConfig = (env: NodeJS.ProcessEnv = process.env): ReadOnlyReleaseConfig => {
-  const value = demand(env, READ_ONLY_REQUIRED);
+  const value = demand(env, READ_ONLY_RELEASE_ENVIRONMENT_VARIABLES);
   const problems: string[] = [];
   httpUrl(value("FLEXPERIMENT_FRONTEND_RELEASE_URL"), "FLEXPERIMENT_FRONTEND_RELEASE_URL", problems);
   httpUrl(value("FLEXPERIMENT_ADMIN_RELEASE_URL"), "FLEXPERIMENT_ADMIN_RELEASE_URL", problems);
@@ -217,7 +222,7 @@ const predecessor = (env: NodeJS.ProcessEnv, problems: string[]): ProductionRele
 };
 
 export const loadProductionReleaseConfig = (env: NodeJS.ProcessEnv = process.env): ProductionReleaseConfig => {
-  const value = demand(env, REQUIRED);
+  const value = demand(env, PRODUCTION_RELEASE_ENVIRONMENT_VARIABLES);
   const problems: string[] = [];
 
   for (const [variable] of APPLICATIONS) {

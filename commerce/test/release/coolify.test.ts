@@ -39,9 +39,9 @@ const client = (apiUrl: string, over: Partial<ConstructorParameters<typeof Cooli
 
 describe("the Coolify client", () => {
   it("reads an application", async () => {
-    const url = await listen(() => ({ status: 200, body: JSON.stringify({ uuid: "app-1", name: "commerce", build_pack: "dockercompose", git_branch: "production-deploy", git_commit_sha: null }) }));
+    const url = await listen(() => ({ status: 200, body: JSON.stringify({ id: 1, uuid: "app-1", name: "commerce", build_pack: "dockercompose", git_branch: "production-deploy", git_commit_sha: null }) }));
     expect(await client(url).application("app-1")).toEqual({
-      uuid: "app-1", name: "commerce", buildPack: "dockercompose", gitBranch: "production-deploy", gitCommitSha: null,
+      id: "1", uuid: "app-1", name: "commerce", buildPack: "dockercompose", gitBranch: "production-deploy", gitCommitSha: null,
     });
   });
 

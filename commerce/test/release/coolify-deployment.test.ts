@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CoolifyClient } from "../../src/release/coolify";
 import { CoolifyDeploymentDriver, CoolifyRecoveryDriver, type SurfaceApplication } from "../../src/release/coolify-deployment";
+import type { ComposeRollbackEvidence } from "../../src/release/compose-rollback-evidence";
 import { ProductionDeployRefStore } from "../../src/release/deploy-ref";
 
 /**
@@ -32,6 +33,7 @@ let server: Server | undefined;
 let retained: Record<string, string[]>;
 let calls: string[];
 let deploymentStatus: string;
+let buildPacks: Record<string, string>;
 
 const listen = async (): Promise<string> => {
   server = createServer((request, response) => {
@@ -44,6 +46,10 @@ const listen = async (): Promise<string> => {
     const images = Object.entries(retained).find(([uuid]) => url.includes(uuid))?.[1] ?? [];
     if (url.includes("/rollback-images")) return send({ images: images.map((tag) => ({ tag })) });
     if (url.endsWith("/rollback")) return send({ deployment_uuid: "dep-rollback" });
+    if (url.includes("/applications/")) {
+      const uuid = url.split("/").at(-1) ?? "";
+      return send({ id: uuid === "app-commerce" ? 3 : 1, uuid, build_pack: buildPacks[uuid] ?? "dockerfile" });
+    }
     // Before the deploy branch: `/deployments/x` also starts with `/deploy`.
     if (url.includes("/deployments/")) return send({ status: deploymentStatus, commit: targetSha });
     if (url.startsWith("/api/v1/deploy")) return send({ deployments: [{ deployment_uuid: "dep-1" }] });
@@ -71,16 +77,17 @@ beforeEach(() => {
   git(clone, "push", "origin", `${preSha}:refs/heads/production-deploy`);
   git(clone, "push", "origin", "main");
   retained = { "app-frontend": [preSha], "app-admin": [preSha], "app-commerce": [preSha] };
+  buildPacks = {};
 });
 afterEach(async () => {
   if (server) await new Promise<void>((resolve) => server!.close(() => resolve()));
   server = undefined;
 });
 
-const drivers = async () => {
+const drivers = async (composeRollbackEvidence?: ComposeRollbackEvidence) => {
   const client = new CoolifyClient({ apiUrl: await listen(), token: "t", pollIntervalMs: 1, sleep: async () => {} });
   const refs = new ProductionDeployRefStore({ cwd: clone });
-  const options = { client, refs, applications: APPLICATIONS };
+  const options = { client, refs, applications: APPLICATIONS, composeRollbackEvidence };
   return { refs, deployment: new CoolifyDeploymentDriver(options), recovery: new CoolifyRecoveryDriver(options) };
 };
 
@@ -103,6 +110,24 @@ describe("deploying through the pointer the applications follow", () => {
 
     await expect(deployment.assertRecoverable(preSha)).rejects.toThrow("DEPLOYMENT_ROLLBACK_IMAGE_MISSING");
     expect(await refs.read()).toBe(preSha);
+  });
+
+  it("uses the Coolify rollback-images API for Dockerfile applications", async () => {
+    const { deployment } = await drivers();
+    await deployment.assertRecoverable(preSha);
+    expect(calls.filter((call) => call.endsWith("/rollback-images"))).toHaveLength(3);
+  });
+
+  it("uses host evidence for Compose and refuses an empty resource rollback-images list as proof", async () => {
+    buildPacks["app-commerce"] = "dockercompose";
+    retained["app-commerce"] = [];
+    const observed: string[] = [];
+    const { deployment } = await drivers({ async assertRecoverable(application, sha) { observed.push(`${application.uuid}:${sha}`); } });
+
+    await deployment.assertRecoverable(preSha);
+
+    expect(observed).toEqual([`app-commerce:${preSha}`]);
+    expect(calls.filter((call) => call === "GET /api/v1/applications/app-commerce/rollback-images")).toHaveLength(0);
   });
 
   it("does not report a failed deployment as a deploy", async () => {

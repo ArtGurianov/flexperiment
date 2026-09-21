@@ -323,14 +323,12 @@ none of it appears in the workflow's environment or its log.
 # /usr/local/bin/flexperiment-release        root:root, 0755
 #!/bin/sh
 set -eu
+# Export every assignment in the root-owned configuration.  Keeping an
+# explicit list here caused candidate publication and certification variables
+# to be silently held in the wrapper shell rather than reaching the runner.
+set -a
 . /etc/flexperiment/release-runner.env       # root:root, 0600
-export FLEXPERIMENT_RELEASE_DATABASE FLEXPERIMENT_RELEASE_ARCHIVE_DIR \
-       FLEXPERIMENT_RELEASE_ENVELOPE_DIR FLEXPERIMENT_RELEASE_LOCK \
-       FLEXPERIMENT_RELEASE_JOURNAL COOLIFY_API_URL COOLIFY_TOKEN \
-       COOLIFY_APPLICATION_FRONTEND COOLIFY_APPLICATION_ADMIN \
-       COOLIFY_APPLICATION_COMMERCE FLEXPERIMENT_FRONTEND_RELEASE_URL \
-       FLEXPERIMENT_ADMIN_RELEASE_URL FLEXPERIMENT_DEPLOY_REF_REMOTE \
-       FLEXPERIMENT_DEPLOY_REF_WORKTREE
+set +a
 exec pnpm --dir /srv/flexperiment release:runner "$@"
 ```
 
