@@ -22,3 +22,6 @@ export const CERTIFICATION_TIMEZONE = "Europe/Moscow";
  * action in their name.
  */
 export const CERTIFICATION_ADMIN_ID = "certification-service";
+
+/** The customer-side confirmation a certification's own cancellation carries. */
+export const CERTIFICATION_CANCELLATION_CONFIRMATION = "Производственная сертификация: отмена собственной брони";
