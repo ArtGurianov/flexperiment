@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import Database from "better-sqlite3";
 import { beforeEach, describe, expect, it } from "vitest";
 import { LegacyPredecessorTopologyReader } from "../../src/release/legacy-predecessor-topology";
@@ -23,8 +22,78 @@ import { migrate } from "../../src/db";
 const PREDECESSOR = "726dc412f62a726cc1f93a03b91de0834c4333e1";
 const OTHER = "b".repeat(40);
 const NOW = new Date("2026-09-21T03:10:00.000Z");
-const LEDGER = execFileSync("git", ["ls-tree", "--name-only", "726dc412", "commerce/migrations/"], { encoding: "utf8" })
-  .split("\n").filter(Boolean).map((path) => path.replace("commerce/migrations/", ""));
+/**
+ * The predecessor's ledger, written down rather than looked up.
+ *
+ * An earlier version read these from `git ls-tree 726dc412`, which passed
+ * locally only because that object happened to be fetched, and failed in CI
+ * where the checkout has no such commit. A test that depends on the state of a
+ * git directory is not testing the code. These names are the predecessor's
+ * identity, so the test states them.
+ */
+const LEDGER = [
+  "0001_initial.sql",
+  "0002_operations.sql",
+  "0003_provider_phase0.sql",
+  "0004_legal_evidence.sql",
+  "0005_provider_webhook_evidence.sql",
+  "0006_legal_release_publish_events.sql",
+  "0007_reservation_recovery.sql",
+  "0008_venue_announcement_deadline.sql",
+  "0009_admin_sessions.sql",
+  "0010_occurrence_visibility_sales_invariant.sql",
+  "0011_occurrence_cancellation_and_refund_capabilities.sql",
+  "0012_refund_hardening.sql",
+  "0013_promoter_attribution_rewards.sql",
+  "0014_prepared_settlement_hardening.sql",
+  "0015_city_interest_requests.sql",
+  "0016_city_interest_lifecycle.sql",
+  "0017_city_interest_delivery_lifecycle.sql",
+  "0018_city_interest_suppression.sql",
+  "0019_city_interest_notification_epochs.sql",
+  "0020_email_outbox_recovery_hardening.sql",
+  "0021_city_interest_request_epochs.sql",
+  "0022_create_unknown_recovery.sql",
+  "0023_email_operational_attention.sql",
+  "0024_tochka_webhook_collision_evidence.sql",
+  "0025_tochka_webhook_conflicts_fail_closed.sql",
+  "0026_post_purchase_occurrence_lifecycle.sql",
+  "0027_occurrence_notification_payload_attention.sql",
+  "0028_customer_participant_ticketing.sql",
+  "0029_unisender_event_dump_reconciliation.sql",
+  "0030_unisender_event_dump_probe_and_saturation.sql",
+  "0031_participant_age_band.sql",
+  "0032_release_sales_gate.sql",
+  "0033_runtime_release_evidence.sql",
+  "0034_worker_sweep_evidence.sql",
+  "0035_promo_codes_v0.sql",
+  "0036_tochka_provider_error_evidence.sql",
+  "0037_emergency_sales_gate.sql",
+  "0038_occurrence_availability_notifications.sql",
+  "0039_email_delivery_outcome.sql",
+  "0040_outbox_authority_control.sql",
+  "0041_outbox_attempt.sql",
+  "0042_agent_referrals_agents_rebuild.sql",
+  "0043_agent_referrals_foundation.sql",
+  "0044_partner_identity.sql",
+  "0045_engagement_publication.sql",
+  "0046_attribution_reward.sql",
+  "0047_act_payment_settlement.sql",
+  "0048_ord_reporting.sql",
+  "0049_agent_referrals_integration_hardening.sql",
+  "0050_agent_referrals_legal_profile_provenance_rebuild.sql",
+  "0051_agent_referrals_legal_profile_supersession.sql",
+  "0052_agent_referrals_unified_legal_requisites.sql",
+  "0053_agent_referrals_tax_treatment_ord_canonicalization.sql",
+  "0054_partner_command_idempotency.sql",
+  "0055_partner_legal_profile_draft_revision.sql",
+  "0056_legal_profile_change_request_sequence.sql",
+  "0057_partner_invite_capability_head.sql",
+  "0058_agents_legal_identity_cleanup.sql",
+  "0059_agents_contract_reference_removal.sql",
+  "0060_agent_referrals_framework_reissuance.sql",
+  "0061_occurrence_admin_reserved_seats.sql",
+];
 
 let db: Database.Database;
 
