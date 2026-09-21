@@ -38,6 +38,8 @@ const abandoned = (options: { at: string; observes: PreDeploySnapshot | PreDeplo
       },
     },
     deployment: {
+      async assertRecoverable() { log.push("recoverable"); },
+      async assertPredecessorRetained() { log.push("retained"); },
       async deploy() {
         log.push("deploy");
         if (!options.deploys) throw new Error("the dead runner already tried");

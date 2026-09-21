@@ -18,7 +18,7 @@ const stranded = (options: { restoresTo?: PreDeploySnapshot; restoreFails?: stri
     sessions, clock: () => now,
     topology: { async observe() { last = queue.shift() ?? last; return last; } },
     evidence: { async read() { return { schema: { lineage: "SUPPORTED", versions: [] } }; } },
-    deployment: { async deploy() { throw new Error("unused"); } },
+    deployment: { async assertRecoverable() { throw new Error("unused"); }, async assertPredecessorRetained() { throw new Error("unused"); }, async deploy() { throw new Error("unused"); } },
     recovery: {
       async restorePreDeployTopology(topology) {
         restored.push(topology);
@@ -84,7 +84,7 @@ describe("rollback after a partial cutover", () => {
       sessions, clock: () => now,
       topology: { async observe() { return partial; } },
       evidence: { async read() { return { schema: { lineage: "SUPPORTED", versions: [] } }; } },
-      deployment: { async deploy() { throw new Error("unused"); } },
+      deployment: { async assertRecoverable() { throw new Error("unused"); }, async assertPredecessorRetained() { throw new Error("unused"); }, async deploy() { throw new Error("unused"); } },
       recovery: { async restorePreDeployTopology() { throw new Error("must not be called"); } },
     };
     sessions.acquireFenced({

@@ -3,54 +3,53 @@ import { DockerComposeRollbackEvidence, type DockerCommand } from "../../src/rel
 
 const PREDECESSOR = "a".repeat(40);
 const SUCCESSOR = "b".repeat(40);
-const application = { id: "3", uuid: "compose-application", name: "commerce", buildPack: "dockercompose", gitBranch: "production-deploy", gitCommitSha: PREDECESSOR };
 const commerce = `registry.example/commerce:${PREDECESSOR}`;
 const worker = `registry.example/commerce-worker:${PREDECESSOR}`;
 
-const command = (options: { images?: readonly string[]; retained?: Record<string, readonly string[]>; absent?: string } = {}): DockerCommand => async (args) => {
+const command = (options: { images?: readonly string[]; absent?: string; services?: string } = {}): DockerCommand => async (args) => {
   const [noun, verb] = args;
-  if (noun === "ps") return "commerce\nworker\n";
+  if (noun === "ps") return options.services ?? "commerce-id|commerce\nworker-id|commerce-worker\n";
   if (noun === "inspect") return `${(options.images ?? [commerce, worker]).join("\n")}\n`;
   if (noun === "image" && verb === "inspect") {
     if (args[2] === options.absent) throw new Error("not found");
     return "{}\n";
   }
-  if (noun === "image" && verb === "ls") {
-    const repository = args[2];
-    return `${(options.retained?.[repository] ?? [
-      `${repository}:${PREDECESSOR}`,
-      `${repository}:${SUCCESSOR}`,
-    ]).join("\n")}\n`;
-  }
   throw new Error(`unexpected docker command: ${args.join(" ")}`);
 };
 
-describe("Compose rollback admission", () => {
-  it("requires every running Compose service to retain the exact predecessor and one additional image", async () => {
-    await expect(new DockerComposeRollbackEvidence(command()).assertRecoverable(application, PREDECESSOR)).resolves.toBeUndefined();
+describe("Compose rollback host evidence", () => {
+  it("accepts exactly one predecessor image per repository", async () => {
+    await expect(new DockerComposeRollbackEvidence(command()).assertPreDeployRecoverable("3", PREDECESSOR)).resolves.toBeUndefined();
   });
 
   it("refuses a container whose tag is not the exact predecessor", async () => {
     const evidence = new DockerComposeRollbackEvidence(command({ images: [commerce, `registry.example/commerce-worker:${SUCCESSOR}`] }));
-    await expect(evidence.assertRecoverable(application, PREDECESSOR)).rejects.toMatchObject({
+    await expect(evidence.assertPreDeployRecoverable("3", PREDECESSOR)).rejects.toMatchObject({
       code: "COMPOSE_ROLLBACK_PREDECESSOR_TAG_MISMATCH",
     });
   });
 
-  it("refuses when either Compose service lacks its local predecessor image", async () => {
+  it("refuses when either current Compose service lacks its local predecessor image", async () => {
     const evidence = new DockerComposeRollbackEvidence(command({ absent: worker }));
-    await expect(evidence.assertRecoverable(application, PREDECESSOR)).rejects.toMatchObject({
+    await expect(evidence.assertPreDeployRecoverable("3", PREDECESSOR)).rejects.toMatchObject({
       code: "COMPOSE_ROLLBACK_PREDECESSOR_IMAGE_MISSING",
     });
   });
 
-  it("refuses one-image retention even though the predecessor image exists", async () => {
-    const evidence = new DockerComposeRollbackEvidence(command({ retained: {
-      "registry.example/commerce": [commerce],
-      "registry.example/commerce-worker": [worker],
-    } }));
-    await expect(evidence.assertRecoverable(application, PREDECESSOR)).rejects.toMatchObject({
-      code: "COMPOSE_ROLLBACK_RETENTION_INSUFFICIENT",
+  it("refuses missing or duplicate current service containers", async () => {
+    const evidence = new DockerComposeRollbackEvidence(command({ services: "commerce-id|commerce\nextra-id|commerce\n" }));
+    await expect(evidence.assertPreDeployRecoverable("3", PREDECESSOR)).rejects.toMatchObject({
+      code: "COMPOSE_ROLLBACK_CONTAINERS_MISSING",
+    });
+  });
+
+  it("refuses after convergence when a predecessor image has disappeared", async () => {
+    const evidence = new DockerComposeRollbackEvidence(command({
+      images: [`registry.example/commerce:${SUCCESSOR}`, `registry.example/commerce-worker:${SUCCESSOR}`],
+      absent: `registry.example/commerce-worker:${PREDECESSOR}`,
+    }));
+    await expect(evidence.assertPredecessorStillPresent("3", PREDECESSOR)).rejects.toMatchObject({
+      code: "COMPOSE_ROLLBACK_PREDECESSOR_IMAGE_MISSING",
     });
   });
 });

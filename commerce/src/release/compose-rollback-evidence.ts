@@ -1,5 +1,4 @@
 import { execFile } from "node:child_process";
-import type { CoolifyApplication } from "./coolify";
 
 export class ComposeRollbackEvidenceError extends Error {
   constructor(readonly code: string, detail?: string) {
@@ -10,7 +9,8 @@ export class ComposeRollbackEvidenceError extends Error {
 export type DockerCommand = (args: readonly string[]) => Promise<string>;
 
 export interface ComposeRollbackEvidence {
-  assertRecoverable(application: CoolifyApplication, predecessorSha: string): Promise<void>;
+  assertPreDeployRecoverable(applicationId: string, predecessorSha: string): Promise<void>;
+  assertPredecessorStillPresent(applicationId: string, predecessorSha: string): Promise<void>;
 }
 
 const docker: DockerCommand = (args) => new Promise((resolve, reject) => {
@@ -23,48 +23,71 @@ const docker: DockerCommand = (args) => new Promise((resolve, reject) => {
 const lines = (value: string) => value.split("\n").map((line) => line.trim()).filter(Boolean);
 const tagOf = (image: string) => image.slice(image.lastIndexOf(":") + 1);
 const repositoryOf = (image: string) => image.slice(0, image.lastIndexOf(":"));
-const COMMIT_TAG = /^[a-f0-9]{40}$/;
+const expectedServices = new Set(["commerce", "commerce-worker"]);
+
+type Container = { readonly id: string; readonly service: string };
 
 /**
- * Coolify's image API is authoritative for Dockerfile applications. A Compose
- * application is different: its retained images are per service on the host,
- * so proving only the resource-level API list could call a missing worker
- * image recoverable. This adapter checks every currently running service.
+ * Compose services are individual local images. The pre-deploy check proves
+ * the two current services are exactly the predecessor and their images exist.
+ * Retention itself is a Coolify application/server policy, checked by the
+ * deployment driver; counting old tags would prove neither policy and would
+ * incorrectly reject the normal one-predecessor state before a target exists.
  */
 export class DockerComposeRollbackEvidence implements ComposeRollbackEvidence {
   constructor(private readonly command: DockerCommand = docker) {}
 
-  async assertRecoverable(application: CoolifyApplication, predecessorSha: string): Promise<void> {
-    if (!application.id) throw new ComposeRollbackEvidenceError("COMPOSE_ROLLBACK_APPLICATION_ID_MISSING", application.uuid);
+  async assertPreDeployRecoverable(applicationId: string, predecessorSha: string): Promise<void> {
+    const containers = await this.containers(applicationId);
+    const images = await this.images(containers);
+    if (images.some((image) => tagOf(image) !== predecessorSha)) {
+      throw new ComposeRollbackEvidenceError("COMPOSE_ROLLBACK_PREDECESSOR_TAG_MISMATCH", applicationId);
+    }
+    await this.requireImages(images, "COMPOSE_ROLLBACK_PREDECESSOR_IMAGE_MISSING");
+  }
 
-    const containers = lines(await this.run(
-      ["ps", "--filter", `label=coolify.applicationId=${application.id}`, "--format", "{{.ID}}"],
+  /**
+   * Runs after the target has converged, before certification preflight can
+   * arm external effects. It derives the two repositories from the current
+   * target containers, then demands their predecessor tags are still local.
+   */
+  async assertPredecessorStillPresent(applicationId: string, predecessorSha: string): Promise<void> {
+    const images = await this.images(await this.containers(applicationId));
+    const predecessors = images.map((image) => `${repositoryOf(image)}:${predecessorSha}`);
+    await this.requireImages(predecessors, "COMPOSE_ROLLBACK_PREDECESSOR_IMAGE_MISSING");
+  }
+
+  private async containers(applicationId: string): Promise<readonly Container[]> {
+    if (!/^\d+$/.test(applicationId)) throw new ComposeRollbackEvidenceError("COMPOSE_ROLLBACK_APPLICATION_ID_INVALID");
+    const values = lines(await this.run(
+      ["ps", "--filter", `label=coolify.applicationId=${applicationId}`, "--format", '{{.ID}}|{{.Label "com.docker.compose.service"}}'],
       "COMPOSE_ROLLBACK_CONTAINER_DISCOVERY_FAILED",
     ));
-    if (!containers.length) throw new ComposeRollbackEvidenceError("COMPOSE_ROLLBACK_CONTAINERS_MISSING", application.uuid);
+    const containers = values.map((value) => {
+      const [id, service, ...extra] = value.split("|");
+      if (!id || !service || extra.length) throw new ComposeRollbackEvidenceError("COMPOSE_ROLLBACK_CONTAINER_METADATA_INCOMPLETE", applicationId);
+      return { id, service };
+    });
+    const services = new Set(containers.map((container) => container.service));
+    if (containers.length !== expectedServices.size || services.size !== expectedServices.size || [...expectedServices].some((service) => !services.has(service))) {
+      throw new ComposeRollbackEvidenceError("COMPOSE_ROLLBACK_CONTAINERS_MISSING", applicationId);
+    }
+    return containers;
+  }
 
+  private async images(containers: readonly Container[]): Promise<readonly string[]> {
     const images = lines(await this.run(
-      ["inspect", "--format", "{{.Config.Image}}", ...containers],
+      ["inspect", "--format", "{{.Config.Image}}", ...containers.map((container) => container.id)],
       "COMPOSE_ROLLBACK_CONTAINER_INSPECTION_FAILED",
     ));
-    if (images.length !== containers.length) {
-      throw new ComposeRollbackEvidenceError("COMPOSE_ROLLBACK_CONTAINER_IMAGE_INCOMPLETE", application.uuid);
+    if (images.length !== containers.length || images.some((image) => !repositoryOf(image) || !tagOf(image))) {
+      throw new ComposeRollbackEvidenceError("COMPOSE_ROLLBACK_CONTAINER_IMAGE_INCOMPLETE");
     }
-    if (images.some((image) => tagOf(image) !== predecessorSha)) {
-      throw new ComposeRollbackEvidenceError("COMPOSE_ROLLBACK_PREDECESSOR_TAG_MISMATCH", application.uuid);
-    }
+    return images;
+  }
 
-    for (const image of new Set(images)) {
-      await this.run(["image", "inspect", image], "COMPOSE_ROLLBACK_PREDECESSOR_IMAGE_MISSING");
-      const repository = repositoryOf(image);
-      const retained = new Set(lines(await this.run(
-        ["image", "ls", repository, "--format", "{{.Repository}}:{{.Tag}}"],
-        "COMPOSE_ROLLBACK_RETENTION_UNREADABLE",
-      )).filter((candidate) => repositoryOf(candidate) === repository && COMMIT_TAG.test(tagOf(candidate))));
-      if (!retained.has(image) || retained.size < 2) {
-        throw new ComposeRollbackEvidenceError("COMPOSE_ROLLBACK_RETENTION_INSUFFICIENT", `${repository}: ${retained.size}`);
-      }
-    }
+  private async requireImages(images: readonly string[], code: string): Promise<void> {
+    for (const image of new Set(images)) await this.run(["image", "inspect", image], code);
   }
 
   private async run(args: readonly string[], code: string): Promise<string> {

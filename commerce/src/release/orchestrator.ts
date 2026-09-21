@@ -29,6 +29,10 @@ export interface RuntimeEvidenceReader {
 
 /** Hands the target revision to whatever actually deploys it. */
 export interface DeploymentDriver {
+  /** Proves the frozen predecessor can survive this deployment before it starts. */
+  assertRecoverable(predecessorSha: string): Promise<void>;
+  /** Re-proves predecessor images after target convergence and before arming. */
+  assertPredecessorRetained(predecessorSha: string): Promise<void>;
   deploy(targetSha: string): Promise<void>;
 }
 
@@ -185,6 +189,7 @@ export class ReleaseOrchestrator {
     // evidence table to read. An ordinary maintenance release on the launch
     // lineage has no predecessor reader and uses the canonical one.
     const before = await this.capturePredecessor(request.candidate.releaseClass);
+    await this.ports.deployment.assertRecoverable(uniformSha(before));
     const session = sessions.acquireFenced({
       id: request.sessionId, ownerId: request.ownerId, mode: "MAINTENANCE_CUTOVER",
       targetSha: request.candidate.sha, candidateId: request.candidate.id, adoptedCutoverId: request.adoptedCutoverId,
@@ -209,6 +214,13 @@ export class ReleaseOrchestrator {
     if (!this.ports.certification) throw new ReleaseOrchestrationError("CUTOVER_REQUIRES_CERTIFICATION_DRIVER");
     const converged = await this.requireTargetTopology(sessionId, request);
     if ("kind" in converged) return converged;
+    const session = this.ports.sessions.read(sessionId);
+    if (!session?.preDeployTopology) throw new ReleaseOrchestrationError("PRE_DEPLOY_TOPOLOGY_REQUIRED");
+    try {
+      await this.ports.deployment.assertPredecessorRetained(uniformSha(session.preDeployTopology));
+    } catch (error) {
+      return this.recovery(sessionId, request.ownerId, `PREDECESSOR_IMAGE_RECHECK_FAILED:${failureCode(error)}`);
+    }
     const admitted = await this.requireReadiness(sessionId, request);
     if (admitted) return admitted;
 
@@ -386,6 +398,10 @@ export class ReleaseOrchestrator {
     const full: ReleaseRequest = { ownerId, candidate, sessionId };
     if (plan.kind === "RETRY_DEPLOY") {
       try {
+        if (session.mode === "MAINTENANCE_CUTOVER") {
+          if (!session.preDeployTopology) throw new ReleaseOrchestrationError("PRE_DEPLOY_TOPOLOGY_REQUIRED");
+          await this.ports.deployment.assertRecoverable(uniformSha(session.preDeployTopology));
+        }
         await this.ports.deployment.deploy(session.targetSha);
       } catch (error) {
         return this.classify(sessionId, ownerId, failureCode(error));
@@ -434,3 +450,10 @@ export class ReleaseOrchestrator {
     return { kind: "RECOVERY_REQUIRED", session, code };
   }
 }
+
+/** A shared deploy pointer can restore only one predecessor revision. */
+const uniformSha = (topology: DeploymentObservation | PreDeploySnapshot): string => {
+  const values = Object.values(topology.runtime);
+  if (!values.length || new Set(values).size !== 1) throw new ReleaseOrchestrationError("PRE_DEPLOY_TOPOLOGY_NOT_UNIFORM");
+  return values[0]!;
+};

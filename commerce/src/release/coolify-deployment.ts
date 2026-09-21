@@ -22,12 +22,15 @@ export type SurfaceApplication = {
   readonly surfaces: readonly (keyof RuntimeTopology)[];
   readonly uuid: string;
   readonly name: string;
+  /** Required only for the one Docker Compose application. */
+  readonly composeApplicationId?: string;
 };
 
 export type CoolifyDeploymentOptions = {
   readonly client: CoolifyClient;
   readonly refs: ProductionDeployRefStore;
   readonly applications: readonly SurfaceApplication[];
+  readonly serverUuid: string;
   readonly composeRollbackEvidence?: ComposeRollbackEvidence;
   readonly onProgress?: (message: string) => void;
 };
@@ -54,15 +57,45 @@ export class CoolifyDeploymentDriver implements DeploymentDriver {
    * that cannot be undone must not begin.
    */
   async assertRecoverable(sha: string): Promise<void> {
+    const cleanup = await this.options.client.serverDockerCleanup(this.options.serverUuid);
+    if (cleanup.applicationImageRetentionDisabled) {
+      throw new DeploymentError("DEPLOYMENT_APPLICATION_IMAGE_RETENTION_DISABLED");
+    }
     for (const application of this.options.applications) {
       const configured = await this.options.client.application(application.uuid);
+      if (configured.dockerImagesToKeep === null || configured.dockerImagesToKeep < 2) {
+        throw new DeploymentError("DEPLOYMENT_IMAGE_RETENTION_INSUFFICIENT", `${application.name}: ${configured.dockerImagesToKeep ?? "unreadable"}`);
+      }
+      const active = await this.options.client.activeDeploymentQueue(application.uuid);
+      if (active.length) throw new DeploymentError("DEPLOYMENT_QUEUE_ACTIVE", `${application.name}: ${active.join(",")}`);
       if (configured.buildPack === "dockercompose") {
-        await (this.options.composeRollbackEvidence ?? new DockerComposeRollbackEvidence()).assertRecoverable(configured, sha);
+        if (!application.composeApplicationId) throw new DeploymentError("COMPOSE_APPLICATION_ID_UNCONFIGURED", application.name);
+        await (this.options.composeRollbackEvidence ?? new DockerComposeRollbackEvidence()).assertPreDeployRecoverable(application.composeApplicationId, sha);
         continue;
       }
       const images = await this.options.client.rollbackImages(application.uuid);
       if (!images.some((image) => image.includes(sha))) {
         throw new DeploymentError("DEPLOYMENT_ROLLBACK_IMAGE_MISSING", `${application.name}: no retained image for ${sha}`);
+      }
+    }
+  }
+
+  /**
+   * Target convergence is not permission to arm. Compose cleanup can run
+   * during that deploy, so prove the frozen predecessor remains on both local
+   * repositories immediately before certification is allowed to continue.
+   */
+  async assertPredecessorRetained(sha: string): Promise<void> {
+    for (const application of this.options.applications) {
+      const configured = await this.options.client.application(application.uuid);
+      if (configured.buildPack === "dockercompose") {
+        if (!application.composeApplicationId) throw new DeploymentError("COMPOSE_APPLICATION_ID_UNCONFIGURED", application.name);
+        await (this.options.composeRollbackEvidence ?? new DockerComposeRollbackEvidence()).assertPredecessorStillPresent(application.composeApplicationId, sha);
+        continue;
+      }
+      const images = await this.options.client.rollbackImages(application.uuid);
+      if (!images.some((image) => image.includes(sha))) {
+        throw new DeploymentError("DEPLOYMENT_PREDECESSOR_IMAGE_MISSING", `${application.name}: no retained image for ${sha}`);
       }
     }
   }

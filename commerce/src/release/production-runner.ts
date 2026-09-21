@@ -280,6 +280,7 @@ export const buildProductionRelease = (config: ProductionReleaseConfig, options:
     const client = new CoolifyClient({ apiUrl: config.coolify.apiUrl, token: config.coolify.token, fetch: options.fetch });
     const coolify = {
       client, refs: deployRef,
+      serverUuid: config.coolify.serverUuid,
       applications: config.applications,
       onProgress: (message: string) => journal.record("deployment.progress", { message }),
     };

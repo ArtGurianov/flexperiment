@@ -35,7 +35,7 @@ export type Harness = {
 const APPLICATIONS = [
   { name: "frontend", uuid: "app-frontend", surfaces: ["frontend"] as const },
   { name: "admin", uuid: "app-admin", surfaces: ["admin"] as const },
-  { name: "commerce", uuid: "app-commerce", surfaces: ["commerce", "worker"] as const },
+  { name: "commerce", uuid: "app-commerce", composeApplicationId: "3", surfaces: ["commerce", "worker"] as const },
 ];
 
 const listen = async (server: Server): Promise<string> => {
@@ -94,13 +94,15 @@ export const harness = async (root: string): Promise<Harness> => {
       response.end(JSON.stringify(body));
     };
     const uuid = APPLICATIONS.map((a) => a.uuid).find((candidate) => url.includes(candidate));
+    if (url.includes("/servers/server-1/docker-cleanup")) return send({ disable_application_image_retention: false });
+    if (url.includes("/deployments/applications/")) return send({ count: 0, deployments: [] });
     if (url.includes("/rollback-images")) return send({ images: (retained[uuid ?? ""] ?? []).map((tag) => ({ tag })) });
     if (url.endsWith("/rollback")) return send({ deployment_uuid: "dep-rollback" });
     // Checked before the deploy branch: `/deployments/x` also starts with `/deploy`.
     if (url.includes("/deployments/")) return send({ status: deploymentStatus, commit: targetSha });
     if (url.includes("/deploy")) return send({ deployments: [{ deployment_uuid: "dep-1" }] });
     if (request.method === "PATCH") return send({ uuid, git_commit_sha: pinned[uuid ?? ""] });
-    return send({ uuid, name: uuid, build_pack: "dockercompose", git_branch: "production-deploy", git_commit_sha: pinned[uuid ?? ""] });
+    return send({ uuid, name: uuid, build_pack: "dockerfile", git_branch: "production-deploy", git_commit_sha: pinned[uuid ?? ""], settings: { docker_images_to_keep: 2 } });
   });
   const descriptorServer = createServer((request, response) => {
     request.resume();
@@ -130,7 +132,7 @@ export const harness = async (root: string): Promise<Harness> => {
         occurrenceScopePath: join(root, "certification-occurrence.json"),
         checkoutBodyPath: join(root, "certification-checkout.json"),
       },
-      coolify: { apiUrl: `${coolifyUrl}/api/v1`, token: "test-token" },
+      coolify: { apiUrl: `${coolifyUrl}/api/v1`, token: "test-token", serverUuid: "server-1" },
       applications: APPLICATIONS.map((application) => ({ ...application, surfaces: [...application.surfaces] })),
       topology: {
         frontendReleaseUrl: `${descriptorUrl}/release.json`,

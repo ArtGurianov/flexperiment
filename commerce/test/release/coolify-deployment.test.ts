@@ -22,7 +22,7 @@ const APPLICATIONS: readonly SurfaceApplication[] = [
   { surfaces: ["frontend"], uuid: "app-frontend", name: "flexperiment" },
   { surfaces: ["admin"], uuid: "app-admin", name: "admin-web" },
   // One application, two surfaces: commerce and its worker deploy together.
-  { surfaces: ["commerce", "worker"], uuid: "app-commerce", name: "commerce" },
+  { surfaces: ["commerce", "worker"], uuid: "app-commerce", name: "commerce", composeApplicationId: "3" },
 ];
 
 let origin: string;
@@ -34,6 +34,9 @@ let retained: Record<string, string[]>;
 let calls: string[];
 let deploymentStatus: string;
 let buildPacks: Record<string, string>;
+let dockerImagesToKeep: number;
+let retentionDisabled: boolean;
+let queue: Record<string, readonly { status: string; deployment_uuid: string }[]>;
 
 const listen = async (): Promise<string> => {
   server = createServer((request, response) => {
@@ -44,11 +47,16 @@ const listen = async (): Promise<string> => {
     calls.push(`${request.method} ${url.split("?")[0]}`);
     const send = (body: unknown) => { response.writeHead(200, { "Content-Type": "application/json" }); response.end(JSON.stringify(body)); };
     const images = Object.entries(retained).find(([uuid]) => url.includes(uuid))?.[1] ?? [];
+    if (url.includes("/servers/server-1/docker-cleanup")) return send({ disable_application_image_retention: retentionDisabled });
+    if (url.includes("/deployments/applications/")) {
+      const uuid = url.split("/").at(-1)?.split("?")[0] ?? "";
+      return send({ count: queue[uuid]?.length ?? 0, deployments: queue[uuid] ?? [] });
+    }
     if (url.includes("/rollback-images")) return send({ images: images.map((tag) => ({ tag })) });
     if (url.endsWith("/rollback")) return send({ deployment_uuid: "dep-rollback" });
     if (url.includes("/applications/")) {
       const uuid = url.split("/").at(-1) ?? "";
-      return send({ id: uuid === "app-commerce" ? 3 : 1, uuid, build_pack: buildPacks[uuid] ?? "dockerfile" });
+      return send({ uuid, build_pack: buildPacks[uuid] ?? "dockerfile", settings: { docker_images_to_keep: dockerImagesToKeep } });
     }
     // Before the deploy branch: `/deployments/x` also starts with `/deploy`.
     if (url.includes("/deployments/")) return send({ status: deploymentStatus, commit: targetSha });
@@ -78,6 +86,9 @@ beforeEach(() => {
   git(clone, "push", "origin", "main");
   retained = { "app-frontend": [preSha], "app-admin": [preSha], "app-commerce": [preSha] };
   buildPacks = {};
+  dockerImagesToKeep = 2;
+  retentionDisabled = false;
+  queue = {};
 });
 afterEach(async () => {
   if (server) await new Promise<void>((resolve) => server!.close(() => resolve()));
@@ -87,7 +98,7 @@ afterEach(async () => {
 const drivers = async (composeRollbackEvidence?: ComposeRollbackEvidence) => {
   const client = new CoolifyClient({ apiUrl: await listen(), token: "t", pollIntervalMs: 1, sleep: async () => {} });
   const refs = new ProductionDeployRefStore({ cwd: clone });
-  const options = { client, refs, applications: APPLICATIONS, composeRollbackEvidence };
+  const options = { client, refs, applications: APPLICATIONS, serverUuid: "server-1", composeRollbackEvidence };
   return { refs, deployment: new CoolifyDeploymentDriver(options), recovery: new CoolifyRecoveryDriver(options) };
 };
 
@@ -122,12 +133,49 @@ describe("deploying through the pointer the applications follow", () => {
     buildPacks["app-commerce"] = "dockercompose";
     retained["app-commerce"] = [];
     const observed: string[] = [];
-    const { deployment } = await drivers({ async assertRecoverable(application, sha) { observed.push(`${application.uuid}:${sha}`); } });
+    const { deployment } = await drivers({
+      async assertPreDeployRecoverable(applicationId, sha) { observed.push(`${applicationId}:${sha}`); },
+      async assertPredecessorStillPresent() {},
+    });
 
     await deployment.assertRecoverable(preSha);
 
-    expect(observed).toEqual([`app-commerce:${preSha}`]);
+    expect(observed).toEqual([`3:${preSha}`]);
     expect(calls.filter((call) => call === "GET /api/v1/applications/app-commerce/rollback-images")).toHaveLength(0);
+  });
+
+  it("accepts one predecessor image per Compose repository when configured retention is two", async () => {
+    buildPacks["app-commerce"] = "dockercompose";
+    const { deployment } = await drivers({ async assertPreDeployRecoverable() {}, async assertPredecessorStillPresent() {} });
+    await expect(deployment.assertRecoverable(preSha)).resolves.toBeUndefined();
+  });
+
+  it("refuses configured retention one even if an older second tag exists", async () => {
+    dockerImagesToKeep = 1;
+    retained["app-commerce"] = [preSha, targetSha];
+    const { deployment } = await drivers();
+    await expect(deployment.assertRecoverable(preSha)).rejects.toMatchObject({ code: "DEPLOYMENT_IMAGE_RETENTION_INSUFFICIENT" });
+  });
+
+  it("refuses when server cleanup disables application image retention", async () => {
+    retentionDisabled = true;
+    const { deployment } = await drivers();
+    await expect(deployment.assertRecoverable(preSha)).rejects.toMatchObject({ code: "DEPLOYMENT_APPLICATION_IMAGE_RETENTION_DISABLED" });
+  });
+
+  it("refuses a nonterminal deployment queue", async () => {
+    queue["app-admin"] = [{ status: "queued", deployment_uuid: "other-controller" }];
+    const { deployment } = await drivers();
+    await expect(deployment.assertRecoverable(preSha)).rejects.toMatchObject({ code: "DEPLOYMENT_QUEUE_ACTIVE" });
+  });
+
+  it("does not allow arming evidence when the post-target Compose predecessor disappeared", async () => {
+    buildPacks["app-commerce"] = "dockercompose";
+    const { deployment } = await drivers({
+      async assertPreDeployRecoverable() {},
+      async assertPredecessorStillPresent() { throw Object.assign(new Error("gone"), { code: "COMPOSE_ROLLBACK_PREDECESSOR_IMAGE_MISSING" }); },
+    });
+    await expect(deployment.assertPredecessorRetained(preSha)).rejects.toMatchObject({ code: "COMPOSE_ROLLBACK_PREDECESSOR_IMAGE_MISSING" });
   });
 
   it("does not report a failed deployment as a deploy", async () => {

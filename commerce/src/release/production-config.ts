@@ -23,6 +23,8 @@ export class ReleaseConfigError extends Error {
 export type SurfaceApplicationConfig = {
   readonly name: string;
   readonly uuid: string;
+  /** Internal numeric ID from the live Compose container label. */
+  readonly composeApplicationId?: string;
   readonly surfaces: readonly ("frontend" | "admin" | "commerce" | "worker")[];
 };
 
@@ -79,7 +81,7 @@ export type ProductionReleaseConfig = {
     readonly expectedLedgerLength: number;
     readonly commerceReadyUrl: string;
   };
-  readonly coolify: { readonly apiUrl: string; readonly token: string };
+  readonly coolify: { readonly apiUrl: string; readonly token: string; readonly serverUuid: string };
   readonly applications: readonly SurfaceApplicationConfig[];
   readonly topology: { readonly frontendReleaseUrl: string; readonly adminReleaseUrl: string };
   readonly deployRef: { readonly remote: string; readonly ref: string; readonly worktree: string };
@@ -94,10 +96,10 @@ const UUID = /^[0-9a-zA-Z][0-9a-zA-Z._-]{7,63}$/;
  * three moving parts, and pretending otherwise would leave the worker
  * unaccounted for at exactly the moment convergence is judged.
  */
-const APPLICATIONS: readonly (readonly [string, string, SurfaceApplicationConfig["surfaces"]])[] = [
-  ["COOLIFY_APPLICATION_FRONTEND", "frontend", ["frontend"]],
-  ["COOLIFY_APPLICATION_ADMIN", "admin", ["admin"]],
-  ["COOLIFY_APPLICATION_COMMERCE", "commerce", ["commerce", "worker"]],
+const APPLICATIONS: readonly { readonly variable: string; readonly composeIdVariable?: string; readonly name: string; readonly surfaces: SurfaceApplicationConfig["surfaces"] }[] = [
+  { variable: "COOLIFY_APPLICATION_FRONTEND", name: "frontend", surfaces: ["frontend"] },
+  { variable: "COOLIFY_APPLICATION_ADMIN", name: "admin", surfaces: ["admin"] },
+  { variable: "COOLIFY_APPLICATION_COMMERCE", composeIdVariable: "COOLIFY_APPLICATION_COMMERCE_ID", name: "commerce", surfaces: ["commerce", "worker"] },
 ];
 
 export const READ_ONLY_RELEASE_ENVIRONMENT_VARIABLES = [
@@ -129,7 +131,8 @@ export const PRODUCTION_RELEASE_ENVIRONMENT_VARIABLES = [
   "CERTIFICATION_CHECKOUT_BODY",
   "COOLIFY_API_URL",
   "COOLIFY_TOKEN",
-  ...APPLICATIONS.map(([variable]) => variable),
+  "COOLIFY_SERVER_UUID",
+  ...APPLICATIONS.flatMap((application) => [application.variable, ...(application.composeIdVariable ? [application.composeIdVariable] : [])]),
   "FLEXPERIMENT_FRONTEND_RELEASE_URL",
   "FLEXPERIMENT_ADMIN_RELEASE_URL",
   "FLEXPERIMENT_DEPLOY_REF_REMOTE",
@@ -225,9 +228,13 @@ export const loadProductionReleaseConfig = (env: NodeJS.ProcessEnv = process.env
   const value = demand(env, PRODUCTION_RELEASE_ENVIRONMENT_VARIABLES);
   const problems: string[] = [];
 
-  for (const [variable] of APPLICATIONS) {
-    if (!UUID.test(value(variable))) problems.push(`${variable} is not an application identifier`);
+  for (const application of APPLICATIONS) {
+    if (!UUID.test(value(application.variable))) problems.push(`${application.variable} is not an application identifier`);
+    if (application.composeIdVariable && !/^\d+$/.test(value(application.composeIdVariable))) {
+      problems.push(`${application.composeIdVariable} is not a Compose application identifier`);
+    }
   }
+  if (!UUID.test(value("COOLIFY_SERVER_UUID"))) problems.push("COOLIFY_SERVER_UUID is not a server identifier");
   httpUrl(value("COOLIFY_API_URL"), "COOLIFY_API_URL", problems);
   httpUrl(value("CERTIFICATION_ADMIN_BASE_URL"), "CERTIFICATION_ADMIN_BASE_URL", problems);
   httpUrl(value("CERTIFICATION_PUBLIC_BASE_URL"), "CERTIFICATION_PUBLIC_BASE_URL", problems);
@@ -240,7 +247,7 @@ export const loadProductionReleaseConfig = (env: NodeJS.ProcessEnv = process.env
 
   const ref = deployRefName(env, problems);
 
-  const uuids = APPLICATIONS.map(([variable]) => value(variable));
+  const uuids = APPLICATIONS.map((application) => value(application.variable));
   if (new Set(uuids).size !== uuids.length) {
     // Two surfaces pointed at one application would deploy and roll back as
     // one, and the topology vector would stop being able to describe a partial
@@ -267,8 +274,13 @@ export const loadProductionReleaseConfig = (env: NodeJS.ProcessEnv = process.env
       checkoutBodyPath: value("CERTIFICATION_CHECKOUT_BODY"),
     },
     predecessor: predecessor(env, problems),
-    coolify: { apiUrl: value("COOLIFY_API_URL"), token: value("COOLIFY_TOKEN") },
-    applications: APPLICATIONS.map(([variable, name, surfaces]) => ({ name, uuid: value(variable), surfaces })),
+    coolify: { apiUrl: value("COOLIFY_API_URL"), token: value("COOLIFY_TOKEN"), serverUuid: value("COOLIFY_SERVER_UUID") },
+    applications: APPLICATIONS.map((application) => ({
+      name: application.name,
+      uuid: value(application.variable),
+      ...(application.composeIdVariable ? { composeApplicationId: value(application.composeIdVariable) } : {}),
+      surfaces: application.surfaces,
+    })),
     topology: {
       frontendReleaseUrl: value("FLEXPERIMENT_FRONTEND_RELEASE_URL"),
       adminReleaseUrl: value("FLEXPERIMENT_ADMIN_RELEASE_URL"),
@@ -306,6 +318,7 @@ export const describeConfig = (config: ProductionReleaseConfig): Record<string, 
     candidateDirectory: config.candidateDirectory,
     envelopeDirectory: config.envelopeDirectory,
     coolifyApiUrl: config.coolify.apiUrl,
+    coolifyServerUuid: config.coolify.serverUuid,
     certification: {
       adminBaseUrl: config.certification.adminBaseUrl,
       publicBaseUrl: config.certification.publicBaseUrl,

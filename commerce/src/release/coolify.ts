@@ -9,12 +9,17 @@
  */
 
 export type CoolifyApplication = {
-  readonly id: string;
   readonly uuid: string;
   readonly name: string;
   readonly buildPack: string;
   readonly gitBranch: string;
   readonly gitCommitSha: string | null;
+  /** Configured per-application retention, not an observation of current tags. */
+  readonly dockerImagesToKeep: number | null;
+};
+
+export type CoolifyServerDockerCleanup = {
+  readonly applicationImageRetentionDisabled: boolean;
 };
 
 export type CoolifyDeployment = {
@@ -66,14 +71,45 @@ export class CoolifyClient {
 
   async application(uuid: string): Promise<CoolifyApplication> {
     const body = await this.request("GET", `/applications/${encodeURIComponent(uuid)}`);
+    const settings = object(body.settings);
+    const retention = settings?.docker_images_to_keep;
     return {
-      id: String(body.id ?? ""),
       uuid: String(body.uuid ?? uuid),
       name: String(body.name ?? ""),
       buildPack: String(body.build_pack ?? ""),
       gitBranch: String(body.git_branch ?? ""),
       gitCommitSha: body.git_commit_sha === null || body.git_commit_sha === undefined ? null : String(body.git_commit_sha),
+      dockerImagesToKeep: typeof retention === "number" && Number.isInteger(retention) && retention >= 0 ? retention : null,
     };
+  }
+
+  /**
+   * The server policy can turn application image retention off globally even
+   * when the application asks Coolify to keep images. Read both policies: a
+   * retained tag count is neither of them and cannot prove the next deploy
+   * will leave a predecessor behind.
+   */
+  async serverDockerCleanup(uuid: string): Promise<CoolifyServerDockerCleanup> {
+    const body = await this.request("GET", `/servers/${encodeURIComponent(uuid)}/docker-cleanup`);
+    if (typeof body.disable_application_image_retention !== "boolean") {
+      throw new CoolifyError("COOLIFY_SERVER_CLEANUP_MALFORMED", uuid);
+    }
+    return { applicationImageRetentionDisabled: body.disable_application_image_retention };
+  }
+
+  /** Every nonterminal queue entry is work another controller still owns. */
+  async activeDeploymentQueue(uuid: string): Promise<readonly string[]> {
+    const body = await this.request("GET", `/deployments/applications/${encodeURIComponent(uuid)}?take=100`);
+    if (!Array.isArray(body.deployments)) throw new CoolifyError("COOLIFY_DEPLOYMENT_QUEUE_MALFORMED", uuid);
+    const terminal = new Set(["finished", "failed", "cancelled", "cancelled-by-user"]);
+    const active: string[] = [];
+    for (const deployment of body.deployments) {
+      if (!object(deployment)) throw new CoolifyError("COOLIFY_DEPLOYMENT_QUEUE_MALFORMED", uuid);
+      const status = deployment.status;
+      if (typeof status !== "string") throw new CoolifyError("COOLIFY_DEPLOYMENT_QUEUE_MALFORMED", uuid);
+      if (!terminal.has(status)) active.push(String(deployment.deployment_uuid ?? deployment.uuid ?? status));
+    }
+    return active;
   }
 
   /**
@@ -171,3 +207,6 @@ export class CoolifyClient {
     }
   }
 }
+
+const object = (value: unknown): Record<string, unknown> | undefined =>
+  value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;

@@ -36,6 +36,8 @@ const admittedEvidence = (): ReleaseReadinessEvidence => {
 const harness = (options: {
   topologies: PreDeploySnapshot[];
   deployFails?: string;
+  recoverableFails?: string;
+  retainedFails?: string;
   certifyFails?: string;
   preflightFails?: string;
   withoutPredecessor?: boolean;
@@ -59,6 +61,8 @@ const harness = (options: {
     },
     evidence: { async read() { log.push("readiness"); return options.evidence ?? admittedEvidence(); } },
     deployment: {
+      async assertRecoverable(sha) { log.push(`recoverable:${sha}`); if (options.recoverableFails) throw new Error(options.recoverableFails); },
+      async assertPredecessorRetained(sha) { log.push(`retained:${sha}`); if (options.retainedFails) throw new Error(options.retainedFails); },
       async deploy(sha) { log.push(`deploy:${sha}`); if (options.deployFails) throw new Error(options.deployFails); },
     },
     certification: {
@@ -82,7 +86,7 @@ describe("maintenance cutover ordering", () => {
     const prepared = await orchestrator.runMaintenanceCutover(cutoverRequest);
 
     expect(prepared.kind).toBe("AWAITING_OPERATOR");
-    expect(log).toEqual([`predecessor:${old}`, `deploy:${target}`, `observe:${target}`, "readiness", "capability-issued"]);
+    expect(log).toEqual([`predecessor:${old}`, `recoverable:${old}`, `deploy:${target}`, `observe:${target}`, `retained:${old}`, "readiness", "capability-issued"]);
     // Issuing a capability is a record this system keeps about itself. Nothing
     // has left it, so the archived database is still a truthful account and a
     // rollback is still legal - which is exactly what a run the operator never
@@ -105,7 +109,7 @@ describe("maintenance cutover ordering", () => {
     // point of no return is crossed immediately before the payment, not before
     // the capability that might never be spent.
     expect(log).toEqual([
-      `predecessor:${old}`, `deploy:${target}`, `observe:${target}`, "readiness",
+      `predecessor:${old}`, `recoverable:${old}`, `deploy:${target}`, `observe:${target}`, `retained:${old}`, "readiness",
       // Preflight is read-only and sits before the point of no return: an
       // unreachable runtime or an absent operator is an ordinary refusal, not
       // a release that can no longer be rolled back.
@@ -115,6 +119,21 @@ describe("maintenance cutover ordering", () => {
     // Settling the session and reopening the gate is one operation, so a
     // terminal session can never coexist with sales still shut.
     expect(store.deploymentGate().closed).toBe(false);
+  });
+
+  it("never issues a capability or arms when the predecessor disappears after target convergence", async () => {
+    const { log, store, orchestrator } = harness({
+      topologies: [topology(old), topology(target)],
+      retainedFails: "COMPOSE_ROLLBACK_PREDECESSOR_IMAGE_MISSING",
+    });
+
+    const outcome = await orchestrator.runMaintenanceCutover(cutoverRequest);
+
+    expect(outcome).toMatchObject({ kind: "RECOVERY_REQUIRED", code: "PREDECESSOR_IMAGE_RECHECK_FAILED:COMPOSE_ROLLBACK_PREDECESSOR_IMAGE_MISSING" });
+    expect(log).toEqual([`predecessor:${old}`, `recoverable:${old}`, `deploy:${target}`, `observe:${target}`, `retained:${old}`]);
+    expect(log).not.toContain("readiness");
+    expect(log).not.toContain("capability-issued");
+    expect(store.deploymentGate().closed).toBe(true);
   });
 
   it("still permits a rollback while the operator has not begun", async () => {

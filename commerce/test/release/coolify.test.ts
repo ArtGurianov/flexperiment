@@ -39,10 +39,30 @@ const client = (apiUrl: string, over: Partial<ConstructorParameters<typeof Cooli
 
 describe("the Coolify client", () => {
   it("reads an application", async () => {
-    const url = await listen(() => ({ status: 200, body: JSON.stringify({ id: 1, uuid: "app-1", name: "commerce", build_pack: "dockercompose", git_branch: "production-deploy", git_commit_sha: null }) }));
+    const url = await listen(() => ({ status: 200, body: JSON.stringify({ uuid: "app-1", name: "commerce", build_pack: "dockercompose", git_branch: "production-deploy", git_commit_sha: null, settings: { docker_images_to_keep: 2 } }) }));
     expect(await client(url).application("app-1")).toEqual({
-      id: "1", uuid: "app-1", name: "commerce", buildPack: "dockercompose", gitBranch: "production-deploy", gitCommitSha: null,
+      uuid: "app-1", name: "commerce", buildPack: "dockercompose", gitBranch: "production-deploy", gitCommitSha: null, dockerImagesToKeep: 2,
     });
+  });
+
+  it("reads server retention and rejects a malformed cleanup policy", async () => {
+    const url = await listen(() => ({ status: 200, body: JSON.stringify({ disable_application_image_retention: false }) }));
+    await expect(client(url).serverDockerCleanup("server-1")).resolves.toEqual({ applicationImageRetentionDisabled: false });
+    await new Promise<void>((resolve) => server!.close(() => resolve()));
+    const malformed = await listen(() => ({ status: 200, body: JSON.stringify({}) }));
+    await expect(client(malformed).serverDockerCleanup("server-1")).rejects.toMatchObject({ code: "COOLIFY_SERVER_CLEANUP_MALFORMED" });
+  });
+
+  it("returns only terminally-unsettled deployments as an active queue", async () => {
+    const url = await listen(() => ({ status: 200, body: JSON.stringify({
+      count: 3,
+      deployments: [
+        { status: "finished", deployment_uuid: "done" },
+        { status: "queued", deployment_uuid: "queued" },
+        { status: "in_progress", deployment_uuid: "running" },
+      ],
+    }) }));
+    await expect(client(url).activeDeploymentQueue("app-1")).resolves.toEqual(["queued", "running"]);
   });
 
   it("refuses a pin the API accepted but did not store", async () => {
