@@ -100,3 +100,67 @@ describe("reporting a run without deciding anything", () => {
     expect(driver.phase(SESSION)).toBe("NEW");
   });
 });
+
+describe("the claim between prepare and certify", () => {
+  /** A fresh process: nothing carried over but the file on disk. */
+  const restarted = () => new ProductionCertificationDriver({
+    db, candidate, adminBaseUrl: "http://127.0.0.1:1", publicBaseUrl: "http://127.0.0.1:1",
+    serviceToken: "token", citySlug: "test-city", now: () => now,
+    operator: { occurrence: { startsAt: "2026-10-01T10:00:00.000Z", endsAt: "2026-10-01T12:00:00.000Z", venueDisclosureText: "Later", venueAnnounceBy: "2026-09-25T00:00:00.000Z" }, checkoutBodyPath: "/dev/null" },
+    terminal: terminal(),
+  });
+
+  it("recovers the same bearer after the issuing process is gone", async () => {
+    // prepare exits with 13 and the process disappears. certify starts minutes
+    // or hours later and must present the same bearer: a new capability per
+    // attempt would be a new authorization for every restart.
+    const issued = await driver.issueCapability(SESSION);
+    const recovered = restarted().recoverCapability(SESSION);
+
+    expect(recovered).toEqual(issued);
+    expect(recovered?.nonce).toBe(issued.nonce);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM certification_capabilities").get()).toEqual({ n: 1 });
+  });
+
+  it("recovers it after the checkout spent it, because the run is not over", async () => {
+    // Restart after the checkout request but before its response: the capability
+    // is spent, the run continues to payment, email, refund and cleanup, and the
+    // claim still identifies this caller to the catalogue endpoint.
+    const issued = await driver.issueCapability(SESSION);
+    new SqliteCertificationCapabilityStore(db).spend(issued.id, now);
+
+    const recovered = restarted().recoverCapability(SESSION);
+    expect(recovered?.id).toBe(issued.id);
+    expect(recovered?.nonce).toBe(issued.nonce);
+    expect(recovered?.consumedAt).toBe(now.toISOString());
+  });
+
+  it("gives another deploy session nothing", async () => {
+    await driver.issueCapability(SESSION);
+    db.prepare(`INSERT INTO deploy_sessions(id, owner_id, mode, target_sha, candidate_id, state, rollback_authority,
+        pre_deploy_topology, created_at, lease_expires_at, deployment_gate_closed)
+      VALUES ('other-session', 'owner', 'MAINTENANCE_CUTOVER', ?, ?, 'SUCCEEDED', 'OLD_LINEAGE_ALLOWED',
+        '{"runtime":{"frontend":"b","admin":"b","commerce":"b","worker":"b"},"controlPlane":{"productionDeployRefSha":"b"}}',
+        '2026-09-19T00:00:00.000Z', '2099-01-01T00:00:00.000Z', 0)`).run(SHA, SHA);
+
+    expect(restarted().recoverCapability("other-session")).toBeUndefined();
+  });
+
+  it("answers nothing before anything was issued", () => {
+    expect(restarted().recoverCapability(SESSION)).toBeUndefined();
+  });
+
+  it("never puts the bearer on a stream or an argument", () => {
+    // The nonce is the bearer. It is read from the row and handed to the ports
+    // in memory; nothing here writes it anywhere a person or a log would see.
+    const source = readFileSync("commerce/src/certification/driver.ts", "utf8");
+    for (const forbidden of ["console.", "process.stdout", "process.stderr", "process.argv", "appendFileSync", "writeFileSync"]) {
+      expect(source, `${forbidden} must not appear here`).not.toContain(forbidden);
+    }
+    const ports = readFileSync("commerce/src/certification/http-ports.ts", "utf8");
+    expect(ports).not.toContain("console.");
+    // It travels in a header, never a query string.
+    expect(ports).toContain("[CERTIFICATION_CLAIM_HEADER]");
+    expect(ports).not.toMatch(/nonce=\$\{/);
+  });
+});

@@ -117,6 +117,28 @@ export class ProductionCertificationDriver implements CertificationDriver {
     if (outcome.kind !== "PASS") throw new Error(`${outcome.kind}:${outcome.code}`);
   }
 
+  /**
+   * The capability a previous process issued, recovered for this one.
+   *
+   * `prepare` exits and the process is gone; `certify` starts fresh minutes or
+   * hours later and has to present the same bearer. It is recovered from the
+   * capability row rather than re-issued, because a new capability per attempt
+   * would mean a new authorization for every restart - and the one that already
+   * exists is the one the run's checkout is idempotent against.
+   *
+   * The row of a spent capability is returned too. After the checkout, the run
+   * still needs it: the claim identifies the caller to the catalogue endpoint
+   * for the close, and the checkout itself replays through its idempotency key
+   * without touching the capability again.
+   */
+  recoverCapability(sessionId: string): CertificationCapability | undefined {
+    const row = this.options.db.prepare(`SELECT id FROM certification_capabilities
+      WHERE deployment_session_id = ? AND retired_at IS NULL
+      ORDER BY consumed_at IS NULL DESC, created_at DESC LIMIT 1`).get(sessionId) as { id: string } | undefined;
+    if (!row) return undefined;
+    return new SqliteCertificationCapabilityStore(this.options.db).get(row.id);
+  }
+
   /** What the run has reached, for a caller reporting progress without deciding anything. */
   phase(sessionId: string): string | undefined {
     return new SqliteCertificationRunStore(this.options.db).load(certificationRunId(sessionId))?.phase;

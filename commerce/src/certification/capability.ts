@@ -132,21 +132,24 @@ export const issueCapability = (store: CertificationCapabilityStore, input: Issu
  * would be a weaker copy of this check that quietly disagrees with it - exactly
  * what the sales gate refuses to keep.
  */
-export const capabilityBearerDefect = (
+/**
+ * Possession and scope: this bearer holds this run's capability, for this
+ * release, behind this fence.
+ *
+ * It says nothing about the capability still being spendable, and that is the
+ * point. Cleanup happens after the checkout has spent it - shutting the fixture
+ * is the last thing a run does - so a check that required an unspent capability
+ * would make the close unreachable and leave the occurrence for sale forever.
+ * What cleanup needs to prove is that the caller is this run, which is exactly
+ * this.
+ */
+export const capabilityPossessionDefect = (
   capability: CertificationCapability | undefined,
   claim: CertificationClaim,
   context: { readonly deploymentSessionId: string; readonly runtimeReleaseSha: string },
   expected: { readonly runId: string; readonly releaseSha: string },
-  now: Date,
 ): CapabilityDefect | undefined => {
   if (!capability || capability.id !== claim.capabilityId) return "CERTIFICATION_CAPABILITY_NOT_FOUND";
-  if (capability.consumedAt) return "CERTIFICATION_CAPABILITY_CONSUMED";
-  // The live slot is a stored fact now, not a computed one. Retiring frees the
-  // index slot immediately, so without this a retired-but-unconsumed
-  // capability would go on satisfying this predicate while its replacement
-  // already existed - two capabilities, both authorised.
-  if (capability.retiredAt) return "CERTIFICATION_CAPABILITY_RETIRED";
-  if (!(Date.parse(capability.expiresAt) > now.getTime())) return "CERTIFICATION_CAPABILITY_EXPIRED";
   if (capability.runId !== claim.runId || capability.runId !== expected.runId) return "CERTIFICATION_CAPABILITY_RUN_MISMATCH";
   if (!nonceMatches(capability.nonce, claim.nonce)) return "CERTIFICATION_CAPABILITY_NONCE_MISMATCH";
   // Three views of the release have to agree: what the capability was issued
@@ -154,6 +157,26 @@ export const capabilityBearerDefect = (
   // certify. Any disagreement means one of them moved.
   if (capability.releaseSha !== context.runtimeReleaseSha || capability.releaseSha !== expected.releaseSha) return "CERTIFICATION_CAPABILITY_RELEASE_MISMATCH";
   if (!context.deploymentSessionId || capability.deploymentSessionId !== context.deploymentSessionId) return "CERTIFICATION_CAPABILITY_SESSION_MISMATCH";
+  return undefined;
+};
+
+/** Possession, plus the capability still being one that could be spent. */
+export const capabilityBearerDefect = (
+  capability: CertificationCapability | undefined,
+  claim: CertificationClaim,
+  context: { readonly deploymentSessionId: string; readonly runtimeReleaseSha: string },
+  expected: { readonly runId: string; readonly releaseSha: string },
+  now: Date,
+): CapabilityDefect | undefined => {
+  const possession = capabilityPossessionDefect(capability, claim, context, expected);
+  if (possession) return possession;
+  if (capability!.consumedAt) return "CERTIFICATION_CAPABILITY_CONSUMED";
+  // The live slot is a stored fact now, not a computed one. Retiring frees the
+  // index slot immediately, so without this a retired-but-unconsumed
+  // capability would go on satisfying this predicate while its replacement
+  // already existed - two capabilities, both authorised.
+  if (capability!.retiredAt) return "CERTIFICATION_CAPABILITY_RETIRED";
+  if (!(Date.parse(capability!.expiresAt) > now.getTime())) return "CERTIFICATION_CAPABILITY_EXPIRED";
   return undefined;
 };
 

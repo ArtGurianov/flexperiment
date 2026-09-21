@@ -198,3 +198,68 @@ describe("the context a catalogue command must be in", () => {
     expect(performed).toBe(1);
   });
 });
+
+describe("cleanup after the capability was spent", () => {
+  const cleanupBody = (kind: "CLOSE_SALES" | "HIDE_OCCURRENCE") =>
+    ({ run_id: "run", command_id: `cleanup-${kind}`, reason: "Production E2E certification cleanup", claim, kind });
+
+  const readyToClean = () => {
+    session();
+    armed();
+    // What the run did: created its fixture, then spent the capability buying
+    // from it.
+    db.prepare(`INSERT INTO certification_catalogue_mutations(run_id, command_kind, command_id, occurrence_id, occurrence_json)
+      VALUES ('run', 'CREATE_OCCURRENCE', 'command-0001', 'occ', '{"id":"occ"}')`).run();
+    new SqliteCertificationRunStore(db).update("run", 1, { direction: "CLEANUP_STARTED" });
+    new SqliteCertificationCapabilityStore(db).spend(claim.capability_id, now);
+  };
+
+  it("closes and hides with a capability the checkout already consumed", () => {
+    // Shutting the fixture is the last thing a run does, so it always happens
+    // after the checkout spent the capability. A check that demanded an unspent
+    // one would make the close unreachable and leave the occurrence for sale.
+    readyToClean();
+
+    expect(performCertificationCatalogueCommand(ports, parseCatalogueCommandRequest(cleanupBody("CLOSE_SALES")))).toEqual(occurrence);
+    expect(performCertificationCatalogueCommand(ports, parseCatalogueCommandRequest(cleanupBody("HIDE_OCCURRENCE")))).toEqual(occurrence);
+    expect(performed).toBe(2);
+  });
+
+  it("still refuses an armed business command on a spent capability", () => {
+    // Possession is enough to shut a fixture. It is not enough to buy again.
+    readyToClean();
+    expect(() => performCertificationCatalogueCommand(ports, parseCatalogueCommandRequest(body({ claim }))))
+      .toThrow("CERTIFICATION_CAPABILITY_CONSUMED");
+  });
+
+  it("reconciles a repeated close and performs only the missing hide", () => {
+    // close landed, hide did not: the retry must not close twice.
+    readyToClean();
+    performCertificationCatalogueCommand(ports, parseCatalogueCommandRequest(cleanupBody("CLOSE_SALES")));
+    performed = 0;
+
+    expect(performCertificationCatalogueCommand(ports, parseCatalogueCommandRequest({ ...cleanupBody("CLOSE_SALES"), command_id: "fresh" }))).toEqual(occurrence);
+    expect(performed).toBe(0);
+    performCertificationCatalogueCommand(ports, parseCatalogueCommandRequest(cleanupBody("HIDE_OCCURRENCE")));
+    expect(performed).toBe(1);
+  });
+
+  it("refuses cleanup before the run recorded that it had begun", () => {
+    // The record says cleanup has started before anything is shut, so a crash
+    // in the middle leaves a run no later resume will decide to reopen.
+    session();
+    armed();
+    db.prepare(`INSERT INTO certification_catalogue_mutations(run_id, command_kind, command_id, occurrence_id, occurrence_json)
+      VALUES ('run', 'CREATE_OCCURRENCE', 'command-0001', 'occ', '{"id":"occ"}')`).run();
+    expect(() => performCertificationCatalogueCommand(ports, parseCatalogueCommandRequest(cleanupBody("CLOSE_SALES"))))
+      .toThrow("CERTIFICATION_CLEANUP_NOT_ARMED");
+  });
+
+  it("refuses cleanup for a run that never created anything", () => {
+    session();
+    armed();
+    new SqliteCertificationRunStore(db).update("run", 1, { direction: "CLEANUP_STARTED" });
+    expect(() => performCertificationCatalogueCommand(ports, parseCatalogueCommandRequest(cleanupBody("CLOSE_SALES"))))
+      .toThrow("CERTIFICATION_CATALOGUE_OUT_OF_ORDER");
+  });
+});

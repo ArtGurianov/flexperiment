@@ -1,6 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import type Database from "better-sqlite3";
-import { CertificationCapabilityError, capabilityBearerDefect, type CertificationClaim } from "./capability";
+import { CertificationCapabilityError, capabilityBearerDefect, capabilityPossessionDefect, type CertificationClaim } from "./capability";
 import { SqliteCertificationCatalogueAuthority, type CleanupKind } from "./catalogue-authority-sqlite";
 import type { CertificationCatalogueCommand } from "./catalogue-authority";
 import type { OccurrenceView } from "./evidence";
@@ -173,11 +173,14 @@ export const performCertificationCatalogueCommand = (
   }
 
   const capability = new SqliteCertificationCapabilityStore(ports.db).get(request.claim.capabilityId);
-  // Possession, currency and fence - not amount and not occurrence. A catalogue
-  // command has no price, and on its first step no occurrence yet, so asking
-  // the checkout predicate here would mean inventing values for it.
-  const defect = capabilityBearerDefect(capability, request.claim,
-    { deploymentSessionId: fence.id, runtimeReleaseSha: serving }, run, ports.now());
+  const context = { deploymentSessionId: fence.id, runtimeReleaseSha: serving };
+  // An armed business command needs a capability that could still be spent.
+  // Cleanup needs only possession: by the time a run shuts its fixture the
+  // checkout has spent the capability, and requiring an unspent one would make
+  // the close unreachable and leave the occurrence for sale forever.
+  const defect = isCleanup(request.command)
+    ? capabilityPossessionDefect(capability, request.claim, context, run)
+    : capabilityBearerDefect(capability, request.claim, context, run, ports.now());
   if (defect) throw new CertificationCapabilityError(defect);
 
   const authority = new SqliteCertificationCatalogueAuthority(ports.db, runs);
