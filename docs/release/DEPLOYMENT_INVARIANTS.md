@@ -60,6 +60,14 @@ A `LAUNCH_BASELINE` candidate must additionally be the current tip of `main`.
 It replaces the database, so publishing an ancestor would deploy a tree `main`
 has already moved past with no way back to the commits between.
 
+Publication is not a lease on `main`. The production runner refreshes
+`origin/main` after taking its release lock and re-derives the launch candidate
+from that exact commit immediately before either `prepare-bootstrap` or the
+initial `deploy` may mutate anything. Historical candidate files remain valid
+records, but fail consumption with `LAUNCH_BASELINE_MUST_BE_MAIN_TIP`. A session
+whose mutation is already durable recovers its recorded target instead; a new
+`main` must never retarget recovery.
+
 ## The deploy mode is derived, never chosen
 
 `ROLLING_COMPATIBLE` earns `ROLLING_SAFE`; everything else takes
