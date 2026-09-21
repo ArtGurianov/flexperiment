@@ -216,9 +216,25 @@ export class BootstrapRollback {
       receipt = this.ports.receipts.advance(receipt.intent.rollbackId, "VERIFIED", { observation: observed.topology });
     }
 
-    if (receipt.stage === "VERIFIED") receipt = this.completeRollback(receipt);
-    if (receipt.stage === "COMPLETED" && await this.ports.predecessorGate.isClosed()) {
-      await this.ports.predecessorGate.open();
+    if (receipt.stage === "VERIFIED") {
+      // COMPLETED is terminal external authority after the successor database
+      // stops being canonical. It therefore has to be the final durable write:
+      // a crash before or during the gate mutation leaves VERIFIED, which a
+      // retry can reconcile without repeating storage, ref or Coolify work.
+      if (await this.ports.predecessorGate.isClosed()) await this.ports.predecessorGate.open();
+      if (await this.ports.predecessorGate.isClosed()) {
+        throw new BootstrapRollbackError("BOOTSTRAP_ROLLBACK_GATE_NOT_OPEN_AFTER_RECONCILE");
+      }
+      receipt = this.completeRollback(receipt);
+      return receipt;
+    }
+    if (receipt.stage === "COMPLETED") {
+      // A retry after the terminal receipt was flushed but before the process
+      // returned may report exit 11 only after re-proving both terminal facts.
+      this.assertFreshObservation(receipt);
+      if (await this.ports.predecessorGate.isClosed()) {
+        throw new BootstrapRollbackError("BOOTSTRAP_ROLLBACK_COMPLETED_GATE_CLOSED");
+      }
     }
     return receipt;
   }
@@ -292,9 +308,13 @@ export class BootstrapRollback {
   }
 
   private completeRollback(receipt: BootstrapRollbackReceipt): BootstrapRollbackReceipt {
+    this.assertFreshObservation(receipt);
+    return this.ports.receipts.advance(receipt.intent.rollbackId, "COMPLETED");
+  }
+
+  private assertFreshObservation(receipt: BootstrapRollbackReceipt): void {
     if (!receipt.observation || !snapshotEquals(receipt.observation, receipt.intent.preDeployTopology)) {
       throw new BootstrapRollbackError("BOOTSTRAP_ROLLBACK_FRESH_OBSERVATION_REQUIRED");
     }
-    return this.ports.receipts.advance(receipt.intent.rollbackId, "COMPLETED");
   }
 }

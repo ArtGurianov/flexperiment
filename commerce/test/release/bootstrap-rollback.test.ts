@@ -18,7 +18,7 @@ const successorDatabase: DatabaseArchive = { ref: "/state/archive/successor.sqli
 const predecessorDatabase: DatabaseArchive = { ref: "/state/archive/predecessor.sqlite", sha256: "e".repeat(64) };
 const now = new Date("2026-09-21T00:00:00.000Z");
 
-type Failure = "archive-hash" | "runtime" | "storage" | "ref" | "frontend" | "admin" | "commerce" | "observe" | "open-gate";
+type Failure = "archive-hash" | "runtime" | "storage" | "ref" | "frontend" | "admin" | "commerce" | "observe" | "before-gate" | "after-gate";
 
 const world = (makeStore: () => ReleaseAuthorityStore, options: { armed?: boolean; fail?: Failure; observed?: DeploymentObservation } = {}) => {
   const log: string[] = [];
@@ -51,6 +51,7 @@ const world = (makeStore: () => ReleaseAuthorityStore, options: { armed?: boolea
   const applications: Record<"frontend" | "admin" | "commerce", string> = { frontend: target, admin: target, commerce: target };
   let ref = target;
   let gateClosed = true;
+  let gateChecks = 0;
   let archiveDigest = predecessorDatabase.sha256;
   let storageRestored = false;
   const runtimeAuthority = new RuntimeQuiescenceAuthority(() => 0);
@@ -117,11 +118,19 @@ const world = (makeStore: () => ReleaseAuthorityStore, options: { armed?: boolea
       },
     },
     predecessorGate: {
-      async isClosed() { log.push("gate-is-closed"); return gateClosed; },
+      async isClosed() {
+        log.push("gate-is-closed");
+        gateChecks += 1;
+        // The first read belongs to accepting the fresh observation while the
+        // gate is still closed. Crash on the next read, after VERIFIED is
+        // durable and immediately before the gate reconciliation begins.
+        if (gateChecks > 1 && failures.delete("before-gate")) throw new Error("CRASH_BEFORE_GATE_OPEN");
+        return gateClosed;
+      },
       async open() {
         log.push("open-gate");
-        if (failures.delete("open-gate")) throw new Error("GATE_OPEN_FAILED");
         gateClosed = false;
+        if (failures.delete("after-gate")) throw new Error("CRASH_AFTER_GATE_OPEN");
       },
     },
   };
@@ -211,15 +220,42 @@ describe.each(releaseAuthorityStores)("production cross-lineage rollback (%s)", 
     expect(local.gateClosed()).toBe(true);
   });
 
-  it("requires a fresh observation and opens the gate only after durable completion", async () => {
-    const local = world(makeStore, { fail: "open-gate" });
-    await expect(local.run()).rejects.toThrow("GATE_OPEN_FAILED");
-    expect(local.receipts.read(bootstrapRollbackId(local.session.id))?.stage).toBe("COMPLETED");
+  it("resumes after convergence before gate open and completes the receipt last", async () => {
+    const local = world(makeStore, { fail: "before-gate" });
+    await expect(local.run()).rejects.toThrow("CRASH_BEFORE_GATE_OPEN");
+    expect(local.receipts.read(bootstrapRollbackId(local.session.id))?.stage).toBe("VERIFIED");
     expect(local.gateClosed()).toBe(true);
     const beforeRetry = local.log.length;
     await local.run();
-    expect(local.log.slice(beforeRetry)).toEqual(["inspect-archive", "gate-is-closed", "open-gate"]);
+    expect(local.log.slice(beforeRetry)).toEqual([
+      "inspect-archive", "gate-is-closed", "open-gate", "gate-is-closed",
+    ]);
+    expect(local.receipts.read(bootstrapRollbackId(local.session.id))?.stage).toBe("COMPLETED");
     expect(local.gateClosed()).toBe(false);
+  });
+
+  it("resumes after gate open before COMPLETED without repeating recovery work", async () => {
+    const local = world(makeStore, { fail: "after-gate" });
+    await expect(local.run()).rejects.toThrow("CRASH_AFTER_GATE_OPEN");
+    expect(local.receipts.read(bootstrapRollbackId(local.session.id))?.stage).toBe("VERIFIED");
+    expect(local.gateClosed()).toBe(false);
+    const beforeRetry = local.log.length;
+    await local.run();
+    expect(local.log.slice(beforeRetry)).toEqual(["inspect-archive", "gate-is-closed", "gate-is-closed"]);
+    expect(local.receipts.read(bootstrapRollbackId(local.session.id))?.stage).toBe("COMPLETED");
+    expect(local.log.filter((entry) => entry === "restore-predecessor")).toHaveLength(1);
+    expect(local.log.filter((entry) => entry.startsWith("restore-frontend"))).toHaveLength(1);
+  });
+
+  it("re-proves observation and gate after COMPLETED before returning exit success", async () => {
+    const local = world(makeStore);
+    await local.run();
+    expect(local.receipts.read(bootstrapRollbackId(local.session.id))?.stage).toBe("COMPLETED");
+    const beforeRetry = local.log.length;
+    await local.run();
+    expect(local.log.slice(beforeRetry)).toEqual(["inspect-archive", "gate-is-closed"]);
+    expect(local.gateClosed()).toBe(false);
+    expect(local.log.filter((entry) => entry === "restore-predecessor")).toHaveLength(1);
   });
 
   it("refuses completion if fresh observation itself fails", async () => {
