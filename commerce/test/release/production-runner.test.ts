@@ -7,6 +7,7 @@ import { loadProductionReleaseConfig, loadReadOnlyReleaseConfig, ReleaseConfigEr
 import { buildProductionRelease, buildReadOnlyRelease, holdSalesOnSignal, ReleaseRunnerLock } from "../../src/release/production-runner";
 import Database from "better-sqlite3";
 import { harness, recordInstance, type Harness } from "../support/production-runner-harness";
+import { TEST_CAPABILITY_KEY } from "../support/certification-secret";
 
 const NOW = new Date("2026-09-20T12:00:00.000Z");
 const now = () => NOW;
@@ -43,23 +44,34 @@ describe("the production composition root", () => {
     }
   });
 
-  it("refuses a maintenance cutover before touching anything when certification is unwired", async () => {
-    recordInstance(vps.db, "COMMERCE", "api-1", vps.preSha, NOW);
-    recordInstance(vps.db, "WORKER", "worker-1", vps.preSha, NOW, NOW.toISOString());
+  it("refuses to build a certification driver where nobody is watching", () => {
+    // The composition is what enforces attendance. `certificationFor` opens the
+    // controlling terminal, and a test runner has none - which is exactly the
+    // position an unattended dispatch is in. It is built lazily, so a command
+    // that never certifies never asks for one.
     const release = buildProductionRelease(vps.config, { now });
     try {
-      const candidate = { id: "c-1", sha: vps.targetSha, releaseClass: "LAUNCH_BASELINE" as const,
-        expectation: { schemaInventory: "x", legalVersion: "v", legalManifestSha256: "e".repeat(64) } };
-
-      await expect(release.orchestrator.runMaintenanceCutover({ ownerId: "runner", candidate }))
-        .rejects.toThrow("CUTOVER_REQUIRES_CERTIFICATION_DRIVER");
-
-      // Refused before the first mutation: no session, no closed gate, and the
-      // pointer still where production left it. A partially wired root must
-      // cost a refusal, never a half-run cutover.
+      const candidate = {
+        id: vps.targetSha, sha: vps.targetSha, releaseClass: "LAUNCH_BASELINE" as const,
+        expectation: { schemaInventory: "inventory-sha256:" + "0".repeat(64), legalVersion: "v", legalManifestSha256: "e".repeat(64) },
+      };
+      expect(() => release.certificationFor(candidate)).toThrow("CERTIFICATION_REQUIRES_ATTENDED_TERMINAL");
+      // Nothing was touched by the refusal.
       expect(release.authority.deploymentGate().closed).toBe(false);
-      expect(await release.deployRef.read()).toBe(vps.preSha);
       expect(vps.calls).toEqual([]);
+    } finally {
+      release.close();
+    }
+  });
+
+  it("refuses to certify a session whose candidate was never published", async () => {
+    // The release a session is for is read back from the session, never
+    // restated, so a cutover cannot be certified against a different release
+    // than it deployed.
+    const release = buildProductionRelease(vps.config, { now });
+    try {
+      await expect(release.ports.certification!.issueCapability("no-such-session"))
+        .rejects.toThrow("RELEASE_CANDIDATE_NOT_PUBLISHED");
     } finally {
       release.close();
     }
@@ -103,6 +115,13 @@ describe("what the runner refuses to start without", () => {
     FLEXPERIMENT_RELEASE_LOCK: vps.config.lockPath,
     FLEXPERIMENT_RELEASE_JOURNAL: vps.config.journalPath,
     FLEXPERIMENT_RELEASE_CANDIDATE_DIR: vps.config.candidateDirectory,
+    CERTIFICATION_ADMIN_BASE_URL: vps.config.certification.adminBaseUrl,
+    CERTIFICATION_PUBLIC_BASE_URL: vps.config.certification.publicBaseUrl,
+    CERTIFICATION_ADMIN_TOKEN: "certification-token",
+    CERTIFICATION_CAPABILITY_KEY: TEST_CAPABILITY_KEY,
+    CERTIFICATION_CITY_SLUG: "test-city",
+    CERTIFICATION_OCCURRENCE_SCOPE: vps.config.certification.occurrenceScopePath,
+    CERTIFICATION_CHECKOUT_BODY: vps.config.certification.checkoutBodyPath,
     COOLIFY_API_URL: vps.config.coolify.apiUrl,
     COOLIFY_TOKEN: "test-token",
     COOLIFY_APPLICATION_FRONTEND: "app-frontend",

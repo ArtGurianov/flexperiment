@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import { capabilityBinding, issueCapability, type CertificationCapability } from "./capability";
-import { certificationNonceDigest, deriveCertificationNonce, parseCapabilityKey } from "./nonce";
+import { parseCapabilityKeyring, recoverCertificationNonce } from "./nonce";
 import { assertAttended } from "./operator-terminal";
 import { certifyProduction, type CertifyPorts } from "./machine";
 import { HttpCertificationAdminPort, HttpCertificationPublicPort } from "./http-ports";
@@ -31,7 +31,10 @@ export type CertificationDriverOptions = {
   readonly adminBaseUrl: string;
   readonly publicBaseUrl: string;
   readonly serviceToken: string;
-  /** `<version>:<key>`. Only the runner holds it; the certified runtime never does. */
+  /**
+   * `<version>:<base64url key>`, newest first, whitespace or comma separated.
+   * Only the runner holds it; the certified runtime never does.
+   */
   readonly capabilityKey: string;
   readonly citySlug: string;
   readonly operator: OperatorScope;
@@ -77,17 +80,29 @@ export class ProductionCertificationDriver implements CertificationDriver {
       runId, deploymentSessionId: sessionId, releaseSha: this.options.candidate.sha,
       maxAmountKopecks: CERTIFICATION_PRICE_KOPECKS,
       ttlMs: this.options.capabilityTtlMs ?? 4 * 60 * 60_000,
-    }, this.now(), this.secret());
+    }, this.now(), this.issuingKey());
     // The bearer is deliberately dropped here. It is derived again when it is
     // needed, so nothing carries it between these two moments.
     return capability;
   }
 
-  private secret() { return parseCapabilityKey(this.options.capabilityKey); }
+  private keyring() { return parseCapabilityKeyring(this.options.capabilityKey); }
 
-  /** The bearer for a capability, recomputed from its own binding. */
+  /** New capabilities are issued under the newest key; old ones stay derivable under theirs. */
+  private issuingKey() { return this.keyring()[0]; }
+
+  /**
+   * The bearer for a capability, recomputed from its own binding.
+   *
+   * The ring is searched rather than indexed, because the version lives inside
+   * the bearer and the bearer is the thing that was never kept. A capability
+   * whose key has been retired has no bearer, and that is a refusal rather than
+   * a guess.
+   */
   bearerFor(capability: CertificationCapability): string {
-    return deriveCertificationNonce(this.secret(), capabilityBinding(capability));
+    const nonce = recoverCertificationNonce(this.keyring(), capabilityBinding(capability), capability.nonceDigest);
+    if (!nonce) throw new Error("CERTIFICATION_CAPABILITY_KEY_MISSING");
+    return nonce;
   }
 
   /**
@@ -105,12 +120,10 @@ export class ProductionCertificationDriver implements CertificationDriver {
     if (!recovered || recovered.id !== capability.id) {
       throw new Error("CERTIFICATION_CAPABILITY_UNRECOVERABLE");
     }
-    // Derivable at all: a key that cannot reproduce the stored digest is the
-    // wrong key, and finding that out after arming would be finding it out too
-    // late.
-    if (certificationNonceDigest(this.bearerFor(recovered)) !== recovered.nonceDigest) {
-      throw new Error("CERTIFICATION_CAPABILITY_KEY_MISMATCH");
-    }
+    // Derivable at all: a ring that cannot reproduce the stored digest has lost
+    // the key this capability was issued under, and finding that out after
+    // arming would be finding it out too late.
+    this.bearerFor(recovered);
     assertAttended();
 
     const runs = new SqliteCertificationRunStore(this.options.db);

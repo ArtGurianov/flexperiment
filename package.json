@@ -21,7 +21,6 @@
     "commerce:seo-snapshot:validate": "tsx commerce/src/validate-seo-snapshot.ts",
     "release:static-descriptor": "tsx commerce/src/write-static-release-descriptor.ts",
     "commerce:create-unknown:repair": "tsx commerce/src/repair-create-unknown-payment.ts",
-    "certify:production": "tsx scripts/certify-production.ts",
     "commerce:email:unack": "tsx commerce/src/clear-email-operational-acknowledgement.ts",
     "commerce:test:image": "bash commerce/test/docker-image-smoke.sh",
     "admin:build": "pnpm --filter @flexperiment/admin build",

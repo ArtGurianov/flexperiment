@@ -12,6 +12,8 @@
  * cost of guessing wrong is paid against production exactly once.
  */
 
+import { parseCapabilityKeyring } from "../certification/nonce";
+
 export class ReleaseConfigError extends Error {
   constructor(readonly code: string, readonly detail?: string) {
     super(detail ? `${code}: ${detail}` : code);
@@ -58,6 +60,16 @@ export type ProductionReleaseConfig = {
   readonly journalPath: string;
   /** Published candidates. The deploy reads them; it never writes one. */
   readonly candidateDirectory: string;
+  /** Everything the attended certification needs. Its key never reaches a container. */
+  readonly certification: {
+    readonly adminBaseUrl: string;
+    readonly publicBaseUrl: string;
+    readonly serviceToken: string;
+    readonly capabilityKey: string;
+    readonly citySlug: string;
+    readonly occurrenceScopePath: string;
+    readonly checkoutBodyPath: string;
+  };
   readonly coolify: { readonly apiUrl: string; readonly token: string };
   readonly applications: readonly SurfaceApplicationConfig[];
   readonly topology: { readonly frontendReleaseUrl: string; readonly adminReleaseUrl: string };
@@ -94,6 +106,13 @@ const REQUIRED = [
   "FLEXPERIMENT_RELEASE_LOCK",
   "FLEXPERIMENT_RELEASE_JOURNAL",
   "FLEXPERIMENT_RELEASE_CANDIDATE_DIR",
+  "CERTIFICATION_ADMIN_BASE_URL",
+  "CERTIFICATION_PUBLIC_BASE_URL",
+  "CERTIFICATION_ADMIN_TOKEN",
+  "CERTIFICATION_CAPABILITY_KEY",
+  "CERTIFICATION_CITY_SLUG",
+  "CERTIFICATION_OCCURRENCE_SCOPE",
+  "CERTIFICATION_CHECKOUT_BODY",
   "COOLIFY_API_URL",
   "COOLIFY_TOKEN",
   ...APPLICATIONS.map(([variable]) => variable),
@@ -178,6 +197,12 @@ export const loadProductionReleaseConfig = (env: NodeJS.ProcessEnv = process.env
     if (!UUID.test(value(variable))) problems.push(`${variable} is not an application identifier`);
   }
   httpUrl(value("COOLIFY_API_URL"), "COOLIFY_API_URL", problems);
+  httpUrl(value("CERTIFICATION_ADMIN_BASE_URL"), "CERTIFICATION_ADMIN_BASE_URL", problems);
+  httpUrl(value("CERTIFICATION_PUBLIC_BASE_URL"), "CERTIFICATION_PUBLIC_BASE_URL", problems);
+  // Parsed here so a malformed or short key is a named configuration refusal
+  // rather than a failure discovered while a cutover is already fenced.
+  try { parseCapabilityKeyring(value("CERTIFICATION_CAPABILITY_KEY")); }
+  catch (error) { problems.push(error instanceof Error ? error.message : "CERTIFICATION_CAPABILITY_KEY is invalid"); }
   httpUrl(value("FLEXPERIMENT_FRONTEND_RELEASE_URL"), "FLEXPERIMENT_FRONTEND_RELEASE_URL", problems);
   httpUrl(value("FLEXPERIMENT_ADMIN_RELEASE_URL"), "FLEXPERIMENT_ADMIN_RELEASE_URL", problems);
 
@@ -200,6 +225,15 @@ export const loadProductionReleaseConfig = (env: NodeJS.ProcessEnv = process.env
     lockPath: value("FLEXPERIMENT_RELEASE_LOCK"),
     journalPath: value("FLEXPERIMENT_RELEASE_JOURNAL"),
     candidateDirectory: value("FLEXPERIMENT_RELEASE_CANDIDATE_DIR"),
+    certification: {
+      adminBaseUrl: value("CERTIFICATION_ADMIN_BASE_URL"),
+      publicBaseUrl: value("CERTIFICATION_PUBLIC_BASE_URL"),
+      serviceToken: value("CERTIFICATION_ADMIN_TOKEN"),
+      capabilityKey: value("CERTIFICATION_CAPABILITY_KEY"),
+      citySlug: value("CERTIFICATION_CITY_SLUG"),
+      occurrenceScopePath: value("CERTIFICATION_OCCURRENCE_SCOPE"),
+      checkoutBodyPath: value("CERTIFICATION_CHECKOUT_BODY"),
+    },
     coolify: { apiUrl: value("COOLIFY_API_URL"), token: value("COOLIFY_TOKEN") },
     applications: APPLICATIONS.map(([variable, name, surfaces]) => ({ name, uuid: value(variable), surfaces })),
     topology: {
@@ -239,6 +273,11 @@ export const describeConfig = (config: ProductionReleaseConfig): Record<string, 
     candidateDirectory: config.candidateDirectory,
     envelopeDirectory: config.envelopeDirectory,
     coolifyApiUrl: config.coolify.apiUrl,
+    certification: {
+      adminBaseUrl: config.certification.adminBaseUrl,
+      publicBaseUrl: config.certification.publicBaseUrl,
+      citySlug: config.certification.citySlug,
+    },
     applications: config.applications.map((application) => ({ name: application.name, surfaces: application.surfaces })),
     topology: config.topology,
     deployRef: { remote, ref: config.deployRef.ref, worktree: config.deployRef.worktree },

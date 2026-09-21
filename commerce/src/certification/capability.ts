@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { certificationNonceDigest, deriveCertificationNonce, nonceDigestMatches, type NonceBinding } from "./nonce";
+import { certificationNonceDigest, deriveCertificationNonce, nonceDigestMatches, type CapabilityKey, type NonceBinding } from "./nonce";
 
 /**
  * A one-shot permission to transact through a deployment fence, and nothing
@@ -110,7 +110,7 @@ export const issueCapability = (
   store: CertificationCapabilityStore,
   input: IssueCapabilityInput,
   now: Date,
-  secret: { version: string; key: string },
+  secret: CapabilityKey,
 ): { capability: CertificationCapability; nonce: string } => {
   if (!input.runId || !input.deploymentSessionId || !input.releaseSha) throw new CertificationCapabilityError("CERTIFICATION_CAPABILITY_SCOPE_REQUIRED");
   if (!Number.isSafeInteger(input.maxAmountKopecks) || input.maxAmountKopecks <= 0) throw new CertificationCapabilityError("CERTIFICATION_CAPABILITY_AMOUNT_INVALID");

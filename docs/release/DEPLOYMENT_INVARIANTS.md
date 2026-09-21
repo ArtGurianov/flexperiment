@@ -278,6 +278,40 @@ actually obtained and verified - a probe that returned a validation error and
 was recorded as corroboration is worse than no probe, because the record claims
 a check that never ran.
 
+## A cutover is finished by a person, and proved by a separate command
+
+Certification is irreducibly attended: someone opens a mailbox and says the
+ticket arrived, and the payment page reaches them on `/dev/tty` and nowhere
+else. So the release is two dispatches and a proof.
+
+```text
+deploy   → fence, deploy, converge, readiness, issue a capability
+         → exit 13, AWAITING_OPERATOR
+         → fence shut, nothing spent, OLD_LINEAGE_ALLOWED intact
+certify  → attended, on the VPS: read-only preflight, then arm, then buy
+         → payment, ticket, refund, close and hide the fixture, settle
+verify   → changes nothing, and is the only thing that proves a finished deploy
+```
+
+`13` is neither success nor failure. A workflow that retried it would re-enter a
+cutover a person is in the middle of; one that failed it would report a broken
+release that is merely waiting.
+
+The capability is issued by `deploy` and its bearer is thrown away. It is
+HMAC-derived from the capability's own binding under a versioned key only the
+runner holds, and the database keeps the digest - so `certify` in a new process
+derives the identical bearer, a read-only leak of the database is not a
+capability, and a compromised runtime cannot mint one. A key may not be retired
+while a non-terminal run issued under it still exists, which is why the runner
+takes a keyring and not a key.
+
+`armExternalEffects` sits between the preflight and the first request that can
+create a payment. An unreachable runtime, a capability that cannot be
+recovered, a catalogue that is not ready or an absent operator are all ordinary
+refusals that leave the old lineage a legal destination. Once armed, a request
+that never reached the provider still costs it - a window that cannot be
+removed, only kept this small.
+
 ## Installing the release runner on the VPS
 
 The workflow invokes one command, `flexperiment-release`, over SSH. It is a
@@ -310,3 +344,17 @@ other ref.
 
 `observe` mutates nothing and is the right preflight. It reports both layers of
 the topology, the readiness evidence and the state of the deployment gate.
+
+The certification half needs more, and all of it is root-owned on the host:
+`CERTIFICATION_ADMIN_BASE_URL` and `CERTIFICATION_PUBLIC_BASE_URL` for the
+runtime being certified, `CERTIFICATION_ADMIN_TOKEN` for the service surface -
+whose digest, not the token, is what the runtime holds in
+`COMMERCE_CERTIFICATION_TOKEN_SHA256` - and `CERTIFICATION_CAPABILITY_KEY` as
+`<version>:<base64url of at least 32 random bytes>`, newest first, which never
+reaches a container. `CERTIFICATION_OCCURRENCE_SCOPE` and
+`CERTIFICATION_CHECKOUT_BODY` are the operator's own files: the fixture's timing
+and a real person's checkout details, read fresh on every attempt and never
+copied into anything this system keeps.
+
+`certify` must be run from an interactive session. It opens `/dev/tty`, and a
+process with no controlling terminal cannot - which is the attendance check.

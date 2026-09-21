@@ -13,11 +13,14 @@
  *   publish-candidate <sha> <class>
  *                            derive and publish a candidate; deploys nothing
  *   deploy  <candidate>      run the release for that published candidate
+ *   certify <session>  the attended half: arm, buy, refund, shut the fixture
+ *   verify  <session>  prove a finished cutover, changing nothing
  *   resume  <session>  take over a session whose lease expired and report the plan
  *   rollback <session> restore the pre-deploy vector for a same-lineage deploy
  *
  * Exit codes are the contract the workflow reads:
- *   0   succeeded, or observe/resume completed
+ *   0   succeeded, or observe/verify/resume completed
+ *   13  awaiting operator - prepared, fenced, nothing spent, a person must certify
  *   10  safe aborted - production untouched, sales open
  *   11  rolled back - production restored, sales open
  *   12  recovery required - sales REMAIN CLOSED, an operator must decide
@@ -29,10 +32,13 @@ import type { ReleaseClass } from "../../commerce/src/release/candidate";
 import { loadCandidatePublicationConfig, loadProductionReleaseConfig, loadReadOnlyReleaseConfig } from "../../commerce/src/release/production-config";
 import { buildCandidatePublisher, buildProductionRelease, buildReadOnlyRelease, holdSalesOnSignal, type ProductionRelease } from "../../commerce/src/release/production-runner";
 import { deriveCandidate } from "../../commerce/src/release/candidate-publication";
+import { verifyCutover } from "../../commerce/src/release/verify-cutover";
 
 const RELEASE_CLASSES: readonly ReleaseClass[] = ["LAUNCH_BASELINE", "ROLLING_COMPATIBLE", "MAINTENANCE_REQUIRED"];
 
-const EXIT_BY_OUTCOME: Record<string, number> = { SUCCEEDED: 0, SAFE_ABORTED: 10, ROLLED_BACK: 11, RECOVERY_REQUIRED: 12 };
+const EXIT_BY_OUTCOME: Record<string, number> = {
+  SUCCEEDED: 0, SAFE_ABORTED: 10, ROLLED_BACK: 11, RECOVERY_REQUIRED: 12, AWAITING_OPERATOR: 13,
+};
 
 const say = (payload: Record<string, unknown>) => process.stdout.write(`${JSON.stringify(payload)}\n`);
 
@@ -46,7 +52,6 @@ const run = async (release: ProductionRelease, argv: readonly string[], ownerId:
       // being released, and the two could disagree.
       const candidate = release.candidates.get(argument);
       if (!candidate) throw new Error(`RELEASE_CANDIDATE_NOT_PUBLISHED: ${argument}`);
-      assertCutoverExecutable(candidate.releaseClass);
       release.journal.record("deploy.start", { candidate: candidate.id, sha: candidate.sha, releaseClass: candidate.releaseClass });
       const outcome = candidate.releaseClass === "ROLLING_COMPATIBLE"
         ? await release.orchestrator.runRolling({ ownerId, candidate })
@@ -54,6 +59,34 @@ const run = async (release: ProductionRelease, argv: readonly string[], ownerId:
       release.journal.record("deploy.outcome", { kind: outcome.kind, session: outcome.session.id, state: outcome.session.state });
       say({ command, outcome: outcome.kind, session: outcome.session.id, code: "code" in outcome ? outcome.code : undefined });
       return EXIT_BY_OUTCOME[outcome.kind] ?? 20;
+    }
+    case "certify": {
+      // The attended half. It refuses before the composition root is built
+      // when nobody is watching, so an unattended dispatch costs a refusal
+      // while the old lineage is still a legal destination.
+      if (!argument) throw new Error("RELEASE_SESSION_REQUIRED");
+      const session = release.sessions.read(argument);
+      if (!session) throw new Error(`DEPLOY_SESSION_NOT_FOUND: ${argument}`);
+      const candidate = release.candidates.get(session.candidateId ?? "");
+      if (!candidate) throw new Error(`RELEASE_CANDIDATE_NOT_PUBLISHED: ${session.candidateId ?? "none"}`);
+      const driver = release.certificationFor(candidate);
+      const capability = driver.recoverCapability(argument);
+      if (!capability) throw new Error("CERTIFICATION_CAPABILITY_UNRECOVERABLE");
+
+      release.journal.record("certify.start", { session: argument, run: capability.runId, phase: driver.phase(argument) });
+      const outcome = await release.orchestrator.certifyAndComplete(argument, { ownerId, candidate, sessionId: argument }, capability);
+      release.journal.record("certify.outcome", { kind: outcome.kind, session: outcome.session.id, state: outcome.session.state });
+      say({ command, outcome: outcome.kind, session: outcome.session.id, code: "code" in outcome ? outcome.code : undefined });
+      return EXIT_BY_OUTCOME[outcome.kind] ?? 20;
+    }
+    case "verify": {
+      if (!argument) throw new Error("RELEASE_SESSION_REQUIRED");
+      const report = await verifyCutover(release, argument);
+      release.journal.record("verify", { session: argument, complete: report.complete, failures: report.failures });
+      say({ command, ...report });
+      // A cutover that does not verify is not a finished deployment, and this
+      // is the only thing that proves one did.
+      return report.complete ? 0 : 12;
     }
     case "resume": {
       if (!argument) throw new Error("RELEASE_SESSION_REQUIRED");
@@ -74,22 +107,6 @@ const run = async (release: ProductionRelease, argv: readonly string[], ownerId:
     default:
       throw new Error(`RELEASE_COMMAND_UNKNOWN: ${String(command ?? "none")}`);
   }
-};
-
-/**
- * The one port with no production adapter, checked before the lock is taken.
- *
- * Certification is irreducibly attended - someone opens a mailbox and says the
- * ticket arrived - so its driver needs an HTTP client for the admin and public
- * surfaces and an operator at a terminal. Neither exists yet. The orchestrator
- * would refuse on its own first line anyway, but refusing here means a dispatch
- * against production does not even open the database or take the lock.
- */
-const assertCutoverExecutable = (releaseClass: ReleaseClass) => {
-  if (releaseClass === "ROLLING_COMPATIBLE") return;
-  throw new Error("RELEASE_PRODUCTION_ADAPTERS_UNAVAILABLE: the certification driver has no production adapter, so a "
-    + "maintenance cutover cannot be executed; the ordering is proved in commerce/test/release/orchestrator.test.ts and "
-    + "the composition root in commerce/test/release/production-runner.test.ts.");
 };
 
 /**

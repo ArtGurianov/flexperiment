@@ -64,7 +64,7 @@ describe("production workflow contract", () => {
     // is how a rollback ends up pointed at a candidate file.
     const inputs = inputsOf("deploy-production.yml");
     expect(Object.keys(inputs)).toEqual(["command", "candidate", "session"]);
-    expect(inputs.command.options).toEqual(["observe", "deploy", "resume", "rollback"]);
+    expect(inputs.command.options).toEqual(["observe", "deploy", "verify", "resume", "rollback"]);
     expect(inputs.command.default).toBe("observe");
   });
 
@@ -80,6 +80,16 @@ describe("production workflow contract", () => {
     // machine being handed production.
     expect(scripts).toMatch(/StrictHostKeyChecking=yes/);
     expect(scripts).not.toMatch(/StrictHostKeyChecking=(no|accept-new)/);
+  });
+
+  it("reads the operator handoff as neither success nor failure", () => {
+    // 13 means prepared, fenced and nothing spent. A job that retried it would
+    // re-enter a cutover a person is in the middle of; one that failed it would
+    // report a broken release that is merely waiting.
+    const scripts = Object.values(workflow("deploy-production.yml").jobs)
+      .flatMap((job) => job.steps ?? []).map((step) => step.run ?? "").join("\n");
+    expect(scripts).toContain("13)");
+    expect(scripts).toMatch(/13\).*AWAITING OPERATOR/);
   });
 
   it("does not swallow the runner's exit code", () => {

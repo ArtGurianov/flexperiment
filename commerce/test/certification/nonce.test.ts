@@ -5,9 +5,10 @@ import { migrate } from "../../src/db";
 import { issueCapability } from "../../src/certification/capability";
 import {
   certificationNonceDigest, deriveCertificationNonce, nonceDigestMatches, parseCapabilityKey,
+  parseCapabilityKeyring, recoverCertificationNonce,
 } from "../../src/certification/nonce";
 import { SqliteCertificationCapabilityStore, SqliteCertificationRunStore } from "../../src/certification/store-sqlite";
-import { testSecret, TEST_CAPABILITY_KEY } from "../support/certification-secret";
+import { testKeyring, testSecret, TEST_CAPABILITY_KEY, TEST_CAPABILITY_KEY_V2 } from "../support/certification-secret";
 
 const SHA = "a".repeat(40);
 const now = new Date("2026-09-21T12:00:00.000Z");
@@ -32,7 +33,7 @@ describe("the bearer is derived, not stored", () => {
   });
 
   it("cannot be produced by a different key", () => {
-    const other = parseCapabilityKey("v1:another-capability-key-not-a-real-secret-x");
+    const other = parseCapabilityKey(TEST_CAPABILITY_KEY_V2.replace("v2:", "v1:"));
     expect(deriveCertificationNonce(other, binding)).not.toBe(deriveCertificationNonce(testSecret(), binding));
   });
 
@@ -46,14 +47,19 @@ describe("the bearer is derived, not stored", () => {
 
   it("carries the key's version, so a rotation is a different key and not a reinterpretation", () => {
     expect(deriveCertificationNonce(testSecret(), binding).startsWith("v1.")).toBe(true);
-    const rotated = parseCapabilityKey("v2:another-capability-key-not-a-real-secret-x");
+    const rotated = parseCapabilityKey(TEST_CAPABILITY_KEY_V2);
     expect(deriveCertificationNonce(rotated, binding).startsWith("v2.")).toBe(true);
   });
 
   it("refuses a key that is not one", () => {
-    for (const bad of [undefined, "", "no-version", "v1:short", ":key-that-is-long-enough-to-be-a-key-00"]) {
+    for (const bad of [undefined, "", "no-version", ":anything", "v1:not+base64url/"]) {
       expect(() => parseCapabilityKey(bad)).toThrow("CERTIFICATION_CAPABILITY_KEY_INVALID");
     }
+    // Length in characters is not entropy. Thirty-two readable characters
+    // decode to twenty-four bytes, and this is the only thing standing between
+    // a database reader and a claim.
+    expect(() => parseCapabilityKey("v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"))
+      .toThrow("at least 32 random bytes");
   });
 });
 
@@ -108,5 +114,37 @@ describe("what the database is left holding", () => {
 
   it("is the key the test fixtures use, spelled out rather than generated", () => {
     expect(TEST_CAPABILITY_KEY.startsWith("v1:")).toBe(true);
+  });
+});
+
+describe("rotating the key without stranding a run", () => {
+  it("recovers a bearer issued under an older version", () => {
+    // A key cannot be retired while a non-terminal run issued under it still
+    // exists: that run's bearer is derivable only from the key that made it.
+    const old = parseCapabilityKey(TEST_CAPABILITY_KEY);
+    const nonce = deriveCertificationNonce(old, binding);
+    const digest = certificationNonceDigest(nonce);
+
+    expect(recoverCertificationNonce(testKeyring(), binding, digest)).toBe(nonce);
+  });
+
+  it("issues under the newest and still answers for the oldest", () => {
+    const ring = testKeyring();
+    expect(ring[0].version).toBe("v2");
+    const newest = deriveCertificationNonce(ring[0], binding);
+    expect(recoverCertificationNonce(ring, binding, certificationNonceDigest(newest))).toBe(newest);
+  });
+
+  it("answers nothing once the issuing key is gone", () => {
+    // Honest, and the caller turns it into a refusal before anything is armed
+    // rather than into a guess.
+    const stranded = certificationNonceDigest(deriveCertificationNonce(parseCapabilityKey("v9:" + TEST_CAPABILITY_KEY_V2.slice(3)), binding));
+    expect(recoverCertificationNonce(testKeyring(), binding, stranded)).toBeUndefined();
+  });
+
+  it("refuses a ring with two keys claiming one version", () => {
+    expect(() => parseCapabilityKeyring(`${TEST_CAPABILITY_KEY} ${TEST_CAPABILITY_KEY}`))
+      .toThrow("two keys share a version");
+    expect(() => parseCapabilityKeyring("   ")).toThrow("no key configured");
   });
 });

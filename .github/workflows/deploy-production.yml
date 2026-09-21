@@ -17,7 +17,7 @@ on:
         required: true
         default: observe
         type: choice
-        options: [observe, deploy, resume, rollback]
+        options: [observe, deploy, verify, resume, rollback]
       candidate:
         description: >-
           For `deploy`: the published candidate, by the path it was written to
@@ -29,7 +29,7 @@ on:
         required: false
         type: string
       session:
-        description: "For `resume` and `rollback`: the deploy session to act on."
+        description: "For `verify`, `resume` and `rollback`: the deploy session to act on."
         required: false
         type: string
 
@@ -67,7 +67,7 @@ jobs:
           case "$COMMAND" in
             observe)  argument="" ;;
             deploy)   argument="$CANDIDATE"; [[ -n "$argument" ]] || { echo "CANDIDATE_REQUIRED" >&2; exit 1; } ;;
-            resume|rollback) argument="$SESSION"; [[ -n "$argument" ]] || { echo "SESSION_REQUIRED" >&2; exit 1; } ;;
+            verify|resume|rollback) argument="$SESSION"; [[ -n "$argument" ]] || { echo "SESSION_REQUIRED" >&2; exit 1; } ;;
             *) echo "COMMAND_UNKNOWN" >&2; exit 1 ;;
           esac
           # The argument is passed to a remote shell, so it may not be able to
@@ -111,6 +111,10 @@ jobs:
             10) echo "release: safe aborted - production untouched, sales open" ;;
             11) echo "release: rolled back - production restored, sales open" ;;
             12) echo "release: RECOVERY REQUIRED - sales remain closed, an operator must decide" >&2 ;;
+            # Not a failure and not a success: the cutover is prepared, fenced,
+            # and nothing has been spent. A person certifies it from a terminal,
+            # and this job must never retry into that.
+            13) echo "release: AWAITING OPERATOR - certify from an attended session, then verify" ;;
             20) echo "release: refused before any mutation" >&2 ;;
             130) echo "release: interrupted - session and gate left as they were" >&2 ;;
             *)  echo "release: unexpected runner status $status" >&2 ;;

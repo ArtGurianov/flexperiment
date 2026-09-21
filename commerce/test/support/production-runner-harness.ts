@@ -5,6 +5,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { migrate } from "../../src/db";
 import type { ProductionReleaseConfig } from "../../src/release/production-config";
+import { TEST_CAPABILITY_KEY } from "./certification-secret";
 
 /**
  * A whole VPS-shaped environment: a real git remote, a real SQLite file, a
@@ -63,6 +64,14 @@ export const harness = async (root: string): Promise<Harness> => {
   git(worktree, "push", "origin", "main");
   git(worktree, "push", "origin", `${preSha}:refs/heads/production-deploy`);
 
+  // The operator's own files, which the certification driver reads rather than
+  // accepting over a network.
+  writeFileSync(join(root, "certification-occurrence.json"), JSON.stringify({
+    starts_at: "2026-10-01T10:00:00.000Z", ends_at: "2026-10-01T12:00:00.000Z",
+    venue_disclosure_text: "Venue announced later", venue_announce_by: "2026-09-25T00:00:00.000Z",
+  }));
+  writeFileSync(join(root, "certification-checkout.json"), JSON.stringify({ customer_email: "certification@example.invalid" }));
+
   const databasePath = join(root, "commerce.sqlite");
   const db = new Database(databasePath);
   db.pragma("foreign_keys = ON");
@@ -114,6 +123,13 @@ export const harness = async (root: string): Promise<Harness> => {
       lockPath: join(root, "locks", "release.lock"),
       journalPath: join(root, "journal", "release.jsonl"),
       candidateDirectory: join(root, "candidates"),
+      certification: {
+        adminBaseUrl: `${coolifyUrl}`, publicBaseUrl: `${coolifyUrl}`,
+        serviceToken: "certification-token", capabilityKey: TEST_CAPABILITY_KEY,
+        citySlug: "test-city",
+        occurrenceScopePath: join(root, "certification-occurrence.json"),
+        checkoutBodyPath: join(root, "certification-checkout.json"),
+      },
       coolify: { apiUrl: `${coolifyUrl}/api/v1`, token: "test-token" },
       applications: APPLICATIONS.map((application) => ({ ...application, surfaces: [...application.surfaces] })),
       topology: {

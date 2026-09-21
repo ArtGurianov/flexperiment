@@ -10,6 +10,10 @@ import { SqliteReleaseAuthorityStore } from "./deploy-session-store";
 import { ReleaseOrchestrator, type CertificationDriver, type ReleasePorts } from "./orchestrator";
 import { describeConfig, ReleaseConfigError, type CandidatePublicationConfig, type ProductionReleaseConfig, type ReadOnlyReleaseConfig } from "./production-config";
 import { FileReleaseCandidateStore } from "./candidate-store";
+import type { ReleaseCandidate } from "./candidate";
+import { ProductionCertificationDriver } from "../certification/driver";
+import { openControllingTerminal } from "../certification/operator-terminal";
+import { readOperatorOccurrence } from "../certification/operator-scope";
 import { GitCommitTreeReader, type CommitTreeReader } from "./candidate-publication";
 import { activeLegalBinding } from "./legal-binding";
 import { DatabaseRuntimeEvidenceReader, ProductionTopologyReader } from "./topology-reader";
@@ -204,12 +208,23 @@ export type ProductionRelease = {
   readonly ports: ReleasePorts;
   /** The durable authority itself, for the gate and for resuming a session by id. */
   readonly authority: SqliteReleaseAuthorityStore;
+  /** The open database, for the read-only questions verification asks of it. */
+  readonly database: Database.Database;
   readonly orchestrator: ReleaseOrchestrator;
   readonly sessions: DeploySessions;
   readonly envelopes: FileCutoverEnvelopeStore;
   readonly deployRef: ProductionDeployRefStore;
   readonly deployment: CoolifyDeploymentDriver;
   readonly candidates: FileReleaseCandidateStore;
+  /**
+   * The certification driver for a candidate.
+   *
+   * Built on demand rather than at composition time: it needs the release it is
+   * certifying, and only the command that resolved a candidate knows which one
+   * that is. The terminal is opened here too, so a composition used by a
+   * command that never certifies never asks for one.
+   */
+  certificationFor(candidate: ReleaseCandidate): ProductionCertificationDriver;
   readonly journal: ReleaseJournal;
   readonly lock: ReleaseRunnerLock;
   close(): void;
@@ -221,14 +236,12 @@ export type BuildOptions = {
   /** Injected only so the integration suite can drive a temporary repository. */
   readonly git?: (args: readonly string[], cwd: string) => Promise<string>;
   /**
-   * The remaining port with no production adapter.
+   * The certification driver.
    *
-   * Certification is irreducibly attended - someone opens a mailbox and says
-   * the ticket arrived - so its driver needs both an HTTP client for the admin
-   * and public surfaces and an operator at a terminal. Neither exists yet, and
-   * none is improvised here: `runMaintenanceCutover` refuses on its first line
-   * when this is absent, before the topology is even read, so the absence costs
-   * a refusal rather than a half-run cutover.
+   * Supplied by the caller rather than built here, because building it needs a
+   * candidate - and only the command that resolved one knows which. A
+   * composition without it refuses a maintenance cutover on the orchestrator's
+   * first line, before the topology is even read.
    */
   readonly certification?: CertificationDriver;
 };
@@ -271,11 +284,19 @@ export const buildProductionRelease = (config: ProductionReleaseConfig, options:
 
     const opened = db;
     const authority = new SqliteReleaseAuthorityStore(opened);
+    const candidatesStore = new FileReleaseCandidateStore(config.candidateDirectory);
+    /** The release a session is for, read back from the session rather than restated. */
+    const certificationForSession = (sessionId: string): ProductionCertificationDriver => {
+      const session = authority.get(sessionId);
+      const candidate = session?.candidateId ? candidatesStore.get(session.candidateId) : undefined;
+      if (!candidate) throw new Error(`RELEASE_CANDIDATE_NOT_PUBLISHED: ${session?.candidateId ?? sessionId}`);
+      return certificationFor(candidate);
+    };
     const sessions = new DeploySessions(authority, now);
     // Read, never written, by a deploy. Publication is a separate composition
     // with no database and no credential, so a deploy cannot mint the candidate
     // it is about to deploy.
-    const candidates = new FileReleaseCandidateStore(config.candidateDirectory);
+    const candidates = candidatesStore;
     const ports: ReleasePorts = {
       sessions,
       candidates,
@@ -288,11 +309,37 @@ export const buildProductionRelease = (config: ProductionReleaseConfig, options:
       evidence: new DatabaseRuntimeEvidenceReader({ db, now, legal: () => activeLegalBinding(opened) }),
       deployment: new CoolifyDeploymentDriver(coolify),
       recovery: new CoolifyRecoveryDriver(coolify),
-      certification: options.certification,
+      // Built lazily, because it needs the candidate this deploy is for. The
+      // orchestrator is handed a driver that resolves it from the session's own
+      // candidate, so a cutover cannot be certified against a different release
+      // than it deployed.
+      // Declared async so a refusal while resolving the driver rejects like
+      // every other failure here, rather than throwing synchronously out of a
+      // call the caller is awaiting.
+      certification: options.certification ?? {
+        async issueCapability(sessionId) { return certificationForSession(sessionId).issueCapability(sessionId); },
+        async preflight(capability) { return certificationForSession(capability.deploymentSessionId).preflight(capability); },
+        async certify(capability) { return certificationForSession(capability.deploymentSessionId).certify(capability); },
+      },
     };
 
+    const certificationFor = (candidate: ReleaseCandidate): ProductionCertificationDriver => new ProductionCertificationDriver({
+      db: opened, candidate, now,
+      adminBaseUrl: config.certification.adminBaseUrl,
+      publicBaseUrl: config.certification.publicBaseUrl,
+      serviceToken: config.certification.serviceToken,
+      capabilityKey: config.certification.capabilityKey,
+      citySlug: config.certification.citySlug,
+      operator: {
+        occurrence: readOperatorOccurrence(config.certification.occurrenceScopePath),
+        checkoutBodyPath: config.certification.checkoutBodyPath,
+      },
+      terminal: openControllingTerminal(),
+      fetch: options.fetch,
+    });
+
     return {
-      ports, sessions, journal, lock, deployRef, authority, candidates,
+      ports, sessions, journal, lock, deployRef, authority, candidates, certificationFor, database: opened,
       deployment: ports.deployment as CoolifyDeploymentDriver,
       envelopes: new FileCutoverEnvelopeStore(config.envelopeDirectory),
       orchestrator: new ReleaseOrchestrator(ports),

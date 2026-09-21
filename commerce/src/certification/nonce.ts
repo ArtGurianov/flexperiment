@@ -42,17 +42,73 @@ const canonical = (binding: NonceBinding): string => JSON.stringify([
   binding.capabilityId, binding.runId, binding.deploymentSessionId, binding.releaseSha, binding.expiresAt,
 ]);
 
-/** The secret's version travels with it, so a rotation is a different key rather than a silent reinterpretation. */
-export const parseCapabilityKey = (raw: string | undefined): { readonly version: string; readonly key: string } => {
+export type CapabilityKey = { readonly version: string; readonly key: Buffer };
+
+/**
+ * `<version>:<base64url of at least 32 random bytes>`.
+ *
+ * Measured in decoded bytes, not characters: a long human-readable string is
+ * not a long key, and this one is the only thing standing between a database
+ * reader and a claim.
+ *
+ * The version travels with the secret and inside every bearer it derives, so a
+ * rotation is a different key rather than a silent reinterpretation of the
+ * same one.
+ */
+export const parseCapabilityKey = (raw: string | undefined): CapabilityKey => {
   const value = (raw ?? "").trim();
-  const [version, key] = value.split(":");
-  if (!version || !key || !/^[A-Za-z0-9._-]{1,32}$/.test(version) || key.length < 32) {
-    throw new CertificationNonceError("CERTIFICATION_CAPABILITY_KEY_INVALID", "expected <version>:<at least 32 characters>");
+  const separator = value.indexOf(":");
+  const version = separator < 0 ? "" : value.slice(0, separator);
+  const encoded = separator < 0 ? "" : value.slice(separator + 1);
+  if (!/^[A-Za-z0-9._-]{1,32}$/.test(version) || !/^[A-Za-z0-9_-]+$/.test(encoded)) {
+    throw new CertificationNonceError("CERTIFICATION_CAPABILITY_KEY_INVALID", "expected <version>:<base64url key>");
+  }
+  const key = Buffer.from(encoded, "base64url");
+  if (key.length < 32) {
+    throw new CertificationNonceError("CERTIFICATION_CAPABILITY_KEY_INVALID", `key is ${key.length} bytes; at least 32 random bytes are required`);
   }
   return { version, key };
 };
 
-export const deriveCertificationNonce = (secret: { version: string; key: string }, binding: NonceBinding): string =>
+/**
+ * Every key this runner may derive with, newest first.
+ *
+ * A key cannot be retired while a non-terminal run issued under it still
+ * exists: that run's bearer is derivable only from the key that made it, and
+ * dropping it would strand a certification mid-payment. So rotation adds a
+ * version rather than replacing one, and the ring is what lets an old run
+ * finish while new ones are issued under the new key.
+ */
+export const parseCapabilityKeyring = (raw: string | undefined): readonly CapabilityKey[] => {
+  const keys = (raw ?? "").split(/[\s,]+/).filter(Boolean).map(parseCapabilityKey);
+  if (!keys.length) throw new CertificationNonceError("CERTIFICATION_CAPABILITY_KEY_INVALID", "no key configured");
+  const versions = new Set(keys.map((entry) => entry.version));
+  if (versions.size !== keys.length) throw new CertificationNonceError("CERTIFICATION_CAPABILITY_KEY_INVALID", "two keys share a version");
+  return keys;
+};
+
+/**
+ * The bearer for a stored capability, found by asking which key produces the
+ * digest it was issued with.
+ *
+ * The version is inside the bearer and the bearer is what was thrown away, so
+ * the ring is tried rather than indexed. Answering undefined is the honest
+ * result for a capability whose key is gone - and the caller turns that into a
+ * refusal before anything is armed, not into a guess.
+ */
+export const recoverCertificationNonce = (
+  keyring: readonly CapabilityKey[],
+  binding: NonceBinding,
+  storedDigest: string,
+): string | undefined => {
+  for (const secret of keyring) {
+    const nonce = deriveCertificationNonce(secret, binding);
+    if (nonceDigestMatches(storedDigest, nonce)) return nonce;
+  }
+  return undefined;
+};
+
+export const deriveCertificationNonce = (secret: CapabilityKey, binding: NonceBinding): string =>
   `${secret.version}.${createHmac("sha256", secret.key).update(canonical(binding)).digest("hex")}`;
 
 /** What the database holds. It proves a presented bearer and mints nothing. */
