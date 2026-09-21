@@ -16,6 +16,7 @@ const predecessor = (options: {
   topologies?: PreDeploySnapshot[];
   gateOpensDuringArchive?: boolean;
   written?: CutoverEnvelope;
+  failAfterEnvelope?: string;
 } = {}) => {
   const log: string[] = [];
   const stored = new Map<string, CutoverEnvelope>();
@@ -38,11 +39,16 @@ const predecessor = (options: {
       },
     },
     archiver: {
-      async archiveAndVerify() {
-        log.push("archive");
+      async verifyOnlineBackups() { log.push("online-backups"); },
+      async prepareArchive() {
+        log.push("prepare-archive");
         if (options.gateOpensDuringArchive) gateClosed = false;
         if (options.archiveFails) throw new Error(options.archiveFails);
         return archive;
+      },
+      async ensureArchivedAndFresh() {
+        log.push("archive-and-fresh");
+        if (options.failAfterEnvelope) throw new Error(options.failAfterEnvelope);
       },
     },
     topology: { async observe() { last = queue.shift() ?? last; log.push("observe"); return last; } },
@@ -63,7 +69,7 @@ describe("bootstrap cutover preparation", () => {
     expect(result.alreadyPrepared).toBe(false);
     // The envelope is the moment the lineage is handed over, so every proof it
     // carries has to already exist when it appears.
-    expect(log).toEqual(["fence-close", "observe", "quiesce", "census", "archive", "observe", "fence-proof", "write-envelope"]);
+    expect(log).toEqual(["fence-close", "observe", "online-backups", "observe", "quiesce", "census", "prepare-archive", "fence-proof", "write-envelope", "archive-and-fresh"]);
     expect(result.envelope).toMatchObject({
       cutoverId: "cutover-1", targetSha: target, mode: "MAINTENANCE_CUTOVER",
       preDeployTopology: before, predecessorDatabase: archive,
@@ -74,7 +80,7 @@ describe("bootstrap cutover preparation", () => {
     const { log, stored, preparation } = predecessor({ blockers: ["city_interest_requests"] });
 
     await expect(preparation.prepare(request)).rejects.toThrow("FINAL_CENSUS_BLOCKED: city_interest_requests");
-    expect(log).not.toContain("archive");
+    expect(log).not.toContain("prepare-archive");
     expect(stored.size).toBe(0);
   });
 
@@ -111,7 +117,7 @@ describe("bootstrap cutover preparation", () => {
     expect(log).not.toContain("fence-open");
   });
 
-  it("returns the same envelope without a second census or archive after a crash", async () => {
+  it("resumes the physical handoff without a second census after a post-envelope crash", async () => {
     const first = predecessor();
     const { envelope } = await first.preparation.prepare(request);
 
@@ -120,7 +126,7 @@ describe("bootstrap cutover preparation", () => {
     const result = await retry.preparation.prepare(request);
 
     expect(result).toEqual({ envelope, alreadyPrepared: true });
-    expect(retry.log).toEqual([]);
+    expect(retry.log).toEqual(["fence-close", "quiesce", "archive-and-fresh"]);
   });
 
   it("is idempotent for a plain retry that does not restate the nonce", async () => {
@@ -136,7 +142,7 @@ describe("bootstrap cutover preparation", () => {
     });
 
     expect(result).toEqual({ envelope, alreadyPrepared: true });
-    expect(retry.log).toEqual([]);
+    expect(retry.log).toEqual(["fence-close", "quiesce", "archive-and-fresh"]);
   });
 
   it("refuses a retry that moves the window, which is a different preparation", async () => {
@@ -166,5 +172,15 @@ describe("bootstrap cutover preparation", () => {
     await expect(preparation.prepare({ ...request, targetSha: "not-a-sha" }))
       .rejects.toThrow("CUTOVER_TARGET_SHA_INVALID");
     expect(log).toEqual([]);
+  });
+
+  it("leaves a durable envelope before an archive/fresh failure and resumes only that physical tail", async () => {
+    const first = predecessor({ failAfterEnvelope: "RENAME_INTERRUPTED" });
+    await expect(first.preparation.prepare(request)).rejects.toThrow("RENAME_INTERRUPTED");
+    expect(first.log).toContain("write-envelope");
+
+    const retry = predecessor({ written: first.stored.get("cutover-1")! });
+    await expect(retry.preparation.prepare(request)).resolves.toMatchObject({ alreadyPrepared: true });
+    expect(retry.log).toEqual(["fence-close", "quiesce", "archive-and-fresh"]);
   });
 });

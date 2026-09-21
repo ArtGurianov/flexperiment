@@ -22,15 +22,12 @@ export type SurfaceApplication = {
   readonly surfaces: readonly (keyof RuntimeTopology)[];
   readonly uuid: string;
   readonly name: string;
-  /** Required only for the one Docker Compose application. */
-  readonly composeApplicationId?: string;
 };
 
 export type CoolifyDeploymentOptions = {
   readonly client: CoolifyClient;
   readonly refs: ProductionDeployRefStore;
   readonly applications: readonly SurfaceApplication[];
-  readonly serverUuid: string;
   readonly composeRollbackEvidence?: ComposeRollbackEvidence;
   readonly onProgress?: (message: string) => void;
 };
@@ -57,7 +54,8 @@ export class CoolifyDeploymentDriver implements DeploymentDriver {
    * that cannot be undone must not begin.
    */
   async assertRecoverable(sha: string): Promise<void> {
-    const cleanup = await this.options.client.serverDockerCleanup(this.options.serverUuid);
+    const binding = await this.serverBinding();
+    const cleanup = await this.options.client.serverDockerCleanup(binding.serverUuid);
     if (cleanup.applicationImageRetentionDisabled) {
       throw new DeploymentError("DEPLOYMENT_APPLICATION_IMAGE_RETENTION_DISABLED");
     }
@@ -69,8 +67,7 @@ export class CoolifyDeploymentDriver implements DeploymentDriver {
       const active = await this.options.client.activeDeploymentQueue(application.uuid);
       if (active.length) throw new DeploymentError("DEPLOYMENT_QUEUE_ACTIVE", `${application.name}: ${active.join(",")}`);
       if (configured.buildPack === "dockercompose") {
-        if (!application.composeApplicationId) throw new DeploymentError("COMPOSE_APPLICATION_ID_UNCONFIGURED", application.name);
-        await (this.options.composeRollbackEvidence ?? new DockerComposeRollbackEvidence()).assertPreDeployRecoverable(application.composeApplicationId, sha);
+        await (this.options.composeRollbackEvidence ?? new DockerComposeRollbackEvidence()).assertPreDeployRecoverable(binding.resourceId(application.uuid), sha);
         continue;
       }
       const images = await this.options.client.rollbackImages(application.uuid);
@@ -86,11 +83,11 @@ export class CoolifyDeploymentDriver implements DeploymentDriver {
    * repositories immediately before certification is allowed to continue.
    */
   async assertPredecessorRetained(sha: string): Promise<void> {
+    const binding = await this.serverBinding();
     for (const application of this.options.applications) {
       const configured = await this.options.client.application(application.uuid);
       if (configured.buildPack === "dockercompose") {
-        if (!application.composeApplicationId) throw new DeploymentError("COMPOSE_APPLICATION_ID_UNCONFIGURED", application.name);
-        await (this.options.composeRollbackEvidence ?? new DockerComposeRollbackEvidence()).assertPredecessorStillPresent(application.composeApplicationId, sha);
+        await (this.options.composeRollbackEvidence ?? new DockerComposeRollbackEvidence()).assertPredecessorStillPresent(binding.resourceId(application.uuid), sha);
         continue;
       }
       const images = await this.options.client.rollbackImages(application.uuid);
@@ -98,6 +95,38 @@ export class CoolifyDeploymentDriver implements DeploymentDriver {
         throw new DeploymentError("DEPLOYMENT_PREDECESSOR_IMAGE_MISSING", `${application.name}: no retained image for ${sha}`);
       }
     }
+  }
+
+  /**
+   * A server policy is meaningful only for the server these applications
+   * actually inhabit. The resource API supplies the hidden numeric Compose id
+   * and proves every trusted application UUID resolves on exactly one server.
+   */
+  private async serverBinding(): Promise<{ readonly serverUuid: string; resourceId(uuid: string): string }> {
+    const wanted = new Set(this.options.applications.map((application) => application.uuid));
+    const matches: { serverUuid: string; resources: ReadonlyMap<string, string> }[] = [];
+    for (const server of await this.options.client.servers()) {
+      const resources = await this.options.client.serverResources(server.uuid);
+      const ids = new Map(resources
+        .filter((resource) => resource.type === "application")
+        .map((resource) => [resource.uuid, resource.id]));
+      if ([...wanted].every((uuid) => ids.has(uuid))) matches.push({ serverUuid: server.uuid, resources: ids });
+    }
+    if (matches.length !== 1) throw new DeploymentError("COOLIFY_APPLICATION_SERVER_BINDING_INVALID", `${matches.length} matching servers`);
+    const match = matches[0]!;
+    return {
+      serverUuid: match.serverUuid,
+      resourceId(uuid) {
+        const id = match.resources.get(uuid);
+        if (!id || !/^\d+$/.test(id)) throw new DeploymentError("COOLIFY_COMPOSE_RESOURCE_ID_INVALID", uuid);
+        return id;
+      },
+    };
+  }
+
+  /** Used by the physical Compose quiescer only after the same server binding. */
+  async composeResourceId(applicationUuid: string): Promise<string> {
+    return (await this.serverBinding()).resourceId(applicationUuid);
   }
 
   /**

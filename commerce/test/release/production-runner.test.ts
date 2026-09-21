@@ -110,6 +110,8 @@ describe("the production composition root", () => {
 describe("what the runner refuses to start without", () => {
   const complete = () => ({
     FLEXPERIMENT_RELEASE_DATABASE: vps.config.databasePath,
+    FLEXPERIMENT_RELEASE_REPLACEMENT_ROOT: vps.config.replacementRoot,
+    FLEXPERIMENT_RELEASE_STATE_DIR: vps.config.stateDirectory,
     FLEXPERIMENT_RELEASE_ARCHIVE_DIR: vps.config.archiveDirectory,
     FLEXPERIMENT_RELEASE_ENVELOPE_DIR: vps.config.envelopeDirectory,
     FLEXPERIMENT_RELEASE_LOCK: vps.config.lockPath,
@@ -124,11 +126,9 @@ describe("what the runner refuses to start without", () => {
     CERTIFICATION_CHECKOUT_BODY: vps.config.certification.checkoutBodyPath,
     COOLIFY_API_URL: vps.config.coolify.apiUrl,
     COOLIFY_TOKEN: "test-token",
-    COOLIFY_SERVER_UUID: "server-1",
     COOLIFY_APPLICATION_FRONTEND: "app-frontend",
     COOLIFY_APPLICATION_ADMIN: "app-admin",
     COOLIFY_APPLICATION_COMMERCE: "app-commerce",
-    COOLIFY_APPLICATION_COMMERCE_ID: "3",
     FLEXPERIMENT_FRONTEND_RELEASE_URL: vps.config.topology.frontendReleaseUrl,
     FLEXPERIMENT_ADMIN_RELEASE_URL: vps.config.topology.adminReleaseUrl,
     FLEXPERIMENT_DEPLOY_REF_REMOTE: vps.config.deployRef.remote,

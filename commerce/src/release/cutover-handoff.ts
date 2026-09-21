@@ -11,10 +11,11 @@ import type { SchemaLineage } from "./schema-identity";
  * ordering is the safety property.
  *
  * Predecessor, in this order: fence sales with the old runtime's own emergency
- * gate, quiesce writers, take the final census and the online backup, obtain the
- * archive's immutable ref and digest, and only then write the envelope. Dying
- * before the envelope exists leaves the old lineage wholly recoverable and the
- * successor holding nothing.
+ * gate, take two online backups, quiesce writers, take the final census and
+ * obtain the archive's immutable ref and digest. The envelope is written next,
+ * durably; only then may the checked predecessor file be atomically renamed
+ * to that ref. Dying before the envelope exists leaves the old lineage wholly
+ * recoverable and the successor holding nothing.
  *
  * Successor: read, validate, adopt into the database, commit - and only then
  * mark the envelope consumed. Dying in that last gap is the case this module

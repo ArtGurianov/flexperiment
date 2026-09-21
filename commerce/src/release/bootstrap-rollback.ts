@@ -123,7 +123,7 @@ export const assertReversible = (session: DeploySession, gate: { closed: boolean
 
 /** Quiesces the successor and captures the database about to be discarded. */
 export interface SuccessorArchiver {
-  quiesceAndArchive(): Promise<DatabaseArchive>;
+  quiesceAndArchive(rollbackId: string): Promise<DatabaseArchive>;
 }
 
 /**
@@ -202,7 +202,7 @@ export class BootstrapRollback {
     const rollbackId = input.rollbackId ?? randomUUID();
     authority.reserveBootstrapRollback(sessionId, ownerId, now, rollbackId);
 
-    const successorDatabase = await this.ports.archiver.quiesceAndArchive();
+    const successorDatabase = await this.ports.archiver.quiesceAndArchive(rollbackId);
     if (!successorDatabase.ref.trim()) throw new BootstrapRollbackError("SUCCESSOR_ARCHIVE_REF_INVALID");
     if (!/^[a-f0-9]{64}$/.test(successorDatabase.sha256)) throw new BootstrapRollbackError("SUCCESSOR_ARCHIVE_DIGEST_INVALID");
     // Read after quiescing: the vector recorded is the one the successor was

@@ -12,6 +12,8 @@
  *   observe                  read both layers and the readiness evidence; mutates nothing
  *   publish-candidate <sha> <class>
  *                            derive and publish a candidate; deploys nothing
+ *   prepare-bootstrap <candidate> <expires-at> [cutover-id]
+ *                            durable legacy DB handoff; deploys nothing
  *   deploy  <candidate>      run the release for that published candidate
  *   certify <session>  the attended half: arm, buy, refund, shut the fixture
  *   verify  <session>  prove a finished cutover, changing nothing
@@ -45,6 +47,19 @@ const say = (payload: Record<string, unknown>) => process.stdout.write(`${JSON.s
 const run = async (release: ProductionRelease, argv: readonly string[], ownerId: string): Promise<number> => {
   const [command, argument] = argv;
   switch (command) {
+    case "prepare-bootstrap": {
+      if (!argument || !argv[2]) throw new Error("BOOTSTRAP_PREPARATION_ARGUMENTS_REQUIRED");
+      const candidate = release.candidates.get(argument);
+      if (!candidate) throw new Error(`RELEASE_CANDIDATE_NOT_PUBLISHED: ${argument}`);
+      if (candidate.releaseClass !== "LAUNCH_BASELINE") throw new Error("BOOTSTRAP_PREPARATION_REQUIRES_LAUNCH_BASELINE");
+      if (!release.bootstrapPreparation) throw new Error("BOOTSTRAP_PREPARATION_PREDECESSOR_UNAVAILABLE");
+      const prepared = await release.bootstrapPreparation.prepare({
+        targetSha: candidate.sha, expiresAt: argv[2]!, cutoverId: argv[3],
+      });
+      release.journal.record("bootstrap.prepared", { cutoverId: prepared.envelope.cutoverId, target: candidate.sha, resumed: prepared.alreadyPrepared });
+      say({ command, cutoverId: prepared.envelope.cutoverId, target: candidate.sha, resumed: prepared.alreadyPrepared });
+      return 0;
+    }
     case "deploy": {
       if (!argument) throw new Error("RELEASE_CANDIDATE_REQUIRED");
       // Resolved out of the write-once store by its commit. A deploy cannot be

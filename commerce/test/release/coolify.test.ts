@@ -53,6 +53,19 @@ describe("the Coolify client", () => {
     await expect(client(malformed).serverDockerCleanup("server-1")).rejects.toMatchObject({ code: "COOLIFY_SERVER_CLEANUP_MALFORMED" });
   });
 
+  it("lists servers and only accepts resource rows that carry an id, UUID and type", async () => {
+    const url = await listen((_method, path) => path.endsWith("/servers")
+      ? { status: 200, body: JSON.stringify([{ uuid: "server-1" }]) }
+      : { status: 200, body: JSON.stringify([{ id: 3, uuid: "app-1", type: "application" }]) });
+    const coolify = client(url);
+    await expect(coolify.servers()).resolves.toEqual([{ uuid: "server-1" }]);
+    await expect(coolify.serverResources("server-1")).resolves.toEqual([{ id: "3", uuid: "app-1", type: "application" }]);
+
+    await new Promise<void>((resolve) => server!.close(() => resolve()));
+    const malformed = await listen(() => ({ status: 200, body: JSON.stringify([{ uuid: "app-1", type: "application" }]) }));
+    await expect(client(malformed).serverResources("server-1")).rejects.toMatchObject({ code: "COOLIFY_SERVER_RESOURCES_MALFORMED" });
+  });
+
   it("returns only terminally-unsettled deployments as an active queue", async () => {
     const url = await listen(() => ({ status: 200, body: JSON.stringify({
       count: 3,

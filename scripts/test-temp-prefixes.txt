@@ -68,6 +68,7 @@ ambiguity-seam-template
 attribution-reward
 attribution-reward-template
 baseline-frozen
+bootstrap-root
 bootstrap-promotion-compat
 candidate-author-fixture
 candidate-threeway
@@ -159,7 +160,9 @@ release-control-v2-materializer-rename
 release-control-v2-shadow
 release-runner
 release-semantics-boundary
+rollback-receipt
 seo-snapshot
+sqlite-cutover
 suppression
 suppression-template
 tax-treatment-ord-canon

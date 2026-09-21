@@ -1,4 +1,5 @@
 import Database from "better-sqlite3";
+import { createHash } from "node:crypto";
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
 import { CoolifyClient } from "./coolify";
@@ -19,6 +20,9 @@ import { activeLegalBinding } from "./legal-binding";
 import { LegacyPredecessorTopologyReader } from "./legacy-predecessor-topology";
 import { readSchemaIdentity } from "../db";
 import { DatabaseRuntimeEvidenceReader, ProductionTopologyReader } from "./topology-reader";
+import { SqliteCutoverStorage } from "./sqlite-cutover-storage";
+import { BootstrapCutoverPreparation, type PreparationRequest, type PreparationResult } from "./cutover-preparation";
+import { DockerComposeRuntimeControl } from "./docker-compose-runtime";
 
 /**
  * The production composition root.
@@ -215,6 +219,10 @@ export type ProductionRelease = {
   readonly orchestrator: ReleaseOrchestrator;
   readonly sessions: DeploySessions;
   readonly envelopes: FileCutoverEnvelopeStore;
+  /** Physical namespace guard; bootstrap commands use this rather than path instructions. */
+  readonly storage: SqliteCutoverStorage;
+  /** Present only while the configured database is the verified legacy predecessor. */
+  readonly bootstrapPreparation?: { prepare(request: PreparationRequest): Promise<PreparationResult> };
   readonly deployRef: ProductionDeployRefStore;
   readonly deployment: CoolifyDeploymentDriver;
   readonly candidates: FileReleaseCandidateStore;
@@ -246,6 +254,8 @@ export type BuildOptions = {
    * first line, before the topology is even read.
    */
   readonly certification?: CertificationDriver;
+  /** Test seam for the host adapter; production always controls the real Compose pair. */
+  readonly runtimeControl?: Pick<DockerComposeRuntimeControl, "ensureStopped">;
 };
 
 /**
@@ -262,10 +272,18 @@ export const buildProductionRelease = (config: ProductionReleaseConfig, options:
   for (const [label, path] of [["database", config.databasePath], ["deploy ref worktree", config.deployRef.worktree]] as const) {
     if (!existsSync(path)) throw new ReleaseConfigError("RELEASE_RUNNER_PATH_MISSING", `${label}: ${path}`);
   }
-  mkdirSync(config.archiveDirectory, { recursive: true, mode: 0o700 });
+  // This performs no mutation. A release runner must not create a plausible
+  // looking state layout on whatever filesystem it happened to be pointed at.
+  const storage = new SqliteCutoverStorage({
+    databasePath: config.databasePath, replacementRoot: config.replacementRoot,
+    stateDirectory: config.stateDirectory, archiveDirectory: config.archiveDirectory,
+    envelopeDirectory: config.envelopeDirectory, journalPath: config.journalPath,
+    lockPath: config.lockPath,
+  });
 
   const lock = ReleaseRunnerLock.acquire(config.lockPath, now);
   let db: Database.Database | undefined;
+  let databaseClosed = false;
   try {
     const journal = new ReleaseJournal(config.journalPath, now);
     journal.record("runner.configured", describeConfig(config));
@@ -280,7 +298,6 @@ export const buildProductionRelease = (config: ProductionReleaseConfig, options:
     const client = new CoolifyClient({ apiUrl: config.coolify.apiUrl, token: config.coolify.token, fetch: options.fetch });
     const coolify = {
       client, refs: deployRef,
-      serverUuid: config.coolify.serverUuid,
       applications: config.applications,
       onProgress: (message: string) => journal.record("deployment.progress", { message }),
     };
@@ -352,6 +369,61 @@ export const buildProductionRelease = (config: ProductionReleaseConfig, options:
       },
     };
 
+    const predecessorTopology = ports.predecessor;
+    const commerce = config.applications.find((application) => application.name === "commerce");
+    const closeDatabaseForStorage = () => {
+      if (databaseClosed) return;
+      databaseClosed = true;
+      opened.close();
+    };
+    const gateAtRestIsClosed = () => {
+      const inspection = new Database(config.databasePath, { readonly: true, fileMustExist: true });
+      try {
+        const row = inspection.prepare("SELECT sales_paused FROM emergency_sales_gate WHERE singleton = 1").get() as { sales_paused?: unknown } | undefined;
+        return Number(row?.sales_paused ?? 1) === 1;
+      } finally { inspection.close(); }
+    };
+    const bootstrapPreparation = predecessorTopology && commerce ? new BootstrapCutoverPreparation({
+      fence: {
+        async ensureClosed() {
+          const result = opened.prepare("UPDATE emergency_sales_gate SET sales_paused = 1, revision = revision + 1 WHERE singleton = 1 AND sales_paused = 0").run();
+          if (result.changes === 0 && !gateAtRestIsClosed()) throw new ReleaseRunnerError("BOOTSTRAP_EMERGENCY_GATE_UNAVAILABLE");
+        },
+        async isClosed() { return gateAtRestIsClosed(); },
+      },
+      quiescer: {
+        async ensureQuiesced() {
+          const id = await (ports.deployment as CoolifyDeploymentDriver).composeResourceId(commerce.uuid);
+          await (options.runtimeControl ?? new DockerComposeRuntimeControl()).ensureStopped(id);
+        },
+      },
+      census: {
+        async inspect() {
+          const integrity = opened.prepare("PRAGMA integrity_check").get() as { integrity_check?: unknown } | undefined;
+          const closed = gateAtRestIsClosed();
+          const blockers = [
+            ...(integrity?.integrity_check === "ok" ? [] : ["sqlite_integrity"]),
+            ...(closed ? [] : ["emergency_sales_gate"]),
+          ];
+          return {
+            admitted: blockers.length === 0, blockers,
+            evidenceDigest: createHash("sha256").update(JSON.stringify({ integrity: integrity?.integrity_check, closed })).digest("hex"),
+          };
+        },
+      },
+      archiver: {
+        async verifyOnlineBackups(cutoverId) { await storage.verifyOnlineBackups(cutoverId); },
+        async prepareArchive(cutoverId) { closeDatabaseForStorage(); return storage.prepareArchive(cutoverId); },
+        async ensureArchivedAndFresh(envelope) { await storage.ensureArchivedAndFresh(envelope); },
+      },
+      topology: predecessorTopology,
+      envelopes: {
+        async read(cutoverId) { return new FileCutoverEnvelopeStore(config.envelopeDirectory).read(cutoverId); },
+        async writeOnce(envelope) { new FileCutoverEnvelopeStore(config.envelopeDirectory).write(envelope); },
+      },
+      clock: now,
+    }) : undefined;
+
     const certificationFor = (candidate: ReleaseCandidate): ProductionCertificationDriver => new ProductionCertificationDriver({
       db: opened, candidate, now,
       adminBaseUrl: config.certification.adminBaseUrl,
@@ -370,10 +442,10 @@ export const buildProductionRelease = (config: ProductionReleaseConfig, options:
     return {
       ports, sessions, journal, lock, deployRef, authority, candidates, certificationFor, database: opened,
       deployment: ports.deployment as CoolifyDeploymentDriver,
-      envelopes: new FileCutoverEnvelopeStore(config.envelopeDirectory),
+      envelopes: new FileCutoverEnvelopeStore(config.envelopeDirectory), storage, bootstrapPreparation,
       orchestrator: new ReleaseOrchestrator(ports),
       close() {
-        opened.close();
+        closeDatabaseForStorage();
         lock.release();
       },
     };

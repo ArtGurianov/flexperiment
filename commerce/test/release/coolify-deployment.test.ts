@@ -22,7 +22,7 @@ const APPLICATIONS: readonly SurfaceApplication[] = [
   { surfaces: ["frontend"], uuid: "app-frontend", name: "flexperiment" },
   { surfaces: ["admin"], uuid: "app-admin", name: "admin-web" },
   // One application, two surfaces: commerce and its worker deploy together.
-  { surfaces: ["commerce", "worker"], uuid: "app-commerce", name: "commerce", composeApplicationId: "3" },
+  { surfaces: ["commerce", "worker"], uuid: "app-commerce", name: "commerce" },
 ];
 
 let origin: string;
@@ -37,6 +37,8 @@ let buildPacks: Record<string, string>;
 let dockerImagesToKeep: number;
 let retentionDisabled: boolean;
 let queue: Record<string, readonly { status: string; deployment_uuid: string }[]>;
+let servers: readonly string[];
+let resourcesFor: (server: string) => readonly { id: string; uuid: string; type: string }[];
 
 const listen = async (): Promise<string> => {
   server = createServer((request, response) => {
@@ -47,6 +49,9 @@ const listen = async (): Promise<string> => {
     calls.push(`${request.method} ${url.split("?")[0]}`);
     const send = (body: unknown) => { response.writeHead(200, { "Content-Type": "application/json" }); response.end(JSON.stringify(body)); };
     const images = Object.entries(retained).find(([uuid]) => url.includes(uuid))?.[1] ?? [];
+    if (url === "/api/v1/servers") return send(servers.map((uuid) => ({ uuid })));
+    const serverMatch = url.match(/\/servers\/([^/]+)\/resources/);
+    if (serverMatch) return send(resourcesFor(serverMatch[1]!));
     if (url.includes("/servers/server-1/docker-cleanup")) return send({ disable_application_image_retention: retentionDisabled });
     if (url.includes("/deployments/applications/")) {
       const uuid = url.split("/").at(-1)?.split("?")[0] ?? "";
@@ -89,6 +94,8 @@ beforeEach(() => {
   dockerImagesToKeep = 2;
   retentionDisabled = false;
   queue = {};
+  servers = ["server-1"];
+  resourcesFor = () => APPLICATIONS.map((application, index) => ({ id: String(index + 1), uuid: application.uuid, type: "application" }));
 });
 afterEach(async () => {
   if (server) await new Promise<void>((resolve) => server!.close(() => resolve()));
@@ -98,7 +105,7 @@ afterEach(async () => {
 const drivers = async (composeRollbackEvidence?: ComposeRollbackEvidence) => {
   const client = new CoolifyClient({ apiUrl: await listen(), token: "t", pollIntervalMs: 1, sleep: async () => {} });
   const refs = new ProductionDeployRefStore({ cwd: clone });
-  const options = { client, refs, applications: APPLICATIONS, serverUuid: "server-1", composeRollbackEvidence };
+  const options = { client, refs, applications: APPLICATIONS, composeRollbackEvidence };
   return { refs, deployment: new CoolifyDeploymentDriver(options), recovery: new CoolifyRecoveryDriver(options) };
 };
 
@@ -161,6 +168,30 @@ describe("deploying through the pointer the applications follow", () => {
     retentionDisabled = true;
     const { deployment } = await drivers();
     await expect(deployment.assertRecoverable(preSha)).rejects.toMatchObject({ code: "DEPLOYMENT_APPLICATION_IMAGE_RETENTION_DISABLED" });
+  });
+
+  it("derives the server and numeric Compose resource id from the three trusted application UUIDs", async () => {
+    buildPacks["app-commerce"] = "dockercompose";
+    const { deployment } = await drivers({ async assertPreDeployRecoverable() {}, async assertPredecessorStillPresent() {} });
+    await expect(deployment.composeResourceId("app-commerce")).resolves.toBe("3");
+  });
+
+  it("refuses an ambiguous or incomplete server binding instead of accepting a configured server UUID", async () => {
+    servers = ["server-1", "server-2"];
+    const { deployment } = await drivers();
+    await expect(deployment.assertRecoverable(preSha)).rejects.toMatchObject({ code: "COOLIFY_APPLICATION_SERVER_BINDING_INVALID" });
+
+    servers = ["server-1"];
+    resourcesFor = () => APPLICATIONS.slice(0, 2).map((application, index) => ({ id: String(index + 1), uuid: application.uuid, type: "application" }));
+    const incomplete = await drivers();
+    await expect(incomplete.deployment.assertRecoverable(preSha)).rejects.toMatchObject({ code: "COOLIFY_APPLICATION_SERVER_BINDING_INVALID" });
+  });
+
+  it("refuses a nonnumeric Compose label id even when the server owns all three UUIDs", async () => {
+    buildPacks["app-commerce"] = "dockercompose";
+    resourcesFor = () => APPLICATIONS.map((application, index) => ({ id: application.uuid === "app-commerce" ? "not-a-label" : String(index + 1), uuid: application.uuid, type: "application" }));
+    const { deployment } = await drivers({ async assertPreDeployRecoverable() {}, async assertPredecessorStillPresent() {} });
+    await expect(deployment.composeResourceId("app-commerce")).rejects.toMatchObject({ code: "COOLIFY_COMPOSE_RESOURCE_ID_INVALID" });
   });
 
   it("refuses a nonterminal deployment queue", async () => {

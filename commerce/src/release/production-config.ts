@@ -23,8 +23,6 @@ export class ReleaseConfigError extends Error {
 export type SurfaceApplicationConfig = {
   readonly name: string;
   readonly uuid: string;
-  /** Internal numeric ID from the live Compose container label. */
-  readonly composeApplicationId?: string;
   readonly surfaces: readonly ("frontend" | "admin" | "commerce" | "worker")[];
 };
 
@@ -52,6 +50,10 @@ export type ReadOnlyReleaseConfig = {
 export type ProductionReleaseConfig = {
   /** The live SQLite file the runner reads the release authority out of. */
   readonly databasePath: string;
+  /** The DB/volume namespace replaced at bootstrap; it is never allowed to contain release state. */
+  readonly replacementRoot: string;
+  /** Runner-owned state outside replacementRoot, but deliberately on the same filesystem for atomic archives. */
+  readonly stateDirectory: string;
   /** Where a predecessor database is archived to, and restored from. */
   readonly archiveDirectory: string;
   /** Survives the database being replaced and the containers being swapped. */
@@ -81,7 +83,7 @@ export type ProductionReleaseConfig = {
     readonly expectedLedgerLength: number;
     readonly commerceReadyUrl: string;
   };
-  readonly coolify: { readonly apiUrl: string; readonly token: string; readonly serverUuid: string };
+  readonly coolify: { readonly apiUrl: string; readonly token: string };
   readonly applications: readonly SurfaceApplicationConfig[];
   readonly topology: { readonly frontendReleaseUrl: string; readonly adminReleaseUrl: string };
   readonly deployRef: { readonly remote: string; readonly ref: string; readonly worktree: string };
@@ -99,7 +101,7 @@ const UUID = /^[0-9a-zA-Z][0-9a-zA-Z._-]{7,63}$/;
 const APPLICATIONS: readonly { readonly variable: string; readonly composeIdVariable?: string; readonly name: string; readonly surfaces: SurfaceApplicationConfig["surfaces"] }[] = [
   { variable: "COOLIFY_APPLICATION_FRONTEND", name: "frontend", surfaces: ["frontend"] },
   { variable: "COOLIFY_APPLICATION_ADMIN", name: "admin", surfaces: ["admin"] },
-  { variable: "COOLIFY_APPLICATION_COMMERCE", composeIdVariable: "COOLIFY_APPLICATION_COMMERCE_ID", name: "commerce", surfaces: ["commerce", "worker"] },
+  { variable: "COOLIFY_APPLICATION_COMMERCE", name: "commerce", surfaces: ["commerce", "worker"] },
 ];
 
 export const READ_ONLY_RELEASE_ENVIRONMENT_VARIABLES = [
@@ -117,6 +119,8 @@ export const READ_ONLY_RELEASE_ENVIRONMENT_VARIABLES = [
  */
 export const PRODUCTION_RELEASE_ENVIRONMENT_VARIABLES = [
   "FLEXPERIMENT_RELEASE_DATABASE",
+  "FLEXPERIMENT_RELEASE_REPLACEMENT_ROOT",
+  "FLEXPERIMENT_RELEASE_STATE_DIR",
   "FLEXPERIMENT_RELEASE_ARCHIVE_DIR",
   "FLEXPERIMENT_RELEASE_ENVELOPE_DIR",
   "FLEXPERIMENT_RELEASE_LOCK",
@@ -131,8 +135,7 @@ export const PRODUCTION_RELEASE_ENVIRONMENT_VARIABLES = [
   "CERTIFICATION_CHECKOUT_BODY",
   "COOLIFY_API_URL",
   "COOLIFY_TOKEN",
-  "COOLIFY_SERVER_UUID",
-  ...APPLICATIONS.flatMap((application) => [application.variable, ...(application.composeIdVariable ? [application.composeIdVariable] : [])]),
+  ...APPLICATIONS.map((application) => application.variable),
   "FLEXPERIMENT_FRONTEND_RELEASE_URL",
   "FLEXPERIMENT_ADMIN_RELEASE_URL",
   "FLEXPERIMENT_DEPLOY_REF_REMOTE",
@@ -230,11 +233,7 @@ export const loadProductionReleaseConfig = (env: NodeJS.ProcessEnv = process.env
 
   for (const application of APPLICATIONS) {
     if (!UUID.test(value(application.variable))) problems.push(`${application.variable} is not an application identifier`);
-    if (application.composeIdVariable && !/^\d+$/.test(value(application.composeIdVariable))) {
-      problems.push(`${application.composeIdVariable} is not a Compose application identifier`);
-    }
   }
-  if (!UUID.test(value("COOLIFY_SERVER_UUID"))) problems.push("COOLIFY_SERVER_UUID is not a server identifier");
   httpUrl(value("COOLIFY_API_URL"), "COOLIFY_API_URL", problems);
   httpUrl(value("CERTIFICATION_ADMIN_BASE_URL"), "CERTIFICATION_ADMIN_BASE_URL", problems);
   httpUrl(value("CERTIFICATION_PUBLIC_BASE_URL"), "CERTIFICATION_PUBLIC_BASE_URL", problems);
@@ -259,6 +258,8 @@ export const loadProductionReleaseConfig = (env: NodeJS.ProcessEnv = process.env
 
   return {
     databasePath: value("FLEXPERIMENT_RELEASE_DATABASE"),
+    replacementRoot: value("FLEXPERIMENT_RELEASE_REPLACEMENT_ROOT"),
+    stateDirectory: value("FLEXPERIMENT_RELEASE_STATE_DIR"),
     archiveDirectory: value("FLEXPERIMENT_RELEASE_ARCHIVE_DIR"),
     envelopeDirectory: value("FLEXPERIMENT_RELEASE_ENVELOPE_DIR"),
     lockPath: value("FLEXPERIMENT_RELEASE_LOCK"),
@@ -274,11 +275,10 @@ export const loadProductionReleaseConfig = (env: NodeJS.ProcessEnv = process.env
       checkoutBodyPath: value("CERTIFICATION_CHECKOUT_BODY"),
     },
     predecessor: predecessor(env, problems),
-    coolify: { apiUrl: value("COOLIFY_API_URL"), token: value("COOLIFY_TOKEN"), serverUuid: value("COOLIFY_SERVER_UUID") },
+    coolify: { apiUrl: value("COOLIFY_API_URL"), token: value("COOLIFY_TOKEN") },
     applications: APPLICATIONS.map((application) => ({
       name: application.name,
       uuid: value(application.variable),
-      ...(application.composeIdVariable ? { composeApplicationId: value(application.composeIdVariable) } : {}),
       surfaces: application.surfaces,
     })),
     topology: {
@@ -314,11 +314,12 @@ export const describeConfig = (config: ProductionReleaseConfig): Record<string, 
   }
   return {
     database: config.databasePath,
+    replacementRoot: config.replacementRoot,
+    stateDirectory: config.stateDirectory,
     archiveDirectory: config.archiveDirectory,
     candidateDirectory: config.candidateDirectory,
     envelopeDirectory: config.envelopeDirectory,
     coolifyApiUrl: config.coolify.apiUrl,
-    coolifyServerUuid: config.coolify.serverUuid,
     certification: {
       adminBaseUrl: config.certification.adminBaseUrl,
       publicBaseUrl: config.certification.publicBaseUrl,

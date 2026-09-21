@@ -11,8 +11,9 @@ import {
  * The successor's `deploy_sessions` row cannot carry the intent that created
  * it: the database it would live in is the one being replaced, and it is gone
  * at exactly the moment the intent matters most. So the envelope goes on the
- * persistent volume, beside the database rather than inside it, and survives
- * the file being renamed away and a fresh baseline taking its place.
+ * runner-owned state namespace, outside the database/volume replacement root,
+ * and survives the file being renamed away and a fresh baseline taking its
+ * place.
  *
  * Consumption is a separate file, not a field. Rewriting the envelope to mark
  * it consumed would mean the durable record of what was adopted and the record
@@ -118,4 +119,4 @@ export const writeCutoverEnvelope = (directory: string, envelope: CutoverEnvelop
 
 export const cutoverEnvelopeDirectory = (): string =>
   process.env.COMMERCE_CUTOVER_ENVELOPE_DIR
-    ?? join(dirname(process.env.COMMERCE_DATABASE_PATH ?? "/var/lib/flexperiment/commerce.sqlite"), "cutover");
+    ?? (() => { throw new Error("CUTOVER_ENVELOPE_DIRECTORY_REQUIRED"); })();

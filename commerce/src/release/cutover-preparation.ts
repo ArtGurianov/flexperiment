@@ -9,10 +9,11 @@ import { isSourceCommit } from "./runtime-identity";
  * Its whole purpose is to make one statement true: once the forward envelope
  * exists, the successor holds a self-sufficient and proven snapshot of the
  * predecessor. Until it exists, the lineage has not been handed over at all and
- * the old side remains wholly recoverable.
+ * the old side remains wholly recoverable. The filesystem move is deliberately
+ * not one of those proofs: it happens only after the envelope is durable.
  *
- * Everything here therefore happens before the envelope, and the envelope is
- * written last.
+ * Everything the envelope vouches for happens before it; once it exists the
+ * physical tail is an idempotent, fail-closed completion of that exact intent.
  */
 
 export class CutoverPreparationError extends Error {
@@ -44,7 +45,24 @@ export interface FinalCensus {
  * `{ ref, sha256 }` that something has already proved restorable.
  */
 export interface PredecessorDatabaseArchiver {
-  archiveAndVerify(): Promise<PredecessorDatabase>;
+  /**
+   * Two independently verified online backups, while the predecessor is still
+   * running. They are a pre-stop restore probe, not the archive handed to the
+   * successor.
+   */
+  verifyOnlineBackups(cutoverId: string): Promise<void>;
+  /**
+   * Runs only after writers are quiet. It checkpoints the live SQLite bundle
+   * and returns the archive identity it is prepared to move, but does not move
+   * it yet: the envelope must become durable first.
+   */
+  prepareArchive(cutoverId: string): Promise<PredecessorDatabase>;
+  /**
+   * Completes an envelope that already exists. This is deliberately an ensure,
+   * so a retry after the durable-envelope/before-rename crash resumes the
+   * physical handoff instead of treating the old database as a fresh cutover.
+   */
+  ensureArchivedAndFresh(envelope: CutoverEnvelope): Promise<void>;
 }
 
 export interface CutoverEnvelopeWriter {
@@ -106,6 +124,12 @@ export class BootstrapCutoverPreparation {
         && existing.expiresAt === request.expiresAt
         && (request.adoptionNonce === undefined || existing.adoptionNonce === request.adoptionNonce);
       if (!sameIntent) throw new CutoverPreparationError("CUTOVER_ENVELOPE_IDENTITY_MISMATCH", cutoverId);
+      // The envelope is durable intent, not proof the rename finished. A crash
+      // in the next line of a previous run must resume through the same
+      // quiescence boundary before the old database can be moved.
+      await this.ports.fence.ensureClosed();
+      await this.ports.quiescer.ensureQuiesced();
+      await this.ports.archiver.ensureArchivedAndFresh(existing);
       return { envelope: existing, alreadyPrepared: true };
     }
 
@@ -113,18 +137,19 @@ export class BootstrapCutoverPreparation {
 
     await this.ports.fence.ensureClosed();
     const beforeQuiesce = await this.ports.topology.observe();
+    await this.ports.archiver.verifyOnlineBackups(cutoverId);
+    // Once the real runtime is stopped there is intentionally no `/readyz` or
+    // instance evidence left to read. Compare the two live observations before
+    // that boundary instead; after it, quiescence plus the checkpointed SQLite
+    // archive is the proof that no writer can move the frozen predecessor.
+    const beforeStop = await this.ports.topology.observe();
+    if (!snapshotEquals(beforeQuiesce, beforeStop)) throw new CutoverPreparationError("PREDECESSOR_TOPOLOGY_DRIFTED");
     await this.ports.quiescer.ensureQuiesced();
 
     const census = await this.ports.census.inspect();
     if (!census.admitted) throw new CutoverPreparationError("FINAL_CENSUS_BLOCKED", census.blockers.join(","));
 
-    const predecessorDatabase = await this.ports.archiver.archiveAndVerify();
-
-    // Read again rather than reuse the earlier reading. Equality across the
-    // census and the archive is what proves the snapshot and the vector
-    // describe one predecessor state instead of two.
-    const afterArchive = await this.ports.topology.observe();
-    if (!snapshotEquals(beforeQuiesce, afterArchive)) throw new CutoverPreparationError("PREDECESSOR_TOPOLOGY_DRIFTED");
+    const predecessorDatabase = await this.ports.archiver.prepareArchive(cutoverId);
 
     // Archiving takes time, and the gate could have been opened during it. A
     // backup taken behind a gate that is now open is not the quiet snapshot it
@@ -137,12 +162,15 @@ export class BootstrapCutoverPreparation {
       // A bootstrap launch is a maintenance cutover by definition; there is no
       // rolling variant of replacing the database, so no caller may ask for one.
       mode: "MAINTENANCE_CUTOVER",
-      preDeployTopology: afterArchive,
+      preDeployTopology: beforeStop,
       predecessorDatabase,
       createdAt: now.toISOString(),
       expiresAt: request.expiresAt,
     });
     await this.ports.envelopes.writeOnce(envelope);
+    // This must stay after writeOnce. The archive name and digest have been
+    // frozen in an fsync'd envelope before the irreversible filesystem rename.
+    await this.ports.archiver.ensureArchivedAndFresh(envelope);
     return { envelope, alreadyPrepared: false };
   }
 }

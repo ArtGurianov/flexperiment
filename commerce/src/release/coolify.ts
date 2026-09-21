@@ -22,6 +22,9 @@ export type CoolifyServerDockerCleanup = {
   readonly applicationImageRetentionDisabled: boolean;
 };
 
+export type CoolifyServer = { readonly uuid: string };
+export type CoolifyServerResource = { readonly id: string; readonly uuid: string; readonly type: string };
+
 export type CoolifyDeployment = {
   readonly uuid: string;
   readonly status: string;
@@ -70,7 +73,7 @@ export class CoolifyClient {
   }
 
   async application(uuid: string): Promise<CoolifyApplication> {
-    const body = await this.request("GET", `/applications/${encodeURIComponent(uuid)}`);
+    const body = this.requiredObject(await this.request("GET", `/applications/${encodeURIComponent(uuid)}`), "GET", `/applications/${encodeURIComponent(uuid)}`);
     const settings = object(body.settings);
     const retention = settings?.docker_images_to_keep;
     return {
@@ -90,7 +93,7 @@ export class CoolifyClient {
    * will leave a predecessor behind.
    */
   async serverDockerCleanup(uuid: string): Promise<CoolifyServerDockerCleanup> {
-    const body = await this.request("GET", `/servers/${encodeURIComponent(uuid)}/docker-cleanup`);
+    const body = this.requiredObject(await this.request("GET", `/servers/${encodeURIComponent(uuid)}/docker-cleanup`), "GET", `/servers/${encodeURIComponent(uuid)}/docker-cleanup`);
     if (typeof body.disable_application_image_retention !== "boolean") {
       throw new CoolifyError("COOLIFY_SERVER_CLEANUP_MALFORMED", uuid);
     }
@@ -99,7 +102,7 @@ export class CoolifyClient {
 
   /** Every nonterminal queue entry is work another controller still owns. */
   async activeDeploymentQueue(uuid: string): Promise<readonly string[]> {
-    const body = await this.request("GET", `/deployments/applications/${encodeURIComponent(uuid)}?take=100`);
+    const body = this.requiredObject(await this.request("GET", `/deployments/applications/${encodeURIComponent(uuid)}?take=100`), "GET", `/deployments/applications/${encodeURIComponent(uuid)}?take=100`);
     if (!Array.isArray(body.deployments)) throw new CoolifyError("COOLIFY_DEPLOYMENT_QUEUE_MALFORMED", uuid);
     const terminal = new Set(["finished", "failed", "cancelled", "cancelled-by-user"]);
     const active: string[] = [];
@@ -110,6 +113,32 @@ export class CoolifyClient {
       if (!terminal.has(status)) active.push(String(deployment.deployment_uuid ?? deployment.uuid ?? status));
     }
     return active;
+  }
+
+  /**
+   * The application endpoint hides internal IDs and destination details.
+   * Resolve both through the server resource API rather than accepting either
+   * as independent operator configuration.
+   */
+  async servers(): Promise<readonly CoolifyServer[]> {
+    const body = await this.request("GET", "/servers");
+    if (!Array.isArray(body)) throw new CoolifyError("COOLIFY_SERVERS_MALFORMED");
+    return body.map((server) => {
+      const row = object(server);
+      if (!row || !row.uuid) throw new CoolifyError("COOLIFY_SERVERS_MALFORMED");
+      return { uuid: String(row.uuid) };
+    });
+  }
+
+  async serverResources(uuid: string): Promise<readonly CoolifyServerResource[]> {
+    const body = await this.request("GET", `/servers/${encodeURIComponent(uuid)}/resources`);
+    const resources = Array.isArray(body) ? body : object(body)?.resources;
+    if (!Array.isArray(resources)) throw new CoolifyError("COOLIFY_SERVER_RESOURCES_MALFORMED", uuid);
+    return resources.map((resource) => {
+      const row = object(resource);
+      if (!row || !row.id || !row.uuid || typeof row.type !== "string") throw new CoolifyError("COOLIFY_SERVER_RESOURCES_MALFORMED", uuid);
+      return { id: String(row.id), uuid: String(row.uuid), type: row.type };
+    });
   }
 
   /**
@@ -131,7 +160,7 @@ export class CoolifyClient {
   /** The images this installation could still roll back to. Empty means a rollback would have nothing to restore. */
   async rollbackImages(uuid: string): Promise<readonly string[]> {
     const body = await this.request("GET", `/applications/${encodeURIComponent(uuid)}/rollback-images`);
-    const images = Array.isArray(body) ? body : Array.isArray(body.images) ? body.images : [];
+    const images = Array.isArray(body) ? body : Array.isArray(object(body)?.images) ? object(body)!.images as unknown[] : [];
     return (images as Record<string, unknown>[])
       .map((image) => String(image.tag ?? image.commit ?? image.name ?? ""))
       .filter(Boolean);
@@ -139,7 +168,7 @@ export class CoolifyClient {
 
   /** Starts a deployment and returns its uuid. Acceptance, not convergence - the caller must await it. */
   async startDeployment(uuid: string): Promise<string> {
-    const body = await this.request("POST", `/deploy?uuid=${encodeURIComponent(uuid)}`);
+    const body = this.requiredObject(await this.request("POST", `/deploy?uuid=${encodeURIComponent(uuid)}`), "POST", `/deploy?uuid=${encodeURIComponent(uuid)}`);
     const queued = Array.isArray(body.deployments) ? (body.deployments as Record<string, unknown>[])[0] : undefined;
     const deploymentUuid = String(queued?.deployment_uuid ?? body.deployment_uuid ?? "");
     if (!deploymentUuid) throw new CoolifyError("COOLIFY_DEPLOYMENT_NOT_QUEUED", uuid);
@@ -153,14 +182,14 @@ export class CoolifyClient {
    * first rather than this being allowed to improvise a rebuild.
    */
   async rollback(uuid: string, commit: string): Promise<string> {
-    const body = await this.request("POST", `/applications/${encodeURIComponent(uuid)}/rollback`, { commit });
+    const body = this.requiredObject(await this.request("POST", `/applications/${encodeURIComponent(uuid)}/rollback`, { commit }), "POST", `/applications/${encodeURIComponent(uuid)}/rollback`);
     const deploymentUuid = String(body.deployment_uuid ?? body.uuid ?? "");
     if (!deploymentUuid) throw new CoolifyError("COOLIFY_ROLLBACK_NOT_QUEUED", `${uuid} -> ${commit}`);
     return deploymentUuid;
   }
 
   async deployment(uuid: string): Promise<CoolifyDeployment> {
-    const body = await this.request("GET", `/deployments/${encodeURIComponent(uuid)}`);
+    const body = this.requiredObject(await this.request("GET", `/deployments/${encodeURIComponent(uuid)}`), "GET", `/deployments/${encodeURIComponent(uuid)}`);
     return {
       uuid: String(body.deployment_uuid ?? body.uuid ?? uuid),
       status: String(body.status ?? "unknown"),
@@ -185,7 +214,7 @@ export class CoolifyClient {
     }
   }
 
-  private async request(method: string, path: string, body?: unknown): Promise<Record<string, unknown>> {
+  private async request(method: string, path: string, body?: unknown): Promise<unknown> {
     let response: Response;
     try {
       response = await this.#fetch(`${this.#apiUrl}${path}`, {
@@ -201,10 +230,16 @@ export class CoolifyClient {
     if (!response.ok) throw new CoolifyError("COOLIFY_REQUEST_FAILED", `${method} ${path}: HTTP ${response.status}`);
     if (!text) return {};
     try {
-      return JSON.parse(text) as Record<string, unknown>;
+      return JSON.parse(text) as unknown;
     } catch {
       throw new CoolifyError("COOLIFY_RESPONSE_MALFORMED", `${method} ${path}`);
     }
+  }
+
+  private requiredObject(value: unknown, method: string, path: string): Record<string, unknown> {
+    const body = object(value);
+    if (!body) throw new CoolifyError("COOLIFY_RESPONSE_MALFORMED", `${method} ${path}`);
+    return body;
   }
 }
 
