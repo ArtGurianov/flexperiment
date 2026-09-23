@@ -298,7 +298,19 @@ class CertificationMachine {
     const cityId = await this.ports.admin.cityIdBySlug(this.input.citySlug);
     if (!cityId) throw new CertificationFailed("CERTIFICATION_CITY_ABSENT");
     const drafted = await this.ports.operator.occurrenceDraft(cityId);
-    const command = { kind: "CREATE_OCCURRENCE" as const, idempotencyKey: this.ports.newIdempotencyKey(), draft: { ...drafted, cityId } };
+    // Spelled out, in exactly the order the catalogue endpoint rebuilds it.
+    // The runtime admits a command only if it is the one this run armed, and it
+    // compares the two as JSON: `{ ...drafted, cityId }` is the same command in
+    // a different key order, and attempt 5 was refused as NOT_ARMED for it.
+    // Whatever order the operator's scope arrives in, this is the order sent.
+    const draft = {
+      cityId,
+      startsAt: drafted.startsAt,
+      endsAt: drafted.endsAt,
+      venueDisclosureText: drafted.venueDisclosureText,
+      venueAnnounceBy: drafted.venueAnnounceBy,
+    };
+    const command = { kind: "CREATE_OCCURRENCE" as const, idempotencyKey: this.ports.newIdempotencyKey(), draft };
     return this.execute(this.arm(run, command), command);
   }
 
