@@ -5,6 +5,8 @@ import {
   type DeployMode, type DeploySession, type DeploymentObservation, type PreDeploySnapshot, type ResumePlan,
 } from "./deploy-session";
 import type { CertificationCapability } from "../certification/capability";
+import { converge, SINGLE_OBSERVATION, type ConvergencePolicy } from "./convergence";
+import { isTransientTopologyRead } from "./topology-reader";
 
 /**
  * The production release contract, expressed once and proved against test
@@ -126,6 +128,13 @@ export type ReleasePorts = {
   /** Present only where a prepared launch envelope can be adopted. */
   readonly cutoverAdoption?: CutoverAdoptionPort;
   readonly clock?: () => Date;
+  /**
+   * How long target topology and readiness may take to become observable after
+   * the deployment driver returns. Absent means one look, which is right for a
+   * port double whose answers are already final; the production root supplies
+   * a real deadline. See `convergence.ts`.
+   */
+  readonly convergence?: ConvergencePolicy;
 };
 
 export type ReleaseRequest = {
@@ -161,9 +170,11 @@ const failureCode = (error: unknown): string =>
 
 export class ReleaseOrchestrator {
   private readonly clock: () => Date;
+  private readonly convergence: ConvergencePolicy;
 
   constructor(private readonly ports: ReleasePorts) {
     this.clock = ports.clock ?? (() => new Date());
+    this.convergence = ports.convergence ?? SINGLE_OBSERVATION;
   }
 
   /**
@@ -518,16 +529,34 @@ export class ReleaseOrchestrator {
     sessionId: string,
     request: ReleaseRequest,
   ): Promise<{ topology: DeploymentObservation } | ReleaseOutcome> {
-    const topology = await this.ports.topology.observe();
-    this.ports.sessions.observeTopology(sessionId, request.ownerId, topology);
+    // Every look is recorded, so the session's monotonic mutation bit latches on
+    // the first surface that moved rather than on whichever look happened last.
+    // The lease is held across the wait: the deploy before it can already have
+    // consumed most of one, and this process owns the runner lock throughout,
+    // which is what makes reclaiming its own lapsed lease safe (`holdLease`).
+    const topology = await converge(this.convergence, async () => {
+      this.ports.sessions.holdLease(sessionId, request.ownerId);
+      const observed = await this.ports.topology.observe();
+      this.ports.sessions.observeTopology(sessionId, request.ownerId, observed);
+      return observed;
+    }, (observed) => runtimeIsTarget(observed.runtime, request.candidate.sha), isTransientTopologyRead);
     if (runtimeIsTarget(topology.runtime, request.candidate.sha)) return { topology };
     return this.classify(sessionId, request.ownerId, "TARGET_TOPOLOGY_NOT_CONVERGED");
   }
 
-  /** ADMITTED is the only answer that may precede arming. PENDING is not "close enough". */
+  /**
+   * ADMITTED is the only answer that may precede arming. PENDING is not "close enough".
+   *
+   * But PENDING is waited on: it is readiness's own word for "not there yet" -
+   * a worker whose first sweep is still running, a heartbeat about to land -
+   * and it resolves as the deploy proceeds. REJECTED never does and ends the
+   * wait at once.
+   */
   private async requireReadiness(sessionId: string, request: ReleaseRequest): Promise<ReleaseOutcome | undefined> {
-    const evidence = await this.ports.evidence.read();
-    const readiness = evaluateReadiness(readinessExpectation(request.candidate), evidence, this.clock());
+    const readiness = await converge(this.convergence, async () => {
+      this.ports.sessions.holdLease(sessionId, request.ownerId);
+      return evaluateReadiness(readinessExpectation(request.candidate), await this.ports.evidence.read(), this.clock());
+    }, (result) => result.state !== "PENDING");
     if (readiness.state === "ADMITTED") return undefined;
     return this.classify(sessionId, request.ownerId, `READINESS_${readiness.state}:${readiness.code}`);
   }

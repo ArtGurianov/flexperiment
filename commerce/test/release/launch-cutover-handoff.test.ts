@@ -11,7 +11,8 @@ import { FileCutoverEnvelopeStore } from "../../src/release/cutover-envelope-fil
 import { schemaInventoryExpectation } from "../../src/release/expectation";
 import { canonicalLegalManifest, parseLegalManifest } from "../../src/legal-manifest";
 import type { CertificationDriver } from "../../src/release/orchestrator";
-import { buildProductionRelease, type ProductionRelease } from "../../src/release/production-runner";
+import { PRODUCTION_CONVERGENCE, type ConvergencePolicy } from "../../src/release/convergence";
+import { buildProductionRelease, type BuildOptions, type ProductionRelease } from "../../src/release/production-runner";
 import { harness, recordInstance, type Harness } from "../support/production-runner-harness";
 
 /**
@@ -125,6 +126,15 @@ const certification = (): CertificationDriver => ({
 } as unknown as CertificationDriver);
 
 /**
+ * The production root with production's convergence attempts but none of its
+ * wall-clock time. Tests that never converge still walk the whole bounded wait,
+ * so they prove it ends; they just do not spend two minutes proving it.
+ */
+const INSTANT: ConvergencePolicy = { ...PRODUCTION_CONVERGENCE, sleep: async () => {} };
+const build = (config: Parameters<typeof buildProductionRelease>[0], options: BuildOptions = {}) =>
+  buildProductionRelease(config, { convergence: INSTANT, ...options });
+
+/**
  * The real root, with the admission guard replaced. Everything the handoff
  * actually runs through - orchestrator, adoption port, session store, deploy
  * ref, deployment driver - is the production wiring.
@@ -155,7 +165,7 @@ describe("the whole path production has to walk, through the real composition ro
     const candidate = launchCandidate(vps.targetSha);
     publish(candidate);
     convergeOnTarget();
-    const release = buildProductionRelease(launchConfig(), { now });
+    const release = build(launchConfig(), { now });
     try {
       // No injected certification driver, and no controlling terminal either -
       // which is the point: issuing a capability is not an attended operation
@@ -184,6 +194,119 @@ describe("the whole path production has to walk, through the real composition ro
     }
   });
 
+  /**
+   * Attempt 4, 2026-09-23: Coolify reported commerce "finished", and 41 ms
+   * later the one topology read found no WORKER heartbeat - the container had
+   * been up for 1.7 s and had not got that far. Every step was correct and the
+   * cutover still went to recovery, because "the deployment job finished" and
+   * "the application can be observed" are different events.
+   *
+   * Each sleep below is one poll interval, and it is where the world moves on:
+   * the fixture advances exactly as production did, a step behind Coolify.
+   */
+  const pollingWorld = (steps: readonly (() => void)[], options: { stepMs?: number } = {}) => {
+    let clock = NOW.getTime();
+    let slept = 0;
+    const current = () => new Date(clock);
+    const release = build(launchConfig(), {
+      now: current,
+      convergence: {
+        ...PRODUCTION_CONVERGENCE,
+        sleep: async () => {
+          clock += options.stepMs ?? 0;
+          steps[slept]?.();
+          slept += 1;
+        },
+      },
+    });
+    return { release, slept: () => slept, current };
+  };
+  const heartbeat = (id: string, at: Date) =>
+    vps.db.prepare("UPDATE runtime_instance_evidence SET heartbeat_at = ? WHERE instance_id = ?").run(at.toISOString(), id);
+  const deployOutput = async (release: ProductionRelease) => {
+    const written: string[] = [];
+    const spy = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => { written.push(String(chunk)); return true; });
+    try {
+      const code = await runCutoverCommand(cli(release), ["deploy", vps.targetSha, CUTOVER], OWNER);
+      const line = written.map((entry) => JSON.parse(entry) as Record<string, unknown>).find((entry) => entry.command === "deploy");
+      return { code, outcome: line?.outcome, reason: line?.code };
+    } finally { spy.mockRestore(); }
+  };
+
+  it("waits for the worker and its first sweep instead of racing them, and hands over with 13", async () => {
+    prepareEnvelope();
+    publish(launchCandidate(vps.targetSha));
+    // Coolify has finished: both descriptors and COMMERCE are on the target.
+    // The worker has not recorded anything yet.
+    vps.serving.frontend = vps.targetSha;
+    vps.serving.admin = vps.targetSha;
+    vps.setApplicationStatus("running:healthy");
+    recordInstance(vps.db, "COMMERCE", "api-1", vps.targetSha, NOW);
+    const { release, slept } = pollingWorld([
+      // observe #2: a worker, but the old one - valid, and not the target yet.
+      () => recordInstance(vps.db, "WORKER", "worker-old", vps.preSha, NOW, NOW.toISOString()),
+      // observe #3: the new worker has replaced it; its first sweep is still running.
+      () => {
+        vps.db.prepare("DELETE FROM runtime_instance_evidence WHERE instance_id = 'worker-old'").run();
+        recordInstance(vps.db, "WORKER", "worker-new", vps.targetSha, NOW);
+      },
+      // readiness #2: the sweep has completed.
+      () => vps.db.prepare("UPDATE runtime_instance_evidence SET last_successful_sweep_at = ? WHERE instance_id = 'worker-new'")
+        .run(NOW.toISOString()),
+    ]);
+    try {
+      const result = await deployOutput(release);
+      expect(result).toEqual({ code: 13, outcome: "AWAITING_OPERATOR", reason: undefined });
+      // Two topology waits and one readiness wait, and not one more.
+      expect(slept()).toBe(3);
+      const session = release.sessions.read(release.authority.deploymentGate().deploymentSessionId!)!;
+      expect(session.observedTopology?.runtime).toEqual({
+        frontend: vps.targetSha, admin: vps.targetSha, commerce: vps.targetSha, worker: vps.targetSha,
+      });
+      expect(session.rollbackAuthority).toBe("OLD_LINEAGE_ALLOWED");
+    } finally { release.close(); }
+  });
+
+  it("gives up on a worker that never appears at the deadline, as recovery that names the worker", async () => {
+    prepareEnvelope();
+    publish(launchCandidate(vps.targetSha));
+    vps.serving.frontend = vps.targetSha;
+    vps.serving.admin = vps.targetSha;
+    vps.setApplicationStatus("running:healthy");
+    recordInstance(vps.db, "COMMERCE", "api-1", vps.targetSha, NOW);
+    // Thirty seconds a poll: the whole wait is twelve minutes, well past the
+    // five-minute session lease. COMMERCE keeps heartbeating throughout, so the
+    // only thing wrong is the worker - and the lease must not become a second
+    // failure that hides it.
+    const world = pollingWorld(Array.from({ length: 30 }, () => () => heartbeat("api-1", world.current())), { stepMs: 30_000 });
+    try {
+      const result = await deployOutput(world.release);
+      expect(result.code).toBe(12);
+      expect(result.outcome).toBe("RECOVERY_REQUIRED");
+      expect(result.reason).toBe("TOPOLOGY_UNIT_NOT_RUNNING: WORKER");
+      // Bounded: production's deadline over its interval, and then it stopped.
+      expect(world.slept()).toBe(PRODUCTION_CONVERGENCE.deadlineMs / PRODUCTION_CONVERGENCE.intervalMs);
+      const session = world.release.sessions.read(world.release.authority.deploymentGate().deploymentSessionId!)!;
+      expect(session.state).toBe("RECOVERY_REQUIRED");
+      expect(session.ownerId).toBe(OWNER);
+    } finally { world.release.close(); }
+  });
+
+  it("does not wait on a descriptor that is malformed rather than late", async () => {
+    prepareEnvelope();
+    publish(launchCandidate(vps.targetSha));
+    convergeOnTarget();
+    // Not a commit at all. No amount of waiting turns this into one.
+    vps.serving.frontend = "not-a-commit";
+    const { release, slept } = pollingWorld([]);
+    try {
+      const result = await deployOutput(release);
+      expect(result.code).toBe(12);
+      expect(result.reason).toMatch(/^TOPOLOGY_SURFACE_COMMIT_INVALID: frontend/);
+      expect(slept()).toBe(0);
+    } finally { release.close(); }
+  });
+
   it("hands a failed cutover to a different process, which rolls it back without impersonation", async () => {
     /**
      * The 2026-09-23 incident end to end, as one test.
@@ -197,7 +320,7 @@ describe("the whole path production has to walk, through the real composition ro
     prepareEnvelope();
     publish(launchCandidate(vps.targetSha));
     // No convergence: COMMERCE never records evidence, so topology throws.
-    const processA = buildProductionRelease(launchConfig(), { now, certification: certification() });
+    const processA = build(launchConfig(), { now, certification: certification() });
     let sessionId = "";
     try {
       const code = await runCutoverCommand(cli(processA), ["deploy", vps.targetSha, CUTOVER], OWNER);
@@ -213,7 +336,7 @@ describe("the whole path production has to walk, through the real composition ro
     // because process A stood down, rather than after the full lease term with
     // production fenced throughout. The physical restore that follows is proved
     // end to end in bootstrap-rollback-composition-root.
-    const processB = buildProductionRelease(launchConfig(), { now, certification: certification() });
+    const processB = build(launchConfig(), { now, certification: certification() });
     try {
       await expect(processB.bootstrapRollback!.rollback(sessionId, "a-different-runner"))
         .rejects.not.toThrow("DEPLOY_SESSION_NOT_OWNER");
@@ -235,14 +358,14 @@ describe("the whole path production has to walk, through the real composition ro
     recordInstance(vps.db, "COMMERCE", "api-1", vps.preSha, NOW);
     recordInstance(vps.db, "WORKER", "worker-1", vps.preSha, NOW, NOW.toISOString());
 
-    const processA = buildProductionRelease(launchConfig(), { now, certification: certification() });
+    const processA = build(launchConfig(), { now, certification: certification() });
     let sessionId = "";
     try {
       expect(await runCutoverCommand(cli(processA), ["deploy", vps.targetSha, CUTOVER], OWNER)).toBe(12);
       sessionId = processA.authority.deploymentGate().deploymentSessionId!;
     } finally { processA.close(); }
 
-    const processB = buildProductionRelease(launchConfig(), { now, certification: certification() });
+    const processB = build(launchConfig(), { now, certification: certification() });
     try {
       // No clock advance: the lease was stood down, not waited out.
       expect(() => processB.sessions.takeOverExpiredLease(sessionId, "a-different-runner")).not.toThrow();
@@ -256,19 +379,19 @@ describe("the whole path production has to walk, through the real composition ro
     // rollback wait, with production fenced throughout.
     prepareEnvelope();
     publish(launchCandidate(vps.targetSha));
-    const processA = buildProductionRelease(launchConfig(), { now, certification: certification() });
+    const processA = build(launchConfig(), { now, certification: certification() });
     let sessionId = "";
     try {
       expect(await runCutoverCommand(cli(processA), ["deploy", vps.targetSha, CUTOVER], OWNER)).toBe(12);
       sessionId = processA.authority.deploymentGate().deploymentSessionId!;
     } finally { processA.close(); }
 
-    const resumer = buildProductionRelease(launchConfig(), { now, certification: certification() });
+    const resumer = build(launchConfig(), { now, certification: certification() });
     try {
       expect(await runCutoverCommand(cli(resumer), ["resume", sessionId], "resuming-runner")).toBe(12);
     } finally { resumer.close(); }
 
-    const processC = buildProductionRelease(launchConfig(), { now, certification: certification() });
+    const processC = build(launchConfig(), { now, certification: certification() });
     try {
       expect(() => processC.sessions.takeOverExpiredLease(sessionId, "yet-another-runner")).not.toThrow();
     } finally { processC.close(); }
@@ -286,7 +409,7 @@ describe("the whole path production has to walk, through the real composition ro
    */
   const certifyingAfter = (elapsedMs: number, outcome: "succeeds" | "fails") => {
     let drift = 0;
-    return buildProductionRelease(launchConfig(), {
+    return build(launchConfig(), {
       now: () => new Date(NOW.getTime() + drift),
       certification: {
         issueCapability: vi.fn(),
@@ -313,7 +436,7 @@ describe("the whole path production has to walk, through the real composition ro
     publish(candidate);
     convergeOnTarget();
 
-    const processA = buildProductionRelease(launchConfig(), { now });
+    const processA = build(launchConfig(), { now });
     let sessionId = "";
     try {
       expect(await runCutoverCommand(cli(processA), ["deploy", vps.targetSha, CUTOVER], "runner-a")).toBe(13);
@@ -335,7 +458,7 @@ describe("the whole path production has to walk, through the real composition ro
     // down and whose lease has not lapsed belongs to that owner, and no other
     // process may take it - which is what keeps the stand-down above from
     // becoming a way to steal a session out from under a running deploy.
-    const release = buildProductionRelease(launchConfig(), { now, certification: certification() });
+    const release = build(launchConfig(), { now, certification: certification() });
     try {
       const held = release.sessions.acquireFenced({
         ownerId: "a-running-deploy", mode: "MAINTENANCE_CUTOVER", targetSha: vps.targetSha,
@@ -369,7 +492,7 @@ describe("the whole path production has to walk, through the real composition ro
     convergeOnTarget();
 
     // Process A: the real certification wiring issues the capability.
-    const processA = buildProductionRelease(launchConfig(), { now });
+    const processA = build(launchConfig(), { now });
     let sessionId = "";
     try {
       expect(await runCutoverCommand(cli(processA), ["deploy", vps.targetSha, CUTOVER], "runner-a")).toBe(13);
@@ -381,7 +504,7 @@ describe("the whole path production has to walk, through the real composition ro
     // The certification ports are substituted only past the lease/session/
     // capability seam - what is under test is that arming succeeds as owner B.
     const armed: string[] = [];
-    const processB = buildProductionRelease(launchConfig(), {
+    const processB = build(launchConfig(), {
       now,
       certification: {
         issueCapability: vi.fn(),
@@ -416,7 +539,7 @@ describe("a prepared cutover has exactly two legal successors", () => {
     convergeOnTarget();
     // The cross-lineage recovery engine is composed only where a predecessor is
     // configured, which is exactly the launch case this routing is about.
-    const release = buildProductionRelease({
+    const release = build({
       ...vps.config,
       predecessor: { expectedSha: vps.preSha, expectedLedgerLength: 61, commerceReadyUrl: "https://commerce.invalid/readyz" },
     }, { now, certification: certification() });
@@ -453,7 +576,7 @@ describe("the launch cutover handoff is consumed by the deploy that follows it",
     const envelope = prepareEnvelope();
     publish(launchCandidate(vps.targetSha));
     convergeOnTarget();
-    const release = buildProductionRelease(vps.config, { now, certification: certification() });
+    const release = build(vps.config, { now, certification: certification() });
     try {
       const code = await runCutoverCommand(cli(release), ["deploy", vps.targetSha, CUTOVER], OWNER);
       expect(code).toBe(13);
@@ -473,7 +596,7 @@ describe("the launch cutover handoff is consumed by the deploy that follows it",
     prepareEnvelope();
     publish(launchCandidate(vps.targetSha));
     convergeOnTarget();
-    const release = buildProductionRelease(vps.config, { now, certification: certification() });
+    const release = build(vps.config, { now, certification: certification() });
     try {
       await runCutoverCommand(cli(release), ["deploy", vps.targetSha, CUTOVER], OWNER);
       const sessionId = release.authority.deploymentGate().deploymentSessionId!;
@@ -503,7 +626,7 @@ describe("the launch cutover handoff is consumed by the deploy that follows it",
     publish(launchCandidate(vps.targetSha));
     // Deliberately no convergence: COMMERCE never records instance evidence,
     // so the canonical topology reader throws.
-    const release = buildProductionRelease(vps.config, { now, certification: certification() });
+    const release = build(vps.config, { now, certification: certification() });
     try {
       const code = await runCutoverCommand(cli(release), ["deploy", vps.targetSha, CUTOVER], OWNER);
       expect(code).toBe(12);
@@ -522,7 +645,7 @@ describe("the launch cutover handoff is consumed by the deploy that follows it",
   it("refuses a launch deploy that names no prepared cutover, before any mutation", async () => {
     prepareEnvelope();
     publish(launchCandidate(vps.targetSha));
-    const release = buildProductionRelease(vps.config, { now, certification: certification() });
+    const release = build(vps.config, { now, certification: certification() });
     try {
       await expect(runCutoverCommand(cli(release), ["deploy", vps.targetSha], OWNER))
         .rejects.toThrow("LAUNCH_DEPLOY_REQUIRES_PREPARED_CUTOVER");
@@ -537,7 +660,7 @@ describe("the launch cutover handoff is consumed by the deploy that follows it",
   it("refuses to adopt a cutover prepared for a different release", async () => {
     prepareEnvelope({ targetSha: vps.preSha });
     publish(launchCandidate(vps.targetSha));
-    const release = buildProductionRelease(vps.config, { now, certification: certification() });
+    const release = build(vps.config, { now, certification: certification() });
     try {
       await expect(runCutoverCommand(cli(release), ["deploy", vps.targetSha, CUTOVER], OWNER))
         .rejects.toThrow("CUTOVER_ENVELOPE_TARGET_MISMATCH");
@@ -550,7 +673,7 @@ describe("the launch cutover handoff is consumed by the deploy that follows it",
 
   it("refuses a cutover id that was never prepared", async () => {
     publish(launchCandidate(vps.targetSha));
-    const release = buildProductionRelease(vps.config, { now, certification: certification() });
+    const release = build(vps.config, { now, certification: certification() });
     try {
       await expect(runCutoverCommand(cli(release), ["deploy", vps.targetSha, "never-prepared"], OWNER))
         .rejects.toThrow("CUTOVER_ENVELOPE_NOT_FOUND");
@@ -564,7 +687,7 @@ describe("the launch cutover handoff is consumed by the deploy that follows it",
     prepareEnvelope();
     publish(launchCandidate(vps.targetSha));
     convergeOnTarget();
-    const first = buildProductionRelease(vps.config, { now, certification: certification() });
+    const first = build(vps.config, { now, certification: certification() });
     let sessionId: string;
     try {
       await runCutoverCommand(cli(first), ["deploy", vps.targetSha, CUTOVER], OWNER);
@@ -573,7 +696,7 @@ describe("the launch cutover handoff is consumed by the deploy that follows it",
       first.close();
     }
 
-    const second = buildProductionRelease(vps.config, { now, certification: certification() });
+    const second = build(vps.config, { now, certification: certification() });
     try {
       // One handoff, one session. A second deploy must not mint a rival owner
       // of the same closed gate, and must not restart the one that exists -

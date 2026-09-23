@@ -4,6 +4,7 @@ import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSyn
 import { dirname, join } from "node:path";
 import { CoolifyClient } from "./coolify";
 import { CoolifyDeploymentDriver, CoolifyRecoveryDriver } from "./coolify-deployment";
+import { PRODUCTION_CONVERGENCE, type ConvergencePolicy } from "./convergence";
 import { FileCutoverEnvelopeStore } from "./cutover-envelope-file-store";
 import type { CutoverEnvelope } from "./cutover-envelope";
 import { adoptCutover } from "./cutover-handoff";
@@ -303,6 +304,12 @@ export type BuildOptions = {
   readonly databaseIdentity?: DatabaseIdentityProbe;
   readonly openHandles?: OpenHandleProbe;
   readonly monotonicNow?: () => number;
+  /**
+   * The bounded wait for deployed and restored applications to become
+   * observable. Production always waits; the suite injects a sleep that moves
+   * its fixture forward instead of time.
+   */
+  readonly convergence?: ConvergencePolicy;
 };
 
 /**
@@ -315,6 +322,7 @@ export type BuildOptions = {
  */
 export const buildProductionRelease = (config: ProductionReleaseConfig, options: BuildOptions = {}): ProductionRelease => {
   const now = options.now ?? (() => new Date());
+  const convergence = options.convergence ?? PRODUCTION_CONVERGENCE;
 
   for (const [label, path] of [["database", config.databasePath], ["deploy ref worktree", config.deployRef.worktree]] as const) {
     if (!existsSync(path)) throw new ReleaseConfigError("RELEASE_RUNNER_PATH_MISSING", `${label}: ${path}`);
@@ -414,6 +422,7 @@ export const buildProductionRelease = (config: ProductionReleaseConfig, options:
       sessions,
       candidates,
       clock: now,
+      convergence,
       topology: new ProductionTopologyReader({
         frontendReleaseUrl: config.topology.frontendReleaseUrl,
         adminReleaseUrl: config.topology.adminReleaseUrl,
@@ -653,6 +662,7 @@ export const buildProductionRelease = (config: ProductionReleaseConfig, options:
         async open() { openGateAtRest(); },
       },
       clock: now,
+      convergence,
     }) : undefined;
 
     const certificationFor = (candidate: ReleaseCandidate): ProductionCertificationDriver => new ProductionCertificationDriver({

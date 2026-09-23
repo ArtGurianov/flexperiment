@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { converge, SINGLE_OBSERVATION, type ConvergencePolicy } from "./convergence";
 import { canonicalEnvelopeSha256, type CutoverEnvelopeStore } from "./cutover-envelope";
 import type { DeploySession, DeploymentObservation, PreDeploySnapshot, ReleaseAuthorityStore } from "./deploy-session";
 import { snapshotEquals } from "./deploy-session";
@@ -177,6 +178,12 @@ export type BootstrapRollbackPorts = {
    */
   readonly lineage: () => string;
   readonly clock?: () => Date;
+  /**
+   * How long a restored application may take to be observable at the
+   * predecessor after Coolify reports its redeploy finished. Absent means one
+   * look. See `convergence.ts`.
+   */
+  readonly convergence?: ConvergencePolicy;
 };
 
 const exactEnvelope = (session: DeploySession, envelope: NonNullable<ReturnType<CutoverEnvelopeStore["read"]>>): void => {
@@ -202,7 +209,11 @@ const predecessorSha = (intent: BootstrapRollbackIntent): string => {
   return [...values][0]!;
 };
 
-/** One operator invocation performs no retries; another invocation resumes the same durable receipt. */
+/**
+ * One operator invocation repeats no mutation; another invocation resumes the
+ * same durable receipt. What it does wait for, boundedly, is the evidence of a
+ * restore it has already made - see `restoreApplication`.
+ */
 export class BootstrapRollback {
   constructor(private readonly ports: BootstrapRollbackPorts) {}
 
@@ -502,9 +513,17 @@ export class BootstrapRollback {
     if (receipt.stage !== from) return receipt;
     if (!(await this.ports.runtime.applicationIsAt(application, sha))) {
       await this.ports.runtime.restoreApplication(application, sha);
-      if (!(await this.ports.runtime.applicationIsAt(application, sha))) {
-        throw new BootstrapRollbackError("BOOTSTRAP_ROLLBACK_APPLICATION_NOT_CONVERGED", application);
-      }
+      // Coolify's "finished" precedes the proxy switching and the worker's
+      // first heartbeat, so the restore is watched rather than glanced at. The
+      // redeploy is not repeated here: a restore that never shows up leaves the
+      // receipt at the stage before it, and the next invocation starts from
+      // there.
+      const converged = await converge(
+        this.ports.convergence ?? SINGLE_OBSERVATION,
+        () => this.ports.runtime.applicationIsAt(application, sha),
+        (at) => at,
+      );
+      if (!converged) throw new BootstrapRollbackError("BOOTSTRAP_ROLLBACK_APPLICATION_NOT_CONVERGED", application);
     }
     return this.ports.receipts.advance(receipt.intent.rollbackId, to);
   }
