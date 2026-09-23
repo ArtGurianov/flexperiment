@@ -51,9 +51,9 @@ export class CoolifyDeploymentDriver implements DeploymentDriver {
    * Every application can still restore the commit named, before anything is
    * asked to move.
    *
-   * Coolify's rollback depends on a retained image, and an image that has been
-   * pruned is discovered either now or in the middle of a recovery. A cutover
-   * that cannot be undone must not begin.
+   * Recovery redeploys the predecessor commit, so what has to still exist is
+   * that commit - not an image someone might have pruned. A cutover that
+   * cannot be undone must not begin.
    */
   async assertRecoverable(sha: string): Promise<void> {
     const binding = await this.serverBinding();
@@ -189,10 +189,10 @@ export class CoolifyRecoveryDriver implements RecoveryDriver {
    * it is one waiting to move again, and the next ordinary deploy would undo
    * the recovery without anyone asking it to.
    *
-   * Then each application is rolled back to its retained image. A missing image
-   * is not quietly rebuilt: a rebuild is a new artifact, and recovery is meant
-   * to restore the one that was running, so this refuses and leaves the
-   * session in recovery with sales shut.
+   * Then each application is redeployed at that commit through Coolify. One
+   * mechanism for all three: Coolify does not own the Compose application's
+   * images, and reimplementing a restore for it is what this system spent two
+   * production incidents learning not to do.
    */
   async restorePreDeployTopology(snapshot: PreDeploySnapshot): Promise<void> {
     const targets = new Set(this.options.applications.flatMap((application) =>

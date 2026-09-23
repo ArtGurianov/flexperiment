@@ -462,10 +462,10 @@ export const buildProductionRelease = (config: ProductionReleaseConfig, options:
      */
     const coolifyLifecycle: RuntimeLifecycle = {
       async stop(applicationUuid) { await client.stopApplication(applicationUuid); },
-      async assertStopped(applicationUuid) {
-        const status = await client.applicationStatus(applicationUuid);
-        if (/running/i.test(status)) throw new ReleaseRunnerError("RUNTIME_NOT_STOPPED", `${applicationUuid}: ${status}`);
-      },
+      // Polls for a positive `exited`, and refuses everything else. A single
+      // read after an asynchronous stop is not evidence, and an unreadable
+      // status is not evidence of absence.
+      async assertStopped(applicationUuid) { await client.awaitApplicationStopped(applicationUuid); },
       async start(applicationUuid) {
         const deployment = await client.awaitDeployment(await client.startDeployment(applicationUuid));
         if (deployment.status !== "finished") throw new ReleaseRunnerError("RUNTIME_NOT_STARTED", `${applicationUuid}: ${deployment.status}`);

@@ -190,16 +190,50 @@ mechanism serves every application, and the recovery order matters:
 ```text
 sales already closed
 → Coolify stops commerce
-→ production-deploy CAS back to the predecessor
+→ prove it POSITIVELY exited, not merely "not running"
+→ prove zero SQLite handles on the host
 → restore the exact predecessor database
+→ production-deploy CAS back to the predecessor
 → Coolify deploys the predecessor
 → topology and readiness prove the predecessor
 → open sales
 ```
 
-The pointer moves before the runtime returns, so the old commerce runtime is
-never brought up against the successor database, and no ordinary deploy can
-silently undo the recovery.
+The database is restored **before** the pointer moves, not after. Moving a
+branch the applications track can itself be a deployment trigger where
+auto-deploy is enabled, so by the time the ref changes the legacy database is
+already in place. Commerce is proved stopped before either happens, which is
+what keeps the old runtime away from the successor database.
+
+Dying between the restore and the CAS leaves an unpleasant but safe state -
+commerce stopped, database LEGACY, ref still at the target, sales closed - and
+the receipt reconciliation below is what continues from it.
+
+## "Stopped" is a positive proof, never an absence
+
+`POST /applications/{uuid}/stop` queues the request and returns. A single
+status read afterwards proves nothing, so the runner polls for a positive
+`exited` state and refuses everything else:
+
+```text
+exited:*                        stopped, continue
+running:* starting:* degraded:* keep waiting, refuse at the timeout
+unknown                         refuse
+status absent                   refuse
+```
+
+Absent matters more than it looks: a token without visibility omits the field
+entirely on this installation, and an implementation that collapsed that into
+"unknown" and then tested for the word "running" would read an unreadable
+runtime as a stopped one - and replace the database underneath it.
+
+`lsof` stays as a second, independent proof. The control plane says the runtime
+is stopped; the host says nothing is holding the SQLite file. Neither alone is
+the evidence.
+
+The stop is also issued with `docker_cleanup=false`. That parameter defaults to
+true and prunes networks and volumes, and a cutover is the worst possible
+moment to ask the control plane for housekeeping.
 
 This accepts one real cost, deliberately: recovery depends on the build
 pipeline at the moment it is needed. That is a smaller risk than maintaining a

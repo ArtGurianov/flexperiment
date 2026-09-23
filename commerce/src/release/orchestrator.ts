@@ -230,8 +230,7 @@ export class ReleaseOrchestrator {
     const before = adoption
       ? adoption.preDeployTopology(request.adoptedCutoverId!)
       : await this.capturePredecessor(request.candidate.releaseClass);
-    // An adopted cutover is judged in the phase preparation left behind.
-    await this.ports.deployment.assertRecoverable(uniformSha(before), adoption ? "PREPARED_STOPPED" : "RUNNING");
+    await this.ports.deployment.assertRecoverable(uniformSha(before));
     const session = adoption
       ? this.adoptOnce(adoption, request)
       : sessions.acquireFenced({

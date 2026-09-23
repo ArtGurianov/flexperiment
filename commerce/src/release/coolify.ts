@@ -168,13 +168,46 @@ export class CoolifyClient {
    * 2026-09-23 incidents were made of.
    */
   async stopApplication(uuid: string): Promise<void> {
-    await this.request("POST", `/applications/${encodeURIComponent(uuid)}/stop`);
+    // `docker_cleanup` defaults to true, which prunes networks and volumes.
+    // This call exists to quiesce one application for a few minutes while its
+    // database is replaced; housekeeping is the last thing production needs at
+    // that moment, so it is disabled explicitly rather than by omission.
+    await this.request("POST", `/applications/${encodeURIComponent(uuid)}/stop?docker_cleanup=false`);
   }
 
-  /** What the control plane says this application is doing right now. */
-  async applicationStatus(uuid: string): Promise<string> {
+  /**
+   * What the control plane says this application is doing, or nothing.
+   *
+   * Absent is returned as absent, never as a word. A token without visibility
+   * omits the field entirely, and collapsing that into "unknown" would make an
+   * unreadable runtime indistinguishable from a stopped one.
+   */
+  async applicationStatus(uuid: string): Promise<string | undefined> {
     const body = this.requiredObject(await this.request("GET", `/applications/${encodeURIComponent(uuid)}`), "GET", `/applications/${encodeURIComponent(uuid)}`);
-    return String(body.status ?? "unknown");
+    const status = body.status;
+    return typeof status === "string" && status.trim() ? status.trim() : undefined;
+  }
+
+  /**
+   * Waits until the application is positively stopped.
+   *
+   * `stop` only queues the request, so a single read afterwards proves nothing.
+   * Only `exited` counts: every other state - running, starting, restarting,
+   * degraded - is waited on and then refused at the timeout, and an absent or
+   * `unknown` status is refused outright. The default has to be "not stopped",
+   * because the thing this gates is replacing the database underneath it.
+   */
+  async awaitApplicationStopped(uuid: string): Promise<string> {
+    const deadline = this.#clock() + this.#timeoutMs;
+    for (;;) {
+      const status = await this.applicationStatus(uuid);
+      if (!status) throw new CoolifyError("COOLIFY_APPLICATION_STATUS_UNREADABLE", uuid);
+      const state = status.split(":")[0]!.toLowerCase();
+      if (state === "exited") return status;
+      if (state === "unknown") throw new CoolifyError("COOLIFY_APPLICATION_STATUS_UNKNOWN", `${uuid}: ${status}`);
+      if (this.#clock() >= deadline) throw new CoolifyError("COOLIFY_APPLICATION_NOT_STOPPED", `${uuid}: last status ${status}`);
+      await this.#sleep(this.#pollMs);
+    }
   }
 
   async startDeployment(uuid: string): Promise<string> {
