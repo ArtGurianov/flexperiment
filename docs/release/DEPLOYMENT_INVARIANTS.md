@@ -268,12 +268,25 @@ its driver from `session.candidateId`, so the omission surfaced only at
 `issueCapability`, after readiness had already admitted the release, and sent a
 finished cutover into recovery instead of to the operator.
 
-A process that returns `RECOVERY_REQUIRED` **stands down from its lease**. It
+Attendance belongs **after** `AWAITING_OPERATOR`, not before it. Issuing a
+capability is not an attended operation and creates no external effect, so the
+deploy that issues one needs no controlling terminal and reaches exit 13
+unattended. The terminal is opened in `preflight` — before anything can be
+armed — and the channel opened there is the one `certify` then speaks on, which
+is why the driver is memoized per session: proving a terminal exists and then
+opening a different one later would prove nothing about the operator who is
+actually present.
+
+A command that hands a session back as `RECOVERY_REQUIRED` **stands down from
+its lease**. It
 knows it is exiting, and holding the lease until it lapses would make the next
 command wait out the full term before it could act, with production fenced the
 whole time. Standing down is not the same as being evicted: only the holder may
 do it, a live holder is never displaced, and a crash still falls back to
-ordinary expiry.
+ordinary expiry. It applies wherever that decision is made — a convergence or
+readiness failure arrives through a different path than an unexpected one, and
+both hand back — and to `resume`, which takes a lease to read the state and
+then tells the operator to roll back.
 
 Cross-lineage `rollback <session>` may take over a **lapsed** lease itself. It
 has an external receipt and does not need the successor's cooperation to begin,

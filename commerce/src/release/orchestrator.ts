@@ -520,16 +520,25 @@ export class ReleaseOrchestrator {
     // classifyFailure settles and releases the gate together when it aborts,
     // and a rolling session never had the gate to release.
     if (session.state === "SAFE_ABORTED") return { kind: "SAFE_ABORTED", session, code };
-    return { kind: "RECOVERY_REQUIRED", session, code };
+    return this.handBack(session, ownerId, code);
   }
 
   private recovery(sessionId: string, ownerId: string, code: string): ReleaseOutcome {
-    const session = this.ports.sessions.enterRecoveryRequired(sessionId, ownerId);
-    // This process is finished with the session. Holding the lease until it
-    // lapses would make the operator wait out the full term before a rollback
-    // could take ownership - with production fenced throughout - for no reason
-    // other than that nobody said so. A crash still falls back to expiry.
-    this.ports.sessions.yieldLease(sessionId, ownerId);
+    return this.handBack(this.ports.sessions.enterRecoveryRequired(sessionId, ownerId), ownerId, code);
+  }
+
+  /**
+   * Handing a session back to an operator, from wherever that decision is made.
+   *
+   * Standing down belongs to the act of handing back, not to one code path.
+   * It lived only in `recovery()`, so a convergence or readiness failure - both
+   * of which arrive through `classify()` - left a live lease behind and the
+   * next rollback had to wait out a term its holder had already finished with,
+   * production fenced throughout. A crash still falls back to expiry, and a
+   * live holder is still never displaced.
+   */
+  private handBack(session: DeploySession, ownerId: string, code: string): ReleaseOutcome {
+    this.ports.sessions.yieldLease(session.id, ownerId);
     return { kind: "RECOVERY_REQUIRED", session, code };
   }
 }

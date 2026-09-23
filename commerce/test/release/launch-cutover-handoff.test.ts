@@ -157,20 +157,28 @@ describe("the whole path production has to walk, through the real composition ro
     convergeOnTarget();
     const release = buildProductionRelease(launchConfig(), { now });
     try {
-      await runCutoverCommand(cli(release), ["deploy", vps.targetSha, CUTOVER], OWNER);
+      // No injected certification driver, and no controlling terminal either -
+      // which is the point: issuing a capability is not an attended operation
+      // and must not require one.
+      const code = await runCutoverCommand(cli(release), ["deploy", vps.targetSha, CUTOVER], OWNER);
+      expect(code).toBe(13);
+
       const sessionId = release.authority.deploymentGate().deploymentSessionId!;
       const session = release.sessions.read(sessionId)!;
-
       // The session remembers which candidate it is for, recorded once at
       // acquisition and never restated.
       expect(session.candidateId).toBe(candidate.id);
 
-      // And the real certification wiring can resolve it. The only thing it
-      // still cannot do here is open a controlling terminal, which is the
-      // human boundary itself - so that, and nothing before it, is what is
-      // left between this deploy and certification.
-      expect(() => release.certificationFor(candidate)).toThrow("CERTIFICATION_REQUIRES_ATTENDED_TERMINAL");
-      expect(() => release.certificationFor(candidate)).not.toThrow("RELEASE_CANDIDATE_NOT_PUBLISHED");
+      // A capability exists, bound to this session and this release.
+      const capability = release.certificationFor(candidate).recoverCapability(sessionId)!;
+      expect(capability).toBeDefined();
+      expect(capability.deploymentSessionId).toBe(sessionId);
+      expect(capability.releaseSha).toBe(candidate.sha);
+
+      // And the cutover is still reversible with the gate shut: nothing has
+      // been armed, because arming belongs to the attended half.
+      expect(session.rollbackAuthority).toBe("OLD_LINEAGE_ALLOWED");
+      expect(release.authority.deploymentGate().closed).toBe(true);
     } finally {
       release.close();
     }
@@ -213,6 +221,57 @@ describe("the whole path production has to walk, through the real composition ro
     } finally {
       processB.close();
     }
+  });
+
+  it("stands down after a convergence failure, not only after an unexpected one", async () => {
+    // This arrives through `classify()`, not `recovery()`. Standing down lived
+    // only in the latter, so a convergence or readiness failure left a live
+    // lease behind and the next rollback waited out a term nobody was using.
+    prepareEnvelope();
+    publish(launchCandidate(vps.targetSha));
+    // Partly converged: observable, but not the target.
+    vps.serving.frontend = vps.targetSha;
+    vps.serving.admin = vps.targetSha;
+    recordInstance(vps.db, "COMMERCE", "api-1", vps.preSha, NOW);
+    recordInstance(vps.db, "WORKER", "worker-1", vps.preSha, NOW, NOW.toISOString());
+
+    const processA = buildProductionRelease(launchConfig(), { now, certification: certification() });
+    let sessionId = "";
+    try {
+      expect(await runCutoverCommand(cli(processA), ["deploy", vps.targetSha, CUTOVER], OWNER)).toBe(12);
+      sessionId = processA.authority.deploymentGate().deploymentSessionId!;
+    } finally { processA.close(); }
+
+    const processB = buildProductionRelease(launchConfig(), { now, certification: certification() });
+    try {
+      // No clock advance: the lease was stood down, not waited out.
+      expect(() => processB.sessions.takeOverExpiredLease(sessionId, "a-different-runner")).not.toThrow();
+      expect(processB.sessions.read(sessionId)?.ownerId).toBe("a-different-runner");
+    } finally { processB.close(); }
+  });
+
+  it("stands down when resume hands a direction back to the operator", async () => {
+    // `resume` takes the lease to read the state and then tells the operator to
+    // roll back. Keeping the fresh lease it just granted itself would make that
+    // rollback wait, with production fenced throughout.
+    prepareEnvelope();
+    publish(launchCandidate(vps.targetSha));
+    const processA = buildProductionRelease(launchConfig(), { now, certification: certification() });
+    let sessionId = "";
+    try {
+      expect(await runCutoverCommand(cli(processA), ["deploy", vps.targetSha, CUTOVER], OWNER)).toBe(12);
+      sessionId = processA.authority.deploymentGate().deploymentSessionId!;
+    } finally { processA.close(); }
+
+    const resumer = buildProductionRelease(launchConfig(), { now, certification: certification() });
+    try {
+      expect(await runCutoverCommand(cli(resumer), ["resume", sessionId], "resuming-runner")).toBe(12);
+    } finally { resumer.close(); }
+
+    const processC = buildProductionRelease(launchConfig(), { now, certification: certification() });
+    try {
+      expect(() => processC.sessions.takeOverExpiredLease(sessionId, "yet-another-runner")).not.toThrow();
+    } finally { processC.close(); }
   });
 
   it("still makes a live lease wait, so a running holder is never evicted", async () => {

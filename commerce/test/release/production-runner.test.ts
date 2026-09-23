@@ -86,19 +86,25 @@ describe("the production composition root", () => {
     }
   });
 
-  it("refuses to build a certification driver where nobody is watching", () => {
-    // The composition is what enforces attendance. `certificationFor` opens the
-    // controlling terminal, and a test runner has none - which is exactly the
-    // position an unattended dispatch is in. It is built lazily, so a command
-    // that never certifies never asks for one.
+  it("asks for a terminal in the attended phase, not when the driver is built", async () => {
+    // Attendance belongs after AWAITING_OPERATOR. Opening the controlling
+    // terminal at construction put it before: `issueCapability` needs no
+    // terminal and creates no external effect, but the driver could not be
+    // built without one, so an unattended deploy could never reach exit 13.
+    // `preflight` is where attendance is proved, and it is before arming.
     const release = buildProductionRelease(vps.config, { now });
     try {
       const candidate = {
         id: vps.targetSha, sha: vps.targetSha, releaseClass: "LAUNCH_BASELINE" as const,
         expectation: { schemaInventory: "inventory-sha256:" + "0".repeat(64), legalVersion: "v", legalManifestSha256: "e".repeat(64) },
       };
-      expect(() => release.certificationFor(candidate)).toThrow("CERTIFICATION_REQUIRES_ATTENDED_TERMINAL");
-      // Nothing was touched by the refusal.
+      const driver = release.certificationFor(candidate);
+      expect(driver).toBeDefined();
+      // A test runner has no controlling terminal, which is exactly the
+      // position an unattended dispatch is in - and this is where it is caught.
+      await expect(driver.preflight({ deploymentSessionId: "s", id: "c", runId: "r" } as never))
+        .rejects.toThrow();
+      // Nothing was touched.
       expect(release.authority.deploymentGate().closed).toBe(false);
       expect(vps.calls).toEqual([]);
     } finally {

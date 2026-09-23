@@ -38,7 +38,7 @@ beforeEach(() => {
     db, candidate, adminBaseUrl: "http://127.0.0.1:1", publicBaseUrl: "http://127.0.0.1:1",
     serviceToken: "token", capabilityKey: TEST_CAPABILITY_KEY, citySlug: "test-city", now: () => now,
     operator: { occurrence: { startsAt: "2026-10-01T10:00:00.000Z", endsAt: "2026-10-01T12:00:00.000Z", venueDisclosureText: "Later", venueAnnounceBy: "2026-09-25T00:00:00.000Z" }, checkoutBodyPath: "/dev/null" },
-    terminal: terminal(),
+    terminal: () => terminal(),
   });
 });
 
@@ -70,7 +70,7 @@ describe("preparing a certification", () => {
       serviceToken: "token", capabilityKey: TEST_CAPABILITY_KEY, citySlug: "test-city",
       now: () => new Date(now.getTime() + 5 * 60 * 60_000),
       operator: { occurrence: { startsAt: "2026-10-01T10:00:00.000Z", endsAt: "2026-10-01T12:00:00.000Z", venueDisclosureText: "Later", venueAnnounceBy: "2026-09-25T00:00:00.000Z" }, checkoutBodyPath: "/dev/null" },
-      terminal: terminal(),
+      terminal: () => terminal(),
     });
     const second = await later.issueCapability(SESSION);
 
@@ -108,7 +108,7 @@ describe("the claim between prepare and certify", () => {
     db, candidate, adminBaseUrl: "http://127.0.0.1:1", publicBaseUrl: "http://127.0.0.1:1",
     serviceToken: "token", capabilityKey: TEST_CAPABILITY_KEY, citySlug: "test-city", now: () => now,
     operator: { occurrence: { startsAt: "2026-10-01T10:00:00.000Z", endsAt: "2026-10-01T12:00:00.000Z", venueDisclosureText: "Later", venueAnnounceBy: "2026-09-25T00:00:00.000Z" }, checkoutBodyPath: "/dev/null" },
-    terminal: terminal(),
+    terminal: () => terminal(),
   });
 
   it("recovers the same bearer after the issuing process is gone", async () => {

@@ -377,11 +377,24 @@ export const buildProductionRelease = (config: ProductionReleaseConfig, options:
       }),
     );
     /** The release a session is for, read back from the session rather than restated. */
+    /**
+     * One driver per session for the life of this process.
+     *
+     * `preflight` proves an operator is present and opens their terminal;
+     * `certify` then speaks on it. A fresh driver per call would open a second
+     * terminal after arming, so what attendance proved and what the operator
+     * answers on would be different channels.
+     */
+    const certificationDrivers = new Map<string, ProductionCertificationDriver>();
     const certificationForSession = (sessionId: string): ProductionCertificationDriver => {
+      const cached = certificationDrivers.get(sessionId);
+      if (cached) return cached;
       const session = authority.get(sessionId);
       const candidate = session?.candidateId ? candidatesStore.get(session.candidateId) : undefined;
       if (!candidate) throw new Error(`RELEASE_CANDIDATE_NOT_PUBLISHED: ${session?.candidateId ?? sessionId}`);
-      return certificationFor(candidate);
+      const driver = certificationFor(candidate);
+      certificationDrivers.set(sessionId, driver);
+      return driver;
     };
     const sessions = new DeploySessions(authority, now);
     // Read, never written, by a deploy. Publication is a separate composition
@@ -653,7 +666,9 @@ export const buildProductionRelease = (config: ProductionReleaseConfig, options:
         occurrence: readOperatorOccurrence(config.certification.occurrenceScopePath),
         checkoutBodyPath: config.certification.checkoutBodyPath,
       },
-      terminal: openControllingTerminal(),
+      // The function, not a channel: opening it here would put the attendance
+      // requirement before AWAITING_OPERATOR, where nothing attended happens.
+      terminal: openControllingTerminal,
       fetch: options.fetch,
     });
 

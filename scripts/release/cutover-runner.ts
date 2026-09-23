@@ -104,9 +104,9 @@ export const runCutoverCommand = async (release: ProductionRelease, argv: readon
       return EXIT_BY_OUTCOME[outcome.kind] ?? 20;
     }
     case "certify": {
-      // The attended half. It refuses before the composition root is built
-      // when nobody is watching, so an unattended dispatch costs a refusal
-      // while the old lineage is still a legal destination.
+      // The attended half. Attendance is proved inside `preflight`, before
+      // anything can be armed, so an unattended dispatch costs a refusal while
+      // the old lineage is still a legal destination.
       if (!argument) throw new Error("RELEASE_SESSION_REQUIRED");
       const session = release.sessions.read(argument);
       if (!session) throw new Error(`DEPLOY_SESSION_NOT_FOUND: ${argument}`);
@@ -138,7 +138,12 @@ export const runCutoverCommand = async (release: ProductionRelease, argv: readon
       say({ command, session: session.id, state: session.state, plan });
       // A resumed session that needs a human decision is not a success, and the
       // workflow must not read it as one.
-      return session.state === "RECOVERY_REQUIRED" ? 12 : 0;
+      if (session.state !== "RECOVERY_REQUIRED") return 0;
+      // This process took the lease to read that state and is now exiting. The
+      // rollback it just told the operator to run should not have to wait out a
+      // term nobody is using, with production fenced throughout.
+      release.sessions.yieldLease(session.id, ownerId);
+      return 12;
     }
     case "rollback-prepared": {
       // The other half of the recovery split. `rollback` speaks for a successor
