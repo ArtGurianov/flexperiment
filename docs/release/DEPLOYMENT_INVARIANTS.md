@@ -209,6 +209,63 @@ Dying between the restore and the CAS leaves an unpleasant but safe state -
 commerce stopped, database LEGACY, ref still at the target, sales closed - and
 the receipt reconciliation below is what continues from it.
 
+## A migrated database is not yet a launch database
+
+`prepare-bootstrap` runs `migrate`, and that alone produces a schema the
+runtime cannot serve from: no cities, and `legal_releases` deliberately empty,
+which readiness refuses with `LEGAL_RELEASE_EVIDENCE_MISSING`. Initialization
+is therefore part of the preparation, in this order:
+
+```text
+migrate
+→ launch seed (the committed catalogue)
+→ publish the candidate's legal release
+→ hand ownership to the runtime
+```
+
+It is an **ensure**, not a create-once. A crash between the schema and the rest
+leaves a `SUPPORTED` database that is still unusable, and an early return on
+"lineage is SUPPORTED" would call that finished. Both the seed and the legal
+publication are idempotent for an exact replay, so re-running them is the safe
+direction.
+
+Ownership is handed over **last**, after every root-side write, and it covers
+the sidecars as well as the main file. The runner is root; the runtime is not.
+A database created here is root-owned and the container cannot open it — it
+crash-loops, and because topology is read from that runtime, the recovery path
+stalls with it. The contract is taken from the predecessor archive, which is
+the file the runtime demonstrably could open, rather than from a hardcoded uid.
+
+Known limitation: once the successor is installed the predecessor bridge is
+gone, so `prepare-bootstrap` cannot be reconstructed in a new process. The
+ensure above therefore protects a retry within the preparation, not a
+cross-process retry after the swap. That gap is recovered through
+`rollback-prepared`.
+
+## An exit code describes what happened, not what was attempted
+
+`20` means "refused before mutation". Once a successor session exists and the
+envelope is consumed, it is no longer available: the pointer may have moved and
+the applications may be deployed, and an operator reading `20` would reach for
+`rollback-prepared` on an adopted cutover.
+
+```text
+before a session/adoption exists   an exception may legitimately be 20
+once the session exists            any unexpected exception is RECOVERY_REQUIRED (12)
+```
+
+The same reasoning applies to `resume`: a runtime that cannot be observed is
+frequently the reason a session needs resuming, so requiring a successful
+observation to produce a recovery plan is circular. An unobservable topology is
+reported as `RECOVERY_REQUIRED` with `TOPOLOGY_UNOBSERVABLE`, never as a safe
+abort — absence of observation is not evidence of anything.
+
+Cross-lineage `rollback <session>` may take over a **lapsed** lease itself. It
+has an external receipt and does not need the successor's cooperation to begin,
+and requiring an operator to re-supply the dead process's owner id made an
+ordinary recovery depend on reading it out of the database by hand. A lease
+that has not lapsed still belongs to whoever holds it.
+
 ## "Stopped" is a positive proof, never an absence
 
 `POST /applications/{uuid}/stop` queues the request and returns. A single

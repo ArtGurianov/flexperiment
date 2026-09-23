@@ -231,15 +231,22 @@ export class ReleaseOrchestrator {
         id: request.sessionId, ownerId: request.ownerId, mode: "MAINTENANCE_CUTOVER",
         targetSha: request.candidate.sha, candidateId: request.candidate.id, adoptedCutoverId: request.adoptedCutoverId,
       }, before);
-    sessions.beginDeploying(session.id, request.ownerId);
-
+    // From here a successor session exists, so every exit below is a decision
+    // about that session. An exception escaping to the CLI would be reported as
+    // exit 20 - "refused before mutation" - which after adoption is a lie: the
+    // envelope is consumed, the pointer may have moved and the applications may
+    // be deployed. Anything unexpected is RECOVERY_REQUIRED instead.
     try {
-      await this.ports.deployment.deploy(request.candidate.sha);
+      sessions.beginDeploying(session.id, request.ownerId);
+      try {
+        await this.ports.deployment.deploy(request.candidate.sha);
+      } catch (error) {
+        return this.classify(session.id, request.ownerId, failureCode(error));
+      }
+      return await this.finishCutover(session.id, request);
     } catch (error) {
-      return this.classify(session.id, request.ownerId, failureCode(error));
+      return this.recovery(session.id, request.ownerId, failureCode(error));
     }
-
-    return this.finishCutover(session.id, request);
   }
 
   /**
@@ -376,7 +383,19 @@ export class ReleaseOrchestrator {
     // does not accept. Advancing it first matches the live flow, where DEPLOYING
     // is set before the deployment driver is ever called.
     if (taken.state === "FENCED") this.ports.sessions.beginDeploying(sessionId, ownerId);
-    const observed = await this.ports.topology.observe();
+    // A runtime that cannot be observed is frequently the reason a session
+    // needs resuming, so requiring a successful observation to produce a
+    // recovery plan is circular. It is reported as RECOVERY_REQUIRED, never as
+    // a safe abort: absence of observation is not evidence of anything.
+    let observed: DeploymentObservation;
+    try {
+      observed = await this.ports.topology.observe();
+    } catch (error) {
+      return {
+        session: this.ports.sessions.enterRecoveryRequired(sessionId, ownerId),
+        plan: { kind: "FIX_FORWARD_OR_ROLLBACK", reason: `TOPOLOGY_UNOBSERVABLE:${failureCode(error)}` } as ResumePlan,
+      };
+    }
     const session = this.ports.sessions.observeTopology(sessionId, ownerId, observed);
     const plan = planResume(session, observed);
     if (plan.kind === "FIX_FORWARD_OR_ROLLBACK" && session.state !== "RECOVERY_REQUIRED") {

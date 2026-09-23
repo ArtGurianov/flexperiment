@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import Database from "better-sqlite3";
-import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, symlinkSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
@@ -15,6 +15,7 @@ const predecessor = "b".repeat(40);
 const target = "a".repeat(40);
 
 const fixture = () => {
+  const initializations: string[] = [];
   const root = mkdtempSync(join(tmpdir(), "sqlite-cutover-"));
   const replacement = join(root, "replacement");
   const state = join(root, "release-state");
@@ -35,6 +36,11 @@ const fixture = () => {
     databasePath: database, replacementRoot: replacement, stateDirectory: state,
     archiveDirectory: archive, envelopeDirectory: envelopes,
     journalPath: join(state, "release.jsonl"), lockPath: join(state, "release.lock"), authority, revalidation,
+    initializeLaunchDatabase: (launch) => {
+      initializations.push("init");
+      launch.exec("CREATE TABLE IF NOT EXISTS launch_marker (id INTEGER PRIMARY KEY, seeded INTEGER NOT NULL)");
+      launch.prepare("INSERT OR REPLACE INTO launch_marker(id, seeded) VALUES (1, 1)").run();
+    },
   });
   let lastIdentity = (() => { const stat = statSync(database); return { canonicalPath: realpathSync(database), dev: stat.dev, ino: stat.ino }; })();
   const grant = (operation: RuntimeLeaseOperation, sessionId: string, override: Partial<RuntimeLeaseBinding> = {}) => {
@@ -45,7 +51,7 @@ const fixture = () => {
     };
     return { lease: authority.acquire(binding), binding };
   };
-  return { root, replacement, state, archive, envelopes, database, storage, authority, grant, expire: () => { now = 11; }, revalidation };
+  return { root, replacement, state, archive, envelopes, database, storage, authority, grant, initializations, expire: () => { now = 11; }, revalidation };
 };
 
 const envelope = (database: { ref: string; sha256: string }) => createCutoverEnvelope({
@@ -87,6 +93,56 @@ describe("physical SQLite launch handoff", () => {
     expect(sha(join(archive, "cutover-1.predecessor.sqlite"))).toBe(firstArchiveHash);
     const launched = openReadOnlyDatabase(database);
     try { expect(classifySchemaLineage(readSchemaIdentity(launched))).toBe("SUPPORTED"); } finally { launched.close(); }
+  });
+
+  it("initialises the launch database, and ensures it again on replay instead of declaring it done", async () => {
+    // `migrate` alone leaves a database the runtime cannot serve from: no
+    // cities and no legal release. The previous version returned early on a
+    // SUPPORTED schema, so a crash between the schema and the rest produced
+    // exactly that - which is what the third cutover attempt hit.
+    const { database, storage, grant, initializations } = fixture();
+    const planned = await storage.prepareArchive("cutover-1", ...(() => { const g = grant("PREPARE", "cutover-1"); return [g.lease, g.binding] as const; })());
+    const handoff = envelope(planned);
+    let next = grant("PREPARE", "cutover-1");
+    await storage.ensureArchivedAndFresh(handoff, next.lease, next.binding);
+    expect(initializations).toHaveLength(1);
+
+    const marker = () => {
+      const db = openReadOnlyDatabase(database);
+      try { return (db.prepare("SELECT seeded FROM launch_marker WHERE id = 1").get() as { seeded: number } | undefined)?.seeded; }
+      finally { db.close(); }
+    };
+    expect(marker()).toBe(1);
+
+    // Strip the initialization back to a bare migrated schema: lineage stays
+    // SUPPORTED, which is what made the old early return look correct.
+    const stripped = new Database(database);
+    try { stripped.exec("DROP TABLE launch_marker"); } finally { stripped.close(); }
+
+    next = grant("PREPARE", "cutover-1");
+    await storage.ensureArchivedAndFresh(handoff, next.lease, next.binding);
+    expect(initializations).toHaveLength(2);
+    expect(marker()).toBe(1);
+  });
+
+  it("hands the launch database to the runtime that has to open it", async () => {
+    // The runner is root in production and the runtime is not. A successor the
+    // runtime cannot open crash-loops, and topology is read from that runtime,
+    // so the recovery path stalls with it.
+    const { database, archive, storage, grant } = fixture();
+    const predecessorMode = 0o644;
+    chmodSync(database, predecessorMode);
+    const planned = await storage.prepareArchive("cutover-1", ...(() => { const g = grant("PREPARE", "cutover-1"); return [g.lease, g.binding] as const; })());
+    const next = grant("PREPARE", "cutover-1");
+    await storage.ensureArchivedAndFresh(envelope(planned), next.lease, next.binding);
+
+    const predecessor = statSync(join(archive, "cutover-1.predecessor.sqlite"));
+    for (const path of [database, `${database}-wal`, `${database}-shm`].filter(existsSync)) {
+      const applied = statSync(path);
+      expect(applied.uid).toBe(predecessor.uid);
+      expect(applied.gid).toBe(predecessor.gid);
+      expect(applied.mode & 0o7777).toBe(predecessor.mode & 0o7777);
+    }
   });
 
   it("resumes after an atomic rename completed but before fresh db.ts bootstrap", async () => {

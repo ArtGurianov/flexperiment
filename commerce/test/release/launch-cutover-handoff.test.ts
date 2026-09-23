@@ -221,6 +221,35 @@ describe("the launch cutover handoff is consumed by the deploy that follows it",
     }
   });
 
+  it("reports an unobservable runtime after adoption as recovery, never as a pre-mutation refusal", async () => {
+    /**
+     * The 2026-09-23 incident exactly. The envelope was consumed, the pointer
+     * had moved and all three applications were deployed - and then the
+     * successor could not be observed, the exception escaped the outcome
+     * classifier, and the CLI reported 20: "refused before mutation". Acting on
+     * that would have meant running rollback-prepared against an adopted
+     * cutover.
+     */
+    prepareEnvelope();
+    publish(launchCandidate(vps.targetSha));
+    // Deliberately no convergence: COMMERCE never records instance evidence,
+    // so the canonical topology reader throws.
+    const release = buildProductionRelease(vps.config, { now, certification: certification() });
+    try {
+      const code = await runCutoverCommand(cli(release), ["deploy", vps.targetSha, CUTOVER], OWNER);
+      expect(code).toBe(12);
+      expect(code).not.toBe(20);
+
+      const sessionId = release.authority.deploymentGate().deploymentSessionId!;
+      expect(sessionId).toBeTruthy();
+      expect(release.sessions.read(sessionId)?.state).toBe("RECOVERY_REQUIRED");
+      // The mutations that make 20 a lie really did happen.
+      expect(release.envelopes.isConsumed(CUTOVER)).toBe(true);
+    } finally {
+      release.close();
+    }
+  });
+
   it("refuses a launch deploy that names no prepared cutover, before any mutation", async () => {
     prepareEnvelope();
     publish(launchCandidate(vps.targetSha));

@@ -29,6 +29,8 @@ import { RuntimeQuiescer, type DatabaseIdentityProbe, type OpenHandleProbe, type
 import { BootstrapRollback } from "./bootstrap-rollback";
 import { FileBootstrapRollbackReceiptStore } from "./bootstrap-rollback-file-store";
 import { classifySchemaLineage } from "./schema-identity";
+import { applyLaunchSeed, readLaunchCatalogue } from "../launch-seed";
+import { loadCanonicalLegalRelease, publishLegalRelease } from "../legal-release";
 import { LaunchBaselineAdmissionGuard, remoteMainTipRefresh, type LaunchBaselineAdmission } from "./launch-baseline-admission";
 
 /**
@@ -487,6 +489,14 @@ export const buildProductionRelease = (config: ProductionReleaseConfig, options:
       stateDirectory: config.stateDirectory, archiveDirectory: config.archiveDirectory,
       envelopeDirectory: config.envelopeDirectory, journalPath: config.journalPath,
       lockPath: config.lockPath, authority: runtimeQuiescenceAuthority, revalidation: runtimeQuiescer,
+      // A migrated database is not yet a servable one. The catalogue and the
+      // legal release come from this release's own checkout, so what is
+      // installed is exactly what the candidate carries. Both are idempotent
+      // for an exact replay, which is what lets the caller re-run them.
+      initializeLaunchDatabase: (launch) => {
+        applyLaunchSeed(launch, readLaunchCatalogue());
+        publishLegalRelease(launch, loadCanonicalLegalRelease());
+      },
     });
     const gateAtRestIsClosed = () => {
       const inspection = new Database(config.databasePath, { readonly: true, fileMustExist: true });
