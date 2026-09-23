@@ -132,6 +132,166 @@ const certification = (): CertificationDriver => ({
 const cli = (release: ProductionRelease): ProductionRelease =>
   ({ ...release, launchBaselineAdmission: { admit: vi.fn(async () => {}) } }) as ProductionRelease;
 
+describe("the whole path production has to walk, through the real composition root", () => {
+  /** The launch config: the cross-lineage engine is composed only with a predecessor. */
+  const launchConfig = () => ({
+    ...vps.config,
+    predecessor: { expectedSha: vps.preSha, expectedLedgerLength: 61, commerceReadyUrl: "https://commerce.invalid/readyz" },
+  });
+
+  it("leaves nothing between a converged deploy and the human certification but the human", async () => {
+    /**
+     * Driven with the REAL certification wiring, not an injected driver.
+     *
+     * An adopted session used to be created without a `candidateId`. The schema
+     * permits that - either a candidate or an adopted cutover satisfies it - and
+     * every component test passed, but certification resolves its driver from
+     * `session.candidateId`. So a cutover that had already converged and been
+     * admitted by readiness failed at `issueCapability` with
+     * RELEASE_CANDIDATE_NOT_PUBLISHED and went to recovery instead of to the
+     * operator. Deterministic, and invisible until the seam ran.
+     */
+    prepareEnvelope();
+    const candidate = launchCandidate(vps.targetSha);
+    publish(candidate);
+    convergeOnTarget();
+    const release = buildProductionRelease(launchConfig(), { now });
+    try {
+      // No injected certification driver, and no controlling terminal either -
+      // which is the point: issuing a capability is not an attended operation
+      // and must not require one.
+      const code = await runCutoverCommand(cli(release), ["deploy", vps.targetSha, CUTOVER], OWNER);
+      expect(code).toBe(13);
+
+      const sessionId = release.authority.deploymentGate().deploymentSessionId!;
+      const session = release.sessions.read(sessionId)!;
+      // The session remembers which candidate it is for, recorded once at
+      // acquisition and never restated.
+      expect(session.candidateId).toBe(candidate.id);
+
+      // A capability exists, bound to this session and this release.
+      const capability = release.certificationFor(candidate).recoverCapability(sessionId)!;
+      expect(capability).toBeDefined();
+      expect(capability.deploymentSessionId).toBe(sessionId);
+      expect(capability.releaseSha).toBe(candidate.sha);
+
+      // And the cutover is still reversible with the gate shut: nothing has
+      // been armed, because arming belongs to the attended half.
+      expect(session.rollbackAuthority).toBe("OLD_LINEAGE_ALLOWED");
+      expect(release.authority.deploymentGate().closed).toBe(true);
+    } finally {
+      release.close();
+    }
+  });
+
+  it("hands a failed cutover to a different process, which rolls it back without impersonation", async () => {
+    /**
+     * The 2026-09-23 incident end to end, as one test.
+     *
+     * Process A adopts, moves the pointer, deploys, cannot observe COMMERCE and
+     * exits 12. Process B is a different owner and must be able to roll back
+     * immediately - the clock is deliberately NOT advanced, because waiting out
+     * a lease that its holder has finished with means keeping production fenced
+     * for no reason. Crash recovery still relies on ordinary expiry.
+     */
+    prepareEnvelope();
+    publish(launchCandidate(vps.targetSha));
+    // No convergence: COMMERCE never records evidence, so topology throws.
+    const processA = buildProductionRelease(launchConfig(), { now, certification: certification() });
+    let sessionId = "";
+    try {
+      const code = await runCutoverCommand(cli(processA), ["deploy", vps.targetSha, CUTOVER], OWNER);
+      expect(code).toBe(12);
+      sessionId = processA.authority.deploymentGate().deploymentSessionId!;
+      expect(processA.sessions.read(sessionId)?.state).toBe("RECOVERY_REQUIRED");
+    } finally {
+      processA.close();
+    }
+
+    // Process B: a different owner, no clock advance, no owner impersonation.
+    // What is under test is the handoff - that ownership passes immediately
+    // because process A stood down, rather than after the full lease term with
+    // production fenced throughout. The physical restore that follows is proved
+    // end to end in bootstrap-rollback-composition-root.
+    const processB = buildProductionRelease(launchConfig(), { now, certification: certification() });
+    try {
+      await expect(processB.bootstrapRollback!.rollback(sessionId, "a-different-runner"))
+        .rejects.not.toThrow("DEPLOY_SESSION_NOT_OWNER");
+      expect(processB.sessions.read(sessionId)?.ownerId).toBe("a-different-runner");
+    } finally {
+      processB.close();
+    }
+  });
+
+  it("stands down after a convergence failure, not only after an unexpected one", async () => {
+    // This arrives through `classify()`, not `recovery()`. Standing down lived
+    // only in the latter, so a convergence or readiness failure left a live
+    // lease behind and the next rollback waited out a term nobody was using.
+    prepareEnvelope();
+    publish(launchCandidate(vps.targetSha));
+    // Partly converged: observable, but not the target.
+    vps.serving.frontend = vps.targetSha;
+    vps.serving.admin = vps.targetSha;
+    recordInstance(vps.db, "COMMERCE", "api-1", vps.preSha, NOW);
+    recordInstance(vps.db, "WORKER", "worker-1", vps.preSha, NOW, NOW.toISOString());
+
+    const processA = buildProductionRelease(launchConfig(), { now, certification: certification() });
+    let sessionId = "";
+    try {
+      expect(await runCutoverCommand(cli(processA), ["deploy", vps.targetSha, CUTOVER], OWNER)).toBe(12);
+      sessionId = processA.authority.deploymentGate().deploymentSessionId!;
+    } finally { processA.close(); }
+
+    const processB = buildProductionRelease(launchConfig(), { now, certification: certification() });
+    try {
+      // No clock advance: the lease was stood down, not waited out.
+      expect(() => processB.sessions.takeOverExpiredLease(sessionId, "a-different-runner")).not.toThrow();
+      expect(processB.sessions.read(sessionId)?.ownerId).toBe("a-different-runner");
+    } finally { processB.close(); }
+  });
+
+  it("stands down when resume hands a direction back to the operator", async () => {
+    // `resume` takes the lease to read the state and then tells the operator to
+    // roll back. Keeping the fresh lease it just granted itself would make that
+    // rollback wait, with production fenced throughout.
+    prepareEnvelope();
+    publish(launchCandidate(vps.targetSha));
+    const processA = buildProductionRelease(launchConfig(), { now, certification: certification() });
+    let sessionId = "";
+    try {
+      expect(await runCutoverCommand(cli(processA), ["deploy", vps.targetSha, CUTOVER], OWNER)).toBe(12);
+      sessionId = processA.authority.deploymentGate().deploymentSessionId!;
+    } finally { processA.close(); }
+
+    const resumer = buildProductionRelease(launchConfig(), { now, certification: certification() });
+    try {
+      expect(await runCutoverCommand(cli(resumer), ["resume", sessionId], "resuming-runner")).toBe(12);
+    } finally { resumer.close(); }
+
+    const processC = buildProductionRelease(launchConfig(), { now, certification: certification() });
+    try {
+      expect(() => processC.sessions.takeOverExpiredLease(sessionId, "yet-another-runner")).not.toThrow();
+    } finally { processC.close(); }
+  });
+
+  it("still makes a live lease wait, so a running holder is never evicted", async () => {
+    prepareEnvelope();
+    publish(launchCandidate(vps.targetSha));
+    convergeOnTarget();
+    const release = buildProductionRelease(launchConfig(), { now, certification: certification() });
+    try {
+      // A session that reached AWAITING_OPERATOR is still held by a live owner,
+      // so standing down never happened and another process may not take it.
+      await runCutoverCommand(cli(release), ["deploy", vps.targetSha, CUTOVER], OWNER);
+      const sessionId = release.authority.deploymentGate().deploymentSessionId!;
+      await expect(release.bootstrapRollback!.rollback(sessionId, "someone-else"))
+        .rejects.toThrow("DEPLOY_SESSION_NOT_OWNER");
+    } finally {
+      release.close();
+    }
+  });
+});
+
 describe("a prepared cutover has exactly two legal successors", () => {
   /**
    * The conceptual hole behind the 2026-09-23 outage, stated directly.
@@ -216,6 +376,35 @@ describe("the launch cutover handoff is consumed by the deploy that follows it",
         controlPlane: { productionDeployRefSha: vps.preSha },
       });
       expect(session.adoptedCutoverId).toBe(CUTOVER);
+    } finally {
+      release.close();
+    }
+  });
+
+  it("reports an unobservable runtime after adoption as recovery, never as a pre-mutation refusal", async () => {
+    /**
+     * The 2026-09-23 incident exactly. The envelope was consumed, the pointer
+     * had moved and all three applications were deployed - and then the
+     * successor could not be observed, the exception escaped the outcome
+     * classifier, and the CLI reported 20: "refused before mutation". Acting on
+     * that would have meant running rollback-prepared against an adopted
+     * cutover.
+     */
+    prepareEnvelope();
+    publish(launchCandidate(vps.targetSha));
+    // Deliberately no convergence: COMMERCE never records instance evidence,
+    // so the canonical topology reader throws.
+    const release = buildProductionRelease(vps.config, { now, certification: certification() });
+    try {
+      const code = await runCutoverCommand(cli(release), ["deploy", vps.targetSha, CUTOVER], OWNER);
+      expect(code).toBe(12);
+      expect(code).not.toBe(20);
+
+      const sessionId = release.authority.deploymentGate().deploymentSessionId!;
+      expect(sessionId).toBeTruthy();
+      expect(release.sessions.read(sessionId)?.state).toBe("RECOVERY_REQUIRED");
+      // The mutations that make 20 a lie really did happen.
+      expect(release.envelopes.isConsumed(CUTOVER)).toBe(true);
     } finally {
       release.close();
     }

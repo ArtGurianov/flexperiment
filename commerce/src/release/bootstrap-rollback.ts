@@ -333,8 +333,20 @@ export class BootstrapRollback {
   }
 
   private reserve(sessionId: string, ownerId: string): BootstrapRollbackReceipt {
-    const session = this.ports.authority.get(sessionId);
+    let session = this.ports.authority.get(sessionId);
     if (!session) throw new BootstrapRollbackError("DEPLOY_SESSION_NOT_FOUND", sessionId);
+    // Cross-lineage rollback has an external receipt and does not need the
+    // successor's cooperation to begin, so it may take over a lapsed lease
+    // itself. Requiring the operator to re-supply the dead process's owner id
+    // made an ordinary recovery depend on reading it out of the database by
+    // hand. A lease that has NOT lapsed still belongs to whoever holds it.
+    if (session.ownerId !== ownerId) {
+      try {
+        session = this.ports.authority.takeOverExpiredLease(sessionId, ownerId, (this.ports.clock ?? (() => new Date()))(), new Date((this.ports.clock ?? (() => new Date()))().getTime() + 10 * 60_000).toISOString());
+      } catch {
+        throw new BootstrapRollbackError("DEPLOY_SESSION_NOT_OWNER", `${sessionId} is held by ${session.ownerId} and its lease has not lapsed`);
+      }
+    }
     assertReversible(session, this.ports.authority.deploymentGate());
     const envelope = this.ports.envelopes.read(session.adoptedCutoverId!);
     if (!envelope) throw new BootstrapRollbackError("CUTOVER_ENVELOPE_NOT_FOUND", session.adoptedCutoverId);

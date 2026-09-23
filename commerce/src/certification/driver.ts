@@ -38,7 +38,18 @@ export type CertificationDriverOptions = {
   readonly capabilityKey: string;
   readonly citySlug: string;
   readonly operator: OperatorScope;
-  readonly terminal: TerminalChannel;
+  /**
+   * The operator's terminal, opened on demand.
+   *
+   * A function rather than a channel because opening `/dev/tty` at
+   * construction put the attendance requirement on the wrong side of
+   * `AWAITING_OPERATOR`: `issueCapability` needs no terminal and creates no
+   * external effect, but the driver could not be built without one, so an
+   * unattended `deploy` could never reach exit 13 at all. Attendance is
+   * asserted in `preflight`, which is before arming, and the channel opened
+   * there is the one `certify` then uses.
+   */
+  readonly terminal: () => TerminalChannel;
   readonly now?: () => Date;
   readonly fetch?: typeof globalThis.fetch;
   readonly capabilityTtlMs?: number;
@@ -53,8 +64,21 @@ const DEFAULT_TIMEOUTS = { paymentMs: 30 * 60_000, emailMs: 15 * 60_000, refundM
 export class ProductionCertificationDriver implements CertificationDriver {
   #admin?: HttpCertificationAdminPort;
   #sessionId?: string;
+  #terminal?: TerminalChannel;
 
   constructor(private readonly options: CertificationDriverOptions) {}
+
+  /**
+   * One channel per driver, opened the first time attendance is required.
+   *
+   * Memoized so `preflight` and `certify` speak to the same terminal: proving
+   * a terminal exists and then opening a different one later would prove
+   * nothing about the operator who is actually there.
+   */
+  private openTerminal(): TerminalChannel {
+    this.#terminal ??= this.options.terminal();
+    return this.#terminal;
+  }
 
   private get now(): () => Date { return this.options.now ?? (() => new Date()); }
 
@@ -124,7 +148,9 @@ export class ProductionCertificationDriver implements CertificationDriver {
     // the key this capability was issued under, and finding that out after
     // arming would be finding it out too late.
     this.bearerFor(recovered);
-    assertAttended();
+    // Opened here, before anything can be armed - not first reached after it.
+    // Retained, so `certify` speaks on the channel whose presence was proved.
+    this.openTerminal();
 
     const runs = new SqliteCertificationRunStore(this.options.db);
     const run = runs.load(capability.runId);
@@ -164,7 +190,7 @@ export class ProductionCertificationDriver implements CertificationDriver {
     const ports: CertifyPorts = {
       admin,
       publicApi: new HttpCertificationPublicPort({ baseUrl: this.options.publicBaseUrl, fetch: this.options.fetch }),
-      operator: new TerminalOperator(this.options.operator, this.options.terminal),
+      operator: new TerminalOperator(this.options.operator, this.openTerminal()),
       runs: new SqliteCertificationRunStore(this.options.db),
       clock: this.now,
       // Random per command, and recorded before the request leaves. Deriving it

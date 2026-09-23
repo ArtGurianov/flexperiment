@@ -40,6 +40,7 @@ const release = (
   launchBaselineAdmission: { admit: vi.fn(admit) },
   bootstrapPreparation: { prepare: mutations.prepare },
   journal: { record: vi.fn() },
+  sessions: { yieldLease: vi.fn() },
   orchestrator: {
     runMaintenanceCutover: mutations.deploy,
     runRolling: vi.fn(() => { throw new Error("rolling path must not run"); }),

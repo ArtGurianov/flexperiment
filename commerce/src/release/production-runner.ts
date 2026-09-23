@@ -29,6 +29,8 @@ import { RuntimeQuiescer, type DatabaseIdentityProbe, type OpenHandleProbe, type
 import { BootstrapRollback } from "./bootstrap-rollback";
 import { FileBootstrapRollbackReceiptStore } from "./bootstrap-rollback-file-store";
 import { classifySchemaLineage } from "./schema-identity";
+import { applyLaunchSeed, readLaunchCatalogue } from "../launch-seed";
+import { loadCanonicalLegalRelease, publishLegalRelease } from "../legal-release";
 import { LaunchBaselineAdmissionGuard, remoteMainTipRefresh, type LaunchBaselineAdmission } from "./launch-baseline-admission";
 
 /**
@@ -375,11 +377,24 @@ export const buildProductionRelease = (config: ProductionReleaseConfig, options:
       }),
     );
     /** The release a session is for, read back from the session rather than restated. */
+    /**
+     * One driver per session for the life of this process.
+     *
+     * `preflight` proves an operator is present and opens their terminal;
+     * `certify` then speaks on it. A fresh driver per call would open a second
+     * terminal after arming, so what attendance proved and what the operator
+     * answers on would be different channels.
+     */
+    const certificationDrivers = new Map<string, ProductionCertificationDriver>();
     const certificationForSession = (sessionId: string): ProductionCertificationDriver => {
+      const cached = certificationDrivers.get(sessionId);
+      if (cached) return cached;
       const session = authority.get(sessionId);
       const candidate = session?.candidateId ? candidatesStore.get(session.candidateId) : undefined;
       if (!candidate) throw new Error(`RELEASE_CANDIDATE_NOT_PUBLISHED: ${session?.candidateId ?? sessionId}`);
-      return certificationFor(candidate);
+      const driver = certificationFor(candidate);
+      certificationDrivers.set(sessionId, driver);
+      return driver;
     };
     const sessions = new DeploySessions(authority, now);
     // Read, never written, by a deploy. Publication is a separate composition
@@ -418,6 +433,7 @@ export const buildProductionRelease = (config: ProductionReleaseConfig, options:
         adopt: (cutoverId, ownerId, candidate) => {
           const { session, reconciled } = adoptCutover(sessions, authority, envelopes, cutoverId, {
             ownerId,
+            candidateId: candidate.id,
             // The candidate's commit, not the envelope's: this is the assertion
             // that the release being deployed is the one that was prepared, and
             // taking it from the envelope would compare it with itself.
@@ -487,6 +503,14 @@ export const buildProductionRelease = (config: ProductionReleaseConfig, options:
       stateDirectory: config.stateDirectory, archiveDirectory: config.archiveDirectory,
       envelopeDirectory: config.envelopeDirectory, journalPath: config.journalPath,
       lockPath: config.lockPath, authority: runtimeQuiescenceAuthority, revalidation: runtimeQuiescer,
+      // A migrated database is not yet a servable one. The catalogue and the
+      // legal release come from this release's own checkout, so what is
+      // installed is exactly what the candidate carries. Both are idempotent
+      // for an exact replay, which is what lets the caller re-run them.
+      initializeLaunchDatabase: (launch) => {
+        applyLaunchSeed(launch, readLaunchCatalogue());
+        publishLegalRelease(launch, loadCanonicalLegalRelease());
+      },
     });
     const gateAtRestIsClosed = () => {
       const inspection = new Database(config.databasePath, { readonly: true, fileMustExist: true });
@@ -642,7 +666,9 @@ export const buildProductionRelease = (config: ProductionReleaseConfig, options:
         occurrence: readOperatorOccurrence(config.certification.occurrenceScopePath),
         checkoutBodyPath: config.certification.checkoutBodyPath,
       },
-      terminal: openControllingTerminal(),
+      // The function, not a channel: opening it here would put the attendance
+      // requirement before AWAITING_OPERATOR, where nothing attended happens.
+      terminal: openControllingTerminal,
       fetch: options.fetch,
     });
 

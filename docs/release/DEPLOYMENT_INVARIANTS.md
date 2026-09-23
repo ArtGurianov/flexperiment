@@ -209,6 +209,91 @@ Dying between the restore and the CAS leaves an unpleasant but safe state -
 commerce stopped, database LEGACY, ref still at the target, sales closed - and
 the receipt reconciliation below is what continues from it.
 
+## A migrated database is not yet a launch database
+
+`prepare-bootstrap` runs `migrate`, and that alone produces a schema the
+runtime cannot serve from: no cities, and `legal_releases` deliberately empty,
+which readiness refuses with `LEGAL_RELEASE_EVIDENCE_MISSING`. Initialization
+is therefore part of the preparation, in this order:
+
+```text
+migrate
+→ launch seed (the committed catalogue)
+→ publish the candidate's legal release
+→ hand ownership to the runtime
+```
+
+It is an **ensure**, not a create-once. A crash between the schema and the rest
+leaves a `SUPPORTED` database that is still unusable, and an early return on
+"lineage is SUPPORTED" would call that finished. Both the seed and the legal
+publication are idempotent for an exact replay, so re-running them is the safe
+direction.
+
+Ownership is handed over **last**, after every root-side write, and it covers
+the sidecars as well as the main file. The runner is root; the runtime is not.
+A database created here is root-owned and the container cannot open it — it
+crash-loops, and because topology is read from that runtime, the recovery path
+stalls with it. The contract is taken from the predecessor archive, which is
+the file the runtime demonstrably could open, rather than from a hardcoded uid.
+
+The ensure is a storage invariant, and deliberately not a forward-retry path.
+Once the successor is installed the predecessor bridge is gone, so
+`prepare-bootstrap` cannot be reconstructed in a new process at all. A crash
+after the swap therefore hands control to `rollback-prepared`, never to a
+second `prepare-bootstrap` — and that is the intended shape, because a
+one-time bootstrap should not grow an alternative forward route.
+
+## An exit code describes what happened, not what was attempted
+
+`20` means "refused before mutation". Once a successor session exists and the
+envelope is consumed, it is no longer available: the pointer may have moved and
+the applications may be deployed, and an operator reading `20` would reach for
+`rollback-prepared` on an adopted cutover.
+
+```text
+before a session/adoption exists   an exception may legitimately be 20
+once the session exists            any unexpected exception is RECOVERY_REQUIRED (12)
+```
+
+The same reasoning applies to `resume`: a runtime that cannot be observed is
+frequently the reason a session needs resuming, so requiring a successful
+observation to produce a recovery plan is circular. An unobservable topology is
+reported as `RECOVERY_REQUIRED` with `TOPOLOGY_UNOBSERVABLE`, never as a safe
+abort — absence of observation is not evidence of anything.
+
+A session records its candidate when it is acquired, and nothing restates it
+afterwards. An adopted session that omitted it still satisfied the schema —
+either a candidate or an adopted cutover is enough — but certification resolves
+its driver from `session.candidateId`, so the omission surfaced only at
+`issueCapability`, after readiness had already admitted the release, and sent a
+finished cutover into recovery instead of to the operator.
+
+Attendance belongs **after** `AWAITING_OPERATOR`, not before it. Issuing a
+capability is not an attended operation and creates no external effect, so the
+deploy that issues one needs no controlling terminal and reaches exit 13
+unattended. The terminal is opened in `preflight` — before anything can be
+armed — and the channel opened there is the one `certify` then speaks on, which
+is why the driver is memoized per session: proving a terminal exists and then
+opening a different one later would prove nothing about the operator who is
+actually present.
+
+A command that hands a session back as `RECOVERY_REQUIRED` **stands down from
+its lease**. It
+knows it is exiting, and holding the lease until it lapses would make the next
+command wait out the full term before it could act, with production fenced the
+whole time. Standing down is not the same as being evicted: only the holder may
+do it, a live holder is never displaced, and a crash still falls back to
+ordinary expiry. It applies wherever that decision is made — a convergence or
+readiness failure arrives through a different path than an unexpected one, and
+both hand back — and to `resume`, which takes a lease to read the state and
+then tells the operator to roll back.
+
+Cross-lineage `rollback <session>` may take over a **lapsed** lease itself. It
+has an external receipt and does not need the successor's cooperation to begin,
+and requiring an operator to re-supply the dead process's owner id made an
+ordinary recovery depend on reading it out of the database by hand. A lease
+that has not lapsed still belongs to whoever holds it.
+
 ## "Stopped" is a positive proof, never an absence
 
 `POST /applications/{uuid}/stop` queues the request and returns. A single

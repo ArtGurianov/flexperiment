@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import Database from "better-sqlite3";
 import {
-  closeSync, constants as fsConstants, copyFileSync, existsSync, fsyncSync, lstatSync, openSync,
-  realpathSync, readFileSync, renameSync, statSync, unlinkSync,
+  chmodSync, chownSync, closeSync, constants as fsConstants, copyFileSync, existsSync, fsyncSync,
+  lstatSync, openSync, realpathSync, readFileSync, renameSync, statSync, unlinkSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { migrate, openDatabase, readSchemaIdentity } from "../db";
@@ -41,6 +41,16 @@ export type SqliteCutoverStorageOptions = {
   /** Shared process-local capability authority; there is no construction path without it. */
   readonly authority: RuntimeQuiescenceAuthority;
   readonly revalidation: RuntimeLeaseRevalidation;
+  /**
+   * Everything a launch database needs beyond its schema.
+   *
+   * `migrate` alone produces a structurally valid database that the runtime
+   * cannot serve from: no cities, and `legal_releases` deliberately empty, so
+   * readiness stops at LEGAL_RELEASE_EVIDENCE_MISSING. Supplied by the
+   * composition root because seeding and legal publication are domain
+   * operations, not storage ones.
+   */
+  readonly initializeLaunchDatabase?: (db: Database.Database) => void;
 };
 
 type Layout = {
@@ -154,6 +164,7 @@ const layout = (options: SqliteCutoverStorageOptions): Layout => {
  */
 export class SqliteCutoverStorage {
   readonly #layout: Layout;
+  readonly #initializeLaunchDatabase?: (db: Database.Database) => void;
   readonly #authority: RuntimeQuiescenceAuthority;
   readonly #revalidation: RuntimeLeaseRevalidation;
 
@@ -161,6 +172,7 @@ export class SqliteCutoverStorage {
     this.#layout = layout(options);
     this.#authority = options.authority;
     this.#revalidation = options.revalidation;
+    this.#initializeLaunchDatabase = options.initializeLaunchDatabase;
   }
 
   async createVerifiedBackups(id: string): Promise<readonly OnlineBackupEvidence[]> {
@@ -222,7 +234,9 @@ export class SqliteCutoverStorage {
       fsyncDirectory(this.#layout.archiveDirectory);
       fsyncDirectory(this.#layout.databaseDirectory);
     }
-    this.ensureFreshLaunchDatabase();
+    // The archive is the predecessor file itself, moved: its uid/gid/mode are
+    // exactly what the runtime was able to open before this cutover began.
+    this.ensureLaunchDatabaseInitialized(archive);
   }
 
   /** Read-only admission for rollback. It must pass before recovery reserves a session or touches the live DB/ref. */
@@ -309,17 +323,66 @@ export class SqliteCutoverStorage {
     }
   }
 
-  private ensureFreshLaunchDatabase(): void {
+  /**
+   * Brings the launch database all the way to something the runtime can serve.
+   *
+   * Deliberately an ENSURE, not a create-once. The previous version returned
+   * early on a SUPPORTED database, so a retry after a crash between `migrate`
+   * and the rest would see a schema and declare the job finished - leaving a
+   * database with no cities and no legal release, which readiness refuses and
+   * certification cannot use. Both steps below are idempotent for an exact
+   * replay, so running them again is the safe direction.
+   *
+   * Ownership is handed over last, after every root-side write. Doing it
+   * earlier would let seeding and legal publication recreate root-owned
+   * sidecars beside a correctly-owned main file.
+   */
+  private ensureLaunchDatabaseInitialized(runtimeOwnership: string): void {
     if (existsSync(this.#layout.database)) {
       const lineage = this.lineageAtRest();
-      if (lineage === "SUPPORTED") return;
-      if (lineage !== "EMPTY_BOOTSTRAPPABLE") throw new SqliteCutoverStorageError("CUTOVER_STORAGE_FRESH_DATABASE_INVALID", lineage);
+      if (lineage !== "SUPPORTED" && lineage !== "EMPTY_BOOTSTRAPPABLE") {
+        throw new SqliteCutoverStorageError("CUTOVER_STORAGE_FRESH_DATABASE_INVALID", lineage);
+      }
     }
     const db = openDatabase(this.#layout.database, { testSchemaSnapshot: false });
-    try { migrate(db); } finally { db.close(); }
+    try {
+      migrate(db);
+      this.#initializeLaunchDatabase?.(db);
+    } finally { db.close(); }
     if (this.lineageAtRest() !== "SUPPORTED") throw new SqliteCutoverStorageError("CUTOVER_STORAGE_FRESH_DATABASE_NOT_SUPPORTED");
+    this.checkpointAndRefuseLiveSidecars();
+    this.handOwnershipToRuntime(runtimeOwnership);
     fsyncFile(this.#layout.database);
     fsyncDirectory(this.#layout.databaseDirectory);
+  }
+
+  /**
+   * The successor inherits the predecessor's uid, gid and mode.
+   *
+   * The runner is root; the runtime is not. A database created here is
+   * root-owned and unreadable to the container, which then crash-loops and the
+   * cutover can never converge - and because the runtime is what topology is
+   * read from, the recovery path stalls with it. The predecessor archive is the
+   * file the runtime demonstrably could open, so its metadata is the contract
+   * rather than a hardcoded uid.
+   */
+  private handOwnershipToRuntime(source: string): void {
+    const wanted = statSync(source);
+    const mode = wanted.mode & 0o7777;
+    // Sidecars too: SQLite recreates them, but one left behind owned by root
+    // beside a handed-over main file is a writer the runtime cannot open.
+    for (const path of [this.#layout.database, `${this.#layout.database}-wal`, `${this.#layout.database}-shm`]) {
+      if (!existsSync(path)) continue;
+      chownSync(path, wanted.uid, wanted.gid);
+      chmodSync(path, mode);
+      const applied = statSync(path);
+      if (applied.uid !== wanted.uid || applied.gid !== wanted.gid || (applied.mode & 0o7777) !== mode) {
+        throw new SqliteCutoverStorageError(
+          "CUTOVER_STORAGE_RUNTIME_OWNERSHIP_NOT_APPLIED",
+          `${basename(path)}: wanted ${wanted.uid}:${wanted.gid} ${mode.toString(8)}, found ${applied.uid}:${applied.gid} ${(applied.mode & 0o7777).toString(8)}`,
+        );
+      }
+    }
   }
 
   private lineageAtRest() {

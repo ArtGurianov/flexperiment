@@ -182,6 +182,21 @@ export class SqliteReleaseAuthorityStore implements ReleaseAuthorityStore {
     return session;
   }
 
+  /**
+   * The current holder stands down.
+   *
+   * A process that has decided to exit knows its lease is about to be useless,
+   * and leaving it alive means the next command has to wait out the full lease
+   * before it may act - with production fenced the whole time. Only the holder
+   * may do this, so it is standing down rather than being evicted, and a crash
+   * still falls back to ordinary expiry.
+   */
+  yieldLease(id: string, ownerId: string, now: Date): void {
+    this.db.prepare(`UPDATE deploy_sessions SET lease_expires_at = ?
+      WHERE id = ? AND owner_id = ? AND state NOT IN ('SAFE_ABORTED', 'SUCCEEDED', 'ROLLED_BACK')`)
+      .run(now.toISOString(), id, ownerId);
+  }
+
   takeOverExpiredLease(id: string, newOwnerId: string, now: Date, leaseExpiresAt: string): DeploySession {
     const session = this.required(id);
     if (TERMINAL.has(session.state)) throw new Error("DEPLOY_SESSION_TERMINAL");
