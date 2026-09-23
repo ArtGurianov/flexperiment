@@ -61,7 +61,8 @@ export type CertificationDriverOptions = {
 export { certificationRunId };
 
 /**
- * What `retryAfterNoEffectFailure` found. Only RETRY_ISSUED changed anything.
+ * What `retryAfterNoEffectFailure` found. RETRY_ISSUED and RETRY_CAPABILITY_REISSUED
+ * wrote certification rows; the others changed nothing.
  *
  * INELIGIBLE is not an error: a first run that failed after doing something
  * still has to be reconciled - a captured payment refunded - and that is the
