@@ -158,15 +158,25 @@ export class CoolifyClient {
   }
 
   /** The images this installation could still roll back to. Empty means a rollback would have nothing to restore. */
-  async rollbackImages(uuid: string): Promise<readonly string[]> {
-    const body = await this.request("GET", `/applications/${encodeURIComponent(uuid)}/rollback-images`);
-    const images = Array.isArray(body) ? body : Array.isArray(object(body)?.images) ? object(body)!.images as unknown[] : [];
-    return (images as Record<string, unknown>[])
-      .map((image) => String(image.tag ?? image.commit ?? image.name ?? ""))
-      .filter(Boolean);
-  }
 
   /** Starts a deployment and returns its uuid. Acceptance, not convergence - the caller must await it. */
+  /**
+   * Takes an application down through the control plane that owns it.
+   *
+   * The runner used to stop containers itself, by label and id. That was a
+   * second deployment control plane underneath this one, and it is what both
+   * 2026-09-23 incidents were made of.
+   */
+  async stopApplication(uuid: string): Promise<void> {
+    await this.request("POST", `/applications/${encodeURIComponent(uuid)}/stop`);
+  }
+
+  /** What the control plane says this application is doing right now. */
+  async applicationStatus(uuid: string): Promise<string> {
+    const body = this.requiredObject(await this.request("GET", `/applications/${encodeURIComponent(uuid)}`), "GET", `/applications/${encodeURIComponent(uuid)}`);
+    return String(body.status ?? "unknown");
+  }
+
   async startDeployment(uuid: string): Promise<string> {
     const body = this.requiredObject(await this.request("POST", `/deploy?uuid=${encodeURIComponent(uuid)}`), "POST", `/deploy?uuid=${encodeURIComponent(uuid)}`);
     const queued = Array.isArray(body.deployments) ? (body.deployments as Record<string, unknown>[])[0] : undefined;
@@ -181,12 +191,6 @@ export class CoolifyClient {
    * call has nothing to restore, which is why `rollbackImages` is checked
    * first rather than this being allowed to improvise a rebuild.
    */
-  async rollback(uuid: string, commit: string): Promise<string> {
-    const body = this.requiredObject(await this.request("POST", `/applications/${encodeURIComponent(uuid)}/rollback`, { commit }), "POST", `/applications/${encodeURIComponent(uuid)}/rollback`);
-    const deploymentUuid = String(body.deployment_uuid ?? body.uuid ?? "");
-    if (!deploymentUuid) throw new CoolifyError("COOLIFY_ROLLBACK_NOT_QUEUED", `${uuid} -> ${commit}`);
-    return deploymentUuid;
-  }
 
   async deployment(uuid: string): Promise<CoolifyDeployment> {
     const body = this.requiredObject(await this.request("GET", `/deployments/${encodeURIComponent(uuid)}`), "GET", `/deployments/${encodeURIComponent(uuid)}`);

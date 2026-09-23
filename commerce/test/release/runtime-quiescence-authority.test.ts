@@ -3,15 +3,13 @@ import { RuntimeQuiescenceAuthority, RuntimeQuiescenceAuthorityError, type Runti
 
 const binding: RuntimeLeaseBinding = {
   sessionId: "session-1", operation: "PREPARE", databasePath: "/db/commerce.sqlite", databaseIdentity: { canonicalPath: "/db/commerce.sqlite", dev: 8, ino: 42 },
-  sha: "a".repeat(40), applicationUuid: "commerce-uuid", applicationResourceId: "17",
-  repositories: { commerce: "repo/commerce", "commerce-worker": "repo/worker" }, lockOwner: "runner-1",
-  units: [{ service: "commerce", containerId: "c1" }, { service: "commerce-worker", containerId: "c2" }],
+  applicationUuid: "commerce-uuid", applicationResourceId: "17", lockOwner: "runner-1",
 };
 
 const probes = (events: string[] = []) => ({
   async assertLockHeld(owner: string) { events.push(`lock:${owner}`); },
   async assertDatabaseIdentity(identity: { canonicalPath: string }) { events.push(`database:${identity.canonicalPath}`); },
-  async assertUnitsStopped(value: RuntimeLeaseBinding) { events.push(`units:${value.units.map((unit) => unit.containerId).join(",")}`); },
+  async assertUnitsStopped(value: RuntimeLeaseBinding) { events.push(`runtime:${value.applicationUuid}`); },
   async assertNoSqliteHandles(path: string) { events.push(`handles:${path}`); },
 });
 
@@ -36,7 +34,7 @@ describe("runtime quiescence authority", () => {
     await expect(authority.consume(lease, binding, probes())).rejects.toMatchObject({ code: "RUNTIME_LEASE_INVALID" });
   });
 
-  it.each(["sessionId", "operation", "databasePath", "sha"] as const)("rejects a mismatched %s", async (key) => {
+  it.each(["sessionId", "operation", "databasePath", "applicationUuid"] as const)("rejects a mismatched %s", async (key) => {
     const authority = new RuntimeQuiescenceAuthority(() => 0);
     const lease = authority.acquire(binding);
     const wrong = { ...binding, [key]: key === "operation" ? "RESTORE" : `${binding[key]}-wrong` } as RuntimeLeaseBinding;
@@ -48,7 +46,7 @@ describe("runtime quiescence authority", () => {
     const lease = authority.acquire(binding);
     const events: string[] = [];
     await authority.consume(lease, binding, probes(events));
-    expect(events).toEqual(["lock:runner-1", "database:/db/commerce.sqlite", "units:c1,c2", "handles:/db/commerce.sqlite", "lock:runner-1"]);
+    expect(events).toEqual(["lock:runner-1", "database:/db/commerce.sqlite", "runtime:commerce-uuid", "handles:/db/commerce.sqlite", "lock:runner-1"]);
   });
 
   it("cannot consume a lease issued by another process-local authority", async () => {
@@ -65,7 +63,7 @@ describe("runtime quiescence authority", () => {
     await expect(authority.consume(lease, binding, probes())).rejects.toMatchObject({ code: "RUNTIME_LEASE_INVALID" });
   });
 
-  it.each(["captured-container-restarted", "new-container-for-trusted-service"])("destroys the lease when %s", async (drift) => {
+  it.each(["runtime-restarted", "runtime-replaced"])("destroys the lease when %s", async (drift) => {
     const authority = new RuntimeQuiescenceAuthority(() => 0);
     const lease = authority.acquire(binding);
     await expect(authority.consume(lease, binding, { ...probes(), async assertUnitsStopped() { throw new Error(drift); } }))

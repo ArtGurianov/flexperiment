@@ -6,7 +6,6 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CoolifyClient } from "../../src/release/coolify";
 import { CoolifyDeploymentDriver, CoolifyRecoveryDriver, type SurfaceApplication } from "../../src/release/coolify-deployment";
-import type { ComposeRollbackEvidence } from "../../src/release/compose-rollback-evidence";
 import { ProductionDeployRefStore } from "../../src/release/deploy-ref";
 
 /**
@@ -34,7 +33,6 @@ let retained: Record<string, string[]>;
 let calls: string[];
 let deploymentStatus: string;
 let buildPacks: Record<string, string>;
-let composeRestores: string[];
 let dockerImagesToKeep: number;
 let retentionDisabled: boolean;
 let queue: Record<string, readonly { status: string; deployment_uuid: string }[]>;
@@ -92,7 +90,6 @@ beforeEach(() => {
   git(clone, "push", "origin", "main");
   retained = { "app-frontend": [preSha], "app-admin": [preSha], "app-commerce": [preSha] };
   buildPacks = { "app-commerce": "dockercompose" };
-  composeRestores = [];
   dockerImagesToKeep = 2;
   retentionDisabled = false;
   queue = {};
@@ -104,14 +101,10 @@ afterEach(async () => {
   server = undefined;
 });
 
-const drivers = async (composeRollbackEvidence?: ComposeRollbackEvidence) => {
+const drivers = async () => {
   const client = new CoolifyClient({ apiUrl: await listen(), token: "t", pollIntervalMs: 1, sleep: async () => {} });
   const refs = new ProductionDeployRefStore({ cwd: clone });
-  const options = {
-    client, refs, applications: APPLICATIONS, composeRollbackEvidence,
-    composeRepositories: ["repo/commerce", "repo/worker"],
-    composeRestore: async (sha: string) => { composeRestores.push(sha); },
-  };
+  const options = { client, refs, applications: APPLICATIONS };
   return { refs, deployment: new CoolifyDeploymentDriver(options), recovery: new CoolifyRecoveryDriver(options) };
 };
 
@@ -125,22 +118,6 @@ describe("deploying through the pointer the applications follow", () => {
     expect(calls.filter((call) => call === "POST /api/v1/deploy")).toHaveLength(3);
   });
 
-  it("refuses to start when a surface could not be put back", async () => {
-    // Coolify's rollback needs a retained image. One that has been pruned is
-    // discovered now or in the middle of a recovery, and a cutover that cannot
-    // be undone must not begin.
-    // A Dockerfile application, because that is the kind whose retained image
-    // Coolify owns. Commerce is Compose and is proved from host evidence.
-    retained["app-admin"] = [];
-    const { refs, deployment } = await drivers({
-      async assertPreDeployRecoverable() {},
-      async assertPredecessorStillPresent() {},
-      async assertRetainedArtifacts() {},
-    });
-
-    await expect(deployment.assertRecoverable(preSha)).rejects.toThrow("DEPLOYMENT_ROLLBACK_IMAGE_MISSING");
-    expect(await refs.read()).toBe(preSha);
-  });
 
   it("refuses when Coolify disagrees with the configured deployment kind", async () => {
     // Configuration decides which destructive path runs; Coolify's answer only
@@ -150,66 +127,14 @@ describe("deploying through the pointer the applications follow", () => {
     await expect(deployment.assertRecoverable(preSha)).rejects.toThrow("DEPLOYMENT_KIND_MISMATCH");
   });
 
-  it("uses the Coolify rollback-images API for Dockerfile applications only", async () => {
-    const { deployment } = await drivers({
-      async assertPreDeployRecoverable() {},
-      async assertPredecessorStillPresent() {},
-      async assertRetainedArtifacts() {},
-    });
-    await deployment.assertRecoverable(preSha);
-    // Two, not three: commerce is Compose and is proved from host evidence.
-    expect(calls.filter((call) => call.endsWith("/rollback-images"))).toHaveLength(2);
-  });
 
-  it("proves a prepared launch from retained artifacts rather than running containers", async () => {
-    // The production failure: after `prepare-bootstrap` the Compose containers
-    // are stopped on purpose, so requiring them is requiring the absence of
-    // what preparation just did.
-    const artifacts: string[] = [];
-    const { deployment } = await drivers({
-      async assertPreDeployRecoverable() { throw new Error("COMPOSE_ROLLBACK_CONTAINERS_MISSING"); },
-      async assertPredecessorStillPresent() {},
-      async assertRetainedArtifacts(repositories, sha) { artifacts.push(`${[...repositories].join(",")}:${sha}`); },
-    });
-    await deployment.assertRecoverable(preSha, "PREPARED_STOPPED");
-    expect(artifacts).toEqual([`repo/commerce,repo/worker:${preSha}`]);
-  });
 
-  it("uses host evidence for Compose and refuses an empty resource rollback-images list as proof", async () => {
-    retained["app-commerce"] = [];
-    const observed: string[] = [];
-    const { deployment } = await drivers({
-      async assertPreDeployRecoverable(applicationId, sha) { observed.push(`${applicationId}:${sha}`); },
-      async assertPredecessorStillPresent() {},
-      async assertRetainedArtifacts() {},
-    });
 
-    await deployment.assertRecoverable(preSha);
 
-    expect(observed).toEqual([`3:${preSha}`]);
-    expect(calls.filter((call) => call === "GET /api/v1/applications/app-commerce/rollback-images")).toHaveLength(0);
-  });
 
-  it("accepts one predecessor image per Compose repository when configured retention is two", async () => {
-    const { deployment } = await drivers({ async assertPreDeployRecoverable() {}, async assertPredecessorStillPresent() {}, async assertRetainedArtifacts() {} });
-    await expect(deployment.assertRecoverable(preSha)).resolves.toBeUndefined();
-  });
-
-  it("refuses configured retention one even if an older second tag exists", async () => {
-    dockerImagesToKeep = 1;
-    retained["app-commerce"] = [preSha, targetSha];
-    const { deployment } = await drivers();
-    await expect(deployment.assertRecoverable(preSha)).rejects.toMatchObject({ code: "DEPLOYMENT_IMAGE_RETENTION_INSUFFICIENT" });
-  });
-
-  it("refuses when server cleanup disables application image retention", async () => {
-    retentionDisabled = true;
-    const { deployment } = await drivers();
-    await expect(deployment.assertRecoverable(preSha)).rejects.toMatchObject({ code: "DEPLOYMENT_APPLICATION_IMAGE_RETENTION_DISABLED" });
-  });
 
   it("derives the server and numeric Compose resource id from the three trusted application UUIDs", async () => {
-    const { deployment } = await drivers({ async assertPreDeployRecoverable() {}, async assertPredecessorStillPresent() {}, async assertRetainedArtifacts() {} });
+    const { deployment } = await drivers();
     await expect(deployment.composeResourceId("app-commerce")).resolves.toBe("3");
   });
 
@@ -226,7 +151,7 @@ describe("deploying through the pointer the applications follow", () => {
 
   it("refuses a nonnumeric Compose label id even when the server owns all three UUIDs", async () => {
     resourcesFor = () => APPLICATIONS.map((application, index) => ({ id: application.uuid === "app-commerce" ? "not-a-label" : String(index + 1), uuid: application.uuid, type: "application" }));
-    const { deployment } = await drivers({ async assertPreDeployRecoverable() {}, async assertPredecessorStillPresent() {}, async assertRetainedArtifacts() {} });
+    const { deployment } = await drivers();
     await expect(deployment.composeResourceId("app-commerce")).rejects.toMatchObject({ code: "COOLIFY_COMPOSE_RESOURCE_ID_INVALID" });
   });
 
@@ -236,14 +161,6 @@ describe("deploying through the pointer the applications follow", () => {
     await expect(deployment.assertRecoverable(preSha)).rejects.toMatchObject({ code: "DEPLOYMENT_QUEUE_ACTIVE" });
   });
 
-  it("does not allow arming evidence when the post-target Compose predecessor disappeared", async () => {
-    const { deployment } = await drivers({
-      async assertPreDeployRecoverable() {},
-      async assertPredecessorStillPresent() { throw Object.assign(new Error("gone"), { code: "COMPOSE_ROLLBACK_PREDECESSOR_IMAGE_MISSING" }); },
-      async assertRetainedArtifacts() {},
-    });
-    await expect(deployment.assertPredecessorRetained(preSha)).rejects.toMatchObject({ code: "COMPOSE_ROLLBACK_PREDECESSOR_IMAGE_MISSING" });
-  });
 
   it("does not report a failed deployment as a deploy", async () => {
     deploymentStatus = "failed";
@@ -286,22 +203,12 @@ describe("putting production back", () => {
     await recovery.restorePreDeployTopology({ runtime: { frontend: preSha, admin: preSha, commerce: preSha, worker: preSha }, controlPlane: { productionDeployRefSha: preSha } });
 
     expect(await refs.read()).toBe(preSha);
-    // Two, not three. Commerce is a Compose application: Coolify does not own
-    // its images, so it is restored from its captured units instead.
-    expect(calls.filter((call) => call.endsWith("/rollback"))).toHaveLength(2);
-    expect(composeRestores).toEqual([preSha]);
+    // One mechanism for all three: recovery deploys the predecessor commit the
+    // pointer now names, rather than resurrecting a retained artifact.
+    expect(calls.filter((call) => call.startsWith("POST /api/v1/deploy"))).toHaveLength(3);
+    expect(calls.filter((call) => call.endsWith("/rollback"))).toHaveLength(0);
   });
 
-  it("refuses rather than rebuilding when the retained image is gone", async () => {
-    // A rebuild is a new artifact. Recovery restores the one that was running,
-    // so this stops and leaves the session in recovery with sales shut.
-    retained["app-admin"] = [];
-    const { refs, recovery } = await drivers();
-    await refs.compareAndSet(preSha, targetSha);
-
-    await expect(recovery.restorePreDeployTopology({ runtime: { frontend: preSha, admin: preSha, commerce: preSha, worker: preSha }, controlPlane: { productionDeployRefSha: preSha } }))
-      .rejects.toThrow("RECOVERY_ROLLBACK_IMAGE_MISSING");
-  });
 
   it("refuses a snapshot this control plane cannot restore", async () => {
     // All three applications track one ref, so a vector naming two commits is

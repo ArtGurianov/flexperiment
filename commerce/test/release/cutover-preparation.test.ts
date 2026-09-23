@@ -26,9 +26,7 @@ const predecessor = (options: {
   const grant = (cutoverId: string) => {
     const binding: RuntimeLeaseBinding = {
       sessionId: cutoverId, operation: "PREPARE", databasePath: "/db", databaseIdentity: { canonicalPath: "/db", dev: 1, ino: 2 },
-      sha: "b".repeat(40), applicationUuid: "commerce-uuid", applicationResourceId: "3",
-      repositories: { commerce: "repo/commerce", "commerce-worker": "repo/worker" },
-      units: [{ service: "commerce", containerId: "c1" }, { service: "commerce-worker", containerId: "c2" }], lockOwner: "runner",
+      applicationUuid: "commerce-uuid", applicationResourceId: "3", lockOwner: "runner",
     };
     return { lease: authority.acquire(binding), binding };
   };

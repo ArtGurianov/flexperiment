@@ -155,15 +155,6 @@ describe("the Coolify client", () => {
     expect((await client(url).awaitDeployment("dep-1")).commit).toBe(OTHER);
   });
 
-  it("lists the images a rollback could still restore", async () => {
-    const url = await listen(() => ({ status: 200, body: JSON.stringify({ images: [{ tag: COMMIT }, { tag: OTHER }] }) }));
-    expect(await client(url).rollbackImages("app-1")).toEqual([COMMIT, OTHER]);
-
-    await new Promise<void>((resolve) => server!.close(() => resolve()));
-    const empty = await listen(() => ({ status: 200, body: JSON.stringify({ images: [] }) }));
-    // Empty is the answer that stops a cutover, so it must be reportable.
-    expect(await client(empty).rollbackImages("app-1")).toEqual([]);
-  });
 
   it("names the path but never the token when a request fails", async () => {
     const url = await listen(() => ({ status: 403, body: "" }));

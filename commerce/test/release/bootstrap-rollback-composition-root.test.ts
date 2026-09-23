@@ -86,13 +86,7 @@ describe("cross-lineage rollback through the production composition root", () =>
     const forward = buildProductionRelease(config, {
       now: () => now, fetch: forwardFetch as typeof globalThis.fetch,
       runtimeControl: {
-        async capture(_binding, expectedSha) {
-          return [
-            { id: "1".repeat(64), service: "commerce", image: `repo/commerce:${expectedSha}`, running: true },
-            { id: "2".repeat(64), service: "commerce-worker", image: `repo/worker:${expectedSha}`, running: true },
-          ];
-        },
-        async stopAndReprove() {}, async assertStopped() {}, async startCaptured() {},
+        async stop() {}, async assertStopped() {}, async start() {},
       },
       openHandles: noHandles,
     });
@@ -109,14 +103,15 @@ describe("cross-lineage rollback through the production composition root", () =>
       if (url.endsWith("/servers")) return new Response(JSON.stringify([{ uuid: "server-1" }]));
       if (url.includes("/servers/server-1/resources")) return resourceResponse();
       if (url.includes("/rollback-images")) return new Response(JSON.stringify([{ tag: `retained:${predecessor}` }]));
-      const rollback = url.match(/\/applications\/app-(frontend|admin|commerce)\/rollback$/);
-      if (method === "POST" && rollback) {
-        const name = rollback[1] as keyof typeof surface;
+      const deploy = url.match(/\/deploy\?uuid=app-(frontend|admin|commerce)$/);
+      if (method === "POST" && deploy) {
+        const name = deploy[1] as keyof typeof surface;
         coolifyRollbacks.push(name);
         surface[name] = predecessor;
-        return new Response(JSON.stringify({ deployment_uuid: `rollback-${name}` }));
+        return new Response(JSON.stringify({ deployments: [{ deployment_uuid: `redeploy-${name}` }] }));
       }
-      if (url.includes("/deployments/rollback-")) return new Response(JSON.stringify({ status: "finished" }));
+      if (url.endsWith("/stop")) return new Response(JSON.stringify({ message: "stopped" }));
+      if (url.includes("/deployments/redeploy-")) return new Response(JSON.stringify({ status: "finished" }));
       if (url.endsWith("/readyz")) return new Response("{}", { status: surface.commerce === predecessor ? 200 : 503 });
       if (url.includes("frontend.invalid")) return new Response(JSON.stringify({ source_commit: surface.frontend }));
       if (url.includes("admin.invalid")) return new Response(JSON.stringify({ source_commit: surface.admin }));
@@ -126,20 +121,9 @@ describe("cross-lineage rollback through the production composition root", () =>
     const release = buildProductionRelease(config, {
       now: () => now, fetch: rollbackFetch as typeof globalThis.fetch,
       runtimeControl: {
-        async capture(_binding, expectedSha) {
-          runtimeEvents.push("capture");
-          return [
-            { id: "3".repeat(64), service: "commerce", image: `repo/commerce:${expectedSha}`, running: true },
-            { id: "4".repeat(64), service: "commerce-worker", image: `repo/worker:${expectedSha}`, running: true },
-          ];
-        },
-        async stopAndReprove() { runtimeEvents.push("stop"); },
+        async stop() { runtimeEvents.push("stop"); },
         async assertStopped() { runtimeEvents.push("reprove"); },
-        // This used to throw "rollback must start through Coolify", which was
-        // the wrong assumption encoded as a fixture: Coolify does not own the
-        // Compose images, and asking it to roll them back fails in production.
-        // Starting the captured units is what actually returns the surface.
-        async startCaptured() { runtimeEvents.push("start-captured"); surface.commerce = predecessor; },
+        async start() { runtimeEvents.push("start"); },
       },
       openHandles: { async assertNoOpenHandles() { runtimeEvents.push("handles"); } },
     });
@@ -155,17 +139,14 @@ describe("cross-lineage rollback through the production composition root", () =>
       const receipt = await release.bootstrapRollback!.rollback(session.id, "owner");
       expect(receipt.stage).toBe("COMPLETED");
       expect(receipt.successorDatabase?.ref).toBe(join(archive, `${bootstrapRollbackId(session.id)}.successor.sqlite`));
-      // Only the two Dockerfile applications go through Coolify's rollback API.
-      // Commerce is Compose: Coolify does not own those images, so it is
-      // restored by starting its captured units instead.
-      expect(coolifyRollbacks).toEqual(["frontend", "admin"]);
-      expect(runtimeEvents).toContain("start-captured");
+      // One mechanism for all three: Coolify deploys the predecessor commit
+      // the pointer now names. No image archaeology, no bespoke Compose path.
+      expect(coolifyRollbacks).toEqual(["frontend", "admin", "commerce"]);
       expect(await release.deployRef.read()).toBe(predecessor);
       expect(existsSync(receipt.intent.predecessorDatabase.ref)).toBe(true);
-      // The tail is the Compose restore: it re-captures first, which is what
-      // proves the units it is about to start carry the predecessor image,
-      // and only then starts them.
-      expect(runtimeEvents).toEqual(["capture", "stop", "handles", "reprove", "handles", "capture", "start-captured"]);
+      // The runner's own runtime work is now only quiescence: stop, prove
+      // stopped, prove no writers. Bringing production back is Coolify's.
+      expect(runtimeEvents).toEqual(["stop", "reprove", "handles", "reprove", "handles"]);
 
       const restored = new Database(databasePath, { readonly: true });
       try {
@@ -245,20 +226,16 @@ describe("cross-lineage rollback through the production composition root", () =>
       if (url.endsWith("/servers")) return new Response(JSON.stringify([{ uuid: "server-1" }]));
       if (url.includes("/servers/server-1/resources")) return resources();
       if (url.endsWith("/readyz")) return new Response("{}", { status: commerceRunning ? 200 : 503 });
+      if (url.includes("/deployments/")) return new Response(JSON.stringify({ status: "finished" }));
+      if (url.includes("/deploy")) { commerceRunning = true; return new Response(JSON.stringify({ deployments: [{ deployment_uuid: "dep-1" }] })); }
+      if (url.endsWith("/stop")) { commerceRunning = false; return new Response(JSON.stringify({ message: "stopped" })); }
       return new Response(JSON.stringify({ source_commit: predecessor }), { status: 200 });
     };
     const events: string[] = [];
     const control = {
-      async capture(_binding: unknown, expectedSha: string) {
-        events.push(`capture:${expectedSha === predecessor ? "predecessor" : "other"}`);
-        return [
-          { id: "5".repeat(64), service: "commerce" as const, image: `repo/commerce:${expectedSha}`, running: commerceRunning },
-          { id: "6".repeat(64), service: "commerce-worker" as const, image: `repo/worker:${expectedSha}`, running: commerceRunning },
-        ];
-      },
-      async stopAndReprove() { events.push("stop"); commerceRunning = false; },
+      async stop() { events.push("stop"); commerceRunning = false; },
       async assertStopped() { events.push("reprove"); },
-      async startCaptured() { events.push("start-captured"); commerceRunning = true; },
+      async start() { events.push("start"); commerceRunning = true; },
     };
     const openHandles = { async assertNoOpenHandles() { events.push("handles"); } };
 
@@ -280,8 +257,7 @@ describe("cross-lineage rollback through the production composition root", () =>
       expect(receipt.intent.authority).toEqual({ kind: "PREPARED_CUTOVER", cutoverId: "prepared-1" });
       // Quiesced against the predecessor, never the target: those containers
       // were never at the target, which is what broke in production.
-      expect(events.filter((entry) => entry.startsWith("capture:")).every((entry) => entry === "capture:predecessor")).toBe(true);
-      expect(events).toContain("start-captured");
+      expect(events).toContain("stop");
       // The pointer never moved, so there was nothing to put back.
       expect(await release.deployRef.read()).toBe(predecessor);
       expect(existsSync(receipt.intent.predecessorDatabase.ref)).toBe(true);

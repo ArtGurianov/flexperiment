@@ -139,56 +139,87 @@ irreversible step, because this command can itself die after replacing the
 launch database with the legacy one, at which point the successor database is
 no longer available to be anyone's recovery cursor.
 
-## The runtime shape of production is configuration, not a discovery
+## Coolify owns the containers, completely
 
-Coolify reports a `build_pack`, and the destructive paths used to branch on it.
-That made production's runtime shape something the control plane learned at run
-time — and a test double answering `dockerfile` for everything put every
-Compose branch, which are the destructive ones, outside the composition root's
-contract. Two outages came through that gap on 2026-09-23.
+The runner used to drive Docker directly: discovering containers by label,
+capturing their ids, stopping them, proving retained image tags, and starting
+those exact ids again. That was a second deployment control plane underneath
+the one this project already runs, and it is what both 2026-09-23 production
+incidents were made of. It has been deleted.
 
-So `deploymentKind` is stated in configuration: frontend and admin are
-Dockerfile applications, commerce is Docker Compose. What Coolify reports is
-checked against it, and a disagreement is `DEPLOYMENT_KIND_MISMATCH` — a
-refusal before mutation, never a branch.
-
-The infrastructure state machine each arrow must be tested against:
+What the runner owns is what Coolify cannot:
 
 ```text
-RUNNING_PREDECESSOR
-        |
-        | prepare-bootstrap
-        v
-PREPARED_STOPPED
-  |             |
-  | deploy      | rollback-prepared
-  v             v
-ADOPTED       RUNNING_PREDECESSOR
-  |
-  | deploy target
-  v
-TARGET_RUNNING
+the sales gate
+the SQLite backup, archive and restore
+schema bootstrap
+moving and verifying production-deploy
+readiness and topology verification
 ```
 
-`PREPARED_STOPPED` is not `RUNNING_PREDECESSOR` with an envelope beside it, and
-three defects came from treating it as though it were:
+Container lifecycle is Coolify's. "Stopped" is what the control plane reports
+and what the runtime stops answering — never a container listing. "Started" is
+a deploy of whatever the tracked ref names, which is why recovery moves the
+pointer first.
 
-- **Recoverability.** While the predecessor serves, its running containers may
-  prove their own identity. Once preparation has stopped them on purpose,
-  demanding them is demanding the absence of what preparation just did. There
-  the evidence is the retained artifact — `${repository}:${predecessorSha}`
-  from the trusted repositories — not a process.
-- **Quiescence.** A session rollback stops the deployed target. A prepared
-  rollback has no target: binding to it produced
-  `TRUSTED_COMPOSE_IMAGE_SHA_MISMATCH` against containers that were never at
-  that commit. It quiesces against the predecessor, expects the units already
-  stopped, and treats a running runtime as drift rather than something to stop
-  on the way past.
-- **Restoration.** Coolify owns a Dockerfile application's images and can roll
-  them back. It does not own the Compose services' images, so commerce is
-  restored by capturing the exact predecessor units and starting them — the
-  same trusted control that stopped them. `capture` refuses any unit whose
-  image is not exactly that commit, so the units are proved before they start.
+`deploymentKind` remains configuration — frontend and admin are Dockerfile
+applications, commerce is Docker Compose — and Coolify's reported `build_pack`
+verifies it (`DEPLOYMENT_KIND_MISMATCH`). It no longer selects a code path,
+because there is only one path left.
+
+## Rollback restores a source commit, not an artifact
+
+The invariant used to be:
+
+```text
+rollback = resurrect exactly the image and container that existed before
+```
+
+That premise is what forced image-retention proofs, container capture and a
+bespoke Compose restoration into existence. It is now:
+
+```text
+rollback = restore the exact application source SHA and the exact predecessor
+           database, then prove production topology and readiness
+```
+
+So recoverability is proved against the predecessor **commit** — that it is
+still resolvable and deployable — rather than against an image inventory. One
+mechanism serves every application, and the recovery order matters:
+
+```text
+sales already closed
+→ Coolify stops commerce
+→ production-deploy CAS back to the predecessor
+→ restore the exact predecessor database
+→ Coolify deploys the predecessor
+→ topology and readiness prove the predecessor
+→ open sales
+```
+
+The pointer moves before the runtime returns, so the old commerce runtime is
+never brought up against the successor database, and no ordinary deploy can
+silently undo the recovery.
+
+This accepts one real cost, deliberately: recovery depends on the build
+pipeline at the moment it is needed. That is a smaller risk than maintaining a
+second control plane to avoid it, and it is the reason readiness — not a
+container state — is what admits a recovery as finished.
+
+## The bootstrap is a one-time operation with an expiry date
+
+The launch machinery below — the predecessor reader, prepared-cutover
+envelopes, `rollback-prepared`, the bootstrap archive protocol and the LEGACY
+lineage branches — exists to cross a lineage boundary exactly once. It should
+be deleted after the first successful launch, leaving:
+
+```text
+publish candidate
+→ CAS production-deploy
+→ Coolify deploy
+→ verify topology and readiness
+→ on failure: CAS back, Coolify redeploy predecessor
+```
 
 ## A receipt stage is reconciled against reality, never replayed
 

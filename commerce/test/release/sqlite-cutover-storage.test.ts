@@ -41,9 +41,7 @@ const fixture = () => {
     if (existsSync(database)) { const stat = statSync(database); lastIdentity = { canonicalPath: realpathSync(database), dev: stat.dev, ino: stat.ino }; }
     const binding: RuntimeLeaseBinding = {
       sessionId, operation, databasePath: database, databaseIdentity: lastIdentity,
-      sha: operation === "PREPARE" ? predecessor : target, applicationUuid: "commerce-uuid", applicationResourceId: "3",
-      repositories: { commerce: "repo/commerce", "commerce-worker": "repo/worker" },
-      units: [{ service: "commerce", containerId: "c1" }, { service: "commerce-worker", containerId: "c2" }], lockOwner: "runner-1", ...override,
+      applicationUuid: "commerce-uuid", applicationResourceId: "3", lockOwner: "runner-1", ...override,
     };
     return { lease: authority.acquire(binding), binding };
   };
@@ -210,7 +208,7 @@ describe("physical SQLite launch handoff", () => {
 
     const mismatch = fixture();
     const original = mismatch.grant("PREPARE", "cutover-1");
-    const changed: RuntimeLeaseBinding = { ...original.binding, sha: "c".repeat(40) };
+    const changed: RuntimeLeaseBinding = { ...original.binding, applicationUuid: "other-uuid" };
     const mismatchBefore = sha(mismatch.database);
     await expect(mismatch.storage.prepareArchive("cutover-1", original.lease, changed))
       .rejects.toMatchObject({ code: "RUNTIME_LEASE_BINDING_MISMATCH" });

@@ -5,7 +5,6 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { migrate } from "../../src/db";
 import type { ProductionReleaseConfig } from "../../src/release/production-config";
-import type { ComposeRollbackEvidence } from "../../src/release/compose-rollback-evidence";
 import { TEST_CAPABILITY_KEY } from "./certification-secret";
 
 /**
@@ -32,8 +31,9 @@ export type Harness = {
   setRetained(uuid: string, tags: readonly string[]): void;
   /** Makes Coolify report a different kind than configuration states. */
   setBuildPack(uuid: string, buildPack: string): void;
-  /** The Compose application's live container and image state. */
-  readonly compose: ComposeWorld;
+  /** What the control plane says the commerce application is doing. */
+  applicationStatus(): string;
+  setApplicationStatus(value: string): void;
   close(): Promise<void>;
 };
 
@@ -53,48 +53,6 @@ const APPLICATIONS = [
 ];
 
 export const COMPOSE_REPOSITORIES = ["repo/commerce", "repo/worker"] as const;
-
-/**
- * A stateful stand-in for the Docker facts the Compose paths read.
- *
- * Deliberately stateful rather than a mock that answers whatever the caller
- * wants: the defects were about running-versus-stopped containers and which
- * image tags survive, so a fixture that cannot be stopped cannot reproduce
- * them.
- */
-export class ComposeWorld implements ComposeRollbackEvidence {
-  #running: string | null;
-  readonly #images = new Set<string>();
-
-  constructor(predecessorSha: string) {
-    this.#running = predecessorSha;
-    for (const repository of COMPOSE_REPOSITORIES) this.#images.add(`${repository}:${predecessorSha}`);
-  }
-
-  /** What `prepare-bootstrap` does to the Compose application. */
-  stop(): void { this.#running = null; }
-  start(sha: string): void { this.#running = sha; }
-  get running(): string | null { return this.#running; }
-  addImage(sha: string): void { for (const repository of COMPOSE_REPOSITORIES) this.#images.add(`${repository}:${sha}`); }
-  pruneImage(sha: string): void { for (const repository of COMPOSE_REPOSITORIES) this.#images.delete(`${repository}:${sha}`); }
-
-  async assertPreDeployRecoverable(_applicationId: string, predecessorSha: string): Promise<void> {
-    if (this.#running === null) throw new Error("COMPOSE_ROLLBACK_CONTAINERS_MISSING");
-    if (this.#running !== predecessorSha) throw new Error("COMPOSE_ROLLBACK_PREDECESSOR_TAG_MISMATCH");
-    await this.assertRetainedArtifacts(COMPOSE_REPOSITORIES, predecessorSha);
-  }
-
-  async assertPredecessorStillPresent(_applicationId: string, predecessorSha: string): Promise<void> {
-    if (this.#running === null) throw new Error("COMPOSE_ROLLBACK_CONTAINERS_MISSING");
-    await this.assertRetainedArtifacts(COMPOSE_REPOSITORIES, predecessorSha);
-  }
-
-  async assertRetainedArtifacts(repositories: readonly string[], predecessorSha: string): Promise<void> {
-    for (const repository of repositories) {
-      if (!this.#images.has(`${repository}:${predecessorSha}`)) throw new Error("COMPOSE_ROLLBACK_PREDECESSOR_IMAGE_MISSING");
-    }
-  }
-}
 
 const listen = async (server: Server): Promise<string> => {
   await new Promise<void>((resolve, reject) => {
@@ -155,6 +113,9 @@ export const harness = async (root: string): Promise<Harness> => {
     APPLICATIONS.map((application) => [application.uuid, [preSha, targetSha]]),
   );
   let deploymentStatus = "finished";
+  // The only runtime state the runner is now allowed to care about, and it
+  // comes from the control plane rather than from a container listing.
+  let applicationStatus = "running:healthy";
   // Overridable so a test can make Coolify disagree with configuration.
   const buildPacks: Record<string, string> = Object.fromEntries(APPLICATIONS.map((a) => [a.uuid, a.buildPack]));
   const pinned: Record<string, string | null> = Object.fromEntries(APPLICATIONS.map((a) => [a.uuid, null]));
@@ -176,12 +137,14 @@ export const harness = async (root: string): Promise<Harness> => {
     if (url.endsWith("/rollback")) return send({ deployment_uuid: "dep-rollback" });
     // Checked before the deploy branch: `/deployments/x` also starts with `/deploy`.
     if (url.includes("/deployments/")) return send({ status: deploymentStatus, commit: targetSha });
-    if (url.includes("/deploy")) return send({ deployments: [{ deployment_uuid: "dep-1" }] });
+    if (url.endsWith("/stop")) { applicationStatus = "exited:unhealthy"; return send({ message: "stopped" }); }
+    if (url.includes("/deploy")) { applicationStatus = "running:healthy"; return send({ deployments: [{ deployment_uuid: "dep-1" }] }); }
     if (request.method === "PATCH") return send({ uuid, git_commit_sha: pinned[uuid ?? ""] });
     const application = APPLICATIONS.find((entry) => entry.uuid === uuid);
     return send({
       uuid, name: uuid,
       build_pack: buildPacks[uuid ?? ""] ?? application?.buildPack ?? "dockerfile",
+      status: applicationStatus,
       git_branch: "production-deploy", git_commit_sha: pinned[uuid ?? ""],
       settings: { docker_images_to_keep: 2 },
     });
@@ -193,7 +156,6 @@ export const harness = async (root: string): Promise<Harness> => {
     response.end(JSON.stringify({ source_commit: serving[surface] }));
   });
 
-  const compose = new ComposeWorld(preSha);
   const coolifyUrl = await listen(coolifyServer);
   const descriptorUrl = await listen(descriptorServer);
 
@@ -202,7 +164,8 @@ export const harness = async (root: string): Promise<Harness> => {
     setDeploymentStatus(status) { deploymentStatus = status; },
     setRetained(uuid, tags) { retained[uuid] = tags; },
     setBuildPack(uuid, buildPack) { buildPacks[uuid] = buildPack; },
-    compose,
+    applicationStatus: () => applicationStatus,
+    setApplicationStatus(value: string) { applicationStatus = value; },
     config: {
       databasePath,
       replacementRoot,

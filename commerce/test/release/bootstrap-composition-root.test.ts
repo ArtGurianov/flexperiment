@@ -81,16 +81,9 @@ describe("bootstrap storage through the production composition root", () => {
     const release = buildProductionRelease(config, {
       now: () => now, fetch: fetch as typeof globalThis.fetch,
       runtimeControl: {
-        async capture(binding, expectedSha) {
-          stopped.push(binding.resourceId); runtimeEvents.push("capture");
-          return [
-            { id: "1".repeat(64), service: "commerce", image: `repo/commerce:${expectedSha}`, running: true },
-            { id: "2".repeat(64), service: "commerce-worker", image: `repo/worker:${expectedSha}`, running: true },
-          ];
-        },
-        async stopAndReprove() { runtimeEvents.push("stop"); },
+        async stop() { stopped.push("app-commerce"); runtimeEvents.push("stop"); },
         async assertStopped() { runtimeEvents.push("containers-absent"); },
-        async startCaptured() { runtimeEvents.push("start"); },
+        async start() { runtimeEvents.push("start"); },
       },
       openHandles: { async assertNoOpenHandles() { runtimeEvents.push("handles-absent"); } },
     });
@@ -101,10 +94,10 @@ describe("bootstrap storage through the production composition root", () => {
       // A second read-back after checkpoint/gate verification is deliberate:
       // it re-proves there are no running containers or open handles before
       // the durable envelope authorizes the rename.
-      expect(stopped).toEqual(["3", "3"]);
+      expect(stopped).toEqual(["app-commerce", "app-commerce"]);
       expect(runtimeEvents).toEqual([
-        "capture", "stop", "handles-absent", "containers-absent", "handles-absent",
-        "capture", "stop", "handles-absent", "containers-absent", "handles-absent",
+        "stop", "containers-absent", "handles-absent", "containers-absent", "handles-absent",
+        "stop", "containers-absent", "handles-absent", "containers-absent", "handles-absent",
       ]);
       expect(existsSync(join(archive, "cutover-1.predecessor.sqlite"))).toBe(true);
       const launched = openReadOnlyDatabase(databasePath);

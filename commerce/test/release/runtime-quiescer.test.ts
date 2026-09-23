@@ -2,20 +2,11 @@ import { describe, expect, it } from "vitest";
 import { RuntimeQuiescenceAuthority } from "../../src/release/runtime-quiescence-authority";
 import { LsofSqliteHandleProbe, RuntimeQuiescer } from "../../src/release/runtime-quiescer";
 
-const sha = "a".repeat(40);
-const commerceId = "1".repeat(64);
-const workerId = "2".repeat(64);
-const compose = {
-  applicationUuid: "commerce-uuid",
-  resourceId: "17",
-  repositories: { commerce: "repo/commerce", "commerce-worker": "repo/worker" },
-} as const;
-const units = [
-  { id: commerceId, service: "commerce" as const, image: `repo/commerce:${sha}`, running: true },
-  { id: workerId, service: "commerce-worker" as const, image: `repo/worker:${sha}`, running: true },
-];
 const identity = { canonicalPath: "/db/commerce.sqlite", dev: 8, ino: 9 };
-const request = { sessionId: "session-1", operation: "PREPARE" as const, databasePath: identity.canonicalPath, sha, lockOwner: "runner-1", compose };
+const request = {
+  sessionId: "session-1", operation: "PREPARE" as const, databasePath: identity.canonicalPath,
+  lockOwner: "runner-1", applicationUuid: "commerce-uuid", applicationResourceId: "17",
+};
 
 const fixture = (options: {
   identities?: Array<typeof identity>;
@@ -24,26 +15,28 @@ const fixture = (options: {
   reproofError?: Error;
 } = {}) => {
   const events: string[] = [];
+  let armed = false;
   const identities = [...(options.identities ?? [identity, identity, identity])];
   const authority = new RuntimeQuiescenceAuthority(() => 0);
   const runtime = {
-    async capture() { events.push("capture"); return units; },
-    async stopAndReprove() { events.push("stop-reproof"); },
-    async assertStopped() { events.push("reproof"); if (options.reproofError) throw options.reproofError; },
-    async startCaptured() { events.push("start"); },
+    async stop() { events.push("stop"); },
+    // Armed by the test after acquire: drift is what a LATER revalidation
+    // discovers, and acquire takes its own clean reading first.
+    async assertStopped() { events.push("reproof"); if (armed && options.reproofError) throw options.reproofError; },
+    async start() { events.push("start"); },
   };
   const database = { async identity() { events.push("database"); return identities.shift() ?? identity; } };
   const handles = { async assertNoOpenHandles() { events.push("handles"); if (options.handlesError) throw options.handlesError; } };
   const lock = { async assertHeld() { events.push("lock"); if (options.lockError) throw options.lockError; } };
   const quiescer = new RuntimeQuiescer({ authority, runtime, database, handles, lock });
-  return { authority, quiescer, events };
+  return { authority, quiescer, events, armDrift: () => { armed = true; } };
 };
 
 describe("RuntimeQuiescer", () => {
   it("issues a lease only after exact capture, stop/reproof, stable DB identity, handles and lock", async () => {
     const { authority, quiescer, events } = fixture();
     const grant = await quiescer.acquire(request);
-    expect(events).toEqual(["database", "capture", "lock", "stop-reproof", "database", "handles", "lock"]);
+    expect(events).toEqual(["database", "lock", "stop", "reproof", "database", "handles", "lock"]);
     await authority.consume(grant.lease, grant.binding, quiescer);
     expect(events.slice(7)).toEqual(["lock", "database", "reproof", "handles", "lock"]);
   });
@@ -56,8 +49,9 @@ describe("RuntimeQuiescer", () => {
   });
 
   it("destroys a consumed lease when a captured or new container appears during reproof", async () => {
-    const { authority, quiescer } = fixture({ reproofError: new Error("runtime-drift") });
+    const { authority, quiescer, armDrift } = fixture({ reproofError: new Error("runtime-drift") });
     const grant = await quiescer.acquire(request);
+    armDrift();
     await expect(authority.consume(grant.lease, grant.binding, quiescer)).rejects.toMatchObject({ code: "RUNTIME_LEASE_REVALIDATION_FAILED" });
     await expect(authority.consume(grant.lease, grant.binding, quiescer)).rejects.toMatchObject({ code: "RUNTIME_LEASE_INVALID" });
   });
@@ -65,7 +59,7 @@ describe("RuntimeQuiescer", () => {
   it("restarts only the captured pair for a safe abort before archive", async () => {
     const { quiescer, events } = fixture();
     const grant = await quiescer.acquire(request);
-    await quiescer.resumeCaptured(grant);
+    await quiescer.resume(grant);
     expect(events.slice(-4)).toEqual(["lock", "reproof", "start", "lock"]);
   });
 });
