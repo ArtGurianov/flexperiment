@@ -274,21 +274,130 @@ describe("the whole path production has to walk, through the real composition ro
     } finally { processC.close(); }
   });
 
-  it("still makes a live lease wait, so a running holder is never evicted", async () => {
+  /**
+   * Certification legitimately outlasts a lease term.
+   *
+   * A real payment, an email and a refund have timeouts of 30, 15 and 30
+   * minutes, with a synchronous terminal read in the middle. The deploy session
+   * lease is five. Nothing can renew it while the operator is doing what they
+   * were asked to - the terminal read blocks the event loop - so the writes
+   * that follow certification would be refused for a lease that lapsed during
+   * the wait, on a release whose money has already moved.
+   */
+  const certifyingAfter = (elapsedMs: number, outcome: "succeeds" | "fails") => {
+    let drift = 0;
+    return buildProductionRelease(launchConfig(), {
+      now: () => new Date(NOW.getTime() + drift),
+      certification: {
+        issueCapability: vi.fn(),
+        preflight: vi.fn(async () => {}),
+        certify: vi.fn(async () => {
+          // The operator paying, the email arriving, the refund settling.
+          drift = elapsedMs;
+          // The runtime keeps beating throughout; only the lease would lapse.
+          const beat = new Date(NOW.getTime() + drift).toISOString();
+          vps.db.prepare("UPDATE runtime_instance_evidence SET heartbeat_at = ?, last_successful_sweep_at = COALESCE(last_successful_sweep_at, ?)")
+            .run(beat, beat);
+          if (outcome === "fails") throw new Error("PAYMENT_PROVIDER_REJECTED");
+        }),
+      } as unknown as CertificationDriver,
+    });
+  };
+
+  it.each([
+    ["settles", "succeeds" as const, 0],
+    ["reports recovery rather than a bare failure", "fails" as const, 12],
+  ])("%s when certification outlasts the lease", async (_label, mode, expected) => {
     prepareEnvelope();
-    publish(launchCandidate(vps.targetSha));
+    const candidate = launchCandidate(vps.targetSha);
+    publish(candidate);
     convergeOnTarget();
+
+    const processA = buildProductionRelease(launchConfig(), { now });
+    let sessionId = "";
+    try {
+      expect(await runCutoverCommand(cli(processA), ["deploy", vps.targetSha, CUTOVER], "runner-a")).toBe(13);
+      sessionId = processA.authority.deploymentGate().deploymentSessionId!;
+    } finally { processA.close(); }
+
+    // Six minutes: past the five-minute lease, and far short of a real payment.
+    const built = certifyingAfter(6 * 60_000, mode);
+    try {
+      const code = await runCutoverCommand(cli(built), ["certify", sessionId], "runner-b");
+      expect(code).toBe(expected);
+      // Never a pre-mutation refusal: the money has already moved by here.
+      expect(code).not.toBe(20);
+    } finally { built.close(); }
+  });
+
+  it("still makes a live lease wait, so a running holder is never evicted", async () => {
+    // Standing down is the holder's to do. A session whose owner has not stood
+    // down and whose lease has not lapsed belongs to that owner, and no other
+    // process may take it - which is what keeps the stand-down above from
+    // becoming a way to steal a session out from under a running deploy.
     const release = buildProductionRelease(launchConfig(), { now, certification: certification() });
     try {
-      // A session that reached AWAITING_OPERATOR is still held by a live owner,
-      // so standing down never happened and another process may not take it.
-      await runCutoverCommand(cli(release), ["deploy", vps.targetSha, CUTOVER], OWNER);
-      const sessionId = release.authority.deploymentGate().deploymentSessionId!;
-      await expect(release.bootstrapRollback!.rollback(sessionId, "someone-else"))
-        .rejects.toThrow("DEPLOY_SESSION_NOT_OWNER");
+      const held = release.sessions.acquireFenced({
+        ownerId: "a-running-deploy", mode: "MAINTENANCE_CUTOVER", targetSha: vps.targetSha,
+        candidateId: vps.targetSha,
+      }, {
+        runtime: { frontend: vps.preSha, admin: vps.preSha, commerce: vps.preSha, worker: vps.preSha },
+        controlPlane: { productionDeployRefSha: vps.preSha },
+      });
+      expect(() => release.sessions.takeOverExpiredLease(held.id, "someone-else"))
+        .toThrow("DEPLOY_SESSION_LEASE_NOT_EXPIRED");
+      expect(release.sessions.read(held.id)?.ownerId).toBe("a-running-deploy");
     } finally {
       release.close();
     }
+  });
+
+  it("hands the session from the deploy process to the attended one without impersonation", async () => {
+    /**
+     * The seam between `exit 13` and the human.
+     *
+     * The deploy runs as one SSH invocation and `certify` as another, each with
+     * its own `hostname:pid` owner. Nothing carries an owner between them, and
+     * `certify` never took over a lease - so arming refused with
+     * DEPLOY_SESSION_NOT_OWNER, and because arming sat outside the try blocks
+     * that refusal surfaced as exit 20 on a session that was already adopted,
+     * deployed, capable and fenced.
+     */
+    prepareEnvelope();
+    const candidate = launchCandidate(vps.targetSha);
+    publish(candidate);
+    convergeOnTarget();
+
+    // Process A: the real certification wiring issues the capability.
+    const processA = buildProductionRelease(launchConfig(), { now });
+    let sessionId = "";
+    try {
+      expect(await runCutoverCommand(cli(processA), ["deploy", vps.targetSha, CUTOVER], "runner-a")).toBe(13);
+      sessionId = processA.authority.deploymentGate().deploymentSessionId!;
+      expect(processA.certificationFor(candidate).recoverCapability(sessionId)).toBeDefined();
+    } finally { processA.close(); }
+
+    // Process B: a different owner, no clock advance, no owner impersonation.
+    // The certification ports are substituted only past the lease/session/
+    // capability seam - what is under test is that arming succeeds as owner B.
+    const armed: string[] = [];
+    const processB = buildProductionRelease(launchConfig(), {
+      now,
+      certification: {
+        issueCapability: vi.fn(),
+        preflight: vi.fn(async () => {}),
+        certify: vi.fn(async () => { armed.push("certified"); }),
+      } as unknown as CertificationDriver,
+    });
+    try {
+      const code = await runCutoverCommand(cli(processB), ["certify", sessionId], "runner-b");
+      expect(code).not.toBe(20);
+      expect(armed).toEqual(["certified"]);
+      const session = processB.sessions.read(sessionId)!;
+      expect(session.ownerId).toBe("runner-b");
+      // Crossing the arming boundary is what makes the release irreversible.
+      expect(session.rollbackAuthority).toBe("NEW_LINEAGE_ONLY");
+    } finally { processB.close(); }
   });
 });
 
