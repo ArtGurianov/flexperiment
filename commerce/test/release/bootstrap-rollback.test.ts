@@ -5,6 +5,7 @@ import {
 } from "../../src/release/bootstrap-rollback";
 import { canonicalEnvelopeSha256, createCutoverEnvelope, InMemoryCutoverEnvelopeStore } from "../../src/release/cutover-envelope";
 import { DeploySessions, InMemoryReleaseAuthorityStore, type DeploymentObservation, type ReleaseAuthorityStore } from "../../src/release/deploy-session";
+import { PRODUCTION_CONVERGENCE } from "../../src/release/convergence";
 import { releaseAuthorityStores } from "../support/release-authority-stores";
 import { RuntimeQuiescenceAuthority, type RuntimeLeaseBinding } from "../../src/release/runtime-quiescence-authority";
 
@@ -20,7 +21,16 @@ const now = new Date("2026-09-21T00:00:00.000Z");
 
 type Failure = "archive-hash" | "runtime" | "storage" | "ref" | "frontend" | "admin" | "commerce" | "observe" | "before-gate" | "after-gate";
 
-const world = (makeStore: () => ReleaseAuthorityStore, options: { armed?: boolean; fail?: Failure; observed?: DeploymentObservation; lineage?: string } = {}) => {
+type Application = "frontend" | "admin" | "commerce";
+
+const world = (makeStore: () => ReleaseAuthorityStore, options: {
+  armed?: boolean; fail?: Failure; observed?: DeploymentObservation; lineage?: string;
+  /**
+   * Looks after a finished redeploy that still see the old application:
+   * Coolify's "finished" arriving ahead of the proxy and the worker.
+   */
+  lag?: Partial<Record<Application, number>>;
+} = {}) => {
   const log: string[] = [];
   const failures = new Set(options.fail ? [options.fail] : []);
   const authority = makeStore();
@@ -48,7 +58,10 @@ const world = (makeStore: () => ReleaseAuthorityStore, options: { armed?: boolea
   }
 
   const receipts = new InMemoryBootstrapRollbackReceiptStore();
-  const applications: Record<"frontend" | "admin" | "commerce", string> = { frontend: target, admin: target, commerce: target };
+  const applications: Record<Application, string> = { frontend: target, admin: target, commerce: target };
+  const lag: Partial<Record<Application, number>> = { ...options.lag };
+  const redeployed: Partial<Record<Application, string>> = {};
+  let slept = 0;
   let ref = target;
   let gateClosed = true;
   let gateChecks = 0;
@@ -64,6 +77,7 @@ const world = (makeStore: () => ReleaseAuthorityStore, options: { armed?: boolea
 
   const ports: BootstrapRollbackPorts = {
     authority, envelopes, receipts, clock: () => now,
+    convergence: { ...PRODUCTION_CONVERGENCE, sleep: async () => { slept += 1; } },
     lineage: () => options.lineage ?? "SUPPORTED",
     storage: {
       inspectPredecessorArchive(archive) {
@@ -86,11 +100,20 @@ const world = (makeStore: () => ReleaseAuthorityStore, options: { armed?: boolea
         if (failures.delete("runtime")) throw new Error("COMPOSE_RUNTIME_CONTAINERS_STILL_RUNNING");
         return { lease: runtimeAuthority.acquire(binding), binding };
       },
-      async applicationIsAt(name, sha) { log.push(`observe-${name}`); return applications[name] === sha; },
+      async applicationIsAt(name, sha) {
+        log.push(`observe-${name}`);
+        const pending = redeployed[name];
+        if (pending !== undefined) {
+          if ((lag[name] ?? 0) > 0) { lag[name]! -= 1; return false; }
+          applications[name] = pending;
+          delete redeployed[name];
+        }
+        return applications[name] === sha;
+      },
       async restoreApplication(name, sha) {
         log.push(`restore-${name}`);
         if (failures.delete(name)) throw new Error(`ROLLBACK_${name.toUpperCase()}_FAILED`);
-        applications[name] = sha;
+        redeployed[name] = sha;
       },
     },
     refs: {
@@ -141,10 +164,42 @@ const world = (makeStore: () => ReleaseAuthorityStore, options: { armed?: boolea
     ref: () => ref,
     storageRestored: () => storageRestored,
     mutateArchive: () => { archiveDigest = "0".repeat(64); },
+    slept: () => slept,
+    setLag: (name: Application, looks: number) => { lag[name] = looks; },
   };
 };
 
 describe.each(releaseAuthorityStores)("production cross-lineage rollback (%s)", (_name, makeStore) => {
+  it("waits out each application's startup in one invocation, redeploying each exactly once", async () => {
+    // Attempt 4's rollback needed three operator invocations for this: the
+    // frontend descriptor and then commerce each answered a moment after
+    // Coolify said "finished", and each single look lost the race.
+    const local = world(makeStore, { lag: { frontend: 2, admin: 1, commerce: 2 } });
+    const receipt = await local.run();
+    expect(receipt.stage).toBe("COMPLETED");
+    expect(local.gateClosed()).toBe(false);
+    for (const name of ["frontend", "admin", "commerce"]) {
+      expect(local.log.filter((entry) => entry === `restore-${name}`)).toHaveLength(1);
+    }
+    // false,false,true / false,true / false,false,true
+    expect(local.slept()).toBe(5);
+  });
+
+  it("stops at the deadline with the receipt at the stage before, and a later invocation finishes without redeploying", async () => {
+    const local = world(makeStore, { lag: { admin: Number.POSITIVE_INFINITY } });
+    await expect(local.run()).rejects.toThrow("BOOTSTRAP_ROLLBACK_APPLICATION_NOT_CONVERGED: admin");
+    const receipt = local.receipts.read(bootstrapRollbackId(local.session.id))!;
+    expect(receipt.stage).toBe("FRONTEND_RESTORED");
+    expect(local.gateClosed()).toBe(true);
+    expect(local.slept()).toBe(PRODUCTION_CONVERGENCE.deadlineMs / PRODUCTION_CONVERGENCE.intervalMs);
+
+    // Admin turns up late. The retry sees it there and does not deploy it again.
+    local.setLag("admin", 0);
+    expect((await local.run()).stage).toBe("COMPLETED");
+    expect(local.log.filter((entry) => entry === "restore-admin")).toHaveLength(1);
+    expect(local.gateClosed()).toBe(false);
+  });
+
   it("forbids rollback permanently after NEW_LINEAGE_ONLY", async () => {
     const local = world(makeStore, { armed: true });
     await expect(local.run()).rejects.toThrow("OLD_LINEAGE_ROLLBACK_FORBIDDEN");

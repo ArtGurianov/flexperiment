@@ -29,6 +29,21 @@ export class TopologyReadError extends Error {
   }
 }
 
+/**
+ * The read failures that are a rollout in progress rather than a fault.
+ *
+ * A unit with no live heartbeat yet, a surface the proxy has not switched to
+ * the new container, two instances of one unit across old and new: each is
+ * what production looks like for a few seconds after Coolify says "finished",
+ * and each resolves by itself. A malformed descriptor, an invalid commit or an
+ * unreadable or invalid deploy pointer does not, and waiting on one would only
+ * delay a refusal that is already certain.
+ */
+const TRANSIENT_TOPOLOGY_READS = new Set(["TOPOLOGY_UNIT_NOT_RUNNING", "TOPOLOGY_SURFACE_UNREACHABLE", "TOPOLOGY_UNIT_DISAGREES"]);
+
+export const isTransientTopologyRead = (error: unknown): boolean =>
+  error instanceof TopologyReadError && TRANSIENT_TOPOLOGY_READS.has(error.code);
+
 export type TopologyReaderOptions = {
   readonly frontendReleaseUrl: string;
   readonly adminReleaseUrl: string;

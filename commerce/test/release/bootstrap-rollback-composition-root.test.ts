@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { canonicalEnvelopeSha256 } from "../../src/release/cutover-envelope";
 import { bootstrapRollbackId } from "../../src/release/bootstrap-rollback";
+import { PRODUCTION_CONVERGENCE } from "../../src/release/convergence";
 import { buildProductionRelease } from "../../src/release/production-runner";
 import type { ProductionReleaseConfig } from "../../src/release/production-config";
 import { classifySchemaLineage } from "../../src/release/schema-identity";
@@ -15,7 +16,7 @@ const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd,
 const now = new Date("2026-09-21T00:00:00.000Z");
 
 describe("cross-lineage rollback through the production composition root", () => {
-  it("shares one lease authority, archives launch DB, restores legacy, rolls back three apps, observes, then opens gate", async () => {
+  it("shares one lease authority, archives launch DB, restores legacy, rolls back three apps as they come up, observes, then opens gate", async () => {
     const root = mkdtempSync(join(tmpdir(), "bootstrap-root-"));
     const replacement = join(root, "replacement");
     const state = join(root, "release-state");
@@ -97,6 +98,19 @@ describe("cross-lineage rollback through the production composition root", () =>
     git(worktree, "push", "origin", "HEAD:refs/heads/production-deploy");
     const surface: Record<"frontend" | "admin" | "commerce", string> = { frontend: target, admin: target, commerce: target };
     const coolifyRollbacks: string[] = [];
+    // Coolify answers "finished" before the application can be seen: the
+    // frontend descriptor two polls later, admin one, commerce two. This is
+    // the attempt-4 shape, where each of these lost a single-look race.
+    const lag = { frontend: 2, admin: 1, commerce: 2 };
+    const landing: { name: keyof typeof surface; polls: number }[] = [];
+    let polls = 0;
+    const poll = async () => {
+      polls += 1;
+      for (const pending of landing.splice(0)) {
+        if (pending.polls > 1) landing.push({ ...pending, polls: pending.polls - 1 });
+        else surface[pending.name] = predecessor;
+      }
+    };
     const rollbackFetch = async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input);
       const method = init?.method ?? "GET";
@@ -107,7 +121,7 @@ describe("cross-lineage rollback through the production composition root", () =>
       if (method === "POST" && deploy) {
         const name = deploy[1] as keyof typeof surface;
         coolifyRollbacks.push(name);
-        surface[name] = predecessor;
+        landing.push({ name, polls: lag[name] });
         return new Response(JSON.stringify({ deployments: [{ deployment_uuid: `redeploy-${name}` }] }));
       }
       if (url.endsWith("/stop")) return new Response(JSON.stringify({ message: "stopped" }));
@@ -120,6 +134,7 @@ describe("cross-lineage rollback through the production composition root", () =>
     const runtimeEvents: string[] = [];
     const release = buildProductionRelease(config, {
       now: () => now, fetch: rollbackFetch as typeof globalThis.fetch,
+      convergence: { ...PRODUCTION_CONVERGENCE, sleep: poll },
       runtimeControl: {
         async stop() { runtimeEvents.push("stop"); },
         async assertStopped() { runtimeEvents.push("reprove"); },
@@ -142,6 +157,8 @@ describe("cross-lineage rollback through the production composition root", () =>
       // One mechanism for all three: Coolify deploys the predecessor commit
       // the pointer now names. No image archaeology, no bespoke Compose path.
       expect(coolifyRollbacks).toEqual(["frontend", "admin", "commerce"]);
+      // Waited out in this one invocation, and only as long as it took.
+      expect(polls).toBe(5);
       expect(await release.deployRef.read()).toBe(predecessor);
       expect(existsSync(receipt.intent.predecessorDatabase.ref)).toBe(true);
       // The runner's own runtime work is now only quiescence: stop, prove

@@ -413,16 +413,60 @@ webhook call and the container `create` happened within seconds of each other
 and the container did not `start` for roughly ninety more. A controller that
 treats acceptance as progress will report a converged deploy that has not begun.
 
+## "Finished" is Coolify's answer, not the application's
+
+When Coolify reports a deployment `finished`, its own operation is over: the
+build ran and the containers were started. The application-level evidence the
+release consumes comes afterwards, asynchronously. The proxy switches to the
+new container, the worker writes its runtime row, and the worker's first sweep
+completes later still (it is launched with `void runSweep()`). The fourth
+launch attempt (2026-09-23) read topology once, 41 ms after commerce
+`finished`. The worker container had been up for 1.7 s and had not recorded a
+heartbeat, so the cutover went to recovery with nothing wrong. Its rollback
+then lost the same race twice, on the frontend descriptor and on commerce.
+
+So every seam that consumes that evidence polls it, boundedly
+(`convergence.ts`; production: 120 s at a 5 s cadence):
+
+- **Forward topology.** After the deployment driver returns, `observe()` is
+  repeated until all four surfaces are the target. Only rollout-shaped reads
+  are waited on: `TOPOLOGY_UNIT_NOT_RUNNING`, `TOPOLOGY_SURFACE_UNREACHABLE`,
+  `TOPOLOGY_UNIT_DISAGREES`, or a valid observation that is simply not the
+  target yet. A malformed descriptor, an invalid commit or an unreadable or
+  invalid deploy pointer is refused on the first look. At the deadline the
+  last real reason becomes an ordinary `RECOVERY_REQUIRED`.
+- **Forward readiness.** Once topology is the target, readiness is
+  re-evaluated while it is `PENDING`. `ADMITTED` proceeds and `REJECTED` stops
+  at once (see below).
+- **Rollback, per application.** After `restoreApplication` returns,
+  `applicationIsAt` is polled. The receipt state machine is unchanged: the
+  redeploy is not repeated by the waiter, and an application that never shows
+  up leaves the receipt at the stage before it, which the next invocation
+  resumes.
+
+The waiter only reads. Each poll is a fresh observation, and nothing is
+redeployed, restarted or reopened from inside a wait. The one write it makes is
+bookkeeping: the forward wait holds the session lease on every poll
+(`holdLease`), because a long Coolify build followed by two full waits can
+outlast the five-minute lease. Reclaiming its own lapsed lease is safe for the
+same reason as during certification: the runner lock is held throughout.
+
+The polling does not belong in the Coolify client. Coolify already answered
+the question it owns, and "can the release see it yet" is the release's
+question.
+
 ## Readiness separates "not yet" from "converged and inadmissible"
 
 A convergence loop is read-only, and the two failure classes it meets are not
 the same:
 
 - **Observable rollout surfaces** - health, readiness, the surfaces' own
-  descriptors - may legitimately be absent, incomplete or briefly malformed
-  while a deploy is in flight. A truncated body from a restarting container is
-  expected transient behaviour, and a parse failure there is retryable exactly
-  like a connection timeout.
+  descriptors - may legitimately be absent or unreachable while a deploy is in
+  flight: a proxy answering 502, a refused connection, a unit with no
+  heartbeat yet. Those are waited on. A descriptor that answers with a body
+  that does not parse, or with something that is not a commit, is refused at
+  once. A restart shows up as a failed request, not as a well-formed response
+  carrying a malformed payload.
 - **Semantic and authority evidence** - the source commit, the schema
   inventory, the legal version and manifest digest - does not become correct by
   waiting. A mismatch or an unparseable value there is terminal.
