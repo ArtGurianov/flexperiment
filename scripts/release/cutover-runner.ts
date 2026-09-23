@@ -101,6 +101,11 @@ export const runCutoverCommand = async (release: ProductionRelease, argv: readon
         : await release.orchestrator.runMaintenanceCutover({ ownerId, candidate, adoptedCutoverId });
       release.journal.record("deploy.outcome", { kind: outcome.kind, session: outcome.session.id, state: outcome.session.state });
       say({ command, outcome: outcome.kind, session: outcome.session.id, code: "code" in outcome ? outcome.code : undefined });
+      // Handing control to a person: this process is done with the session, and
+      // `certify` arrives as a separate SSH invocation with its own owner id.
+      // Holding the lease here would make the attended half unable to arm
+      // without impersonating a process that has already exited.
+      if (outcome.kind === "AWAITING_OPERATOR") release.sessions.yieldLease(outcome.session.id, ownerId);
       return EXIT_BY_OUTCOME[outcome.kind] ?? 20;
     }
     case "certify": {
@@ -110,6 +115,17 @@ export const runCutoverCommand = async (release: ProductionRelease, argv: readon
       if (!argument) throw new Error("RELEASE_SESSION_REQUIRED");
       const session = release.sessions.read(argument);
       if (!session) throw new Error(`DEPLOY_SESSION_NOT_FOUND: ${argument}`);
+      // The deploy that produced this session has exited and stood down. This
+      // is a different process with its own owner id, so it claims the session
+      // before arming anything. A lease somebody is still holding is refused,
+      // never taken: standing down is the holder's to do.
+      if (session.ownerId !== ownerId) {
+        try {
+          release.sessions.takeOverExpiredLease(argument, ownerId);
+        } catch (error) {
+          throw new Error(`DEPLOY_SESSION_HELD_BY_ANOTHER_RUNNER: ${argument} is held by ${session.ownerId} (${error instanceof Error ? error.message : "unknown"})`);
+        }
+      }
       const candidate = release.candidates.get(session.candidateId ?? "");
       if (!candidate) throw new Error(`RELEASE_CANDIDATE_NOT_PUBLISHED: ${session.candidateId ?? "none"}`);
       const driver = release.certificationFor(candidate);

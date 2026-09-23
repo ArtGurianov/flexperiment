@@ -277,8 +277,21 @@ is why the driver is memoized per session: proving a terminal exists and then
 opening a different one later would prove nothing about the operator who is
 actually present.
 
-A command that hands a session back as `RECOVERY_REQUIRED` **stands down from
-its lease**. It
+Each runner command is a separate SSH invocation with its own
+`hostname:pid` owner, and nothing carries an owner between them. So **a command
+that hands a session to a person stands down from its lease, and the command
+that picks it up claims it.** `deploy` stands down when it returns
+`AWAITING_OPERATOR`; `certify` claims the session before it arms anything. A
+lease its holder has not stood down from and which has not lapsed is refused,
+never taken - standing down is the holder's to do, which is what stops this
+from becoming a way to take a session out from under a running deploy.
+
+Reusing an owner token across processes would be the wrong fix: two different
+processes would be indistinguishable to the lease authority, which is the
+impersonation this removed.
+
+A command that hands a session back as `RECOVERY_REQUIRED` also **stands down
+from its lease**. It
 knows it is exiting, and holding the lease until it lapses would make the next
 command wait out the full term before it could act, with production fenced the
 whole time. Standing down is not the same as being evicted: only the holder may
@@ -287,6 +300,10 @@ ordinary expiry. It applies wherever that decision is made — a convergence or
 readiness failure arrives through a different path than an unexpected one, and
 both hand back — and to `resume`, which takes a lease to read the state and
 then tells the operator to roll back.
+
+Arming is inside the same failure contract as everything else past adoption. A
+session, a deployed successor, a capability and a closed gate already exist by
+then, so a refusal there is `RECOVERY_REQUIRED`, never a pre-mutation `20`.
 
 Cross-lineage `rollback <session>` may take over a **lapsed** lease itself. It
 has an external receipt and does not need the successor's cooperation to begin,

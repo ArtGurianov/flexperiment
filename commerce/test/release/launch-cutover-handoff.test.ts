@@ -275,20 +275,73 @@ describe("the whole path production has to walk, through the real composition ro
   });
 
   it("still makes a live lease wait, so a running holder is never evicted", async () => {
-    prepareEnvelope();
-    publish(launchCandidate(vps.targetSha));
-    convergeOnTarget();
+    // Standing down is the holder's to do. A session whose owner has not stood
+    // down and whose lease has not lapsed belongs to that owner, and no other
+    // process may take it - which is what keeps the stand-down above from
+    // becoming a way to steal a session out from under a running deploy.
     const release = buildProductionRelease(launchConfig(), { now, certification: certification() });
     try {
-      // A session that reached AWAITING_OPERATOR is still held by a live owner,
-      // so standing down never happened and another process may not take it.
-      await runCutoverCommand(cli(release), ["deploy", vps.targetSha, CUTOVER], OWNER);
-      const sessionId = release.authority.deploymentGate().deploymentSessionId!;
-      await expect(release.bootstrapRollback!.rollback(sessionId, "someone-else"))
-        .rejects.toThrow("DEPLOY_SESSION_NOT_OWNER");
+      const held = release.sessions.acquireFenced({
+        ownerId: "a-running-deploy", mode: "MAINTENANCE_CUTOVER", targetSha: vps.targetSha,
+        candidateId: vps.targetSha,
+      }, {
+        runtime: { frontend: vps.preSha, admin: vps.preSha, commerce: vps.preSha, worker: vps.preSha },
+        controlPlane: { productionDeployRefSha: vps.preSha },
+      });
+      expect(() => release.sessions.takeOverExpiredLease(held.id, "someone-else"))
+        .toThrow("DEPLOY_SESSION_LEASE_NOT_EXPIRED");
+      expect(release.sessions.read(held.id)?.ownerId).toBe("a-running-deploy");
     } finally {
       release.close();
     }
+  });
+
+  it("hands the session from the deploy process to the attended one without impersonation", async () => {
+    /**
+     * The seam between `exit 13` and the human.
+     *
+     * The deploy runs as one SSH invocation and `certify` as another, each with
+     * its own `hostname:pid` owner. Nothing carries an owner between them, and
+     * `certify` never took over a lease - so arming refused with
+     * DEPLOY_SESSION_NOT_OWNER, and because arming sat outside the try blocks
+     * that refusal surfaced as exit 20 on a session that was already adopted,
+     * deployed, capable and fenced.
+     */
+    prepareEnvelope();
+    const candidate = launchCandidate(vps.targetSha);
+    publish(candidate);
+    convergeOnTarget();
+
+    // Process A: the real certification wiring issues the capability.
+    const processA = buildProductionRelease(launchConfig(), { now });
+    let sessionId = "";
+    try {
+      expect(await runCutoverCommand(cli(processA), ["deploy", vps.targetSha, CUTOVER], "runner-a")).toBe(13);
+      sessionId = processA.authority.deploymentGate().deploymentSessionId!;
+      expect(processA.certificationFor(candidate).recoverCapability(sessionId)).toBeDefined();
+    } finally { processA.close(); }
+
+    // Process B: a different owner, no clock advance, no owner impersonation.
+    // The certification ports are substituted only past the lease/session/
+    // capability seam - what is under test is that arming succeeds as owner B.
+    const armed: string[] = [];
+    const processB = buildProductionRelease(launchConfig(), {
+      now,
+      certification: {
+        issueCapability: vi.fn(),
+        preflight: vi.fn(async () => {}),
+        certify: vi.fn(async () => { armed.push("certified"); }),
+      } as unknown as CertificationDriver,
+    });
+    try {
+      const code = await runCutoverCommand(cli(processB), ["certify", sessionId], "runner-b");
+      expect(code).not.toBe(20);
+      expect(armed).toEqual(["certified"]);
+      const session = processB.sessions.read(sessionId)!;
+      expect(session.ownerId).toBe("runner-b");
+      // Crossing the arming boundary is what makes the release irreversible.
+      expect(session.rollbackAuthority).toBe("NEW_LINEAGE_ONLY");
+    } finally { processB.close(); }
   });
 });
 

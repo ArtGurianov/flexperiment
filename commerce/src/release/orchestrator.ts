@@ -342,7 +342,23 @@ export class ReleaseOrchestrator {
 
     // ---- last reversible point -------------------------------------------
     // Immediately before the first request that can create a real payment.
-    this.ports.sessions.armExternalEffects(sessionId, request.ownerId);
+    try {
+      this.ports.sessions.armExternalEffects(sessionId, request.ownerId);
+    } catch (error) {
+      // A session, a deployed successor, a capability and a closed gate all
+      // already exist, so this cannot be reported as a pre-mutation refusal -
+      // the same semantics the deploy side already carries. Recovery itself
+      // needs the session, so if that is what failed, say so without pretending
+      // to have transitioned anything.
+      const code = `CERTIFICATION_NOT_ARMED:${failureCode(error)}`;
+      try {
+        return this.recovery(sessionId, request.ownerId, code);
+      } catch {
+        const session = this.ports.sessions.read(sessionId);
+        if (!session) throw error;
+        return { kind: "RECOVERY_REQUIRED", session, code };
+      }
+    }
     // ----------------------------------------------------------------------
 
     try {
