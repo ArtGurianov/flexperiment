@@ -116,6 +116,7 @@ http403
 integration-hardening-migration
 integration-hardening-only-0049
 integration-hardening-template
+launch-handoff
 legal-manifest-hash-calculator
 legal-profile-provenance
 legal-profile-provenance-e2e

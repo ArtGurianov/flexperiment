@@ -5,6 +5,8 @@ import { dirname, join } from "node:path";
 import { CoolifyClient } from "./coolify";
 import { CoolifyDeploymentDriver, CoolifyRecoveryDriver } from "./coolify-deployment";
 import { FileCutoverEnvelopeStore } from "./cutover-envelope-file-store";
+import type { CutoverEnvelope } from "./cutover-envelope";
+import { adoptCutover } from "./cutover-handoff";
 import { defaultGit, ProductionDeployRefStore, ProductionDeployRefViewer } from "./deploy-ref";
 import { DeploySessions } from "./deploy-session";
 import { SqliteReleaseAuthorityStore } from "./deploy-session-store";
@@ -383,6 +385,15 @@ export const buildProductionRelease = (config: ProductionReleaseConfig, options:
     // with no database and no credential, so a deploy cannot mint the candidate
     // it is about to deploy.
     const candidates = candidatesStore;
+    // One store, shared by the preparation that writes the envelope and the
+    // deploy that adopts it. Two instances over the same directory would be two
+    // things that could disagree about whether a handoff was consumed.
+    const envelopes = new FileCutoverEnvelopeStore(config.envelopeDirectory);
+    const requireEnvelope = (cutoverId: string): CutoverEnvelope => {
+      const envelope = envelopes.read(cutoverId);
+      if (!envelope) throw new ReleaseRunnerError("CUTOVER_ENVELOPE_NOT_FOUND", cutoverId);
+      return envelope;
+    };
     const ports: ReleasePorts = {
       sessions,
       candidates,
@@ -398,6 +409,25 @@ export const buildProductionRelease = (config: ProductionReleaseConfig, options:
       // the bridge is not something a later release could reach for - it is
       // absent from the composition entirely.
       predecessor: predecessorReader(),
+      // The other half of that handoff. Once the launch database is in place
+      // the bridge above is gone, and this is how a prepared cutover still
+      // knows what production was before it started.
+      cutoverAdoption: {
+        preDeployTopology: (cutoverId) => requireEnvelope(cutoverId).preDeployTopology,
+        adopt: (cutoverId, ownerId, candidate) => {
+          const { session, reconciled } = adoptCutover(sessions, authority, envelopes, cutoverId, {
+            ownerId,
+            // The candidate's commit, not the envelope's: this is the assertion
+            // that the release being deployed is the one that was prepared, and
+            // taking it from the envelope would compare it with itself.
+            sourceCommit: candidate.sha,
+            schemaLineage: classifySchemaLineage(readSchemaIdentity(opened)),
+            adoptionNonce: requireEnvelope(cutoverId).adoptionNonce,
+            now: now(),
+          });
+          return { session, reconciled };
+        },
+      },
       deployment: new CoolifyDeploymentDriver(coolify),
       recovery: new CoolifyRecoveryDriver(coolify),
       // Built lazily, because it needs the candidate this deploy is for. The
@@ -499,8 +529,8 @@ export const buildProductionRelease = (config: ProductionReleaseConfig, options:
       },
       topology: predecessorTopology,
       envelopes: {
-        async read(cutoverId) { return new FileCutoverEnvelopeStore(config.envelopeDirectory).read(cutoverId); },
-        async writeOnce(envelope) { new FileCutoverEnvelopeStore(config.envelopeDirectory).write(envelope); },
+        async read(cutoverId) { return envelopes.read(cutoverId); },
+        async writeOnce(envelope) { envelopes.write(envelope); },
       },
       clock: now,
     }) : undefined;
@@ -536,7 +566,7 @@ export const buildProductionRelease = (config: ProductionReleaseConfig, options:
     };
     const bootstrapRollback = config.predecessor && commerce ? new BootstrapRollback({
       authority,
-      envelopes: new FileCutoverEnvelopeStore(config.envelopeDirectory),
+      envelopes,
       receipts: new FileBootstrapRollbackReceiptStore(join(config.envelopeDirectory, "rollback")),
       storage: {
         inspectPredecessorArchive(archive) { return storage.inspectPredecessorArchive(archive); },
@@ -594,7 +624,7 @@ export const buildProductionRelease = (config: ProductionReleaseConfig, options:
     return {
       ports, sessions, journal, lock, deployRef, authority, candidates, launchBaselineAdmission, certificationFor, database: opened,
       deployment: ports.deployment as CoolifyDeploymentDriver,
-      envelopes: new FileCutoverEnvelopeStore(config.envelopeDirectory), storage, bootstrapPreparation, bootstrapRollback,
+      envelopes, storage, bootstrapPreparation, bootstrapRollback,
       orchestrator: new ReleaseOrchestrator(ports),
       close() {
         closeDatabaseForStorage();

@@ -68,6 +68,36 @@ records, but fail consumption with `LAUNCH_BASELINE_MUST_BE_MAIN_TIP`. A session
 whose mutation is already durable recovers its recorded target instead; a new
 `main` must never retarget recovery.
 
+## A launch cutover is two commands, and the second adopts the first
+
+`prepare-bootstrap` archives the predecessor database and leaves the fresh
+launch database standing in its place. From that moment there is no predecessor
+left to read, so the `deploy` that follows cannot re-derive its own pre-deploy
+snapshot — it adopts the one the envelope froze before the swap.
+
+That is why a `LAUNCH_BASELINE` deploy names the cutover it is finishing:
+
+```sh
+flexperiment-release prepare-bootstrap <candidate> <expires-at> <cutover-id>
+flexperiment-release deploy            <candidate> <cutover-id>
+```
+
+Omitting it is `LAUNCH_DEPLOY_REQUIRES_PREPARED_CUTOVER`, refused before any
+mutation. Nothing but `prepare-bootstrap` creates the launch database, so a
+launch deploy is always the second half of a prepared handoff and never a
+standalone command.
+
+Adoption happens once. A cutover whose session already exists is
+`CUTOVER_ALREADY_ADOPTED`: that session owns the closed gate, and finishing it
+is `resume`'s job, never a second `deploy`. The envelope is marked consumed only
+after the successor database has committed the session, so a consumed envelope
+with no session is a lost authority rather than an invitation to adopt again.
+
+This seam is the one the suite previously missed. Both halves were proved in
+isolation — the preparation wrote a correct envelope, and `adoptCutover` adopted
+one correctly when called — while nothing called it. Invariants count only at
+the seam that consumes them.
+
 ## The deploy mode is derived, never chosen
 
 `ROLLING_COMPATIBLE` earns `ROLLING_SAFE`; everything else takes
