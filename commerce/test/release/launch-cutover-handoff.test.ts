@@ -132,6 +132,107 @@ const certification = (): CertificationDriver => ({
 const cli = (release: ProductionRelease): ProductionRelease =>
   ({ ...release, launchBaselineAdmission: { admit: vi.fn(async () => {}) } }) as ProductionRelease;
 
+describe("the whole path production has to walk, through the real composition root", () => {
+  /** The launch config: the cross-lineage engine is composed only with a predecessor. */
+  const launchConfig = () => ({
+    ...vps.config,
+    predecessor: { expectedSha: vps.preSha, expectedLedgerLength: 61, commerceReadyUrl: "https://commerce.invalid/readyz" },
+  });
+
+  it("leaves nothing between a converged deploy and the human certification but the human", async () => {
+    /**
+     * Driven with the REAL certification wiring, not an injected driver.
+     *
+     * An adopted session used to be created without a `candidateId`. The schema
+     * permits that - either a candidate or an adopted cutover satisfies it - and
+     * every component test passed, but certification resolves its driver from
+     * `session.candidateId`. So a cutover that had already converged and been
+     * admitted by readiness failed at `issueCapability` with
+     * RELEASE_CANDIDATE_NOT_PUBLISHED and went to recovery instead of to the
+     * operator. Deterministic, and invisible until the seam ran.
+     */
+    prepareEnvelope();
+    const candidate = launchCandidate(vps.targetSha);
+    publish(candidate);
+    convergeOnTarget();
+    const release = buildProductionRelease(launchConfig(), { now });
+    try {
+      await runCutoverCommand(cli(release), ["deploy", vps.targetSha, CUTOVER], OWNER);
+      const sessionId = release.authority.deploymentGate().deploymentSessionId!;
+      const session = release.sessions.read(sessionId)!;
+
+      // The session remembers which candidate it is for, recorded once at
+      // acquisition and never restated.
+      expect(session.candidateId).toBe(candidate.id);
+
+      // And the real certification wiring can resolve it. The only thing it
+      // still cannot do here is open a controlling terminal, which is the
+      // human boundary itself - so that, and nothing before it, is what is
+      // left between this deploy and certification.
+      expect(() => release.certificationFor(candidate)).toThrow("CERTIFICATION_REQUIRES_ATTENDED_TERMINAL");
+      expect(() => release.certificationFor(candidate)).not.toThrow("RELEASE_CANDIDATE_NOT_PUBLISHED");
+    } finally {
+      release.close();
+    }
+  });
+
+  it("hands a failed cutover to a different process, which rolls it back without impersonation", async () => {
+    /**
+     * The 2026-09-23 incident end to end, as one test.
+     *
+     * Process A adopts, moves the pointer, deploys, cannot observe COMMERCE and
+     * exits 12. Process B is a different owner and must be able to roll back
+     * immediately - the clock is deliberately NOT advanced, because waiting out
+     * a lease that its holder has finished with means keeping production fenced
+     * for no reason. Crash recovery still relies on ordinary expiry.
+     */
+    prepareEnvelope();
+    publish(launchCandidate(vps.targetSha));
+    // No convergence: COMMERCE never records evidence, so topology throws.
+    const processA = buildProductionRelease(launchConfig(), { now, certification: certification() });
+    let sessionId = "";
+    try {
+      const code = await runCutoverCommand(cli(processA), ["deploy", vps.targetSha, CUTOVER], OWNER);
+      expect(code).toBe(12);
+      sessionId = processA.authority.deploymentGate().deploymentSessionId!;
+      expect(processA.sessions.read(sessionId)?.state).toBe("RECOVERY_REQUIRED");
+    } finally {
+      processA.close();
+    }
+
+    // Process B: a different owner, no clock advance, no owner impersonation.
+    // What is under test is the handoff - that ownership passes immediately
+    // because process A stood down, rather than after the full lease term with
+    // production fenced throughout. The physical restore that follows is proved
+    // end to end in bootstrap-rollback-composition-root.
+    const processB = buildProductionRelease(launchConfig(), { now, certification: certification() });
+    try {
+      await expect(processB.bootstrapRollback!.rollback(sessionId, "a-different-runner"))
+        .rejects.not.toThrow("DEPLOY_SESSION_NOT_OWNER");
+      expect(processB.sessions.read(sessionId)?.ownerId).toBe("a-different-runner");
+    } finally {
+      processB.close();
+    }
+  });
+
+  it("still makes a live lease wait, so a running holder is never evicted", async () => {
+    prepareEnvelope();
+    publish(launchCandidate(vps.targetSha));
+    convergeOnTarget();
+    const release = buildProductionRelease(launchConfig(), { now, certification: certification() });
+    try {
+      // A session that reached AWAITING_OPERATOR is still held by a live owner,
+      // so standing down never happened and another process may not take it.
+      await runCutoverCommand(cli(release), ["deploy", vps.targetSha, CUTOVER], OWNER);
+      const sessionId = release.authority.deploymentGate().deploymentSessionId!;
+      await expect(release.bootstrapRollback!.rollback(sessionId, "someone-else"))
+        .rejects.toThrow("DEPLOY_SESSION_NOT_OWNER");
+    } finally {
+      release.close();
+    }
+  });
+});
+
 describe("a prepared cutover has exactly two legal successors", () => {
   /**
    * The conceptual hole behind the 2026-09-23 outage, stated directly.

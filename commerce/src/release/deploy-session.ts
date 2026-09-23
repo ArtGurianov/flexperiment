@@ -117,6 +117,8 @@ export interface ReleaseAuthorityStore {
   renewOwnedLease(id: string, ownerId: string, now: Date, leaseExpiresAt: string): DeploySession;
   /** Ownership moves only when the lease has actually lapsed, decided inside the write. */
   takeOverExpiredLease(id: string, newOwnerId: string, now: Date, leaseExpiresAt: string): DeploySession;
+  /** The holder standing down, so the next command need not wait out the lease. */
+  yieldLease(id: string, ownerId: string, now: Date): void;
   /** Chooses recovery direction once and for all, in the same write that checks it may be chosen. */
   reserveBootstrapRollback(id: string, ownerId: string, now: Date, rollbackId: string): DeploySession;
   /** Re-proves ownership of a reservation across a long external step. Guarded no-op. */
@@ -268,6 +270,12 @@ export class InMemoryReleaseAuthorityStore implements ReleaseAuthorityStore {
     const session = this.write(id, ownerId, now, NON_TERMINAL, {});
     if (session.bootstrapRollbackId !== rollbackId) throw new Error("BOOTSTRAP_ROLLBACK_NOT_RESERVED");
     return session;
+  }
+
+  yieldLease(id: string, ownerId: string, now: Date): void {
+    const session = this.#sessions.get(id);
+    if (!session || session.ownerId !== ownerId || TERMINAL.has(session.state)) return;
+    this.#sessions.set(id, { ...session, leaseExpiresAt: now.toISOString() });
   }
 
   takeOverExpiredLease(id: string, newOwnerId: string, now: Date, leaseExpiresAt: string): DeploySession {
@@ -490,6 +498,10 @@ export class DeploySessions {
 
   reserveBootstrapRollback(id: string, ownerId: string, rollbackId: string): DeploySession {
     return this.store.reserveBootstrapRollback(id, ownerId, this.clock(), rollbackId);
+  }
+
+  yieldLease(id: string, ownerId: string): void {
+    this.store.yieldLease(id, ownerId, this.clock());
   }
 
   takeOverExpiredLease(id: string, ownerId: string): DeploySession {

@@ -525,6 +525,11 @@ export class ReleaseOrchestrator {
 
   private recovery(sessionId: string, ownerId: string, code: string): ReleaseOutcome {
     const session = this.ports.sessions.enterRecoveryRequired(sessionId, ownerId);
+    // This process is finished with the session. Holding the lease until it
+    // lapses would make the operator wait out the full term before a rollback
+    // could take ownership - with production fenced throughout - for no reason
+    // other than that nobody said so. A crash still falls back to expiry.
+    this.ports.sessions.yieldLease(sessionId, ownerId);
     return { kind: "RECOVERY_REQUIRED", session, code };
   }
 }

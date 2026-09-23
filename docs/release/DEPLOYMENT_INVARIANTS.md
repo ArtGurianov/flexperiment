@@ -236,11 +236,12 @@ crash-loops, and because topology is read from that runtime, the recovery path
 stalls with it. The contract is taken from the predecessor archive, which is
 the file the runtime demonstrably could open, rather than from a hardcoded uid.
 
-Known limitation: once the successor is installed the predecessor bridge is
-gone, so `prepare-bootstrap` cannot be reconstructed in a new process. The
-ensure above therefore protects a retry within the preparation, not a
-cross-process retry after the swap. That gap is recovered through
-`rollback-prepared`.
+The ensure is a storage invariant, and deliberately not a forward-retry path.
+Once the successor is installed the predecessor bridge is gone, so
+`prepare-bootstrap` cannot be reconstructed in a new process at all. A crash
+after the swap therefore hands control to `rollback-prepared`, never to a
+second `prepare-bootstrap` — and that is the intended shape, because a
+one-time bootstrap should not grow an alternative forward route.
 
 ## An exit code describes what happened, not what was attempted
 
@@ -259,6 +260,20 @@ frequently the reason a session needs resuming, so requiring a successful
 observation to produce a recovery plan is circular. An unobservable topology is
 reported as `RECOVERY_REQUIRED` with `TOPOLOGY_UNOBSERVABLE`, never as a safe
 abort — absence of observation is not evidence of anything.
+
+A session records its candidate when it is acquired, and nothing restates it
+afterwards. An adopted session that omitted it still satisfied the schema —
+either a candidate or an adopted cutover is enough — but certification resolves
+its driver from `session.candidateId`, so the omission surfaced only at
+`issueCapability`, after readiness had already admitted the release, and sent a
+finished cutover into recovery instead of to the operator.
+
+A process that returns `RECOVERY_REQUIRED` **stands down from its lease**. It
+knows it is exiting, and holding the lease until it lapses would make the next
+command wait out the full term before it could act, with production fenced the
+whole time. Standing down is not the same as being evicted: only the holder may
+do it, a live holder is never displaced, and a crash still falls back to
+ordinary expiry.
 
 Cross-lineage `rollback <session>` may take over a **lapsed** lease itself. It
 has an external receipt and does not need the successor's cooperation to begin,

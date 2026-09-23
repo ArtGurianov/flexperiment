@@ -420,6 +420,7 @@ export const buildProductionRelease = (config: ProductionReleaseConfig, options:
         adopt: (cutoverId, ownerId, candidate) => {
           const { session, reconciled } = adoptCutover(sessions, authority, envelopes, cutoverId, {
             ownerId,
+            candidateId: candidate.id,
             // The candidate's commit, not the envelope's: this is the assertion
             // that the release being deployed is the one that was prepared, and
             // taking it from the envelope would compare it with itself.

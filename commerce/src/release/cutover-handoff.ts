@@ -30,6 +30,18 @@ export class CutoverHandoffError extends Error {
 
 export type AdoptionContext = {
   readonly ownerId: string;
+  /**
+   * The candidate this handoff is for.
+   *
+   * A session records its candidate at acquisition and nobody restates it
+   * afterwards. An adopted session that omitted it satisfied the schema - the
+   * check allows either a candidate or an adopted cutover - but certification
+   * resolves its driver from `session.candidateId`, so the omission surfaced
+   * only at `issueCapability`, after readiness had already admitted the
+   * release, and sent a finished cutover into recovery instead of handing it
+   * to the operator.
+   */
+  readonly candidateId: string;
   readonly sourceCommit: string;
   readonly schemaLineage: SchemaLineage;
   readonly adoptionNonce: string;
@@ -90,6 +102,7 @@ export const adoptCutover = (
     ownerId: context.ownerId,
     mode: "MAINTENANCE_CUTOVER",
     targetSha: envelope.targetSha,
+    candidateId: context.candidateId,
     adoptedCutoverId: envelope.cutoverId,
     predecessorDatabaseRef: envelope.predecessorDatabase.ref,
     predecessorDatabaseSha256: envelope.predecessorDatabase.sha256,

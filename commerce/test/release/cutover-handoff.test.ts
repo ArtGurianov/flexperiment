@@ -25,7 +25,7 @@ const successor = (makeStore: () => ReleaseAuthorityStore, makeEnvelopes: () => 
   return { store, envelopes, sessions: new DeploySessions(store, () => now) };
 };
 
-const context = { ownerId: "owner", sourceCommit: target, schemaLineage: "SUPPORTED" as const, adoptionNonce: "nonce-1", now };
+const context = { ownerId: "owner", candidateId: target, sourceCommit: target, schemaLineage: "SUPPORTED" as const, adoptionNonce: "nonce-1", now };
 
 describe.each(releaseAuthorityStores.flatMap(([sessionName, makeStore]) =>
   cutoverEnvelopeStores.map(([envelopeName, makeEnvelopes]) => [`cutover handoff across the lineage boundary (${sessionName} sessions, ${envelopeName} envelopes)`, makeStore, makeEnvelopes] as const)))
