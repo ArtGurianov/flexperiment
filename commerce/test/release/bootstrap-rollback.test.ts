@@ -20,7 +20,7 @@ const now = new Date("2026-09-21T00:00:00.000Z");
 
 type Failure = "archive-hash" | "runtime" | "storage" | "ref" | "frontend" | "admin" | "commerce" | "observe" | "before-gate" | "after-gate";
 
-const world = (makeStore: () => ReleaseAuthorityStore, options: { armed?: boolean; fail?: Failure; observed?: DeploymentObservation } = {}) => {
+const world = (makeStore: () => ReleaseAuthorityStore, options: { armed?: boolean; fail?: Failure; observed?: DeploymentObservation; lineage?: string } = {}) => {
   const log: string[] = [];
   const failures = new Set(options.fail ? [options.fail] : []);
   const authority = makeStore();
@@ -66,6 +66,7 @@ const world = (makeStore: () => ReleaseAuthorityStore, options: { armed?: boolea
 
   const ports: BootstrapRollbackPorts = {
     authority, envelopes, receipts, clock: () => now,
+    lineage: () => options.lineage ?? "SUPPORTED",
     storage: {
       inspectPredecessorArchive(archive) {
         log.push("inspect-archive");

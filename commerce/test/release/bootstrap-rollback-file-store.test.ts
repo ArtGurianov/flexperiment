@@ -9,7 +9,8 @@ const predecessor = "c".repeat(40);
 const receipt = (stage: BootstrapRollbackStage = "RESERVED"): BootstrapRollbackReceipt => ({
   stage,
   intent: {
-    rollbackId: "rollback-1", cutoverId: "cutover-1", successorSessionId: "session-1",
+    rollbackId: "rollback-1", cutoverId: "cutover-1",
+    authority: { kind: "SUCCESSOR_SESSION", sessionId: "session-1" },
     targetSha: "d".repeat(40), forwardEnvelopeSha256: "e".repeat(64),
     predecessorDatabase: { ref: "/state/archive/predecessor.sqlite", sha256: "a".repeat(64) },
     preDeployTopology: {

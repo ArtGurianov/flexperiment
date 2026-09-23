@@ -98,6 +98,47 @@ isolation — the preparation wrote a correct envelope, and `adoptCutover` adopt
 one correctly when called — while nothing called it. Invariants count only at
 the seam that consumes them.
 
+## Every state the runner produces has exactly one recovery owner
+
+`prepare-bootstrap` crosses the destructive boundary *before* a successor
+session exists. That intermediate state — envelope durable, predecessor
+archived, launch database installed, sales fenced, nothing adopted — is a real
+durable lifecycle state, and it is reachable even when everything works: the
+deploy admission can refuse a candidate `main` moved past, after the
+preparation has already run.
+
+```text
+before the envelope is durable   prepare-bootstrap cleans up internally
+envelope durable, not adopted    rollback-prepared <cutover-id>
+adopted, session exists          rollback <session>
+external effects armed           forward recovery only
+```
+
+`rollback-prepared` is a separate command, not an overload: `rollback` means
+"the successor session owns this cutover", and here there deliberately is none.
+It refuses with `PREPARED_ROLLBACK_OWNED_BY_SUCCESSOR_SESSION` the moment the
+envelope is consumed or a session has adopted it, so the two can never race.
+It does **not** invent a session to satisfy the older model — the fact being
+represented is that adoption never happened.
+
+Both authorities drive one restore engine and one stage ladder, so a prepared
+restore cannot drift into a second implementation that merely resembles the
+real one. The receipt records which authority it answers to:
+
+```ts
+authority:
+  | { kind: "SUCCESSOR_SESSION"; sessionId: string }
+  | { kind: "PREPARED_CUTOVER";  cutoverId: string }
+```
+
+Two rules that are easy to get wrong. **Envelope expiry must not prohibit
+rollback**: expiry is an admission condition for going *forward*, and cannot
+revoke the ability to put the predecessor back — a cutover left overnight stays
+recoverable. And the durable receipt is written **before** the first
+irreversible step, because this command can itself die after replacing the
+launch database with the legacy one, at which point the successor database is
+no longer available to be anyone's recovery cursor.
+
 ## The deploy mode is derived, never chosen
 
 `ROLLING_COMPATIBLE` earns `ROLLING_SAFE`; everything else takes

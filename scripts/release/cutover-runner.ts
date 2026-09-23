@@ -22,6 +22,16 @@
  *   verify  <session>  prove a finished cutover, changing nothing
  *   resume  <session>  take over a session whose lease expired and report the plan
  *   rollback <session> restore the pre-deploy vector; launch rollback resumes from its external receipt
+ *   rollback-prepared <cutover-id>
+ *                            restore the predecessor from a prepared cutover
+ *                            that no session ever adopted
+ *
+ * Every state the runner can produce has exactly one recovery owner:
+ *
+ *   before the envelope is durable   prepare-bootstrap cleans up internally
+ *   envelope durable, not adopted    rollback-prepared <cutover-id>
+ *   adopted, session exists          rollback <session>
+ *   external effects armed           forward recovery only
  *
  * Exit codes are the contract the workflow reads:
  *   0   succeeded, or observe/verify/resume completed
@@ -129,6 +139,30 @@ export const runCutoverCommand = async (release: ProductionRelease, argv: readon
       // A resumed session that needs a human decision is not a success, and the
       // workflow must not read it as one.
       return session.state === "RECOVERY_REQUIRED" ? 12 : 0;
+    }
+    case "rollback-prepared": {
+      // The other half of the recovery split. `rollback` speaks for a successor
+      // session; this speaks for a prepared cutover that never became one, and
+      // the two may never address the same handoff.
+      if (!argument) throw new Error("RELEASE_CUTOVER_REQUIRED");
+      if (!release.bootstrapRollback) throw new Error("PREPARED_ROLLBACK_PREDECESSOR_UNAVAILABLE");
+      try {
+        const receipt = await release.bootstrapRollback.rollbackPrepared(argument);
+        release.journal.record("prepared-rollback.outcome", { cutoverId: argument, rollback: receipt.intent.rollbackId, stage: receipt.stage });
+        say({ command, outcome: "ROLLED_BACK", cutoverId: argument, rollback: receipt.intent.rollbackId });
+        return 11;
+      } catch (error) {
+        // Before durable intent exists this is an ordinary pre-mutation
+        // refusal; after it, production is mid-restore and only an operator
+        // decides what happens next.
+        if (!release.bootstrapRollback.isPreparedStarted(argument)) throw error;
+        release.journal.record("prepared-rollback.recovery-required", {
+          cutoverId: argument,
+          code: error instanceof Error ? error.message.split(":")[0] : "UNKNOWN_RELEASE_FAILURE",
+        });
+        say({ command, outcome: "RECOVERY_REQUIRED", cutoverId: argument });
+        return 12;
+      }
     }
     case "rollback": {
       if (!argument) throw new Error("RELEASE_SESSION_REQUIRED");
