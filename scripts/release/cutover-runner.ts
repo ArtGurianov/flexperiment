@@ -14,7 +14,10 @@
  *                            derive and publish a candidate; deploys nothing
  *   prepare-bootstrap <candidate> <expires-at> [cutover-id]
  *                            durable legacy DB handoff; deploys nothing
- *   deploy  <candidate>      run the release for that published candidate
+ *   deploy  <candidate> [cutover-id]
+ *                            run the release for that published candidate; a
+ *                            LAUNCH_BASELINE must name the prepared cutover it
+ *                            is adopting, because its predecessor is archived
  *   certify <session>  the attended half: arm, buy, refund, shut the fixture
  *   verify  <session>  prove a finished cutover, changing nothing
  *   resume  <session>  take over a session whose lease expired and report the plan
@@ -69,11 +72,23 @@ export const runCutoverCommand = async (release: ProductionRelease, argv: readon
       // being released, and the two could disagree.
       const candidate = release.candidates.get(argument);
       if (!candidate) throw new Error(`RELEASE_CANDIDATE_NOT_PUBLISHED: ${argument}`);
-      if (candidate.releaseClass === "LAUNCH_BASELINE") await release.launchBaselineAdmission.admit(candidate);
-      release.journal.record("deploy.start", { candidate: candidate.id, sha: candidate.sha, releaseClass: candidate.releaseClass });
+      // A launch baseline is always the second half of a prepared handoff:
+      // nothing else creates the launch database, and by the time this runs the
+      // predecessor it would otherwise read has already been archived. So the
+      // cutover id is required rather than optional, and naming it is how the
+      // deploy says which prepared handoff it is finishing.
+      const adoptedCutoverId = candidate.releaseClass === "LAUNCH_BASELINE" ? argv[2] : undefined;
+      if (candidate.releaseClass === "LAUNCH_BASELINE") {
+        // Admission first, and deliberately: whether this artifact is still the
+        // launch baseline does not depend on what else the command was given,
+        // and a stale candidate must be refused on its own terms.
+        await release.launchBaselineAdmission.admit(candidate);
+        if (!adoptedCutoverId) throw new Error("LAUNCH_DEPLOY_REQUIRES_PREPARED_CUTOVER");
+      }
+      release.journal.record("deploy.start", { candidate: candidate.id, sha: candidate.sha, releaseClass: candidate.releaseClass, cutoverId: adoptedCutoverId });
       const outcome = candidate.releaseClass === "ROLLING_COMPATIBLE"
         ? await release.orchestrator.runRolling({ ownerId, candidate })
-        : await release.orchestrator.runMaintenanceCutover({ ownerId, candidate });
+        : await release.orchestrator.runMaintenanceCutover({ ownerId, candidate, adoptedCutoverId });
       release.journal.record("deploy.outcome", { kind: outcome.kind, session: outcome.session.id, state: outcome.session.state });
       say({ command, outcome: outcome.kind, session: outcome.session.id, code: "code" in outcome ? outcome.code : undefined });
       return EXIT_BY_OUTCOME[outcome.kind] ?? 20;

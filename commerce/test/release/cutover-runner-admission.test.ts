@@ -127,7 +127,9 @@ describe("cutover runner launch-baseline admission", () => {
     const runner = release(store, refuseStale, mutations);
 
     await expect(runCutoverCommand(runner, ["prepare-bootstrap", CURRENT, "2026-09-22T00:00:00.000Z"], "owner")).resolves.toBe(0);
-    await expect(runCutoverCommand(runner, ["deploy", CURRENT], "owner")).resolves.toBe(13);
+    // The launch deploy names the cutover it is finishing; the guard it goes
+    // through is still the same one the preparation used.
+    await expect(runCutoverCommand(runner, ["deploy", CURRENT, "cutover-1"], "owner")).resolves.toBe(13);
     expect(runner.launchBaselineAdmission.admit).toHaveBeenCalledTimes(2);
     expect(runner.launchBaselineAdmission.admit).toHaveBeenNthCalledWith(1, candidate(CURRENT));
     expect(runner.launchBaselineAdmission.admit).toHaveBeenNthCalledWith(2, candidate(CURRENT));

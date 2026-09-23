@@ -69,6 +69,32 @@ export interface RecoveryDriver {
   restorePreDeployTopology(snapshot: PreDeploySnapshot): Promise<void>;
 }
 
+/**
+ * The successor half of the launch handoff.
+ *
+ * `prepare-bootstrap` leaves two durable facts behind: an envelope on the
+ * filesystem, and a fresh launch database standing where the predecessor used
+ * to be. From that moment the predecessor reader has nothing left to read, so
+ * a launch deploy cannot re-derive its own pre-deploy snapshot - it adopts the
+ * one the envelope froze before the database was replaced.
+ *
+ * Reading the envelope and adopting it are separate members for the same
+ * reason the handoff itself is ordered: recoverability is proved against the
+ * frozen snapshot BEFORE a session and a closed gate exist to be cleaned up.
+ */
+export interface CutoverAdoptionPort {
+  /** The frozen snapshot, read without mutating anything. */
+  preDeployTopology(cutoverId: string): PreDeploySnapshot;
+  /**
+   * Session, closed gate and adoption identity, committed together.
+   *
+   * `reconciled` means the database had already committed this handoff. That is
+   * not a second deploy's licence to start: the session is the authority from
+   * then on, and finishing it is `resume`'s job.
+   */
+  adopt(cutoverId: string, ownerId: string, candidate: ReleaseCandidate): { session: DeploySession; reconciled: boolean };
+}
+
 export type ReleasePorts = {
   readonly sessions: DeploySessions;
   /**
@@ -97,6 +123,8 @@ export type ReleasePorts = {
   readonly certification?: CertificationDriver;
   readonly recovery?: RecoveryDriver;
   readonly candidates?: ReleaseCandidateReader;
+  /** Present only where a prepared launch envelope can be adopted. */
+  readonly cutoverAdoption?: CutoverAdoptionPort;
   readonly clock?: () => Date;
 };
 
@@ -188,12 +216,21 @@ export class ReleaseOrchestrator {
     // cutover starts on the old lineage, where the canonical reader has no
     // evidence table to read. An ordinary maintenance release on the launch
     // lineage has no predecessor reader and uses the canonical one.
-    const before = await this.capturePredecessor(request.candidate.releaseClass);
+    // A prepared launch cutover has already replaced the database this would
+    // otherwise read, so its snapshot comes from the envelope rather than from
+    // a predecessor that no longer exists. Both paths prove recoverability
+    // against the same frozen vector before any session or gate exists.
+    const adoption = request.adoptedCutoverId ? this.adoptionPort() : undefined;
+    const before = adoption
+      ? adoption.preDeployTopology(request.adoptedCutoverId!)
+      : await this.capturePredecessor(request.candidate.releaseClass);
     await this.ports.deployment.assertRecoverable(uniformSha(before));
-    const session = sessions.acquireFenced({
-      id: request.sessionId, ownerId: request.ownerId, mode: "MAINTENANCE_CUTOVER",
-      targetSha: request.candidate.sha, candidateId: request.candidate.id, adoptedCutoverId: request.adoptedCutoverId,
-    }, before);
+    const session = adoption
+      ? this.adoptOnce(adoption, request)
+      : sessions.acquireFenced({
+        id: request.sessionId, ownerId: request.ownerId, mode: "MAINTENANCE_CUTOVER",
+        targetSha: request.candidate.sha, candidateId: request.candidate.id, adoptedCutoverId: request.adoptedCutoverId,
+      }, before);
     sessions.beginDeploying(session.id, request.ownerId);
 
     try {
@@ -251,6 +288,28 @@ export class ReleaseOrchestrator {
     if (releaseClass !== "LAUNCH_BASELINE") return this.ports.topology.observe();
     if (!this.ports.predecessor) throw new ReleaseOrchestrationError("LAUNCH_CUTOVER_REQUIRES_PREDECESSOR_READER");
     return this.ports.predecessor.observe();
+  }
+
+  /**
+   * Refused rather than silently fallen back to a fresh read: a deploy told to
+   * adopt a cutover must adopt that cutover. Re-deriving the snapshot instead
+   * would judge the release against the successor it just installed.
+   */
+  private adoptionPort(): CutoverAdoptionPort {
+    if (!this.ports.cutoverAdoption) throw new ReleaseOrchestrationError("CUTOVER_ADOPTION_REQUIRES_ADOPTION_PORT");
+    return this.ports.cutoverAdoption;
+  }
+
+  /**
+   * A handoff is adopted once. Finding one already committed means a previous
+   * deploy owns this cutover, and restarting it here would hand a second runner
+   * the same closed gate. The existing session is the authority; `resume` is
+   * what reads its state and decides what is still owed.
+   */
+  private adoptOnce(adoption: CutoverAdoptionPort, request: ReleaseRequest): DeploySession {
+    const { session, reconciled } = adoption.adopt(request.adoptedCutoverId!, request.ownerId, request.candidate);
+    if (reconciled) throw new ReleaseOrchestrationError("CUTOVER_ALREADY_ADOPTED", `${request.adoptedCutoverId} is owned by session ${session.id}; resume it`);
+    return session;
   }
 
   /**
