@@ -4,7 +4,6 @@ import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSyn
 import { dirname, join } from "node:path";
 import { CoolifyClient } from "./coolify";
 import { CoolifyDeploymentDriver, CoolifyRecoveryDriver } from "./coolify-deployment";
-import type { ComposeRollbackEvidence } from "./compose-rollback-evidence";
 import { FileCutoverEnvelopeStore } from "./cutover-envelope-file-store";
 import type { CutoverEnvelope } from "./cutover-envelope";
 import { adoptCutover } from "./cutover-handoff";
@@ -26,8 +25,7 @@ import { DatabaseRuntimeEvidenceReader, ProductionTopologyReader } from "./topol
 import { SqliteCutoverStorage } from "./sqlite-cutover-storage";
 import { BootstrapCutoverPreparation, type PreparationRequest, type PreparationResult } from "./cutover-preparation";
 import { RuntimeQuiescenceAuthority } from "./runtime-quiescence-authority";
-import { RuntimeQuiescer, type DatabaseIdentityProbe, type OpenHandleProbe } from "./runtime-quiescer";
-import { TrustedComposeRuntimeControl } from "./trusted-compose-runtime";
+import { RuntimeQuiescer, type DatabaseIdentityProbe, type OpenHandleProbe, type RuntimeLifecycle } from "./runtime-quiescer";
 import { BootstrapRollback } from "./bootstrap-rollback";
 import { FileBootstrapRollbackReceiptStore } from "./bootstrap-rollback-file-store";
 import { classifySchemaLineage } from "./schema-identity";
@@ -299,14 +297,7 @@ export type BuildOptions = {
    */
   readonly certification?: CertificationDriver;
   /** Test seams for host observation; production uses the bounded real adapters. */
-  readonly runtimeControl?: Pick<TrustedComposeRuntimeControl, "capture" | "stopAndReprove" | "assertStopped" | "startCaptured">;
-  /**
-   * The Compose evidence adapter. A seam because the real one shells out to
-   * `docker`, and the paths that use it are the destructive ones - leaving them
-   * unreachable from the composition-root suite is what let two Compose-only
-   * defects reach production.
-   */
-  readonly composeRollbackEvidence?: ComposeRollbackEvidence;
+  readonly runtimeControl?: RuntimeLifecycle;
   readonly databaseIdentity?: DatabaseIdentityProbe;
   readonly openHandles?: OpenHandleProbe;
   readonly monotonicNow?: () => number;
@@ -346,21 +337,6 @@ export const buildProductionRelease = (config: ProductionReleaseConfig, options:
       applications: config.applications,
       // The trusted local repositories, so a prepared launch can prove its
       // predecessor artifacts without a running container to read them off.
-      composeRepositories: Object.values(config.composeRepositories),
-      // Resolved when it runs, not when the root is built: the Compose
-      // application is named further down, and a recovery is the wrong moment
-      // to discover a wiring order problem.
-      composeRestore: async (sha: string) => {
-        const application = config.applications.find((entry) => entry.deploymentKind === "dockercompose");
-        if (!application) throw new ReleaseRunnerError("RECOVERY_COMPOSE_APPLICATION_UNCONFIGURED");
-        const control = options.runtimeControl ?? new TrustedComposeRuntimeControl();
-        const resourceId = await (ports.deployment as CoolifyDeploymentDriver).composeResourceId(application.uuid);
-        const binding = { applicationUuid: application.uuid, resourceId, repositories: config.composeRepositories };
-        // `capture` reads stopped containers too and refuses any whose image is
-        // not exactly this commit, so the units are proved before start.
-        await control.startCaptured(binding, await control.capture(binding, sha));
-      },
-      ...(options.composeRollbackEvidence ? { composeRollbackEvidence: options.composeRollbackEvidence } : {}),
       onProgress: (message: string) => journal.record("deployment.progress", { message }),
     };
 
@@ -477,9 +453,27 @@ export const buildProductionRelease = (config: ProductionReleaseConfig, options:
       opened.close();
     };
     const runtimeQuiescenceAuthority = new RuntimeQuiescenceAuthority(options.monotonicNow ?? (() => performance.now()));
+    /**
+     * Coolify owns the containers, completely.
+     *
+     * "Stopped" is what the control plane says and what the runtime stops
+     * answering - never a container listing. "Started" is a deploy of whatever
+     * the tracked ref names, which is why recovery moves the pointer first.
+     */
+    const coolifyLifecycle: RuntimeLifecycle = {
+      async stop(applicationUuid) { await client.stopApplication(applicationUuid); },
+      // Polls for a positive `exited`, and refuses everything else. A single
+      // read after an asynchronous stop is not evidence, and an unreadable
+      // status is not evidence of absence.
+      async assertStopped(applicationUuid) { await client.awaitApplicationStopped(applicationUuid); },
+      async start(applicationUuid) {
+        const deployment = await client.awaitDeployment(await client.startDeployment(applicationUuid));
+        if (deployment.status !== "finished") throw new ReleaseRunnerError("RUNTIME_NOT_STARTED", `${applicationUuid}: ${deployment.status}`);
+      },
+    };
     const runtimeQuiescer = new RuntimeQuiescer({
       authority: runtimeQuiescenceAuthority,
-      runtime: options.runtimeControl,
+      runtime: options.runtimeControl ?? coolifyLifecycle,
       database: options.databaseIdentity,
       handles: options.openHandles,
       lock,
@@ -519,17 +513,16 @@ export const buildProductionRelease = (config: ProductionReleaseConfig, options:
       quiescer: {
         async acquire(cutoverId) {
           const id = await (ports.deployment as CoolifyDeploymentDriver).composeResourceId(commerce.uuid);
-          if (!config.predecessor) throw new ReleaseRunnerError("BOOTSTRAP_PREDECESSOR_CONFIGURATION_MISSING");
           return runtimeQuiescer.acquire({
             sessionId: cutoverId,
             operation: "PREPARE",
             databasePath: config.databasePath,
-            sha: config.predecessor.expectedSha,
             lockOwner: lock.ownerId,
-            compose: { applicationUuid: commerce.uuid, resourceId: id, repositories: config.composeRepositories },
+            applicationUuid: commerce.uuid,
+            applicationResourceId: id,
           });
         },
-        async abortBeforeArchive(grant) { await runtimeQuiescer.resumeCaptured(grant); },
+        async abortBeforeArchive(grant) { await runtimeQuiescer.resume(grant); },
       },
       census: {
         async inspect() {
@@ -603,26 +596,19 @@ export const buildProductionRelease = (config: ProductionReleaseConfig, options:
         },
       },
       runtime: {
-        async acquire(rollbackId, quiesceSha, expectStopped) {
+        async acquire(rollbackId) {
           const resourceId = await (ports.deployment as CoolifyDeploymentDriver).composeResourceId(commerce.uuid);
-          const compose = { applicationUuid: commerce.uuid, resourceId, repositories: config.composeRepositories };
-          if (expectStopped) {
-            // A prepared restore inherits an already-quiesced runtime. Anything
-            // running here is state this cutover did not produce, so it is
-            // refused rather than stopped on the way past.
-            const control = options.runtimeControl ?? new TrustedComposeRuntimeControl();
-            const captured = await control.capture(compose, quiesceSha);
-            if (captured.some((unit) => unit.running)) {
-              throw new ReleaseRunnerError("PREPARED_ROLLBACK_RUNTIME_UNEXPECTEDLY_RUNNING", commerce.uuid);
-            }
-          }
+          // Stopping an already-stopped application is idempotent through the
+          // control plane, so a prepared restore and a session restore ask for
+          // exactly the same thing. The distinction that existed here was a
+          // distinction between Docker primitives, and it is gone with them.
           return runtimeQuiescer.acquire({
             sessionId: rollbackId,
             operation: "RESTORE",
             databasePath: config.databasePath,
-            sha: quiesceSha,
             lockOwner: lock.ownerId,
-            compose,
+            applicationUuid: commerce.uuid,
+            applicationResourceId: resourceId,
           });
         },
         async applicationIsAt(name, sha) {

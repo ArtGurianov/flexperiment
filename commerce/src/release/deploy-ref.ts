@@ -102,6 +102,19 @@ export class ProductionDeployRefStore implements DeployRefReader {
   }
 
   /**
+   * That a commit is still something the deployment system could be pointed at.
+   *
+   * Recovery restores a SOURCE commit and lets the build pipeline produce the
+   * artifact, rather than resurrecting a retained image. So this, not an image
+   * inventory, is what proves a rollback still has somewhere to go.
+   */
+  async assertResolvable(sha: string): Promise<void> {
+    if (!SHA.test(sha)) throw new DeployRefError("DEPLOY_REF_TARGET_INVALID", sha);
+    await this.#git(["fetch", "--no-tags", this.#remote, sha], this.#cwd);
+    await this.#git(["cat-file", "-e", `${sha}^{commit}`], this.#cwd);
+  }
+
+  /**
    * Moves the pointer, or refuses.
    *
    * The target is fetched and its existence proved locally first: pushing a

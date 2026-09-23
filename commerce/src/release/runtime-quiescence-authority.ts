@@ -17,18 +17,14 @@ export type RuntimeQuiescenceLease = RuntimeLeaseToken;
 const issueLease = (): RuntimeQuiescenceLease => new RuntimeLeaseToken(authoritySecret);
 
 export type RuntimeLeaseOperation = "PREPARE" | "RESTORE";
-export type RuntimeLeaseUnit = Readonly<{ service: "commerce" | "commerce-worker"; containerId: string }>;
 export type RuntimeLeaseDatabaseIdentity = Readonly<{ canonicalPath: string; dev: number; ino: number }>;
 export type RuntimeLeaseBinding = Readonly<{
   sessionId: string;
   operation: RuntimeLeaseOperation;
   databasePath: string;
   databaseIdentity: RuntimeLeaseDatabaseIdentity;
-  sha: string;
   applicationUuid: string;
   applicationResourceId: string;
-  repositories: Readonly<Record<RuntimeLeaseUnit["service"], string>>;
-  units: readonly RuntimeLeaseUnit[];
   lockOwner: string;
 }>;
 
@@ -58,7 +54,7 @@ export class RuntimeQuiescenceAuthority {
     const issuedAt = this.monotonicNow();
     if (!Number.isFinite(issuedAt)) throw new RuntimeQuiescenceAuthorityError("RUNTIME_LEASE_INVALID", "clock");
     const lease = issueLease();
-    this.#leases.set(lease, Object.freeze({ binding: Object.freeze({ ...binding, units: Object.freeze(binding.units.map((unit) => Object.freeze({ ...unit }))) }), issuedAt, deadline: issuedAt + this.ttlMs }));
+    this.#leases.set(lease, Object.freeze({ binding: Object.freeze({ ...binding }), issuedAt, deadline: issuedAt + this.ttlMs }));
     return lease;
   }
 
@@ -82,16 +78,18 @@ export class RuntimeQuiescenceAuthority {
   }
 
   private validateBinding(binding: RuntimeLeaseBinding): void {
-    if (!binding.sessionId || !binding.databasePath || !binding.databaseIdentity?.canonicalPath || !Number.isInteger(binding.databaseIdentity.dev) || !Number.isInteger(binding.databaseIdentity.ino) || !/^[a-f0-9]{40}$/.test(binding.sha) || !binding.applicationUuid || !/^\d+$/.test(binding.applicationResourceId) || !binding.repositories.commerce || !binding.repositories["commerce-worker"] || !binding.lockOwner
-      || binding.units.length !== 2 || new Set(binding.units.map((unit) => unit.service)).size !== 2
-      || binding.units.some((unit) => !unit.containerId)) throw new RuntimeQuiescenceAuthorityError("RUNTIME_LEASE_INVALID", "binding");
+    if (!binding.sessionId || !binding.databasePath || !binding.databaseIdentity?.canonicalPath
+      || !Number.isInteger(binding.databaseIdentity.dev) || !Number.isInteger(binding.databaseIdentity.ino)
+      || !binding.applicationUuid || !binding.applicationResourceId || !binding.lockOwner) {
+      throw new RuntimeQuiescenceAuthorityError("RUNTIME_LEASE_INVALID", "binding");
+    }
   }
 
   private sameBinding(left: RuntimeLeaseBinding, right: RuntimeLeaseBinding): boolean {
     return left.sessionId === right.sessionId && left.operation === right.operation && left.databasePath === right.databasePath
-      && left.databaseIdentity.canonicalPath === right.databaseIdentity.canonicalPath && left.databaseIdentity.dev === right.databaseIdentity.dev && left.databaseIdentity.ino === right.databaseIdentity.ino && left.sha === right.sha && left.applicationUuid === right.applicationUuid
-      && left.applicationResourceId === right.applicationResourceId && left.repositories.commerce === right.repositories.commerce && left.repositories["commerce-worker"] === right.repositories["commerce-worker"]
-      && left.lockOwner === right.lockOwner && left.units.length === right.units.length
-      && left.units.every((unit, index) => unit.service === right.units[index]?.service && unit.containerId === right.units[index]?.containerId);
+      && left.databaseIdentity.canonicalPath === right.databaseIdentity.canonicalPath
+      && left.databaseIdentity.dev === right.databaseIdentity.dev && left.databaseIdentity.ino === right.databaseIdentity.ino
+      && left.applicationUuid === right.applicationUuid && left.applicationResourceId === right.applicationResourceId
+      && left.lockOwner === right.lockOwner;
   }
 }

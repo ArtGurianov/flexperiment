@@ -1,5 +1,4 @@
 import { CoolifyClient, CoolifyError, type CoolifyDeployment } from "./coolify";
-import { DockerComposeRollbackEvidence, type ComposeRollbackEvidence } from "./compose-rollback-evidence";
 import { ProductionDeployRefStore } from "./deploy-ref";
 import type { DeploymentDriver, RecoveryDriver } from "./orchestrator";
 import type { PreDeploySnapshot, RuntimeTopology } from "./deploy-session";
@@ -27,33 +26,11 @@ export type SurfaceApplication = {
   readonly deploymentKind: DeploymentKind;
 };
 
-/**
- * Which runtime shape the predecessor is in when recoverability is judged.
- *
- * Before `prepare-bootstrap`, the predecessor is serving and its running
- * containers can prove their own identity. Afterwards it is deliberately
- * stopped, and requiring running containers would make a prepared launch
- * impossible to deploy - which is exactly what it did. In that phase the
- * evidence is the retained artifact, not a process.
- */
-export type PredecessorRuntimePhase = "RUNNING" | "PREPARED_STOPPED";
 
 export type CoolifyDeploymentOptions = {
   readonly client: CoolifyClient;
   readonly refs: ProductionDeployRefStore;
   readonly applications: readonly SurfaceApplication[];
-  readonly composeRollbackEvidence?: ComposeRollbackEvidence;
-  /** Trusted local repositories for the Compose application's services. */
-  readonly composeRepositories?: readonly string[];
-  /**
-   * Restores the Compose application to a commit.
-   *
-   * Coolify does not own those images, so there is nothing here to roll back;
-   * the composition root supplies the trusted control that captures the exact
-   * predecessor units and starts them. Absent, a Compose restore is refused
-   * rather than attempted through the wrong mechanism.
-   */
-  readonly composeRestore?: (sha: string) => Promise<void>;
   readonly onProgress?: (message: string) => void;
 };
 
@@ -74,55 +51,24 @@ export class CoolifyDeploymentDriver implements DeploymentDriver {
    * Every application can still restore the commit named, before anything is
    * asked to move.
    *
-   * Coolify's rollback depends on a retained image, and an image that has been
-   * pruned is discovered either now or in the middle of a recovery. A cutover
-   * that cannot be undone must not begin.
+   * Recovery redeploys the predecessor commit, so what has to still exist is
+   * that commit - not an image someone might have pruned. A cutover that
+   * cannot be undone must not begin.
    */
-  async assertRecoverable(sha: string, phase: PredecessorRuntimePhase = "RUNNING"): Promise<void> {
+  async assertRecoverable(sha: string): Promise<void> {
     const binding = await this.serverBinding();
-    const cleanup = await this.options.client.serverDockerCleanup(binding.serverUuid);
-    if (cleanup.applicationImageRetentionDisabled) {
-      throw new DeploymentError("DEPLOYMENT_APPLICATION_IMAGE_RETENTION_DISABLED");
-    }
     for (const application of this.options.applications) {
       const configured = await this.options.client.application(application.uuid);
       this.assertDeploymentKind(application, configured.buildPack);
-      if (configured.dockerImagesToKeep === null || configured.dockerImagesToKeep < 2) {
-        throw new DeploymentError("DEPLOYMENT_IMAGE_RETENTION_INSUFFICIENT", `${application.name}: ${configured.dockerImagesToKeep ?? "unreadable"}`);
-      }
       const active = await this.options.client.activeDeploymentQueue(application.uuid);
       if (active.length) throw new DeploymentError("DEPLOYMENT_QUEUE_ACTIVE", `${application.name}: ${active.join(",")}`);
-      if (application.deploymentKind === "dockercompose") {
-        await this.assertComposeRecoverable(binding.resourceId(application.uuid), sha, phase);
-        continue;
-      }
-      // A Dockerfile application's retained image is a Coolify fact and stays
-      // readable whether or not anything is running, so this needs no phase.
-      const images = await this.options.client.rollbackImages(application.uuid);
-      if (!images.some((image) => image.includes(sha))) {
-        throw new DeploymentError("DEPLOYMENT_ROLLBACK_IMAGE_MISSING", `${application.name}: no retained image for ${sha}`);
-      }
     }
-  }
-
-  /**
-   * Compose recoverability, judged against the phase production is actually in.
-   *
-   * RUNNING may read identity off the live containers, which is the stronger
-   * proof and the one to use while it is available. PREPARED_STOPPED cannot:
-   * preparation stopped those containers on purpose. There the claim is that
-   * the predecessor artifacts are still on disk, proved from the trusted
-   * repositories rather than from a process that is meant to be absent.
-   */
-  private async assertComposeRecoverable(resourceId: string, sha: string, phase: PredecessorRuntimePhase): Promise<void> {
-    const evidence = this.options.composeRollbackEvidence ?? new DockerComposeRollbackEvidence();
-    if (phase === "RUNNING") {
-      await evidence.assertPreDeployRecoverable(resourceId, sha);
-      return;
-    }
-    const repositories = this.options.composeRepositories ?? [];
-    if (!repositories.length) throw new DeploymentError("DEPLOYMENT_COMPOSE_REPOSITORIES_UNCONFIGURED");
-    await evidence.assertRetainedArtifacts(repositories, sha);
+    // What recovery needs is the predecessor COMMIT, not a retained artifact.
+    // Proving an image still exists locally was the premise that forced this
+    // system to reimplement Docker; the pointer and the build pipeline are the
+    // things a redeploy actually depends on.
+    await this.options.refs.assertResolvable(sha);
+    void binding;
   }
 
   /**
@@ -145,19 +91,11 @@ export class CoolifyDeploymentDriver implements DeploymentDriver {
    * repositories immediately before certification is allowed to continue.
    */
   async assertPredecessorRetained(sha: string): Promise<void> {
-    const binding = await this.serverBinding();
-    for (const application of this.options.applications) {
-      const configured = await this.options.client.application(application.uuid);
-      this.assertDeploymentKind(application, configured.buildPack);
-      if (application.deploymentKind === "dockercompose") {
-        await (this.options.composeRollbackEvidence ?? new DockerComposeRollbackEvidence()).assertPredecessorStillPresent(binding.resourceId(application.uuid), sha);
-        continue;
-      }
-      const images = await this.options.client.rollbackImages(application.uuid);
-      if (!images.some((image) => image.includes(sha))) {
-        throw new DeploymentError("DEPLOYMENT_PREDECESSOR_IMAGE_MISSING", `${application.name}: no retained image for ${sha}`);
-      }
-    }
+    // Re-proved immediately before arming, for the same reason as before: the
+    // window between convergence and the first external effect is when a
+    // recovery source can quietly stop existing. Under the redeploy contract
+    // that source is the commit, so that is what is re-proved.
+    await this.options.refs.assertResolvable(sha);
   }
 
   /**
@@ -233,26 +171,14 @@ export class CoolifyRecoveryDriver implements RecoveryDriver {
   async restoreApplication(name: string, sha: string): Promise<void> {
     const application = this.options.applications.find((entry) => entry.name === name);
     if (!application) throw new DeploymentError("RECOVERY_APPLICATION_UNKNOWN", name);
-    // `assertRecoverable` has distinguished the two kinds since it was written;
-    // this did not, and would have asked Coolify to roll back an application
-    // whose images Coolify does not own. Refused rather than attempted: a
-    // Compose restore is a different mechanism, and guessing at it during a
-    // recovery is how the recovery becomes the incident.
-    if (application.deploymentKind === "dockercompose") {
-      if (!this.options.composeRestore) {
-        throw new DeploymentError("RECOVERY_COMPOSE_ROLLBACK_UNSUPPORTED", `${application.name}: Compose services are restored from their captured units, not by a Coolify image rollback`);
-      }
-      await this.options.composeRestore(sha);
-      this.log(`${application.name} restored from captured units`);
-      return;
-    }
-    const images = await this.options.client.rollbackImages(application.uuid);
-    if (!images.some((image) => image.includes(sha))) {
-      throw new DeploymentError("RECOVERY_ROLLBACK_IMAGE_MISSING", `${application.name}: no retained image for ${sha}`);
-    }
-    const deployment = await this.options.client.awaitDeployment(await this.options.client.rollback(application.uuid, sha));
+    // One mechanism for both kinds, because recovery is now "deploy the
+    // predecessor commit" rather than "resurrect the predecessor artifact".
+    // The pointer has already been moved back, so this deploys that commit.
+    const current = await this.options.refs.read();
+    if (current !== sha) throw new DeploymentError("RECOVERY_REF_NOT_RESTORED", `${application.name}: ref is ${current}, expected ${sha}`);
+    const deployment = await this.options.client.awaitDeployment(await this.options.client.startDeployment(application.uuid));
     if (!settled(deployment)) throw new DeploymentError("RECOVERY_ROLLBACK_FAILED", `${application.name}: ${deployment.status}`);
-    this.log(`${application.name} rolled back`);
+    this.log(`${application.name} redeployed at ${sha}`);
   }
 
   /**
@@ -263,10 +189,10 @@ export class CoolifyRecoveryDriver implements RecoveryDriver {
    * it is one waiting to move again, and the next ordinary deploy would undo
    * the recovery without anyone asking it to.
    *
-   * Then each application is rolled back to its retained image. A missing image
-   * is not quietly rebuilt: a rebuild is a new artifact, and recovery is meant
-   * to restore the one that was running, so this refuses and leaves the
-   * session in recovery with sales shut.
+   * Then each application is redeployed at that commit through Coolify. One
+   * mechanism for all three: Coolify does not own the Compose application's
+   * images, and reimplementing a restore for it is what this system spent two
+   * production incidents learning not to do.
    */
   async restorePreDeployTopology(snapshot: PreDeploySnapshot): Promise<void> {
     const targets = new Set(this.options.applications.flatMap((application) =>

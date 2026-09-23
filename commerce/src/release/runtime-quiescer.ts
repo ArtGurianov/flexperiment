@@ -9,11 +9,26 @@ import {
   type RuntimeLeaseRevalidation,
   type RuntimeQuiescenceLease,
 } from "./runtime-quiescence-authority";
-import {
-  TrustedComposeRuntimeControl,
-  type TrustedComposeBinding,
-  type TrustedComposeUnit,
-} from "./trusted-compose-runtime";
+
+/**
+ * Who owns the containers.
+ *
+ * Coolify does, completely. This used to drive Docker directly - discovering
+ * containers by label, capturing their ids, stopping them and starting those
+ * exact ids again - which was a second deployment control plane underneath the
+ * one we already run. It produced both production incidents of 2026-09-23 and
+ * nothing else. The runner now asks Coolify to stop and to deploy, and proves
+ * the outcome through readiness and the release descriptors, the same evidence
+ * every other part of the system uses.
+ */
+export interface RuntimeLifecycle {
+  /** Ask the control plane to take the application down. */
+  stop(applicationUuid: string): Promise<void>;
+  /** Prove it is down. Never inspects containers; asks the control plane. */
+  assertStopped(applicationUuid: string): Promise<void>;
+  /** Bring it back on whatever commit the tracked ref now names. */
+  start(applicationUuid: string): Promise<void>;
+}
 
 export class RuntimeQuiescenceError extends Error {
   constructor(readonly code: string, detail?: string) { super(detail ? `${code}: ${detail}` : code); }
@@ -83,14 +98,15 @@ export type RuntimeQuiescerAcquireRequest = Readonly<{
   sessionId: string;
   operation: RuntimeLeaseOperation;
   databasePath: string;
-  sha: string;
   lockOwner: string;
-  compose: TrustedComposeBinding;
+  /** The Coolify application to take down. No commit, and no container ids. */
+  applicationUuid: string;
+  applicationResourceId: string;
 }>;
 
 export type RuntimeQuiescerOptions = Readonly<{
   authority: RuntimeQuiescenceAuthority;
-  runtime?: Pick<TrustedComposeRuntimeControl, "capture" | "stopAndReprove" | "assertStopped" | "startCaptured">;
+  runtime: RuntimeLifecycle;
   database?: DatabaseIdentityProbe;
   handles?: OpenHandleProbe;
   lock: ReleaseLockReader;
@@ -102,22 +118,30 @@ const sameIdentity = (left: RuntimeLeaseDatabaseIdentity, right: RuntimeLeaseDat
 
 /** Issues and revalidates process-local storage capabilities; it never mutates SQLite. */
 export class RuntimeQuiescer implements RuntimeLeaseRevalidation {
-  readonly #runtime: Pick<TrustedComposeRuntimeControl, "capture" | "stopAndReprove" | "assertStopped" | "startCaptured">;
+  readonly #runtime: RuntimeLifecycle;
   readonly #database: DatabaseIdentityProbe;
   readonly #handles: OpenHandleProbe;
 
   constructor(private readonly options: RuntimeQuiescerOptions) {
-    this.#runtime = options.runtime ?? new TrustedComposeRuntimeControl();
+    this.#runtime = options.runtime;
     this.#database = options.database ?? new HostDatabaseIdentityProbe();
     this.#handles = options.handles ?? new LsofSqliteHandleProbe();
   }
 
+  /**
+   * Takes the runtime down and proves the database is nobody's to write.
+   *
+   * The identity re-read and the handle probe are the parts that actually make
+   * a database swap safe, and neither knows what a container is. That is the
+   * whole remaining job: the control plane stops the application, and the host
+   * proves no writer is left holding the file.
+   */
   async acquire(input: RuntimeQuiescerAcquireRequest): Promise<RuntimeLeaseGrant> {
     await this.options.closeControllerDatabase?.();
     const before = await this.#database.identity(input.databasePath);
-    const captured = await this.#runtime.capture(input.compose, input.sha);
     await this.options.lock.assertHeld(input.lockOwner);
-    await this.#runtime.stopAndReprove(input.compose, captured);
+    await this.#runtime.stop(input.applicationUuid);
+    await this.#runtime.assertStopped(input.applicationUuid);
     const after = await this.#database.identity(input.databasePath);
     if (!sameIdentity(before, after)) throw new RuntimeQuiescenceError("RUNTIME_QUIESCER_DATABASE_IDENTITY_DRIFT");
     await this.#handles.assertNoOpenHandles(input.databasePath);
@@ -127,22 +151,18 @@ export class RuntimeQuiescer implements RuntimeLeaseRevalidation {
       operation: input.operation,
       databasePath: input.databasePath,
       databaseIdentity: before,
-      sha: input.sha,
-      applicationUuid: input.compose.applicationUuid,
-      applicationResourceId: input.compose.resourceId,
-      repositories: input.compose.repositories,
-      units: Object.freeze(captured.map((unit) => Object.freeze({ service: unit.service, containerId: unit.id }))),
+      applicationUuid: input.applicationUuid,
+      applicationResourceId: input.applicationResourceId,
       lockOwner: input.lockOwner,
     });
     return Object.freeze({ lease: this.options.authority.acquire(binding), binding });
   }
 
-  async resumeCaptured(grant: RuntimeLeaseGrant): Promise<void> {
+  /** Puts the runtime back, on whatever commit the tracked ref now names. */
+  async resume(grant: RuntimeLeaseGrant): Promise<void> {
     await this.options.lock.assertHeld(grant.binding.lockOwner);
-    const compose = this.composeBinding(grant.binding);
-    const units = this.capturedUnits(grant.binding);
-    await this.#runtime.assertStopped(compose, units);
-    await this.#runtime.startCaptured(compose, units);
+    await this.#runtime.assertStopped(grant.binding.applicationUuid);
+    await this.#runtime.start(grant.binding.applicationUuid);
     await this.options.lock.assertHeld(grant.binding.lockOwner);
   }
 
@@ -154,23 +174,11 @@ export class RuntimeQuiescer implements RuntimeLeaseRevalidation {
   }
 
   async assertUnitsStopped(binding: RuntimeLeaseBinding): Promise<void> {
-    await this.#runtime.assertStopped(this.composeBinding(binding), this.capturedUnits(binding));
+    await this.#runtime.assertStopped(binding.applicationUuid);
   }
 
   async assertNoSqliteHandles(databasePath: string): Promise<void> {
     await this.#handles.assertNoOpenHandles(databasePath);
   }
 
-  private composeBinding(binding: RuntimeLeaseBinding): TrustedComposeBinding {
-    return { applicationUuid: binding.applicationUuid, resourceId: binding.applicationResourceId, repositories: binding.repositories };
-  }
-
-  private capturedUnits(binding: RuntimeLeaseBinding): readonly TrustedComposeUnit[] {
-    return binding.units.map((unit) => ({
-      id: unit.containerId,
-      service: unit.service,
-      image: `${binding.repositories[unit.service]}:${binding.sha}`,
-      running: false,
-    }));
-  }
 }

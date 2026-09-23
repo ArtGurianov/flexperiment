@@ -57,10 +57,8 @@ const world = (makeStore: () => ReleaseAuthorityStore, options: { armed?: boolea
   const runtimeAuthority = new RuntimeQuiescenceAuthority(() => 0);
   const binding: RuntimeLeaseBinding = {
     sessionId: bootstrapRollbackId(session.id), operation: "RESTORE", databasePath: "/db",
-    databaseIdentity: { canonicalPath: "/db", dev: 1, ino: 2 }, sha: target,
+    databaseIdentity: { canonicalPath: "/db", dev: 1, ino: 2 },
     applicationUuid: "commerce-uuid", applicationResourceId: "3",
-    repositories: { commerce: "repo/commerce", "commerce-worker": "repo/worker" },
-    units: [{ service: "commerce", containerId: "c1" }, { service: "commerce-worker", containerId: "c2" }],
     lockOwner: "runner",
   };
 
@@ -84,7 +82,7 @@ const world = (makeStore: () => ReleaseAuthorityStore, options: { armed?: boolea
     },
     runtime: {
       async acquire() {
-        log.push("stop-target");
+        log.push("stop-runtime");
         if (failures.delete("runtime")) throw new Error("COMPOSE_RUNTIME_CONTAINERS_STILL_RUNNING");
         return { lease: runtimeAuthority.acquire(binding), binding };
       },
