@@ -720,8 +720,15 @@ The proof, the new run and its capability are one IMMEDIATE transaction. The
 first capability's retirement is the capability store's own step during
 issuance, and the schema permits it only after `expires_at` by the database
 clock. That is kept, not bypassed: until then `certify` refuses with
-`CERTIFICATION_RETRY_CAPABILITY_STILL_LIVE` and writes nothing. Once `-a2`
-exists a later `certify` continues it, and there is no `-a3`. A first run that
+`CERTIFICATION_RETRY_CAPABILITY_STILL_LIVE`, and the transaction rolls back
+with every durable row unchanged. Once `-a2` exists a later `certify` continues
+it, and there is no `-a3`. What `-a2` may still need is a capability. A runner
+that died after creating it and came back more than a TTL later would otherwise
+recover an expired one, be refused by the runtime, and be stuck again. So an
+unspent, expired `-a2` capability is replaced on the same run, through the same
+store issuance and database-clock guard. A spent one is never replaced: the
+checkout happened under it, and the refund and cleanup continue with it. Any
+other capability shape fails closed. A first run that
 did something is not eligible and goes down the ordinary path, which
 reconciles it. `verify` judges the run that certified, and re-proves from the
 first run's leftovers that it did nothing.

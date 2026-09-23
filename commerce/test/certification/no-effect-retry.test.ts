@@ -97,7 +97,7 @@ const driver = () => new ProductionCertificationDriver({
   fetch: certificationRuntime({ db, sha: SHA, now: clock, citySlug: "kemerovo", legal: LEGAL }),
 });
 
-/** Everything the retry could possibly write, for "changed nothing" to be checked against. */
+/** Every durable row the retry could write, for "unchanged" to be checked against. */
 const snapshot = () => JSON.stringify({
   runs: db.prepare("SELECT * FROM certification_runs ORDER BY run_id").all(),
   capabilities: db.prepare("SELECT * FROM certification_capabilities ORDER BY id").all(),
@@ -126,11 +126,13 @@ beforeEach(() => {
 });
 
 describe("a no-effect certification retry from attempt 5's durable state", () => {
-  it("refuses while the first capability is still live, and changes nothing", () => {
+  it("refuses while the first capability is still live, leaving the durable rows unchanged", () => {
     world();
     const before = snapshot();
     expect(() => driver().retryAfterNoEffectFailure(SESSION)).toThrow("CERTIFICATION_RETRY_CAPABILITY_STILL_LIVE");
-    // The whole transaction rolled back: no -a2 run, no capability, no retirement.
+    // Rolled back: the runs, capabilities, session and ledger rows are as they
+    // were - no -a2 run, no capability, no retirement. (Row equality, not a
+    // claim about the database file's bytes.)
     expect(snapshot()).toBe(before);
     expect(new SqliteCertificationRunStore(db).load(RETRY)).toBeUndefined();
   });
@@ -188,6 +190,67 @@ describe("a no-effect certification retry from attempt 5's durable state", () =>
     expect(snapshot()).toBe(after);
     expect(driver().recoverCapability(SESSION)!.id).toBe(first.id);
     expect(db.prepare("SELECT COUNT(*) AS n FROM certification_runs").get()).toEqual({ n: 2 });
+  });
+
+  const liveCapabilities = () => db.prepare(`SELECT id, run_id, deployment_session_id, release_sha FROM certification_capabilities
+    WHERE consumed_at IS NULL AND retired_at IS NULL`).all() as { id: string; run_id: string; deployment_session_id: string; release_sha: string }[];
+
+  it("gives -a2 a new capability on the same run when its own expires unspent, and still never makes -a3", () => {
+    // Created, then the runner died before certifying, and came back more
+    // than a TTL later. Recovering the expired capability would be refused by
+    // the runtime, and with no -a3 the session would be stuck again.
+    world();
+    afterExpiry();
+    expect(driver().retryAfterNoEffectFailure(SESSION)).toEqual({ kind: "RETRY_ISSUED" });
+    const firstA2 = driver().recoverCapability(SESSION)!;
+    expect(firstA2.runId).toBe(RETRY);
+
+    clock = new Date(Date.parse(firstA2.expiresAt) + 1_000);
+    expect(driver().retryAfterNoEffectFailure(SESSION)).toEqual({ kind: "RETRY_CAPABILITY_REISSUED" });
+
+    expect((db.prepare("SELECT run_id FROM certification_runs ORDER BY run_id").all() as { run_id: string }[]).map((row) => row.run_id))
+      .toEqual([BASE, RETRY]);
+    expect((db.prepare("SELECT retired_at FROM certification_capabilities WHERE id = ?").get(firstA2.id) as { retired_at: string | null }).retired_at)
+      .not.toBeNull();
+    const live = liveCapabilities();
+    expect(live).toHaveLength(1);
+    expect(live[0]).toMatchObject({ run_id: RETRY, deployment_session_id: SESSION, release_sha: SHA });
+    expect(live[0].id).not.toBe(firstA2.id);
+    expect(driver().recoverCapability(SESSION)!.id).toBe(live[0].id);
+
+    // And a live replacement is simply continued.
+    const settled = snapshot();
+    expect(driver().retryAfterNoEffectFailure(SESSION)).toEqual({ kind: "RETRY_EXISTS" });
+    expect(snapshot()).toBe(settled);
+  });
+
+  it("never replaces a spent -a2 capability, which is what the refund and cleanup continue with", () => {
+    world();
+    afterExpiry();
+    expect(driver().retryAfterNoEffectFailure(SESSION)).toEqual({ kind: "RETRY_ISSUED" });
+    const spent = driver().recoverCapability(SESSION)!;
+    db.prepare("UPDATE certification_capabilities SET consumed_at = ? WHERE id = ?").run(clock.toISOString(), spent.id);
+
+    clock = new Date(Date.parse(spent.expiresAt) + 1_000);
+    const before = snapshot();
+    expect(driver().retryAfterNoEffectFailure(SESSION)).toEqual({ kind: "RETRY_EXISTS" });
+    expect(snapshot()).toBe(before);
+    expect(liveCapabilities()).toEqual([]);
+    expect(driver().recoverCapability(SESSION)!.id).toBe(spent.id);
+  });
+
+  it("fails closed on a capability shape no path produces", () => {
+    world();
+    afterExpiry();
+    expect(driver().retryAfterNoEffectFailure(SESSION)).toEqual({ kind: "RETRY_ISSUED" });
+    // A spent -a2 capability and a second, unretired one beside it.
+    const spent = driver().recoverCapability(SESSION)!;
+    db.prepare("UPDATE certification_capabilities SET consumed_at = ? WHERE id = ?").run(clock.toISOString(), spent.id);
+    issueCapability(new SqliteCertificationCapabilityStore(db),
+      { runId: BASE, deploymentSessionId: SESSION, releaseSha: SHA, maxAmountKopecks: 100, ttlMs: TTL }, clock, testSecret());
+    const before = snapshot();
+    expect(() => driver().retryAfterNoEffectFailure(SESSION)).toThrow("CERTIFICATION_RETRY_CAPABILITY_CORRUPT");
+    expect(snapshot()).toBe(before);
   });
 
   it("does nothing for a first run that has not failed", () => {

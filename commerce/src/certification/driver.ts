@@ -70,6 +70,8 @@ export { certificationRunId };
 export type NoEffectRetryOutcome =
   | { readonly kind: "NOT_FAILED" }
   | { readonly kind: "RETRY_EXISTS" }
+  /** `-a2`'s own capability had expired unspent; the same run was given a new one. */
+  | { readonly kind: "RETRY_CAPABILITY_REISSUED" }
   | { readonly kind: "INELIGIBLE"; readonly reason: string }
   | { readonly kind: "RETRY_ISSUED" };
 
@@ -262,14 +264,21 @@ export class ProductionCertificationDriver implements CertificationDriver {
    * rather than worked around: until then this refuses with
    * CERTIFICATION_RETRY_CAPABILITY_STILL_LIVE and changes nothing.
    *
-   * Idempotent: once `-a2` exists, a later `certify` is continuing it, and this
-   * answers RETRY_EXISTS without creating anything. There is no `-a3`.
+   * Idempotent: once `-a2` exists, a later `certify` is continuing it, and no
+   * run is ever created again. There is no `-a3`. What `-a2` may still need is
+   * a capability: a runner that died after creating it and came back more than
+   * a TTL later would otherwise recover an expired one and be refused by the
+   * runtime, stuck exactly as attempt 5 was. So an unspent, expired `-a2`
+   * capability is replaced on the same run, through the same store issuance
+   * and the same database-clock guard. A spent one is never replaced: the
+   * checkout already happened under it, and it is the identity the refund and
+   * cleanup continue with.
    */
   retryAfterNoEffectFailure(sessionId: string): NoEffectRetryOutcome {
     const runs = new SqliteCertificationRunStore(this.options.db);
     const retry = retryRunId(sessionId);
     const work = this.options.db.transaction((): NoEffectRetryOutcome => {
-      if (runs.load(retry)) return { kind: "RETRY_EXISTS" };
+      if (runs.load(retry)) return this.continueRetry(sessionId, retry);
       const first = runs.load(certificationRunId(sessionId));
       if (!first?.failure) return { kind: "NOT_FAILED" };
       const defect = noEffectDefect(this.options.db, sessionId, first, this.options.candidate);
@@ -297,6 +306,29 @@ export class ProductionCertificationDriver implements CertificationDriver {
       return { kind: "RETRY_ISSUED" };
     });
     return work.immediate();
+  }
+
+  /** `-a2` exists: keep it certifiable, and never make another run. Runs inside the caller's transaction. */
+  private continueRetry(sessionId: string, retry: string): NoEffectRetryOutcome {
+    const held = this.options.db.prepare(`SELECT id, run_id, release_sha, consumed_at, expires_at FROM certification_capabilities
+      WHERE deployment_session_id = ? AND retired_at IS NULL`).all(sessionId) as
+      { id: string; run_id: string; release_sha: string; consumed_at: string | null; expires_at: string }[];
+    // One capability standing for the session, and it is `-a2`'s. Anything
+    // else is a shape no path here produces, and guessing which one to trust
+    // is how a second authorization would come to exist.
+    if (held.length !== 1 || held[0].run_id !== retry || held[0].release_sha !== this.options.candidate.sha) {
+      throw new CertificationCapabilityError("CERTIFICATION_RETRY_CAPABILITY_CORRUPT",
+        held.map((row) => `${row.id}:${row.run_id}`).join(",") || "none");
+    }
+    const [capability] = held;
+    if (capability.consumed_at) return { kind: "RETRY_EXISTS" };
+    if (Date.parse(capability.expires_at) > this.now().getTime()) return { kind: "RETRY_EXISTS" };
+    issueCapability(new SqliteCertificationCapabilityStore(this.options.db), {
+      runId: retry, deploymentSessionId: sessionId, releaseSha: this.options.candidate.sha,
+      maxAmountKopecks: CERTIFICATION_PRICE_KOPECKS,
+      ttlMs: this.options.capabilityTtlMs ?? 4 * 60 * 60_000,
+    }, this.now(), this.issuingKey());
+    return { kind: "RETRY_CAPABILITY_REISSUED" };
   }
 
   /** What the run has reached, for a caller reporting progress without deciding anything. */
