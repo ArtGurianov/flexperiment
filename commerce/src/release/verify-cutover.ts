@@ -1,6 +1,7 @@
 import { runtimeIsTarget } from "./deploy-session";
 import { SqliteCertificationRunStore } from "../certification/store-sqlite";
 import { SqliteCatalogueMutationLedger } from "../certification/catalogue-authority-sqlite";
+import { certificationRunId, effectiveCertificationRunId, retryRunId } from "../certification/no-effect-retry";
 import type { ProductionRelease } from "./production-runner";
 
 /**
@@ -55,7 +56,18 @@ export const verifyCutover = async (release: ProductionRelease, sessionId: strin
   check("schema_lineage_supported", admitted.schema.lineage === "SUPPORTED", admitted.schema.lineage);
 
   const runs = new SqliteCertificationRunStore(release.database);
-  const run = runs.load(`certification-${sessionId}`);
+  // The run that certified the release: the session's no-effect retry when it
+  // has one, otherwise its first.
+  const run = runs.load(effectiveCertificationRunId(release.database, sessionId));
+  const retried = run?.runId === retryRunId(sessionId);
+  if (retried) {
+    // A retry is only ever legitimate over a first run that did nothing. Asked
+    // again here, from what that run left behind, not from the retry's say-so.
+    const first = new SqliteCatalogueMutationLedger(release.database, certificationRunId(sessionId));
+    const firstOrders = release.database.prepare("SELECT COUNT(*) AS n FROM orders WHERE certification_run_id = ?")
+      .get(certificationRunId(sessionId)) as { n: number };
+    check("superseded_certification_had_no_effect", first.occurrenceId() === undefined && firstOrders.n === 0);
+  }
   check("certification_complete", run?.phase === "COMPLETE", run?.phase ?? "no run");
   check("certification_not_failed", !run?.failure, run?.failure?.code);
   // Every external effect of the certification has a terminal record: the

@@ -75,6 +75,7 @@ candidate-threeway
 cert-dispatch
 cert-dispatch-template
 certification-operator
+certification-scope
 claim-seam
 claim-seam-template
 commerce-test-db-snapshot

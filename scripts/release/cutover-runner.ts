@@ -115,6 +115,17 @@ export const runCutoverCommand = async (release: ProductionRelease, argv: readon
       if (!argument) throw new Error("RELEASE_SESSION_REQUIRED");
       const session = release.sessions.read(argument);
       if (!session) throw new Error(`DEPLOY_SESSION_NOT_FOUND: ${argument}`);
+      const candidate = release.candidates.get(session.candidateId ?? "");
+      if (!candidate) throw new Error(`RELEASE_CANDIDATE_NOT_PUBLISHED: ${session.candidateId ?? "none"}`);
+      const driver = release.certificationFor(candidate);
+      // A first certification that failed before doing anything gets exactly
+      // one retry (see `no-effect-retry.ts`). Decided before the session is
+      // claimed, because it never touches the session: it only reads it, and
+      // a refusal - the first capability not yet expired - leaves nothing
+      // changed at all. A first run that did something is INELIGIBLE and goes
+      // on to the ordinary path below, which reconciles it.
+      const retry = driver.retryAfterNoEffectFailure(argument);
+      if (retry.kind !== "NOT_FAILED") release.journal.record("certify.retry", { session: argument, ...retry });
       // The deploy that produced this session has exited and stood down. This
       // is a different process with its own owner id, so it claims the session
       // before arming anything. A lease somebody is still holding is refused,
@@ -126,9 +137,6 @@ export const runCutoverCommand = async (release: ProductionRelease, argv: readon
           throw new Error(`DEPLOY_SESSION_HELD_BY_ANOTHER_RUNNER: ${argument} is held by ${session.ownerId} (${error instanceof Error ? error.message : "unknown"})`);
         }
       }
-      const candidate = release.candidates.get(session.candidateId ?? "");
-      if (!candidate) throw new Error(`RELEASE_CANDIDATE_NOT_PUBLISHED: ${session.candidateId ?? "none"}`);
-      const driver = release.certificationFor(candidate);
       const capability = driver.recoverCapability(argument);
       if (!capability) throw new Error("CERTIFICATION_CAPABILITY_UNRECOVERABLE");
 

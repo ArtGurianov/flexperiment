@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
-import { capabilityBinding, issueCapability, type CertificationCapability } from "./capability";
+import { capabilityBinding, CertificationCapabilityError, issueCapability, type CertificationCapability } from "./capability";
 import { parseCapabilityKeyring, recoverCertificationNonce } from "./nonce";
 import { assertAttended } from "./operator-terminal";
 import { certifyProduction, type CertifyPorts } from "./machine";
@@ -8,6 +8,7 @@ import { HttpCertificationAdminPort, HttpCertificationPublicPort } from "./http-
 import { TerminalOperator, type OperatorScope, type TerminalChannel } from "./operator-terminal";
 import { SqliteCertificationCapabilityStore, SqliteCertificationRunStore } from "./store-sqlite";
 import { CERTIFICATION_OCCURRENCE_TITLE, CERTIFICATION_PRICE_KOPECKS, CERTIFICATION_TIMEZONE } from "./scope";
+import { certificationRunId, effectiveCertificationRunId, noEffectDefect, retryRunId } from "./no-effect-retry";
 import type { CertificationDriver } from "../release/orchestrator";
 import type { ReleaseCandidate } from "../release/candidate";
 
@@ -56,8 +57,21 @@ export type CertificationDriverOptions = {
   readonly timeouts?: { readonly paymentMs: number; readonly emailMs: number; readonly refundMs: number };
 };
 
-/** One run per deploy session, so a restart continues rather than begins. */
-export const certificationRunId = (deploymentSessionId: string): string => `certification-${deploymentSessionId}`;
+/** One run per deploy session, so a restart continues rather than begins. See `no-effect-retry.ts` for the one exception. */
+export { certificationRunId };
+
+/**
+ * What `retryAfterNoEffectFailure` found. Only RETRY_ISSUED changed anything.
+ *
+ * INELIGIBLE is not an error: a first run that failed after doing something
+ * still has to be reconciled - a captured payment refunded - and that is the
+ * ordinary `certify` path, which the caller then takes.
+ */
+export type NoEffectRetryOutcome =
+  | { readonly kind: "NOT_FAILED" }
+  | { readonly kind: "RETRY_EXISTS" }
+  | { readonly kind: "INELIGIBLE"; readonly reason: string }
+  | { readonly kind: "RETRY_ISSUED" };
 
 const DEFAULT_TIMEOUTS = { paymentMs: 30 * 60_000, emailMs: 15 * 60_000, refundMs: 30 * 60_000 };
 
@@ -234,9 +248,60 @@ export class ProductionCertificationDriver implements CertificationDriver {
     return new SqliteCertificationCapabilityStore(this.options.db).get(row.id);
   }
 
+  /**
+   * The session's one retry, if its first certification provably did nothing.
+   *
+   * Everything happens in one IMMEDIATE transaction: the proof is re-read, the
+   * `-a2` run is created and its capability issued, and the store's issuance
+   * retires the first capability in the same write. A throw anywhere rolls all
+   * of it back, so there is never an `-a2` run without a capability, or a
+   * retired capability without a replacement.
+   *
+   * The first capability is never retired early. The schema allows retirement
+   * only once it has expired, by the database's own clock, and that is kept
+   * rather than worked around: until then this refuses with
+   * CERTIFICATION_RETRY_CAPABILITY_STILL_LIVE and changes nothing.
+   *
+   * Idempotent: once `-a2` exists, a later `certify` is continuing it, and this
+   * answers RETRY_EXISTS without creating anything. There is no `-a3`.
+   */
+  retryAfterNoEffectFailure(sessionId: string): NoEffectRetryOutcome {
+    const runs = new SqliteCertificationRunStore(this.options.db);
+    const retry = retryRunId(sessionId);
+    const work = this.options.db.transaction((): NoEffectRetryOutcome => {
+      if (runs.load(retry)) return { kind: "RETRY_EXISTS" };
+      const first = runs.load(certificationRunId(sessionId));
+      if (!first?.failure) return { kind: "NOT_FAILED" };
+      const defect = noEffectDefect(this.options.db, sessionId, first, this.options.candidate);
+      if (defect) return { kind: "INELIGIBLE", reason: defect };
+
+      runs.create({
+        runId: retry, revision: 1, releaseSha: this.options.candidate.sha,
+        phase: "NEW", direction: "NORMAL", startedAt: this.now().toISOString(),
+      });
+      try {
+        issueCapability(new SqliteCertificationCapabilityStore(this.options.db), {
+          runId: retry, deploymentSessionId: sessionId, releaseSha: this.options.candidate.sha,
+          maxAmountKopecks: CERTIFICATION_PRICE_KOPECKS,
+          ttlMs: this.options.capabilityTtlMs ?? 4 * 60 * 60_000,
+        }, this.now(), this.issuingKey());
+      } catch (error) {
+        if (error instanceof CertificationCapabilityError && error.code === "CERTIFICATION_CAPABILITY_ALREADY_LIVE") {
+          const live = this.options.db.prepare("SELECT expires_at FROM certification_capabilities WHERE id = ?")
+            .get(error.detail ?? "") as { expires_at: string } | undefined;
+          throw new CertificationCapabilityError("CERTIFICATION_RETRY_CAPABILITY_STILL_LIVE",
+            `${error.detail ?? "unknown"} expires ${live?.expires_at ?? "unknown"}; retry after that`);
+        }
+        throw error;
+      }
+      return { kind: "RETRY_ISSUED" };
+    });
+    return work.immediate();
+  }
+
   /** What the run has reached, for a caller reporting progress without deciding anything. */
   phase(sessionId: string): string | undefined {
-    return new SqliteCertificationRunStore(this.options.db).load(certificationRunId(sessionId))?.phase;
+    return new SqliteCertificationRunStore(this.options.db).load(effectiveCertificationRunId(this.options.db, sessionId))?.phase;
   }
 
   /**

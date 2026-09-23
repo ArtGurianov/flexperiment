@@ -683,6 +683,54 @@ refusals that leave the old lineage a legal destination. Once armed, a request
 that never reached the provider still costs it - a window that cannot be
 removed, only kept this small.
 
+## A certification that did nothing may be retried once, and only after its capability expires
+
+One certification run per deploy session is the rule (`certification-<session>`),
+because a restart after a payment must continue that payment, never begin
+another. A failed run is reconciled, not replaced, and its failure is immutable.
+
+Attempt 5 (2026-09-23) hit the case the rule did not anticipate. `certify`
+armed the release and its first command, `CREATE_OCCURRENCE`, was refused by
+the runtime as `CERTIFICATION_COMMAND_NOT_ARMED`. The runtime admits a command
+only if it equals the armed one compared as JSON, and the runner had armed the
+draft with `cityId` last while the endpoint rebuilds it with `cityId` first.
+The run recorded `INCOMPLETE` and shut a catalogue it never opened. Armed means
+no rollback, and a failed run can never pass, so a release whose certification
+had touched nothing had no way to finish. The runner now spells the draft out
+in the endpoint's order, and a test sends the runner's real command through the
+real endpoint parser and SQLite authority, which is the round trip no test made
+before.
+
+The way out is exactly one retry, `certification-<session>-a2`, and only when
+the first run provably did nothing (`no-effect-retry.ts`):
+
+- The session is `RECOVERY_REQUIRED`, `NEW_LINEAGE_ONLY`, fenced, with no
+  rollback reserved, for the same candidate.
+- The run failed at `NEW`, is `CATALOGUE_CLEAN`, has nothing pending, and has
+  no evidence identifiers. A superseded `CREATE_OCCURRENCE` is expected:
+  cleanup keeps it as the forensic record of what it retired.
+- The run has no catalogue-ledger row. The mutation and its ledger row commit
+  in one transaction, so no row means no occurrence.
+- The run has no order and no checkout. A certification order cannot exist
+  without its run's ledger row.
+- There is exactly one capability for the session, bound to that run, never
+  spent and never replaced.
+
+The proof, the new run and its capability are one IMMEDIATE transaction. The
+first capability's retirement is the capability store's own step during
+issuance, and the schema permits it only after `expires_at` by the database
+clock. That is kept, not bypassed: until then `certify` refuses with
+`CERTIFICATION_RETRY_CAPABILITY_STILL_LIVE` and writes nothing. Once `-a2`
+exists a later `certify` continues it, and there is no `-a3`. A first run that
+did something is not eligible and goes down the ordinary path, which
+reconciles it. `verify` judges the run that certified, and re-proves from the
+first run's leftovers that it did nothing.
+
+This is runner-only. The deployed runtime already binds each command to the
+capability's run, not to a session-derived id, so recovering this way needs
+no new candidate and no deploy, and the certified target stays the one the
+session names.
+
 ## Installing the release runner on the VPS
 
 The workflow invokes one command, `flexperiment-release`, over SSH. It is a

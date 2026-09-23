@@ -13,6 +13,9 @@ import { canonicalLegalManifest, parseLegalManifest } from "../../src/legal-mani
 import type { CertificationDriver } from "../../src/release/orchestrator";
 import { PRODUCTION_CONVERGENCE, type ConvergencePolicy } from "../../src/release/convergence";
 import { buildProductionRelease, type BuildOptions, type ProductionRelease } from "../../src/release/production-runner";
+import { certificationRunId, retryRunId } from "../../src/certification/no-effect-retry";
+import { SqliteCertificationRunStore } from "../../src/certification/store-sqlite";
+import { verifyCutover } from "../../src/release/verify-cutover";
 import { harness, recordInstance, type Harness } from "../support/production-runner-harness";
 
 /**
@@ -451,6 +454,86 @@ describe("the whole path production has to walk, through the real composition ro
       // Never a pre-mutation refusal: the money has already moved by here.
       expect(code).not.toBe(20);
     } finally { built.close(); }
+  });
+
+  it("carries attempt 5 forward through certify: refused while its capability lives, then certified on -a2", async () => {
+    /**
+     * 2026-09-23, attempt 5: `certify` armed the release, its first catalogue
+     * command was refused, and the session was left armed, in recovery, with a
+     * certification run that can never pass. This drives the way out through
+     * the CLI and the real composition root, from a capability that `deploy`
+     * really issued.
+     */
+    prepareEnvelope();
+    const candidate = launchCandidate(vps.targetSha);
+    publish(candidate);
+    convergeOnTarget();
+    const processA = build(launchConfig(), { now });
+    let sessionId = "";
+    try {
+      expect(await runCutoverCommand(cli(processA), ["deploy", vps.targetSha, CUTOVER], "runner-a")).toBe(13);
+      sessionId = processA.authority.deploymentGate().deploymentSessionId!;
+    } finally { processA.close(); }
+
+    // What attempt 5 left behind, through the same legal transitions.
+    const armed = { kind: "CREATE_OCCURRENCE" as const, idempotencyKey: "k", draft: {
+      startsAt: "2026-12-15T15:00:00.000Z", endsAt: "2026-12-15T18:00:00.000Z",
+      venueDisclosureText: "Announced later", venueAnnounceBy: "2026-12-08T09:00:00.000Z", cityId: "city",
+    } };
+    const runs = new SqliteCertificationRunStore(vps.db);
+    let first = runs.load(certificationRunId(sessionId))!;
+    first = runs.update(first.runId, first.revision, { pendingCommand: armed });
+    first = runs.update(first.runId, first.revision, {
+      pendingCommand: null, direction: "CLEANUP_STARTED",
+      supersededCommand: { command: armed, reason: "CLEANUP_SUPERSEDED_CATALOGUE_OPENING" },
+    });
+    runs.update(first.runId, first.revision, {
+      direction: "CATALOGUE_CLEAN",
+      failure: { outcome: "INCOMPLETE", code: "CERTIFICATION_CATALOGUE_COMMAND_FAILED (500)", recordedAt: NOW.toISOString() },
+    });
+    const attempt5 = build(launchConfig(), { now, certification: certification() });
+    try {
+      attempt5.sessions.takeOverExpiredLease(sessionId, "runner-b");
+      attempt5.sessions.armExternalEffects(sessionId, "runner-b");
+      attempt5.sessions.enterRecoveryRequired(sessionId, "runner-b");
+      attempt5.sessions.yieldLease(sessionId, "runner-b");
+    } finally { attempt5.close(); }
+
+    const certified: string[] = [];
+    const operatorAt = (at: Date) => build(launchConfig(), {
+      now: () => at,
+      certification: {
+        issueCapability: vi.fn(),
+        preflight: vi.fn(async () => {}),
+        certify: vi.fn(async (capability: { runId: string }) => { certified.push(capability.runId); }),
+      } as unknown as CertificationDriver,
+    });
+
+    // Ten minutes in: the first capability is live, and is not retired early.
+    const early = operatorAt(new Date(NOW.getTime() + 10 * 60_000));
+    try {
+      await expect(runCutoverCommand(cli(early), ["certify", sessionId], "runner-c"))
+        .rejects.toThrow("CERTIFICATION_RETRY_CAPABILITY_STILL_LIVE");
+    } finally { early.close(); }
+    expect(runs.load(retryRunId(sessionId))).toBeUndefined();
+    expect(certified).toEqual([]);
+
+    // Past its expiry. The runtime is still up and beating.
+    const later = new Date(NOW.getTime() + 4 * 60 * 60_000 + 1_000);
+    vps.db.prepare("UPDATE runtime_instance_evidence SET heartbeat_at = ?").run(later.toISOString());
+    const late = operatorAt(later);
+    try {
+      expect(await runCutoverCommand(cli(late), ["certify", sessionId], "runner-c")).toBe(0);
+      expect(certified).toEqual([retryRunId(sessionId)]);
+      expect(late.sessions.read(sessionId)?.state).toBe("SUCCEEDED");
+      expect(late.authority.deploymentGate().closed).toBe(false);
+
+      // `verify` judges the run that certified, not the one that failed - and
+      // re-proves from what the first left behind that it did nothing.
+      const report = await verifyCutover(late, sessionId);
+      expect(report.checks.superseded_certification_had_no_effect).toBe(true);
+      expect(report.checks.certification_not_failed).toBe(true);
+    } finally { late.close(); }
   });
 
   it("still makes a live lease wait, so a running holder is never evicted", async () => {
