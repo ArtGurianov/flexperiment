@@ -129,6 +129,50 @@ const certification = (): CertificationDriver => ({
 const cli = (release: ProductionRelease): ProductionRelease =>
   ({ ...release, launchBaselineAdmission: { admit: vi.fn(async () => {}) } }) as ProductionRelease;
 
+describe("a prepared cutover has exactly two legal successors", () => {
+  /**
+   * The conceptual hole behind the 2026-09-23 outage, stated directly.
+   *
+   * `prepare-bootstrap` crosses a destructive boundary. Whatever happens next,
+   * the operator must have somewhere to go: forward by adopting the handoff, or
+   * back by restoring the predecessor from it. A state with neither is an
+   * outage with no owner, which is exactly what shipped.
+   */
+  it("routes forward to deploy and back to rollback-prepared, and nowhere else", async () => {
+    prepareEnvelope();
+    publish(launchCandidate(vps.targetSha));
+    convergeOnTarget();
+    // The cross-lineage recovery engine is composed only where a predecessor is
+    // configured, which is exactly the launch case this routing is about.
+    const release = buildProductionRelease({
+      ...vps.config,
+      predecessor: { expectedSha: vps.preSha, expectedLedgerLength: 61, commerceReadyUrl: "https://commerce.invalid/readyz" },
+    }, { now, certification: certification() });
+    try {
+      const runner = cli(release);
+      // Backward: the prepared cutover is addressable by its own id, with no
+      // session in existence.
+      expect(release.authority.deploymentGate().deploymentSessionId).toBeNull();
+      expect(release.bootstrapRollback?.isPreparedStarted(CUTOVER)).toBe(false);
+
+      // `rollback` speaks for a session, so it cannot reach a prepared cutover
+      // by that name - which is why the second command has to exist.
+      await expect(runCutoverCommand(runner, ["rollback", CUTOVER], OWNER)).rejects.toThrow();
+
+      // Forward: the same handoff, adopted.
+      await expect(runCutoverCommand(runner, ["deploy", vps.targetSha, CUTOVER], OWNER)).resolves.toBe(13);
+      expect(release.envelopes.isConsumed(CUTOVER)).toBe(true);
+
+      // And once adopted, the prepared route closes behind it: ownership has
+      // moved to the session, and the two paths can never both be live.
+      await expect(runCutoverCommand(runner, ["rollback-prepared", CUTOVER], OWNER))
+        .rejects.toThrow("PREPARED_ROLLBACK_OWNED_BY_SUCCESSOR_SESSION");
+    } finally {
+      release.close();
+    }
+  });
+});
+
 describe("the launch cutover handoff is consumed by the deploy that follows it", () => {
   it("adopts the prepared envelope instead of re-reading an archived predecessor", async () => {
     // The regression. Before the adoption port existed this threw

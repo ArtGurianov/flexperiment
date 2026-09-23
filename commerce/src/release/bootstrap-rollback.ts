@@ -14,10 +14,25 @@ import type { RuntimeLeaseGrant } from "./runtime-quiescer";
 
 export type DatabaseArchive = { readonly ref: string; readonly sha256: string };
 
+/**
+ * Which durable fact authorises this restore.
+ *
+ * `prepare-bootstrap` crosses the destructive boundary before a successor
+ * session exists, so the state it produces - envelope durable, predecessor
+ * archived, launch database installed, nothing adopted - has no session to
+ * name. Recording the authority instead of always naming a session is what
+ * lets that state be recovered without inventing a session that never existed.
+ * A synthetic one would assert an adoption that did not happen, and adoption is
+ * precisely the thing being denied.
+ */
+export type BootstrapRollbackAuthority =
+  | { readonly kind: "SUCCESSOR_SESSION"; readonly sessionId: string }
+  | { readonly kind: "PREPARED_CUTOVER"; readonly cutoverId: string };
+
 export type BootstrapRollbackIntent = {
   readonly rollbackId: string;
   readonly cutoverId: string;
-  readonly successorSessionId: string;
+  readonly authority: BootstrapRollbackAuthority;
   readonly targetSha: string;
   readonly forwardEnvelopeSha256: string;
   readonly predecessorDatabase: DatabaseArchive;
@@ -49,6 +64,15 @@ export const BOOTSTRAP_ROLLBACK_STAGES: readonly BootstrapRollbackStage[] = [
 
 export const bootstrapRollbackId = (sessionId: string): string =>
   `rollback-${createHash("sha256").update(sessionId).digest("hex")}`;
+
+/**
+ * Distinct namespace, deliberately. A prepared restore and a session restore
+ * must never be able to address the same receipt: they answer to different
+ * authorities, and one silently resuming the other's durable intent is exactly
+ * the confusion this split exists to prevent.
+ */
+export const preparedRollbackId = (cutoverId: string): string =>
+  `rollback-prepared-${createHash("sha256").update(cutoverId).digest("hex")}`;
 
 export const canonicalRollbackReceiptSha256 = (receipt: BootstrapRollbackReceipt): string =>
   createHash("sha256").update(JSON.stringify(receipt)).digest("hex");
@@ -131,6 +155,15 @@ export type BootstrapRollbackPorts = {
   readonly refs: { read(): Promise<string>; compareAndSet(expected: string, target: string): Promise<string> };
   readonly verification: { observe(): Promise<{ readonly topology: DeploymentObservation; readonly lineage: string }> };
   readonly predecessorGate: { isClosed(): Promise<boolean>; open(): Promise<void> };
+  /**
+   * The lineage of the database that is live right now.
+   *
+   * Separate from `verification.observe()`, which reads the predecessor once it
+   * is back and needs a running runtime to do it. A prepared rollback has to
+   * establish what it is starting from while the runtime is still quiesced, and
+   * the only question it can answer then is which schema is installed.
+   */
+  readonly lineage: () => string;
   readonly clock?: () => Date;
 };
 
@@ -173,10 +206,52 @@ export class BootstrapRollback {
     return Boolean(this.ports.authority.get(sessionId)?.bootstrapRollbackId);
   }
 
+  /** True once a prepared restore has durable intent, however it then failed. */
+  isPreparedStarted(cutoverId: string): boolean {
+    try {
+      return Boolean(this.ports.receipts.read(preparedRollbackId(cutoverId)));
+    } catch {
+      // As above: unreadable is not evidence that nothing started.
+      return true;
+    }
+  }
+
+  /**
+   * Restores the predecessor from a prepared cutover that was never adopted.
+   *
+   * This is the owner of the state `prepare-bootstrap` leaves behind when the
+   * deploy that should have followed never created a session: envelope
+   * durable, predecessor archived, launch database installed, sales fenced.
+   * `rollback` cannot serve it - that command's authority is a successor
+   * session, and here there is deliberately none.
+   */
+  async rollbackPrepared(cutoverId: string): Promise<BootstrapRollbackReceipt> {
+    let receipt = this.ports.receipts.read(preparedRollbackId(cutoverId));
+    if (!receipt) receipt = await this.reservePrepared(cutoverId);
+    if (receipt.intent.authority.kind !== "PREPARED_CUTOVER" || receipt.intent.authority.cutoverId !== cutoverId) {
+      throw new BootstrapRollbackError("BOOTSTRAP_ROLLBACK_AUTHORITY_MISMATCH", cutoverId);
+    }
+    return this.execute(receipt);
+  }
+
   async rollback(sessionId: string, ownerId: string): Promise<BootstrapRollbackReceipt> {
     let receipt = this.ports.receipts.read(bootstrapRollbackId(sessionId));
     if (!receipt) receipt = this.reserve(sessionId, ownerId);
-    if (receipt.intent.successorSessionId !== sessionId) throw new BootstrapRollbackError("BOOTSTRAP_ROLLBACK_SESSION_MISMATCH");
+    if (receipt.intent.authority.kind !== "SUCCESSOR_SESSION" || receipt.intent.authority.sessionId !== sessionId) {
+      throw new BootstrapRollbackError("BOOTSTRAP_ROLLBACK_SESSION_MISMATCH");
+    }
+    return this.execute(receipt);
+  }
+
+  /**
+   * The physical restore, shared by both authorities.
+   *
+   * Only the durable intent differs between them; every irreversible step below
+   * - archive proof, database swap, ref lease, application restoration,
+   * verification and the gate - is one engine, so a prepared restore cannot
+   * drift into being a second implementation that merely resembles this one.
+   */
+  private async execute(receipt: BootstrapRollbackReceipt): Promise<BootstrapRollbackReceipt> {
     this.assertDurableIntent(receipt);
 
     const oldSha = predecessorSha(receipt.intent);
@@ -256,7 +331,7 @@ export class BootstrapRollback {
       intent: {
         rollbackId,
         cutoverId: envelope.cutoverId,
-        successorSessionId: session.id,
+        authority: { kind: "SUCCESSOR_SESSION", sessionId: session.id },
         targetSha: envelope.targetSha,
         forwardEnvelopeSha256: canonicalEnvelopeSha256(envelope),
         predecessorDatabase: predecessor,
@@ -274,10 +349,81 @@ export class BootstrapRollback {
     return receipt;
   }
 
+  /**
+   * Reserves a restore for a prepared cutover nothing ever adopted.
+   *
+   * Everything here is proved before a single byte moves, and deliberately
+   * without consulting the envelope's expiry: expiry is an admission condition
+   * for going FORWARD. It cannot revoke the ability to put the predecessor
+   * back, or a cutover left overnight would become unrecoverable by the clock.
+   */
+  private async reservePrepared(cutoverId: string): Promise<BootstrapRollbackReceipt> {
+    const envelope = this.ports.envelopes.read(cutoverId);
+    if (!envelope) throw new BootstrapRollbackError("CUTOVER_ENVELOPE_NOT_FOUND", cutoverId);
+    // Consumption and adoption are the successor's marks. Either one means this
+    // cutover belongs to a session, and racing that session's own rollback is
+    // the one thing this command must never do.
+    if (this.ports.envelopes.isConsumed(cutoverId)) {
+      throw new BootstrapRollbackError("PREPARED_ROLLBACK_OWNED_BY_SUCCESSOR_SESSION", `${cutoverId} is consumed; use rollback <session>`);
+    }
+    const adopted = this.ports.authority.findByAdoptedCutover(cutoverId);
+    if (adopted) {
+      throw new BootstrapRollbackError("PREPARED_ROLLBACK_OWNED_BY_SUCCESSOR_SESSION", `${cutoverId} is adopted by session ${adopted.id}; use rollback <session>`);
+    }
+    const gate = this.ports.authority.deploymentGate();
+    if (gate.deploymentSessionId !== null) {
+      throw new BootstrapRollbackError("PREPARED_ROLLBACK_SUCCESSOR_GATE_OWNED", gate.deploymentSessionId);
+    }
+    // The database standing here must be the one the preparation installed. An
+    // unknown third state is not something to restore over.
+    const lineage = this.ports.lineage();
+    if (lineage !== "SUPPORTED") throw new BootstrapRollbackError("PREPARED_ROLLBACK_SUCCESSOR_NOT_INSTALLED", lineage);
+
+    const predecessor = this.ports.storage.inspectPredecessorArchive(envelope.predecessorDatabase);
+    const rollbackId = preparedRollbackId(cutoverId);
+    const intent: BootstrapRollbackIntent = {
+      rollbackId,
+      cutoverId,
+      authority: { kind: "PREPARED_CUTOVER", cutoverId },
+      targetSha: envelope.targetSha,
+      forwardEnvelopeSha256: canonicalEnvelopeSha256(envelope),
+      predecessorDatabase: predecessor,
+      preDeployTopology: envelope.preDeployTopology,
+      createdAt: (this.ports.clock ?? (() => new Date()))().toISOString(),
+    };
+    // Throws when the frozen vector is not uniform, before anything is written.
+    predecessorSha(intent);
+    // Nothing adopted this cutover, so the deploy pointer cannot legitimately
+    // have left the predecessor. A ref that moved anyway is state this command
+    // did not produce and must not silently overwrite.
+    const frozen = predecessorSha(intent);
+    const ref = await this.ports.refs.read();
+    if (ref !== frozen) throw new BootstrapRollbackError("PREPARED_ROLLBACK_REF_MOVED", `expected ${frozen}, found ${ref}`);
+
+    const receipt: BootstrapRollbackReceipt = { stage: "RESERVED", intent };
+    try {
+      this.ports.receipts.write(receipt);
+    } catch (error) {
+      const existing = this.ports.receipts.read(rollbackId);
+      if (!existing || canonicalRollbackReceiptSha256(existing) !== canonicalRollbackReceiptSha256(receipt)) throw error;
+      return existing;
+    }
+    return receipt;
+  }
+
   private assertDurableIntent(receipt: BootstrapRollbackReceipt): void {
     const envelope = this.ports.envelopes.read(receipt.intent.cutoverId);
     if (!envelope) throw new BootstrapRollbackError("CUTOVER_ENVELOPE_NOT_FOUND", receipt.intent.cutoverId);
-    if (!this.ports.envelopes.isConsumed(envelope.cutoverId)) throw new BootstrapRollbackError("CUTOVER_ENVELOPE_NOT_CONSUMED");
+    // Each authority re-proves its own precondition on every retry. A prepared
+    // restore that found its envelope consumed mid-flight has had a successor
+    // appear underneath it, and must stop rather than keep restoring.
+    const consumed = this.ports.envelopes.isConsumed(envelope.cutoverId);
+    if (receipt.intent.authority.kind === "SUCCESSOR_SESSION" && !consumed) {
+      throw new BootstrapRollbackError("CUTOVER_ENVELOPE_NOT_CONSUMED");
+    }
+    if (receipt.intent.authority.kind === "PREPARED_CUTOVER" && consumed) {
+      throw new BootstrapRollbackError("PREPARED_ROLLBACK_OWNED_BY_SUCCESSOR_SESSION", envelope.cutoverId);
+    }
     if (canonicalEnvelopeSha256(envelope) !== receipt.intent.forwardEnvelopeSha256
       || envelope.targetSha !== receipt.intent.targetSha
       || envelope.predecessorDatabase.ref !== receipt.intent.predecessorDatabase.ref

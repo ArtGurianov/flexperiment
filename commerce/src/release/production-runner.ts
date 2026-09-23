@@ -567,6 +567,9 @@ export const buildProductionRelease = (config: ProductionReleaseConfig, options:
     const bootstrapRollback = config.predecessor && commerce ? new BootstrapRollback({
       authority,
       envelopes,
+      // Read fresh on each call: a prepared restore asks this before it starts
+      // and the database underneath it is the thing being replaced.
+      lineage: () => classifySchemaLineage(readSchemaIdentity(opened)),
       receipts: new FileBootstrapRollbackReceiptStore(join(config.envelopeDirectory, "rollback")),
       storage: {
         inspectPredecessorArchive(archive) { return storage.inspectPredecessorArchive(archive); },
