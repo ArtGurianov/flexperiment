@@ -60,9 +60,9 @@ describe("bootstrap storage through the production composition root", () => {
       coolify: { apiUrl: "https://coolify.invalid/api/v1", token: "t" },
       composeRepositories: { commerce: "repo/commerce", "commerce-worker": "repo/worker" },
       applications: [
-        { name: "frontend", uuid: "app-frontend", surfaces: ["frontend"] },
-        { name: "admin", uuid: "app-admin", surfaces: ["admin"] },
-        { name: "commerce", uuid: "app-commerce", surfaces: ["commerce", "worker"] },
+        { name: "frontend", uuid: "app-frontend", deploymentKind: "dockerfile", surfaces: ["frontend"] },
+        { name: "admin", uuid: "app-admin", deploymentKind: "dockerfile", surfaces: ["admin"] },
+        { name: "commerce", uuid: "app-commerce", deploymentKind: "dockercompose", surfaces: ["commerce", "worker"] },
       ],
       topology: { frontendReleaseUrl: "https://frontend.invalid/release.json", adminReleaseUrl: "https://admin.invalid/release.json" },
       deployRef: { remote: origin, ref: "refs/heads/production-deploy", worktree },

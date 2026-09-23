@@ -62,9 +62,9 @@ describe("cross-lineage rollback through the production composition root", () =>
       coolify: { apiUrl: "https://coolify.invalid/api/v1", token: "t" },
       composeRepositories: { commerce: "repo/commerce", "commerce-worker": "repo/worker" },
       applications: [
-        { name: "frontend", uuid: "app-frontend", surfaces: ["frontend"] },
-        { name: "admin", uuid: "app-admin", surfaces: ["admin"] },
-        { name: "commerce", uuid: "app-commerce", surfaces: ["commerce", "worker"] },
+        { name: "frontend", uuid: "app-frontend", deploymentKind: "dockerfile", surfaces: ["frontend"] },
+        { name: "admin", uuid: "app-admin", deploymentKind: "dockerfile", surfaces: ["admin"] },
+        { name: "commerce", uuid: "app-commerce", deploymentKind: "dockercompose", surfaces: ["commerce", "worker"] },
       ],
       topology: { frontendReleaseUrl: "https://frontend.invalid/release.json", adminReleaseUrl: "https://admin.invalid/release.json" },
       deployRef: { remote: origin, ref: "refs/heads/production-deploy", worktree },
@@ -135,7 +135,11 @@ describe("cross-lineage rollback through the production composition root", () =>
         },
         async stopAndReprove() { runtimeEvents.push("stop"); },
         async assertStopped() { runtimeEvents.push("reprove"); },
-        async startCaptured() { throw new Error("rollback must start through Coolify"); },
+        // This used to throw "rollback must start through Coolify", which was
+        // the wrong assumption encoded as a fixture: Coolify does not own the
+        // Compose images, and asking it to roll them back fails in production.
+        // Starting the captured units is what actually returns the surface.
+        async startCaptured() { runtimeEvents.push("start-captured"); surface.commerce = predecessor; },
       },
       openHandles: { async assertNoOpenHandles() { runtimeEvents.push("handles"); } },
     });
@@ -151,10 +155,137 @@ describe("cross-lineage rollback through the production composition root", () =>
       const receipt = await release.bootstrapRollback!.rollback(session.id, "owner");
       expect(receipt.stage).toBe("COMPLETED");
       expect(receipt.successorDatabase?.ref).toBe(join(archive, `${bootstrapRollbackId(session.id)}.successor.sqlite`));
-      expect(coolifyRollbacks).toEqual(["frontend", "admin", "commerce"]);
+      // Only the two Dockerfile applications go through Coolify's rollback API.
+      // Commerce is Compose: Coolify does not own those images, so it is
+      // restored by starting its captured units instead.
+      expect(coolifyRollbacks).toEqual(["frontend", "admin"]);
+      expect(runtimeEvents).toContain("start-captured");
       expect(await release.deployRef.read()).toBe(predecessor);
       expect(existsSync(receipt.intent.predecessorDatabase.ref)).toBe(true);
-      expect(runtimeEvents).toEqual(["capture", "stop", "handles", "reprove", "handles"]);
+      // The tail is the Compose restore: it re-captures first, which is what
+      // proves the units it is about to start carry the predecessor image,
+      // and only then starts them.
+      expect(runtimeEvents).toEqual(["capture", "stop", "handles", "reprove", "handles", "capture", "start-captured"]);
+
+      const restored = new Database(databasePath, { readonly: true });
+      try {
+        expect(classifySchemaLineage(readSchemaIdentity(restored))).toBe("LEGACY");
+        expect((restored.prepare("SELECT sales_paused FROM emergency_sales_gate WHERE singleton = 1").get() as { sales_paused: number }).sales_paused).toBe(0);
+      } finally { restored.close(); }
+    } finally { release.close(); }
+  });
+
+  it("restores a prepared cutover that no session ever adopted, end to end", async () => {
+    // The production shape of 2026-09-23: preparation succeeded, the deploy
+    // refused before adoption, and there was no session for anything to name.
+    // Everything below is the real composition root.
+    const root = mkdtempSync(join(tmpdir(), "prepared-root-"));
+    const replacement = join(root, "replacement");
+    const state = join(root, "release-state");
+    const archive = join(state, "archive");
+    const envelopes = join(state, "envelopes");
+    const locks = join(state, "locks");
+    const journal = join(state, "journal");
+    const candidates = join(state, "candidates");
+    const worktree = join(root, "worktree");
+    const origin = join(root, "origin");
+    for (const path of [replacement, archive, envelopes, locks, journal, candidates, worktree, origin]) mkdirSync(path, { recursive: true });
+
+    git(origin, "init", "--bare", "--initial-branch=main", ".");
+    git(worktree, "init", "--initial-branch=main", ".");
+    git(worktree, "config", "user.email", "test@example.invalid");
+    git(worktree, "config", "user.name", "Test");
+    git(worktree, "remote", "add", "origin", origin);
+    writeFileSync(join(worktree, "tracked"), "predecessor\n");
+    git(worktree, "add", "."); git(worktree, "commit", "-m", "predecessor");
+    const predecessor = git(worktree, "rev-parse", "HEAD");
+    git(worktree, "push", "origin", "HEAD:refs/heads/production-deploy");
+    writeFileSync(join(worktree, "tracked"), "target\n");
+    git(worktree, "commit", "-am", "target");
+    const target = git(worktree, "rev-parse", "HEAD");
+    git(worktree, "push", "origin", "HEAD:refs/heads/main");
+
+    const databasePath = join(replacement, "commerce.sqlite");
+    const legacy = new Database(databasePath);
+    legacy.pragma("journal_mode = WAL");
+    legacy.exec(`CREATE TABLE schema_migrations (version TEXT PRIMARY KEY);
+      INSERT INTO schema_migrations VALUES ('legacy');
+      CREATE TABLE emergency_sales_gate (singleton INTEGER PRIMARY KEY, sales_paused INTEGER NOT NULL, revision INTEGER NOT NULL);
+      INSERT INTO emergency_sales_gate VALUES (1, 0, 1);
+      CREATE TABLE runtime_release_evidence (unit TEXT PRIMARY KEY, source_commit TEXT NOT NULL, started_at TEXT NOT NULL, observed_at TEXT NOT NULL, last_successful_sweep_at TEXT);
+      INSERT INTO runtime_release_evidence VALUES ('COMMERCE', '${predecessor}', '${now.toISOString()}', '${now.toISOString()}', NULL);
+      INSERT INTO runtime_release_evidence VALUES ('WORKER', '${predecessor}', '${now.toISOString()}', '${now.toISOString()}', '${now.toISOString()}');`);
+    legacy.close();
+
+    const config: ProductionReleaseConfig = {
+      databasePath, replacementRoot: replacement, stateDirectory: state, archiveDirectory: archive, envelopeDirectory: envelopes,
+      lockPath: join(locks, "release.lock"), journalPath: join(journal, "release.jsonl"), candidateDirectory: candidates,
+      certification: { adminBaseUrl: "https://admin.invalid", publicBaseUrl: "https://public.invalid", serviceToken: "t", capabilityKey: "k1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", citySlug: "city", occurrenceScopePath: join(root, "scope.json"), checkoutBodyPath: join(root, "checkout.json") },
+      predecessor: { expectedSha: predecessor, expectedLedgerLength: 1, commerceReadyUrl: "https://commerce.invalid/readyz" },
+      coolify: { apiUrl: "https://coolify.invalid/api/v1", token: "t" },
+      composeRepositories: { commerce: "repo/commerce", "commerce-worker": "repo/worker" },
+      applications: [
+        { name: "frontend", uuid: "app-frontend", deploymentKind: "dockerfile", surfaces: ["frontend"] },
+        { name: "admin", uuid: "app-admin", deploymentKind: "dockerfile", surfaces: ["admin"] },
+        { name: "commerce", uuid: "app-commerce", deploymentKind: "dockercompose", surfaces: ["commerce", "worker"] },
+      ],
+      topology: { frontendReleaseUrl: "https://frontend.invalid/release.json", adminReleaseUrl: "https://admin.invalid/release.json" },
+      deployRef: { remote: origin, ref: "refs/heads/production-deploy", worktree },
+    };
+
+    const resources = () => new Response(JSON.stringify([
+      { id: "1", uuid: "app-frontend", type: "application" },
+      { id: "2", uuid: "app-admin", type: "application" },
+      { id: "3", uuid: "app-commerce", type: "application" },
+    ]));
+    // Frontend and admin never moved; commerce is stopped by preparation.
+    let commerceRunning = true;
+    const fetchStub = async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith("/servers")) return new Response(JSON.stringify([{ uuid: "server-1" }]));
+      if (url.includes("/servers/server-1/resources")) return resources();
+      if (url.endsWith("/readyz")) return new Response("{}", { status: commerceRunning ? 200 : 503 });
+      return new Response(JSON.stringify({ source_commit: predecessor }), { status: 200 });
+    };
+    const events: string[] = [];
+    const control = {
+      async capture(_binding: unknown, expectedSha: string) {
+        events.push(`capture:${expectedSha === predecessor ? "predecessor" : "other"}`);
+        return [
+          { id: "5".repeat(64), service: "commerce" as const, image: `repo/commerce:${expectedSha}`, running: commerceRunning },
+          { id: "6".repeat(64), service: "commerce-worker" as const, image: `repo/worker:${expectedSha}`, running: commerceRunning },
+        ];
+      },
+      async stopAndReprove() { events.push("stop"); commerceRunning = false; },
+      async assertStopped() { events.push("reprove"); },
+      async startCaptured() { events.push("start-captured"); commerceRunning = true; },
+    };
+    const openHandles = { async assertNoOpenHandles() { events.push("handles"); } };
+
+    const forward = buildProductionRelease(config, { now: () => now, fetch: fetchStub as typeof globalThis.fetch, runtimeControl: control, openHandles });
+    const prepared = await forward.bootstrapPreparation!.prepare({ targetSha: target, expiresAt: "2026-09-24T06:00:00.000Z", cutoverId: "prepared-1" });
+    forward.close();
+
+    // The deploy refused before adoption: nothing consumed the envelope, and
+    // no session exists. This is the state with no owner before M5/M6.
+    expect(commerceRunning).toBe(false);
+
+    const release = buildProductionRelease(config, { now: () => now, fetch: fetchStub as typeof globalThis.fetch, runtimeControl: control, openHandles });
+    try {
+      expect(release.envelopes.isConsumed(prepared.envelope.cutoverId)).toBe(false);
+      expect(release.authority.deploymentGate().deploymentSessionId).toBeNull();
+
+      const receipt = await release.bootstrapRollback!.rollbackPrepared("prepared-1");
+      expect(receipt.stage).toBe("COMPLETED");
+      expect(receipt.intent.authority).toEqual({ kind: "PREPARED_CUTOVER", cutoverId: "prepared-1" });
+      // Quiesced against the predecessor, never the target: those containers
+      // were never at the target, which is what broke in production.
+      expect(events.filter((entry) => entry.startsWith("capture:")).every((entry) => entry === "capture:predecessor")).toBe(true);
+      expect(events).toContain("start-captured");
+      // The pointer never moved, so there was nothing to put back.
+      expect(await release.deployRef.read()).toBe(predecessor);
+      expect(existsSync(receipt.intent.predecessorDatabase.ref)).toBe(true);
+      expect(release.envelopes.isConsumed("prepared-1")).toBe(false);
 
       const restored = new Database(databasePath, { readonly: true });
       try {

@@ -11,6 +11,17 @@ export type DockerCommand = (args: readonly string[]) => Promise<string>;
 export interface ComposeRollbackEvidence {
   assertPreDeployRecoverable(applicationId: string, predecessorSha: string): Promise<void>;
   assertPredecessorStillPresent(applicationId: string, predecessorSha: string): Promise<void>;
+  /**
+   * Proof that does not depend on anything running.
+   *
+   * The two checks above derive their repositories from live containers, which
+   * is the stronger evidence while the predecessor is serving. Once
+   * `prepare-bootstrap` has stopped it on purpose, that evidence is gone by
+   * design, and demanding it made a prepared launch impossible to deploy. Here
+   * the repositories are the trusted configured ones and the claim is only
+   * that the predecessor artifacts are still on disk.
+   */
+  assertRetainedArtifacts(repositories: readonly string[], predecessorSha: string): Promise<void>;
 }
 
 const docker: DockerCommand = (args) => new Promise((resolve, reject) => {
@@ -55,6 +66,12 @@ export class DockerComposeRollbackEvidence implements ComposeRollbackEvidence {
     const images = await this.images(await this.containers(applicationId));
     const predecessors = images.map((image) => `${repositoryOf(image)}:${predecessorSha}`);
     await this.requireImages(predecessors, "COMPOSE_ROLLBACK_PREDECESSOR_IMAGE_MISSING");
+  }
+
+  async assertRetainedArtifacts(repositories: readonly string[], predecessorSha: string): Promise<void> {
+    if (!repositories.length) throw new ComposeRollbackEvidenceError("COMPOSE_ROLLBACK_REPOSITORIES_REQUIRED");
+    if (!/^[a-f0-9]{40}$/.test(predecessorSha)) throw new ComposeRollbackEvidenceError("COMPOSE_ROLLBACK_PREDECESSOR_SHA_INVALID");
+    await this.requireImages(repositories.map((repository) => `${repository}:${predecessorSha}`), "COMPOSE_ROLLBACK_PREDECESSOR_IMAGE_MISSING");
   }
 
   private async containers(applicationId: string): Promise<readonly Container[]> {

@@ -139,6 +139,70 @@ irreversible step, because this command can itself die after replacing the
 launch database with the legacy one, at which point the successor database is
 no longer available to be anyone's recovery cursor.
 
+## The runtime shape of production is configuration, not a discovery
+
+Coolify reports a `build_pack`, and the destructive paths used to branch on it.
+That made production's runtime shape something the control plane learned at run
+time — and a test double answering `dockerfile` for everything put every
+Compose branch, which are the destructive ones, outside the composition root's
+contract. Two outages came through that gap on 2026-09-23.
+
+So `deploymentKind` is stated in configuration: frontend and admin are
+Dockerfile applications, commerce is Docker Compose. What Coolify reports is
+checked against it, and a disagreement is `DEPLOYMENT_KIND_MISMATCH` — a
+refusal before mutation, never a branch.
+
+The infrastructure state machine each arrow must be tested against:
+
+```text
+RUNNING_PREDECESSOR
+        |
+        | prepare-bootstrap
+        v
+PREPARED_STOPPED
+  |             |
+  | deploy      | rollback-prepared
+  v             v
+ADOPTED       RUNNING_PREDECESSOR
+  |
+  | deploy target
+  v
+TARGET_RUNNING
+```
+
+`PREPARED_STOPPED` is not `RUNNING_PREDECESSOR` with an envelope beside it, and
+three defects came from treating it as though it were:
+
+- **Recoverability.** While the predecessor serves, its running containers may
+  prove their own identity. Once preparation has stopped them on purpose,
+  demanding them is demanding the absence of what preparation just did. There
+  the evidence is the retained artifact — `${repository}:${predecessorSha}`
+  from the trusted repositories — not a process.
+- **Quiescence.** A session rollback stops the deployed target. A prepared
+  rollback has no target: binding to it produced
+  `TRUSTED_COMPOSE_IMAGE_SHA_MISMATCH` against containers that were never at
+  that commit. It quiesces against the predecessor, expects the units already
+  stopped, and treats a running runtime as drift rather than something to stop
+  on the way past.
+- **Restoration.** Coolify owns a Dockerfile application's images and can roll
+  them back. It does not own the Compose services' images, so commerce is
+  restored by capturing the exact predecessor units and starting them — the
+  same trusted control that stopped them. `capture` refuses any unit whose
+  image is not exactly that commit, so the units are proved before they start.
+
+## A receipt stage is reconciled against reality, never replayed
+
+`RESERVED` records intent, not that storage is still where it was when the
+intent was written. A process that died after the atomic restore but before
+advancing the receipt leaves `RESERVED` over a database that is already the
+predecessor; replaying the swap there would archive the predecessor as though
+it were the successor.
+
+So the stage is reconciled against the live lineage before it is acted on.
+`SUPPORTED` means storage has not crossed and `RESERVED` is honest. `LEGACY`
+with the exact archived predecessor in place means it has, and the receipt is
+advanced to agree with reality. Anything else is `BOOTSTRAP_ROLLBACK_LINEAGE_UNACCOUNTED`.
+
 ## The deploy mode is derived, never chosen
 
 `ROLLING_COMPATIBLE` earns `ROLLING_SAFE`; everything else takes

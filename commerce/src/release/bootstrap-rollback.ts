@@ -141,7 +141,19 @@ export interface BootstrapRollbackStorage {
 }
 
 export interface BootstrapRollbackRuntime {
-  acquire(rollbackId: string, targetSha: string): Promise<RuntimeLeaseGrant>;
+  /**
+   * Quiesces the Compose runtime this restore is about to replace under.
+   *
+   * `quiesceSha` is what the units are expected to be carrying, and the two
+   * authorities disagree about it. A session rollback stops the deployed
+   * target. A prepared rollback has no target: preparation already stopped the
+   * predecessor, and binding to the target made the restore impossible -
+   * TRUSTED_COMPOSE_IMAGE_SHA_MISMATCH against containers that were never at
+   * that commit. `expectStopped` says which of those two worlds this is, so a
+   * runtime found running where it should be stopped is drift, not something
+   * to quietly stop.
+   */
+  acquire(rollbackId: string, quiesceSha: string, expectStopped: boolean): Promise<RuntimeLeaseGrant>;
   applicationIsAt(name: "frontend" | "admin" | "commerce", sha: string): Promise<boolean>;
   restoreApplication(name: "frontend" | "admin" | "commerce", sha: string): Promise<void>;
 }
@@ -253,10 +265,16 @@ export class BootstrapRollback {
    */
   private async execute(receipt: BootstrapRollbackReceipt): Promise<BootstrapRollbackReceipt> {
     this.assertDurableIntent(receipt);
+    receipt = this.reconcileReserved(receipt);
 
     const oldSha = predecessorSha(receipt.intent);
     if (receipt.stage === "RESERVED") {
-      const grant = await this.ports.runtime.acquire(receipt.intent.rollbackId, receipt.intent.targetSha);
+      const prepared = receipt.intent.authority.kind === "PREPARED_CUTOVER";
+      const grant = await this.ports.runtime.acquire(
+        receipt.intent.rollbackId,
+        prepared ? oldSha : receipt.intent.targetSha,
+        prepared,
+      );
       const restored = await this.ports.storage.restore(receipt.intent.rollbackId, receipt.intent.predecessorDatabase, grant);
       if (restored.predecessorDatabase.sha256 !== receipt.intent.predecessorDatabase.sha256) {
         throw new BootstrapRollbackError("PREDECESSOR_DATABASE_DIGEST_MISMATCH");
@@ -409,6 +427,32 @@ export class BootstrapRollback {
       return existing;
     }
     return receipt;
+  }
+
+  /**
+   * A RESERVED receipt is not permission to run the RESERVED step.
+   *
+   * It records intent, not that storage is still where it was when the intent
+   * was written. Between invocations the database may have crossed: a process
+   * that died after the atomic restore but before advancing the receipt leaves
+   * RESERVED over a database that is already the predecessor. Replaying the
+   * swap there would archive the predecessor as though it were the successor.
+   *
+   * So the stage is reconciled against the live lineage before it is acted on.
+   * SUPPORTED means storage has not crossed and RESERVED is honest. LEGACY with
+   * the exact predecessor in place means it has, and the receipt is advanced to
+   * match reality rather than replayed against it. Anything else is a database
+   * this restore cannot account for, and is refused.
+   */
+  private reconcileReserved(receipt: BootstrapRollbackReceipt): BootstrapRollbackReceipt {
+    if (receipt.stage !== "RESERVED") return receipt;
+    const lineage = this.ports.lineage();
+    if (lineage === "SUPPORTED") return receipt;
+    if (lineage !== "LEGACY") throw new BootstrapRollbackError("BOOTSTRAP_ROLLBACK_LINEAGE_UNACCOUNTED", lineage);
+    // The predecessor is already standing. Its identity is re-proved from the
+    // immutable archive before the receipt is allowed to agree.
+    this.ports.storage.inspectPredecessorArchive(receipt.intent.predecessorDatabase);
+    return this.ports.receipts.advance(receipt.intent.rollbackId, "DATABASE_RESTORED");
   }
 
   private assertDurableIntent(receipt: BootstrapRollbackReceipt): void {

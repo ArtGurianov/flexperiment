@@ -96,6 +96,10 @@ const prepareEnvelope = (overrides: Partial<CutoverEnvelope> = {}): CutoverEnvel
     ...overrides,
   });
   new FileCutoverEnvelopeStore(vps.config.envelopeDirectory).write(envelope);
+  // What preparation actually does to the Compose application: it stops it.
+  // Modelling that is the difference between this suite and the one that was
+  // green while production refused with COMPOSE_ROLLBACK_CONTAINERS_MISSING.
+  vps.compose.stop();
   return envelope;
 };
 
@@ -103,6 +107,8 @@ const prepareEnvelope = (overrides: Partial<CutoverEnvelope> = {}): CutoverEnvel
 const convergeOnTarget = () => {
   vps.serving.frontend = vps.targetSha;
   vps.serving.admin = vps.targetSha;
+  vps.compose.addImage(vps.targetSha);
+  vps.compose.start(vps.targetSha);
   recordInstance(vps.db, "COMMERCE", "api-1", vps.targetSha, NOW);
   recordInstance(vps.db, "WORKER", "worker-1", vps.targetSha, NOW, NOW.toISOString());
 };
@@ -147,7 +153,7 @@ describe("a prepared cutover has exactly two legal successors", () => {
     const release = buildProductionRelease({
       ...vps.config,
       predecessor: { expectedSha: vps.preSha, expectedLedgerLength: 61, commerceReadyUrl: "https://commerce.invalid/readyz" },
-    }, { now, certification: certification() });
+    }, { now, certification: certification(), composeRollbackEvidence: vps.compose });
     try {
       const runner = cli(release);
       // Backward: the prepared cutover is addressable by its own id, with no
@@ -181,7 +187,7 @@ describe("the launch cutover handoff is consumed by the deploy that follows it",
     const envelope = prepareEnvelope();
     publish(launchCandidate(vps.targetSha));
     convergeOnTarget();
-    const release = buildProductionRelease(vps.config, { now, certification: certification() });
+    const release = buildProductionRelease(vps.config, { now, certification: certification(), composeRollbackEvidence: vps.compose });
     try {
       const code = await runCutoverCommand(cli(release), ["deploy", vps.targetSha, CUTOVER], OWNER);
       expect(code).toBe(13);
@@ -201,7 +207,7 @@ describe("the launch cutover handoff is consumed by the deploy that follows it",
     prepareEnvelope();
     publish(launchCandidate(vps.targetSha));
     convergeOnTarget();
-    const release = buildProductionRelease(vps.config, { now, certification: certification() });
+    const release = buildProductionRelease(vps.config, { now, certification: certification(), composeRollbackEvidence: vps.compose });
     try {
       await runCutoverCommand(cli(release), ["deploy", vps.targetSha, CUTOVER], OWNER);
       const sessionId = release.authority.deploymentGate().deploymentSessionId!;
@@ -221,7 +227,7 @@ describe("the launch cutover handoff is consumed by the deploy that follows it",
   it("refuses a launch deploy that names no prepared cutover, before any mutation", async () => {
     prepareEnvelope();
     publish(launchCandidate(vps.targetSha));
-    const release = buildProductionRelease(vps.config, { now, certification: certification() });
+    const release = buildProductionRelease(vps.config, { now, certification: certification(), composeRollbackEvidence: vps.compose });
     try {
       await expect(runCutoverCommand(cli(release), ["deploy", vps.targetSha], OWNER))
         .rejects.toThrow("LAUNCH_DEPLOY_REQUIRES_PREPARED_CUTOVER");
@@ -236,7 +242,7 @@ describe("the launch cutover handoff is consumed by the deploy that follows it",
   it("refuses to adopt a cutover prepared for a different release", async () => {
     prepareEnvelope({ targetSha: vps.preSha });
     publish(launchCandidate(vps.targetSha));
-    const release = buildProductionRelease(vps.config, { now, certification: certification() });
+    const release = buildProductionRelease(vps.config, { now, certification: certification(), composeRollbackEvidence: vps.compose });
     try {
       await expect(runCutoverCommand(cli(release), ["deploy", vps.targetSha, CUTOVER], OWNER))
         .rejects.toThrow("CUTOVER_ENVELOPE_TARGET_MISMATCH");
@@ -249,7 +255,7 @@ describe("the launch cutover handoff is consumed by the deploy that follows it",
 
   it("refuses a cutover id that was never prepared", async () => {
     publish(launchCandidate(vps.targetSha));
-    const release = buildProductionRelease(vps.config, { now, certification: certification() });
+    const release = buildProductionRelease(vps.config, { now, certification: certification(), composeRollbackEvidence: vps.compose });
     try {
       await expect(runCutoverCommand(cli(release), ["deploy", vps.targetSha, "never-prepared"], OWNER))
         .rejects.toThrow("CUTOVER_ENVELOPE_NOT_FOUND");
@@ -263,7 +269,7 @@ describe("the launch cutover handoff is consumed by the deploy that follows it",
     prepareEnvelope();
     publish(launchCandidate(vps.targetSha));
     convergeOnTarget();
-    const first = buildProductionRelease(vps.config, { now, certification: certification() });
+    const first = buildProductionRelease(vps.config, { now, certification: certification(), composeRollbackEvidence: vps.compose });
     let sessionId: string;
     try {
       await runCutoverCommand(cli(first), ["deploy", vps.targetSha, CUTOVER], OWNER);
@@ -272,7 +278,7 @@ describe("the launch cutover handoff is consumed by the deploy that follows it",
       first.close();
     }
 
-    const second = buildProductionRelease(vps.config, { now, certification: certification() });
+    const second = buildProductionRelease(vps.config, { now, certification: certification(), composeRollbackEvidence: vps.compose });
     try {
       // One handoff, one session. A second deploy must not mint a rival owner
       // of the same closed gate, and must not restart the one that exists -
