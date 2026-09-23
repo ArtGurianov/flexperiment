@@ -29,8 +29,14 @@ export interface RuntimeEvidenceReader {
 
 /** Hands the target revision to whatever actually deploys it. */
 export interface DeploymentDriver {
-  /** Proves the frozen predecessor can survive this deployment before it starts. */
-  assertRecoverable(predecessorSha: string): Promise<void>;
+  /**
+   * Proves the frozen predecessor can survive this deployment before it starts.
+   *
+   * The phase says which evidence is available. A prepared launch has already
+   * stopped its predecessor on purpose, so demanding running containers there
+   * is demanding the absence of the thing preparation just did.
+   */
+  assertRecoverable(predecessorSha: string, phase?: "RUNNING" | "PREPARED_STOPPED"): Promise<void>;
   /** Re-proves predecessor images after target convergence and before arming. */
   assertPredecessorRetained(predecessorSha: string): Promise<void>;
   deploy(targetSha: string): Promise<void>;
@@ -224,7 +230,8 @@ export class ReleaseOrchestrator {
     const before = adoption
       ? adoption.preDeployTopology(request.adoptedCutoverId!)
       : await this.capturePredecessor(request.candidate.releaseClass);
-    await this.ports.deployment.assertRecoverable(uniformSha(before));
+    // An adopted cutover is judged in the phase preparation left behind.
+    await this.ports.deployment.assertRecoverable(uniformSha(before), adoption ? "PREPARED_STOPPED" : "RUNNING");
     const session = adoption
       ? this.adoptOnce(adoption, request)
       : sessions.acquireFenced({

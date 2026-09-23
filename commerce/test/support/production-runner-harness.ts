@@ -5,6 +5,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { migrate } from "../../src/db";
 import type { ProductionReleaseConfig } from "../../src/release/production-config";
+import type { ComposeRollbackEvidence } from "../../src/release/compose-rollback-evidence";
 import { TEST_CAPABILITY_KEY } from "./certification-secret";
 
 /**
@@ -29,14 +30,71 @@ export type Harness = {
   readonly serving: Record<"frontend" | "admin", string>;
   setDeploymentStatus(status: string): void;
   setRetained(uuid: string, tags: readonly string[]): void;
+  /** Makes Coolify report a different kind than configuration states. */
+  setBuildPack(uuid: string, buildPack: string): void;
+  /** The Compose application's live container and image state. */
+  readonly compose: ComposeWorld;
   close(): Promise<void>;
 };
 
+/**
+ * The shapes production actually has. Commerce is a Docker Compose application
+ * of two services; the other two are Dockerfile applications.
+ *
+ * This used to answer `dockerfile` for all three, which put every Compose
+ * branch - and they are the destructive ones - outside this harness's reach.
+ * Two production-only defects came through that gap, so the kind is modelled
+ * here and the Coolify stub below reports it.
+ */
 const APPLICATIONS = [
-  { name: "frontend", uuid: "app-frontend", surfaces: ["frontend"] as const },
-  { name: "admin", uuid: "app-admin", surfaces: ["admin"] as const },
-  { name: "commerce", uuid: "app-commerce", surfaces: ["commerce", "worker"] as const },
+  { name: "frontend", uuid: "app-frontend", surfaces: ["frontend"] as const, buildPack: "dockerfile" },
+  { name: "admin", uuid: "app-admin", surfaces: ["admin"] as const, buildPack: "dockerfile" },
+  { name: "commerce", uuid: "app-commerce", surfaces: ["commerce", "worker"] as const, buildPack: "dockercompose" },
 ];
+
+export const COMPOSE_REPOSITORIES = ["repo/commerce", "repo/worker"] as const;
+
+/**
+ * A stateful stand-in for the Docker facts the Compose paths read.
+ *
+ * Deliberately stateful rather than a mock that answers whatever the caller
+ * wants: the defects were about running-versus-stopped containers and which
+ * image tags survive, so a fixture that cannot be stopped cannot reproduce
+ * them.
+ */
+export class ComposeWorld implements ComposeRollbackEvidence {
+  #running: string | null;
+  readonly #images = new Set<string>();
+
+  constructor(predecessorSha: string) {
+    this.#running = predecessorSha;
+    for (const repository of COMPOSE_REPOSITORIES) this.#images.add(`${repository}:${predecessorSha}`);
+  }
+
+  /** What `prepare-bootstrap` does to the Compose application. */
+  stop(): void { this.#running = null; }
+  start(sha: string): void { this.#running = sha; }
+  get running(): string | null { return this.#running; }
+  addImage(sha: string): void { for (const repository of COMPOSE_REPOSITORIES) this.#images.add(`${repository}:${sha}`); }
+  pruneImage(sha: string): void { for (const repository of COMPOSE_REPOSITORIES) this.#images.delete(`${repository}:${sha}`); }
+
+  async assertPreDeployRecoverable(_applicationId: string, predecessorSha: string): Promise<void> {
+    if (this.#running === null) throw new Error("COMPOSE_ROLLBACK_CONTAINERS_MISSING");
+    if (this.#running !== predecessorSha) throw new Error("COMPOSE_ROLLBACK_PREDECESSOR_TAG_MISMATCH");
+    await this.assertRetainedArtifacts(COMPOSE_REPOSITORIES, predecessorSha);
+  }
+
+  async assertPredecessorStillPresent(_applicationId: string, predecessorSha: string): Promise<void> {
+    if (this.#running === null) throw new Error("COMPOSE_ROLLBACK_CONTAINERS_MISSING");
+    await this.assertRetainedArtifacts(COMPOSE_REPOSITORIES, predecessorSha);
+  }
+
+  async assertRetainedArtifacts(repositories: readonly string[], predecessorSha: string): Promise<void> {
+    for (const repository of repositories) {
+      if (!this.#images.has(`${repository}:${predecessorSha}`)) throw new Error("COMPOSE_ROLLBACK_PREDECESSOR_IMAGE_MISSING");
+    }
+  }
+}
 
 const listen = async (server: Server): Promise<string> => {
   await new Promise<void>((resolve, reject) => {
@@ -97,6 +155,8 @@ export const harness = async (root: string): Promise<Harness> => {
     APPLICATIONS.map((application) => [application.uuid, [preSha, targetSha]]),
   );
   let deploymentStatus = "finished";
+  // Overridable so a test can make Coolify disagree with configuration.
+  const buildPacks: Record<string, string> = Object.fromEntries(APPLICATIONS.map((a) => [a.uuid, a.buildPack]));
   const pinned: Record<string, string | null> = Object.fromEntries(APPLICATIONS.map((a) => [a.uuid, null]));
 
   const coolifyServer = createServer((request, response) => {
@@ -118,7 +178,13 @@ export const harness = async (root: string): Promise<Harness> => {
     if (url.includes("/deployments/")) return send({ status: deploymentStatus, commit: targetSha });
     if (url.includes("/deploy")) return send({ deployments: [{ deployment_uuid: "dep-1" }] });
     if (request.method === "PATCH") return send({ uuid, git_commit_sha: pinned[uuid ?? ""] });
-    return send({ uuid, name: uuid, build_pack: "dockerfile", git_branch: "production-deploy", git_commit_sha: pinned[uuid ?? ""], settings: { docker_images_to_keep: 2 } });
+    const application = APPLICATIONS.find((entry) => entry.uuid === uuid);
+    return send({
+      uuid, name: uuid,
+      build_pack: buildPacks[uuid ?? ""] ?? application?.buildPack ?? "dockerfile",
+      git_branch: "production-deploy", git_commit_sha: pinned[uuid ?? ""],
+      settings: { docker_images_to_keep: 2 },
+    });
   });
   const descriptorServer = createServer((request, response) => {
     request.resume();
@@ -127,6 +193,7 @@ export const harness = async (root: string): Promise<Harness> => {
     response.end(JSON.stringify({ source_commit: serving[surface] }));
   });
 
+  const compose = new ComposeWorld(preSha);
   const coolifyUrl = await listen(coolifyServer);
   const descriptorUrl = await listen(descriptorServer);
 
@@ -134,6 +201,8 @@ export const harness = async (root: string): Promise<Harness> => {
     db, preSha, targetSha, calls, serving,
     setDeploymentStatus(status) { deploymentStatus = status; },
     setRetained(uuid, tags) { retained[uuid] = tags; },
+    setBuildPack(uuid, buildPack) { buildPacks[uuid] = buildPack; },
+    compose,
     config: {
       databasePath,
       replacementRoot,
@@ -151,8 +220,12 @@ export const harness = async (root: string): Promise<Harness> => {
         checkoutBodyPath: join(root, "certification-checkout.json"),
       },
       coolify: { apiUrl: `${coolifyUrl}/api/v1`, token: "test-token" },
-      composeRepositories: { commerce: "repo/commerce", "commerce-worker": "repo/worker" },
-      applications: APPLICATIONS.map((application) => ({ ...application, surfaces: [...application.surfaces] })),
+      composeRepositories: { commerce: COMPOSE_REPOSITORIES[0], "commerce-worker": COMPOSE_REPOSITORIES[1] },
+      applications: APPLICATIONS.map((application) => ({
+        name: application.name, uuid: application.uuid,
+        deploymentKind: application.buildPack as "dockerfile" | "dockercompose",
+        surfaces: [...application.surfaces],
+      })),
       topology: {
         frontendReleaseUrl: `${descriptorUrl}/release.json`,
         adminReleaseUrl: `${descriptorUrl}/admin/release.json`,

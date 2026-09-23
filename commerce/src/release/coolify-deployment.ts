@@ -3,6 +3,7 @@ import { DockerComposeRollbackEvidence, type ComposeRollbackEvidence } from "./c
 import { ProductionDeployRefStore } from "./deploy-ref";
 import type { DeploymentDriver, RecoveryDriver } from "./orchestrator";
 import type { PreDeploySnapshot, RuntimeTopology } from "./deploy-session";
+import type { DeploymentKind } from "./production-config";
 
 /**
  * Deploying, and putting production back, through the control plane that
@@ -22,13 +23,37 @@ export type SurfaceApplication = {
   readonly surfaces: readonly (keyof RuntimeTopology)[];
   readonly uuid: string;
   readonly name: string;
+  /** Stated by configuration. Coolify's answer is verified against it, never used to choose a path. */
+  readonly deploymentKind: DeploymentKind;
 };
+
+/**
+ * Which runtime shape the predecessor is in when recoverability is judged.
+ *
+ * Before `prepare-bootstrap`, the predecessor is serving and its running
+ * containers can prove their own identity. Afterwards it is deliberately
+ * stopped, and requiring running containers would make a prepared launch
+ * impossible to deploy - which is exactly what it did. In that phase the
+ * evidence is the retained artifact, not a process.
+ */
+export type PredecessorRuntimePhase = "RUNNING" | "PREPARED_STOPPED";
 
 export type CoolifyDeploymentOptions = {
   readonly client: CoolifyClient;
   readonly refs: ProductionDeployRefStore;
   readonly applications: readonly SurfaceApplication[];
   readonly composeRollbackEvidence?: ComposeRollbackEvidence;
+  /** Trusted local repositories for the Compose application's services. */
+  readonly composeRepositories?: readonly string[];
+  /**
+   * Restores the Compose application to a commit.
+   *
+   * Coolify does not own those images, so there is nothing here to roll back;
+   * the composition root supplies the trusted control that captures the exact
+   * predecessor units and starts them. Absent, a Compose restore is refused
+   * rather than attempted through the wrong mechanism.
+   */
+  readonly composeRestore?: (sha: string) => Promise<void>;
   readonly onProgress?: (message: string) => void;
 };
 
@@ -53,7 +78,7 @@ export class CoolifyDeploymentDriver implements DeploymentDriver {
    * pruned is discovered either now or in the middle of a recovery. A cutover
    * that cannot be undone must not begin.
    */
-  async assertRecoverable(sha: string): Promise<void> {
+  async assertRecoverable(sha: string, phase: PredecessorRuntimePhase = "RUNNING"): Promise<void> {
     const binding = await this.serverBinding();
     const cleanup = await this.options.client.serverDockerCleanup(binding.serverUuid);
     if (cleanup.applicationImageRetentionDisabled) {
@@ -61,19 +86,56 @@ export class CoolifyDeploymentDriver implements DeploymentDriver {
     }
     for (const application of this.options.applications) {
       const configured = await this.options.client.application(application.uuid);
+      this.assertDeploymentKind(application, configured.buildPack);
       if (configured.dockerImagesToKeep === null || configured.dockerImagesToKeep < 2) {
         throw new DeploymentError("DEPLOYMENT_IMAGE_RETENTION_INSUFFICIENT", `${application.name}: ${configured.dockerImagesToKeep ?? "unreadable"}`);
       }
       const active = await this.options.client.activeDeploymentQueue(application.uuid);
       if (active.length) throw new DeploymentError("DEPLOYMENT_QUEUE_ACTIVE", `${application.name}: ${active.join(",")}`);
-      if (configured.buildPack === "dockercompose") {
-        await (this.options.composeRollbackEvidence ?? new DockerComposeRollbackEvidence()).assertPreDeployRecoverable(binding.resourceId(application.uuid), sha);
+      if (application.deploymentKind === "dockercompose") {
+        await this.assertComposeRecoverable(binding.resourceId(application.uuid), sha, phase);
         continue;
       }
+      // A Dockerfile application's retained image is a Coolify fact and stays
+      // readable whether or not anything is running, so this needs no phase.
       const images = await this.options.client.rollbackImages(application.uuid);
       if (!images.some((image) => image.includes(sha))) {
         throw new DeploymentError("DEPLOYMENT_ROLLBACK_IMAGE_MISSING", `${application.name}: no retained image for ${sha}`);
       }
+    }
+  }
+
+  /**
+   * Compose recoverability, judged against the phase production is actually in.
+   *
+   * RUNNING may read identity off the live containers, which is the stronger
+   * proof and the one to use while it is available. PREPARED_STOPPED cannot:
+   * preparation stopped those containers on purpose. There the claim is that
+   * the predecessor artifacts are still on disk, proved from the trusted
+   * repositories rather than from a process that is meant to be absent.
+   */
+  private async assertComposeRecoverable(resourceId: string, sha: string, phase: PredecessorRuntimePhase): Promise<void> {
+    const evidence = this.options.composeRollbackEvidence ?? new DockerComposeRollbackEvidence();
+    if (phase === "RUNNING") {
+      await evidence.assertPreDeployRecoverable(resourceId, sha);
+      return;
+    }
+    const repositories = this.options.composeRepositories ?? [];
+    if (!repositories.length) throw new DeploymentError("DEPLOYMENT_COMPOSE_REPOSITORIES_UNCONFIGURED");
+    await evidence.assertRetainedArtifacts(repositories, sha);
+  }
+
+  /**
+   * Configuration and control plane must agree about what this application is.
+   *
+   * A disagreement is refused rather than resolved: taking Coolify's answer
+   * would let a reconfigured application silently change which destructive
+   * path runs, and taking ours would act on a shape the control plane will not
+   * honour.
+   */
+  private assertDeploymentKind(application: SurfaceApplication, reported: string): void {
+    if (reported !== application.deploymentKind) {
+      throw new DeploymentError("DEPLOYMENT_KIND_MISMATCH", `${application.name}: configured ${application.deploymentKind}, Coolify reports ${reported || "nothing"}`);
     }
   }
 
@@ -86,7 +148,8 @@ export class CoolifyDeploymentDriver implements DeploymentDriver {
     const binding = await this.serverBinding();
     for (const application of this.options.applications) {
       const configured = await this.options.client.application(application.uuid);
-      if (configured.buildPack === "dockercompose") {
+      this.assertDeploymentKind(application, configured.buildPack);
+      if (application.deploymentKind === "dockercompose") {
         await (this.options.composeRollbackEvidence ?? new DockerComposeRollbackEvidence()).assertPredecessorStillPresent(binding.resourceId(application.uuid), sha);
         continue;
       }
@@ -170,6 +233,19 @@ export class CoolifyRecoveryDriver implements RecoveryDriver {
   async restoreApplication(name: string, sha: string): Promise<void> {
     const application = this.options.applications.find((entry) => entry.name === name);
     if (!application) throw new DeploymentError("RECOVERY_APPLICATION_UNKNOWN", name);
+    // `assertRecoverable` has distinguished the two kinds since it was written;
+    // this did not, and would have asked Coolify to roll back an application
+    // whose images Coolify does not own. Refused rather than attempted: a
+    // Compose restore is a different mechanism, and guessing at it during a
+    // recovery is how the recovery becomes the incident.
+    if (application.deploymentKind === "dockercompose") {
+      if (!this.options.composeRestore) {
+        throw new DeploymentError("RECOVERY_COMPOSE_ROLLBACK_UNSUPPORTED", `${application.name}: Compose services are restored from their captured units, not by a Coolify image rollback`);
+      }
+      await this.options.composeRestore(sha);
+      this.log(`${application.name} restored from captured units`);
+      return;
+    }
     const images = await this.options.client.rollbackImages(application.uuid);
     if (!images.some((image) => image.includes(sha))) {
       throw new DeploymentError("RECOVERY_ROLLBACK_IMAGE_MISSING", `${application.name}: no retained image for ${sha}`);

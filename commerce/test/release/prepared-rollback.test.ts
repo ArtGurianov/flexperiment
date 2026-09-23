@@ -74,6 +74,7 @@ const world = (
   let gateChecks = 0;
   let archiveDigest = predecessorDatabase.sha256;
   let storageRestored = false;
+  let lineage = options.lineage ?? "SUPPORTED";
   const runtimeAuthority = new RuntimeQuiescenceAuthority(() => 0);
   const binding: RuntimeLeaseBinding = {
     sessionId: preparedRollbackId(CUTOVER), operation: "RESTORE", databasePath: "/db",
@@ -86,7 +87,7 @@ const world = (
 
   const ports: BootstrapRollbackPorts = {
     authority, envelopes, receipts, clock: () => now,
-    lineage: () => options.lineage ?? "SUPPORTED",
+    lineage: () => lineage,
     storage: {
       inspectPredecessorArchive(archive) {
         log.push("inspect-archive");
@@ -159,6 +160,7 @@ const world = (
     gateClosed: () => gateClosed,
     ref: () => ref,
     storageRestored: () => storageRestored,
+    setLineage: (value: string) => { lineage = value; },
     applications,
     mutateArchive: () => { archiveDigest = "0".repeat(64); },
   };
@@ -258,6 +260,29 @@ describe.each(releaseAuthorityStores)("rollback of a prepared cutover nobody ado
     // No second database swap, pointer move or restart.
     expect(local.log.slice(before.length).filter((entry) =>
       entry.startsWith("restore-") || entry.startsWith("cas-ref") || entry === "archive-successor")).toEqual([]);
+  });
+
+  it("reconciles a RESERVED receipt forward when the database already crossed", async () => {
+    // The crash this exists for: the process died after the atomic restore but
+    // before advancing the receipt. Replaying RESERVED there would archive the
+    // predecessor as though it were the successor.
+    const local = world(makeStore, { fail: "storage" });
+    await expect(local.run()).rejects.toThrow();
+    expect(local.receipts.read(preparedRollbackId(CUTOVER))?.stage).toBe("RESERVED");
+
+    local.setLineage("LEGACY");
+    const before = local.log.filter((entry) => entry === "archive-successor").length;
+    const receipt = await local.run();
+    expect(receipt.stage).toBe("COMPLETED");
+    // No second database swap: the receipt agreed with reality instead.
+    expect(local.log.filter((entry) => entry === "archive-successor").length).toBe(before);
+  });
+
+  it("refuses a RESERVED receipt over a database it cannot account for", async () => {
+    const local = world(makeStore, { fail: "storage" });
+    await expect(local.run()).rejects.toThrow();
+    local.setLineage("UNKNOWN");
+    await expect(local.run()).rejects.toThrow("BOOTSTRAP_ROLLBACK_LINEAGE_UNACCOUNTED");
   });
 
   it("requires an exact cutover id and never selects an envelope implicitly", async () => {

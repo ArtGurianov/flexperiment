@@ -20,9 +20,25 @@ export class ReleaseConfigError extends Error {
   }
 }
 
+/**
+ * How an application is deployed, stated here rather than discovered.
+ *
+ * Coolify reports a `build_pack`, and the destructive paths used to branch on
+ * it directly. That made the runtime shape of production an input the control
+ * plane learned at run time - and a test double that answered "dockerfile" for
+ * everything left the Compose branches, which are the destructive ones,
+ * outside the composition root's contract entirely. Two outages came through
+ * that gap.
+ *
+ * So the kind is configuration. What Coolify reports is checked against it and
+ * a disagreement is a refusal, never a branch.
+ */
+export type DeploymentKind = "dockerfile" | "dockercompose";
+
 export type SurfaceApplicationConfig = {
   readonly name: string;
   readonly uuid: string;
+  readonly deploymentKind: DeploymentKind;
   readonly surfaces: readonly ("frontend" | "admin" | "commerce" | "worker")[];
 };
 
@@ -104,10 +120,13 @@ const UUID = /^[0-9a-zA-Z][0-9a-zA-Z._-]{7,63}$/;
  * three moving parts, and pretending otherwise would leave the worker
  * unaccounted for at exactly the moment convergence is judged.
  */
-const APPLICATIONS: readonly { readonly variable: string; readonly composeIdVariable?: string; readonly name: string; readonly surfaces: SurfaceApplicationConfig["surfaces"] }[] = [
-  { variable: "COOLIFY_APPLICATION_FRONTEND", name: "frontend", surfaces: ["frontend"] },
-  { variable: "COOLIFY_APPLICATION_ADMIN", name: "admin", surfaces: ["admin"] },
-  { variable: "COOLIFY_APPLICATION_COMMERCE", name: "commerce", surfaces: ["commerce", "worker"] },
+const APPLICATIONS: readonly { readonly variable: string; readonly name: string; readonly deploymentKind: DeploymentKind; readonly surfaces: SurfaceApplicationConfig["surfaces"] }[] = [
+  { variable: "COOLIFY_APPLICATION_FRONTEND", name: "frontend", deploymentKind: "dockerfile", surfaces: ["frontend"] },
+  { variable: "COOLIFY_APPLICATION_ADMIN", name: "admin", deploymentKind: "dockerfile", surfaces: ["admin"] },
+  // Two services in one Compose application, which is why this one carries two
+  // surfaces and why its recovery is local images rather than a Coolify image
+  // rollback.
+  { variable: "COOLIFY_APPLICATION_COMMERCE", name: "commerce", deploymentKind: "dockercompose", surfaces: ["commerce", "worker"] },
 ];
 
 export const READ_ONLY_RELEASE_ENVIRONMENT_VARIABLES = [
@@ -293,6 +312,7 @@ export const loadProductionReleaseConfig = (env: NodeJS.ProcessEnv = process.env
     applications: APPLICATIONS.map((application) => ({
       name: application.name,
       uuid: value(application.variable),
+      deploymentKind: application.deploymentKind,
       surfaces: application.surfaces,
     })),
     topology: {
