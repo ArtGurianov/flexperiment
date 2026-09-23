@@ -274,6 +274,62 @@ describe("the whole path production has to walk, through the real composition ro
     } finally { processC.close(); }
   });
 
+  /**
+   * Certification legitimately outlasts a lease term.
+   *
+   * A real payment, an email and a refund have timeouts of 30, 15 and 30
+   * minutes, with a synchronous terminal read in the middle. The deploy session
+   * lease is five. Nothing can renew it while the operator is doing what they
+   * were asked to - the terminal read blocks the event loop - so the writes
+   * that follow certification would be refused for a lease that lapsed during
+   * the wait, on a release whose money has already moved.
+   */
+  const certifyingAfter = (elapsedMs: number, outcome: "succeeds" | "fails") => {
+    let drift = 0;
+    return buildProductionRelease(launchConfig(), {
+      now: () => new Date(NOW.getTime() + drift),
+      certification: {
+        issueCapability: vi.fn(),
+        preflight: vi.fn(async () => {}),
+        certify: vi.fn(async () => {
+          // The operator paying, the email arriving, the refund settling.
+          drift = elapsedMs;
+          // The runtime keeps beating throughout; only the lease would lapse.
+          const beat = new Date(NOW.getTime() + drift).toISOString();
+          vps.db.prepare("UPDATE runtime_instance_evidence SET heartbeat_at = ?, last_successful_sweep_at = COALESCE(last_successful_sweep_at, ?)")
+            .run(beat, beat);
+          if (outcome === "fails") throw new Error("PAYMENT_PROVIDER_REJECTED");
+        }),
+      } as unknown as CertificationDriver,
+    });
+  };
+
+  it.each([
+    ["settles", "succeeds" as const, 0],
+    ["reports recovery rather than a bare failure", "fails" as const, 12],
+  ])("%s when certification outlasts the lease", async (_label, mode, expected) => {
+    prepareEnvelope();
+    const candidate = launchCandidate(vps.targetSha);
+    publish(candidate);
+    convergeOnTarget();
+
+    const processA = buildProductionRelease(launchConfig(), { now });
+    let sessionId = "";
+    try {
+      expect(await runCutoverCommand(cli(processA), ["deploy", vps.targetSha, CUTOVER], "runner-a")).toBe(13);
+      sessionId = processA.authority.deploymentGate().deploymentSessionId!;
+    } finally { processA.close(); }
+
+    // Six minutes: past the five-minute lease, and far short of a real payment.
+    const built = certifyingAfter(6 * 60_000, mode);
+    try {
+      const code = await runCutoverCommand(cli(built), ["certify", sessionId], "runner-b");
+      expect(code).toBe(expected);
+      // Never a pre-mutation refusal: the money has already moved by here.
+      expect(code).not.toBe(20);
+    } finally { built.close(); }
+  });
+
   it("still makes a live lease wait, so a running holder is never evicted", async () => {
     // Standing down is the holder's to do. A session whose owner has not stood
     // down and whose lease has not lapsed belongs to that owner, and no other

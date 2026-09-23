@@ -496,6 +496,33 @@ export class DeploySessions {
     return this.store.renewOwnedLease(id, ownerId, this.clock(), new Date(this.clock().getTime() + this.leaseMs).toISOString());
   }
 
+  /**
+   * Keeps a session this process already owns, across an operation longer than
+   * a lease term.
+   *
+   * The attended certification legitimately outlasts five minutes: a real
+   * payment, an email and a refund each have timeouts measured in tens of
+   * minutes, with a synchronous `/dev/tty` read in the middle. Nothing can
+   * renew a lease during that - the terminal read blocks the event loop, so a
+   * timer is not an option - and the write that follows would then be refused
+   * for a lease that lapsed while the operator was doing exactly what they were
+   * asked to.
+   *
+   * Reclaiming one's own lapsed lease is safe here and nowhere else: the caller
+   * still holds the exclusive runner lock for the life of the command, so no
+   * other runner could have legitimately taken the session. If the process
+   * actually died the lock is gone with it, and ordinary cross-process takeover
+   * applies unchanged. A session whose owner has changed is refused outright.
+   */
+  holdLease(id: string, ownerId: string): DeploySession {
+    const session = this.store.get(id);
+    if (!session) throw new Error(`DEPLOY_SESSION_NOT_FOUND: ${id}`);
+    if (session.ownerId !== ownerId) throw new Error("DEPLOY_SESSION_NOT_OWNER");
+    return Date.parse(session.leaseExpiresAt) > this.clock().getTime()
+      ? this.renewLease(id, ownerId)
+      : this.takeOverExpiredLease(id, ownerId);
+  }
+
   reserveBootstrapRollback(id: string, ownerId: string, rollbackId: string): DeploySession {
     return this.store.reserveBootstrapRollback(id, ownerId, this.clock(), rollbackId);
   }

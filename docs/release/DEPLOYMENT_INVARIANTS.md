@@ -301,6 +301,23 @@ readiness failure arrives through a different path than an unexpected one, and
 both hand back — and to `resume`, which takes a lease to read the state and
 then tells the operator to roll back.
 
+Certification legitimately outlasts a lease term. A real payment, an email and
+a refund have timeouts of thirty, fifteen and thirty minutes, with a
+synchronous terminal read in the middle; the session lease is five. Nothing can
+renew it while that is happening — the terminal read blocks the event loop, so
+a timer is not an option — and the writes that close the release would then be
+refused for a lease that lapsed while the operator was doing exactly what they
+were asked to, on a release whose money has already moved.
+
+So the attended command **reclaims its own lease** at each seam around the long
+wait: before arming, and again before the final observation or the recovery
+that records a failure. Reclaiming one's own lapsed lease is safe here and
+nowhere else, because the process still holds the exclusive runner lock for the
+life of the command, so no other runner could legitimately have taken the
+session. If the process actually died the lock died with it and ordinary
+cross-process takeover applies unchanged. A session whose owner has changed is
+refused outright.
+
 Arming is inside the same failure contract as everything else past adoption. A
 session, a deployed successor, a capability and a closed gate already exist by
 then, so a refusal there is `RECOVERY_REQUIRED`, never a pre-mutation `20`.

@@ -343,6 +343,9 @@ export class ReleaseOrchestrator {
     // ---- last reversible point -------------------------------------------
     // Immediately before the first request that can create a real payment.
     try {
+      // Preflight includes a terminal the operator may take their time over, so
+      // the lease that arming needs may already have lapsed by now.
+      this.ports.sessions.holdLease(sessionId, request.ownerId);
       this.ports.sessions.armExternalEffects(sessionId, request.ownerId);
     } catch (error) {
       // A session, a deployed successor, a capability and a closed gate all
@@ -366,12 +369,17 @@ export class ReleaseOrchestrator {
     } catch (error) {
       // Past the boundary there is no safe abort and no rollback: the archived
       // database can no longer account for what may already have happened.
+      // Recovery needs the lease too, and certification has just spent longer
+      // than one - so reclaim it before trying to record anything.
+      this.ports.sessions.holdLease(sessionId, request.ownerId);
       return this.recovery(sessionId, request.ownerId, `CERTIFICATION_FAILED:${failureCode(error)}`);
     }
 
     // Certification takes as long as a real payment and refund take, and a
     // surface can drift underneath it. The observation that closes the release
-    // has to be the one taken after that, never the pre-arming snapshot.
+    // has to be the one taken after that, never the pre-arming snapshot - and
+    // the lease it is recorded under has to be one that survived the wait.
+    this.ports.sessions.holdLease(sessionId, request.ownerId);
     const final = await this.requireTargetTopology(sessionId, request);
     if ("kind" in final) return final;
 
