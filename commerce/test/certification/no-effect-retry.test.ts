@@ -198,7 +198,10 @@ describe("a no-effect certification retry from attempt 5's durable state", () =>
     expect(firstA2.runId).toBe(RETRY);
 
     clock = new Date(Date.parse(firstA2.expiresAt) + 1_000);
-    expect(driver().retryAfterNoEffectFailure(SESSION)).toEqual({ kind: "RETRY_CAPABILITY_REISSUED" });
+    // The retry exists and is continued; replacing its expired capability is
+    // the same same-run reissue every certification attempt gets.
+    expect(driver().retryAfterNoEffectFailure(SESSION)).toEqual({ kind: "RETRY_EXISTS" });
+    expect(driver().reissueExpiredCapability(SESSION)).toEqual({ kind: "REISSUED" });
 
     expect((db.prepare("SELECT run_id FROM certification_runs ORDER BY run_id").all() as { run_id: string }[]).map((row) => row.run_id))
       .toEqual([BASE, RETRY]);

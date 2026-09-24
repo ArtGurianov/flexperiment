@@ -720,22 +720,31 @@ describe("the whole path production has to walk, through the real composition ro
       expect(processA.certificationFor(candidate).recoverCapability(sessionId)).toBeDefined();
     } finally { processA.close(); }
 
-    // Process B: a different owner, no clock advance, no owner impersonation.
-    // The certification ports are substituted only past the lease/session/
-    // capability seam - what is under test is that arming succeeds as owner B.
-    const armed: string[] = [];
+    // Process B: a different owner, no owner impersonation - and the operator
+    // comes back after the capability's hour. `certify` replaces it on the
+    // same base run before anything is armed. The certification ports are
+    // substituted only past the lease/session/capability seam.
+    const issued = vps.db.prepare("SELECT id, run_id, expires_at FROM certification_capabilities WHERE consumed_at IS NULL AND retired_at IS NULL").get() as { id: string; run_id: string; expires_at: string };
+    const late = new Date(Date.parse(issued.expires_at) + 60_000);
+    vps.db.prepare("UPDATE runtime_instance_evidence SET heartbeat_at = ?, last_successful_sweep_at = CASE WHEN unit = 'WORKER' THEN ? ELSE last_successful_sweep_at END")
+      .run(late.toISOString(), late.toISOString());
+    const armed: { id: string; runId: string; expiresAt: string }[] = [];
     const processB = build(launchConfig(), {
-      now,
+      now: () => late,
       certification: {
         issueCapability: vi.fn(),
         preflight: vi.fn(async () => {}),
-        certify: vi.fn(async () => { armed.push("certified"); }),
+        certify: vi.fn(async (capability: { id: string; runId: string; expiresAt: string }) => { armed.push(capability); }),
       } as unknown as CertificationDriver,
     });
     try {
       const code = await runCutoverCommand(cli(processB), ["certify", sessionId], "runner-b");
       expect(code).not.toBe(20);
-      expect(armed).toEqual(["certified"]);
+      expect(armed.map((capability) => capability.runId)).toEqual([issued.run_id]);
+      expect(armed[0].id).not.toBe(issued.id);
+      expect(Date.parse(armed[0].expiresAt)).toBeGreaterThan(late.getTime());
+      expect(vps.db.prepare("SELECT retirement_reason FROM certification_capabilities WHERE id = ?").get(issued.id))
+        .toEqual({ retirement_reason: "EXPIRED_REPLACED" });
       const session = processB.sessions.read(sessionId)!;
       expect(session.ownerId).toBe("runner-b");
       // Crossing the arming boundary is what makes the release irreversible.

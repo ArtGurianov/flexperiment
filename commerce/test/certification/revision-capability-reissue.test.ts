@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { migrate } from "../../src/db";
 import { issueCapability } from "../../src/certification/capability";
 import { ProductionCertificationDriver } from "../../src/certification/driver";
-import { revisionRunId } from "../../src/certification/no-effect-retry";
+import { certificationRunId, revisionRunId } from "../../src/certification/no-effect-retry";
 import { readOperatorOccurrence } from "../../src/certification/operator-scope";
 import type { CertificationRun } from "../../src/certification/run";
 import { SqliteCertificationCapabilityStore, SqliteCertificationRunStore } from "../../src/certification/store-sqlite";
@@ -110,7 +110,7 @@ describe("reissuing an expired, unspent revision capability", () => {
   it("leaves a live capability alone", () => {
     world();
     const before = snapshot();
-    expect(driver().reissueExpiredRevisionCapability(SESSION)).toEqual({ kind: "CAPABILITY_LIVE" });
+    expect(driver().reissueExpiredCapability(SESSION)).toEqual({ kind: "CAPABILITY_LIVE" });
     expect(snapshot()).toBe(before);
   });
 
@@ -119,7 +119,7 @@ describe("reissuing an expired, unspent revision capability", () => {
     const runBefore = JSON.stringify(new SqliteCertificationRunStore(db).load(RUN));
     afterExpiry();
     const certification = driver();
-    expect(certification.reissueExpiredRevisionCapability(SESSION)).toEqual({ kind: "REISSUED" });
+    expect(certification.reissueExpiredCapability(SESSION)).toEqual({ kind: "REISSUED" });
 
     const rows = capabilities();
     expect(rows.find((row) => row.id === first.id)).toMatchObject({ consumed_at: null, retirement_reason: "EXPIRED_REPLACED" });
@@ -137,10 +137,10 @@ describe("reissuing an expired, unspent revision capability", () => {
   it("is idempotent: a second call finds the reissued capability live and writes nothing", () => {
     world();
     afterExpiry();
-    expect(driver().reissueExpiredRevisionCapability(SESSION)).toEqual({ kind: "REISSUED" });
+    expect(driver().reissueExpiredCapability(SESSION)).toEqual({ kind: "REISSUED" });
     const after = snapshot();
     clock = new Date(clock.getTime() + 60_000);
-    expect(driver().reissueExpiredRevisionCapability(SESSION)).toEqual({ kind: "CAPABILITY_LIVE" });
+    expect(driver().reissueExpiredCapability(SESSION)).toEqual({ kind: "CAPABILITY_LIVE" });
     expect(snapshot()).toBe(after);
   });
 
@@ -149,7 +149,7 @@ describe("reissuing an expired, unspent revision capability", () => {
     new SqliteCertificationCapabilityStore(db).spend(first.id, new Date(T0.getTime() + 60_000));
     afterExpiry();
     const before = snapshot();
-    expect(driver().reissueExpiredRevisionCapability(SESSION)).toEqual({ kind: "INELIGIBLE", reason: "CAPABILITY_SPENT" });
+    expect(driver().reissueExpiredCapability(SESSION)).toEqual({ kind: "INELIGIBLE", reason: "CAPABILITY_SPENT" });
     expect(snapshot()).toBe(before);
   });
 
@@ -164,15 +164,53 @@ describe("reissuing an expired, unspent revision capability", () => {
       world(options);
       afterExpiry();
       const before = snapshot();
-      expect(driver().reissueExpiredRevisionCapability(SESSION)).toEqual({ kind: "INELIGIBLE", reason });
+      expect(driver().reissueExpiredCapability(SESSION)).toEqual({ kind: "INELIGIBLE", reason });
       expect(snapshot()).toBe(before);
     });
   }
 
-  it("does not apply to a session's own target: that is the no-effect retry's", () => {
-    world({ revision: false });
+  /** An ordinary maintenance deploy handed over: fenced, not yet armed, its base run fresh. */
+  const handedOver = () => {
+    db.prepare(`INSERT INTO deploy_sessions(id, owner_id, mode, target_sha, candidate_id, state, rollback_authority,
+        pre_deploy_topology, observed_topology, created_at, lease_expires_at, deployment_gate_closed, mutation_observed)
+      VALUES (?, 'runner', 'MAINTENANCE_CUTOVER', ?, ?, 'DEPLOYING', 'OLD_LINEAGE_ALLOWED', ?, ?, ?, ?, 1, 1)`).run(
+      SESSION, SHA, SHA, topology("b".repeat(40)), topology(SHA), T0.toISOString(), T0.toISOString());
+    new SqliteCertificationRunStore(db).create({
+      runId: certificationRunId(SESSION), revision: 1, releaseSha: SHA, phase: "NEW", direction: "NORMAL", startedAt: T0.toISOString(),
+    });
+    return issueCapability(new SqliteCertificationCapabilityStore(db),
+      { runId: certificationRunId(SESSION), deploymentSessionId: SESSION, releaseSha: SHA, maxAmountKopecks: 100, ttlMs: TTL }, T0, testSecret()).capability;
+  };
+
+  it("reissues an ordinary deploy's base-run capability too: the operator came back after the hour", () => {
+    const first = handedOver();
     afterExpiry();
-    expect(driver().reissueExpiredRevisionCapability(SESSION)).toEqual({ kind: "NOT_APPLICABLE" });
+    expect(driver().reissueExpiredCapability(SESSION)).toEqual({ kind: "REISSUED" });
+    expect(capabilities().find((row) => row.id === first.id)).toMatchObject({ retirement_reason: "EXPIRED_REPLACED" });
+    expect(live()).toEqual([expect.objectContaining({ run_id: certificationRunId(SESSION), release_sha: SHA })]);
+    // Still not armed: nothing about the session moved.
+    expect(db.prepare("SELECT state, rollback_authority FROM deploy_sessions WHERE id = ?").get(SESSION))
+      .toEqual({ state: "DEPLOYING", rollback_authority: "OLD_LINEAGE_ALLOWED" });
+  });
+
+  it("refuses to arm on an expired, unspent capability: preflight says so before anything is armed", async () => {
+    const first = handedOver();
+    afterExpiry();
+    // Before this, preflight never looked at expiry: the session was armed and
+    // the runtime then refused the first command - attempt 5's trap.
+    await expect(driver().preflight(first)).rejects.toThrow("CERTIFICATION_CAPABILITY_EXPIRED");
+    // A live one gets past that check (and on to the runtime, which this test does not have).
+    clock = new Date(T0.getTime() + 60_000);
+    await expect(driver().preflight(first)).rejects.toThrow("NO_NETWORK_IN_REISSUE_TESTS");
+  });
+
+  it("lets a spent capability through preflight hours after its expiry: the refund and cleanup continue under it", async () => {
+    const first = handedOver();
+    new SqliteCertificationCapabilityStore(db).spend(first.id, new Date(T0.getTime() + 60_000));
+    const spent = new SqliteCertificationCapabilityStore(db).get(first.id)!;
+    clock = new Date(Date.parse(spent.expiresAt) + 6 * 60 * 60_000);
+    // Past the freshness check, on to the runtime (which this test does not have).
+    await expect(driver().preflight(spent)).rejects.toThrow("NO_NETWORK_IN_REISSUE_TESTS");
   });
 
   it("refuses a capability that is not the current revision's", () => {
@@ -182,7 +220,7 @@ describe("reissuing an expired, unspent revision capability", () => {
     world({ revisionTarget: "e".repeat(40) });
     afterExpiry();
     const before = snapshot();
-    expect(driver().reissueExpiredRevisionCapability(SESSION).kind).toBe("INELIGIBLE");
+    expect(driver().reissueExpiredCapability(SESSION).kind).toBe("INELIGIBLE");
     expect(snapshot()).toBe(before);
   });
 
@@ -231,7 +269,7 @@ describe("reissuing an expired, unspent revision capability", () => {
       const old = live()[0];
       afterExpiry();
 
-      expect(driver().reissueExpiredRevisionCapability(SESSION)).toEqual({ kind: "REISSUED" });
+      expect(driver().reissueExpiredCapability(SESSION)).toEqual({ kind: "REISSUED" });
       // The paid history is untouched...
       expect(JSON.stringify(history())).toBe(spentBefore);
       // ...the current revision's expired capability is replaced...
@@ -263,16 +301,16 @@ describe("reissuing an expired, unspent revision capability", () => {
       { runId: revisionRunId(SESSION, 1), deploymentSessionId: SESSION, releaseSha: previous, maxAmountKopecks: 100, ttlMs: TTL }, T0, testSecret());
     afterExpiry();
     const before = snapshot();
-    expect(driver().reissueExpiredRevisionCapability(SESSION)).toEqual({ kind: "INELIGIBLE", reason: "CAPABILITY_COUNT_0" });
+    expect(driver().reissueExpiredCapability(SESSION)).toEqual({ kind: "INELIGIBLE", reason: "CAPABILITY_COUNT_0" });
     expect(snapshot()).toBe(before);
   });
 
   it("with the production lifetime: live until the hour is up, then reissued for another hour", () => {
     world({ ttlMs: CERTIFICATION_CAPABILITY_TTL_MS });
     clock = new Date(T0.getTime() + CERTIFICATION_CAPABILITY_TTL_MS - 1);
-    expect(driver().reissueExpiredRevisionCapability(SESSION)).toEqual({ kind: "CAPABILITY_LIVE" });
+    expect(driver().reissueExpiredCapability(SESSION)).toEqual({ kind: "CAPABILITY_LIVE" });
     clock = new Date(T0.getTime() + CERTIFICATION_CAPABILITY_TTL_MS + 1_000);
-    expect(driver().reissueExpiredRevisionCapability(SESSION)).toEqual({ kind: "REISSUED" });
+    expect(driver().reissueExpiredCapability(SESSION)).toEqual({ kind: "REISSUED" });
     const replacement = db.prepare("SELECT expires_at FROM certification_capabilities WHERE consumed_at IS NULL AND retired_at IS NULL").get() as { expires_at: string };
     expect(Date.parse(replacement.expires_at)).toBe(clock.getTime() + CERTIFICATION_CAPABILITY_TTL_MS);
   });
