@@ -589,7 +589,7 @@ export class CommerceDomain {
     return { withdrawn: result.withdrawn, deleted_count: result.city_interest_deleted };
   }
 
-  checkoutContext(input: { occurrenceId: string; promoCode?: string; referralSlug?: string }) {
+  checkoutContext(input: { occurrenceId: string; promoCode?: string; referralSlug?: string; certification?: PresentedCertificationCapability }) {
     return checkoutContext(this, input);
   }
 

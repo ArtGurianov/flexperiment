@@ -697,9 +697,7 @@ draft with `cityId` last while the endpoint rebuilds it with `cityId` first.
 The run recorded `INCOMPLETE` and shut a catalogue it never opened. Armed means
 no rollback, and a failed run can never pass, so a release whose certification
 had touched nothing had no way to finish. The runner now spells the draft out
-in the endpoint's order, and a test sends the runner's real command through the
-real endpoint parser and SQLite authority, which is the round trip no test made
-before.
+in the endpoint's order. The real-router E2E below is what proves it.
 
 The way out is exactly one retry, `certification-<session>-a2`, and only when
 the first run provably did nothing (`no-effect-retry.ts`):
@@ -737,6 +735,46 @@ This is runner-only. The deployed runtime already binds each command to the
 capability's run, not to a session-derived id, so recovering this way needs
 no new candidate and no deploy, and the certified target stays the one the
 session names.
+
+## Certification is proved against the real runtime, end to end
+
+`commerce/test/certification/real-router-e2e.test.ts` runs a complete
+production certification, from `CREATE_OCCURRENCE` to `COMPLETE`. The real
+certification driver and machine talk over their real HTTP ports to
+`createApp`, which means the real certification router, the real public quote
+and checkout routes, the real domain and the real worker cycle, with real
+request and response serialization at every boundary. Only the two systems
+outside production are substituted:
+
+- the payment provider, as `TochkaProvider` minus its network;
+- the email provider, as `UnisenderGoProvider` minus its network.
+
+The runtime mounts its webhook routes only for those classes, and certification
+demands the evidence the webhooks write. The webhooks are signed the way the
+providers sign them (an RS256 JWT, and an MD5 over the key) and verified by the
+runtime's own verifiers.
+
+It exists because the attended certification had never run against a runtime.
+Every test on either side described the other side by hand, including one
+written to fix the first production failure, which invented the field whose
+absence caused the second. Built on 2026-09-24, it found eight
+runner/runtime contract defects between arming and the final close. Each would
+have failed a production certification, several of them after the ₽1 had moved:
+
+| # | Step | Defect |
+|---|---|---|
+| 1 | create | the armed command's JSON key order differed from the endpoint's rebuild |
+| 2 | create | identity was judged on the create response, which has no `city_slug` |
+| 3 | quote | `checkoutContext` answered the sales gate with no certification path, so a fenced release could never quote |
+| 4 | quote, checkout | the claim header was split on `.`, and the versioned nonce contains one |
+| 5 | checkout | `withImmediateTransaction` could not nest inside the admission's transaction |
+| 6 | checkout | the capability was spent before `checkout` re-proved it, so it was refused as spent |
+| 7 | payment, cancellation | the certification occurrence read carried no `availability` |
+| 8 | cancellation | the router sent a fixed sentence where the domain requires `CANCEL <bookingId>` |
+
+Reverting any one fix makes the test fail at the step where production would
+have. A certification-shaped change is not done until this test reaches
+`COMPLETE`, and no runtime stub stands in for it.
 
 ## Installing the release runner on the VPS
 

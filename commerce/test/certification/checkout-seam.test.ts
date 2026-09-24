@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CommerceDomain, DomainError } from "../../src/domain";
 import { MockProvider } from "../../src/provider";
 import { issueCapability } from "../../src/certification/capability";
-import { admitCertificationCheckout, parseCertificationClaim } from "../../src/certification/checkout-admission";
+import { admitCertificationCheckout, encodeCertificationClaim, parseCertificationClaim } from "../../src/certification/checkout-admission";
 import { SqliteCertificationCapabilityStore, SqliteCertificationRunStore } from "../../src/certification/store-sqlite";
 import { concurrencyFixture, type ConcurrencyFixture } from "../support/concurrency-fixture";
 import { testSecret } from "../support/certification-secret";
@@ -144,12 +144,27 @@ describe("the deployment fence and the public checkout are one fact", () => {
 });
 
 describe("how a claim may reach the server", () => {
-  it("reads three opaque fields, and refuses anything else by shape", () => {
-    expect(parseCertificationClaim("cap.run.nonce")).toEqual({ capabilityId: "cap", runId: "run", nonce: "nonce" });
+  it("round-trips a real claim, whose nonce itself contains the separator", () => {
+    // The nonce is `<keyVersion>.<hmac>`. Sent raw, every real claim was four
+    // pieces and was refused - attempt 5 would have been, at its first payment.
+    const claim = { capabilityId: "4e391d40-b01f-4e71-86b6-2697a753a4aa", runId: "certification-e4cb1a91-r1", nonce: `v1.${"a".repeat(64)}` };
+    expect(parseCertificationClaim(encodeCertificationClaim(claim))).toEqual(claim);
     expect(parseCertificationClaim(undefined)).toBeUndefined();
     expect(parseCertificationClaim("   ")).toBeUndefined();
-    for (const malformed of ["cap.run", "cap.run.nonce.extra", "cap..nonce", "cap.run.no nce", "../../etc"]) {
-      expect(() => parseCertificationClaim(malformed)).toThrow("CERTIFICATION_CLAIM_MALFORMED");
+  });
+
+  it("refuses anything that is not exactly three canonical fields", () => {
+    const field = (value: string) => Buffer.from(value).toString("base64url");
+    for (const malformed of [
+      `cap.run.v1.${"a".repeat(8)}`,                          // the old raw form
+      [field("cap"), field("run")].join("."),                 // two fields
+      [field("cap"), field("run"), field("n"), field("x")].join("."),
+      [field("cap"), "", field("nonce")].join("."),            // empty field
+      [field("cap"), field("run"), "YR"].join("."),           // decodes, but is not how "a" is written
+      [field("cap"), field("run"), field("no nce")].join("."), // a value outside the field alphabet
+      "../../etc",
+    ]) {
+      expect(() => parseCertificationClaim(malformed), malformed).toThrow("CERTIFICATION_CLAIM_MALFORMED");
     }
   });
 

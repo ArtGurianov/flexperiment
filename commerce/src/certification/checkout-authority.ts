@@ -105,21 +105,17 @@ export class InMemoryCertificationCheckoutAuthority implements CertificationChec
     const defect = authorizationDefect(capability, input.claim, input.facts, run, input.now);
     if (defect) throw new CertificationCapabilityError(defect);
 
-    const before = capability!;
-    const consumed = this.capabilities.spend(before.id, input.now);
-    try {
-      const created = create({ capability: consumed, run, facts: input.facts });
-      this.orders.record(input.idempotencyKey, {
-        orderId: (created as { orderId?: string }).orderId ?? "",
-        statusId: (created as { statusId?: string }).statusId ?? "",
-        certificationRunId: run.runId,
-      });
-      return created;
-    } catch (error) {
-      // Nothing was admitted, so nothing was spent.
-      this.capabilities.restore(before);
-      throw error;
-    }
+    // Created while unspent - `checkout` re-proves the authorization and
+    // refuses a spent capability - then spent. A failure before the spend has
+    // spent nothing; the production authority does both in one transaction.
+    const created = create({ capability: capability!, run, facts: input.facts });
+    this.capabilities.spend(capability!.id, input.now);
+    this.orders.record(input.idempotencyKey, {
+      orderId: (created as { orderId?: string }).orderId ?? "",
+      statusId: (created as { statusId?: string }).statusId ?? "",
+      certificationRunId: run.runId,
+    });
+    return created;
   }
 }
 

@@ -1,3 +1,4 @@
+import { encodeCertificationClaim } from "../../src/certification/checkout-admission";
 import { createServer, type Server } from "node:http";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CertificationHttpError, HttpCertificationAdminPort, HttpCertificationPublicPort } from "../../src/certification/http-ports";
@@ -51,7 +52,7 @@ describe("the public surface a certification buys through", () => {
     expect(result).toEqual({ statusId: "status-1", paymentUrl: "https://provider.invalid/pay" });
     const [call] = calls;
     expect(call.url).toBe("/v1/public/checkouts");
-    expect(call.headers["x-certification-claim"]).toBe("cap-1.run-1.nonce-1");
+    expect(call.headers["x-certification-claim"]).toBe(encodeCertificationClaim({ capabilityId: "cap-1", runId: "run-1", nonce: "nonce-1" }));
     expect(call.headers["idempotency-key"]).toBe("idempotency-key-0001");
     // A query parameter lands in access logs, proxy logs and browser history.
     expect(call.url).not.toContain("cap-1");
@@ -61,9 +62,12 @@ describe("the public surface a certification buys through", () => {
     // It reaches the shop the way a customer does. A privileged route or a
     // token here would mean the certification proved a path nobody else takes.
     reply = () => ({ body: { quote_id: "quote-1" } });
-    await new HttpCertificationPublicPort({ baseUrl }).checkoutContext("occ");
+    await new HttpCertificationPublicPort({ baseUrl }).checkoutContext("occ", claim);
     expect(calls[0].headers.authorization).toBeUndefined();
     expect(calls[0].url).toBe("/v1/public/checkout-context");
+    // The claim, in its header - the only thing that lets the quote through the
+    // fence this release closed.
+    expect(calls[0].headers["x-certification-claim"]).toBe(encodeCertificationClaim(claim));
   });
 
   it("uses the same idempotency key on a repeat, so a timeout cannot buy twice", async () => {

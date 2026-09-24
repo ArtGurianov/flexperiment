@@ -5,6 +5,8 @@ import { isReplay, type CertificationCheckoutAuthority } from "./checkout-author
 import type { CertificationContext } from "../domain/checkout";
 import { SqliteCertificationCheckoutAuthority, SqliteCertificationOrderLedger } from "./checkout-authority-sqlite";
 import { SqliteCertificationCapabilityStore, SqliteCertificationRunStore } from "./store-sqlite";
+import { SqliteCatalogueMutationLedger } from "./catalogue-authority-sqlite";
+import type { PresentedCertificationCapability } from "../release/sales-gate";
 
 /**
  * Reading a certification claim off a request, and nothing else.
@@ -20,17 +22,37 @@ export const CERTIFICATION_CLAIM_HEADER = "X-Certification-Claim";
 const FIELD = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 
 /**
- * `<capabilityId>.<runId>.<nonce>`. Three opaque fields, so a malformed header
- * is refused by shape before anything looks up a capability with it.
+ * The claim on the wire: each of `capabilityId`, `runId` and `nonce`
+ * base64url-encoded on its own, joined by `.`.
+ *
+ * The fields used to go raw, `<capabilityId>.<runId>.<nonce>`, split on `.`
+ * into exactly three - and the nonce is `<keyVersion>.<hmac>`, so every real
+ * claim arrived as four pieces and was refused as MALFORMED. Encoding each
+ * field is what makes the separator unambiguous, whatever a field contains;
+ * special-casing "four pieces" would only fit today's nonce.
+ *
+ * Built and read by these two functions and nothing else, so the runner that
+ * sends a claim and the runtime that admits one cannot drift apart.
  */
+const encodeField = (value: string) => Buffer.from(value, "utf8").toString("base64url");
+
+export const encodeCertificationClaim = (claim: CertificationClaim): string =>
+  [claim.capabilityId, claim.runId, claim.nonce].map(encodeField).join(".");
+
+/** Refused by shape before anything looks up a capability with it. */
 export const parseCertificationClaim = (header: string | undefined | null): CertificationClaim | undefined => {
   const raw = (header ?? "").trim();
   if (!raw) return undefined;
   const parts = raw.split(".");
-  if (parts.length !== 3 || parts.some((part) => !FIELD.test(part))) {
-    throw new CertificationCapabilityError("CERTIFICATION_CLAIM_MALFORMED");
-  }
-  const [capabilityId, runId, nonce] = parts;
+  if (parts.length !== 3) throw new CertificationCapabilityError("CERTIFICATION_CLAIM_MALFORMED");
+  const fields = parts.map((part) => {
+    const value = Buffer.from(part, "base64url").toString("utf8");
+    // One spelling per claim: a part that does not re-encode to itself is
+    // not base64url of anything, whatever Node's lenient decoder made of it.
+    if (!part || encodeField(value) !== part || !FIELD.test(value)) throw new CertificationCapabilityError("CERTIFICATION_CLAIM_MALFORMED");
+    return value;
+  });
+  const [capabilityId, runId, nonce] = fields;
   return { capabilityId, runId, nonce };
 };
 
@@ -62,6 +84,61 @@ export const admissionFacts = (db: Database.Database, quoteId: string): Admissio
     runtimeReleaseSha: process.env.SOURCE_COMMIT?.trim() ?? "",
     actualAmountKopecks: Number(quote.final_amount_kopecks),
     checkoutOccurrenceId: String(quote.occurrence_id),
+  };
+};
+
+/**
+ * A certification's quote, behind the fence its own release closed.
+ *
+ * `checkoutContext` answers the sales gate like every public route, and while a
+ * cutover holds the deployment fence that answer is closed - so a certification
+ * could never obtain the quote its checkout needs. The fence is opened here the
+ * way the checkout opens it: by presenting the capability to the one canonical
+ * gate, which still answers the emergency and business gates first. Nothing is
+ * bypassed around it.
+ *
+ * Narrower than a checkout, because a quote is only ever the run's own fixture
+ * at the one step that asks for it:
+ *
+ *   - the run named by the claim is at OCCURRENCE_OPEN, going forward;
+ *   - the occurrence is the one this run's catalogue ledger says it created -
+ *     a runtime-owned record, not the run row the runner writes;
+ *   - no promo or referral rides along: a certification buys the fixture at
+ *     its price.
+ *
+ * Every fact handed to the gate is the server's own. The capability is
+ * presented, never spent: spending belongs to the checkout, with its order.
+ */
+export const presentCertificationQuote = (
+  db: Database.Database,
+  claim: CertificationClaim,
+  request: { readonly occurrenceId: string; readonly promoCode?: string; readonly referralSlug?: string },
+): PresentedCertificationCapability => {
+  if (request.promoCode || request.referralSlug) throw new CertificationCapabilityError("CERTIFICATION_QUOTE_ATTRIBUTION_FORBIDDEN");
+  const run = new SqliteCertificationRunStore(db).load(claim.runId);
+  if (!run) throw new CertificationCapabilityError("CERTIFICATION_RUN_NOT_FOUND", claim.runId);
+  if (run.phase !== "OCCURRENCE_OPEN" || run.direction !== "NORMAL") {
+    throw new CertificationCapabilityError("CERTIFICATION_RUN_NOT_QUOTING", `${run.phase}/${run.direction}`);
+  }
+  const fixture = new SqliteCatalogueMutationLedger(db, run.runId).occurrenceId();
+  if (!fixture || fixture !== request.occurrenceId || run.occurrenceId !== fixture) {
+    throw new CertificationCapabilityError("CERTIFICATION_QUOTE_NOT_THIS_RUN", request.occurrenceId);
+  }
+  const occurrence = db.prepare("SELECT price_kopecks FROM occurrences WHERE id = ?").get(fixture) as { price_kopecks: number } | undefined;
+  if (!occurrence) throw new CertificationCapabilityError("CERTIFICATION_QUOTE_NOT_THIS_RUN", fixture);
+  const fence = db.prepare("SELECT id FROM deploy_sessions WHERE deployment_gate_closed = 1").get() as { id: string } | undefined;
+  const capability = new SqliteCertificationCapabilityStore(db).get(claim.capabilityId);
+  if (!capability) throw new CertificationCapabilityError("CERTIFICATION_CAPABILITY_NOT_FOUND");
+  return {
+    capability,
+    claim,
+    facts: {
+      deploymentSessionId: fence?.id ?? "",
+      runtimeReleaseSha: process.env.SOURCE_COMMIT?.trim() ?? "",
+      actualAmountKopecks: Number(occurrence.price_kopecks),
+      checkoutOccurrenceId: fixture,
+    },
+    expected: { runId: run.runId, releaseSha: run.releaseSha, occurrenceId: run.occurrenceId },
   };
 };
 
