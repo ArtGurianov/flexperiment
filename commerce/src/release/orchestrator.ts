@@ -73,7 +73,7 @@ export interface RecoveryDriver {
 
 export type ReleasePorts = {
   readonly sessions: DeploySessions;
-  /** What production is, on the launch lineage. */
+  /** What production is serving now. */
   readonly topology: TopologyReader;
   readonly evidence: RuntimeEvidenceReader;
   readonly deployment: DeploymentDriver;
@@ -405,9 +405,17 @@ export class ReleaseOrchestrator {
     if (!session.preDeployTopology) throw new ReleaseOrchestrationError("PRE_DEPLOY_TOPOLOGY_REQUIRED");
     const before = session.preDeployTopology;
 
+    // Three sequential Coolify redeploys and a convergence wait can each take
+    // minutes; the lease is five. No write after one of them may depend on the
+    // lease granted before it, so the lease is re-held after the restore,
+    // before every poll, and before every settling write. This process holds
+    // the runner lock throughout, which is what makes reclaiming its own lapsed
+    // lease safe (`holdLease`), exactly as the target wait does.
+    const hold = () => this.ports.sessions.holdLease(sessionId, ownerId);
     try {
       await this.ports.recovery.restorePreDeployTopology(before);
     } catch (error) {
+      hold();
       return this.recovery(sessionId, ownerId, `ROLLBACK_FAILED:${failureCode(error)}`);
     }
 
@@ -417,11 +425,15 @@ export class ReleaseOrchestrator {
     // read as "refused before mutation".
     let restored: DeploymentObservation;
     try {
-      restored = await converge(this.convergence, () => this.ports.topology.observe(),
-        (observation) => snapshotEquals(observation, before), isTransientTopologyRead);
+      restored = await converge(this.convergence, async () => {
+        hold();
+        return this.ports.topology.observe();
+      }, (observation) => snapshotEquals(observation, before), isTransientTopologyRead);
     } catch (error) {
+      hold();
       return this.recovery(sessionId, ownerId, `ROLLBACK_NOT_CONVERGED:${failureCode(error)}`);
     }
+    hold();
     if (!snapshotEquals(restored, before)) return this.recovery(sessionId, ownerId, "ROLLBACK_NOT_CONVERGED");
     // completeRollback insists on the exact vector itself and settles the
     // session and the gate in one operation.

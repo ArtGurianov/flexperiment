@@ -182,8 +182,15 @@ Two rules keep this usable on the day it is needed:
   short of the exact recorded vector is `RECOVERY_REQUIRED` with sales closed -
   never an exception that would read as exit `20`, "refused before mutation".
 
-Both were missing until the launch retired: until then, only the launch's own
-restore path had them.
+- **No write after a long wait uses a lease granted before it.** Three
+  sequential Coolify redeploys and the convergence wait can each outlast the
+  five-minute lease, so the lease is re-held after the restore, before every
+  poll and before every settling write - as the target wait already does. A
+  restore that took six minutes still settles as `ROLLED_BACK`, and one that
+  then failed is still `RECOVERY_REQUIRED` rather than a bare lease error.
+
+These were missing until the launch retired: until then, only the launch's
+own restore path had the first two.
 
 ## An exit code describes what happened, not what was attempted
 

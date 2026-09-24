@@ -15,14 +15,18 @@ const stranded = (options: {
   /** What production answers, in order; an error is a read that failed. */
   observations?: (PreDeploySnapshot | Error)[];
   convergence?: ConvergencePolicy;
+  /** How long the restore takes on the session's clock: three Coolify redeploys may take minutes. */
+  restoreTakesMs?: number;
 } = {}) => {
+  let clock = now.getTime();
+  const current = () => new Date(clock);
   const restored: unknown[] = [];
   const queue: (PreDeploySnapshot | Error)[] = options.observations ?? [partial, options.restoresTo ?? before];
   let last: PreDeploySnapshot = partial;
   const store = new InMemoryReleaseAuthorityStore();
-  const sessions = new DeploySessions(store, () => now);
+  const sessions = new DeploySessions(store, current);
   const ports: ReleasePorts = {
-    sessions, clock: () => now,
+    sessions, clock: current,
     topology: {
       async observe() {
         const next = queue.shift();
@@ -37,6 +41,7 @@ const stranded = (options: {
     recovery: {
       async restorePreDeployTopology(topology) {
         restored.push(topology);
+        clock += options.restoreTakesMs ?? 0;
         if (options.restoreFails) throw new Error(options.restoreFails);
       },
     },
@@ -45,7 +50,7 @@ const stranded = (options: {
     id: "stranded", ownerId: "owner", mode: "MAINTENANCE_CUTOVER", targetSha: target,
   }, before);
   sessions.beginDeploying(session.id, "owner");
-  return { store, sessions, restored, orchestrator: new ReleaseOrchestrator(ports) };
+  return { store, sessions, restored, orchestrator: new ReleaseOrchestrator(ports), advance: (ms: number) => { clock += ms; } };
 };
 
 describe("rollback after a partial cutover", () => {
@@ -104,6 +109,49 @@ describe("rollback after a partial cutover", () => {
     const { store, orchestrator } = stranded({ observations: [new TopologyReadError("TOPOLOGY_UNIT_NOT_RUNNING", "COMMERCE")] });
     await expect(orchestrator.rollback("stranded", "someone-else")).rejects.toThrow("DEPLOY_SESSION_NOT_OWNER");
     expect(store.deploymentGate().closed).toBe(true);
+  });
+
+  it("settles a rollback whose restore outlasted the lease it started with", async () => {
+    // Three sequential Coolify redeploys may each take minutes; the session's
+    // lease is five. Production is back, so the session must say so and sales
+    // must reopen, not fail on a lease granted before the wait.
+    const { store, orchestrator } = stranded({ restoreTakesMs: 6 * 60_000 });
+    const outcome = await orchestrator.rollback("stranded", "owner");
+    expect(outcome).toMatchObject({ kind: "ROLLED_BACK" });
+    expect(store.deploymentGate().closed).toBe(false);
+  });
+
+  it("records a long restore that then failed as recovery, not as a lease error", async () => {
+    const { store, orchestrator } = stranded({ restoreTakesMs: 6 * 60_000, restoreFails: "COOLIFY_DEPLOYMENT_TIMED_OUT" });
+    const outcome = await orchestrator.rollback("stranded", "owner");
+    expect(outcome).toMatchObject({ kind: "RECOVERY_REQUIRED", code: "ROLLBACK_FAILED:COOLIFY_DEPLOYMENT_TIMED_OUT" });
+    expect(store.get("stranded")?.state).toBe("RECOVERY_REQUIRED");
+    expect(store.deploymentGate().closed).toBe(true);
+  });
+
+  it("holds the lease across a convergence wait longer than the lease itself", async () => {
+    let advance: (ms: number) => void = () => {};
+    const built = stranded({
+      observations: [partial, new TopologyReadError("TOPOLOGY_UNIT_NOT_RUNNING", "WORKER"), partial, before],
+      // Each poll interval is three minutes of the session's clock.
+      convergence: { deadlineMs: 20 * 60_000, intervalMs: 3 * 60_000, sleep: async () => { advance(3 * 60_000); } },
+    });
+    advance = built.advance;
+    const outcome = await built.orchestrator.rollback("stranded", "owner");
+    expect(outcome).toMatchObject({ kind: "ROLLED_BACK" });
+    expect(built.store.deploymentGate().closed).toBe(false);
+  });
+
+  it("records a convergence that never came back, after waiting past the lease, as recovery", async () => {
+    let advance: (ms: number) => void = () => {};
+    const built = stranded({
+      observations: [partial, partial, partial, partial],
+      convergence: { deadlineMs: 9 * 60_000, intervalMs: 3 * 60_000, sleep: async () => { advance(3 * 60_000); } },
+    });
+    advance = built.advance;
+    const outcome = await built.orchestrator.rollback("stranded", "owner");
+    expect(outcome).toMatchObject({ kind: "RECOVERY_REQUIRED", code: "ROLLBACK_NOT_CONVERGED" });
+    expect(built.store.deploymentGate().closed).toBe(true);
   });
 
   it("stays in recovery when the restore itself fails", async () => {
