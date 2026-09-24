@@ -193,11 +193,12 @@ export class SqliteReleaseAuthorityStore implements ReleaseAuthorityStore {
    * the insert commits with them or not at all. The table's triggers repeat the
    * state and chain rules below this, for any writer that is not this one.
    */
-  appendForwardTarget(id: string, ownerId: string, now: Date, input: ForwardTargetInput): ForwardTarget {
+  appendForwardTarget(id: string, ownerId: string, now: Date, input: ForwardTargetInput, within?: () => void): ForwardTarget {
     const work = this.db.transaction((): ForwardTarget => {
       const session = this.write(id, ownerId, now, ["RECOVERY_REQUIRED"], {});
       assertSupersedable(session, this.deploymentGate().deploymentSessionId);
       const target = forwardTargetFor(session, releaseBinding(session, this.forwardTargets(id)), input, now);
+      within?.();
       this.db.prepare(`INSERT INTO deploy_session_forward_targets(session_id, revision, from_sha, target_sha, candidate_id, ci_evidence, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?)`).run(
         target.sessionId, target.revision, target.fromSha, target.targetSha, target.candidateId, target.ciEvidence, target.createdAt,

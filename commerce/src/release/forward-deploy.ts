@@ -37,8 +37,14 @@ export type ForwardDeployPorts = {
   readonly admission: { admit(candidate: ReleaseCandidate, current: ReleaseBinding): Promise<{ readonly ciEvidence: string }> };
   /** Why the current target's certification may not be left behind, or undefined. */
   readonly supersessionDefect: (sessionId: string, releaseSha: string) => string | undefined;
-  /** A live unspent capability that would block the new revision's own, or undefined. */
-  readonly liveCapability: (sessionId: string) => string | undefined;
+  /** A live unspent capability occupying the session's one slot, or undefined. */
+  readonly liveCapability: (sessionId: string) => { readonly id: string; readonly releaseSha: string; readonly expiresAt: string } | undefined;
+  /**
+   * Retires a live capability of the target being left, as part of the forward
+   * revision's own transaction. Early by design: its TTL is a backstop for an
+   * abandoned capability, not a lock on recovery.
+   */
+  readonly revokeCapability: (capabilityId: string, sessionId: string) => void;
   /** Applies the candidate's own predeploy-compatible migrations. Idempotent. */
   readonly migrate: () => void;
   /**
@@ -102,7 +108,7 @@ export class ForwardDeploy {
     // fenced and the next command made to wait it out. Only this region: after
     // the first durable write, failures are RECOVERY_REQUIRED, whose outcome
     // path already stands down.
-    let admitted: { candidate: ReleaseCandidate; ciEvidence: string };
+    let admitted: { candidate: ReleaseCandidate; ciEvidence: string; revoke?: string; leaving: string };
     try {
       admitted = await this.admitRevision(sessionId, candidateId);
     } catch (error) {
@@ -120,7 +126,7 @@ export class ForwardDeploy {
   }
 
   /** Everything before the first durable write. Refusals here are thrown. */
-  private async admitRevision(sessionId: string, candidateId: string): Promise<{ candidate: ReleaseCandidate; ciEvidence: string }> {
+  private async admitRevision(sessionId: string, candidateId: string): Promise<{ candidate: ReleaseCandidate; ciEvidence: string; revoke?: string; leaving: string }> {
     const { sessions } = this.ports;
     const current = sessions.binding(sessionId);
     const candidate = this.ports.candidates.get(candidateId);
@@ -129,14 +135,18 @@ export class ForwardDeploy {
     const { ciEvidence } = await this.ports.admission.admit(candidate, current);
     const unsafe = this.ports.supersessionDefect(sessionId, current.targetSha);
     if (unsafe) throw new ForwardDeployError("FORWARD_DEPLOY_PRIOR_TARGET_NOT_SAFE", unsafe);
-    const blocking = this.ports.liveCapability(sessionId);
-    if (blocking) throw new ForwardDeployError("FORWARD_DEPLOY_CAPABILITY_STILL_LIVE", blocking);
+    // A live capability of the target being left is revoked with the revision;
+    // one for any other release is not ours to end, and is refused.
+    const live = this.ports.liveCapability(sessionId);
+    if (live && live.releaseSha !== current.targetSha) {
+      throw new ForwardDeployError("FORWARD_DEPLOY_CAPABILITY_STILL_LIVE", `${live.id} for ${live.releaseSha} expires ${live.expiresAt}`);
+    }
     const unknown = this.ports.unknownMigrations();
     if (unknown.length) throw new ForwardDeployError("FORWARD_DEPLOY_MIGRATIONS_NOT_CARRIED", unknown.join(","));
-    return { candidate, ciEvidence };
+    return { candidate, ciEvidence, revoke: live?.id, leaving: current.targetSha };
   }
 
-  private commitRevision(sessionId: string, admitted: { candidate: ReleaseCandidate; ciEvidence: string }, ownerId: string): ForwardTarget {
+  private commitRevision(sessionId: string, admitted: { candidate: ReleaseCandidate; ciEvidence: string; revoke?: string; leaving: string }, ownerId: string): ForwardTarget {
     const { sessions } = this.ports;
     const { candidate, ciEvidence } = admitted;
     // ---- first durable write ----------------------------------------------
@@ -145,7 +155,15 @@ export class ForwardDeploy {
     // re-applies them idempotently. They are predeploy-compatible, so the
     // previous target keeps serving under them.
     this.ports.migrate();
-    const recorded = sessions.appendForwardTarget(sessionId, ownerId, { targetSha: candidate.sha, candidateId: candidate.id, ciEvidence });
+    // One point of commitment: the old target's capability is revoked and the
+    // revision recorded in the same IMMEDIATE transaction, after safety is
+    // re-proved inside it. There is never a durable "revoked, but not going
+    // forward".
+    const recorded = sessions.appendForwardTarget(sessionId, ownerId, { targetSha: candidate.sha, candidateId: candidate.id, ciEvidence }, () => {
+      const unsafe = this.ports.supersessionDefect(sessionId, admitted.leaving);
+      if (unsafe) throw new ForwardDeployError("FORWARD_DEPLOY_PRIOR_TARGET_NOT_SAFE", unsafe);
+      if (admitted.revoke) this.ports.revokeCapability(admitted.revoke, sessionId);
+    });
     this.ports.journal.record("forward-deploy.revision", {
       session: sessionId, revision: recorded.revision, from: recorded.fromSha, target: recorded.targetSha,
     });

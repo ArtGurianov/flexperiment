@@ -135,7 +135,7 @@ export interface ReleaseAuthorityStore {
    * reserved; and the revision is the next one, starting where the current
    * binding ends. A row in the right state is not authorisation on its own.
    */
-  appendForwardTarget(id: string, ownerId: string, now: Date, input: ForwardTargetInput): ForwardTarget;
+  appendForwardTarget(id: string, ownerId: string, now: Date, input: ForwardTargetInput, within?: () => void): ForwardTarget;
 }
 
 export type ForwardTargetInput = {
@@ -274,12 +274,13 @@ export class InMemoryReleaseAuthorityStore implements ReleaseAuthorityStore {
 
   forwardTargets(id: string): readonly ForwardTarget[] { return [...(this.#forwardTargets.get(id) ?? [])]; }
 
-  appendForwardTarget(id: string, ownerId: string, now: Date, input: ForwardTargetInput): ForwardTarget {
+  appendForwardTarget(id: string, ownerId: string, now: Date, input: ForwardTargetInput, within?: () => void): ForwardTarget {
     const session = this.write(id, ownerId, now, ["RECOVERY_REQUIRED"], {});
     assertSupersedable(session, this.#gateOwnerSessionId);
     const targets = this.#forwardTargets.get(id) ?? [];
     const current = releaseBinding(session, targets);
     const target = forwardTargetFor(session, current, input, now);
+    within?.();
     this.#forwardTargets.set(id, [...targets, target]);
     return target;
   }
@@ -567,9 +568,14 @@ export class DeploySessions {
     return this.store.forwardTargets(id);
   }
 
-  /** See ReleaseAuthorityStore.appendForwardTarget. */
-  appendForwardTarget(id: string, ownerId: string, input: ForwardTargetInput): ForwardTarget {
-    return this.store.appendForwardTarget(id, ownerId, this.clock(), input);
+  /**
+   * See ReleaseAuthorityStore.appendForwardTarget. `within` runs inside the
+   * same transaction, before the revision is written and while the current
+   * binding is still the one being left - so whatever it does commits with the
+   * revision or not at all.
+   */
+  appendForwardTarget(id: string, ownerId: string, input: ForwardTargetInput, within?: () => void): ForwardTarget {
+    return this.store.appendForwardTarget(id, ownerId, this.clock(), input, within);
   }
 
   renewLease(id: string, ownerId: string): DeploySession {

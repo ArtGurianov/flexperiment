@@ -72,13 +72,15 @@ describe("who decides when a capability is retired", () => {
   });
 
   it("has no term left that no test can reach", () => {
-    // Each of the three is killed by one of the cases above. The baseline's
-    // guard carried a fourth, recorded as deliberately redundant - and a
-    // predicate nobody can reach is one nobody can prove still works.
+    // Four terms since 0005: spent, the stamp, and expiry are each killed by a
+    // case above; the forward-supersession term (session armed and stuck, the
+    // capability of its current binding) by capability-revocation.test.ts. The
+    // baseline's guard carried a redundant one - and a predicate nobody can
+    // reach is one nobody can prove still works.
     const sql = db.prepare("SELECT sql FROM sqlite_master WHERE name = 'certification_capabilities_retirement_guard'")
       .get() as { sql: string };
     const terms = sql.sql.split(/\bOR\b/).length;
-    expect(terms).toBe(3);
+    expect(terms).toBe(4);
     expect(sql.sql).not.toContain("< OLD.expires_at\n    OR NEW.retired_at >");
   });
 });

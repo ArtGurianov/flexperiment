@@ -155,6 +155,7 @@ const toCapability = (row: Record<string, unknown>): CertificationCapability => 
   nonceDigest: String(row.nonce),
   consumedAt: text(row.consumed_at),
   retiredAt: text(row.retired_at),
+  retirementReason: text(row.retirement_reason) as CertificationCapability["retirementReason"],
 });
 
 export class SqliteCertificationCapabilityStore implements CertificationCapabilityStore {
@@ -179,7 +180,7 @@ export class SqliteCertificationCapabilityStore implements CertificationCapabili
         // Retirement is refused by the schema before expiry, so this is the one
         // moment it is permitted - and the stamp is the database's own clock
         // rather than a caller's, which cannot then claim the future.
-        this.db.prepare(`UPDATE certification_capabilities SET retired_at = ${NOW_SQL} WHERE id = ?`).run(live.id);
+        this.db.prepare(`UPDATE certification_capabilities SET retired_at = ${NOW_SQL}, retirement_reason = 'EXPIRED_REPLACED' WHERE id = ?`).run(live.id);
       }
       this.db.prepare(`INSERT INTO certification_capabilities(id, run_id, deployment_session_id, release_sha,
           max_amount_kopecks, expires_at, nonce, consumed_at, retired_at)
@@ -190,6 +191,22 @@ export class SqliteCertificationCapabilityStore implements CertificationCapabili
       return this.required(capability.id);
     });
     return this.db.inTransaction ? run() : run.immediate();
+  }
+
+  /**
+   * Retires an unspent, live capability early because its session is being
+   * carried forward to a newer release. Only the forward revision's own
+   * transaction calls this, after re-proving the current target is safe to
+   * leave; the schema re-proves the rest - the session armed, stuck and
+   * fenced, and this capability belonging to its current binding - and stamps
+   * the moment with its own clock. A retired capability is refused by every
+   * bearer check, on any runtime, from that write on.
+   */
+  revokeForForwardSupersession(id: string, deploymentSessionId: string): void {
+    const changed = this.db.prepare(`UPDATE certification_capabilities
+      SET retired_at = ${NOW_SQL}, retirement_reason = 'FORWARD_SUPERSESSION'
+      WHERE id = ? AND deployment_session_id = ? AND consumed_at IS NULL AND retired_at IS NULL`).run(id, deploymentSessionId);
+    if (changed.changes !== 1) throw new CertificationCapabilityError("CERTIFICATION_CAPABILITY_NOT_REVOCABLE", id);
   }
 
   get(id: string): CertificationCapability | undefined {

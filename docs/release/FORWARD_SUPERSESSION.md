@@ -196,12 +196,17 @@ runner lock is taken:
    fixture, recorded only `CREATE_OCCURRENCE`, and never published or opened
    it. That fixture is closed and hidden, and there are zero orders, zero
    payments and zero checkout idempotency rows.
-7. **No live capability blocks the new one.** The session holds no unspent
-   capability that has not expired. Such a capability would make the final
-   issuance step fail after production had already moved, so this refuses
-   before any migration or ref movement. A spent capability does not occupy
-   the live slot and does not block. Attempt 5's last capability (`6a259177…`)
-   expires 2026-09-24T07:29:00Z.
+7. **A live capability of the target being left is revoked, not waited out.**
+   It is retired early with reason `FORWARD_SUPERSESSION`
+   (`0005_certification_capability_revocation.sql`), in the same IMMEDIATE
+   transaction that records the revision, after supersession safety is
+   re-proved inside that transaction. So "revoked, but not going forward" is
+   never a durable state. The schema allows that reason only for an unspent
+   capability of the session's current binding, while the session is armed,
+   stuck, fenced and has no rollback reserved. Natural replacement is
+   unchanged (`EXPIRED_REPLACED`, only after expiry). A live capability of
+   any *other* release is refused with `FORWARD_DEPLOY_CAPABILITY_STILL_LIVE`.
+   A TTL is a backstop for an abandoned capability, not a lock on recovery.
 
 A refusal anywhere in admission is an ordinary exit 20 and changes nothing.
 It also stands the session's lease down before it propagates, so the next

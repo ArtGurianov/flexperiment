@@ -585,7 +585,7 @@ describe("the whole path production has to walk, through the real composition ro
     const forwardCandidate = await deriveCandidate(new GitCommitTreeReader(worktree, defaultGit), { sha: forwardSha, releaseClass: "MAINTENANCE_REQUIRED" });
     publish(forwardCandidate);
 
-    let at = new Date(NOW.getTime() + 10 * 60_000);
+    const at = new Date(NOW.getTime() + 10 * 60_000);
     let switched = false;
     const forwardRoot = () => build(launchConfig(), {
       now: () => at,
@@ -603,12 +603,12 @@ describe("the whole path production has to walk, through the real composition ro
       } },
     });
 
-    // Ten minutes in, attempt 5's capability is still live: refused before
-    // anything moves.
+    // An ordinary refusal before any write: an unpublished candidate. Nothing
+    // moves.
     const early = forwardRoot();
     try {
-      await expect(runCutoverCommand(cli(early), ["forward-deploy", sessionId, forwardSha], "runner-c"))
-        .rejects.toThrow("FORWARD_DEPLOY_CAPABILITY_STILL_LIVE");
+      await expect(runCutoverCommand(cli(early), ["forward-deploy", sessionId, "f".repeat(40)], "runner-c"))
+        .rejects.toThrow("RELEASE_CANDIDATE_NOT_PUBLISHED");
       expect(early.sessions.forwardTargets(sessionId)).toEqual([]);
       expect(await early.deployRef.read()).toBe(vps.targetSha);
     } finally { early.close(); }
@@ -621,9 +621,9 @@ describe("the whole path production has to walk, through the real composition ro
       processB.sessions.yieldLease(sessionId, "runner-x");
     } finally { processB.close(); }
 
-    // Past its expiry. The old runtime is still up and beating.
-    at = new Date(NOW.getTime() + 4 * 60 * 60_000 + 1_000);
-    vps.db.prepare("UPDATE runtime_instance_evidence SET heartbeat_at = ?").run(at.toISOString());
+    // Still ten minutes in: attempt 5's capability is live for hours yet, and
+    // is revoked with the revision instead of waited out.
+    const attempt5Capability = (vps.db.prepare("SELECT id FROM certification_capabilities WHERE consumed_at IS NULL AND retired_at IS NULL").get() as { id: string }).id;
     const forward = forwardRoot();
     try {
       expect(await runCutoverCommand(cli(forward), ["forward-deploy", sessionId, forwardSha], "runner-c")).toBe(13);
@@ -634,6 +634,8 @@ describe("the whole path production has to walk, through the real composition ro
       expect(runs.load(revisionRunId(sessionId, 1))).toMatchObject({ releaseSha: forwardSha, phase: "NEW", failure: null });
       const live = vps.db.prepare("SELECT run_id, release_sha FROM certification_capabilities WHERE consumed_at IS NULL AND retired_at IS NULL").all();
       expect(live).toEqual([{ run_id: revisionRunId(sessionId, 1), release_sha: forwardSha }]);
+      expect(vps.db.prepare("SELECT consumed_at, retirement_reason FROM certification_capabilities WHERE id = ?").get(attempt5Capability))
+        .toEqual({ consumed_at: null, retirement_reason: "FORWARD_SUPERSESSION" });
       expect(forward.authority.deploymentGate()).toEqual({ closed: true, deploymentSessionId: sessionId });
     } finally { forward.close(); }
 

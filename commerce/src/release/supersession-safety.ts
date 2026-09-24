@@ -72,9 +72,11 @@ export const supersessionDefect = (db: Database.Database, sessionId: string, rel
  * capability - and finding that out at the last step would be after production
  * had already moved. Refused before anything changes instead.
  */
-export const liveCapabilityBlocking = (db: Database.Database, sessionId: string, now: Date): string | undefined => {
-  const live = db.prepare(`SELECT id, expires_at FROM certification_capabilities
-    WHERE deployment_session_id = ? AND consumed_at IS NULL AND retired_at IS NULL`).get(sessionId) as { id: string; expires_at: string } | undefined;
-  if (live && Date.parse(live.expires_at) > now.getTime()) return `${live.id} expires ${live.expires_at}`;
+export type LiveCapability = { readonly id: string; readonly releaseSha: string; readonly expiresAt: string };
+
+export const liveCapabilityBlocking = (db: Database.Database, sessionId: string, now: Date): LiveCapability | undefined => {
+  const live = db.prepare(`SELECT id, release_sha, expires_at FROM certification_capabilities
+    WHERE deployment_session_id = ? AND consumed_at IS NULL AND retired_at IS NULL`).get(sessionId) as { id: string; release_sha: string; expires_at: string } | undefined;
+  if (live && Date.parse(live.expires_at) > now.getTime()) return { id: live.id, releaseSha: live.release_sha, expiresAt: live.expires_at };
   return undefined;
 };

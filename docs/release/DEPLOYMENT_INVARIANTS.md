@@ -754,7 +754,9 @@ arming (rollback forbidden, sales fenced), `forward-deploy <session>
   read from GitHub at admission and stored with the revision. The prior target
   must be safe to leave: its certification started (at least one run), every
   run terminal, no money in motion,
-  every fixture shut. No unexpired capability may be holding the live slot. A
+  every fixture shut. A live capability of the target being left is revoked as
+  `FORWARD_SUPERSESSION` in the same transaction as the revision, rather than
+  waited out. Only that reason may retire a capability before its expiry. A
   refusal stands the lease down, so the next command need not wait it out.
 - **Appending is a release-authority write**: owner and live lease are proved
   in the same IMMEDIATE transaction as the insert. The table's triggers repeat
