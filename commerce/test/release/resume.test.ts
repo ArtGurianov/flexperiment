@@ -202,4 +202,20 @@ describe("continuing a session that was taken over", () => {
     await expect(orchestrator.continueSession("undecided", "new-runner", "FIX_FORWARD_OR_ROLLBACK"))
       .rejects.toThrow("FIX_FORWARD_DIRECTION_REQUIRED");
   });
+
+  it("will not carry an armed session forward: that is forward-deploy's, never resume's", async () => {
+    const { sessions, advance, log, orchestrator } = abandoned({ at: "armed", observes: topology(target), afterDeploy: true });
+    sessions.observeTopology("armed", "dead-runner", topology(target));
+    sessions.armExternalEffects("armed", "dead-runner");
+    advance(120_000);
+    await orchestrator.resume("armed", "new-runner");
+    const before = log.length;
+
+    await expect(orchestrator.continueSession("armed", "new-runner", "FIX_FORWARD_ONLY"))
+      .rejects.toThrow("FIX_FORWARD_DIRECTION_REQUIRED");
+    // No deploy, no readiness, no capability: finishing an armed cutover again
+    // would issue a second capability for a run that already started.
+    expect(log.slice(before).filter((entry) => !entry.startsWith("observe"))).toEqual([]);
+  });
 });
+

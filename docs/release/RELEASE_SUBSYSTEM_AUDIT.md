@@ -270,6 +270,10 @@ Coolify, not in this file. They are outside this audit.
 
 - #164: `deploy` and `forward-deploy` share `ReleaseAdmissionGuard`, and
   `publish-candidate` accepts only `MAINTENANCE_REQUIRED`.
+- #165: `resume --continue` runs `RETRY_DEPLOY`/`PROVE_READINESS` in the same
+  invocation. Plain `resume` names the next command, yields its lease and exits
+  12. `continueSession` refuses `FIX_FORWARD_ONLY`, which it used to finish a
+  second time.
 
 ## Recommended order
 

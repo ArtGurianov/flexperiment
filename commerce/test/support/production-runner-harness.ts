@@ -27,6 +27,8 @@ export type Harness = {
   readonly calls: string[];
   /** What each descriptor surface currently answers with. */
   readonly serving: Record<"frontend" | "admin", string>;
+  /** What Coolify reports a deployment as, once followed to the end. */
+  setDeploymentStatus(status: string): void;
   /** Runs when Coolify is asked to deploy: what production looks like once it has. */
   onDeploy(effect: (() => void) | undefined): void;
   close(): Promise<void>;
@@ -101,7 +103,7 @@ export const harness = async (root: string): Promise<Harness> => {
 
   const calls: string[] = [];
   const serving: Record<"frontend" | "admin", string> = { frontend: preSha, admin: preSha };
-  const deploymentStatus = "finished";
+  let deploymentStatus = "finished";
   let deployEffect: (() => void) | undefined;
   // The kind Coolify reports for each application, matching configuration.
   const buildPacks: Record<string, string> = Object.fromEntries(APPLICATIONS.map((a) => [a.uuid, a.buildPack]));
@@ -139,6 +141,7 @@ export const harness = async (root: string): Promise<Harness> => {
   return {
     db, preSha, targetSha, calls, serving,
     onDeploy(effect) { deployEffect = effect; },
+    setDeploymentStatus(status) { deploymentStatus = status; },
     config: {
       databasePath,
       lockPath: join(lockDirectory, "release.lock"),

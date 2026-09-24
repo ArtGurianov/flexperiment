@@ -476,21 +476,42 @@ export class ReleaseOrchestrator {
     const session = this.ports.sessions.observeTopology(sessionId, ownerId, observed);
     const plan = planResume(session, observed);
     if (plan.kind !== expected) throw new ReleaseOrchestrationError(`RESUME_PLAN_STALE:${plan.kind}`);
+    // Only the two plans with one obvious next step are continued. Choosing
+    // between rollback and fix-forward is a person's; and an armed session goes
+    // forward only by `forward-deploy` - finishing it again here would issue a
+    // second capability for a run that already started.
+    if (plan.kind === "FIX_FORWARD_OR_ROLLBACK" || plan.kind === "FIX_FORWARD_ONLY") {
+      throw new ReleaseOrchestrationError("FIX_FORWARD_DIRECTION_REQUIRED");
+    }
 
     const full: ReleaseRequest = { ownerId, candidate, sessionId };
-    if (plan.kind === "RETRY_DEPLOY") {
-      try {
-        if (session.mode === "MAINTENANCE_CUTOVER") {
-          if (!session.preDeployTopology) throw new ReleaseOrchestrationError("PRE_DEPLOY_TOPOLOGY_REQUIRED");
-          await this.ports.deployment.assertRecoverable(uniformSha(session.preDeployTopology));
+    // ---- last pre-action boundary --------------------------------------
+    // Everything above refuses before anything moves, and may throw. From here
+    // production may be moved, so every exit is a decision about the session:
+    // an exception escaping to the CLI would read as exit 20, "refused before
+    // mutation", which after a redeploy is a lie. As in runMaintenanceCutover,
+    // anything unexpected is RECOVERY_REQUIRED.
+    try {
+      if (plan.kind === "RETRY_DEPLOY") {
+        try {
+          if (session.mode === "MAINTENANCE_CUTOVER") {
+            if (!session.preDeployTopology) throw new ReleaseOrchestrationError("PRE_DEPLOY_TOPOLOGY_REQUIRED");
+            await this.ports.deployment.assertRecoverable(uniformSha(session.preDeployTopology));
+          }
+          await this.ports.deployment.deploy(binding.targetSha);
+        } catch (error) {
+          // Coolify can take longer than the lease; the classification after it
+          // must not depend on the lease granted before it.
+          this.ports.sessions.holdLease(sessionId, ownerId);
+          return await this.classify(sessionId, ownerId, failureCode(error));
         }
-        await this.ports.deployment.deploy(binding.targetSha);
-      } catch (error) {
-        return this.classify(sessionId, ownerId, failureCode(error));
+        this.ports.sessions.holdLease(sessionId, ownerId);
       }
+      return await (session.mode === "MAINTENANCE_CUTOVER" ? this.finishCutover(sessionId, full) : this.finishRolling(sessionId, full));
+    } catch (error) {
+      try { this.ports.sessions.holdLease(sessionId, ownerId); } catch { /* recovery below says whether it still owns the session */ }
+      return this.recovery(sessionId, ownerId, `RESUME_CONTINUATION_FAILED:${failureCode(error)}`);
     }
-    if (plan.kind === "FIX_FORWARD_OR_ROLLBACK") throw new ReleaseOrchestrationError("FIX_FORWARD_DIRECTION_REQUIRED");
-    return session.mode === "MAINTENANCE_CUTOVER" ? this.finishCutover(sessionId, full) : this.finishRolling(sessionId, full);
   }
 
   /** Convergence is proved by a fresh observation, never by the snapshot taken earlier. */

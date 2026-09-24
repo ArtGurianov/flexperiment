@@ -220,6 +220,28 @@ observation to produce a recovery plan is circular. An unobservable topology is
 reported as `RECOVERY_REQUIRED` with `TOPOLOGY_UNOBSERVABLE`, never as a safe
 abort — absence of observation is not evidence of anything.
 
+`resume <session>` diagnoses a session and continues nothing. The session is
+unsettled, so something still has to be done: it names the next command, stands
+down, and exits 12. `resume <session> --continue` carries out the two plans that
+have one obvious next step, **in the same invocation**, under the lease it just
+took:
+
+- `RETRY_DEPLOY`: nothing moved, so the deploy is fired again;
+- `PROVE_READINESS`: every surface already serves the target, so it picks up at
+  readiness.
+
+A separate follow-up process would have waited out that lease, with production
+fenced. The plan is re-derived from a fresh observation first and refused if
+production has outgrown it (`RESUME_PLAN_STALE`). `FIX_FORWARD_OR_ROLLBACK` and
+`FIX_FORWARD_ONLY` are never continued (`FIX_FORWARD_DIRECTION_REQUIRED`):
+choosing a direction is a person's decision, and an armed session goes forward
+only by `forward-deploy`. Until #165 nothing called the continuation, and it
+would have finished an armed cutover a second time. Once the continuation has started acting, it
+may have moved production. So from then on, any failure, including an
+unreadable topology afterwards or a failed redeploy it cannot even classify,
+is `RECOVERY_REQUIRED` (`RESUME_CONTINUATION_FAILED:…`, exit 12, gate closed).
+It never escapes to the CLI as exit 20.
+
 A session records its candidate when it is acquired, and nothing restates it
 afterwards. An adopted session that omitted it still satisfied the schema —
 either a candidate or an adopted cutover is enough — but certification resolves
@@ -258,7 +280,8 @@ do it, a live holder is never displaced, and a crash still falls back to
 ordinary expiry. It applies wherever that decision is made — a convergence or
 readiness failure arrives through a different path than an unexpected one, and
 both hand back — and to `resume`, which takes a lease to read the state and
-then tells the operator to roll back.
+then tells the operator what to run next, and to `resume --continue` once it
+hands over.
 
 Certification legitimately outlasts a lease term. A real payment, an email and
 a refund have timeouts of thirty, fifteen and thirty minutes, with a
