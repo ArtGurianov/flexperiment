@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import type { ReleaseCandidate } from "../../src/release/candidate";
 import { DeploySessions, InMemoryReleaseAuthorityStore } from "../../src/release/deploy-session";
 import { ForwardDeploy, type ForwardDeployPorts } from "../../src/release/forward-deploy";
+import Database from "better-sqlite3";
+import { migrate } from "../../src/db";
+import { supersessionDefect } from "../../src/release/supersession-safety";
 import { snapshot } from "../support/deploy-snapshot";
 
 /**
@@ -40,6 +43,8 @@ const world = (options: { pointer?: string; serving?: string } = {}) => {
   const published = new Map([forward, later].map((sha) => [sha, candidate(sha)]));
   const state = {
     unsafe: undefined as string | undefined,
+    /** When set, the safety predicate the world answers with instead of `unsafe`. */
+    defect: undefined as ((sessionId: string, releaseSha: string) => string | undefined) | undefined,
     live: undefined as string | undefined,
     unknown: [] as string[],
     admission: async (value: ReleaseCandidate) => { log.push(`admit:${value.sha}`); return { ciEvidence: `ci:${value.sha}` }; },
@@ -51,7 +56,7 @@ const world = (options: { pointer?: string; serving?: string } = {}) => {
     gate: () => store.deploymentGate(),
     candidates: { get: (id) => published.get(id) },
     admission: { admit: (value) => state.admission(value) },
-    supersessionDefect: () => state.unsafe,
+    supersessionDefect: (sessionId, releaseSha) => (state.defect ? state.defect(sessionId, releaseSha) : state.unsafe),
     liveCapability: () => state.live,
     migrate: () => state.migrate(),
     unknownMigrations: () => state.unknown,
@@ -210,6 +215,35 @@ describe("resuming a committed revision", () => {
     w.state.deployFails = false;
     expect((await w.runner.run("armed", forward, "operator")).kind).toBe("AWAITING_OPERATOR");
     expect(w.log).toContain(`redeploy:${forward}`);
+  });
+
+  describe("a revision deployed but never certified - no -r<N> run or capability exists", () => {
+    /** The real predicate, over a database holding no certification for revision 1's release. */
+    const uncertified = () => {
+      const w = committed({ pointer: forward, serving: forward });
+      const db = new Database(":memory:");
+      migrate(db);
+      w.state.defect = (sessionId, releaseSha) => supersessionDefect(db, sessionId, releaseSha);
+      w.state.admission = async (value) => { w.log.push(`admit:${value.sha}`); return { ciEvidence: `ci:${value.sha}` }; };
+      return w;
+    };
+
+    it("refuses a newer candidate: no revision, no migration, no pointer move, and the lease stood down", async () => {
+      const w = uncertified();
+      await expect(w.runner.run("armed", later, "operator")).rejects.toThrow(`FORWARD_DEPLOY_PRIOR_TARGET_NOT_SAFE: CERTIFICATION_NOT_STARTED:${forward}`);
+      expect(w.sessions.forwardTargets("armed").map((target) => target.revision)).toEqual([1]);
+      expect(w.log).not.toContain("migrate");
+      expect(w.pointer()).toBe(forward);
+      expect(() => w.sessions.takeOverExpiredLease("armed", "next-process")).not.toThrow();
+    });
+
+    it("resumes it with the same candidate: readiness and its own capability, never a supersession", async () => {
+      const w = uncertified();
+      expect((await w.runner.run("armed", forward, "operator")).kind).toBe("AWAITING_OPERATOR");
+      expect(w.log.some((entry) => entry.startsWith("admit:"))).toBe(false);
+      expect(w.log).toContain(`finish:${forward}`);
+      expect(w.sessions.forwardTargets("armed").map((target) => target.revision)).toEqual([1]);
+    });
   });
 
   it("a different candidate while the committed revision stands is a NEW revision, admitted in full", async () => {

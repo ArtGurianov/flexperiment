@@ -178,6 +178,10 @@ runner lock is taken:
 6. **The prior target is safe to supersede**
    (`certificationSafeToSupersede`). For every certification run of the
    current binding's target:
+   - there is at least one. A target whose certification was never created
+     (revision N deployed, then a failure before issuance) is refused with
+     `CERTIFICATION_NOT_STARTED`; `forward-deploy` with N's own candidate
+     resumes it instead;
    - the run is terminal: it recorded a failure, or it is `COMPLETE` with its
      completion recorded. A run that never ran is not abandoned;
    - no pending command;

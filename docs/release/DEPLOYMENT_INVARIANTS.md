@@ -752,7 +752,8 @@ arming (rollback forbidden, sales fenced), `forward-deploy <session>
   that is main's tip, re-derived byte for byte, descended from the current
   target, the installed runner's own tree, and green in CI for its exact SHA,
   read from GitHub at admission and stored with the revision. The prior target
-  must be safe to leave: every certification run terminal, no money in motion,
+  must be safe to leave: its certification started (at least one run), every
+  run terminal, no money in motion,
   every fixture shut. No unexpired capability may be holding the live slot. A
   refusal stands the lease down, so the next command need not wait it out.
 - **Appending is a release-authority write**: owner and live lease are proved

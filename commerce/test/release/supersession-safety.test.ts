@@ -167,7 +167,13 @@ describe("certification safe to supersede", () => {
     expect(supersessionDefect(db, SESSION, SHA)).toMatch(/^REFUND_OBLIGATION_OPEN:/);
   });
 
+  it("refuses a release whose certification was never created at all", () => {
+    // Revision N deployed, then a failure before its capability was issued.
+    expect(supersessionDefect(db, SESSION, SHA)).toBe(`CERTIFICATION_NOT_STARTED:${SHA}`);
+  });
+
   it("judges only the runs this session certified this release with", () => {
+    run({}, "mine");
     run({}, "other", OTHER);
     fixture("other", "other-occ", "OPEN", "PUBLISHED");
     expect(supersessionDefect(db, SESSION, SHA)).toBeUndefined();

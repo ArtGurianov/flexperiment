@@ -10,6 +10,10 @@ import type Database from "better-sqlite3";
  * resolving, or captured and not yet refunded. So the answer is read from the
  * state that matters, for every run the session certified this release with:
  *
+ *   - there is at least one. A release whose certification was never even
+ *     created - revision N deployed, then a failure before its capability was
+ *     issued - is less eligible to abandon than one that never ran, not more.
+ *     `forward-deploy` with that same candidate resumes it instead;
  *   - the run is terminal: it recorded a failure, or it is COMPLETE. A run that
  *     simply never ran is not a certification that can be abandoned - leaving
  *     it would supersede a release nobody tried to certify;
@@ -26,6 +30,7 @@ export const supersessionDefect = (db: Database.Database, sessionId: string, rel
   const runs = (db.prepare(`SELECT DISTINCT run_id FROM certification_capabilities
     WHERE deployment_session_id = ? AND release_sha = ? ORDER BY run_id`).all(sessionId, releaseSha) as { run_id: string }[])
     .map((row) => row.run_id);
+  if (runs.length === 0) return `CERTIFICATION_NOT_STARTED:${releaseSha}`;
 
   for (const runId of runs) {
     const run = db.prepare("SELECT pending_command, failure_outcome, phase, completed_at FROM certification_runs WHERE run_id = ?").get(runId) as
