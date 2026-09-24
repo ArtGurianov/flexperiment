@@ -368,6 +368,10 @@ export class ProductionCertificationDriver implements CertificationDriver {
    * again - so without this the session could be finished only by a new
    * commit. The same same-run reissue `-a2` has, under the same rules:
    *
+   *   - only the current run's own capability, which must be the session's
+   *     one live slot: earlier revisions' spent capabilities are history and
+   *     are neither counted nor touched, and a foreign one in the slot is
+   *     refused rather than cleared;
    *   - only an expired capability, and only an unspent one: a spent one is
    *     the identity the checkout, the refund and cleanup continue with;
    *   - only for the session's current binding - revision, release and
@@ -401,14 +405,22 @@ export class ProductionCertificationDriver implements CertificationDriver {
       if (!run) return ineligible("RUN_MISSING");
       if (run.releaseSha !== this.options.candidate.sha) return ineligible("RUN_RELEASE_MISMATCH");
 
-      const held = db.prepare(`SELECT id, run_id, release_sha, consumed_at, expires_at FROM certification_capabilities
-        WHERE deployment_session_id = ? AND retired_at IS NULL`).all(sessionId) as
-        { id: string; run_id: string; release_sha: string; consumed_at: string | null; expires_at: string }[];
+      // The current run's own capability. Earlier revisions' spent ones stay
+      // non-retired - spent and retired are different endings - and a session
+      // carried past a paid, refunded revision has one per such revision; they
+      // are history and play no part here.
+      const held = db.prepare(`SELECT id, consumed_at, expires_at FROM certification_capabilities
+        WHERE deployment_session_id = ? AND run_id = ? AND release_sha = ? AND retired_at IS NULL`)
+        .all(sessionId, run.runId, this.options.candidate.sha) as { id: string; consumed_at: string | null; expires_at: string }[];
       if (held.length !== 1) return ineligible(`CAPABILITY_COUNT_${held.length}`);
       const [capability] = held;
-      if (capability.run_id !== run.runId) return ineligible("CAPABILITY_RUN_MISMATCH");
-      if (capability.release_sha !== this.options.candidate.sha) return ineligible("CAPABILITY_RELEASE_MISMATCH");
       if (capability.consumed_at) return ineligible("CAPABILITY_SPENT");
+      // And the session's one live slot must be exactly it. Issuing retires
+      // whatever expired capability holds that slot; a foreign one there is a
+      // shape no path produces, and is not this call's to clear silently.
+      const slot = db.prepare(`SELECT id FROM certification_capabilities
+        WHERE deployment_session_id = ? AND consumed_at IS NULL AND retired_at IS NULL`).all(sessionId) as { id: string }[];
+      if (slot.length !== 1 || slot[0].id !== capability.id) return ineligible("CAPABILITY_SLOT_FOREIGN");
       if (Date.parse(capability.expires_at) > this.now().getTime()) return { kind: "CAPABILITY_LIVE" };
 
       if (run.failure) return ineligible("RUN_FAILED");

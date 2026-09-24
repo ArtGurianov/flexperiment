@@ -184,4 +184,86 @@ describe("reissuing an expired, unspent revision capability", () => {
     expect(driver().reissueExpiredRevisionCapability(SESSION).kind).toBe("INELIGIBLE");
     expect(snapshot()).toBe(before);
   });
+
+  /**
+   * The lineage the launch actually walked: earlier revisions certified with a
+   * real payment, refunded, and superseded. Their spent capabilities are never
+   * retired - spent and retired are different endings - so they stay
+   * non-retired history beside the current revision's.
+   */
+  const lineage = (paidRevisions: number) => {
+    const shas = ["1", "2", "3", "4"].map((c) => c.repeat(40));
+    db.prepare(`INSERT INTO deploy_sessions(id, owner_id, mode, target_sha, candidate_id, state, rollback_authority,
+        pre_deploy_topology, observed_topology, created_at, lease_expires_at, deployment_gate_closed, mutation_observed)
+      VALUES (?, 'runner', 'MAINTENANCE_CUTOVER', ?, ?, 'RECOVERY_REQUIRED', 'NEW_LINEAGE_ONLY', ?, ?, ?, ?, 1, 1)`).run(
+      SESSION, ORIGINAL, ORIGINAL, topology("b".repeat(40)), topology(ORIGINAL), T0.toISOString(), T0.toISOString());
+    const runs = new SqliteCertificationRunStore(db);
+    const spent: string[] = [];
+    let from = ORIGINAL;
+    for (let revision = 1; revision <= paidRevisions + 1; revision += 1) {
+      const current = revision === paidRevisions + 1;
+      const sha = current ? SHA : shas[revision - 1];
+      db.prepare(`INSERT INTO deploy_session_forward_targets(session_id, revision, from_sha, target_sha, candidate_id, ci_evidence)
+        VALUES (?, ?, ?, ?, ?, '{}')`).run(SESSION, revision, from, sha, sha);
+      runs.create({
+        runId: revisionRunId(SESSION, revision), revision: 1, releaseSha: sha, phase: current ? "NEW" : "PAYMENT_PROVEN",
+        direction: current ? "NORMAL" : "CATALOGUE_CLEAN", startedAt: T0.toISOString(),
+        ...(current ? {} : { orderId: `order-${revision}`, paymentId: `payment-${revision}`, failure: { outcome: "INCOMPLETE", code: "CERTIFICATION_EMAIL_TIMEOUT:TICKET", recordedAt: T0.toISOString() } }),
+      });
+      const { capability } = issueCapability(new SqliteCertificationCapabilityStore(db),
+        { runId: revisionRunId(SESSION, revision), deploymentSessionId: SESSION, releaseSha: sha, maxAmountKopecks: 100, ttlMs: TTL }, T0, testSecret());
+      if (!current) {
+        new SqliteCertificationCapabilityStore(db).spend(capability.id, new Date(T0.getTime() + 60_000));
+        spent.push(capability.id);
+      }
+      from = sha;
+    }
+    return { spent, current: revisionRunId(SESSION, paidRevisions + 1) };
+  };
+
+  for (const paid of [1, 2]) {
+    it(`reissues the current revision's capability beside ${paid} paid, spent revision${paid > 1 ? "s" : ""}`, () => {
+      const { spent, current } = lineage(paid);
+      const history = () => db.prepare(`SELECT id, consumed_at, retired_at, retirement_reason FROM certification_capabilities
+        WHERE id IN (${spent.map(() => "?").join(", ")}) ORDER BY id`).all(...spent);
+      const spentBefore = JSON.stringify(history());
+      const old = live()[0];
+      afterExpiry();
+
+      expect(driver().reissueExpiredRevisionCapability(SESSION)).toEqual({ kind: "REISSUED" });
+      // The paid history is untouched...
+      expect(JSON.stringify(history())).toBe(spentBefore);
+      // ...the current revision's expired capability is replaced...
+      expect(capabilities().find((row) => row.id === old.id)).toMatchObject({ retirement_reason: "EXPIRED_REPLACED" });
+      // ...and the one unspent, unretired slot is the replacement, on the current run.
+      expect(live()).toEqual([expect.objectContaining({ run_id: current, release_sha: SHA })]);
+      expect(live()[0].id).not.toBe(old.id);
+    });
+  }
+
+  it("will not quietly replace a foreign capability that holds the session's slot", () => {
+    // Revision 1's capability, unspent and expired, still holds the session's
+    // one live slot, and the current revision's run has none of its own - a
+    // shape no path produces. issueCapability would retire the foreign one
+    // silently; the reissue refuses and writes nothing.
+    db.prepare(`INSERT INTO deploy_sessions(id, owner_id, mode, target_sha, candidate_id, state, rollback_authority,
+        pre_deploy_topology, observed_topology, created_at, lease_expires_at, deployment_gate_closed, mutation_observed)
+      VALUES (?, 'runner', 'MAINTENANCE_CUTOVER', ?, ?, 'RECOVERY_REQUIRED', 'NEW_LINEAGE_ONLY', ?, ?, ?, ?, 1, 1)`).run(
+      SESSION, ORIGINAL, ORIGINAL, topology("b".repeat(40)), topology(ORIGINAL), T0.toISOString(), T0.toISOString());
+    const previous = "1".repeat(40);
+    const target = db.prepare(`INSERT INTO deploy_session_forward_targets(session_id, revision, from_sha, target_sha, candidate_id, ci_evidence)
+      VALUES (?, ?, ?, ?, ?, '{}')`);
+    target.run(SESSION, 1, ORIGINAL, previous, previous);
+    target.run(SESSION, 2, previous, SHA, SHA);
+    const runs = new SqliteCertificationRunStore(db);
+    runs.create({ runId: revisionRunId(SESSION, 1), revision: 1, releaseSha: previous, phase: "NEW", direction: "NORMAL", startedAt: T0.toISOString() });
+    runs.create({ runId: revisionRunId(SESSION, 2), revision: 1, releaseSha: SHA, phase: "NEW", direction: "NORMAL", startedAt: T0.toISOString() });
+    issueCapability(new SqliteCertificationCapabilityStore(db),
+      { runId: revisionRunId(SESSION, 1), deploymentSessionId: SESSION, releaseSha: previous, maxAmountKopecks: 100, ttlMs: TTL }, T0, testSecret());
+    afterExpiry();
+    const before = snapshot();
+    expect(driver().reissueExpiredRevisionCapability(SESSION)).toEqual({ kind: "INELIGIBLE", reason: "CAPABILITY_COUNT_0" });
+    expect(snapshot()).toBe(before);
+  });
 });
+

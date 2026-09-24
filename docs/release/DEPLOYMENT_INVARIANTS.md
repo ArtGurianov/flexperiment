@@ -638,7 +638,11 @@ arming (rollback forbidden, sales fenced), `forward-deploy <session>
   the existing run, so the session could be finished only by a new commit.
   `certify` replaces it first (`reissueExpiredRevisionCapability`), under the
   rules `-a2` already has. It acts only on an expired, unspent capability of the
-  current binding's run, and only while the session is armed, stuck and fenced
+  current binding's run, which must also be the session's one live slot.
+  Earlier revisions' spent capabilities are never retired, because spent and
+  retired are different endings. A session carried past paid, refunded
+  revisions therefore keeps one per revision, and they are neither counted nor
+  touched. It acts only while the session is armed, stuck and fenced
   and the run has reached no checkout: no payment evidence, no order, no command
   in flight, no failure. The old capability is retired (`EXPIRED_REPLACED`, by
   the database's own clock) and the new one issued in one IMMEDIATE
