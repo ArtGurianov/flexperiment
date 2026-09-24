@@ -33,7 +33,7 @@ export const deriveCandidate = async (
   input: { readonly sha: string; readonly releaseClass: ReleaseClass; readonly mainRef?: string },
 ): Promise<ReleaseCandidate> => {
   if (!SHA.test(input.sha)) throw new CandidateStoreError("RELEASE_CANDIDATE_SHA_INVALID", input.sha);
-  if (input.releaseClass === "LAUNCH_BASELINE") throw new CandidateStoreError("LAUNCH_BASELINE_RETIRED", input.sha);
+  if ((input.releaseClass as string) === "LAUNCH_BASELINE") throw new CandidateStoreError("LAUNCH_BASELINE_RETIRED", input.sha);
   if (!RELEASE_CLASSES.includes(input.releaseClass)) throw new CandidateStoreError("RELEASE_CANDIDATE_CLASS_INVALID", String(input.releaseClass));
 
   const mainRef = input.mainRef ?? "origin/main";

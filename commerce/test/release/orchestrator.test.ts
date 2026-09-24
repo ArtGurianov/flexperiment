@@ -12,7 +12,7 @@ const now = new Date("2026-09-20T00:00:00.000Z");
 const versions = ["0001_launch_baseline.sql"];
 const topology = (sha: string): PreDeploySnapshot => ({ runtime: { frontend: sha, admin: sha, commerce: sha, worker: sha }, controlPlane: { productionDeployRefSha: sha } });
 
-const candidateFor = (releaseClass: "LAUNCH_BASELINE" | "ROLLING_COMPATIBLE" | "MAINTENANCE_REQUIRED") => ({
+const candidateFor = (releaseClass: "ROLLING_COMPATIBLE" | "MAINTENANCE_REQUIRED") => ({
   id: `candidate-${releaseClass}`, sha: target, releaseClass, expectation,
 });
 
@@ -56,7 +56,7 @@ const harness = (options: {
     evidence: { async read() { log.push("readiness"); return options.evidence ?? admittedEvidence(); } },
     deployment: {
       async assertRecoverable(sha) { log.push(`recoverable:${sha}`); if (options.recoverableFails) throw new Error(options.recoverableFails); },
-      async assertPredecessorRetained(sha) { log.push(`retained:${sha}`); if (options.retainedFails) throw new Error(options.retainedFails); },
+      async assertRecoverySourceAvailable(sha) { log.push(`retained:${sha}`); if (options.retainedFails) throw new Error(options.retainedFails); },
       async deploy(sha) { log.push(`deploy:${sha}`); if (options.deployFails) throw new Error(options.deployFails); },
     },
     certification: {
@@ -118,12 +118,12 @@ describe("maintenance cutover ordering", () => {
   it("never issues a capability or arms when the predecessor disappears after target convergence", async () => {
     const { log, store, orchestrator } = harness({
       topologies: [topology(old), topology(target)],
-      retainedFails: "COMPOSE_ROLLBACK_PREDECESSOR_IMAGE_MISSING",
+      retainedFails: "DEPLOY_REF_TARGET_INVALID",
     });
 
     const outcome = await orchestrator.runMaintenanceCutover(cutoverRequest);
 
-    expect(outcome).toMatchObject({ kind: "RECOVERY_REQUIRED", code: "PREDECESSOR_IMAGE_RECHECK_FAILED:COMPOSE_ROLLBACK_PREDECESSOR_IMAGE_MISSING" });
+    expect(outcome).toMatchObject({ kind: "RECOVERY_REQUIRED", code: "RECOVERY_SOURCE_RECHECK_FAILED:DEPLOY_REF_TARGET_INVALID" });
     expect(log).toEqual([`observe:${old}`, `recoverable:${old}`, `deploy:${target}`, `observe:${target}`, `retained:${old}`]);
     expect(log).not.toContain("readiness");
     expect(log).not.toContain("capability-issued");
@@ -183,14 +183,6 @@ describe("maintenance cutover ordering", () => {
       expect(outcome.session.rollbackAuthority).toBe("NEW_LINEAGE_ONLY");
       expect(log).toEqual(expect.arrayContaining(["preflight", "certify"]));
     });
-  });
-
-  it("refuses a launch candidate: the launch is history, never a release", async () => {
-    const { log, store, orchestrator } = harness({ topologies: [topology(old), topology(target)] });
-
-    await expect(orchestrator.runMaintenanceCutover({ ownerId: "owner", candidate: candidateFor("LAUNCH_BASELINE") })).rejects.toThrow("LAUNCH_BASELINE_RETIRED");
-    expect(log).toEqual([]);
-    expect(store.deploymentGate().closed).toBe(false);
   });
 
   it("safe-aborts and reopens sales when the build fails before any surface moves", async () => {
@@ -265,12 +257,13 @@ describe("rolling release ordering", () => {
     expect(outcome.kind).toBe("SUCCEEDED");
     expect(outcome.session).toMatchObject({ state: "SUCCEEDED", rollbackAuthority: "OLD_LINEAGE_ALLOWED" });
     expect(log).toEqual([`observe:${old}`, `deploy:${target}`, `observe:${target}`, "readiness"]);
+    expect(store.deploymentGate().closed).toBe(false);
   });
 
   it("leaves the sales fence untouched when a rolling deploy fails", async () => {
     // The rolling path never closed the gate, so it has no business opening it
     // either - the shared failure classifier must not reopen on its behalf.
-    const { log, store, orchestrator } = harness({ topologies: [topology(old), topology(old)], deployFails: "IMAGE_BUILD_FAILED" });
+    const { store, orchestrator } = harness({ topologies: [topology(old), topology(old)], deployFails: "IMAGE_BUILD_FAILED" });
     const outcome = await orchestrator.runRolling(rollingRequest);
 
     expect(outcome).toMatchObject({ kind: "SAFE_ABORTED", code: "IMAGE_BUILD_FAILED" });

@@ -12,7 +12,7 @@ const expectation = {
   schemaInventory: schemaInventoryExpectation(versions),
   legalVersion: "2026-09-20.1", legalManifestSha256: "e".repeat(64),
 };
-const candidate = { id: "candidate-1", sha: target, releaseClass: "LAUNCH_BASELINE" as const, expectation };
+const candidate = { id: "candidate-1", sha: target, releaseClass: "MAINTENANCE_REQUIRED" as const, expectation };
 
 /** A dead runner leaves a session mid-flight; a new one picks it up later. */
 const abandoned = (options: { at: string; observes: PreDeploySnapshot | PreDeploySnapshot[]; afterDeploy?: boolean; deploys?: boolean }) => {
@@ -39,7 +39,7 @@ const abandoned = (options: { at: string; observes: PreDeploySnapshot | PreDeplo
     },
     deployment: {
       async assertRecoverable() { log.push("recoverable"); },
-      async assertPredecessorRetained() { log.push("retained"); },
+      async assertRecoverySourceAvailable() { log.push("retained"); },
       async deploy() {
         log.push("deploy");
         if (!options.deploys) throw new Error("the dead runner already tried");

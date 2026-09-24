@@ -151,7 +151,7 @@ const production = (options: { withhold?: readonly string[]; emailMs?: number } 
   const versions = (db.prepare("SELECT version FROM schema_migrations ORDER BY version").all() as { version: string }[]).map((row) => row.version);
   const legal = activeLegalBinding(db)!;
   const candidate: ReleaseCandidate = {
-    id: SHA, sha: SHA, releaseClass: "LAUNCH_BASELINE",
+    id: SHA, sha: SHA, releaseClass: "MAINTENANCE_REQUIRED",
     expectation: { schemaInventory: schemaInventoryExpectation(versions), legalVersion: legal.version, legalManifestSha256: legal.manifestSha256 },
   };
 

@@ -84,15 +84,12 @@ export class CoolifyDeploymentDriver implements DeploymentDriver {
   }
 
   /**
-   * Target convergence is not permission to arm. Compose cleanup can run
-   * during that deploy, so prove the frozen predecessor remains on both local
-   * repositories immediately before certification is allowed to continue.
+   * Target convergence is not permission to arm. The window between
+   * convergence and the first external effect is when a recovery source can
+   * quietly stop existing, so it is re-proved immediately before arming.
+   * Recovery redeploys the predecessor commit, so the commit is the source.
    */
-  async assertPredecessorRetained(sha: string): Promise<void> {
-    // Re-proved immediately before arming, for the same reason as before: the
-    // window between convergence and the first external effect is when a
-    // recovery source can quietly stop existing. Under the redeploy contract
-    // that source is the commit, so that is what is re-proved.
+  async assertRecoverySourceAvailable(sha: string): Promise<void> {
     await this.options.refs.assertResolvable(sha);
   }
 

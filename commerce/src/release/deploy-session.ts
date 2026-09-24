@@ -44,33 +44,13 @@ export type DeploySession = {
   readonly preDeployTopology?: PreDeploySnapshot;
   readonly observedTopology?: DeploymentObservation;
   /**
-   * The cutover envelope this session adopted, when it was created across a
-   * lineage boundary. Unique per session: the filesystem envelope and the
-   * database row cannot share a transaction, so a retry that finds a session
-   * already carrying this id finishes consuming the envelope instead of
-   * refusing as a duplicate.
+   * The launch session: the one that adopted a prepared cutover, recorded in
+   * `adopted_cutover_id`. History only - nothing creates one any more, and the
+   * launch's other columns (envelope digest, predecessor archive, bootstrap
+   * rollback) stay in the schema unread. All a caller needs to know is that
+   * this session cannot be rolled back.
    */
-  readonly adoptedCutoverId?: string;
-  /**
-   * The predecessor archive this session was handed, copied out of the envelope
-   * at adoption. Without it, a retry that finds the session already committed
-   * has nothing to check the leftover envelope against, and a file that merely
-   * reused a cutover id would read as the same handoff.
-   */
-  readonly predecessorDatabaseRef?: string;
-  readonly predecessorDatabaseSha256?: string;
-  /** Digest of every immutable field of the adopted envelope; see canonicalEnvelopeSha256. */
-  readonly adoptedEnvelopeSha256?: string;
-  /**
-   * Set once a bootstrap reverse handoff is reserved, and never cleared.
-   *
-   * Preparing one archives the successor and then loses the ability to consult
-   * this database at all, so the direction of recovery has to be chosen here,
-   * atomically, before that happens. Without it another runner could arm
-   * external effects - and take a real payment - while a rollback already
-   * committed to restoring the predecessor.
-   */
-  readonly bootstrapRollbackId?: string;
+  readonly launch?: true;
   /**
    * The candidate this session deploys. Recorded at acquisition so a later call
    * cannot restate the release's identity: a resumed session continues the
@@ -95,7 +75,6 @@ export type DeploySessionPatch = Partial<Pick<DeploySession, "ownerId" | "state"
 export interface ReleaseAuthorityStore {
   get(id: string): DeploySession | undefined;
   /** The session that adopted this cutover, if any. Makes handoff retry idempotent. */
-  findByAdoptedCutover(cutoverId: string): DeploySession | undefined;
   /**
    * Creates the session. Whether the gate closes follows from the session's own
    * mode, never from a caller's flag: a maintenance cutover that did not close
@@ -159,7 +138,6 @@ export const assertSupersedable = (session: DeploySession, gateOwnerSessionId: s
   if (session.state !== "RECOVERY_REQUIRED") throw new Error(`FORWARD_TARGET_SESSION_STATE:${session.state}`);
   if (session.rollbackAuthority !== "NEW_LINEAGE_ONLY") throw new Error("FORWARD_TARGET_SESSION_NOT_ARMED");
   if (gateOwnerSessionId !== session.id) throw new Error("DEPLOYMENT_GATE_NOT_OWNED");
-  if (session.bootstrapRollbackId) throw new Error("BOOTSTRAP_ROLLBACK_RESERVED");
 };
 
 /** The next revision after `current`, validated the way the schema will. */
@@ -185,18 +163,6 @@ export const runtimeIsTarget = (runtime: RuntimeTopology, targetSha: string): bo
 export const snapshotEquals = (left: PreDeploySnapshot, right: PreDeploySnapshot): boolean =>
   runtimeEquals(left.runtime, right.runtime)
   && left.controlPlane.productionDeployRefSha === right.controlPlane.productionDeployRefSha;
-
-/**
- * The snapshot's fields in a fixed order, for the digests that identify an
- * envelope. `Object.values` would follow insertion order, which differs between
- * a literal built here and the same snapshot parsed back out of its own JSON -
- * so a replay could recompute a different digest for an identical envelope and
- * refuse the handoff it was written to prove.
- */
-export const snapshotDigestParts = (snapshot: PreDeploySnapshot): readonly string[] => [
-  ...surfaces.map((surface) => snapshot.runtime[surface]),
-  snapshot.controlPlane.productionDeployRefSha,
-];
 
 export const assertSnapshot = (snapshot: PreDeploySnapshot): void => {
   // A snapshot carrying only four surfaces is the shape this predates. It is
@@ -229,9 +195,6 @@ export class InMemoryReleaseAuthorityStore implements ReleaseAuthorityStore {
   acquire(session: DeploySession): DeploySession {
     if (this.#sessions.has(session.id)) throw new Error("DEPLOY_SESSION_ALREADY_EXISTS");
     if (this.#activeSessionId) throw new Error("DEPLOY_SESSION_ALREADY_ACTIVE");
-    if (session.adoptedCutoverId && this.findByAdoptedCutover(session.adoptedCutoverId)) {
-      throw new Error("CUTOVER_ALREADY_ADOPTED");
-    }
     if (!session.preDeployTopology) throw new Error("PRE_DEPLOY_TOPOLOGY_REQUIRED");
     const expected = session.mode === "MAINTENANCE_CUTOVER" ? "FENCED" : "DEPLOYING";
     if (session.state !== expected) throw new Error("DEPLOY_SESSION_INITIAL_STATE_INVALID");
@@ -242,11 +205,6 @@ export class InMemoryReleaseAuthorityStore implements ReleaseAuthorityStore {
   }
 
   get(id: string): DeploySession | undefined { return this.#sessions.get(id); }
-
-  findByAdoptedCutover(cutoverId: string): DeploySession | undefined {
-    for (const session of this.#sessions.values()) if (session.adoptedCutoverId === cutoverId) return session;
-    return undefined;
-  }
 
   settle(id: string, ownerId: string, now: Date, from: readonly DeploySessionState[], state: TerminalState): DeploySession {
     // Existence first: an id nobody ever acquired is not an inactive session,
@@ -483,7 +441,6 @@ export class DeploySessions {
     // The reverse handoff may already have archived the successor and be about
     // to replace this database. Letting a payment through now would make the
     // predecessor archive an untrue account of what happened.
-    if (session.bootstrapRollbackId) throw new Error("BOOTSTRAP_ROLLBACK_RESERVED");
     // Readiness stays the orchestrator's job, but arming certification on a
     // knowingly partial deployment is the one misuse worth making impossible
     // here rather than trusting a call order. The target is the current
@@ -582,7 +539,6 @@ export class DeploySessions {
    */
   completeTarget(id: string, ownerId: string, observation: DeploymentObservation): DeploySession {
     const observed = this.observeTopology(id, ownerId, observation);
-    if (observed.bootstrapRollbackId) throw new Error("BOOTSTRAP_ROLLBACK_RESERVED");
     // Settled only against what the session is deploying now.
     if (!runtimeIsTarget(observation.runtime, this.binding(id).targetSha)) throw new Error("TARGET_TOPOLOGY_NOT_CONVERGED");
     if (observed.mode === "MAINTENANCE_CUTOVER" && observed.rollbackAuthority !== "NEW_LINEAGE_ONLY") {

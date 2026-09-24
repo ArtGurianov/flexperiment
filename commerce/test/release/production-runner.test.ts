@@ -53,7 +53,7 @@ describe("the production composition root", () => {
     const release = buildProductionRelease(vps.config, { now });
     try {
       const candidate = {
-        id: vps.targetSha, sha: vps.targetSha, releaseClass: "LAUNCH_BASELINE" as const,
+        id: vps.targetSha, sha: vps.targetSha, releaseClass: "MAINTENANCE_REQUIRED" as const,
         expectation: { schemaInventory: "inventory-sha256:" + "0".repeat(64), legalVersion: "v", legalManifestSha256: "e".repeat(64) },
       };
       const driver = release.certificationFor(candidate);

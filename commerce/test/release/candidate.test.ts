@@ -17,14 +17,8 @@ describe("release candidate", () => {
     expect(deployMode(candidate("MAINTENANCE_REQUIRED"))).toBe("MAINTENANCE_CUTOVER");
   });
 
-  it("never lets the launch baseline be rolling", () => {
-    // It replaces the database underneath the running revision, so there is no
-    // interval during which both lineages are servable.
-    expect(deployMode(candidate("LAUNCH_BASELINE"))).toBe("MAINTENANCE_CUTOVER");
-  });
-
   it("derives readiness source identity from the candidate SHA", () => {
-    const release = candidate("LAUNCH_BASELINE");
+    const release = candidate("MAINTENANCE_REQUIRED");
     expect(release.expectation).not.toHaveProperty("sourceCommit");
     expect(readinessExpectation(release)).toEqual({ ...release.expectation, sourceCommit: release.sha });
   });

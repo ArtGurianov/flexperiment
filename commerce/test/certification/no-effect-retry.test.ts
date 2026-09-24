@@ -112,7 +112,7 @@ beforeEach(() => {
   clock = new Date(T0.getTime() + 10 * 60_000);
   const versions = (db.prepare("SELECT version FROM schema_migrations ORDER BY version").all() as { version: string }[]).map((row) => row.version);
   candidate = {
-    id: SHA, sha: SHA, releaseClass: "LAUNCH_BASELINE",
+    id: SHA, sha: SHA, releaseClass: "MAINTENANCE_REQUIRED",
     expectation: { schemaInventory: schemaInventoryExpectation(versions), legalVersion: LEGAL.version, legalManifestSha256: LEGAL.manifestSha256 },
   };
   scopePath = join(mkdtempSync(join(tmpdir(), "certification-scope-")), "occurrence.json");

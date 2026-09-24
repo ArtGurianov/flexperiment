@@ -26,17 +26,15 @@ type Row = {
   state: string; rollback_authority: string; mutation_observed: number; deployment_gate_closed: number;
   created_at: string; lease_expires_at: string;
   pre_deploy_topology: string; observed_topology: string | null;
-  adopted_cutover_id: string | null; adopted_envelope_sha256: string | null;
-  predecessor_database_ref: string | null; predecessor_database_sha256: string | null;
-  bootstrap_rollback_id: string | null;
+  adopted_cutover_id: string | null;
 };
 
-const COLUMNS = `id, owner_id, mode, target_sha, candidate_id, state, rollback_authority,
+/** What a session is created with. The launch's adoption columns are never written again. */
+const INSERT_COLUMNS = `id, owner_id, mode, target_sha, candidate_id, state, rollback_authority,
   mutation_observed, deployment_gate_closed, created_at, lease_expires_at,
-  pre_deploy_topology, observed_topology, adopted_cutover_id, adopted_envelope_sha256,
-  predecessor_database_ref, predecessor_database_sha256, bootstrap_rollback_id`;
-
-const optional = <T>(value: T | null | undefined): T | undefined => (value === null ? undefined : value);
+  pre_deploy_topology, observed_topology`;
+/** What a session is read with: `adopted_cutover_id` only to recognise the launch session. */
+const COLUMNS = `${INSERT_COLUMNS}, adopted_cutover_id`;
 
 /**
  * The column is still called `pre_deploy_topology`, and it now holds both
@@ -69,11 +67,7 @@ const toSession = (row: Row): DeploySession => ({
   leaseExpiresAt: row.lease_expires_at,
   preDeployTopology: readSnapshot(row.pre_deploy_topology),
   observedTopology: row.observed_topology ? readSnapshot(row.observed_topology) : undefined,
-  adoptedCutoverId: optional(row.adopted_cutover_id),
-  adoptedEnvelopeSha256: optional(row.adopted_envelope_sha256),
-  predecessorDatabaseRef: optional(row.predecessor_database_ref),
-  predecessorDatabaseSha256: optional(row.predecessor_database_sha256),
-  bootstrapRollbackId: optional(row.bootstrap_rollback_id),
+  ...(row.adopted_cutover_id ? { launch: true as const } : {}),
 });
 
 export class SqliteReleaseAuthorityStore implements ReleaseAuthorityStore {
@@ -84,33 +78,20 @@ export class SqliteReleaseAuthorityStore implements ReleaseAuthorityStore {
     const expected = session.mode === "MAINTENANCE_CUTOVER" ? "FENCED" : "DEPLOYING";
     if (session.state !== expected) throw new Error("DEPLOY_SESSION_INITIAL_STATE_INVALID");
     if (this.get(session.id)) throw new Error("DEPLOY_SESSION_ALREADY_EXISTS");
-    if (session.adoptedCutoverId && this.findByAdoptedCutover(session.adoptedCutoverId)) {
-      throw new Error("CUTOVER_ALREADY_ADOPTED");
-    }
     try {
-      this.db.prepare(`INSERT INTO deploy_sessions(${COLUMNS}) VALUES (
-        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      this.db.prepare(`INSERT INTO deploy_sessions(${INSERT_COLUMNS}) VALUES (
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
         session.id, session.ownerId, session.mode, session.targetSha, session.candidateId,
         session.state, session.rollbackAuthority, session.mutationObserved ? 1 : 0,
         // The gate follows from the mode, not from a caller's flag.
         session.mode === "MAINTENANCE_CUTOVER" ? 1 : 0,
         session.createdAt, session.leaseExpiresAt,
         JSON.stringify(session.preDeployTopology), session.observedTopology ? JSON.stringify(session.observedTopology) : null,
-        session.adoptedCutoverId ?? null, session.adoptedEnvelopeSha256 ?? null,
-        session.predecessorDatabaseRef ?? null, session.predecessorDatabaseSha256 ?? null,
-        session.bootstrapRollbackId ?? null,
       );
     } catch (error) {
       // The partial unique index is the authority on "one live session", not a
       // check this adapter performed a moment earlier.
       if (String(error).includes("deploy_sessions_single_non_terminal_idx")) throw new Error("DEPLOY_SESSION_ALREADY_ACTIVE");
-      // Matched on the constraint, not on a column name: the adoption CHECK
-      // also mentions `adopted_cutover_id`, and reporting a malformed handoff
-      // as an already-adopted one sends the caller looking for a session that
-      // does not exist.
-      if (String(error).includes("UNIQUE constraint failed: deploy_sessions.adopted_cutover_id")) {
-        throw new Error("CUTOVER_ALREADY_ADOPTED");
-      }
       throw error;
     }
     return this.required(session.id);
@@ -118,11 +99,6 @@ export class SqliteReleaseAuthorityStore implements ReleaseAuthorityStore {
 
   get(id: string): DeploySession | undefined {
     const row = this.db.prepare(`SELECT ${COLUMNS} FROM deploy_sessions WHERE id = ?`).get(id) as Row | undefined;
-    return row ? toSession(row) : undefined;
-  }
-
-  findByAdoptedCutover(cutoverId: string): DeploySession | undefined {
-    const row = this.db.prepare(`SELECT ${COLUMNS} FROM deploy_sessions WHERE adopted_cutover_id = ?`).get(cutoverId) as Row | undefined;
     return row ? toSession(row) : undefined;
   }
 
@@ -239,7 +215,7 @@ export class SqliteReleaseAuthorityStore implements ReleaseAuthorityStore {
       WHERE id = ? AND owner_id = ? AND lease_expires_at > ? AND state IN (${placeholders})`)
       .run(...values, id, ownerId, now.toISOString(), ...from);
 
-    if (changed.changes !== 1) this.explainRefusal(id, ownerId, now, from);
+    if (changed.changes !== 1) this.explainRefusal(id, ownerId, now);
     return this.required(id);
   }
 
@@ -248,7 +224,7 @@ export class SqliteReleaseAuthorityStore implements ReleaseAuthorityStore {
    * the row afterwards, which is exactly why it may not be the authority: it
    * says why this attempt lost, and the loss itself was decided in SQL.
    */
-  private explainRefusal(id: string, ownerId: string, now: Date, from: readonly DeploySessionState[]): never {
+  private explainRefusal(id: string, ownerId: string, now: Date): never {
     const session = this.get(id);
     if (!session) throw new Error("DEPLOY_SESSION_NOT_FOUND");
     if (session.ownerId !== ownerId) throw new Error("DEPLOY_SESSION_NOT_OWNER");
