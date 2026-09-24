@@ -104,7 +104,6 @@ const convergeOnTarget = () => {
   vps.db.prepare("DELETE FROM runtime_instance_evidence WHERE source_commit = ?").run(vps.preSha);
   vps.serving.frontend = vps.targetSha;
   vps.serving.admin = vps.targetSha;
-  vps.setApplicationStatus("running:healthy");
   recordInstance(vps.db, "COMMERCE", "api-1", vps.targetSha, NOW);
   recordInstance(vps.db, "WORKER", "worker-1", vps.targetSha, NOW, NOW.toISOString());
 };

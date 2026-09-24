@@ -115,8 +115,6 @@ describe("what the runner refuses to start without", () => {
     CERTIFICATION_CHECKOUT_BODY: vps.config.certification.checkoutBodyPath,
     COOLIFY_API_URL: vps.config.coolify.apiUrl,
     COOLIFY_TOKEN: "test-token",
-    FLEXPERIMENT_COMMERCE_IMAGE_REPOSITORY: vps.config.composeRepositories.commerce,
-    FLEXPERIMENT_COMMERCE_WORKER_IMAGE_REPOSITORY: vps.config.composeRepositories["commerce-worker"],
     COOLIFY_APPLICATION_FRONTEND: "app-frontend",
     COOLIFY_APPLICATION_ADMIN: "app-admin",
     COOLIFY_APPLICATION_COMMERCE: "app-commerce",

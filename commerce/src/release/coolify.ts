@@ -14,16 +14,7 @@ export type CoolifyApplication = {
   readonly buildPack: string;
   readonly gitBranch: string;
   readonly gitCommitSha: string | null;
-  /** Configured per-application retention, not an observation of current tags. */
-  readonly dockerImagesToKeep: number | null;
 };
-
-export type CoolifyServerDockerCleanup = {
-  readonly applicationImageRetentionDisabled: boolean;
-};
-
-export type CoolifyServer = { readonly uuid: string };
-export type CoolifyServerResource = { readonly id: string; readonly uuid: string; readonly type: string };
 
 export type CoolifyDeployment = {
   readonly uuid: string;
@@ -74,30 +65,13 @@ export class CoolifyClient {
 
   async application(uuid: string): Promise<CoolifyApplication> {
     const body = this.requiredObject(await this.request("GET", `/applications/${encodeURIComponent(uuid)}`), "GET", `/applications/${encodeURIComponent(uuid)}`);
-    const settings = object(body.settings);
-    const retention = settings?.docker_images_to_keep;
     return {
       uuid: String(body.uuid ?? uuid),
       name: String(body.name ?? ""),
       buildPack: String(body.build_pack ?? ""),
       gitBranch: String(body.git_branch ?? ""),
       gitCommitSha: body.git_commit_sha === null || body.git_commit_sha === undefined ? null : String(body.git_commit_sha),
-      dockerImagesToKeep: typeof retention === "number" && Number.isInteger(retention) && retention >= 0 ? retention : null,
     };
-  }
-
-  /**
-   * The server policy can turn application image retention off globally even
-   * when the application asks Coolify to keep images. Read both policies: a
-   * retained tag count is neither of them and cannot prove the next deploy
-   * will leave a predecessor behind.
-   */
-  async serverDockerCleanup(uuid: string): Promise<CoolifyServerDockerCleanup> {
-    const body = this.requiredObject(await this.request("GET", `/servers/${encodeURIComponent(uuid)}/docker-cleanup`), "GET", `/servers/${encodeURIComponent(uuid)}/docker-cleanup`);
-    if (typeof body.disable_application_image_retention !== "boolean") {
-      throw new CoolifyError("COOLIFY_SERVER_CLEANUP_MALFORMED", uuid);
-    }
-    return { applicationImageRetentionDisabled: body.disable_application_image_retention };
   }
 
   /** Every nonterminal queue entry is work another controller still owns. */
@@ -115,101 +89,7 @@ export class CoolifyClient {
     return active;
   }
 
-  /**
-   * The application endpoint hides internal IDs and destination details.
-   * Resolve both through the server resource API rather than accepting either
-   * as independent operator configuration.
-   */
-  async servers(): Promise<readonly CoolifyServer[]> {
-    const body = await this.request("GET", "/servers");
-    if (!Array.isArray(body)) throw new CoolifyError("COOLIFY_SERVERS_MALFORMED");
-    return body.map((server) => {
-      const row = object(server);
-      if (!row || !row.uuid) throw new CoolifyError("COOLIFY_SERVERS_MALFORMED");
-      return { uuid: String(row.uuid) };
-    });
-  }
-
-  async serverResources(uuid: string): Promise<readonly CoolifyServerResource[]> {
-    const body = await this.request("GET", `/servers/${encodeURIComponent(uuid)}/resources`);
-    const resources = Array.isArray(body) ? body : object(body)?.resources;
-    if (!Array.isArray(resources)) throw new CoolifyError("COOLIFY_SERVER_RESOURCES_MALFORMED", uuid);
-    return resources.map((resource) => {
-      const row = object(resource);
-      if (!row || !row.id || !row.uuid || typeof row.type !== "string") throw new CoolifyError("COOLIFY_SERVER_RESOURCES_MALFORMED", uuid);
-      return { id: String(row.id), uuid: String(row.uuid), type: row.type };
-    });
-  }
-
-  /**
-   * Pins the exact commit and reads it back.
-   *
-   * The read-back is the point. A PATCH that returns 200 without storing what
-   * it was given would leave the next deploy taking whatever the branch points
-   * at - which is the failure this pinning exists to remove, arriving silently.
-   */
-  async pinCommit(uuid: string, commit: string): Promise<CoolifyApplication> {
-    await this.request("PATCH", `/applications/${encodeURIComponent(uuid)}`, { git_commit_sha: commit });
-    const application = await this.application(uuid);
-    if (application.gitCommitSha !== commit) {
-      throw new CoolifyError("COOLIFY_COMMIT_PIN_NOT_STORED", `${uuid}: asked ${commit}, stored ${application.gitCommitSha ?? "null"}`);
-    }
-    return application;
-  }
-
-  /** The images this installation could still roll back to. Empty means a rollback would have nothing to restore. */
-
   /** Starts a deployment and returns its uuid. Acceptance, not convergence - the caller must await it. */
-  /**
-   * Takes an application down through the control plane that owns it.
-   *
-   * The runner used to stop containers itself, by label and id. That was a
-   * second deployment control plane underneath this one, and it is what both
-   * 2026-09-23 incidents were made of.
-   */
-  async stopApplication(uuid: string): Promise<void> {
-    // `docker_cleanup` defaults to true, which prunes networks and volumes.
-    // This call exists to quiesce one application for a few minutes while its
-    // database is replaced; housekeeping is the last thing production needs at
-    // that moment, so it is disabled explicitly rather than by omission.
-    await this.request("POST", `/applications/${encodeURIComponent(uuid)}/stop?docker_cleanup=false`);
-  }
-
-  /**
-   * What the control plane says this application is doing, or nothing.
-   *
-   * Absent is returned as absent, never as a word. A token without visibility
-   * omits the field entirely, and collapsing that into "unknown" would make an
-   * unreadable runtime indistinguishable from a stopped one.
-   */
-  async applicationStatus(uuid: string): Promise<string | undefined> {
-    const body = this.requiredObject(await this.request("GET", `/applications/${encodeURIComponent(uuid)}`), "GET", `/applications/${encodeURIComponent(uuid)}`);
-    const status = body.status;
-    return typeof status === "string" && status.trim() ? status.trim() : undefined;
-  }
-
-  /**
-   * Waits until the application is positively stopped.
-   *
-   * `stop` only queues the request, so a single read afterwards proves nothing.
-   * Only `exited` counts: every other state - running, starting, restarting,
-   * degraded - is waited on and then refused at the timeout, and an absent or
-   * `unknown` status is refused outright. The default has to be "not stopped",
-   * because the thing this gates is replacing the database underneath it.
-   */
-  async awaitApplicationStopped(uuid: string): Promise<string> {
-    const deadline = this.#clock() + this.#timeoutMs;
-    for (;;) {
-      const status = await this.applicationStatus(uuid);
-      if (!status) throw new CoolifyError("COOLIFY_APPLICATION_STATUS_UNREADABLE", uuid);
-      const state = status.split(":")[0]!.toLowerCase();
-      if (state === "exited") return status;
-      if (state === "unknown") throw new CoolifyError("COOLIFY_APPLICATION_STATUS_UNKNOWN", `${uuid}: ${status}`);
-      if (this.#clock() >= deadline) throw new CoolifyError("COOLIFY_APPLICATION_NOT_STOPPED", `${uuid}: last status ${status}`);
-      await this.#sleep(this.#pollMs);
-    }
-  }
-
   async startDeployment(uuid: string): Promise<string> {
     const body = this.requiredObject(await this.request("POST", `/deploy?uuid=${encodeURIComponent(uuid)}`), "POST", `/deploy?uuid=${encodeURIComponent(uuid)}`);
     const queued = Array.isArray(body.deployments) ? (body.deployments as Record<string, unknown>[])[0] : undefined;
@@ -217,13 +97,6 @@ export class CoolifyClient {
     if (!deploymentUuid) throw new CoolifyError("COOLIFY_DEPLOYMENT_NOT_QUEUED", uuid);
     return deploymentUuid;
   }
-
-  /**
-   * Restores a retained image for one application, and returns the deployment
-   * to follow. It is not a deploy of a commit: the image already exists or the
-   * call has nothing to restore, which is why `rollbackImages` is checked
-   * first rather than this being allowed to improvise a rebuild.
-   */
 
   async deployment(uuid: string): Promise<CoolifyDeployment> {
     const body = this.requiredObject(await this.request("GET", `/deployments/${encodeURIComponent(uuid)}`), "GET", `/deployments/${encodeURIComponent(uuid)}`);

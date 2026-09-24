@@ -28,12 +28,8 @@ export type Harness = {
   /** What each descriptor surface currently answers with. */
   readonly serving: Record<"frontend" | "admin", string>;
   setDeploymentStatus(status: string): void;
-  setRetained(uuid: string, tags: readonly string[]): void;
   /** Makes Coolify report a different kind than configuration states. */
   setBuildPack(uuid: string, buildPack: string): void;
-  /** What the control plane says the commerce application is doing. */
-  applicationStatus(): string;
-  setApplicationStatus(value: string): void;
   /** Runs when Coolify is asked to deploy: what production looks like once it has. */
   onDeploy(effect: (() => void) | undefined): void;
   close(): Promise<void>;
@@ -54,7 +50,6 @@ const APPLICATIONS = [
   { name: "commerce", uuid: "app-commerce", surfaces: ["commerce", "worker"] as const, buildPack: "dockercompose" },
 ];
 
-export const COMPOSE_REPOSITORIES = ["repo/commerce", "repo/worker"] as const;
 
 const listen = async (server: Server): Promise<string> => {
   await new Promise<void>((resolve, reject) => {
@@ -109,17 +104,10 @@ export const harness = async (root: string): Promise<Harness> => {
 
   const calls: string[] = [];
   const serving: Record<"frontend" | "admin", string> = { frontend: preSha, admin: preSha };
-  const retained: Record<string, readonly string[]> = Object.fromEntries(
-    APPLICATIONS.map((application) => [application.uuid, [preSha, targetSha]]),
-  );
   let deploymentStatus = "finished";
-  // The only runtime state the runner is now allowed to care about, and it
-  // comes from the control plane rather than from a container listing.
-  let applicationStatus = "running:healthy";
   let deployEffect: (() => void) | undefined;
   // Overridable so a test can make Coolify disagree with configuration.
   const buildPacks: Record<string, string> = Object.fromEntries(APPLICATIONS.map((a) => [a.uuid, a.buildPack]));
-  const pinned: Record<string, string | null> = Object.fromEntries(APPLICATIONS.map((a) => [a.uuid, null]));
 
   const coolifyServer = createServer((request, response) => {
     request.resume();
@@ -130,24 +118,15 @@ export const harness = async (root: string): Promise<Harness> => {
       response.end(JSON.stringify(body));
     };
     const uuid = APPLICATIONS.map((a) => a.uuid).find((candidate) => url.includes(candidate));
-    if (url === "/api/v1/servers") return send([{ uuid: "server-1" }]);
-    if (url.includes("/servers/server-1/resources")) return send(APPLICATIONS.map((application, index) => ({ id: String(index + 1), uuid: application.uuid, type: "application" })));
-    if (url.includes("/servers/server-1/docker-cleanup")) return send({ disable_application_image_retention: false });
     if (url.includes("/deployments/applications/")) return send({ count: 0, deployments: [] });
-    if (url.includes("/rollback-images")) return send({ images: (retained[uuid ?? ""] ?? []).map((tag) => ({ tag })) });
-    if (url.endsWith("/rollback")) return send({ deployment_uuid: "dep-rollback" });
     // Checked before the deploy branch: `/deployments/x` also starts with `/deploy`.
     if (url.includes("/deployments/")) return send({ status: deploymentStatus, commit: targetSha });
-    if (url.endsWith("/stop")) { applicationStatus = "exited:unhealthy"; return send({ message: "stopped" }); }
-    if (url.includes("/deploy")) { applicationStatus = "running:healthy"; deployEffect?.(); return send({ deployments: [{ deployment_uuid: "dep-1" }] }); }
-    if (request.method === "PATCH") return send({ uuid, git_commit_sha: pinned[uuid ?? ""] });
+    if (url.includes("/deploy")) { deployEffect?.(); return send({ deployments: [{ deployment_uuid: "dep-1" }] }); }
     const application = APPLICATIONS.find((entry) => entry.uuid === uuid);
     return send({
       uuid, name: uuid,
       build_pack: buildPacks[uuid ?? ""] ?? application?.buildPack ?? "dockerfile",
-      status: applicationStatus,
-      git_branch: "production-deploy", git_commit_sha: pinned[uuid ?? ""],
-      settings: { docker_images_to_keep: 2 },
+      git_branch: "production-deploy", git_commit_sha: null,
     });
   });
   const descriptorServer = createServer((request, response) => {
@@ -163,10 +142,7 @@ export const harness = async (root: string): Promise<Harness> => {
   return {
     db, preSha, targetSha, calls, serving,
     setDeploymentStatus(status) { deploymentStatus = status; },
-    setRetained(uuid, tags) { retained[uuid] = tags; },
     setBuildPack(uuid, buildPack) { buildPacks[uuid] = buildPack; },
-    applicationStatus: () => applicationStatus,
-    setApplicationStatus(value: string) { applicationStatus = value; },
     onDeploy(effect) { deployEffect = effect; },
     config: {
       databasePath,
@@ -181,7 +157,6 @@ export const harness = async (root: string): Promise<Harness> => {
         checkoutBodyPath: join(root, "certification-checkout.json"),
       },
       coolify: { apiUrl: `${coolifyUrl}/api/v1`, token: "test-token" },
-      composeRepositories: { commerce: COMPOSE_REPOSITORIES[0], "commerce-worker": COMPOSE_REPOSITORIES[1] },
       applications: APPLICATIONS.map((application) => ({
         name: application.name, uuid: application.uuid,
         deploymentKind: application.buildPack as "dockerfile" | "dockercompose",

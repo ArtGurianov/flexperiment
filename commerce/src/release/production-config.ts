@@ -83,8 +83,6 @@ export type ProductionReleaseConfig = {
     readonly checkoutBodyPath: string;
   };
   readonly coolify: { readonly apiUrl: string; readonly token: string };
-  /** Trusted repositories for the two local images in the commerce Compose application. */
-  readonly composeRepositories: Readonly<Record<"commerce" | "commerce-worker", string>>;
   readonly applications: readonly SurfaceApplicationConfig[];
   readonly topology: { readonly frontendReleaseUrl: string; readonly adminReleaseUrl: string };
   readonly deployRef: { readonly remote: string; readonly ref: string; readonly worktree: string };
@@ -141,8 +139,6 @@ export const PRODUCTION_RELEASE_ENVIRONMENT_VARIABLES = [
   "CERTIFICATION_CHECKOUT_BODY",
   "COOLIFY_API_URL",
   "COOLIFY_TOKEN",
-  "FLEXPERIMENT_COMMERCE_IMAGE_REPOSITORY",
-  "FLEXPERIMENT_COMMERCE_WORKER_IMAGE_REPOSITORY",
   ...APPLICATIONS.map((application) => application.variable),
   "FLEXPERIMENT_FRONTEND_RELEASE_URL",
   "FLEXPERIMENT_ADMIN_RELEASE_URL",
@@ -264,10 +260,6 @@ export const loadProductionReleaseConfig = (env: NodeJS.ProcessEnv = process.env
       checkoutBodyPath: value("CERTIFICATION_CHECKOUT_BODY"),
     },
     coolify: { apiUrl: value("COOLIFY_API_URL"), token: value("COOLIFY_TOKEN") },
-    composeRepositories: {
-      commerce: value("FLEXPERIMENT_COMMERCE_IMAGE_REPOSITORY"),
-      "commerce-worker": value("FLEXPERIMENT_COMMERCE_WORKER_IMAGE_REPOSITORY"),
-    },
     applications: APPLICATIONS.map((application) => ({
       name: application.name,
       uuid: value(application.variable),
