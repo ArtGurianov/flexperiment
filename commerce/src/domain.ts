@@ -80,6 +80,16 @@ export {
 export const UNISENDER_EVENT_DUMP_GRACE_MS = 5 * 60 * 1_000;
 export const UNISENDER_EVENT_DUMP_POLL_MS = 15 * 1_000;
 export const UNISENDER_EVENT_DUMP_REEXPORT_MS = 5 * 60 * 1_000;
+/**
+ * An email an export has already shown as unresolved is exported again later
+ * each time: 5, 10, 20, 40 minutes... up to this. A message that stays `sent`
+ * gains little from a new export every five minutes, and on 2026-09-24 two of
+ * them used the whole create allowance in an hour.
+ */
+export const UNISENDER_EVENT_DUMP_MAX_REEXPORT_BACKOFF_MS = 4 * 60 * 60 * 1_000;
+/** UniSender deletes a dump itself after this long. */
+export const UNISENDER_EVENT_DUMP_LIFETIME_MS = 8 * 60 * 60 * 1_000;
+export const UNISENDER_EVENT_DUMP_MAX_RELEASE_ATTEMPTS = 5;
 export const UNISENDER_EVENT_DUMP_MAX_POLL_BACKOFF_MS = 2 * 60 * 1_000;
 export const UNISENDER_EVENT_DUMP_MAX_CREATES_PER_EIGHT_HOURS = 9;
 /** Keep a conservative slot below Unisender's documented max of ten dumps. */
@@ -1222,6 +1232,7 @@ export class CommerceDomain {
     if (!isEmailDeliveryEvidenceProvider(this.emailProvider)) return;
     const timestamp = new Date(this.clock()).toISOString();
     this.failStaleUnisenderEventDumpCreates(timestamp);
+    await this.releaseUnisenderEventDumps();
     const poll = this.claimUnisenderEventDumpRun(timestamp);
     if (poll) return this.pollUnisenderEventDumpRun(poll, timestamp);
     const lease = this.reserveUnisenderEventDumpCreateLease(timestamp);
@@ -1447,6 +1458,7 @@ export class CommerceDomain {
       const dump = await this.emailProvider.getEventDump({ dumpId: run.dump_id });
       if (dump.status === "failed") {
         this.finishUnisenderEventDumpRun(String(run.id), String(run.lease), timestamp, "FAILED");
+        await this.releaseUnisenderEventDumps();
         return;
       }
       for (const event of dump.events) this.applyUnisenderDumpEvent(String(run.id), event);
@@ -1456,11 +1468,38 @@ export class CommerceDomain {
         const saturated = typeof dump.returnedEventCount !== "number"
           || dump.returnedEventCount >= Number(run.requested_limit ?? UNISENDER_EVENT_DUMP_EVENT_LIMIT);
         this.finishUnisenderEventDumpRun(String(run.id), String(run.lease), timestamp, "READY", saturated, typeof run.job_id_filter === "string" && run.job_id_filter.length > 0);
+        await this.releaseUnisenderEventDumps();
         return;
       }
       this.deferUnisenderEventDumpPoll(String(run.id), String(run.lease), timestamp, "IN_PROCESS");
     } catch {
       this.deferUnisenderEventDumpPoll(String(run.id), String(run.lease), timestamp, "POLL_UNAVAILABLE");
+    }
+  }
+
+  /**
+   * Give read exports back. The dump to delete was recorded by the write that
+   * finished its run, so a failed or ambiguous delete - or a process that died
+   * before trying - is retried here on the next pass, a bounded number of
+   * times. Nothing here decides to create an export: capacity is still
+   * whatever event-dump/list says. Past UniSender's own eight-hour lifetime the
+   * dump is gone anyway and the record is cleared.
+   */
+  private async releaseUnisenderEventDumps() {
+    if (!isEmailDeliveryEvidenceProvider(this.emailProvider) || !this.emailProvider.deleteEventDump) return;
+    const expired = new Date(this.clock() - UNISENDER_EVENT_DUMP_LIFETIME_MS).toISOString();
+    this.db.prepare(`UPDATE unisender_event_dump_runs SET release_dump_id = NULL
+      WHERE release_dump_id IS NOT NULL AND create_started_at <= ?`).run(expired);
+    const pending = many(this.db, `SELECT id, release_dump_id FROM unisender_event_dump_runs
+      WHERE release_dump_id IS NOT NULL AND release_attempts < ?
+      ORDER BY create_started_at LIMIT 3`, UNISENDER_EVENT_DUMP_MAX_RELEASE_ATTEMPTS);
+    for (const run of pending) {
+      let released = false;
+      try { await this.emailProvider.deleteEventDump({ dumpId: String(run.release_dump_id) }); released = true; } catch { /* retried next pass */ }
+      this.db.prepare(released
+        ? "UPDATE unisender_event_dump_runs SET release_dump_id = NULL WHERE id = ? AND release_dump_id = ?"
+        : "UPDATE unisender_event_dump_runs SET release_attempts = release_attempts + 1 WHERE id = ? AND release_dump_id = ?")
+        .run(run.id, run.release_dump_id);
     }
   }
 
@@ -1512,8 +1551,21 @@ export class CommerceDomain {
         END,
         updated_at = ?
       WHERE run_id = ? AND state = 'ACTIVE'`).run(retryAt, saturated ? 1 : 0, wasTargeted ? 1 : 0, timestamp, runId);
+    // An export that was read and still left the email unresolved: the next
+    // one waits twice as long as the last. Saturated or unread exports keep
+    // the base delay - they did not show the email at all.
+    if (outcome === "READY" && !saturated) {
+      const waiting = many(this.db, `SELECT target.id, (SELECT COUNT(*) FROM unisender_event_dump_targets prior
+          WHERE prior.outbox_id = target.outbox_id) AS exports
+        FROM unisender_event_dump_targets target WHERE target.run_id = ? AND target.state = 'RETRY_WAIT'`, runId);
+      const backoff = this.db.prepare("UPDATE unisender_event_dump_targets SET next_attempt_at = ? WHERE id = ?");
+      for (const target of waiting) {
+        const delay = Math.min(UNISENDER_EVENT_DUMP_REEXPORT_MS * (2 ** Math.min(Math.max(0, Number(target.exports) - 1), 16)), UNISENDER_EVENT_DUMP_MAX_REEXPORT_BACKOFF_MS);
+        backoff.run(new Date(this.clock() + delay).toISOString(), target.id);
+      }
+    }
     this.db.prepare(`UPDATE unisender_event_dump_runs
-      SET state = ?, dump_id = NULL, next_attempt_at = ?, last_error_code = ?,
+      SET state = ?, release_dump_id = dump_id, dump_id = NULL, next_attempt_at = ?, last_error_code = ?,
           lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
       WHERE id = ? AND lease_owner = ?`)
 .run(outcome === "READY" ? "CONSUMED" : "EXHAUSTED", timestamp, outcome === "READY" ? null : outcome, timestamp, runId, lease);

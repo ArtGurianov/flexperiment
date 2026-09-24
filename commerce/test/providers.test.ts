@@ -245,6 +245,20 @@ describe("provider contracts", () => {
     ] });
   });
 
+  it("gives a read Event Dump back with the documented delete call, and says when the provider refused", async () => {
+    const requests: Request[] = [];
+    let answer: Response = Response.json({ status: "success" });
+    const provider = new UnisenderGoProvider({ apiKey: "test-key-not-a-secret", fromEmail: "noreply@example.test", fromName: "Flexperiment", replyToEmail: "hello@example.test" }, async (input, init) => {
+      requests.push(new Request(input, init)); return answer;
+    });
+    await expect(provider.deleteEventDump({ dumpId: "dump-1" })).resolves.toBeUndefined();
+    expect(requests[0].url).toBe("https://goapi.unisender.ru/ru/transactional/api/v1/event-dump/delete.json");
+    expect(await requests[0].json()).toEqual({ dump_id: "dump-1" });
+    expect(requests[0].signal).toBeInstanceOf(AbortSignal);
+    answer = Response.json({ status: "error", code: 404 }, { status: 404 });
+    await expect(provider.deleteEventDump({ dumpId: "dump-2" })).rejects.toThrow("Unisender Event Dump delete failed.");
+  });
+
   it("accepts queued Event Dump state without files and distinguishes deterministic create rejection", async () => {
     const provider = new UnisenderGoProvider({ apiKey: "test-key-not-a-secret", fromEmail: "noreply@example.test", fromName: "Flexperiment", replyToEmail: "hello@example.test" }, async (input) => {
       const url = String(input);

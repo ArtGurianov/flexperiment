@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { migrate, openDatabase } from "../src/db";
-import { CommerceDomain, CREATE_UNKNOWN_LOOKUP_INITIAL_BACKOFF_MS, CREATE_UNKNOWN_LOOKUP_MAX_ATTEMPTS, DomainError, EMAIL_SEND_UNKNOWN_MAX_ATTEMPTS, STALE_PREPARED_SETTLEMENT_MS, classifyOccurrenceRevision } from "../src/domain";
+import { CommerceDomain, CREATE_UNKNOWN_LOOKUP_INITIAL_BACKOFF_MS, CREATE_UNKNOWN_LOOKUP_MAX_ATTEMPTS, DomainError, EMAIL_SEND_UNKNOWN_MAX_ATTEMPTS, STALE_PREPARED_SETTLEMENT_MS, classifyOccurrenceRevision, UNISENDER_EVENT_DUMP_MAX_RELEASE_ATTEMPTS } from "../src/domain";
 import { runWorkerSweep } from "../src/worker-sweep";
 import { EventDumpCreateRejectedError, UnisenderGoProvider, type EmailDeliveryEvidenceProvider, type EmailProvider } from "../src/email-provider";
 import { MockProvider, TochkaProviderError, type PaymentProvider } from "../src/provider";
@@ -1351,6 +1351,116 @@ describe("commerce domain", () => {
     expect(lookups).toBe(0);
     expect(setup.db.prepare("SELECT status FROM email_outbox WHERE id = ?").get(outbox.id)).toEqual({ status: "SENT" });
     expect(attemptJobId(setup.db, outbox.id)).toBe("sent-job");
+  });
+
+  it("does not spend the Event Dump allowance re-exporting an email that stays sent (2026-09-24)", async () => {
+    // Production, 2026-09-24: two emails stayed `sent` for hours. Every export
+    // said `sent` again, a fresh one was created five minutes after the last,
+    // and the runtime's whole allowance was gone in an hour - then nothing
+    // could be reconciled for seven more.
+    const setup = fixture(); databases.push(setup.db);
+    let timestamp = Date.parse("2026-09-24T06:45:00.000Z");
+    const stored = new Map<string, number>();
+    const created: number[] = []; const deleted: string[] = [];
+    let outboxId = "";
+    const expire = () => { for (const [dumpId, at] of stored) if (at + 8 * 60 * 60_000 <= timestamp) stored.delete(dumpId); };
+    const email: EmailProvider & EmailDeliveryEvidenceProvider = {
+      async send() { return { jobId: "1x9dJF-000bdo-EXF7" }; },
+      async lookup() { return { status: "UNKNOWN" }; },
+      async listEventDumps() { expire(); return { count: stored.size }; },
+      async createEventDump() { expire(); const dumpId = `dump-${created.length}`; created.push(timestamp); stored.set(dumpId, timestamp); return { dumpId }; },
+      async getEventDump() {
+        return { status: "ready", returnedEventCount: 2, events: [
+          { eventTime: "2026-09-24 06:51:57", jobId: "1x9dJF-000bdo-EXF7", status: "accepted", deliveryStatus: "ok_accepted", metadata: { outbox_id: outboxId } },
+          { eventTime: "2026-09-24 06:51:59", jobId: "1x9dJF-000bdo-EXF7", status: "sent", deliveryStatus: "ok_sent", metadata: { outbox_id: outboxId } },
+        ] };
+      },
+      async deleteEventDump({ dumpId }) {
+        // The first delete of every export fails - as a timeout or a 5xx would.
+        if (!refused.has(dumpId)) { refused.add(dumpId); throw new Error("Unisender Event Dump delete failed."); }
+        deleted.push(dumpId); stored.delete(dumpId);
+      },
+    };
+    const refused = new Set<string>();
+    let domain = new CommerceDomain(setup.db, new MockProvider(), email, () => timestamp);
+    const quote = domain.checkoutContext({ occurrenceId: setup.occurrenceId });
+    const checkout = await domain.checkoutAsync(checkoutPayload(quote.quote_id), "event-dump-stuck-sent", "https://flexperiment.ru");
+    const payment = setup.db.prepare("SELECT p.id FROM payments p JOIN orders o ON o.id = p.order_id WHERE o.public_status_id = ?").get(checkout.status_id) as { id: string };
+    domain.markPaymentPaid(payment.id, 100_000, "provider-payment");
+    outboxId = (setup.db.prepare("SELECT id FROM email_outbox WHERE type = 'TICKET'").get() as { id: string }).id;
+    await domain.processEmailOutbox();
+    domain.applyUnisenderDelivery({ source: "WEBHOOK", outboxId, status: "SENT", providerStatus: "sent", jobId: "1x9dJF-000bdo-EXF7", semanticKey: "webhook-sent-stuck" });
+
+    // The worker's cadence, for eight hours - restarted every hour, so
+    // nothing the backoff or the release relies on may live in memory.
+    for (let minute = 0; minute < 8 * 60; minute += 1) {
+      timestamp += 60_000;
+      if (minute % 60 === 0) domain = new CommerceDomain(setup.db, new MockProvider(), email, () => timestamp);
+      await domain.reconcileUnisenderEventDumps();
+    }
+
+    expect(setup.db.prepare("SELECT status FROM email_outbox WHERE id = ?").get(outboxId)).toEqual({ status: "SENT" });
+    // Still looked at, but less often the longer nothing changes...
+    expect(created.length).toBeGreaterThanOrEqual(3);
+    expect(created.length).toBeLessThanOrEqual(7);
+    const gaps = created.slice(1).map((at, index) => at - created[index]);
+    for (let index = 1; index < gaps.length; index += 1) expect(gaps[index]).toBeGreaterThanOrEqual(gaps[index - 1]);
+    // ...never so often that the allowance runs out...
+    expect(setup.db.prepare("SELECT last_create_probe_error FROM unisender_event_dump_control").get()).not.toEqual({ last_create_probe_error: "LOCAL_CREATE_CAP" });
+    // ...and an export read to the end is given back rather than left to
+    // occupy one of ten slots, even when the first delete fails.
+    expect(refused.size).toBe(created.length);
+    expect(deleted).toHaveLength(created.length);
+    expect(stored.size).toBe(0);
+    expect(setup.db.prepare("SELECT COUNT(*) AS n FROM unisender_event_dump_runs WHERE release_dump_id IS NOT NULL").get()).toEqual({ n: 0 });
+  });
+
+  it("stops retrying a delete that never succeeds, and never creates an export because of it", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    let timestamp = Date.parse("2026-09-24T06:45:00.000Z");
+    let creates = 0; let deletes = 0; let listed = 0;
+    let outboxId = "";
+    const email: EmailProvider & EmailDeliveryEvidenceProvider = {
+      async send() { return { jobId: "job-never-deleted" }; },
+      async lookup() { return { status: "UNKNOWN" }; },
+      // The provider-side count stays the authority: every undeleted export is still there.
+      async listEventDumps() { listed += 1; return { count: creates }; },
+      async createEventDump() { creates += 1; return { dumpId: `dump-${creates}` }; },
+      async getEventDump() {
+        return { status: "ready", returnedEventCount: 1, events: [
+          { eventTime: "2026-09-24 06:51:59", jobId: "job-never-deleted", status: "sent", deliveryStatus: "ok_sent", metadata: { outbox_id: outboxId } },
+        ] };
+      },
+      async deleteEventDump() { deletes += 1; throw new Error("Unisender Event Dump delete failed."); },
+    };
+    const domain = new CommerceDomain(setup.db, new MockProvider(), email, () => timestamp);
+    const quote = domain.checkoutContext({ occurrenceId: setup.occurrenceId });
+    const checkout = await domain.checkoutAsync(checkoutPayload(quote.quote_id), "event-dump-undeletable", "https://flexperiment.ru");
+    const payment = setup.db.prepare("SELECT p.id FROM payments p JOIN orders o ON o.id = p.order_id WHERE o.public_status_id = ?").get(checkout.status_id) as { id: string };
+    domain.markPaymentPaid(payment.id, 100_000, "provider-payment");
+    outboxId = (setup.db.prepare("SELECT id FROM email_outbox WHERE type = 'TICKET'").get() as { id: string }).id;
+    await domain.processEmailOutbox();
+    domain.applyUnisenderDelivery({ source: "WEBHOOK", outboxId, status: "SENT", providerStatus: "sent", jobId: "job-never-deleted", semanticKey: "webhook-sent-undeletable" });
+
+    for (let minute = 0; minute < 3 * 60; minute += 1) {
+      timestamp += 60_000;
+      await domain.reconcileUnisenderEventDumps();
+    }
+    // Each export's delete is tried a bounded number of times, then left to expire.
+    expect(deletes).toBe(creates * UNISENDER_EVENT_DUMP_MAX_RELEASE_ATTEMPTS);
+    expect(setup.db.prepare("SELECT DISTINCT release_attempts FROM unisender_event_dump_runs WHERE release_dump_id IS NOT NULL").all())
+      .toEqual([{ release_attempts: UNISENDER_EVENT_DUMP_MAX_RELEASE_ATTEMPTS }]);
+    // Evidence read before the failed deletes was kept.
+    expect(setup.db.prepare("SELECT COUNT(*) AS n FROM email_provider_events WHERE outbox_id = ? AND evidence_source = 'EVENT_DUMP'").get(outboxId)).toEqual({ n: 1 });
+    // Every create was preceded by the provider-side count, and the backoff still held.
+    expect(listed).toBe(creates);
+    expect(creates).toBe(6); // at about 5, 11, 22, 43, 84 and 165 minutes
+
+    // Past UniSender's own lifetime the dump is gone; the record is cleared.
+    timestamp += 8 * 60 * 60_000;
+    await domain.reconcileUnisenderEventDumps();
+    expect(setup.db.prepare("SELECT COUNT(*) AS n FROM unisender_event_dump_runs WHERE release_dump_id IS NOT NULL AND create_started_at <= ?")
+      .get(new Date(timestamp - 8 * 60 * 60_000).toISOString())).toEqual({ n: 0 });
   });
 
   it("converges a lost delivered callback from strictly correlated Event Dump evidence without resend", async () => {

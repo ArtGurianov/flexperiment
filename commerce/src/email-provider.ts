@@ -45,6 +45,8 @@ export interface EmailDeliveryEvidenceProvider {
   listEventDumps(): Promise<{ count: number }>;
   createEventDump(input: { startTime: string; endTime: string; jobId?: string }): Promise<{ dumpId: string }>;
   getEventDump(input: { dumpId: string }): Promise<UnisenderEventDump>;
+  /** Frees one of the provider's ten stored-dump slots once an export has been read. */
+  deleteEventDump?(input: { dumpId: string }): Promise<void>;
 }
 
 export const isEmailDeliveryEvidenceProvider = (provider: EmailProvider): provider is EmailProvider & EmailDeliveryEvidenceProvider =>
@@ -238,6 +240,16 @@ export class UnisenderGoProvider implements EmailProvider, EmailDeliveryEvidence
     }
     if (payload?.status !== "success" || typeof payload.dump_id !== "string" || !payload.dump_id) throw new EmailProviderAmbiguousError();
     return { dumpId: payload.dump_id };
+  }
+
+  async deleteEventDump(input: { dumpId: string }) {
+    const response = await this.requestEventDump(`${EVENT_DUMP_URL}/delete.json`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json", "X-API-KEY": this.config.apiKey },
+      body: JSON.stringify({ dump_id: input.dumpId }),
+    });
+    const payload = await response.json().catch(() => undefined) as { status?: unknown } | undefined;
+    if (!response.ok || payload?.status !== "success") throw new Error("Unisender Event Dump delete failed.");
   }
 
   async getEventDump(input: { dumpId: string }): Promise<UnisenderEventDump> {

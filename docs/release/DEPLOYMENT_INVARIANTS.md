@@ -858,6 +858,35 @@ Both provider paths store the same sanitized fields on `email_provider_events`
 - **Event dump**: the export requests `destination_response` alongside
   `delivery_status`. It has no `sender_ip`.
 
+### An unresolved email does not use up the event-dump allowance
+
+Unisender stores at most ten exports, each for eight hours. The runtime creates
+at most nine in any eight hours. Before this change, an email that stayed `sent`
+was exported again five minutes after every export that still showed it
+unresolved. On 2026-09-24 two such emails used the whole allowance in an hour,
+and nothing could be reconciled for the next seven.
+
+Now each export that has been read and still leaves an email unresolved doubles
+that email's wait before the next one: 5, 10, 20, 40 minutes, and so on, up to
+4 hours. A saturated or unread export keeps the 5-minute retry, because it never
+showed the email. The wait comes from how many exports that email already has
+in the database, so a worker restart doesn't reset it.
+
+An export that has been read is deleted at Unisender, which frees its slot
+instead of holding it for eight hours. The dump to delete is recorded in the
+same write that finishes its run (migration 0007, `release_dump_id`). Every
+reconcile pass retries it, up to five attempts, so a failed or ambiguous delete,
+or a process that dies first, is retried instead of forgotten. After eight
+hours Unisender has removed the dump itself, and the record is cleared. A delete
+that keeps failing never causes an export to be created: capacity is still
+whatever `event-dump/list` reports, and the create path refuses while nine
+exist. Evidence ingested before a failed delete is kept.
+
+The regression tests replay the production shape. One email stuck at `sent` is
+reconciled every minute for eight hours, with the worker restarted every hour
+and every export's first delete failing. A second test covers a delete that
+never succeeds. Removing either the backoff or the retry sweep fails both tests.
+
 ## Installing the release runner on the VPS
 
 The workflow invokes one command, `flexperiment-release`, over SSH. It is a
