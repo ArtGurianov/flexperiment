@@ -122,6 +122,58 @@ export const emailEvidence = (evidence: OrderEvidence, type: string, payloadRef:
   return { delivered: true, outboxId, jobId };
 };
 
+/** A stored timestamp as ISO UTC; SQLite's `datetime('now')` shape has no zone. */
+const instant = (value: unknown): string | undefined => {
+  const raw = text(value);
+  if (!raw) return undefined;
+  const iso = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(raw) ? `${raw.replace(" ", "T")}Z` : raw;
+  return /^[0-9T:.\-Z]+$/.test(iso) ? iso : undefined;
+};
+
+/** Only the provider's own status words; nothing a payload could smuggle. */
+const word = (value: unknown): string => {
+  const raw = text(value) ?? "none";
+  return /^[A-Za-z_]{1,32}$/.test(raw) ? raw : "unrecognised";
+};
+
+const duration = (ms: number): string => {
+  const seconds = Math.max(0, Math.round(ms / 1000));
+  return `${Math.floor(seconds / 60)}m${String(seconds % 60).padStart(2, "0")}s`;
+};
+
+/**
+ * What an email wait saw before it gave up.
+ *
+ * "Timeout" alone cannot tell a sending failure from a receiver deferring the
+ * message or a delivery webhook that never came. -r1's ticket (2026-09-24)
+ * stopped at `sent` for the whole wait and was delivered three minutes after -
+ * a recipient deferral - and that was not visible from the failure itself.
+ *
+ * Built only from states, provider status words and timestamps: never an
+ * address, a subject or an SMTP payload, because this becomes a durable
+ * failure code and a log line.
+ */
+export const emailTimeoutDiagnosis = (evidence: OrderEvidence, type: string, payloadRef: string, waitedFrom: Date, observedAt: Date): string => {
+  const outbox = rows(evidence.email_outbox).filter((row) => row.type === type && row.payload_ref === payloadRef);
+  const waited = `waited=${duration(observedAt.getTime() - waitedFrom.getTime())} observed_at=${observedAt.toISOString()}`;
+  if (outbox.length !== 1) return `last_status=${outbox.length === 0 ? "NO_OUTBOX" : "OUTBOX_NOT_UNIQUE"} ${waited}`;
+  const row = outbox[0];
+  const events = rows(evidence.email_provider_events)
+    .filter((event) => event.outbox_id === row.id)
+    .map((event) => ({ status: word(event.provider_status), at: instant(event.received_at) ?? "" }))
+    .sort((left, right) => left.at.localeCompare(right.at));
+  const firstSent = events.find((event) => event.status === "sent")?.at ?? instant(row.sent_at) ?? "none";
+  const last = events.at(-1);
+  return [
+    `last_status=${word(row.status)}`,
+    `last_provider=${last ? `${last.status}@${last.at || "unknown"}` : "none"}`,
+    `provider_events=${events.length}`,
+    `queued_at=${instant(row.created_at) ?? "unknown"}`,
+    `first_sent_at=${firstSent}`,
+    waited,
+  ].join(" ");
+};
+
 /**
  * What a payment says about money that may need returning, which is not the
  * same question as whether the checkout succeeded.

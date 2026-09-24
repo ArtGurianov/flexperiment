@@ -4,7 +4,7 @@ import type { CertificationCapability, CertificationClaim } from "./capability";
 import type { CertificationCatalogueCommand } from "./catalogue-authority";
 import { assertCatalogueClean, ensureCatalogueClean, type CatalogueCleanupPorts } from "./cleanup";
 import {
-  emailEvidence, manifestDefect, occurrenceIdentityDefect, orderIdentityDefect, paymentRecoveryDisposition, refundConvergenceDefect, refundPollAction,
+  emailEvidence, emailTimeoutDiagnosis, manifestDefect, occurrenceIdentityDefect, orderIdentityDefect, paymentRecoveryDisposition, refundConvergenceDefect, refundPollAction,
   type CertificationScope, type OccurrenceView, type OrderEvidence, type RefundIdentifiers, type RunIdentifiers,
 } from "./evidence";
 import {
@@ -401,6 +401,7 @@ class CertificationMachine {
   private async awaitEmail(run: CertificationRun, type: string, payloadRef: string | null | undefined, next: CertificationPhase): Promise<CertificationRun> {
     if (!payloadRef) throw new CertificationFailed(`CERTIFICATION_EMAIL_REF_MISSING:${type}`);
     const orderId = this.requireOrder(run);
+    const waitedFrom = this.ports.clock();
     const settled = await this.ports.waitFor(async () => {
       const evidence = await this.ports.admin.orderEvidence(orderId);
       const result = emailEvidence(evidence, type, payloadRef);
@@ -416,7 +417,19 @@ class CertificationMachine {
       if (result.code === "CERTIFICATION_EMAIL_OUTBOX_MISSING") return undefined;
       throw new CertificationFailed(result.code);
     }, this.input.timeouts.emailMs);
-    if (!settled) throw new CertificationIncomplete(`CERTIFICATION_EMAIL_TIMEOUT:${type}`);
+    if (!settled) {
+      // The limit is unchanged: an email not delivered in time is a degraded
+      // customer experience and fails the certification. What changes is that
+      // the failure says what was seen, so the next one can be told apart - a
+      // send that never left, a receiver deferring, a webhook that never came.
+      let seen: string;
+      try {
+        seen = emailTimeoutDiagnosis(await this.ports.admin.orderEvidence(orderId), type, payloadRef, waitedFrom, this.ports.clock());
+      } catch {
+        seen = "evidence_unreadable";
+      }
+      throw new CertificationIncomplete(`CERTIFICATION_EMAIL_TIMEOUT:${type} ${seen}`);
+    }
     return this.commit(run, { phase: next });
   }
 

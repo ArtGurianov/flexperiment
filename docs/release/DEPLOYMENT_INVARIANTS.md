@@ -811,6 +811,28 @@ Reverting any one fix makes the test fail at the step where production would
 have. A certification-shaped change is not done until this test reaches
 `COMPLETE`, and no runtime stub stands in for it.
 
+## An email the customer did not get in time fails certification, and says why
+
+Certification waits 15 minutes for each email's delivery. That wait is a
+customer-experience limit, not a network timeout, and it stays strict. On
+2026-09-24, `-r1`'s ticket stayed at `sent` for the whole wait because the
+recipient's mailbox was full. It was delivered three minutes after the limit,
+which is still a bad experience for a real customer, so failing was right. A
+timeout never resends the email.
+
+What a timeout now records, in the run's failure code and the CLI output, is
+what the wait saw:
+
+```
+CERTIFICATION_EMAIL_TIMEOUT:TICKET last_status=SENT last_provider=sent@2026-09-24T06:23:25Z
+  provider_events=4 queued_at=2026-09-24T06:17:43Z first_sent_at=2026-09-24T06:17:58Z
+  waited=14m51s observed_at=2026-09-24T06:32:49.000Z
+```
+
+That line separates a send that never left, a receiver deferring the message,
+and a delivery webhook that never arrived. It carries only states, provider
+status words and times: never an address or an SMTP payload.
+
 ## Installing the release runner on the VPS
 
 The workflow invokes one command, `flexperiment-release`, over SSH. It is a
