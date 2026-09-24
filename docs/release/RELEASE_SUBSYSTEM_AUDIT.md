@@ -266,6 +266,11 @@ The commerce containers read their own variables (`SOURCE_COMMIT`,
 `COMMERCE_CERTIFICATION_TOKEN_SHA256`, `COMMERCE_INSTANCE_ID`), set in
 Coolify, not in this file. They are outside this audit.
 
+## Addressed since
+
+- #164: `deploy` and `forward-deploy` share `ReleaseAdmissionGuard`, and
+  `publish-candidate` accepts only `MAINTENANCE_REQUIRED`.
+
 ## Recommended order
 
 1. **PR: shared admission for `deploy`**, and `publish-candidate` accepting

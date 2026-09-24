@@ -47,8 +47,19 @@ import { buildCandidatePublisher, buildProductionRelease, buildReadOnlyRelease, 
 import { deriveCandidate } from "../../commerce/src/release/candidate-publication";
 import { verifyCutover } from "../../commerce/src/release/verify-cutover";
 
-/** What may still be published. LAUNCH_BASELINE remains readable, never publishable. */
-const PUBLISHABLE_RELEASE_CLASSES: readonly ReleaseClass[] = ["ROLLING_COMPATIBLE", "MAINTENANCE_REQUIRED"];
+/**
+ * What may be published. The deploy mode is derived from the class, never
+ * chosen - so an operator naming ROLLING_COMPATIBLE would be choosing to skip
+ * the fence and the certification. Nothing can prove a candidate compatible
+ * yet, so only MAINTENANCE_REQUIRED is publishable; LAUNCH_BASELINE is history.
+ */
+export const publishableReleaseClass = (named: string | undefined): ReleaseClass => {
+  const requested = (named ?? "").trim();
+  if (requested === "LAUNCH_BASELINE") throw new Error("LAUNCH_BASELINE_RETIRED");
+  if (requested === "ROLLING_COMPATIBLE") throw new Error("ROLLING_COMPATIBLE_REQUIRES_COMPATIBILITY_PROOF");
+  if (requested !== "MAINTENANCE_REQUIRED") throw new Error(`RELEASE_CLASS_INVALID: ${requested || "absent"}`);
+  return requested;
+};
 
 const EXIT_BY_OUTCOME: Record<string, number> = {
   SUCCEEDED: 0, SAFE_ABORTED: 10, ROLLED_BACK: 11, RECOVERY_REQUIRED: 12, AWAITING_OPERATOR: 13,
@@ -71,7 +82,11 @@ export const runCutoverCommand = async (release: ProductionRelease, argv: readon
       if (!candidate) throw new Error(`RELEASE_CANDIDATE_NOT_PUBLISHED: ${argument}`);
       // A launch candidate is history: the store refuses it by name
       // (LAUNCH_BASELINE_RETIRED) rather than returning something deployable.
-      release.journal.record("deploy.start", { candidate: candidate.id, sha: candidate.sha, releaseClass: candidate.releaseClass });
+      // Admission before anything is recorded or moved: main's exact tip,
+      // re-derived from its commit, this runner checked out at it, and its own
+      // CI green. A refusal is exit 20 - nothing has been touched.
+      const { ciEvidence } = await release.admission.admit(candidate);
+      release.journal.record("deploy.start", { candidate: candidate.id, sha: candidate.sha, releaseClass: candidate.releaseClass, ci: ciEvidence });
       const outcome = candidate.releaseClass === "ROLLING_COMPATIBLE"
         ? await release.orchestrator.runRolling({ ownerId, candidate })
         : await release.orchestrator.runMaintenanceCutover({ ownerId, candidate });
@@ -213,10 +228,7 @@ export const runCutoverCommand = async (release: ProductionRelease, argv: readon
  * a candidate cannot claim one its tree does not have.
  */
 const publishCandidate = async (sha: string, named: string | undefined): Promise<number> => {
-  const requested = (named ?? "").trim();
-  if (requested === "LAUNCH_BASELINE") throw new Error("LAUNCH_BASELINE_RETIRED");
-  const releaseClass = requested as ReleaseClass;
-  if (!PUBLISHABLE_RELEASE_CLASSES.includes(releaseClass)) throw new Error(`RELEASE_CLASS_INVALID: ${releaseClass || "absent"}`);
+  const releaseClass = publishableReleaseClass(named);
   const publisher = buildCandidatePublisher(loadCandidatePublicationConfig());
   await publisher.fetch(sha);
   const derived = await deriveCandidate(publisher.tree, { sha, releaseClass });

@@ -60,9 +60,20 @@ The workflow publishes `MAINTENANCE_REQUIRED` and requires the exact current tip
 of `main` (`CANDIDATE_MUST_BE_MAIN_HEAD`): forward admission deploys nothing
 else, so an ancestor would be a candidate nothing may deploy.
 
-Publication is not a lease on `main`. `forward-deploy` refreshes `origin/main`
-after taking its release lock and re-derives the candidate from that exact
-commit before it may mutate anything. A session whose mutation is already
+Publication is not a lease on `main`, and the CLI publisher checks no CI. So
+admission happens at consumption. Both `deploy` and `forward-deploy` run the same
+`ReleaseAdmissionGuard` after taking the release lock and before anything is
+recorded or moved:
+
+- the candidate is `MAINTENANCE_REQUIRED`;
+- it is main's exact tip, read afresh, and re-derived from that commit;
+- the runner doing it is checked out at that commit, clean;
+- the exact commit's own `test` and `docker-build` succeeded.
+
+A refusal is exit 20 (`DEPLOY_ADMISSION_REFUSED`, or
+`FORWARD_DEPLOY_ADMISSION_REFUSED`, which also requires the candidate to
+descend from the current target). Until #164 only `forward-deploy` asked any of
+this. A session whose mutation is already
 durable recovers its recorded target instead; a new `main` must never retarget
 recovery.
 
@@ -279,7 +290,11 @@ that has not lapsed still belongs to whoever holds it.
 
 `ROLLING_COMPATIBLE` earns `ROLLING_SAFE`; everything else takes
 `MAINTENANCE_CUTOVER`. The absence of a compatibility proof is not
-compatibility.
+compatibility. Nothing can produce that proof yet, so `publish-candidate`
+refuses `ROLLING_COMPATIBLE` (`ROLLING_COMPATIBLE_REQUIRES_COMPATIBILITY_PROOF`)
+and admission refuses anything but `MAINTENANCE_REQUIRED`. Before #164 the CLI
+took the class as an operator's argument, which let an operator choose to skip
+the fence and the certification.
 An operator who could select the rolling path for a schema-incompatible release
 would skip the fence and the certification with it, so the choice belongs to
 whoever classified the candidate.

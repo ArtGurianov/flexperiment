@@ -128,8 +128,14 @@ const certification = (): CertificationDriver => ({
  * so they prove it ends; they just do not spend two minutes proving it.
  */
 const INSTANT: ConvergencePolicy = { ...PRODUCTION_CONVERGENCE, sleep: async () => {} };
-const build = (config: Parameters<typeof buildProductionRelease>[0], options: BuildOptions = {}) =>
-  buildProductionRelease(config, { convergence: INSTANT, ...options });
+/**
+ * Admission is its own suite (forward-admission.test.ts) and needs a real CI
+ * and a runner checked out at the candidate; here it is admitted, so the
+ * subject stays the deploy. `realAdmission` opts back in.
+ */
+const ADMITTED = { admit: async () => ({ ciEvidence: "{}" }) };
+const build = (config: Parameters<typeof buildProductionRelease>[0], options: BuildOptions & { realAdmission?: boolean } = {}) =>
+  buildProductionRelease(config, { convergence: INSTANT, ...(options.realAdmission ? {} : { admission: ADMITTED }), ...options });
 
 /** The real root, unmodified: every command below runs through production wiring. */
 const cli = (release: ProductionRelease): ProductionRelease => release;
@@ -220,6 +226,26 @@ describe("the whole path production has to walk, through the real composition ro
       return { code, outcome: line?.outcome, reason: line?.code };
     } finally { spy.mockRestore(); }
   };
+
+  it("refuses an ordinary deploy that admission refuses, before anything is recorded", async () => {
+    // The harness's main is not a publishable tree (no migrations, no legal
+    // manifest), so the candidate cannot re-derive from main's tip - the same
+    // refusal a stale, unreviewed or CI-red candidate gets. Before admission
+    // was shared, `deploy` checked nothing but that the candidate existed.
+    servePredecessor();
+    publish(maintenanceCandidate(vps.targetSha));
+    const release = build(launchConfig(), {
+      now, realAdmission: true,
+      installedRunner: async () => ({ sha: vps.targetSha, tree: "t".repeat(40), candidateTree: "t".repeat(40), clean: true }),
+      ciAttestation: { attest: async (sha) => JSON.stringify({ sha }) },
+    });
+    try {
+      await expect(runCutoverCommand(cli(release), ["deploy", vps.targetSha], OWNER)).rejects.toThrow("DEPLOY_ADMISSION_REFUSED");
+      expect(release.authority.deploymentGate()).toEqual({ closed: false, deploymentSessionId: null });
+      expect(await release.deployRef.read()).toBe(vps.preSha);
+      expect(vps.db.prepare("SELECT COUNT(*) AS n FROM deploy_sessions").get()).toEqual({ n: 0 });
+    } finally { release.close(); }
+  });
 
   it("waits for the worker and its first sweep instead of racing them, and hands over with 13", async () => {
     servePredecessor();
