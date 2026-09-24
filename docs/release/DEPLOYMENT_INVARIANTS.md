@@ -236,7 +236,11 @@ production has outgrown it (`RESUME_PLAN_STALE`). `FIX_FORWARD_OR_ROLLBACK` and
 `FIX_FORWARD_ONLY` are never continued (`FIX_FORWARD_DIRECTION_REQUIRED`):
 choosing a direction is a person's decision, and an armed session goes forward
 only by `forward-deploy`. Until #165 nothing called the continuation, and it
-would have finished an armed cutover a second time.
+would have finished an armed cutover a second time. Once the continuation has started acting, it
+may have moved production. So from then on, any failure, including an
+unreadable topology afterwards or a failed redeploy it cannot even classify,
+is `RECOVERY_REQUIRED` (`RESUME_CONTINUATION_FAILED:…`, exit 12, gate closed).
+It never escapes to the CLI as exit 20.
 
 A session records its candidate when it is acquired, and nothing restates it
 afterwards. An adopted session that omitted it still satisfied the schema —

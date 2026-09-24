@@ -406,27 +406,28 @@ describe("the whole path production has to walk, through the real composition ro
     } finally { processB.close(); }
   });
 
-  describe("a runner that died after fencing, before Coolify was asked", () => {
-    /** Process A fenced production and died: DEPLOYING-to-be, pointer unmoved, lease lapsed. */
-    const diedAfterFencing = () => {
-      servePredecessor();
-      const candidate = maintenanceCandidate(vps.targetSha);
-      publish(candidate);
-      const dead = build(launchConfig(), { now, certification: certification() });
-      let sessionId = "";
-      try {
-        sessionId = dead.sessions.acquireFenced({ ownerId: "dead-runner", mode: "MAINTENANCE_CUTOVER", targetSha: vps.targetSha, candidateId: candidate.id }, {
-          runtime: { frontend: vps.preSha, admin: vps.preSha, commerce: vps.preSha, worker: vps.preSha },
-          controlPlane: { productionDeployRefSha: vps.preSha },
-        }).id;
-      } finally { dead.close(); }
-      // Past the dead runner's lease; production kept running meanwhile.
-      const later = new Date(NOW.getTime() + 6 * 60_000);
-      vps.db.prepare("UPDATE runtime_instance_evidence SET heartbeat_at = ?, last_successful_sweep_at = CASE WHEN unit = 'WORKER' THEN ? ELSE last_successful_sweep_at END")
-        .run(later.toISOString(), later.toISOString());
-      return { sessionId, later };
-    };
+  /** Process A fenced production and died: DEPLOYING-to-be, pointer unmoved, lease lapsed. */
+  const diedAfterFencing = () => {
+    servePredecessor();
+    const candidate = maintenanceCandidate(vps.targetSha);
+    publish(candidate);
+    const dead = build(launchConfig(), { now, certification: certification() });
+    let sessionId = "";
+    try {
+      sessionId = dead.sessions.acquireFenced({ ownerId: "dead-runner", mode: "MAINTENANCE_CUTOVER", targetSha: vps.targetSha, candidateId: candidate.id }, {
+        runtime: { frontend: vps.preSha, admin: vps.preSha, commerce: vps.preSha, worker: vps.preSha },
+        controlPlane: { productionDeployRefSha: vps.preSha },
+      }).id;
+    } finally { dead.close(); }
+    // Past the dead runner's lease; production kept running meanwhile.
+    const later = new Date(NOW.getTime() + 6 * 60_000);
+    vps.db.prepare("UPDATE runtime_instance_evidence SET heartbeat_at = ?, last_successful_sweep_at = CASE WHEN unit = 'WORKER' THEN ? ELSE last_successful_sweep_at END")
+      .run(later.toISOString(), later.toISOString());
+    return { sessionId, later };
+  };
 
+
+  describe("a runner that died after fencing, before Coolify was asked", () => {
     it("`resume` reports it, stands down and exits 12: action is still needed", async () => {
       const { sessionId, later } = diedAfterFencing();
       const resumer = build(launchConfig(), { now: () => later, certification: certification() });
@@ -463,6 +464,47 @@ describe("the whole path production has to walk, through the real composition ro
       try {
         expect(() => operator.sessions.takeOverExpiredLease(sessionId, "operator")).not.toThrow();
       } finally { operator.close(); }
+    });
+  });
+
+  describe("once `resume --continue` has acted, nothing escapes as exit 20", () => {
+    it("a re-fired deploy followed by an unreadable topology is recovery, not a refusal", async () => {
+      const { sessionId, later } = diedAfterFencing();
+      // The redeploy happens - the pointer moves, Coolify finishes - and then a
+      // descriptor answers with something that is not a commit, which no
+      // amount of waiting fixes.
+      afterDeploy(() => {
+        vps.db.prepare("DELETE FROM runtime_instance_evidence WHERE source_commit = ?").run(vps.preSha);
+        recordInstance(vps.db, "COMMERCE", "api-1", vps.targetSha, later);
+        recordInstance(vps.db, "WORKER", "worker-1", vps.targetSha, later, later.toISOString());
+        vps.serving.admin = vps.targetSha;
+        vps.serving.frontend = "not-a-commit";
+      });
+      const continuer = build(launchConfig(), { now: () => later, certification: certification() });
+      try {
+        expect(await runCutoverCommand(cli(continuer), ["resume", sessionId, "--continue"], "resuming-runner")).toBe(12);
+        expect(continuer.sessions.read(sessionId)?.state).toBe("RECOVERY_REQUIRED");
+        expect(continuer.authority.deploymentGate().closed).toBe(true);
+        // The mutation is real and stays visible: this is recovery, not a
+        // claim that nothing happened.
+        expect(await continuer.deployRef.read()).toBe(vps.targetSha);
+      } finally { continuer.close(); }
+      const next = build(launchConfig(), { now: () => later, certification: certification() });
+      try {
+        expect(() => next.sessions.takeOverExpiredLease(sessionId, "next-runner")).not.toThrow();
+      } finally { next.close(); }
+    });
+
+    it("a failed redeploy whose classification cannot observe production is recovery too", async () => {
+      const { sessionId, later } = diedAfterFencing();
+      vps.setDeploymentStatus("failed");
+      afterDeploy(() => { vps.serving.frontend = "not-a-commit"; });
+      const continuer = build(launchConfig(), { now: () => later, certification: certification() });
+      try {
+        expect(await runCutoverCommand(cli(continuer), ["resume", sessionId, "--continue"], "resuming-runner")).toBe(12);
+        expect(continuer.sessions.read(sessionId)?.state).toBe("RECOVERY_REQUIRED");
+        expect(continuer.authority.deploymentGate().closed).toBe(true);
+      } finally { continuer.close(); }
     });
   });
 

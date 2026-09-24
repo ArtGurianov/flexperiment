@@ -485,22 +485,33 @@ export class ReleaseOrchestrator {
     }
 
     const full: ReleaseRequest = { ownerId, candidate, sessionId };
-    if (plan.kind === "RETRY_DEPLOY") {
-      try {
-        if (session.mode === "MAINTENANCE_CUTOVER") {
-          if (!session.preDeployTopology) throw new ReleaseOrchestrationError("PRE_DEPLOY_TOPOLOGY_REQUIRED");
-          await this.ports.deployment.assertRecoverable(uniformSha(session.preDeployTopology));
+    // ---- last pre-action boundary --------------------------------------
+    // Everything above refuses before anything moves, and may throw. From here
+    // production may be moved, so every exit is a decision about the session:
+    // an exception escaping to the CLI would read as exit 20, "refused before
+    // mutation", which after a redeploy is a lie. As in runMaintenanceCutover,
+    // anything unexpected is RECOVERY_REQUIRED.
+    try {
+      if (plan.kind === "RETRY_DEPLOY") {
+        try {
+          if (session.mode === "MAINTENANCE_CUTOVER") {
+            if (!session.preDeployTopology) throw new ReleaseOrchestrationError("PRE_DEPLOY_TOPOLOGY_REQUIRED");
+            await this.ports.deployment.assertRecoverable(uniformSha(session.preDeployTopology));
+          }
+          await this.ports.deployment.deploy(binding.targetSha);
+        } catch (error) {
+          // Coolify can take longer than the lease; the classification after it
+          // must not depend on the lease granted before it.
+          this.ports.sessions.holdLease(sessionId, ownerId);
+          return await this.classify(sessionId, ownerId, failureCode(error));
         }
-        await this.ports.deployment.deploy(binding.targetSha);
-      } catch (error) {
-        // Coolify can take longer than the lease; the classification after it
-        // must not depend on the lease granted before it.
         this.ports.sessions.holdLease(sessionId, ownerId);
-        return this.classify(sessionId, ownerId, failureCode(error));
       }
-      this.ports.sessions.holdLease(sessionId, ownerId);
+      return await (session.mode === "MAINTENANCE_CUTOVER" ? this.finishCutover(sessionId, full) : this.finishRolling(sessionId, full));
+    } catch (error) {
+      try { this.ports.sessions.holdLease(sessionId, ownerId); } catch { /* recovery below says whether it still owns the session */ }
+      return this.recovery(sessionId, ownerId, `RESUME_CONTINUATION_FAILED:${failureCode(error)}`);
     }
-    return session.mode === "MAINTENANCE_CUTOVER" ? this.finishCutover(sessionId, full) : this.finishRolling(sessionId, full);
   }
 
   /** Convergence is proved by a fresh observation, never by the snapshot taken earlier. */
