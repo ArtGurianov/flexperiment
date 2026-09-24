@@ -8,7 +8,8 @@ import { HttpCertificationAdminPort, HttpCertificationPublicPort } from "./http-
 import { TerminalOperator, type OperatorScope, type TerminalChannel } from "./operator-terminal";
 import { SqliteCertificationCapabilityStore, SqliteCertificationRunStore } from "./store-sqlite";
 import { CERTIFICATION_OCCURRENCE_TITLE, CERTIFICATION_PRICE_KOPECKS, CERTIFICATION_TIMEZONE } from "./scope";
-import { certificationRunId, effectiveCertificationRunId, noEffectDefect, retryRunId } from "./no-effect-retry";
+import { certificationRunId, effectiveCertificationRunId, noEffectDefect, retryRunId, revisionRunId } from "./no-effect-retry";
+import { currentBindingIn } from "../release/forward-target";
 import type { CertificationDriver } from "../release/orchestrator";
 import type { ReleaseCandidate } from "../release/candidate";
 
@@ -74,7 +75,9 @@ export type NoEffectRetryOutcome =
   /** `-a2`'s own capability had expired unspent; the same run was given a new one. */
   | { readonly kind: "RETRY_CAPABILITY_REISSUED" }
   | { readonly kind: "INELIGIBLE"; readonly reason: string }
-  | { readonly kind: "RETRY_ISSUED" };
+  | { readonly kind: "RETRY_ISSUED" }
+  /** The session has been carried forward; the retry belongs to its original target only. */
+  | { readonly kind: "NOT_APPLICABLE" };
 
 const DEFAULT_TIMEOUTS = { paymentMs: 30 * 60_000, emailMs: 15 * 60_000, refundMs: 30 * 60_000 };
 
@@ -109,7 +112,14 @@ export class ProductionCertificationDriver implements CertificationDriver {
    */
   async issueCapability(sessionId: string): Promise<CertificationCapability> {
     this.#sessionId = sessionId;
-    const runId = certificationRunId(sessionId);
+    // The run is the current forward revision's. A driver built for any other
+    // release than the one the session is deploying now must not issue for it.
+    const binding = currentBindingIn(this.options.db, sessionId);
+    if (!binding) throw new Error(`DEPLOY_SESSION_NOT_FOUND: ${sessionId}`);
+    if (binding.targetSha !== this.options.candidate.sha) {
+      throw new Error(`CERTIFICATION_CANDIDATE_NOT_CURRENT_BINDING: ${this.options.candidate.sha} != ${binding.targetSha}`);
+    }
+    const runId = revisionRunId(sessionId, binding.revision);
     const runs = new SqliteCertificationRunStore(this.options.db);
     if (!runs.load(runId)) {
       runs.create({
@@ -276,6 +286,9 @@ export class ProductionCertificationDriver implements CertificationDriver {
    * cleanup continue with.
    */
   retryAfterNoEffectFailure(sessionId: string): NoEffectRetryOutcome {
+    // Specific to the session's original target. A session carried forward
+    // certifies its new revision with that revision's own run.
+    if ((currentBindingIn(this.options.db, sessionId)?.revision ?? 0) > 0) return { kind: "NOT_APPLICABLE" };
     const runs = new SqliteCertificationRunStore(this.options.db);
     const retry = retryRunId(sessionId);
     const work = this.options.db.transaction((): NoEffectRetryOutcome => {

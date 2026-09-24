@@ -1,6 +1,12 @@
 # Forward supersession of an armed cutover session
 
-Status: design, for review before implementation. Nothing here is built yet.
+Status: implemented. `forward-deploy` is in `scripts/release/cutover-runner.ts`
+(`commerce/src/release/forward-deploy.ts`). The migration is
+`0004_deploy_session_forward_targets.sql`, admission is `forward-admission.ts`,
+and the safety predicate is `supersession-safety.ts`. The runner needs
+`FLEXPERIMENT_CI_REPOSITORY` (`owner/name`) for the CI attestation, and
+optionally `FLEXPERIMENT_CI_TOKEN_FILE`; without the repository,
+`forward-deploy` refuses and every other command runs as before.
 
 ## The situation this exists for
 

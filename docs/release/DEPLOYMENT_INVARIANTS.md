@@ -736,6 +736,37 @@ capability's run, not to a session-derived id, so recovering this way needs
 no new candidate and no deploy, and the certified target stays the one the
 session names.
 
+## An armed session goes forward by revision, never by rewriting its target
+
+A cutover session's `target_sha` and `candidate_id` are what it first set out
+to deploy, and they never change. When that target cannot be certified after
+arming (rollback forbidden, sales fenced), `forward-deploy <session>
+<candidate>` carries the session to a newer release by appending a revision to
+`deploy_session_forward_targets`. The design is in `FORWARD_SUPERSESSION.md`.
+
+- **Every target decision reads the current release binding**, revision, SHA
+  and candidate together, never `session.targetSha`: topology, readiness,
+  arming, settling, `certify`, `verify`, and the runtime's certification
+  admission.
+- **A new revision is admitted in full**: a `MAINTENANCE_REQUIRED` candidate
+  that is main's tip, re-derived byte for byte, descended from the current
+  target, the installed runner's own tree, and green in CI for its exact SHA,
+  read from GitHub at admission and stored with the revision. The prior target
+  must be safe to leave (no money in motion, every fixture shut), and no
+  unexpired capability may be holding the live slot.
+- **Appending is a release-authority write**: owner and live lease are proved
+  in the same IMMEDIATE transaction as the insert. The table's triggers repeat
+  the state and chain rules for any other writer.
+- **Resuming never re-admits.** The recorded binding is the authority, main
+  may have moved on, and the pointer moves only from the revision's own
+  `from_sha`; anywhere else is `FORWARD_DEPLOY_REF_DIVERGED`. Migrations run
+  before the revision, so a crash between them leaves no target committed, and
+  the next run admits from scratch.
+- **Nothing certified for one revision counts for another.** Revision N gets
+  run `certification-<session>-r<N>` and its own capability. The earlier runs
+  stay as history, and `verify` re-proves that each target left behind is
+  safe.
+
 ## Certification is proved against the real runtime, end to end
 
 `commerce/test/certification/real-router-e2e.test.ts` runs a complete

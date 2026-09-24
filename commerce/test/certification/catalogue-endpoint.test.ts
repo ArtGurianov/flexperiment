@@ -172,6 +172,21 @@ describe("the context a catalogue command must be in", () => {
       .toThrow("CERTIFICATION_RUNTIME_RELEASE_MISMATCH");
   });
 
+  it("judges the runtime against the fence's current forward binding, not its frozen target", () => {
+    // Attempt 5's session: armed and stuck on OTHER, carried forward to SHA.
+    session(OTHER, 1, SESSION, "RECOVERY_REQUIRED");
+    db.prepare("UPDATE deploy_sessions SET rollback_authority = 'NEW_LINEAGE_ONLY' WHERE id = ?").run(SESSION);
+    db.prepare(`INSERT INTO deploy_session_forward_targets(session_id, revision, from_sha, target_sha, candidate_id, ci_evidence)
+      VALUES (?, 1, ?, ?, ?, '{}')`).run(SESSION, OTHER, SHA, SHA);
+    armed(SHA);
+    // The runtime serving the release the session was carried to is the one
+    // being certified.
+    expect(performCertificationCatalogueCommand(ports, parseCatalogueCommandRequest(body({ claim })))).toEqual(occurrence);
+    // One still serving the frozen original is not.
+    expect(() => performCertificationCatalogueCommand({ ...ports, runtimeReleaseSha: () => OTHER }, parseCatalogueCommandRequest(body({ claim: { ...claim } }))))
+      .toThrow("CERTIFICATION_RUNTIME_RELEASE_MISMATCH");
+  });
+
   it("refuses an expired, retired or foreign capability", () => {
     session();
     armed();

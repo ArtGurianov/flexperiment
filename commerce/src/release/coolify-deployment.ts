@@ -140,7 +140,24 @@ export class CoolifyDeploymentDriver implements DeploymentDriver {
   async deployFrom(expectedSha: string, targetSha: string): Promise<void> {
     this.log(`moving the deploy pointer ${expectedSha} -> ${targetSha}`);
     await this.options.refs.compareAndSet(expectedSha, targetSha);
+    await this.deployApplications();
+  }
 
+  /**
+   * Deploys what the pointer already names, without moving it.
+   *
+   * For resuming a forward revision whose pointer already moved: refused unless
+   * the pointer is exactly the commit asked for, so it can never deploy
+   * whatever happens to be there.
+   */
+  async redeployAt(sha: string): Promise<void> {
+    const current = await this.options.refs.read();
+    if (current !== sha) throw new DeploymentError("DEPLOY_REF_NOT_AT_TARGET", `${current} != ${sha}`);
+    this.log(`redeploying at ${sha}`);
+    await this.deployApplications();
+  }
+
+  private async deployApplications(): Promise<void> {
     const deployments: { application: SurfaceApplication; uuid: string }[] = [];
     for (const application of this.options.applications) {
       deployments.push({ application, uuid: await this.options.client.startDeployment(application.uuid) });

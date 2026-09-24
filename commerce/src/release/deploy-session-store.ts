@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
+import { readForwardTargets, releaseBinding, type ForwardTarget } from "./forward-target";
 import {
-  NON_TERMINAL, TERMINAL,
+  NON_TERMINAL, TERMINAL, assertSupersedable, forwardTargetFor, type ForwardTargetInput,
   type DeploymentGateView, type DeploySession, type DeploySessionPatch, type DeploySessionState,
   assertSnapshot, type DeploymentObservation, type PreDeploySnapshot, type ReleaseAuthorityStore, type TerminalState,
 } from "./deploy-session";
@@ -180,6 +181,30 @@ export class SqliteReleaseAuthorityStore implements ReleaseAuthorityStore {
     const session = this.write(id, ownerId, now, NON_TERMINAL, {});
     if (session.bootstrapRollbackId !== rollbackId) throw new Error("BOOTSTRAP_ROLLBACK_NOT_RESERVED");
     return session;
+  }
+
+  forwardTargets(id: string): readonly ForwardTarget[] {
+    return readForwardTargets(this.db, id);
+  }
+
+  /**
+   * One IMMEDIATE transaction: the guarded no-op write proves owner and live
+   * lease inside it, the session and revision chain are re-read inside it, and
+   * the insert commits with them or not at all. The table's triggers repeat the
+   * state and chain rules below this, for any writer that is not this one.
+   */
+  appendForwardTarget(id: string, ownerId: string, now: Date, input: ForwardTargetInput): ForwardTarget {
+    const work = this.db.transaction((): ForwardTarget => {
+      const session = this.write(id, ownerId, now, ["RECOVERY_REQUIRED"], {});
+      assertSupersedable(session, this.deploymentGate().deploymentSessionId);
+      const target = forwardTargetFor(session, releaseBinding(session, this.forwardTargets(id)), input, now);
+      this.db.prepare(`INSERT INTO deploy_session_forward_targets(session_id, revision, from_sha, target_sha, candidate_id, ci_evidence, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)`).run(
+        target.sessionId, target.revision, target.fromSha, target.targetSha, target.candidateId, target.ciEvidence, target.createdAt,
+      );
+      return target;
+    });
+    return this.db.inTransaction ? work() : work.immediate();
   }
 
   /**

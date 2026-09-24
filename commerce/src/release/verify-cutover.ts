@@ -2,6 +2,7 @@ import { runtimeIsTarget } from "./deploy-session";
 import { SqliteCertificationRunStore } from "../certification/store-sqlite";
 import { SqliteCatalogueMutationLedger } from "../certification/catalogue-authority-sqlite";
 import { certificationRunId, effectiveCertificationRunId, retryRunId } from "../certification/no-effect-retry";
+import { supersessionDefect } from "./supersession-safety";
 import type { ProductionRelease } from "./production-runner";
 
 /**
@@ -43,13 +44,27 @@ export const verifyCutover = async (release: ProductionRelease, sessionId: strin
   // Read now, not from the session's last recorded observation: a surface can
   // drift after the release settles, and this is the question that would catch
   // it.
+  // The target is the current binding: a session carried forward finished at
+  // the release it was carried to, not at its frozen original.
+  const binding = release.sessions.binding(sessionId);
   try {
     const observed = await release.ports.topology.observe();
-    check("runtime_converged", runtimeIsTarget(observed.runtime, session.targetSha), JSON.stringify(observed.runtime));
-    check("deploy_pointer_at_target", observed.controlPlane.productionDeployRefSha === session.targetSha, observed.controlPlane.productionDeployRefSha);
+    check("runtime_converged", runtimeIsTarget(observed.runtime, binding.targetSha), JSON.stringify(observed.runtime));
+    check("deploy_pointer_at_target", observed.controlPlane.productionDeployRefSha === binding.targetSha, observed.controlPlane.productionDeployRefSha);
   } catch (error) {
     check("runtime_converged", false, error instanceof Error ? error.message : "unreadable");
     check("deploy_pointer_at_target", false, "topology unreadable");
+  }
+
+  // Every target the session was carried away from, re-proved from what its
+  // certification left behind rather than from the fact that admission once
+  // allowed it: no money in motion, every fixture shut.
+  const left = [session.targetSha, ...release.sessions.forwardTargets(sessionId).slice(0, -1).map((target) => target.targetSha)];
+  if (binding.revision > 0) {
+    left.forEach((sha, revision) => {
+      const defect = supersessionDefect(release.database, sessionId, sha);
+      check(`superseded_revision_${revision}_safe`, defect === undefined, defect);
+    });
   }
 
   const admitted = await release.ports.evidence.read();

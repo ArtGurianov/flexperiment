@@ -5,6 +5,7 @@ import { SqliteCertificationCatalogueAuthority, type CleanupKind } from "./catal
 import type { CertificationCatalogueCommand } from "./catalogue-authority";
 import type { OccurrenceView } from "./evidence";
 import { SqliteCertificationCapabilityStore, SqliteCertificationRunStore } from "./store-sqlite";
+import { currentBindingIn } from "../release/forward-target";
 
 /**
  * The one catalogue operation a certification may ask the running system to
@@ -167,8 +168,11 @@ export const performCertificationCatalogueCommand = (
   if (!serving) throw new CertificationEndpointError("CERTIFICATION_RUNTIME_COMMIT_UNKNOWN", 503);
   // The runtime answering this request must be the one being certified. A
   // container still serving the old commit would otherwise publish an
-  // occurrence on behalf of a release it is not running.
-  if (serving !== fence.target_sha || serving !== run.releaseSha) {
+  // occurrence on behalf of a release it is not running. "Being certified" is
+  // the fence's current binding: a session carried forward certifies the
+  // release it was carried to, never its frozen original target.
+  const target = currentBindingIn(ports.db, fence.id)?.targetSha ?? fence.target_sha;
+  if (serving !== target || serving !== run.releaseSha) {
     throw new CertificationEndpointError("CERTIFICATION_RUNTIME_RELEASE_MISMATCH", 409);
   }
 

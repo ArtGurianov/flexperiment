@@ -1,4 +1,10 @@
 import Database from "better-sqlite3";
+import { ForwardDeploy } from "./forward-deploy";
+import { ForwardAdmissionError, ForwardSupersessionAdmissionGuard, GitHubCheckRunsAttestation, type CiAttestation, type InstalledRunner } from "./forward-admission";
+import { currentBindingIn } from "./forward-target";
+import { liveCapabilityBlocking, supersessionDefect } from "./supersession-safety";
+import { revisionRunId } from "../certification/no-effect-retry";
+import { unknownAppliedMigrations } from "../outbox-authority";
 import { createHash, randomUUID } from "node:crypto";
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -21,7 +27,8 @@ import { readOperatorOccurrence } from "../certification/operator-scope";
 import { GitCommitTreeReader, type CommitTreeReader } from "./candidate-publication";
 import { activeLegalBinding } from "./legal-binding";
 import { LegacyPredecessorTopologyReader } from "./legacy-predecessor-topology";
-import { readSchemaIdentity } from "../db";
+import { migrate, readSchemaIdentity } from "../db";
+import { SqliteCertificationRunStore } from "../certification/store-sqlite";
 import { DatabaseRuntimeEvidenceReader, ProductionTopologyReader } from "./topology-reader";
 import { SqliteCutoverStorage } from "./sqlite-cutover-storage";
 import { BootstrapCutoverPreparation, type PreparationRequest, type PreparationResult } from "./cutover-preparation";
@@ -271,6 +278,8 @@ export type ProductionRelease = {
   readonly candidates: FileReleaseCandidateStore;
   /** Consumption-time proof that a launch candidate is still current main. */
   readonly launchBaselineAdmission: LaunchBaselineAdmission;
+  /** Carries an armed, stuck cutover session forward to a newer release. */
+  readonly forwardDeploy: ForwardDeploy;
   /**
    * The certification driver for a candidate.
    *
@@ -310,6 +319,9 @@ export type BuildOptions = {
    * its fixture forward instead of time.
    */
   readonly convergence?: ConvergencePolicy;
+  /** Test seams for forward admission: the runner's own checkout, and CI. */
+  readonly installedRunner?: InstalledRunner;
+  readonly ciAttestation?: CiAttestation;
 };
 
 /**
@@ -397,9 +409,11 @@ export const buildProductionRelease = (config: ProductionReleaseConfig, options:
     const certificationForSession = (sessionId: string): ProductionCertificationDriver => {
       const cached = certificationDrivers.get(sessionId);
       if (cached) return cached;
-      const session = authority.get(sessionId);
-      const candidate = session?.candidateId ? candidatesStore.get(session.candidateId) : undefined;
-      if (!candidate) throw new Error(`RELEASE_CANDIDATE_NOT_PUBLISHED: ${session?.candidateId ?? sessionId}`);
+      // The current binding's candidate: a session carried forward certifies
+      // the release it was carried to.
+      const binding = currentBindingIn(opened, sessionId);
+      const candidate = binding?.candidateId ? candidatesStore.get(binding.candidateId) : undefined;
+      if (!candidate) throw new Error(`RELEASE_CANDIDATE_NOT_PUBLISHED: ${binding?.candidateId ?? sessionId}`);
       const driver = certificationFor(candidate);
       certificationDrivers.set(sessionId, driver);
       return driver;
@@ -682,11 +696,47 @@ export const buildProductionRelease = (config: ProductionReleaseConfig, options:
       fetch: options.fetch,
     });
 
+    const orchestrator = new ReleaseOrchestrator(ports);
+    const git = options.git ?? defaultGit;
+    const forwardDeploy = new ForwardDeploy({
+      sessions,
+      gate: () => authority.deploymentGate(),
+      candidates,
+      admission: new ForwardSupersessionAdmissionGuard(
+        admissionTree,
+        remoteMainTipRefresh({ remote: config.deployRef.remote, cwd: config.deployRef.worktree, tree: admissionTree, git }),
+        options.installedRunner ?? (async (candidateSha) => {
+          const cwd = process.cwd();
+          return {
+            sha: (await git(["rev-parse", "HEAD"], cwd)).trim(),
+            tree: (await git(["rev-parse", "HEAD^{tree}"], cwd)).trim(),
+            candidateTree: (await git(["rev-parse", `${candidateSha}^{tree}`], cwd)).trim(),
+            clean: (await git(["status", "--porcelain"], cwd)).trim() === "",
+          };
+        }),
+        options.ciAttestation ?? (config.ciAttestation
+          ? new GitHubCheckRunsAttestation({ repository: config.ciAttestation.repository, tokenFile: config.ciAttestation.tokenFile, fetch: options.fetch, now })
+          : { async attest() { throw new ForwardAdmissionError("FORWARD_DEPLOY_ADMISSION_REFUSED", "FLEXPERIMENT_CI_REPOSITORY is not configured"); } }),
+      ),
+      supersessionDefect: (sessionId, releaseSha) => supersessionDefect(opened, sessionId, releaseSha),
+      liveCapability: (sessionId) => liveCapabilityBlocking(opened, sessionId, now()),
+      // The runner's own checkout is the candidate (admission proved it), so
+      // its migrations are the candidate's.
+      migrate: () => migrate(opened),
+      unknownMigrations: () => unknownAppliedMigrations(opened),
+      refs: deployRef,
+      deployment: ports.deployment as CoolifyDeploymentDriver,
+      topology: ports.topology,
+      revisionRunExists: (sessionId, revision) => Boolean(new SqliteCertificationRunStore(opened).load(revisionRunId(sessionId, revision))),
+      finishForward: (sessionId, request) => orchestrator.finishForward(sessionId, request),
+      journal,
+    });
+
     return {
-      ports, sessions, journal, lock, deployRef, authority, candidates, launchBaselineAdmission, certificationFor, database: opened,
+      ports, sessions, journal, lock, deployRef, authority, candidates, launchBaselineAdmission, forwardDeploy, certificationFor, database: opened,
       deployment: ports.deployment as CoolifyDeploymentDriver,
       envelopes, storage, bootstrapPreparation, bootstrapRollback,
-      orchestrator: new ReleaseOrchestrator(ports),
+      orchestrator,
       close() {
         closeDatabaseForStorage();
         lock.release();

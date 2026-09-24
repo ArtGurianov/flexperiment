@@ -295,6 +295,28 @@ export class ReleaseOrchestrator {
   }
 
   /**
+   * Finishes a forward revision once its release has been deployed.
+   *
+   * The same ordering as any cutover, because it is one: convergence to the
+   * revision's release, readiness for its candidate, and a capability issued
+   * for its own certification run. The session stays RECOVERY_REQUIRED and
+   * fenced throughout; only `certify` settles it. A failure anywhere here is
+   * recovery, never a pre-mutation refusal - the pointer has moved.
+   */
+  async finishForward(sessionId: string, request: ReleaseRequest): Promise<ReleaseOutcome> {
+    const binding = this.ports.sessions.binding(sessionId);
+    if (binding.revision === 0 || binding.targetSha !== request.candidate.sha || binding.candidateId !== request.candidate.id) {
+      throw new ReleaseOrchestrationError("FORWARD_CANDIDATE_NOT_CURRENT_BINDING", `${request.candidate.id} != ${binding.candidateId ?? binding.targetSha}`);
+    }
+    try {
+      this.ports.sessions.holdLease(sessionId, request.ownerId);
+      return await this.finishCutover(sessionId, request);
+    } catch (error) {
+      return this.recovery(sessionId, request.ownerId, failureCode(error));
+    }
+  }
+
+  /**
    * The snapshot a cutover freezes, from the reader that can see the lineage it
    * is leaving.
    *
@@ -339,6 +361,13 @@ export class ReleaseOrchestrator {
    */
   async certifyAndComplete(sessionId: string, request: ReleaseRequest, capability: CertificationCapability): Promise<ReleaseOutcome> {
     if (!this.ports.certification) throw new ReleaseOrchestrationError("CUTOVER_REQUIRES_CERTIFICATION_DRIVER");
+    // Certified only as the release the session is deploying now. A caller
+    // naming another candidate would certify one release under another's
+    // expectation. Refused before preflight, so nothing has been touched.
+    const binding = this.ports.sessions.binding(sessionId);
+    if (binding.targetSha !== request.candidate.sha || binding.candidateId !== request.candidate.id) {
+      throw new ReleaseOrchestrationError("CERTIFY_CANDIDATE_NOT_CURRENT_BINDING", `${request.candidate.id} != ${binding.candidateId ?? binding.targetSha}`);
+    }
 
     // Read-only, and deliberately before the arming below. An unreachable
     // runtime, a lost capability, a catalogue that is not ready or an
@@ -498,10 +527,13 @@ export class ReleaseOrchestrator {
     // a session worth taking one more step of.
     const known = this.ports.sessions.read(sessionId);
     if (!known) throw new ReleaseOrchestrationError("DEPLOY_SESSION_NOT_FOUND", sessionId);
-    if (!known.candidateId) throw new ReleaseOrchestrationError("SESSION_HAS_NO_CANDIDATE", sessionId);
-    const candidate = this.ports.candidates.get(known.candidateId);
-    if (!candidate) throw new ReleaseOrchestrationError("CANDIDATE_NOT_FOUND", known.candidateId);
-    if (candidate.sha !== known.targetSha) throw new ReleaseOrchestrationError("CANDIDATE_SESSION_MISMATCH", known.candidateId);
+    // The current binding, never the frozen original: a session carried
+    // forward continues the release it was carried to.
+    const binding = this.ports.sessions.binding(sessionId);
+    if (!binding.candidateId) throw new ReleaseOrchestrationError("SESSION_HAS_NO_CANDIDATE", sessionId);
+    const candidate = this.ports.candidates.get(binding.candidateId);
+    if (!candidate) throw new ReleaseOrchestrationError("CANDIDATE_NOT_FOUND", binding.candidateId);
+    if (candidate.sha !== binding.targetSha) throw new ReleaseOrchestrationError("CANDIDATE_SESSION_MISMATCH", binding.candidateId);
 
     const observed = await this.ports.topology.observe();
     const session = this.ports.sessions.observeTopology(sessionId, ownerId, observed);
@@ -515,7 +547,7 @@ export class ReleaseOrchestrator {
           if (!session.preDeployTopology) throw new ReleaseOrchestrationError("PRE_DEPLOY_TOPOLOGY_REQUIRED");
           await this.ports.deployment.assertRecoverable(uniformSha(session.preDeployTopology));
         }
-        await this.ports.deployment.deploy(session.targetSha);
+        await this.ports.deployment.deploy(binding.targetSha);
       } catch (error) {
         return this.classify(sessionId, ownerId, failureCode(error));
       }
