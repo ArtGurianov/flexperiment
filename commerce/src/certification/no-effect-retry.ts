@@ -57,7 +57,7 @@ export const effectiveCertificationRunId = (db: Database.Database, deploymentSes
 
 type SessionRow = {
   state: string; rollback_authority: string; deployment_gate_closed: number;
-  target_sha: string; candidate_id: string | null; bootstrap_rollback_id: string | null;
+  target_sha: string; candidate_id: string | null;
 };
 
 const EVIDENCE: readonly (keyof CertificationRun)[] = [
@@ -84,13 +84,12 @@ export const noEffectDefect = (
   run: CertificationRun,
   candidate: ReleaseCandidate,
 ): string | undefined => {
-  const session = db.prepare(`SELECT state, rollback_authority, deployment_gate_closed, target_sha, candidate_id, bootstrap_rollback_id
+  const session = db.prepare(`SELECT state, rollback_authority, deployment_gate_closed, target_sha, candidate_id
     FROM deploy_sessions WHERE id = ?`).get(deploymentSessionId) as SessionRow | undefined;
   if (!session) return "SESSION_NOT_FOUND";
   if (session.state !== "RECOVERY_REQUIRED") return `SESSION_STATE_${session.state}`;
   if (session.rollback_authority !== "NEW_LINEAGE_ONLY") return `SESSION_AUTHORITY_${session.rollback_authority}`;
   if (session.deployment_gate_closed !== 1) return "SESSION_GATE_OPEN";
-  if (session.bootstrap_rollback_id) return "SESSION_ROLLBACK_RESERVED";
   if (session.target_sha !== candidate.sha || session.candidate_id !== candidate.id) return "SESSION_CANDIDATE_MISMATCH";
 
   if (run.releaseSha !== candidate.sha) return "RUN_RELEASE_MISMATCH";

@@ -89,8 +89,8 @@ What remains is history, readable and never actionable:
 
 | Left behind | Now |
 |---|---|
-| `LAUNCH_BASELINE` candidate files | readable by the store; `publish-candidate` and `deploy` refuse with `LAUNCH_BASELINE_RETIRED` |
-| the launch session's `adopted_cutover_id` and bootstrap columns | frozen in the `0001` baseline, read as history; `rollback` refuses the session with `LAUNCH_SESSION_NOT_ROLLBACKABLE` before touching its lease |
+| `LAUNCH_BASELINE` candidate files | not a `ReleaseClass` any more; readable only through `readHistorical`. `get`, `publish-candidate` and `deploy` refuse with `LAUNCH_BASELINE_RETIRED` |
+| the launch session's `adopted_cutover_id` and bootstrap columns | frozen in the `0001` baseline and never written again. A session exposes them only as `launch: true`; `rollback` refuses it with `LAUNCH_SESSION_NOT_ROLLBACKABLE` before touching its lease |
 | a pre-launch (`LEGACY`) database | refused by `db.ts`, by readiness, and by `observe` (`READ_ONLY_SCHEMA_LINEAGE_UNOBSERVABLE`) |
 | envelopes, archives, `aborted-*` directories and receipts on the VPS | forensic evidence; untouched |
 
@@ -170,6 +170,20 @@ sales already closed (maintenance) or never closed (rolling)
 No database is involved: an ordinary release is migrated forward and never
 replaced. Only the launch restored a database, and that path was retired with
 it (see "The launch machinery is retired").
+
+Two rules keep this usable on the day it is needed:
+
+- **An unobservable target does not stop a rollback.** A release that did not
+  come up is the usual reason to roll back, so a topology that cannot be read
+  beforehand is not recorded, and ownership is proved through the lease alone.
+  Authority (`OLD_LINEAGE_ALLOWED`) and the frozen snapshot still gate it.
+- **The restored predecessor is waited for, boundedly,** exactly as a deploy's
+  target is (see `convergence.ts`). The pointer has moved by then, so anything
+  short of the exact recorded vector is `RECOVERY_REQUIRED` with sales closed -
+  never an exception that would read as exit `20`, "refused before mutation".
+
+Both were missing until the launch retired: until then, only the launch's own
+restore path had them.
 
 ## An exit code describes what happened, not what was attempted
 

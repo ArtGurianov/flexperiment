@@ -327,14 +327,26 @@ describe("the whole path production has to walk, through the real composition ro
     }
 
     // Process B: a different owner, no clock advance, no owner impersonation.
-    // What is under test is the handoff - that ownership passes immediately
-    // because process A stood down, rather than after the full lease term with
-    // production fenced throughout.
+    // Ownership passes immediately because process A stood down, rather than
+    // after the full lease term with production fenced throughout - and the
+    // rollback then runs to the end: the pointer goes back, Coolify redeploys
+    // the predecessor, and the restored topology is read back before anything
+    // is settled.
+    expect(git(vps.config.deployRef.worktree, "ls-remote", "origin", "refs/heads/production-deploy").split("\t")[0]).toBe(vps.targetSha);
+    let redeployed = 0;
+    // Redeploying the predecessor brings its COMMERCE back.
+    vps.onDeploy(() => {
+      redeployed += 1;
+      if (redeployed === 1) recordInstance(vps.db, "COMMERCE", "api-0-restored", vps.preSha, NOW);
+    });
     const processB = build(launchConfig(), { now, certification: certification() });
     try {
-      await runCutoverCommand(cli(processB), ["rollback", sessionId], "a-different-runner")
-        .catch((error: Error) => { expect(error.message).not.toMatch(/DEPLOY_SESSION_NOT_OWNER|HELD_BY_ANOTHER_RUNNER/); });
-      expect(processB.sessions.read(sessionId)?.ownerId).toBe("a-different-runner");
+      expect(await runCutoverCommand(cli(processB), ["rollback", sessionId], "a-different-runner")).toBe(11);
+      const session = processB.sessions.read(sessionId)!;
+      expect(session).toMatchObject({ state: "ROLLED_BACK", ownerId: "a-different-runner" });
+      expect(processB.authority.deploymentGate().closed).toBe(false);
+      expect(redeployed).toBe(3);
+      expect(git(vps.config.deployRef.worktree, "ls-remote", "origin", "refs/heads/production-deploy").split("\t")[0]).toBe(vps.preSha);
     } finally {
       processB.close();
     }

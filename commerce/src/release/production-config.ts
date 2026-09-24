@@ -107,8 +107,8 @@ const APPLICATIONS: readonly { readonly variable: string; readonly name: string;
   { variable: "COOLIFY_APPLICATION_FRONTEND", name: "frontend", deploymentKind: "dockerfile", surfaces: ["frontend"] },
   { variable: "COOLIFY_APPLICATION_ADMIN", name: "admin", deploymentKind: "dockerfile", surfaces: ["admin"] },
   // Two services in one Compose application, which is why this one carries two
-  // surfaces and why its recovery is local images rather than a Coolify image
-  // rollback.
+  // surfaces. Recovery is the same as for the others: Coolify redeploys the
+  // predecessor commit.
   { variable: "COOLIFY_APPLICATION_COMMERCE", name: "commerce", deploymentKind: "dockercompose", surfaces: ["commerce", "worker"] },
 ];
 

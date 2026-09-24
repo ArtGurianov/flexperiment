@@ -14,7 +14,7 @@ const sha = "a".repeat(40);
 const versions = ["0001_launch_baseline.sql"];
 const scope = { citySlug: "kemerovo", title: "FLEXPERIMENT — Кемерово — production E2E run", timezone: "Asia/Novokuznetsk", priceKopecks: 100, capacity: 1 };
 const candidate: ReleaseCandidate = {
-  id: "candidate", sha, releaseClass: "LAUNCH_BASELINE",
+  id: "candidate", sha, releaseClass: "MAINTENANCE_REQUIRED",
   expectation: { schemaInventory: schemaInventoryExpectation(versions), legalVersion: "2026-09-20.1", legalManifestSha256: "e".repeat(64) },
 };
 const now = new Date("2026-09-20T00:00:00.000Z");

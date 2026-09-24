@@ -12,12 +12,18 @@ import type { ReleaseReadinessExpectation } from "./readiness";
  * because they are one fact.
  */
 export type ReleaseClass =
-  /** The launch cutover itself: replaces the database, so never rolling. */
-  | "LAUNCH_BASELINE"
   /** Proved readable by the previous revision, so sales need not close. */
   | "ROLLING_COMPATIBLE"
   /** Anything else. Absence of proof is not compatibility. */
   | "MAINTENANCE_REQUIRED";
+
+/**
+ * The launch cutover's class. It replaced the database once, on 2026-09-24,
+ * and was retired with the machinery that did it: its candidate files are
+ * history, read through `FileReleaseCandidateStore.readHistorical`, and are
+ * never a `ReleaseCandidate`.
+ */
+export type RetiredReleaseClass = "LAUNCH_BASELINE";
 
 export type CandidateExpectation = Omit<ReleaseReadinessExpectation, "sourceCommit">;
 
@@ -27,6 +33,11 @@ export type ReleaseCandidate = {
   readonly releaseClass: ReleaseClass;
   /** The candidate is the sole owner of the source commit identity. */
   readonly expectation: CandidateExpectation;
+};
+
+/** A published candidate file as history: releasable, or from a retired class. */
+export type HistoricalCandidate = Omit<ReleaseCandidate, "releaseClass"> & {
+  readonly releaseClass: ReleaseClass | RetiredReleaseClass;
 };
 
 /**

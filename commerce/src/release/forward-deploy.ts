@@ -87,7 +87,6 @@ export class ForwardDeploy {
       throw new ForwardDeployError("FORWARD_DEPLOY_SESSION_NOT_SUPERSEDABLE", `${session.mode}/${session.state}/${session.rollbackAuthority}`);
     }
     if (this.ports.gate().deploymentSessionId !== sessionId) throw new ForwardDeployError("FORWARD_DEPLOY_SESSION_NOT_SUPERSEDABLE", "gate not owned");
-    if (session.bootstrapRollbackId) throw new ForwardDeployError("FORWARD_DEPLOY_SESSION_NOT_SUPERSEDABLE", "rollback reserved");
 
     // Claimed before anything is decided: a live holder is refused, never taken.
     if (session.ownerId !== ownerId) {

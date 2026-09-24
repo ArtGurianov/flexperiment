@@ -1,9 +1,9 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { runCutoverCommand } from "../../../scripts/release/cutover-runner";
-import type { ReleaseCandidate } from "../../src/release/candidate";
+import type { HistoricalCandidate } from "../../src/release/candidate";
 import { FileReleaseCandidateStore } from "../../src/release/candidate-store";
 import type { ProductionRelease } from "../../src/release/production-runner";
 
@@ -16,7 +16,7 @@ import type { ProductionRelease } from "../../src/release/production-runner";
 
 const LAUNCH = "a".repeat(40);
 
-const launchCandidate: ReleaseCandidate = {
+const launchCandidate: HistoricalCandidate = {
   id: LAUNCH,
   sha: LAUNCH,
   releaseClass: "LAUNCH_BASELINE",
@@ -27,7 +27,7 @@ const launchCandidate: ReleaseCandidate = {
   },
 };
 
-type Session = { id: string; ownerId: string; adoptedCutoverId?: string };
+type Session = { id: string; ownerId: string; launch?: true };
 
 const release = (store: FileReleaseCandidateStore, session?: Session, takeOver: () => void = () => {}) => ({
   candidates: store,
@@ -48,16 +48,21 @@ const release = (store: FileReleaseCandidateStore, session?: Session, takeOver: 
   orchestrator: { runMaintenanceCutover: ReturnType<typeof vi.fn>; runRolling: ReturnType<typeof vi.fn>; rollback: ReturnType<typeof vi.fn> };
 };
 
+let directory: string;
 let store: FileReleaseCandidateStore;
 beforeEach(() => {
-  store = new FileReleaseCandidateStore(mkdtempSync(join(tmpdir(), "release-candidates-")));
+  directory = mkdtempSync(join(tmpdir(), "release-candidates-"));
+  store = new FileReleaseCandidateStore(directory);
 });
+/** As production's publication wrote it, before the class was retired. */
+const writeLaunchCandidate = () =>
+  writeFileSync(join(directory, `${LAUNCH}.json`), `${JSON.stringify(launchCandidate, null, 2)}\n`);
 
 describe("the retired launch machinery", () => {
   it("keeps a launch candidate readable, and refuses to deploy it before anything is recorded", async () => {
-    store.publish(launchCandidate);
+    writeLaunchCandidate();
     const runner = release(store);
-    expect(store.get(LAUNCH)).toEqual(launchCandidate);
+    expect(store.readHistorical(LAUNCH)).toEqual(launchCandidate);
 
     await expect(runCutoverCommand(runner, ["deploy", LAUNCH], "owner")).rejects.toThrow("LAUNCH_BASELINE_RETIRED");
     expect(runner.journal.record).not.toHaveBeenCalled();
@@ -74,7 +79,7 @@ describe("the retired launch machinery", () => {
   });
 
   it("refuses to roll back the launch session, before claiming its lease", async () => {
-    const runner = release(store, { id: "launch-session", ownerId: "someone-else", adoptedCutoverId: "launch-cutover" });
+    const runner = release(store, { id: "launch-session", ownerId: "someone-else", launch: true });
     await expect(runCutoverCommand(runner, ["rollback", "launch-session"], "owner")).rejects.toThrow("LAUNCH_SESSION_NOT_ROLLBACKABLE");
     expect(runner.sessions.takeOverExpiredLease).not.toHaveBeenCalled();
     expect(runner.orchestrator.rollback).not.toHaveBeenCalled();

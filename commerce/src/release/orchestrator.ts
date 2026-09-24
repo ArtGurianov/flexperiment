@@ -1,12 +1,12 @@
 import { deployMode, readinessExpectation, type ReleaseCandidate, type ReleaseCandidateReader } from "./candidate";
 import { evaluateReadiness, type ReleaseReadinessEvidence } from "./readiness";
 import {
-  DeploySessions, planResume, runtimeIsTarget,
-  type DeployMode, type DeploySession, type DeploymentObservation, type PreDeploySnapshot, type ResumePlan,
+  DeploySessions, planResume, runtimeIsTarget, snapshotEquals,
+  type DeploySession, type DeploymentObservation, type PreDeploySnapshot, type ResumePlan,
 } from "./deploy-session";
 import type { CertificationCapability } from "../certification/capability";
 import { converge, SINGLE_OBSERVATION, type ConvergencePolicy } from "./convergence";
-import { isTransientTopologyRead } from "./topology-reader";
+import { isTransientTopologyRead, TopologyReadError } from "./topology-reader";
 
 /**
  * The production release contract, expressed once and proved against test
@@ -31,10 +31,13 @@ export interface RuntimeEvidenceReader {
 
 /** Hands the target revision to whatever actually deploys it. */
 export interface DeploymentDriver {
-  /** Proves the frozen predecessor can survive this deployment before it starts. */
+  /** Proves the predecessor can be restored before this deployment starts. */
   assertRecoverable(predecessorSha: string): Promise<void>;
-  /** Re-proves predecessor images after target convergence and before arming. */
-  assertPredecessorRetained(predecessorSha: string): Promise<void>;
+  /**
+   * Re-proves, after target convergence and before arming, that what a
+   * rollback would restore is still there: the predecessor commit.
+   */
+  assertRecoverySourceAvailable(predecessorSha: string): Promise<void>;
   deploy(targetSha: string): Promise<void>;
 }
 
@@ -168,9 +171,6 @@ export class ReleaseOrchestrator {
     if (deployMode(request.candidate) !== "MAINTENANCE_CUTOVER") throw new ReleaseOrchestrationError("CUTOVER_REQUIRES_MAINTENANCE_CUTOVER");
     if (!this.ports.certification) throw new ReleaseOrchestrationError("CUTOVER_REQUIRES_CERTIFICATION_DRIVER");
     const { sessions } = this.ports;
-    // A launch candidate replaced the database from a prepared handoff that no
-    // longer exists; it is history, never a release.
-    if (request.candidate.releaseClass === "LAUNCH_BASELINE") throw new ReleaseOrchestrationError("LAUNCH_BASELINE_RETIRED");
     // Captured before the gate closes and before anything is deployed, so a
     // failure can be judged against what production was actually serving. The
     // session, that snapshot and the closed gate are created together, and
@@ -211,9 +211,9 @@ export class ReleaseOrchestrator {
     const session = this.ports.sessions.read(sessionId);
     if (!session?.preDeployTopology) throw new ReleaseOrchestrationError("PRE_DEPLOY_TOPOLOGY_REQUIRED");
     try {
-      await this.ports.deployment.assertPredecessorRetained(uniformSha(session.preDeployTopology));
+      await this.ports.deployment.assertRecoverySourceAvailable(uniformSha(session.preDeployTopology));
     } catch (error) {
-      return this.recovery(sessionId, request.ownerId, `PREDECESSOR_IMAGE_RECHECK_FAILED:${failureCode(error)}`);
+      return this.recovery(sessionId, request.ownerId, `RECOVERY_SOURCE_RECHECK_FAILED:${failureCode(error)}`);
     }
     const admitted = await this.requireReadiness(sessionId, request);
     if (admitted) return admitted;
@@ -388,18 +388,41 @@ export class ReleaseOrchestrator {
    */
   async rollback(sessionId: string, ownerId: string): Promise<ReleaseOutcome> {
     if (!this.ports.recovery) throw new ReleaseOrchestrationError("ROLLBACK_REQUIRES_RECOVERY_DRIVER");
-    if (this.ports.sessions.read(sessionId)?.adoptedCutoverId) throw new ReleaseOrchestrationError("LAUNCH_SESSION_NOT_ROLLBACKABLE");
-    const session = this.ports.sessions.observeTopology(sessionId, ownerId, await this.ports.topology.observe());
+    if (this.ports.sessions.read(sessionId)?.launch) throw new ReleaseOrchestrationError("LAUNCH_SESSION_NOT_ROLLBACKABLE");
+    // Recorded when it can be read. A target that does not come up is the
+    // usual reason to roll back, so an unobservable runtime must not be what
+    // stops the rollback: ownership is then proved through the lease alone.
+    let observed: DeploymentObservation | undefined;
+    try {
+      observed = await this.ports.topology.observe();
+    } catch (error) {
+      if (!(error instanceof TopologyReadError)) throw error;
+    }
+    const session = observed
+      ? this.ports.sessions.observeTopology(sessionId, ownerId, observed)
+      : this.ports.sessions.holdLease(sessionId, ownerId);
     if (session.rollbackAuthority !== "OLD_LINEAGE_ALLOWED") throw new ReleaseOrchestrationError("OLD_LINEAGE_ROLLBACK_FORBIDDEN");
     if (!session.preDeployTopology) throw new ReleaseOrchestrationError("PRE_DEPLOY_TOPOLOGY_REQUIRED");
+    const before = session.preDeployTopology;
 
     try {
-      await this.ports.recovery.restorePreDeployTopology(session.preDeployTopology);
+      await this.ports.recovery.restorePreDeployTopology(before);
     } catch (error) {
       return this.recovery(sessionId, ownerId, `ROLLBACK_FAILED:${failureCode(error)}`);
     }
 
-    const restored = await this.ports.topology.observe();
+    // The predecessor comes back asynchronously, like any deploy: waited on,
+    // boundedly. From here the pointer has moved, so anything short of the
+    // exact recorded vector is recovery - never an exception a caller would
+    // read as "refused before mutation".
+    let restored: DeploymentObservation;
+    try {
+      restored = await converge(this.convergence, () => this.ports.topology.observe(),
+        (observation) => snapshotEquals(observation, before), isTransientTopologyRead);
+    } catch (error) {
+      return this.recovery(sessionId, ownerId, `ROLLBACK_NOT_CONVERGED:${failureCode(error)}`);
+    }
+    if (!snapshotEquals(restored, before)) return this.recovery(sessionId, ownerId, "ROLLBACK_NOT_CONVERGED");
     // completeRollback insists on the exact vector itself and settles the
     // session and the gate in one operation.
     return { kind: "ROLLED_BACK", session: this.ports.sessions.completeRollback(sessionId, ownerId, restored), code: "ROLLED_BACK" };

@@ -43,9 +43,8 @@ describe("forward supersession admission", () => {
   });
 
   it("admits only a MAINTENANCE_REQUIRED candidate", async () => {
-    // A historical launch candidate: no longer derivable, still on disk.
-    const launch = { ...await mainCandidate(), releaseClass: "LAUNCH_BASELINE" as const };
-    await expect(guard().admit(launch, binding)).rejects.toThrow("is LAUNCH_BASELINE");
+    const rolling = { ...await mainCandidate(), releaseClass: "ROLLING_COMPATIBLE" as const };
+    await expect(guard().admit(rolling, binding)).rejects.toThrow("is ROLLING_COMPATIBLE");
   });
 
   it("refuses a candidate that is not main's tip, read afresh", async () => {

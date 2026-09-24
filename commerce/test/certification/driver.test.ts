@@ -16,7 +16,7 @@ const SESSION = "deploy-session";
 const now = new Date("2026-09-19T12:00:00.000Z");
 
 const candidate = {
-  id: SHA, sha: SHA, releaseClass: "LAUNCH_BASELINE" as const,
+  id: SHA, sha: SHA, releaseClass: "MAINTENANCE_REQUIRED" as const,
   expectation: { schemaInventory: schemaInventoryExpectation(["0001_launch_baseline.sql"]), legalVersion: "2026-09-20.1", legalManifestSha256: "e".repeat(64) },
 };
 

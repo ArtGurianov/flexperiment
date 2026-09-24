@@ -57,7 +57,8 @@ describe("deriving a candidate from the commit it is for", () => {
   });
 
   it("never derives the retired launch baseline, even for main's tip", async () => {
-    await expect(deriveCandidate(tree(), { sha: MAIN, releaseClass: "LAUNCH_BASELINE" }))
+    // The CLI hands over whatever string it was given.
+    await expect(deriveCandidate(tree(), { sha: MAIN, releaseClass: "LAUNCH_BASELINE" as never }))
       .rejects.toThrow("LAUNCH_BASELINE_RETIRED");
     // An ancestor on main is publishable as an ordinary maintenance release.
     await expect(deriveCandidate(tree(), { sha: OLDER, releaseClass: "MAINTENANCE_REQUIRED" })).resolves.toMatchObject({ sha: OLDER });
@@ -79,9 +80,8 @@ describe("deriving a candidate from the commit it is for", () => {
 });
 
 describe("a published candidate is written once", () => {
-  // A historical launch candidate: still readable, and still write-once.
   const candidate = {
-    id: MAIN, sha: MAIN, releaseClass: "LAUNCH_BASELINE" as const,
+    id: MAIN, sha: MAIN, releaseClass: "MAINTENANCE_REQUIRED" as const,
     expectation: { schemaInventory: schemaInventoryExpectation(["0001_launch_baseline.sql"]), legalVersion: "2026-09-20.1", legalManifestSha256: "e".repeat(64) },
   };
 
@@ -101,7 +101,7 @@ describe("a published candidate is written once", () => {
       .toThrow("RELEASE_CANDIDATE_ALREADY_PUBLISHED_DIFFERENTLY");
     expect(() => store.publish({ ...candidate, expectation: { ...candidate.expectation, legalManifestSha256: "f".repeat(64) } }))
       .toThrow("RELEASE_CANDIDATE_ALREADY_PUBLISHED_DIFFERENTLY");
-    expect(store.get(MAIN)?.releaseClass).toBe("LAUNCH_BASELINE");
+    expect(store.get(MAIN)?.releaseClass).toBe("MAINTENANCE_REQUIRED");
   });
 
   it("refuses a file that was edited after publication", () => {
@@ -121,5 +121,28 @@ describe("a published candidate is written once", () => {
 
   it("answers undefined for a commit nobody published", () => {
     expect(new FileReleaseCandidateStore(directory).get("c".repeat(40))).toBeUndefined();
+  });
+});
+
+describe("a launch candidate is history", () => {
+  // Written as production's publication wrote it, before the class was retired.
+  const launch = {
+    id: MAIN, sha: MAIN, releaseClass: "LAUNCH_BASELINE",
+    expectation: { schemaInventory: schemaInventoryExpectation(["0001_launch_baseline.sql"]), legalVersion: "2026-09-20.1", legalManifestSha256: "e".repeat(64) },
+  };
+
+  it("is read as history and refused as a release", () => {
+    writeFileSync(join(directory, `${MAIN}.json`), `${JSON.stringify(launch, null, 2)}\n`);
+    const store = new FileReleaseCandidateStore(directory);
+    expect(store.readHistorical(MAIN)).toEqual(launch);
+    expect(() => store.get(MAIN)).toThrow(`LAUNCH_BASELINE_RETIRED: ${MAIN}`);
+  });
+
+  it("is never published again, and cannot be republished as something else", () => {
+    const store = new FileReleaseCandidateStore(directory);
+    expect(() => store.publish(launch as never)).toThrow("RELEASE_CANDIDATE_INVALID: releaseClass");
+    writeFileSync(join(directory, `${MAIN}.json`), `${JSON.stringify(launch, null, 2)}\n`);
+    expect(() => store.publish({ ...launch, releaseClass: "MAINTENANCE_REQUIRED" }))
+      .toThrow("RELEASE_CANDIDATE_ALREADY_PUBLISHED_DIFFERENTLY");
   });
 });

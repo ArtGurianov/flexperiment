@@ -81,3 +81,26 @@ describe("what the release authority will read back out of its own column", () =
     expect(() => store.get("stored")).toThrow("DEPLOY_SNAPSHOT_MALFORMED");
   });
 });
+
+describe("the launch session, as history", () => {
+  it("is recognised from its adoption columns, which a new session never writes", () => {
+    // Production's launch session: adopted from a prepared cutover, so all four
+    // adoption columns are set - the schema allows them only together.
+    db.prepare(`INSERT INTO deploy_sessions(
+      id, owner_id, mode, target_sha, candidate_id, state, rollback_authority,
+      mutation_observed, deployment_gate_closed, created_at, lease_expires_at, pre_deploy_topology,
+      adopted_cutover_id, adopted_envelope_sha256, predecessor_database_ref, predecessor_database_sha256
+    ) VALUES ('launch', 'owner', 'MAINTENANCE_CUTOVER', ?, 'candidate', 'SUCCEEDED', 'NEW_LINEAGE_ONLY',
+      1, 0, ?, ?, ?, 'launch-cutover', ?, 'prelaunch.sqlite', ?)`)
+      .run(target, now.toISOString(), now.toISOString(), JSON.stringify(snapshot(old)), "e".repeat(64), "f".repeat(64));
+    expect(store.get("launch")).toMatchObject({ id: "launch", launch: true });
+    // Nothing else about the launch is part of the session any more.
+    expect(Object.keys(store.get("launch")!)).not.toEqual(expect.arrayContaining(["adoptedCutoverId", "bootstrapRollbackId"]));
+
+    const ordinary = fenced();
+    expect(ordinary.launch).toBeUndefined();
+    expect(db.prepare(`SELECT adopted_cutover_id, adopted_envelope_sha256, predecessor_database_ref,
+      predecessor_database_sha256, bootstrap_rollback_id FROM deploy_sessions WHERE id = 'stored'`).get())
+      .toEqual({ adopted_cutover_id: null, adopted_envelope_sha256: null, predecessor_database_ref: null, predecessor_database_sha256: null, bootstrap_rollback_id: null });
+  });
+});

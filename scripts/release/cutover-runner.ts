@@ -69,9 +69,8 @@ export const runCutoverCommand = async (release: ProductionRelease, argv: readon
       // being released, and the two could disagree.
       const candidate = release.candidates.get(argument);
       if (!candidate) throw new Error(`RELEASE_CANDIDATE_NOT_PUBLISHED: ${argument}`);
-      // The launch replaced the database from a prepared handoff that no longer
-      // exists. Its candidates stay readable as history, never deployable.
-      if (candidate.releaseClass === "LAUNCH_BASELINE") throw new Error("LAUNCH_BASELINE_RETIRED");
+      // A launch candidate is history: the store refuses it by name
+      // (LAUNCH_BASELINE_RETIRED) rather than returning something deployable.
       release.journal.record("deploy.start", { candidate: candidate.id, sha: candidate.sha, releaseClass: candidate.releaseClass });
       const outcome = candidate.releaseClass === "ROLLING_COMPATIBLE"
         ? await release.orchestrator.runRolling({ ownerId, candidate })
@@ -169,7 +168,7 @@ export const runCutoverCommand = async (release: ProductionRelease, argv: readon
       // The launch session adopted a prepared cutover: reversing it means
       // restoring the pre-launch database, and that machinery is retired.
       // Refused here, before the takeover below could write anything.
-      if (session.adoptedCutoverId) throw new Error("LAUNCH_SESSION_NOT_ROLLBACKABLE");
+      if (session.launch) throw new Error("LAUNCH_SESSION_NOT_ROLLBACKABLE");
       // A failed deploy stood down and exited; the rollback is a different
       // process with its own owner id. As with `certify`, it claims a lapsed
       // lease and refuses one somebody still holds.
@@ -205,8 +204,9 @@ export const runCutoverCommand = async (release: ProductionRelease, argv: readon
  * a candidate cannot claim one its tree does not have.
  */
 const publishCandidate = async (sha: string, named: string | undefined): Promise<number> => {
-  const releaseClass = (named ?? "").trim() as ReleaseClass;
-  if (releaseClass === "LAUNCH_BASELINE") throw new Error("LAUNCH_BASELINE_RETIRED");
+  const requested = (named ?? "").trim();
+  if (requested === "LAUNCH_BASELINE") throw new Error("LAUNCH_BASELINE_RETIRED");
+  const releaseClass = requested as ReleaseClass;
   if (!PUBLISHABLE_RELEASE_CLASSES.includes(releaseClass)) throw new Error(`RELEASE_CLASS_INVALID: ${releaseClass || "absent"}`);
   const publisher = buildCandidatePublisher(loadCandidatePublicationConfig());
   await publisher.fetch(sha);
