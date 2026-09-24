@@ -406,6 +406,88 @@ describe("the whole path production has to walk, through the real composition ro
     } finally { processB.close(); }
   });
 
+  describe("a runner that died after fencing, before Coolify was asked", () => {
+    /** Process A fenced production and died: DEPLOYING-to-be, pointer unmoved, lease lapsed. */
+    const diedAfterFencing = () => {
+      servePredecessor();
+      const candidate = maintenanceCandidate(vps.targetSha);
+      publish(candidate);
+      const dead = build(launchConfig(), { now, certification: certification() });
+      let sessionId = "";
+      try {
+        sessionId = dead.sessions.acquireFenced({ ownerId: "dead-runner", mode: "MAINTENANCE_CUTOVER", targetSha: vps.targetSha, candidateId: candidate.id }, {
+          runtime: { frontend: vps.preSha, admin: vps.preSha, commerce: vps.preSha, worker: vps.preSha },
+          controlPlane: { productionDeployRefSha: vps.preSha },
+        }).id;
+      } finally { dead.close(); }
+      // Past the dead runner's lease; production kept running meanwhile.
+      const later = new Date(NOW.getTime() + 6 * 60_000);
+      vps.db.prepare("UPDATE runtime_instance_evidence SET heartbeat_at = ?, last_successful_sweep_at = CASE WHEN unit = 'WORKER' THEN ? ELSE last_successful_sweep_at END")
+        .run(later.toISOString(), later.toISOString());
+      return { sessionId, later };
+    };
+
+    it("`resume` reports it, stands down and exits 12: action is still needed", async () => {
+      const { sessionId, later } = diedAfterFencing();
+      const resumer = build(launchConfig(), { now: () => later, certification: certification() });
+      try {
+        expect(await runCutoverCommand(cli(resumer), ["resume", sessionId], "resuming-runner")).toBe(12);
+        // Nothing continued: the pointer has not moved, the gate is still shut.
+        expect(await resumer.deployRef.read()).toBe(vps.preSha);
+        expect(resumer.authority.deploymentGate().closed).toBe(true);
+      } finally { resumer.close(); }
+      // And it let go: the next command claims the session at once.
+      const next = build(launchConfig(), { now: () => later, certification: certification() });
+      try {
+        expect(() => next.sessions.takeOverExpiredLease(sessionId, "next-runner")).not.toThrow();
+      } finally { next.close(); }
+    });
+
+    it("`resume --continue` re-fires the deploy in the same invocation and hands over with 13", async () => {
+      const { sessionId, later } = diedAfterFencing();
+      afterDeploy(() => {
+        vps.db.prepare("DELETE FROM runtime_instance_evidence WHERE source_commit = ?").run(vps.preSha);
+        vps.serving.frontend = vps.targetSha;
+        vps.serving.admin = vps.targetSha;
+        recordInstance(vps.db, "COMMERCE", "api-1", vps.targetSha, later);
+        recordInstance(vps.db, "WORKER", "worker-1", vps.targetSha, later, later.toISOString());
+      });
+      const continuer = build(launchConfig(), { now: () => later, certification: certification() });
+      try {
+        expect(await runCutoverCommand(cli(continuer), ["resume", sessionId, "--continue"], "resuming-runner")).toBe(13);
+        expect(await continuer.deployRef.read()).toBe(vps.targetSha);
+        expect(continuer.sessions.read(sessionId)).toMatchObject({ state: "DEPLOYING", rollbackAuthority: "OLD_LINEAGE_ALLOWED" });
+      } finally { continuer.close(); }
+      // Handed to the attended certify: stood down, like any deploy at 13.
+      const operator = build(launchConfig(), { now: () => later, certification: certification() });
+      try {
+        expect(() => operator.sessions.takeOverExpiredLease(sessionId, "operator")).not.toThrow();
+      } finally { operator.close(); }
+    });
+  });
+
+  it("`resume --continue` does not guess a direction, and stands down", async () => {
+    servePredecessor();
+    publish(maintenanceCandidate(vps.targetSha));
+    const processA = build(launchConfig(), { now, certification: certification() });
+    let sessionId = "";
+    try {
+      expect(await runCutoverCommand(cli(processA), ["deploy", vps.targetSha], OWNER)).toBe(12);
+      sessionId = processA.authority.deploymentGate().deploymentSessionId!;
+    } finally { processA.close(); }
+    const deploysBefore = vps.calls.filter((call) => call.startsWith("POST /api/v1/deploy")).length;
+
+    const continuer = build(launchConfig(), { now, certification: certification() });
+    try {
+      expect(await runCutoverCommand(cli(continuer), ["resume", sessionId, "--continue"], "resuming-runner")).toBe(12);
+      expect(vps.calls.filter((call) => call.startsWith("POST /api/v1/deploy")).length).toBe(deploysBefore);
+    } finally { continuer.close(); }
+    const next = build(launchConfig(), { now, certification: certification() });
+    try {
+      expect(() => next.sessions.takeOverExpiredLease(sessionId, "rollback-runner")).not.toThrow();
+    } finally { next.close(); }
+  });
+
   it("stands down when resume hands a direction back to the operator", async () => {
     // `resume` takes the lease to read the state and then tells the operator to
     // roll back. Keeping the fresh lease it just granted itself would make that

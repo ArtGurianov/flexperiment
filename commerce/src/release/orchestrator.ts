@@ -476,6 +476,13 @@ export class ReleaseOrchestrator {
     const session = this.ports.sessions.observeTopology(sessionId, ownerId, observed);
     const plan = planResume(session, observed);
     if (plan.kind !== expected) throw new ReleaseOrchestrationError(`RESUME_PLAN_STALE:${plan.kind}`);
+    // Only the two plans with one obvious next step are continued. Choosing
+    // between rollback and fix-forward is a person's; and an armed session goes
+    // forward only by `forward-deploy` - finishing it again here would issue a
+    // second capability for a run that already started.
+    if (plan.kind === "FIX_FORWARD_OR_ROLLBACK" || plan.kind === "FIX_FORWARD_ONLY") {
+      throw new ReleaseOrchestrationError("FIX_FORWARD_DIRECTION_REQUIRED");
+    }
 
     const full: ReleaseRequest = { ownerId, candidate, sessionId };
     if (plan.kind === "RETRY_DEPLOY") {
@@ -486,10 +493,13 @@ export class ReleaseOrchestrator {
         }
         await this.ports.deployment.deploy(binding.targetSha);
       } catch (error) {
+        // Coolify can take longer than the lease; the classification after it
+        // must not depend on the lease granted before it.
+        this.ports.sessions.holdLease(sessionId, ownerId);
         return this.classify(sessionId, ownerId, failureCode(error));
       }
+      this.ports.sessions.holdLease(sessionId, ownerId);
     }
-    if (plan.kind === "FIX_FORWARD_OR_ROLLBACK") throw new ReleaseOrchestrationError("FIX_FORWARD_DIRECTION_REQUIRED");
     return session.mode === "MAINTENANCE_CUTOVER" ? this.finishCutover(sessionId, full) : this.finishRolling(sessionId, full);
   }
 

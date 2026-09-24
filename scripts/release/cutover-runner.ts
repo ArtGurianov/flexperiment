@@ -17,7 +17,10 @@
  *                            newer MAINTENANCE_REQUIRED release; resumable
  *   certify <session>  the attended half: arm, buy, refund, shut the fixture
  *   verify  <session>  prove a finished cutover, changing nothing
- *   resume  <session>  take over a session whose lease expired and report the plan
+ *   resume  <session> [--continue]
+ *                            take over a session whose lease expired and report
+ *                            the plan; --continue carries out RETRY_DEPLOY or
+ *                            PROVE_READINESS in the same invocation
  *   rollback <session> restore the pre-deploy vector
  *
  * Every state the runner can produce has exactly one recovery owner:
@@ -31,7 +34,8 @@
  * history at 3ad07cf; see docs/release/DEPLOYMENT_INVARIANTS.md.
  *
  * Exit codes are the contract the workflow reads:
- *   0   succeeded, or observe/verify/resume completed
+ *   0   succeeded, or observe/verify completed (resume without --continue
+ *       always exits 12: an unsettled session still needs something done)
  *   13  awaiting operator - prepared, fenced, nothing spent, a person must certify
  *   10  safe aborted - production untouched, sales open
  *   11  rolled back - production restored, sales open
@@ -173,15 +177,37 @@ export const runCutoverCommand = async (release: ProductionRelease, argv: readon
     }
     case "resume": {
       if (!argument) throw new Error("RELEASE_SESSION_REQUIRED");
+      const continuing = argv[2] === "--continue";
+      if (argv[2] !== undefined && !continuing) throw new Error(`RELEASE_RESUME_ARGUMENT_UNKNOWN: ${argv[2]}`);
       const { session, plan } = await release.orchestrator.resume(argument, ownerId);
-      release.journal.record("resume", { session: session.id, state: session.state, plan: plan.kind });
-      say({ command, session: session.id, state: session.state, plan });
-      // A resumed session that needs a human decision is not a success, and the
-      // workflow must not read it as one.
-      if (session.state !== "RECOVERY_REQUIRED") return 0;
-      // This process took the lease to read that state and is now exiting. The
-      // rollback it just told the operator to run should not have to wait out a
-      // term nobody is using, with production fenced throughout.
+      release.journal.record("resume", { session: session.id, state: session.state, plan: plan.kind, continuing });
+      // Two plans have one obvious next step, and `--continue` takes it in this
+      // same process - the lease it just took is the one the step needs, so no
+      // second process has to wait for it. The others are a person's choice.
+      const continuable = plan.kind === "RETRY_DEPLOY" || plan.kind === "PROVE_READINESS";
+      if (continuing && continuable) {
+        let outcome;
+        try {
+          outcome = await release.orchestrator.continueSession(session.id, ownerId, plan.kind);
+        } catch (error) {
+          // Refused before acting (a stale plan, a candidate that no longer
+          // names the target): stand down so the next command need not wait.
+          release.sessions.yieldLease(session.id, ownerId);
+          throw error;
+        }
+        release.journal.record("resume.outcome", { session: session.id, kind: outcome.kind, state: outcome.session.state });
+        say({ command, session: session.id, plan, outcome: outcome.kind, code: "code" in outcome ? outcome.code : undefined });
+        // Handed to the attended `certify`, or to an operator: stand down, as a
+        // deploy does at the same point.
+        if (outcome.kind === "AWAITING_OPERATOR" || outcome.kind === "RECOVERY_REQUIRED") release.sessions.yieldLease(session.id, ownerId);
+        return EXIT_BY_OUTCOME[outcome.kind] ?? 20;
+      }
+      // A non-terminal session always needs something done, so this is never
+      // a success. This process took the lease only to read the state; the
+      // command it names next must not have to wait that lease out, with
+      // production fenced throughout.
+      const next = continuable ? "resume --continue" : plan.kind === "FIX_FORWARD_ONLY" ? "forward-deploy" : "rollback or forward-deploy";
+      say({ command, session: session.id, state: session.state, plan, next });
       release.sessions.yieldLease(session.id, ownerId);
       return 12;
     }
