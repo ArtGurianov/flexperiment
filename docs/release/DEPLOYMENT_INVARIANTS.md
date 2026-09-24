@@ -811,6 +811,88 @@ Reverting any one fix makes the test fail at the step where production would
 have. A certification-shaped change is not done until this test reaches
 `COMPLETE`, and no runtime stub stands in for it.
 
+## An email the customer did not get in time fails certification, and says why
+
+Certification waits 15 minutes for each email's delivery. That wait is a
+customer-experience limit, not a network timeout, and it stays strict. On
+2026-09-24, `-r1`'s ticket stayed at `sent` for the whole wait because the
+recipient's mailbox was full. It was delivered three minutes after the limit,
+which is still a bad experience for a real customer, so failing was right. A
+timeout never resends the email.
+
+What a timeout now records, in the run's failure code and the CLI output, is
+what the wait saw:
+
+```
+CERTIFICATION_EMAIL_TIMEOUT:TICKET last_status=SENT last_provider=sent@2026-09-24T06:23:25Z
+  provider_events=4 queued_at=2026-09-24T06:17:43Z first_sent_at=2026-09-24T06:17:58Z
+  waited=14m51s observed_at=2026-09-24T06:32:49.000Z
+  delivery_status=err_mailbox_full evidence_source=WEBHOOK
+  destination_response="452 4.2.2 <address>: Mailbox full"
+```
+
+The last three fields come from the most recent provider event that said
+anything about delivery. When no event did, they read `delivery_status=UNKNOWN`
+and `destination_response=UNAVAILABLE`, which is itself a finding: we don't
+know, rather than a guess that the receiver deferred the message. The same day's
+cancellation and refund emails stayed `sent` for hours, and without these fields
+nothing could tell a receiver deferring them from a provider that never tried
+again.
+
+The line carries states, provider status words, times, and the receiving
+server's answer after sanitizing: addresses, URLs and long opaque tokens are
+removed, and the answer is at most 300 characters. It never carries an address,
+a subject or a URL. The database refuses a stored answer containing `@`, whoever
+writes it.
+
+### Where the delivery fields come from
+
+Both provider paths store the same sanitized fields on `email_provider_events`
+(migration 0006): `evidence_source`, `delivery_status`, `destination_response`,
+`sender_ip` and `provider_event_time`.
+
+- **Webhook**: only when the Unisender webhook has `delivery_info = 1`. Only
+  `delivery_status`, `destination_response` and `sender_ip` are read from it.
+  The recipient's IP, user agent, device and location in the same object are
+  never read.
+- **Event dump**: the export requests `destination_response` alongside
+  `delivery_status`. It has no `sender_ip`. When an event carries an answer,
+  the sanitized answer is part of its deduplication key
+  (`unisender:event-dump:v2:`). An export that finally carries the answer
+  therefore adds a row next to the same event recorded without it, which covers
+  every row reconciled before this change, including 2026-09-24's two stuck
+  jobs. It isn't discarded as a duplicate. Without an answer the key is
+  unchanged, so older rows still deduplicate exactly as before.
+
+### An unresolved email does not use up the event-dump allowance
+
+Unisender stores at most ten exports, each for eight hours. The runtime creates
+at most nine in any eight hours. Before this change, an email that stayed `sent`
+was exported again five minutes after every export that still showed it
+unresolved. On 2026-09-24 two such emails used the whole allowance in an hour,
+and nothing could be reconciled for the next seven.
+
+Now each export that has been read and still leaves an email unresolved doubles
+that email's wait before the next one: 5, 10, 20, 40 minutes, and so on, up to
+4 hours. A saturated or unread export keeps the 5-minute retry, because it never
+showed the email. The wait comes from how many exports that email already has
+in the database, so a worker restart doesn't reset it.
+
+An export that has been read is deleted at Unisender, which frees its slot
+instead of holding it for eight hours. The dump to delete is recorded in the
+same write that finishes its run (migration 0007, `release_dump_id`). Every
+reconcile pass retries it, up to five attempts, so a failed or ambiguous delete,
+or a process that dies first, is retried instead of forgotten. After eight
+hours Unisender has removed the dump itself, and the record is cleared. A delete
+that keeps failing never causes an export to be created: capacity is still
+whatever `event-dump/list` reports, and the create path refuses while nine
+exist. Evidence ingested before a failed delete is kept.
+
+The regression tests replay the production shape. One email stuck at `sent` is
+reconciled every minute for eight hours, with the worker restarted every hour
+and every export's first delete failing. A second test covers a delete that
+never succeeds. Removing either the backoff or the retry sweep fails both tests.
+
 ## Installing the release runner on the VPS
 
 The workflow invokes one command, `flexperiment-release`, over SSH. It is a

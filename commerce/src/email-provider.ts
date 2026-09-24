@@ -27,6 +27,8 @@ export type UnisenderDumpEvent = {
   jobId: string;
   status: string;
   deliveryStatus: string;
+  /** Raw, as the dump carried it; sanitized before anything stores it. */
+  destinationResponse?: string;
   metadata: unknown;
 };
 
@@ -43,6 +45,8 @@ export interface EmailDeliveryEvidenceProvider {
   listEventDumps(): Promise<{ count: number }>;
   createEventDump(input: { startTime: string; endTime: string; jobId?: string }): Promise<{ dumpId: string }>;
   getEventDump(input: { dumpId: string }): Promise<UnisenderEventDump>;
+  /** Frees one of the provider's ten stored-dump slots once an export has been read. */
+  deleteEventDump?(input: { dumpId: string }): Promise<void>;
 }
 
 export const isEmailDeliveryEvidenceProvider = (provider: EmailProvider): provider is EmailProvider & EmailDeliveryEvidenceProvider =>
@@ -154,7 +158,9 @@ const dumpEvidenceFromCsv = (csv: string) => {
     const deliveryStatus = row[columns.get("delivery_status")!];
     const rawMetadata = row[columns.get("metadata")!];
     if (![eventTime, jobId, status, deliveryStatus, rawMetadata].every((value) => typeof value === "string")) return [];
-    try { return [{ eventTime, jobId, status, deliveryStatus, metadata: JSON.parse(rawMetadata) }]; }
+    const responseColumn = columns.get("destination_response");
+    const destinationResponse = responseColumn === undefined ? undefined : row[responseColumn];
+    try { return [{ eventTime, jobId, status, deliveryStatus, ...(destinationResponse ? { destinationResponse } : {}), metadata: JSON.parse(rawMetadata) }]; }
     catch { return []; }
   }) };
 };
@@ -221,10 +227,11 @@ export class UnisenderGoProvider implements EmailProvider, EmailDeliveryEvidence
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "application/json", "X-API-KEY": this.config.apiKey },
       // Batch one small time window. Request only fields needed for strict
-      // opaque correlation; the export never includes recipient/address data.
+      // opaque correlation, plus the receiver's answer, which is sanitized
+      // before it is stored; the export never includes recipient/address data.
       body: JSON.stringify({ start_time: input.startTime, end_time: input.endTime, limit: UNISENDER_EVENT_DUMP_EVENT_LIMIT,
         ...(input.jobId ? { filter: { job_id: input.jobId } } : {}),
-        dump_fields: ["event_time", "job_id", "status", "delivery_status", "metadata"], format: "csv" }),
+        dump_fields: ["event_time", "job_id", "status", "delivery_status", "destination_response", "metadata"], format: "csv" }),
     });
     const payload = await response.json().catch(() => undefined) as UnisenderDumpCreateResponse | undefined;
     if (!response.ok) {
@@ -233,6 +240,16 @@ export class UnisenderGoProvider implements EmailProvider, EmailDeliveryEvidence
     }
     if (payload?.status !== "success" || typeof payload.dump_id !== "string" || !payload.dump_id) throw new EmailProviderAmbiguousError();
     return { dumpId: payload.dump_id };
+  }
+
+  async deleteEventDump(input: { dumpId: string }) {
+    const response = await this.requestEventDump(`${EVENT_DUMP_URL}/delete.json`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json", "X-API-KEY": this.config.apiKey },
+      body: JSON.stringify({ dump_id: input.dumpId }),
+    });
+    const payload = await response.json().catch(() => undefined) as { status?: unknown } | undefined;
+    if (!response.ok || payload?.status !== "success") throw new Error("Unisender Event Dump delete failed.");
   }
 
   async getEventDump(input: { dumpId: string }): Promise<UnisenderEventDump> {

@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import { canonical, canonicalV2, decryptTicketCapability, id, now, publicId, sha256 } from "./crypto";
 import { EmailProviderRejectedError, EventDumpCreateRejectedError, isEmailDeliveryEvidenceProvider, type EmailProvider, type UnisenderDumpEvent, UNISENDER_EVENT_DUMP_EVENT_LIMIT, UnconfiguredEmailProvider } from "./email-provider";
+import { deliveryEvidence } from "./email-delivery-evidence";
 import type { LegalManifest } from "./legal-manifest";
 import { loadCanonicalLegalRelease, verifyCurrentLegalSourceHashes, type CanonicalLegalRelease } from "./legal-release";
 import { providerErrorEvidence, type PaymentProvider } from "./provider";
@@ -79,6 +80,16 @@ export {
 export const UNISENDER_EVENT_DUMP_GRACE_MS = 5 * 60 * 1_000;
 export const UNISENDER_EVENT_DUMP_POLL_MS = 15 * 1_000;
 export const UNISENDER_EVENT_DUMP_REEXPORT_MS = 5 * 60 * 1_000;
+/**
+ * An email an export has already shown as unresolved is exported again later
+ * each time: 5, 10, 20, 40 minutes... up to this. A message that stays `sent`
+ * gains little from a new export every five minutes, and on 2026-09-24 two of
+ * them used the whole create allowance in an hour.
+ */
+export const UNISENDER_EVENT_DUMP_MAX_REEXPORT_BACKOFF_MS = 4 * 60 * 60 * 1_000;
+/** UniSender deletes a dump itself after this long. */
+export const UNISENDER_EVENT_DUMP_LIFETIME_MS = 8 * 60 * 60 * 1_000;
+export const UNISENDER_EVENT_DUMP_MAX_RELEASE_ATTEMPTS = 5;
 export const UNISENDER_EVENT_DUMP_MAX_POLL_BACKOFF_MS = 2 * 60 * 1_000;
 export const UNISENDER_EVENT_DUMP_MAX_CREATES_PER_EIGHT_HOURS = 9;
 /** Keep a conservative slot below Unisender's documented max of ten dumps. */
@@ -688,7 +699,8 @@ export class CommerceDomain {
         OR EXISTS (SELECT 1 FROM refunds r WHERE r.order_id = ? AND r.id = outbox.payload_ref)
       ORDER BY outbox.created_at`, orderId, ticket?.id ?? "", booking?.id ?? "", orderId);
     const emailProviderEvents = many(this.db, `SELECT event.outbox_id, event.semantic_key,
-      event.status, event.provider_status, event.job_id, event.received_at
+      event.status, event.provider_status, event.job_id, event.received_at,
+      event.evidence_source, event.delivery_status, event.destination_response, event.provider_event_time
       FROM email_provider_events event JOIN email_outbox outbox ON outbox.id = event.outbox_id
       WHERE outbox.payload_ref = ? OR outbox.payload_ref = ? OR outbox.payload_ref = ?
         OR EXISTS (SELECT 1 FROM refunds r WHERE r.order_id = ? AND r.id = outbox.payload_ref)
@@ -1220,6 +1232,7 @@ export class CommerceDomain {
     if (!isEmailDeliveryEvidenceProvider(this.emailProvider)) return;
     const timestamp = new Date(this.clock()).toISOString();
     this.failStaleUnisenderEventDumpCreates(timestamp);
+    await this.releaseUnisenderEventDumps();
     const poll = this.claimUnisenderEventDumpRun(timestamp);
     if (poll) return this.pollUnisenderEventDumpRun(poll, timestamp);
     const lease = this.reserveUnisenderEventDumpCreateLease(timestamp);
@@ -1445,6 +1458,7 @@ export class CommerceDomain {
       const dump = await this.emailProvider.getEventDump({ dumpId: run.dump_id });
       if (dump.status === "failed") {
         this.finishUnisenderEventDumpRun(String(run.id), String(run.lease), timestamp, "FAILED");
+        await this.releaseUnisenderEventDumps();
         return;
       }
       for (const event of dump.events) this.applyUnisenderDumpEvent(String(run.id), event);
@@ -1454,11 +1468,38 @@ export class CommerceDomain {
         const saturated = typeof dump.returnedEventCount !== "number"
           || dump.returnedEventCount >= Number(run.requested_limit ?? UNISENDER_EVENT_DUMP_EVENT_LIMIT);
         this.finishUnisenderEventDumpRun(String(run.id), String(run.lease), timestamp, "READY", saturated, typeof run.job_id_filter === "string" && run.job_id_filter.length > 0);
+        await this.releaseUnisenderEventDumps();
         return;
       }
       this.deferUnisenderEventDumpPoll(String(run.id), String(run.lease), timestamp, "IN_PROCESS");
     } catch {
       this.deferUnisenderEventDumpPoll(String(run.id), String(run.lease), timestamp, "POLL_UNAVAILABLE");
+    }
+  }
+
+  /**
+   * Give read exports back. The dump to delete was recorded by the write that
+   * finished its run, so a failed or ambiguous delete - or a process that died
+   * before trying - is retried here on the next pass, a bounded number of
+   * times. Nothing here decides to create an export: capacity is still
+   * whatever event-dump/list says. Past UniSender's own eight-hour lifetime the
+   * dump is gone anyway and the record is cleared.
+   */
+  private async releaseUnisenderEventDumps() {
+    if (!isEmailDeliveryEvidenceProvider(this.emailProvider) || !this.emailProvider.deleteEventDump) return;
+    const expired = new Date(this.clock() - UNISENDER_EVENT_DUMP_LIFETIME_MS).toISOString();
+    this.db.prepare(`UPDATE unisender_event_dump_runs SET release_dump_id = NULL
+      WHERE release_dump_id IS NOT NULL AND create_started_at <= ?`).run(expired);
+    const pending = many(this.db, `SELECT id, release_dump_id FROM unisender_event_dump_runs
+      WHERE release_dump_id IS NOT NULL AND release_attempts < ?
+      ORDER BY create_started_at LIMIT 3`, UNISENDER_EVENT_DUMP_MAX_RELEASE_ATTEMPTS);
+    for (const run of pending) {
+      let released = false;
+      try { await this.emailProvider.deleteEventDump({ dumpId: String(run.release_dump_id) }); released = true; } catch { /* retried next pass */ }
+      this.db.prepare(released
+        ? "UPDATE unisender_event_dump_runs SET release_dump_id = NULL WHERE id = ? AND release_dump_id = ?"
+        : "UPDATE unisender_event_dump_runs SET release_attempts = release_attempts + 1 WHERE id = ? AND release_dump_id = ?")
+        .run(run.id, run.release_dump_id);
     }
   }
 
@@ -1510,8 +1551,21 @@ export class CommerceDomain {
         END,
         updated_at = ?
       WHERE run_id = ? AND state = 'ACTIVE'`).run(retryAt, saturated ? 1 : 0, wasTargeted ? 1 : 0, timestamp, runId);
+    // An export that was read and still left the email unresolved: the next
+    // one waits twice as long as the last. Saturated or unread exports keep
+    // the base delay - they did not show the email at all.
+    if (outcome === "READY" && !saturated) {
+      const waiting = many(this.db, `SELECT target.id, (SELECT COUNT(*) FROM unisender_event_dump_targets prior
+          WHERE prior.outbox_id = target.outbox_id) AS exports
+        FROM unisender_event_dump_targets target WHERE target.run_id = ? AND target.state = 'RETRY_WAIT'`, runId);
+      const backoff = this.db.prepare("UPDATE unisender_event_dump_targets SET next_attempt_at = ? WHERE id = ?");
+      for (const target of waiting) {
+        const delay = Math.min(UNISENDER_EVENT_DUMP_REEXPORT_MS * (2 ** Math.min(Math.max(0, Number(target.exports) - 1), 16)), UNISENDER_EVENT_DUMP_MAX_REEXPORT_BACKOFF_MS);
+        backoff.run(new Date(this.clock() + delay).toISOString(), target.id);
+      }
+    }
     this.db.prepare(`UPDATE unisender_event_dump_runs
-      SET state = ?, dump_id = NULL, next_attempt_at = ?, last_error_code = ?,
+      SET state = ?, release_dump_id = dump_id, dump_id = NULL, next_attempt_at = ?, last_error_code = ?,
           lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
       WHERE id = ? AND lease_owner = ?`)
 .run(outcome === "READY" ? "CONSUMED" : "EXHAUSTED", timestamp, outcome === "READY" ? null : outcome, timestamp, runId, lease);
@@ -1526,8 +1580,17 @@ export class CommerceDomain {
     if (!target) return;
     if (!event.eventTime || !event.deliveryStatus) return;
     const providerStatus = event.status.toLowerCase();
-    const semanticKey = `unisender:event-dump:${sha256(canonical({ outbox_id: target.outbox_id, job_id: event.jobId, status: providerStatus, delivery_status: event.deliveryStatus, event_time: event.eventTime }))}`;
-    const observation = normalizeUnisenderReconciliationEvent({ outboxId: String(target.outbox_id), providerStatus, jobId: event.jobId, semanticKey });
+    const delivery = deliveryEvidence({ deliveryStatus: event.deliveryStatus, destinationResponse: event.destinationResponse, eventTime: event.eventTime });
+    // The receiver's answer is part of the event's identity, sanitized, so an
+    // export that finally carries it is not discarded as a duplicate of the
+    // same event recorded without it - which is every row reconciled before
+    // exports requested it. Without an answer the key is unchanged, so those
+    // rows still deduplicate exactly as before.
+    const identity = { outbox_id: target.outbox_id, job_id: event.jobId, status: providerStatus, delivery_status: event.deliveryStatus, event_time: event.eventTime };
+    const semanticKey = delivery.destinationResponse
+      ? `unisender:event-dump:v2:${sha256(canonical({ ...identity, destination_response: delivery.destinationResponse }))}`
+      : `unisender:event-dump:${sha256(canonical(identity))}`;
+    const observation = normalizeUnisenderReconciliationEvent({ outboxId: String(target.outbox_id), providerStatus, jobId: event.jobId, semanticKey, source: "EVENT_DUMP", delivery });
     if (observation) this.applyUnisenderDelivery(observation);
   }
 
@@ -1805,7 +1868,14 @@ export class CommerceDomain {
     return withImmediateTransaction(this.db, () => {
       const outbox = one(this.db, "SELECT id FROM email_outbox WHERE id = ?", input.outboxId);
       if (!outbox) throw new DomainError("UNISENDER_OUTBOX_NOT_FOUND", 404);
-      const inserted = this.db.prepare("INSERT OR IGNORE INTO email_provider_events(id, outbox_id, semantic_key, status, provider_status, job_id) VALUES (?, ?, ?, ?, ?, ?)").run(id(), input.outboxId, input.semanticKey, input.status, input.providerStatus, input.jobId ?? null);
+      // The one seam every provider path writes through sanitizes again, so no
+      // caller has to be trusted to have done it; the schema's `@` check is
+      // only the backstop.
+      const delivery = deliveryEvidence(input.delivery ?? {});
+      const inserted = this.db.prepare(`INSERT OR IGNORE INTO email_provider_events(id, outbox_id, semantic_key, status, provider_status, job_id,
+          evidence_source, delivery_status, destination_response, sender_ip, provider_event_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+.run(id(), input.outboxId, input.semanticKey, input.status, input.providerStatus, input.jobId ?? null,
+          input.source, delivery.deliveryStatus, delivery.destinationResponse, delivery.senderIp, delivery.eventTime);
       if (!inserted.changes) return { duplicate: true };
       if (input.providerStatus === "delivered") {
         this.completeDeliveredCityInterest(input.outboxId);

@@ -105,7 +105,12 @@ afterEach(() => {
   for (const name of Object.keys(env)) delete env[name];
 });
 
-const production = () => {
+/**
+ * `withhold`: email types the recipient's server keeps deferring - the provider
+ * reports them sent, never delivered. `emailMs` shortens the wait so a test can
+ * reach its end.
+ */
+const production = (options: { withhold?: readonly string[]; emailMs?: number } = {}) => {
   const db = openDatabase(":memory:");
   migrate(db);
   db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, 'moscow', 'Москва')").run(randomUUID());
@@ -171,8 +176,9 @@ const production = () => {
     for (const email of unisender.sent) {
       if (!email.outboxId || delivered.has(email.jobId)) continue;
       delivered.add(email.jobId);
+      const status = options.withhold?.includes(email.type ?? "") ? "sent" : "delivered";
       const unsigned = JSON.stringify({ auth: "pending", events_by_user: [{ user_id: 1, events: [{ event_name: "transactional_email_status",
-        event_data: { job_id: email.jobId, metadata: { outbox_id: email.outboxId }, status: "delivered", event_time: "2026-09-24 04:00:00" } }] }] });
+        event_data: { job_id: email.jobId, metadata: { outbox_id: email.outboxId }, status, event_time: "2026-09-24 04:00:00" } }] }] });
       const body = unsigned.replace("pending", createHash("md5").update(unsigned.replace("pending", UNISENDER_KEY)).digest("hex"));
       const response = await app.request(`${API}/v1/webhooks/unisender`, { method: "POST", headers: { "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.1" }, body });
       if (response.status !== 200) throw new Error(`UNISENDER_WEBHOOK_REFUSED ${response.status} ${await response.text()}`);
@@ -220,13 +226,29 @@ const production = () => {
     },
     terminal: () => terminal,
     fetch: runnerFetch,
-    timeouts: { paymentMs: 60_000, emailMs: 60_000, refundMs: 60_000 },
+    timeouts: { paymentMs: 60_000, emailMs: options.emailMs ?? 60_000, refundMs: 60_000 },
   });
 
   return { db, app, tochka, unisender, driver, requests, payer };
 };
 
 describe("a production certification against the real commerce runtime", () => {
+  it("fails an undelivered ticket at the limit, and says what it saw", async () => {
+    // The recipient's server defers the ticket: the provider reports it sent,
+    // never delivered. The limit fails the certification as before; the
+    // failure now carries what the wait observed - and nothing personal.
+    const world = production({ withhold: ["TICKET"], emailMs: 1 });
+    const capability = await world.driver.issueCapability(SESSION);
+    await world.driver.preflight(capability);
+
+    const failure = await world.driver.certify(capability).then(() => undefined, (error: Error) => error.message);
+    expect(failure).toMatch(/^INCOMPLETE:CERTIFICATION_EMAIL_TIMEOUT:TICKET last_status=SENT last_provider=sent@\S+ provider_events=\d+ queued_at=\S+ first_sent_at=\S+ waited=\d+m\d{2}s observed_at=\S+ delivery_status=\w+ evidence_source=\w+ destination_response=(UNAVAILABLE|"[^"]*")$/);
+    expect(failure).not.toContain("certification@example.test");
+    const run = new SqliteCertificationRunStore(world.db).load(capability.runId)!;
+    expect(run.failure?.code).toMatch(/^CERTIFICATION_EMAIL_TIMEOUT:TICKET last_status=SENT /);
+    world.db.close();
+  });
+
   it("runs from CREATE_OCCURRENCE to COMPLETE through every real route", async () => {
     const world = production();
     const capability = await world.driver.issueCapability(SESSION);

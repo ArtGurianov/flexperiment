@@ -1,3 +1,5 @@
+import type { DeliveryEvidence } from "./email-delivery-evidence";
+
 /**
  * Provider observations are evidence, not a second delivery authority. Both
  * the webhook fast path and the delayed Event Dump path must enter the same
@@ -10,6 +12,9 @@ export type UnisenderReconciliationEvent = {
   providerStatus: UnisenderDeliveryStatus;
   jobId?: string;
   semanticKey: string;
+  source: "WEBHOOK" | "EVENT_DUMP";
+  /** Already sanitized: see email-delivery-evidence.ts. */
+  delivery?: DeliveryEvidence;
 };
 
 const deliveryStatus = (providerStatus: string): UnisenderReconciliationEvent["status"] | undefined => {
@@ -25,6 +30,8 @@ export const normalizeUnisenderReconciliationEvent = (input: {
   providerStatus: unknown;
   jobId?: unknown;
   semanticKey: string;
+  source: UnisenderReconciliationEvent["source"];
+  delivery?: DeliveryEvidence;
 }): UnisenderReconciliationEvent | undefined => {
   if (typeof input.outboxId !== "string" || typeof input.providerStatus !== "string") return undefined;
   const providerStatus = input.providerStatus.toLowerCase();
@@ -36,5 +43,7 @@ export const normalizeUnisenderReconciliationEvent = (input: {
     providerStatus: providerStatus as UnisenderDeliveryStatus,
     ...(typeof input.jobId === "string" ? { jobId: input.jobId } : {}),
     semanticKey: input.semanticKey,
+    source: input.source,
+    ...(input.delivery ? { delivery: input.delivery } : {}),
   };
 };
