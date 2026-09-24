@@ -856,7 +856,13 @@ Both provider paths store the same sanitized fields on `email_provider_events`
   The recipient's IP, user agent, device and location in the same object are
   never read.
 - **Event dump**: the export requests `destination_response` alongside
-  `delivery_status`. It has no `sender_ip`.
+  `delivery_status`. It has no `sender_ip`. When an event carries an answer,
+  the sanitized answer is part of its deduplication key
+  (`unisender:event-dump:v2:`). An export that finally carries the answer
+  therefore adds a row next to the same event recorded without it, which covers
+  every row reconciled before this change, including 2026-09-24's two stuck
+  jobs. It isn't discarded as a duplicate. Without an answer the key is
+  unchanged, so older rows still deduplicate exactly as before.
 
 ### An unresolved email does not use up the event-dump allowance
 

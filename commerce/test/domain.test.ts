@@ -8,7 +8,8 @@ import { CommerceDomain, CREATE_UNKNOWN_LOOKUP_INITIAL_BACKOFF_MS, CREATE_UNKNOW
 import { runWorkerSweep } from "../src/worker-sweep";
 import { EventDumpCreateRejectedError, UnisenderGoProvider, type EmailDeliveryEvidenceProvider, type EmailProvider } from "../src/email-provider";
 import { MockProvider, TochkaProviderError, type PaymentProvider } from "../src/provider";
-import { decryptTicketCapability, emailHash, sha256 } from "../src/crypto";
+import { canonical, decryptTicketCapability, emailHash, sha256 } from "../src/crypto";
+import { emailTimeoutDiagnosis } from "../src/certification/evidence";
 
 const legalManifest = { documents: Object.fromEntries(["PUBLIC_OFFER", "PRIVACY_POLICY", "PD_CONSENT", "CHECKOUT_DISCLOSURE"].map((document) => [document, { document_id: document, version: "test-1", sha256: "0".repeat(64), current_url: `https://example.test/legal/${document}`, archive_url: `https://example.test/archive/${document}`, checkout_relevant: true }])) };
 const unisenderTestConfig = { apiKey: "test-key-not-a-secret", fromEmail: "noreply@example.test", fromName: "Flexperiment", replyToEmail: "hello@example.test" };
@@ -1413,6 +1414,60 @@ describe("commerce domain", () => {
     expect(deleted).toHaveLength(created.length);
     expect(stored.size).toBe(0);
     expect(setup.db.prepare("SELECT COUNT(*) AS n FROM unisender_event_dump_runs WHERE release_dump_id IS NOT NULL").get()).toEqual({ n: 0 });
+  });
+
+  it("enriches an event production already reconciled without the receiver's answer (#156 rollout)", async () => {
+    // Production reconciled both stuck jobs by Event Dump at 06:57Z, before
+    // exports carried destination_response. The same provider event exported
+    // again with the answer must add a row, not be discarded as a duplicate.
+    const setup = fixture(); databases.push(setup.db);
+    let timestamp = Date.parse("2026-09-24T06:45:00.000Z");
+    let outboxId = "";
+    let response: string | undefined = "451 4.7.1 <buyer@example.test> try again later";
+    const sent = () => ({ eventTime: "2026-09-24 06:51:59", jobId: "1x9dJF-000bXq-8zcp", status: "sent", deliveryStatus: "ok_sent", metadata: { outbox_id: outboxId },
+      ...(response ? { destinationResponse: response } : {}) });
+    const email: EmailProvider & EmailDeliveryEvidenceProvider = {
+      async send() { return { jobId: "1x9dJF-000bXq-8zcp" }; },
+      async lookup() { return { status: "UNKNOWN" }; },
+      async listEventDumps() { return { count: 0 }; },
+      async createEventDump() { return { dumpId: `dump-${timestamp}` }; },
+      async getEventDump() { return { status: "ready", returnedEventCount: 1, events: [sent()] }; },
+      async deleteEventDump() {},
+    };
+    const domain = new CommerceDomain(setup.db, new MockProvider(), email, () => timestamp);
+    const quote = domain.checkoutContext({ occurrenceId: setup.occurrenceId });
+    const checkout = await domain.checkoutAsync(checkoutPayload(quote.quote_id), "event-dump-enrich", "https://flexperiment.ru");
+    const payment = setup.db.prepare("SELECT p.id FROM payments p JOIN orders o ON o.id = p.order_id WHERE o.public_status_id = ?").get(checkout.status_id) as { id: string };
+    domain.markPaymentPaid(payment.id, 100_000, "provider-payment");
+    outboxId = (setup.db.prepare("SELECT id FROM email_outbox WHERE type = 'TICKET'").get() as { id: string }).id;
+    await domain.processEmailOutbox();
+    // The row production holds: written by the pre-#156 code, under its key, with no detail.
+    const legacyKey = `unisender:event-dump:${sha256(canonical({ outbox_id: outboxId, job_id: "1x9dJF-000bXq-8zcp", status: "sent", delivery_status: "ok_sent", event_time: "2026-09-24 06:51:59" }))}`;
+    setup.db.prepare(`INSERT INTO email_provider_events(id, outbox_id, semantic_key, status, provider_status, job_id, received_at)
+      VALUES ('legacy', ?, ?, 'SENT', 'sent', '1x9dJF-000bXq-8zcp', '2026-09-24 06:57:27')`).run(outboxId, legacyKey);
+    const rows = () => setup.db.prepare(`SELECT semantic_key, destination_response FROM email_provider_events
+      WHERE outbox_id = ? AND semantic_key LIKE 'unisender:event-dump:%' ORDER BY received_at, semantic_key`).all(outboxId) as { semantic_key: string; destination_response: string | null }[];
+    const exportOnce = async () => { for (let minute = 0; minute < 5 * 60; minute += 1) { timestamp += 60_000; await domain.reconcileUnisenderEventDumps(); } };
+
+    await exportOnce();
+    expect(rows()).toEqual([
+      { semantic_key: legacyKey, destination_response: null },
+      { semantic_key: expect.stringMatching(/^unisender:event-dump:v2:[0-9a-f]{64}$/), destination_response: "451 4.7.1 <address> try again later" },
+    ]);
+    // The key is derived from the sanitized answer, never the raw one.
+    expect(rows()[1].semantic_key).toBe(`unisender:event-dump:v2:${sha256(canonical({ outbox_id: outboxId, job_id: "1x9dJF-000bXq-8zcp", status: "sent", delivery_status: "ok_sent", event_time: "2026-09-24 06:51:59", destination_response: "451 4.7.1 <address> try again later" }))}`);
+
+    // The exact rich event again, and the poorer one again: both duplicates.
+    await exportOnce();
+    response = undefined;
+    await exportOnce();
+    expect(rows()).toHaveLength(2);
+
+    // And the timeout diagnosis still reads the rich evidence.
+    const events = setup.db.prepare("SELECT * FROM email_provider_events WHERE outbox_id = ?").all(outboxId) as Record<string, unknown>[];
+    const outbox = setup.db.prepare("SELECT id, type, payload_ref, status, created_at, sent_at FROM email_outbox WHERE id = ?").get(outboxId) as Record<string, unknown>;
+    expect(emailTimeoutDiagnosis({ email_outbox: [outbox], email_provider_events: events }, "TICKET", String(outbox.payload_ref), new Date(timestamp - 15 * 60_000), new Date(timestamp)))
+      .toMatch(/ delivery_status=ok_sent evidence_source=EVENT_DUMP destination_response="451 4\.7\.1 <address> try again later"$/);
   });
 
   it("stops retrying a delete that never succeeds, and never creates an export because of it", async () => {

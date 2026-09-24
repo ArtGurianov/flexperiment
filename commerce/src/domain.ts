@@ -1580,9 +1580,17 @@ export class CommerceDomain {
     if (!target) return;
     if (!event.eventTime || !event.deliveryStatus) return;
     const providerStatus = event.status.toLowerCase();
-    const semanticKey = `unisender:event-dump:${sha256(canonical({ outbox_id: target.outbox_id, job_id: event.jobId, status: providerStatus, delivery_status: event.deliveryStatus, event_time: event.eventTime }))}`;
-    const observation = normalizeUnisenderReconciliationEvent({ outboxId: String(target.outbox_id), providerStatus, jobId: event.jobId, semanticKey, source: "EVENT_DUMP",
-      delivery: deliveryEvidence({ deliveryStatus: event.deliveryStatus, destinationResponse: event.destinationResponse, eventTime: event.eventTime }) });
+    const delivery = deliveryEvidence({ deliveryStatus: event.deliveryStatus, destinationResponse: event.destinationResponse, eventTime: event.eventTime });
+    // The receiver's answer is part of the event's identity, sanitized, so an
+    // export that finally carries it is not discarded as a duplicate of the
+    // same event recorded without it - which is every row reconciled before
+    // exports requested it. Without an answer the key is unchanged, so those
+    // rows still deduplicate exactly as before.
+    const identity = { outbox_id: target.outbox_id, job_id: event.jobId, status: providerStatus, delivery_status: event.deliveryStatus, event_time: event.eventTime };
+    const semanticKey = delivery.destinationResponse
+      ? `unisender:event-dump:v2:${sha256(canonical({ ...identity, destination_response: delivery.destinationResponse }))}`
+      : `unisender:event-dump:${sha256(canonical(identity))}`;
+    const observation = normalizeUnisenderReconciliationEvent({ outboxId: String(target.outbox_id), providerStatus, jobId: event.jobId, semanticKey, source: "EVENT_DUMP", delivery });
     if (observation) this.applyUnisenderDelivery(observation);
   }
 
