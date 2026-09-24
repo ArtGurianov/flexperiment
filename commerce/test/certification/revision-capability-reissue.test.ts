@@ -204,6 +204,15 @@ describe("reissuing an expired, unspent revision capability", () => {
     await expect(driver().preflight(first)).rejects.toThrow("NO_NETWORK_IN_REISSUE_TESTS");
   });
 
+  it("lets a spent capability through preflight hours after its expiry: the refund and cleanup continue under it", async () => {
+    const first = handedOver();
+    new SqliteCertificationCapabilityStore(db).spend(first.id, new Date(T0.getTime() + 60_000));
+    const spent = new SqliteCertificationCapabilityStore(db).get(first.id)!;
+    clock = new Date(Date.parse(spent.expiresAt) + 6 * 60 * 60_000);
+    // Past the freshness check, on to the runtime (which this test does not have).
+    await expect(driver().preflight(spent)).rejects.toThrow("NO_NETWORK_IN_REISSUE_TESTS");
+  });
+
   it("refuses a capability that is not the current revision's", () => {
     // The revision is another release; this capability is not its. A shape no
     // path produces, and guessing which one to trust is how a second

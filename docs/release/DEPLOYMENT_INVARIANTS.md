@@ -637,7 +637,7 @@ arming (rollback forbidden, sales fenced), `forward-deploy <session>
   revision's `-rN` (one rule, `reissueExpiredCapability`). For a revision: An operator who starts `certify` after the TTL would otherwise be
   refused in preflight, and `forward-deploy` with the same commit only finds
   the existing run, so the session could be finished only by a new commit.
-  `certify` replaces it first (`reissueExpiredRevisionCapability`), under the
+  `certify` replaces it first (`reissueExpiredCapability`), under the
   rules `-a2` already has. It acts only on an expired, unspent capability of the
   current binding's run, which must also be the session's one live slot.
   Earlier revisions' spent capabilities are never retired, because spent and
