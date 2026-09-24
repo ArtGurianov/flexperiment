@@ -845,6 +845,33 @@ removed, and the answer is at most 300 characters. It never carries an address,
 a subject or a URL. The database refuses a stored answer containing `@`, whoever
 writes it.
 
+### The certification mailbox must be reachable from UniSender quickly
+
+The certification's customer email is `customer_email` in the operator checkout
+body (`CERTIFICATION_CHECKOUT_BODY` in `release-runner.env`). It must be a
+mailbox that accepts UniSender's mail within minutes, because every one of the
+three emails has 15 minutes.
+
+On 2026-09-24 the certification address was a ProtonMail mailbox, and
+UniSender, which sends from Russia, got slow or no acceptance from Proton each
+time:
+
+| Email | Sent (UniSender `sent`) | Delivered |
+|---|---|---|
+| `-r1` ticket | 06:17:58Z | 06:36:04Z, 18 min (the mailbox was also full) |
+| `-r1` cancellation and refund | 06:51:59Z | 09:34:44Z, 2 h 43 min |
+| `-r2` ticket | 09:44:18Z | not within the 15-minute wait |
+
+There were no bounces and no suppression, and nothing was resent: one send
+attempt each, with UniSender's first SMTP attempt on time. Both `-r1` and
+`-r2` failed on `EMAIL_TIMEOUT` and were refunded. `-r3` uses a Gmail mailbox
+instead, which changes only the receiving side.
+
+Certify against a mainstream provider that accepts mail from Russia promptly,
+and keep its inbox with space free. Changing the recipient needs no code
+change, but a run's checkout request is bound to the body it was created
+with, so the change only applies from the next revision's run.
+
 ### Where the delivery fields come from
 
 Both provider paths store the same sanitized fields on `email_provider_events`
