@@ -188,6 +188,12 @@ the fence closed, and the only way on is `rollback`. Either wire it in as
 `continueSession` and make `resume` say "roll back" for those states. Deleting
 it is simpler, and rollback covers both states.
 
+It also leaves the lease behind. For `RETRY_DEPLOY` and `PROVE_READINESS`,
+plain `resume` takes the lease and exits 0 **without yielding it**, so a
+separate follow-up invocation would wait out the lease. If continuation stays
+a separate invocation, the diagnostic `resume` must yield. Better: continue in
+the same invocation (`resume --continue`), which is what #164/#165 do.
+
 ### Forward supersession
 
 1. **Scenario:** a maintenance release crossed the external-effects boundary
@@ -264,9 +270,9 @@ Coolify, not in this file. They are outside this audit.
 
 1. **PR: shared admission for `deploy`**, and `publish-candidate` accepting
    only `MAINTENANCE_REQUIRED`. Before the next production release.
-2. **PR: `resume`.** Delete `continueSession` and make `resume` point at
-   `rollback` for `RETRY_DEPLOY`/`PROVE_READINESS`, or wire it in. A small
-   decision.
+2. **PR: `resume --continue`** runs `continueSession` in the same invocation.
+   Plain `resume` yields its lease and exits 12 whenever action is still
+   needed.
 3. **VPS cleanup**, in the order above: stage a runner from `main`, observe,
    then remove the nine retired names. Keep the launch forensics. Disk is 59%
    used (31 GB free).
