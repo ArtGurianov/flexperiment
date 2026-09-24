@@ -3,7 +3,7 @@ import { ZodError } from "zod";
 import type { Sqlite } from "./db";
 import { assertAdminOrigin, issueAdminSession, parseSession, verifyAdminPassword } from "./auth";
 import { emailHash, publicId, sha256 } from "./crypto";
-import { admitCertificationCheckout, CERTIFICATION_CLAIM_HEADER, parseCertificationClaim } from "./certification/checkout-admission";
+import { admitCertificationCheckout, CERTIFICATION_CLAIM_HEADER, parseCertificationClaim, presentCertificationQuote } from "./certification/checkout-admission";
 import { createCertificationServiceRouter } from "./certification/service-router";
 import { CommerceDomain, DomainError } from "./domain";
 import type { CertificationContext } from "./domain/checkout";
@@ -188,7 +188,12 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
     rateLimit(clientIpRateLimitKey("checkout-context", c.req.raw.headers), 30, 60_000);
     const input = checkoutContextSchema.parse(await jsonBody(c.req.raw));
     rateLimit(`checkout-context-occurrence:${input.occurrence_id}`, 120, 10 * 60_000);
-    return c.json(domain.checkoutContext({ occurrenceId: input.occurrence_id, promoCode: input.promo_code, referralSlug: input.referral_slug }));
+    // A certification quotes its own fixture behind the fence its release
+    // closed. Same header as the checkout, and the same gate decides.
+    const claim = parseCertificationClaim(c.req.header(CERTIFICATION_CLAIM_HEADER));
+    const request = { occurrenceId: input.occurrence_id, promoCode: input.promo_code, referralSlug: input.referral_slug };
+    const certification = claim ? presentCertificationQuote(sqlite, claim, request) : undefined;
+    return c.json(domain.checkoutContext({ ...request, certification }));
   });
   publicApi.post("/checkouts", async (c) => {
     rateLimit(clientIpRateLimitKey("checkout", c.req.raw.headers), 20, 60_000);

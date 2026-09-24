@@ -1,5 +1,5 @@
 import { CertificationCapabilityError, type CertificationClaim } from "./capability";
-import { CERTIFICATION_CLAIM_HEADER } from "./checkout-admission";
+import { CERTIFICATION_CLAIM_HEADER, encodeCertificationClaim } from "./checkout-admission";
 import type { CertificationCatalogueCommand } from "./catalogue-authority";
 import type { AdminPort, PublicPort } from "./machine";
 import type { OccurrenceView, OrderEvidence } from "./evidence";
@@ -192,8 +192,12 @@ export class HttpCertificationPublicPort implements PublicPort {
     this.#client = new Client(options);
   }
 
-  async checkoutContext(occurrenceId: string): Promise<{ quoteId: string }> {
-    const body = await this.#client.call("POST", "/v1/public/checkout-context", "CHECKOUT_CONTEXT", { occurrence_id: occurrenceId });
+  async checkoutContext(occurrenceId: string, claim: CertificationClaim): Promise<{ quoteId: string }> {
+    // The fence is closed by this release; the claim is what lets its own
+    // certification quote its own fixture behind it.
+    const body = await this.#client.call("POST", "/v1/public/checkout-context", "CHECKOUT_CONTEXT", { occurrence_id: occurrenceId }, {
+      [CERTIFICATION_CLAIM_HEADER]: encodeCertificationClaim(claim),
+    });
     const quoteId = body.quote_id;
     if (typeof quoteId !== "string" || !quoteId) throw new CertificationHttpError("CERTIFICATION_QUOTE_MALFORMED", 200);
     return { quoteId };
@@ -202,8 +206,8 @@ export class HttpCertificationPublicPort implements PublicPort {
   async createCheckout(body: string, idempotencyKey: string, claim: CertificationClaim): Promise<{ statusId: string; paymentUrl?: string }> {
     const response = await this.#client.call("POST", "/v1/public/checkouts", "CHECKOUT", JSON.parse(body) as Record<string, unknown>, {
       "Idempotency-Key": idempotencyKey,
-      // Three opaque fields. Never a query parameter: this one opens a fence.
-      [CERTIFICATION_CLAIM_HEADER]: `${claim.capabilityId}.${claim.runId}.${claim.nonce}`,
+      // Never a query parameter: this one opens a fence.
+      [CERTIFICATION_CLAIM_HEADER]: encodeCertificationClaim(claim),
     });
     const statusId = response.status_id;
     if (typeof statusId !== "string" || !statusId) throw new CertificationHttpError("CERTIFICATION_CHECKOUT_MALFORMED", 200);

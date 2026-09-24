@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { availableSeatsSql } from "../occurrence-inventory";
 import type Database from "better-sqlite3";
 import type { CommerceDomain } from "../domain";
 import { DomainError } from "../domain";
@@ -6,7 +7,7 @@ import { activeLegalBinding } from "../release/legal-binding";
 import { DatabaseRuntimeEvidenceReader } from "../release/topology-reader";
 import { authenticateCertificationService, parseCatalogueCommandRequest, performCertificationCatalogueCommand, CertificationEndpointError } from "./catalogue-endpoint";
 import { SqliteCatalogueMutationLedger } from "./catalogue-authority-sqlite";
-import { CERTIFICATION_ADMIN_ID, CERTIFICATION_CANCELLATION_CONFIRMATION, CERTIFICATION_OCCURRENCE_TITLE, CERTIFICATION_PRICE_KOPECKS, CERTIFICATION_TIMEZONE } from "./scope";
+import { CERTIFICATION_ADMIN_ID, CERTIFICATION_OCCURRENCE_TITLE, CERTIFICATION_PRICE_KOPECKS, CERTIFICATION_TIMEZONE } from "./scope";
 import type { OccurrenceView } from "./evidence";
 
 /**
@@ -21,9 +22,16 @@ import type { OccurrenceView } from "./evidence";
  * one mutation is the narrow catalogue command.
  */
 
+/**
+ * The certification's read of an occurrence. `availability` is the same seat
+ * arithmetic the public catalogue shows: the runner proves the seat was held
+ * after payment and released after cancellation with it, and without it both
+ * checks compared against a missing field and could never pass.
+ */
 const occurrenceRow = (db: Database.Database, occurrenceId: string): OccurrenceView => {
   const row = db.prepare(`SELECT o.id, o.title, o.admin_revision, o.visibility, o.sales_status, o.fulfillment_status,
-      o.timezone, o.price_kopecks, o.capacity, o.starts_at, o.ends_at, c.slug AS city_slug
+      o.timezone, o.price_kopecks, o.capacity, o.starts_at, o.ends_at, c.slug AS city_slug,
+      ${availableSeatsSql("o")} AS availability
     FROM occurrences o JOIN cities c ON c.id = o.city_id WHERE o.id = ?`).get(occurrenceId);
   if (!row) throw new DomainError("OCCURRENCE_NOT_FOUND", 404);
   return row as unknown as OccurrenceView;
@@ -136,9 +144,15 @@ export const createCertificationServiceRouter = (sqlite: Database.Database, doma
     runOrder(sqlite, c.req.param("runId"), booking.order_id);
     // A full cancellation, with nothing withheld: a certification that kept
     // part of its own rouble would be proving a refund it did not make.
+    //
+    // The confirmation is the domain's own per-booking phrase, the one an
+    // operator types in the admin UI. It names the exact booking, and this
+    // route has just proved that booking is the run's own order. A fixed
+    // sentence here could never match it, and every certification
+    // cancellation failed with CONFIRMATION_REQUIRED.
     return c.json(domain.cancelCustomerBooking(bookingId, {
       reason: String(body.reason ?? "Production E2E certification"),
-      confirmation_text: CERTIFICATION_CANCELLATION_CONFIRMATION,
+      confirmation_text: `CANCEL ${bookingId}`,
     }, idempotencyKey));
   });
 

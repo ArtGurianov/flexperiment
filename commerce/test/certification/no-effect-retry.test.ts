@@ -6,18 +6,13 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { migrate } from "../../src/db";
 import { issueCapability } from "../../src/certification/capability";
 import { ProductionCertificationDriver } from "../../src/certification/driver";
-import { HttpCertificationAdminPort } from "../../src/certification/http-ports";
-import { certifyProduction, type CertifyPorts } from "../../src/certification/machine";
 import { certificationRunId, retryRunId } from "../../src/certification/no-effect-retry";
 import { readOperatorOccurrence } from "../../src/certification/operator-scope";
-import { TerminalOperator } from "../../src/certification/operator-terminal";
 import type { CertificationRun } from "../../src/certification/run";
-import { CERTIFICATION_OCCURRENCE_TITLE, CERTIFICATION_PRICE_KOPECKS, CERTIFICATION_TIMEZONE } from "../../src/certification/scope";
 import { SqliteCertificationCapabilityStore, SqliteCertificationRunStore } from "../../src/certification/store-sqlite";
 import type { ReleaseCandidate } from "../../src/release/candidate";
 import { schemaInventoryExpectation } from "../../src/release/expectation";
 import { TEST_CAPABILITY_KEY, testSecret } from "../support/certification-secret";
-import { certificationRuntime } from "../support/certification-runtime";
 
 /**
  * Attempt 5's durable state, reproduced row for row, and the one way forward
@@ -94,7 +89,9 @@ const driver = () => new ProductionCertificationDriver({
   operator: { occurrence: readOperatorOccurrence(scopePath), checkoutBodyPath: "/nonexistent" },
   terminal: () => ({ write: () => {}, readLine: () => "", close: () => {} }),
   now: () => clock,
-  fetch: certificationRuntime({ db, sha: SHA, now: clock, citySlug: "kemerovo", legal: LEGAL }),
+  // The retry is durable state only. Nothing here may reach a runtime; the
+  // real-router E2E is where a certification meets one.
+  fetch: (async () => { throw new Error("NO_NETWORK_IN_RETRY_TESTS"); }) as typeof globalThis.fetch,
 });
 
 /** Every durable row the retry could write, for "unchanged" to be checked against. */
@@ -137,7 +134,7 @@ describe("a no-effect certification retry from attempt 5's durable state", () =>
     expect(new SqliteCertificationRunStore(db).load(RETRY)).toBeUndefined();
   });
 
-  it("after expiry retires, creates -a2 and issues its capability together, and the fixed command is admitted", async () => {
+  it("after expiry retires, creates -a2 and issues its capability together", () => {
     world();
     afterExpiry();
     const certification = driver();
@@ -154,27 +151,10 @@ describe("a no-effect certification retry from attempt 5's durable state", () =>
     const capability = certification.recoverCapability(SESSION)!;
     expect(capability.runId).toBe(RETRY);
 
-    // And the retry's first command gets through the deployed runtime's own
-    // admission, which is where attempt 5 stopped.
-    const admin = new HttpCertificationAdminPort({
-      baseUrl: "https://admin.invalid", token: "t", runId: RETRY,
-      fetch: certificationRuntime({ db, sha: SHA, now: clock, citySlug: "kemerovo", legal: LEGAL }),
-    });
-    admin.useClaim({ capabilityId: capability.id, runId: RETRY, nonce: certification.bearerFor(capability) });
-    const ports: CertifyPorts = {
-      admin, publicApi: {} as CertifyPorts["publicApi"],
-      operator: new TerminalOperator({ occurrence: readOperatorOccurrence(scopePath), checkoutBodyPath: "/nonexistent" }, { write: () => {}, readLine: () => "", close: () => {} }),
-      runs: new SqliteCertificationRunStore(db), clock: () => clock,
-      newIdempotencyKey: () => "retry-create-key", waitFor: async () => undefined,
-    };
-    await certifyProduction(ports, {
-      runId: RETRY, candidate, capability, bearerNonce: certification.bearerFor(capability),
-      scope: { citySlug: "kemerovo", title: CERTIFICATION_OCCURRENCE_TITLE, timezone: CERTIFICATION_TIMEZONE, priceKopecks: CERTIFICATION_PRICE_KOPECKS, capacity: 1 },
-      citySlug: "kemerovo", timeouts: { paymentMs: 1, emailMs: 1, refundMs: 1 },
-    });
-    const ledger = db.prepare("SELECT run_id, command_kind FROM certification_catalogue_mutations ORDER BY recorded_at").all();
-    expect(ledger[0]).toEqual({ run_id: RETRY, command_kind: "CREATE_OCCURRENCE" });
-    expect(ledger.filter((row) => (row as { run_id: string }).run_id === BASE)).toEqual([]);
+    // Whether -a2's commands then get through a runtime is not this test's
+    // question: real-router-e2e.test.ts runs a certification through the real
+    // app. What matters here is that nothing ran under the first run's name.
+    expect(db.prepare("SELECT COUNT(*) AS n FROM certification_catalogue_mutations WHERE run_id = ?").get(BASE)).toEqual({ n: 0 });
   });
 
   it("is idempotent: a second certify continues -a2 and never makes -a3", () => {

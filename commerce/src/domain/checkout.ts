@@ -99,7 +99,7 @@ export const replayCheckout = (host: CheckoutHost, input: unknown, idempotencyKe
   return host.checkoutResult(replay);
 };
 
-export const checkoutContext = (host: CheckoutHost, input: { occurrenceId: string; promoCode?: string; referralSlug?: string }) =>
+export const checkoutContext = (host: CheckoutHost, input: { occurrenceId: string; promoCode?: string; referralSlug?: string; certification?: PresentedCertificationCapability }) =>
   withImmediateTransaction(host.db, () => {
     const occurrence = one(host.db, "SELECT * FROM occurrences WHERE id = ?", input.occurrenceId);
     let promo: Row | undefined;
@@ -107,7 +107,8 @@ export const checkoutContext = (host: CheckoutHost, input: { occurrenceId: strin
       promo = one(host.db, `SELECT p.*, a.enabled AS agent_enabled FROM promo_codes p
         LEFT JOIN partners a ON a.id = p.agent_id WHERE p.normalized_code = ?`, input.promoCode.trim().toUpperCase());
     }
-    host.assertNewOrdersOpen();
+    // A presented certification is judged by the same gate, never around it.
+    host.assertNewOrdersOpen(input.certification);
     if (!occurrence) throw new DomainError("OCCURRENCE_NOT_FOUND", 404);
     if (input.promoCode && !promo) throw new DomainError("PROMO_NOT_FOUND", 404);
     if (promo && !isPromoEligible(promo)) throw new DomainError("PROMO_NOT_ELIGIBLE", 409);

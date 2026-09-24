@@ -58,7 +58,24 @@ export const legalManifest = (raw: unknown): LegalManifest => {
   catch { throw new DomainError("LEGAL_RELEASE_INVALID", 503); }
 };
 
+/**
+ * An IMMEDIATE transaction - or, inside one already open, a savepoint in it.
+ *
+ * The nested case is real: a certification checkout spends its capability and
+ * creates its order in one transaction, opened by the checkout authority, and
+ * the order is created by `checkout`, which takes this lock itself. A second
+ * `BEGIN` there is refused by SQLite ("cannot start a transaction within a
+ * transaction"), so no certification checkout could ever have committed. Joining
+ * the caller's transaction is what that design asked for: the outer transaction
+ * decides the commit, and a failure in here still undoes only its own work
+ * before it propagates.
+ */
 export function withImmediateTransaction<T>(db: Database.Database, operation: () => T): T {
+  if (db.inTransaction) {
+    db.exec("SAVEPOINT with_immediate_transaction");
+    try { const result = operation(); db.exec("RELEASE with_immediate_transaction"); return result; }
+    catch (error) { db.exec("ROLLBACK TO with_immediate_transaction"); db.exec("RELEASE with_immediate_transaction"); throw error; }
+  }
   db.exec("BEGIN IMMEDIATE");
   try { const result = operation(); db.exec("COMMIT"); return result; }
   catch (error) { db.exec("ROLLBACK"); throw error; }

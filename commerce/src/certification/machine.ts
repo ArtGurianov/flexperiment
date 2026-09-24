@@ -54,7 +54,7 @@ export interface AdminPort extends CatalogueCleanupPorts {
 }
 
 export interface PublicPort {
-  checkoutContext(occurrenceId: string): Promise<{ readonly quoteId: string }>;
+  checkoutContext(occurrenceId: string, claim: CertificationClaim): Promise<{ readonly quoteId: string }>;
   /**
    * The claim proves possession only. The server establishes the release SHA,
    * the deployment session, the occurrence and the price this quote actually
@@ -335,7 +335,8 @@ class CertificationMachine {
 
   private async openQuote(run: CertificationRun): Promise<CertificationRun> {
     await this.assertBaseline();
-    const { quoteId } = await this.ports.publicApi.checkoutContext(this.requireOccurrence(run));
+    const claim: CertificationClaim = { capabilityId: this.input.capability.id, runId: run.runId, nonce: this.input.bearerNonce };
+    const { quoteId } = await this.ports.publicApi.checkoutContext(this.requireOccurrence(run), claim);
     return this.commit(run, { quoteId, phase: "QUOTE_READY" });
   }
 

@@ -59,8 +59,16 @@ export class SqliteCertificationCheckoutAuthority implements CertificationChecko
       const defect = authorizationDefect(capability, input.claim, input.facts, run, input.now);
       if (defect) throw new CertificationCapabilityError(defect);
 
-      const consumed = this.capabilities.spend(input.claim.capabilityId, input.now);
-      return create({ capability: consumed, run, facts: input.facts });
+      // Created while the capability is still unspent, then spent - in this one
+      // transaction, so the order and the spend still commit together or not
+      // at all. The other order made every certification checkout impossible:
+      // `checkout` re-proves the authorization against the quote's own facts,
+      // and a capability spent a moment earlier is, correctly, refused there.
+      // A spend that fails after the order exists throws, and takes the order
+      // with it.
+      const created = create({ capability: capability!, run, facts: input.facts });
+      this.capabilities.spend(input.claim.capabilityId, input.now);
+      return created;
     });
     // Immediate, so two concurrent admissions contend for the write lock at the
     // first statement rather than discovering the conflict at COMMIT, after one
