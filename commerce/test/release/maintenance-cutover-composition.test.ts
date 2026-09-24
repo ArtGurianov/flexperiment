@@ -640,19 +640,31 @@ describe("the whole path production has to walk, through the real composition ro
       expect(forward.authority.deploymentGate()).toEqual({ closed: true, deploymentSessionId: sessionId });
     } finally { forward.close(); }
 
-    // The attended half, at the release the session was carried to.
-    const certified: string[] = [];
+    // The attended half, at the release the session was carried to - and the
+    // operator comes back after the revision's capability has expired unspent.
+    // `certify` replaces it on the same run instead of needing another commit.
+    const revisionCapability = (vps.db.prepare("SELECT id, expires_at FROM certification_capabilities WHERE consumed_at IS NULL AND retired_at IS NULL").get() as { id: string; expires_at: string });
+    const late = new Date(Date.parse(revisionCapability.expires_at) + 60_000);
+    // The runtime kept running meanwhile: its units kept heartbeating.
+    vps.db.prepare("UPDATE runtime_instance_evidence SET heartbeat_at = ?, last_successful_sweep_at = CASE WHEN unit = 'WORKER' THEN ? ELSE last_successful_sweep_at END")
+      .run(late.toISOString(), late.toISOString());
+    const certified: { runId: string; id: string; expiresAt: string }[] = [];
     const operator = build(launchConfig(), {
-      now: () => at,
+      now: () => late,
       certification: {
         issueCapability: vi.fn(),
         preflight: vi.fn(async () => {}),
-        certify: vi.fn(async (capability: { runId: string }) => { certified.push(capability.runId); }),
+        certify: vi.fn(async (capability: { runId: string; id: string; expiresAt: string }) => { certified.push(capability); }),
       } as unknown as CertificationDriver,
     });
     try {
       expect(await runCutoverCommand(cli(operator), ["certify", sessionId], "runner-d")).toBe(0);
-      expect(certified).toEqual([revisionRunId(sessionId, 1)]);
+      expect(certified.map((capability) => capability.runId)).toEqual([revisionRunId(sessionId, 1)]);
+      expect(certified[0].id).not.toBe(revisionCapability.id);
+      expect(Date.parse(certified[0].expiresAt)).toBeGreaterThan(late.getTime());
+      expect(vps.db.prepare("SELECT retirement_reason FROM certification_capabilities WHERE id = ?").get(revisionCapability.id))
+        .toEqual({ retirement_reason: "EXPIRED_REPLACED" });
+      expect(vps.db.prepare("SELECT COUNT(*) AS n FROM certification_runs WHERE run_id LIKE ?").get(`%${sessionId}%`)).toEqual({ n: 2 });
       expect(operator.sessions.read(sessionId)?.state).toBe("SUCCEEDED");
       expect(operator.authority.deploymentGate().closed).toBe(false);
 

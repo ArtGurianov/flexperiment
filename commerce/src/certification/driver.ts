@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import { capabilityBinding, CertificationCapabilityError, issueCapability, type CertificationCapability } from "./capability";
 import { parseCapabilityKeyring, recoverCertificationNonce } from "./nonce";
-import { assertAttended } from "./operator-terminal";
 import { certifyProduction, type CertifyPorts } from "./machine";
 import { HttpCertificationAdminPort, HttpCertificationPublicPort } from "./http-ports";
 import { TerminalOperator, type OperatorScope, type TerminalChannel } from "./operator-terminal";
@@ -60,6 +59,20 @@ export type CertificationDriverOptions = {
 
 /** One run per deploy session, so a restart continues rather than begins. See `no-effect-retry.ts` for the one exception. */
 export { certificationRunId };
+
+/**
+ * What `certify` found about the current forward revision's capability.
+ * INELIGIBLE writes nothing: the ordinary path then meets whatever the
+ * capability is, and a spent or corrupt one is never replaced.
+ */
+export type RevisionReissueOutcome =
+  | { readonly kind: "NOT_APPLICABLE" }
+  | { readonly kind: "CAPABILITY_LIVE" }
+  | { readonly kind: "REISSUED" }
+  | { readonly kind: "INELIGIBLE"; readonly reason: string };
+
+/** A run carrying any of these has reached a checkout, or beyond. */
+const PAYMENT_EVIDENCE = ["statusId", "orderId", "paymentId", "bookingId", "ticketId", "refundObligationId", "refundId", "humanTicketVerifiedAt", "completedAt"] as const;
 
 /**
  * What `retryAfterNoEffectFailure` found. RETRY_ISSUED and RETRY_CAPABILITY_REISSUED
@@ -343,6 +356,88 @@ export class ProductionCertificationDriver implements CertificationDriver {
       ttlMs: this.options.capabilityTtlMs ?? 4 * 60 * 60_000,
     }, this.now(), this.issuingKey());
     return { kind: "RETRY_CAPABILITY_REISSUED" };
+  }
+
+  /**
+   * A new capability for the current forward revision's own run, when the one
+   * it was issued expired before anyone spent it.
+   *
+   * `forward-deploy` issues revision N its run and one capability. An operator
+   * who starts `certify` after that capability's TTL would be refused in
+   * preflight, and `forward-deploy` with the same commit only finds the run
+   * again - so without this the session could be finished only by a new
+   * commit. The same same-run reissue `-a2` has, under the same rules:
+   *
+   *   - only the current run's own capability, which must be the session's
+   *     one live slot: earlier revisions' spent capabilities are history and
+   *     are neither counted nor touched, and a foreign one in the slot is
+   *     refused rather than cleared;
+   *   - only an expired capability, and only an unspent one: a spent one is
+   *     the identity the checkout, the refund and cleanup continue with;
+   *   - only for the session's current binding - revision, release and
+   *     candidate - and only while the session is armed, stuck and fenced;
+   *   - only while the run has reached no checkout: no payment evidence on the
+   *     run, no order under its name, no command in flight, no failure. Its
+   *     catalogue progress may stand: the ledger and the fixture belong to the
+   *     run, not to the capability, and nothing durable names a capability id;
+   *   - the old capability is retired (EXPIRED_REPLACED, by the database's own
+   *     clock) and the new one issued in one IMMEDIATE transaction, so the new
+   *     one is the only live capability;
+   *   - idempotent: once reissued, the next call finds it live and writes
+   *     nothing.
+   */
+  reissueExpiredRevisionCapability(sessionId: string): RevisionReissueOutcome {
+    const db = this.options.db;
+    if ((currentBindingIn(db, sessionId)?.revision ?? 0) === 0) return { kind: "NOT_APPLICABLE" };
+    const ineligible = (reason: string): RevisionReissueOutcome => ({ kind: "INELIGIBLE", reason });
+    const work = db.transaction((): RevisionReissueOutcome => {
+      const binding = currentBindingIn(db, sessionId);
+      if (!binding || binding.revision === 0) return { kind: "NOT_APPLICABLE" };
+      const session = db.prepare(`SELECT state, rollback_authority, deployment_gate_closed FROM deploy_sessions WHERE id = ?`)
+        .get(sessionId) as { state: string; rollback_authority: string; deployment_gate_closed: number } | undefined;
+      if (!session) return ineligible("SESSION_NOT_FOUND");
+      if (session.state !== "RECOVERY_REQUIRED") return ineligible(`SESSION_STATE_${session.state}`);
+      if (session.rollback_authority !== "NEW_LINEAGE_ONLY") return ineligible(`SESSION_AUTHORITY_${session.rollback_authority}`);
+      if (session.deployment_gate_closed !== 1) return ineligible("SESSION_GATE_OPEN");
+      if (binding.targetSha !== this.options.candidate.sha || binding.candidateId !== this.options.candidate.id) return ineligible("CANDIDATE_NOT_CURRENT_BINDING");
+
+      const run = new SqliteCertificationRunStore(db).load(revisionRunId(sessionId, binding.revision));
+      if (!run) return ineligible("RUN_MISSING");
+      if (run.releaseSha !== this.options.candidate.sha) return ineligible("RUN_RELEASE_MISMATCH");
+
+      // The current run's own capability. Earlier revisions' spent ones stay
+      // non-retired - spent and retired are different endings - and a session
+      // carried past a paid, refunded revision has one per such revision; they
+      // are history and play no part here.
+      const held = db.prepare(`SELECT id, consumed_at, expires_at FROM certification_capabilities
+        WHERE deployment_session_id = ? AND run_id = ? AND release_sha = ? AND retired_at IS NULL`)
+        .all(sessionId, run.runId, this.options.candidate.sha) as { id: string; consumed_at: string | null; expires_at: string }[];
+      if (held.length !== 1) return ineligible(`CAPABILITY_COUNT_${held.length}`);
+      const [capability] = held;
+      if (capability.consumed_at) return ineligible("CAPABILITY_SPENT");
+      // And the session's one live slot must be exactly it. Issuing retires
+      // whatever expired capability holds that slot; a foreign one there is a
+      // shape no path produces, and is not this call's to clear silently.
+      const slot = db.prepare(`SELECT id FROM certification_capabilities
+        WHERE deployment_session_id = ? AND consumed_at IS NULL AND retired_at IS NULL`).all(sessionId) as { id: string }[];
+      if (slot.length !== 1 || slot[0].id !== capability.id) return ineligible("CAPABILITY_SLOT_FOREIGN");
+      if (Date.parse(capability.expires_at) > this.now().getTime()) return { kind: "CAPABILITY_LIVE" };
+
+      if (run.failure) return ineligible("RUN_FAILED");
+      if (run.pendingCommand) return ineligible("RUN_COMMAND_PENDING");
+      const evidence = PAYMENT_EVIDENCE.find((field) => run[field] !== null && run[field] !== undefined);
+      if (evidence) return ineligible(`RUN_EVIDENCE_${evidence}`);
+      const orders = db.prepare("SELECT COUNT(*) AS n FROM orders WHERE certification_run_id = ?").get(run.runId) as { n: number };
+      if (orders.n !== 0) return ineligible("CERTIFICATION_ORDER_PRESENT");
+
+      issueCapability(new SqliteCertificationCapabilityStore(db), {
+        runId: run.runId, deploymentSessionId: sessionId, releaseSha: this.options.candidate.sha,
+        maxAmountKopecks: CERTIFICATION_PRICE_KOPECKS,
+        ttlMs: this.options.capabilityTtlMs ?? 4 * 60 * 60_000,
+      }, this.now(), this.issuingKey());
+      return { kind: "REISSUED" };
+    });
+    return work.immediate();
   }
 
   /** What the run has reached, for a caller reporting progress without deciding anything. */

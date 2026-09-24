@@ -632,6 +632,25 @@ arming (rollback forbidden, sales fenced), `forward-deploy <session>
   run `certification-<session>-r<N>` and its own capability. The earlier runs
   stay as history, and `verify` re-proves that each target left behind is
   safe.
+- **A revision's capability that expired unspent is reissued, on the same
+  run.** An operator who starts `certify` after the TTL would otherwise be
+  refused in preflight, and `forward-deploy` with the same commit only finds
+  the existing run, so the session could be finished only by a new commit.
+  `certify` replaces it first (`reissueExpiredRevisionCapability`), under the
+  rules `-a2` already has. It acts only on an expired, unspent capability of the
+  current binding's run, which must also be the session's one live slot.
+  Earlier revisions' spent capabilities are never retired, because spent and
+  retired are different endings. A session carried past paid, refunded
+  revisions therefore keeps one per revision, and they are neither counted nor
+  touched. It acts only while the session is armed, stuck and fenced
+  and the run has reached no checkout: no payment evidence, no order, no command
+  in flight, no failure. The old capability is retired (`EXPIRED_REPLACED`, by
+  the database's own clock) and the new one issued in one IMMEDIATE
+  transaction. A second call finds it live and writes nothing. A spent
+  capability is never replaced, because the checkout, refund and cleanup
+  continue under it. Catalogue progress may stand, because the ledger and the
+  fixture belong to the run and nothing durable names a capability id. This is
+  what makes a shorter capability TTL safe.
 
 ## Certification is proved against the real runtime, end to end
 
