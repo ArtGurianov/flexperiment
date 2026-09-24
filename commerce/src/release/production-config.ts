@@ -57,16 +57,8 @@ export type CandidatePublicationConfig = {
   readonly deployRef: { readonly remote: string; readonly worktree: string };
 };
 
-export type PredecessorReleaseConfig = {
-  readonly expectedSha: string;
-  readonly expectedLedgerLength: number;
-  readonly commerceReadyUrl: string;
-};
-
 export type ReadOnlyReleaseConfig = {
   readonly databasePath: string;
-  /** Present only while observe is expected to read the one trusted legacy predecessor. */
-  readonly predecessor?: PredecessorReleaseConfig;
   readonly topology: { readonly frontendReleaseUrl: string; readonly adminReleaseUrl: string };
   readonly deployRef: { readonly remote: string; readonly ref: string; readonly worktree: string };
 };
@@ -74,14 +66,6 @@ export type ReadOnlyReleaseConfig = {
 export type ProductionReleaseConfig = {
   /** The live SQLite file the runner reads the release authority out of. */
   readonly databasePath: string;
-  /** The DB/volume namespace replaced at bootstrap; it is never allowed to contain release state. */
-  readonly replacementRoot: string;
-  /** Runner-owned state outside replacementRoot, but deliberately on the same filesystem for atomic archives. */
-  readonly stateDirectory: string;
-  /** Where a predecessor database is archived to, and restored from. */
-  readonly archiveDirectory: string;
-  /** Survives the database being replaced and the containers being swapped. */
-  readonly envelopeDirectory: string;
   /** One cutover at a time, enforced by the filesystem rather than by convention. */
   readonly lockPath: string;
   /** Append-only, secret-free record of what this run did. */
@@ -98,11 +82,6 @@ export type ProductionReleaseConfig = {
     readonly occurrenceScopePath: string;
     readonly checkoutBodyPath: string;
   };
-  /**
-   * The one predecessor a launch cutover may start from. Absent for every
-   * ordinary release, which never crosses a lineage boundary.
-   */
-  readonly predecessor?: PredecessorReleaseConfig;
   readonly coolify: { readonly apiUrl: string; readonly token: string };
   /** Trusted repositories for the two local images in the commerce Compose application. */
   readonly composeRepositories: Readonly<Record<"commerce" | "commerce-worker", string>>;
@@ -150,10 +129,6 @@ export const READ_ONLY_RELEASE_ENVIRONMENT_VARIABLES = [
  */
 export const PRODUCTION_RELEASE_ENVIRONMENT_VARIABLES = [
   "FLEXPERIMENT_RELEASE_DATABASE",
-  "FLEXPERIMENT_RELEASE_REPLACEMENT_ROOT",
-  "FLEXPERIMENT_RELEASE_STATE_DIR",
-  "FLEXPERIMENT_RELEASE_ARCHIVE_DIR",
-  "FLEXPERIMENT_RELEASE_ENVELOPE_DIR",
   "FLEXPERIMENT_RELEASE_LOCK",
   "FLEXPERIMENT_RELEASE_JOURNAL",
   "FLEXPERIMENT_RELEASE_CANDIDATE_DIR",
@@ -215,11 +190,9 @@ export const loadReadOnlyReleaseConfig = (env: NodeJS.ProcessEnv = process.env):
   httpUrl(value("FLEXPERIMENT_FRONTEND_RELEASE_URL"), "FLEXPERIMENT_FRONTEND_RELEASE_URL", problems);
   httpUrl(value("FLEXPERIMENT_ADMIN_RELEASE_URL"), "FLEXPERIMENT_ADMIN_RELEASE_URL", problems);
   const ref = deployRefName(env, problems);
-  const predecessorConfig = predecessor(env, problems);
   if (problems.length) throw new ReleaseConfigError("RELEASE_RUNNER_CONFIGURATION_INVALID", problems.join("; "));
   return {
     databasePath: value("FLEXPERIMENT_RELEASE_DATABASE"),
-    ...(predecessorConfig ? { predecessor: predecessorConfig } : {}),
     topology: {
       frontendReleaseUrl: value("FLEXPERIMENT_FRONTEND_RELEASE_URL"),
       adminReleaseUrl: value("FLEXPERIMENT_ADMIN_RELEASE_URL"),
@@ -243,24 +216,6 @@ export const loadCandidatePublicationConfig = (env: NodeJS.ProcessEnv = process.
     deployRef: { remote: value("FLEXPERIMENT_DEPLOY_REF_REMOTE"), worktree: value("FLEXPERIMENT_DEPLOY_REF_WORKTREE") },
   };
 };
-
-/**
- * The predecessor's identity, stated rather than discovered.
- *
- * All three or none: a bridge configured with two of them would be one that
- * reads whatever legacy database it is pointed at, and this one is bound to a
- * commit somebody reviewed.
- */
-function predecessor(env: NodeJS.ProcessEnv, problems: string[]): PredecessorReleaseConfig | undefined {
-  const sha = (env.FLEXPERIMENT_PREDECESSOR_SHA ?? "").trim();
-  const ledger = (env.FLEXPERIMENT_PREDECESSOR_LEDGER ?? "").trim();
-  const ready = (env.FLEXPERIMENT_PREDECESSOR_READY_URL ?? "").trim();
-  if (!sha && !ledger && !ready) return undefined;
-  if (!/^[a-f0-9]{40}$/.test(sha)) problems.push("FLEXPERIMENT_PREDECESSOR_SHA is not a commit");
-  if (!/^\d{1,4}$/.test(ledger)) problems.push("FLEXPERIMENT_PREDECESSOR_LEDGER is not a migration count");
-  httpUrl(ready, "FLEXPERIMENT_PREDECESSOR_READY_URL", problems);
-  return { expectedSha: sha, expectedLedgerLength: Number(ledger), commerceReadyUrl: ready };
-}
 
 export const loadProductionReleaseConfig = (env: NodeJS.ProcessEnv = process.env): ProductionReleaseConfig => {
   const value = demand(env, PRODUCTION_RELEASE_ENVIRONMENT_VARIABLES);
@@ -296,10 +251,6 @@ export const loadProductionReleaseConfig = (env: NodeJS.ProcessEnv = process.env
 
   return {
     databasePath: value("FLEXPERIMENT_RELEASE_DATABASE"),
-    replacementRoot: value("FLEXPERIMENT_RELEASE_REPLACEMENT_ROOT"),
-    stateDirectory: value("FLEXPERIMENT_RELEASE_STATE_DIR"),
-    archiveDirectory: value("FLEXPERIMENT_RELEASE_ARCHIVE_DIR"),
-    envelopeDirectory: value("FLEXPERIMENT_RELEASE_ENVELOPE_DIR"),
     lockPath: value("FLEXPERIMENT_RELEASE_LOCK"),
     journalPath: value("FLEXPERIMENT_RELEASE_JOURNAL"),
     candidateDirectory: value("FLEXPERIMENT_RELEASE_CANDIDATE_DIR"),
@@ -312,7 +263,6 @@ export const loadProductionReleaseConfig = (env: NodeJS.ProcessEnv = process.env
       occurrenceScopePath: value("CERTIFICATION_OCCURRENCE_SCOPE"),
       checkoutBodyPath: value("CERTIFICATION_CHECKOUT_BODY"),
     },
-    predecessor: predecessor(env, problems),
     coolify: { apiUrl: value("COOLIFY_API_URL"), token: value("COOLIFY_TOKEN") },
     composeRepositories: {
       commerce: value("FLEXPERIMENT_COMMERCE_IMAGE_REPOSITORY"),
@@ -358,11 +308,7 @@ export const describeConfig = (config: ProductionReleaseConfig): Record<string, 
   }
   return {
     database: config.databasePath,
-    replacementRoot: config.replacementRoot,
-    stateDirectory: config.stateDirectory,
-    archiveDirectory: config.archiveDirectory,
     candidateDirectory: config.candidateDirectory,
-    envelopeDirectory: config.envelopeDirectory,
     coolifyApiUrl: config.coolify.apiUrl,
     certification: {
       adminBaseUrl: config.certification.adminBaseUrl,

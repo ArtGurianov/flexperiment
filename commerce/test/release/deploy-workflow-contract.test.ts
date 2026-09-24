@@ -107,16 +107,16 @@ describe("production workflow contract", () => {
     expect(scripts).toMatch(/exit "\$status"/);
   });
 
-  it("publishes launch candidates from exactly one operator input", () => {
+  it("publishes candidates from exactly one operator input", () => {
     const inputs = inputsOf("release-candidate.yml");
     expect(Object.keys(inputs)).toEqual(["candidate_sha"]);
     expect(inputs).not.toHaveProperty("release_class");
   });
 
-  it("classifies the P2 publication as a launch baseline without dispatch input", () => {
+  it("classifies publication as maintenance-required, never the retired launch baseline, without dispatch input", () => {
     const publication = Object.values(workflow("release-candidate.yml").jobs).flatMap((job) => job.steps ?? [])
       .find((step) => (step.run ?? "").includes("publish-candidate"));
-    expect(publication?.env?.RELEASE_CLASS).toBe("LAUNCH_BASELINE");
+    expect(publication?.env?.RELEASE_CLASS).toBe("MAINTENANCE_REQUIRED");
     expect(publication?.env?.RELEASE_CLASS).not.toContain("inputs.release_class");
   });
 
@@ -166,14 +166,13 @@ describe("production workflow contract", () => {
     expect(candidate.permissions?.checks).toBe("read");
   });
 
-  it("binds a launch baseline to the current tip of main", () => {
-    // The launch cutover destroys the predecessor database. Publishing an
-    // ancestor as the baseline would silently deploy a tree that main has
-    // already moved past, with no way back to the commits in between.
+  it("binds a candidate to the current tip of main", () => {
+    // Forward admission deploys only main's exact tip, so an ancestor would be
+    // a candidate nothing may deploy.
     const script = scriptOf("release-candidate.yml");
-    expect(script).toContain("LAUNCH_BASELINE");
+    expect(script).not.toContain("LAUNCH_BASELINE");
     expect(script).toContain("git rev-parse origin/main");
-    expect(script).toContain("LAUNCH_BASELINE_MUST_BE_MAIN_HEAD");
+    expect(script).toContain("CANDIDATE_MUST_BE_MAIN_HEAD");
   });
 
   it("exports the entire production runner configuration contract", () => {

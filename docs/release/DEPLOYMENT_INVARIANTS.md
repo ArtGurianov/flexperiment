@@ -56,88 +56,60 @@ ancestor of `origin/main`, and `test` and `docker-build` both `success` **for
 that sha**. Being descended from a green commit is a different claim about a
 different tree.
 
-A `LAUNCH_BASELINE` candidate must additionally be the current tip of `main`.
-It replaces the database, so publishing an ancestor would deploy a tree `main`
-has already moved past with no way back to the commits between.
+The workflow publishes `MAINTENANCE_REQUIRED` and requires the exact current tip
+of `main` (`CANDIDATE_MUST_BE_MAIN_HEAD`): forward admission deploys nothing
+else, so an ancestor would be a candidate nothing may deploy.
 
-Publication is not a lease on `main`. The production runner refreshes
-`origin/main` after taking its release lock and re-derives the launch candidate
-from that exact commit immediately before either `prepare-bootstrap` or the
-initial `deploy` may mutate anything. Historical candidate files remain valid
-records, but fail consumption with `LAUNCH_BASELINE_MUST_BE_MAIN_TIP`. A session
-whose mutation is already durable recovers its recorded target instead; a new
-`main` must never retarget recovery.
+Publication is not a lease on `main`. `forward-deploy` refreshes `origin/main`
+after taking its release lock and re-derives the candidate from that exact
+commit before it may mutate anything. A session whose mutation is already
+durable recovers its recorded target instead; a new `main` must never retarget
+recovery.
 
-## A launch cutover is two commands, and the second adopts the first
+## The launch machinery is retired
 
-`prepare-bootstrap` archives the predecessor database and leaves the fresh
-launch database standing in its place. From that moment there is no predecessor
-left to read, so the `deploy` that follows cannot re-derive its own pre-deploy
-snapshot — it adopts the one the envelope froze before the swap.
+The launch crossed a lineage boundary exactly once: the pre-launch database was
+archived, the launch baseline installed in its place, and the release certified.
+Session `e4cb1a91` verified complete on 2026-09-24 at `3ad07cf`. What existed
+only to make that crossing has been deleted, as this document said it would be:
 
-That is why a `LAUNCH_BASELINE` deploy names the cutover it is finishing:
+- the commands `prepare-bootstrap` and `rollback-prepared`, and the
+  cross-lineage branch of `rollback`;
+- the predecessor topology reader, prepared-cutover envelopes and their
+  adoption, the bootstrap archive and restore protocol with its receipts, the
+  runtime quiescer, and launch-baseline admission;
+- the `LAUNCH_BASELINE` release class as something that can be published or
+  deployed;
+- the runner settings that served them (`FLEXPERIMENT_RELEASE_REPLACEMENT_ROOT`,
+  `_STATE_DIR`, `_ARCHIVE_DIR`, `_ENVELOPE_DIR` and the three
+  `FLEXPERIMENT_PREDECESSOR_*`). The host may still export them; nothing reads
+  them.
 
-```sh
-flexperiment-release prepare-bootstrap <candidate> <expires-at> <cutover-id>
-flexperiment-release deploy            <candidate> <cutover-id>
-```
+What remains is history, readable and never actionable:
 
-Omitting it is `LAUNCH_DEPLOY_REQUIRES_PREPARED_CUTOVER`, refused before any
-mutation. Nothing but `prepare-bootstrap` creates the launch database, so a
-launch deploy is always the second half of a prepared handoff and never a
-standalone command.
+| Left behind | Now |
+|---|---|
+| `LAUNCH_BASELINE` candidate files | readable by the store; `publish-candidate` and `deploy` refuse with `LAUNCH_BASELINE_RETIRED` |
+| the launch session's `adopted_cutover_id` and bootstrap columns | frozen in the `0001` baseline, read as history; `rollback` refuses the session with `LAUNCH_SESSION_NOT_ROLLBACKABLE` before touching its lease |
+| a pre-launch (`LEGACY`) database | refused by `db.ts`, by readiness, and by `observe` (`READ_ONLY_SCHEMA_LINEAGE_UNOBSERVABLE`) |
+| envelopes, archives, `aborted-*` directories and receipts on the VPS | forensic evidence; untouched |
 
-Adoption happens once. A cutover whose session already exists is
-`CUTOVER_ALREADY_ADOPTED`: that session owns the closed gate, and finishing it
-is `resume`'s job, never a second `deploy`. The envelope is marked consumed only
-after the successor database has committed the session, so a consumed envelope
-with no session is a lost authority rather than an invitation to adopt again.
-
-This seam is the one the suite previously missed. Both halves were proved in
-isolation — the preparation wrote a correct envelope, and `adoptCutover` adopted
-one correctly when called — while nothing called it. Invariants count only at
-the seam that consumes them.
+The removed code, its tests and the sections of this document that described it
+are in git history at `3ad07cf`.
 
 ## Every state the runner produces has exactly one recovery owner
 
-`prepare-bootstrap` crosses the destructive boundary *before* a successor
-session exists. That intermediate state — envelope durable, predecessor
-archived, launch database installed, sales fenced, nothing adopted — is a real
-durable lifecycle state, and it is reachable even when everything works: the
-deploy admission can refuse a candidate `main` moved past, after the
-preparation has already run.
-
 ```text
-before the envelope is durable   prepare-bootstrap cleans up internally
-envelope durable, not adopted    rollback-prepared <cutover-id>
-adopted, session exists          rollback <session>
-external effects armed           forward recovery only
+session exists, nothing armed   rollback <session>
+external effects armed          forward-deploy <session> <candidate>
 ```
 
-`rollback-prepared` is a separate command, not an overload: `rollback` means
-"the successor session owns this cutover", and here there deliberately is none.
-It refuses with `PREPARED_ROLLBACK_OWNED_BY_SUCCESSOR_SESSION` the moment the
-envelope is consumed or a session has adopted it, so the two can never race.
-It does **not** invent a session to satisfy the older model — the fact being
-represented is that adoption never happened.
-
-Both authorities drive one restore engine and one stage ladder, so a prepared
-restore cannot drift into a second implementation that merely resembles the
-real one. The receipt records which authority it answers to:
-
-```ts
-authority:
-  | { kind: "SUCCESSOR_SESSION"; sessionId: string }
-  | { kind: "PREPARED_CUTOVER";  cutoverId: string }
-```
-
-Two rules that are easy to get wrong. **Envelope expiry must not prohibit
-rollback**: expiry is an admission condition for going *forward*, and cannot
-revoke the ability to put the predecessor back — a cutover left overnight stays
-recoverable. And the durable receipt is written **before** the first
-irreversible step, because this command can itself die after replacing the
-launch database with the legacy one, at which point the successor database is
-no longer available to be anyone's recovery cursor.
+`rollback` is usually run by a different process from the deploy that failed:
+that deploy stood down and exited. So `rollback`, like `certify`, claims a lease
+its holder has let go of and refuses one somebody still holds
+(`DEPLOY_SESSION_HELD_BY_ANOTHER_RUNNER`). Before the launch was retired this
+takeover lived only in the bootstrap rollback, so an ordinary maintenance
+deploy that failed could not be rolled back from a new process at all.
 
 ## Coolify owns the containers, completely
 
@@ -179,79 +151,34 @@ That premise is what forced image-retention proofs, container capture and a
 bespoke Compose restoration into existence. It is now:
 
 ```text
-rollback = restore the exact application source SHA and the exact predecessor
-           database, then prove production topology and readiness
+rollback = restore the exact application source SHA, then prove production
+           topology and readiness
 ```
 
 So recoverability is proved against the predecessor **commit** — that it is
 still resolvable and deployable — rather than against an image inventory. One
-mechanism serves every application, and the recovery order matters:
+mechanism serves every application:
 
 ```text
-sales already closed
-→ Coolify stops commerce
-→ prove it POSITIVELY exited, not merely "not running"
-→ prove zero SQLite handles on the host
-→ restore the exact predecessor database
+sales already closed (maintenance) or never closed (rolling)
 → production-deploy CAS back to the predecessor
 → Coolify deploys the predecessor
-→ topology and readiness prove the predecessor
-→ open sales
+→ topology and readiness prove the predecessor, exactly the recorded vector
+→ settle the session and, for a maintenance release, open sales
 ```
 
-The database is restored **before** the pointer moves, not after. Moving a
-branch the applications track can itself be a deployment trigger where
-auto-deploy is enabled, so by the time the ref changes the legacy database is
-already in place. Commerce is proved stopped before either happens, which is
-what keeps the old runtime away from the successor database.
-
-Dying between the restore and the CAS leaves an unpleasant but safe state -
-commerce stopped, database LEGACY, ref still at the target, sales closed - and
-the receipt reconciliation below is what continues from it.
-
-## A migrated database is not yet a launch database
-
-`prepare-bootstrap` runs `migrate`, and that alone produces a schema the
-runtime cannot serve from: no cities, and `legal_releases` deliberately empty,
-which readiness refuses with `LEGAL_RELEASE_EVIDENCE_MISSING`. Initialization
-is therefore part of the preparation, in this order:
-
-```text
-migrate
-→ launch seed (the committed catalogue)
-→ publish the candidate's legal release
-→ hand ownership to the runtime
-```
-
-It is an **ensure**, not a create-once. A crash between the schema and the rest
-leaves a `SUPPORTED` database that is still unusable, and an early return on
-"lineage is SUPPORTED" would call that finished. Both the seed and the legal
-publication are idempotent for an exact replay, so re-running them is the safe
-direction.
-
-Ownership is handed over **last**, after every root-side write, and it covers
-the sidecars as well as the main file. The runner is root; the runtime is not.
-A database created here is root-owned and the container cannot open it — it
-crash-loops, and because topology is read from that runtime, the recovery path
-stalls with it. The contract is taken from the predecessor archive, which is
-the file the runtime demonstrably could open, rather than from a hardcoded uid.
-
-The ensure is a storage invariant, and deliberately not a forward-retry path.
-Once the successor is installed the predecessor bridge is gone, so
-`prepare-bootstrap` cannot be reconstructed in a new process at all. A crash
-after the swap therefore hands control to `rollback-prepared`, never to a
-second `prepare-bootstrap` — and that is the intended shape, because a
-one-time bootstrap should not grow an alternative forward route.
+No database is involved: an ordinary release is migrated forward and never
+replaced. Only the launch restored a database, and that path was retired with
+it (see "The launch machinery is retired").
 
 ## An exit code describes what happened, not what was attempted
 
-`20` means "refused before mutation". Once a successor session exists and the
-envelope is consumed, it is no longer available: the pointer may have moved and
-the applications may be deployed, and an operator reading `20` would reach for
-`rollback-prepared` on an adopted cutover.
+`20` means "refused before mutation". Once a session exists that is no longer
+true: the pointer may have moved and the applications may be deployed, and an
+operator reading `20` would believe production untouched.
 
 ```text
-before a session/adoption exists   an exception may legitimately be 20
+before a session exists            an exception may legitimately be 20
 once the session exists            any unexpected exception is RECOVERY_REQUIRED (12)
 ```
 
@@ -318,74 +245,14 @@ session. If the process actually died the lock died with it and ordinary
 cross-process takeover applies unchanged. A session whose owner has changed is
 refused outright.
 
-Arming is inside the same failure contract as everything else past adoption. A
+Arming is inside the same failure contract as everything else once a session exists. A
 session, a deployed successor, a capability and a closed gate already exist by
 then, so a refusal there is `RECOVERY_REQUIRED`, never a pre-mutation `20`.
 
-Cross-lineage `rollback <session>` may take over a **lapsed** lease itself. It
-has an external receipt and does not need the successor's cooperation to begin,
-and requiring an operator to re-supply the dead process's owner id made an
-ordinary recovery depend on reading it out of the database by hand. A lease
+`rollback <session>` may take over a **lapsed** lease itself, as `certify` does.
+Requiring an operator to re-supply the dead or departed process's owner id made
+an ordinary recovery depend on reading it out of the database by hand. A lease
 that has not lapsed still belongs to whoever holds it.
-
-## "Stopped" is a positive proof, never an absence
-
-`POST /applications/{uuid}/stop` queues the request and returns. A single
-status read afterwards proves nothing, so the runner polls for a positive
-`exited` state and refuses everything else:
-
-```text
-exited:*                        stopped, continue
-running:* starting:* degraded:* keep waiting, refuse at the timeout
-unknown                         refuse
-status absent                   refuse
-```
-
-Absent matters more than it looks: a token without visibility omits the field
-entirely on this installation, and an implementation that collapsed that into
-"unknown" and then tested for the word "running" would read an unreadable
-runtime as a stopped one - and replace the database underneath it.
-
-`lsof` stays as a second, independent proof. The control plane says the runtime
-is stopped; the host says nothing is holding the SQLite file. Neither alone is
-the evidence.
-
-The stop is also issued with `docker_cleanup=false`. That parameter defaults to
-true and prunes networks and volumes, and a cutover is the worst possible
-moment to ask the control plane for housekeeping.
-
-This accepts one real cost, deliberately: recovery depends on the build
-pipeline at the moment it is needed. That is a smaller risk than maintaining a
-second control plane to avoid it, and it is the reason readiness — not a
-container state — is what admits a recovery as finished.
-
-## The bootstrap is a one-time operation with an expiry date
-
-The launch machinery below — the predecessor reader, prepared-cutover
-envelopes, `rollback-prepared`, the bootstrap archive protocol and the LEGACY
-lineage branches — exists to cross a lineage boundary exactly once. It should
-be deleted after the first successful launch, leaving:
-
-```text
-publish candidate
-→ CAS production-deploy
-→ Coolify deploy
-→ verify topology and readiness
-→ on failure: CAS back, Coolify redeploy predecessor
-```
-
-## A receipt stage is reconciled against reality, never replayed
-
-`RESERVED` records intent, not that storage is still where it was when the
-intent was written. A process that died after the atomic restore but before
-advancing the receipt leaves `RESERVED` over a database that is already the
-predecessor; replaying the swap there would archive the predecessor as though
-it were the successor.
-
-So the stage is reconciled against the live lineage before it is acted on.
-`SUPPORTED` means storage has not crossed and `RESERVED` is honest. `LEGACY`
-with the exact archived predecessor in place means it has, and the receipt is
-advanced to agree with reality. Anything else is `BOOTSTRAP_ROLLBACK_LINEAGE_UNACCOUNTED`.
 
 ## The deploy mode is derived, never chosen
 
@@ -475,31 +342,6 @@ the same:
 commit that has not converged, a stale heartbeat or a sweep that has not
 happened are `PENDING`. Collapsing the first into the second makes a loop wait
 forever on something no amount of waiting can fix.
-
-## A fresh launch database is brought up in one order, and part of it is a person
-
-```text
-0001_launch_baseline          schema, plus its own zero state: schema_identity,
-                              the singletons, the advertising policies, the
-                              feature state at ACTIVE
-commerce:launch-seed          city reference data, and nothing else. Idempotent
-                              by digest: the same catalogue repeated is a
-                              success, a different one is refused
-bootstrap the admin account   a provisioning command, never carried in a dump
-create and publish the        AN OPERATOR STEP, through the admin surface
-  certification occurrence
-commerce:legal-release        preflight -> publish -> promote, so the
-                              publication ledger is real rather than seeded
-readiness                     every surface converged on the target
-the one-rouble certification  payment, webhook, email, refund, finality
-open public sales
-```
-
-**Occurrences are not seeded, and the catalogue format has no field for them.**
-They are content a person schedules, and the certification occurrence is one of
-them - so a checkout cannot be certified until that step has been done by hand.
-Naming it here is the point: a field that was only ever allowed to be empty
-would have implied the seed provides something it does not.
 
 ## Sales are closed by a hierarchy, and only one level is bypassable
 
@@ -591,8 +433,7 @@ start the runner over SSH and read its exit code; `12` means recovery is
 required and sales stay shut, and no workflow may turn that into a retry.
 
 The composition root fails closed **before the first mutation** when any
-component is missing - the lock, the envelope directory, the database, the
-archive directory, the deploy-ref credential, the Coolify token, the three
+component is missing - the lock, the database, the deploy-ref credential, the Coolify token, the three
 application identities, the two descriptor endpoints, the journal. It reports
 every missing one at once, because discovering configuration one variable per
 run means repeatedly starting a process against production that could take the
@@ -853,8 +694,7 @@ mailbox that accepts UniSender's mail within minutes, because every one of the
 three emails has 15 minutes.
 
 On 2026-09-24 the certification address was a ProtonMail mailbox, and
-UniSender, which sends from Russia, got slow or no acceptance from Proton each
-time:
+UniSender's mail to it was accepted slowly or not within the wait each time:
 
 | Email | Sent (UniSender `sent`) | Delivered |
 |---|---|---|
@@ -864,11 +704,16 @@ time:
 
 There were no bounces and no suppression, and nothing was resent: one send
 attempt each, with UniSender's first SMTP attempt on time. Both `-r1` and
-`-r2` failed on `EMAIL_TIMEOUT` and were refunded. `-r3` uses a Gmail mailbox
-instead, which changes only the receiving side.
+`-r2` failed on `EMAIL_TIMEOUT` and were refunded.
 
-Certify against a mainstream provider that accepts mail from Russia promptly,
-and keep its inbox with space free. Changing the recipient needs no code
+`-r3` changed only the receiving mailbox, to Gmail - same runtime, same
+UniSender account, sender and templates - and all three emails were delivered
+in 11-24 seconds. That isolates the delay to the UniSender-to-ProtonMail path.
+Why that path is slow is not established; it is not a claim about either
+provider's infrastructure until UniSender says so.
+
+Certify against a mailbox whose provider has been shown to accept UniSender's
+mail promptly (Gmail has), and keep its inbox with space free. Changing the recipient needs no code
 change, but a run's checkout request is bound to the body it was created
 with, so the change only applies from the next revision's run.
 
@@ -940,10 +785,7 @@ set +a
 exec pnpm --dir /srv/flexperiment release:runner "$@"
 ```
 
-The envelope directory must be on the volume that outlives the containers
-(`commerce-data:/var/lib/flexperiment`), because the whole reason the cutover
-envelope exists is to survive the database being archived and the containers
-being replaced. The lock and the journal may live beside it. The git worktree
+The lock and the journal live on the host, outside the containers. The git worktree
 holds the credential that may move `production-deploy` and nothing else: that
 credential is not a general push credential, and the runner never writes to any
 other ref.

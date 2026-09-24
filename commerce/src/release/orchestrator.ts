@@ -62,71 +62,21 @@ export interface CertificationDriver {
 /**
  * Undoing a same-lineage deploy is not deploying one SHA: it restores a vector,
  * each surface to whatever it was actually serving, which need not have been
- * the same commit. No database is involved - that only happens across a lineage
- * boundary, and that case belongs to BootstrapRollback, which can prove the
- * archive it restored. Keeping the two apart is what stops this driver from
- * being both the actor and the only witness.
+ * the same commit. No database is involved: a release never replaces it.
  */
 export interface RecoveryDriver {
   restorePreDeployTopology(snapshot: PreDeploySnapshot): Promise<void>;
 }
 
-/**
- * The successor half of the launch handoff.
- *
- * `prepare-bootstrap` leaves two durable facts behind: an envelope on the
- * filesystem, and a fresh launch database standing where the predecessor used
- * to be. From that moment the predecessor reader has nothing left to read, so
- * a launch deploy cannot re-derive its own pre-deploy snapshot - it adopts the
- * one the envelope froze before the database was replaced.
- *
- * Reading the envelope and adopting it are separate members for the same
- * reason the handoff itself is ordered: recoverability is proved against the
- * frozen snapshot BEFORE a session and a closed gate exist to be cleaned up.
- */
-export interface CutoverAdoptionPort {
-  /** The frozen snapshot, read without mutating anything. */
-  preDeployTopology(cutoverId: string): PreDeploySnapshot;
-  /**
-   * Session, closed gate and adoption identity, committed together.
-   *
-   * `reconciled` means the database had already committed this handoff. That is
-   * not a second deploy's licence to start: the session is the authority from
-   * then on, and finishing it is `resume`'s job.
-   */
-  adopt(cutoverId: string, ownerId: string, candidate: ReleaseCandidate): { session: DeploySession; reconciled: boolean };
-}
-
 export type ReleasePorts = {
   readonly sessions: DeploySessions;
-  /**
-   * What production is, on the lineage this release is converging onto.
-   *
-   * It cannot answer for the predecessor: the launch schema's evidence table
-   * arrives with the baseline, so on the database a cutover starts from this
-   * reader throws. See `predecessor` below.
-   */
+  /** What production is, on the launch lineage. */
   readonly topology: TopologyReader;
-  /**
-   * The predecessor, for the two phases that have to read the old lineage: the
-   * snapshot a cutover freezes, and the proof a bootstrap rollback restored
-   * exactly that.
-   *
-   * Chosen by phase and never by trying one reader and catching the other's
-   * failure. A reader picked by whether a table happens to exist is a
-   * compatibility branch that outlives the thing it was for; this one is named
-   * at its two call sites and is deleted with the predecessor runbook.
-   *
-   * Absent for a rolling release, which never crosses a lineage boundary.
-   */
-  readonly predecessor?: TopologyReader;
   readonly evidence: RuntimeEvidenceReader;
   readonly deployment: DeploymentDriver;
   readonly certification?: CertificationDriver;
   readonly recovery?: RecoveryDriver;
   readonly candidates?: ReleaseCandidateReader;
-  /** Present only where a prepared launch envelope can be adopted. */
-  readonly cutoverAdoption?: CutoverAdoptionPort;
   readonly clock?: () => Date;
   /**
    * How long target topology and readiness may take to become observable after
@@ -142,7 +92,6 @@ export type ReleaseRequest = {
   /** Carries the commit, the release class and the expectation as one fact. */
   readonly candidate: ReleaseCandidate;
   readonly sessionId?: string;
-  readonly adoptedCutoverId?: string;
 };
 
 export type ReleaseOutcome =
@@ -219,34 +168,24 @@ export class ReleaseOrchestrator {
     if (deployMode(request.candidate) !== "MAINTENANCE_CUTOVER") throw new ReleaseOrchestrationError("CUTOVER_REQUIRES_MAINTENANCE_CUTOVER");
     if (!this.ports.certification) throw new ReleaseOrchestrationError("CUTOVER_REQUIRES_CERTIFICATION_DRIVER");
     const { sessions } = this.ports;
+    // A launch candidate replaced the database from a prepared handoff that no
+    // longer exists; it is history, never a release.
+    if (request.candidate.releaseClass === "LAUNCH_BASELINE") throw new ReleaseOrchestrationError("LAUNCH_BASELINE_RETIRED");
     // Captured before the gate closes and before anything is deployed, so a
     // failure can be judged against what production was actually serving. The
-    // session, that snapshot and the closed gate are created together.
-    //
-    // Read through the predecessor bridge when one is configured: a launch
-    // cutover starts on the old lineage, where the canonical reader has no
-    // evidence table to read. An ordinary maintenance release on the launch
-    // lineage has no predecessor reader and uses the canonical one.
-    // A prepared launch cutover has already replaced the database this would
-    // otherwise read, so its snapshot comes from the envelope rather than from
-    // a predecessor that no longer exists. Both paths prove recoverability
-    // against the same frozen vector before any session or gate exists.
-    const adoption = request.adoptedCutoverId ? this.adoptionPort() : undefined;
-    const before = adoption
-      ? adoption.preDeployTopology(request.adoptedCutoverId!)
-      : await this.capturePredecessor(request.candidate.releaseClass);
+    // session, that snapshot and the closed gate are created together, and
+    // recoverability is proved against the snapshot before any of them exist.
+    const before = await this.ports.topology.observe();
     await this.ports.deployment.assertRecoverable(uniformSha(before));
-    const session = adoption
-      ? this.adoptOnce(adoption, request)
-      : sessions.acquireFenced({
-        id: request.sessionId, ownerId: request.ownerId, mode: "MAINTENANCE_CUTOVER",
-        targetSha: request.candidate.sha, candidateId: request.candidate.id, adoptedCutoverId: request.adoptedCutoverId,
-      }, before);
-    // From here a successor session exists, so every exit below is a decision
-    // about that session. An exception escaping to the CLI would be reported as
-    // exit 20 - "refused before mutation" - which after adoption is a lie: the
-    // envelope is consumed, the pointer may have moved and the applications may
-    // be deployed. Anything unexpected is RECOVERY_REQUIRED instead.
+    const session = sessions.acquireFenced({
+      id: request.sessionId, ownerId: request.ownerId, mode: "MAINTENANCE_CUTOVER",
+      targetSha: request.candidate.sha, candidateId: request.candidate.id,
+    }, before);
+    // From here a session exists, so every exit below is a decision about that
+    // session. An exception escaping to the CLI would be reported as exit 20 -
+    // "refused before mutation" - which after this point is a lie: the pointer
+    // may have moved and the applications may be deployed. Anything unexpected
+    // is RECOVERY_REQUIRED instead.
     try {
       sessions.beginDeploying(session.id, request.ownerId);
       try {
@@ -314,42 +253,6 @@ export class ReleaseOrchestrator {
     } catch (error) {
       return this.recovery(sessionId, request.ownerId, failureCode(error));
     }
-  }
-
-  /**
-   * The snapshot a cutover freezes, from the reader that can see the lineage it
-   * is leaving.
-   *
-   * A launch baseline requires the bridge rather than falling back to it: the
-   * canonical reader would throw on the predecessor database, and a cutover
-   * that began without a snapshot would have no way to prove a safe abort.
-   */
-  private async capturePredecessor(releaseClass: ReleaseCandidate["releaseClass"]): Promise<DeploymentObservation> {
-    if (releaseClass !== "LAUNCH_BASELINE") return this.ports.topology.observe();
-    if (!this.ports.predecessor) throw new ReleaseOrchestrationError("LAUNCH_CUTOVER_REQUIRES_PREDECESSOR_READER");
-    return this.ports.predecessor.observe();
-  }
-
-  /**
-   * Refused rather than silently fallen back to a fresh read: a deploy told to
-   * adopt a cutover must adopt that cutover. Re-deriving the snapshot instead
-   * would judge the release against the successor it just installed.
-   */
-  private adoptionPort(): CutoverAdoptionPort {
-    if (!this.ports.cutoverAdoption) throw new ReleaseOrchestrationError("CUTOVER_ADOPTION_REQUIRES_ADOPTION_PORT");
-    return this.ports.cutoverAdoption;
-  }
-
-  /**
-   * A handoff is adopted once. Finding one already committed means a previous
-   * deploy owns this cutover, and restarting it here would hand a second runner
-   * the same closed gate. The existing session is the authority; `resume` is
-   * what reads its state and decides what is still owed.
-   */
-  private adoptOnce(adoption: CutoverAdoptionPort, request: ReleaseRequest): DeploySession {
-    const { session, reconciled } = adoption.adopt(request.adoptedCutoverId!, request.ownerId, request.candidate);
-    if (reconciled) throw new ReleaseOrchestrationError("CUTOVER_ALREADY_ADOPTED", `${request.adoptedCutoverId} is owned by session ${session.id}; resume it`);
-    return session;
   }
 
   /**
@@ -473,11 +376,10 @@ export class ReleaseOrchestrator {
    * deploy only.
    *
    * It settles the session in the very database it is rolling back within, so
-   * it is valid precisely while that database survives the operation. A session
-   * that adopted a cutover is refused outright: reversing it replaces
-   * `commerce.sqlite`, and a rollback cannot keep its only receipt inside the
-   * thing it is destroying. That case belongs to BootstrapRollback, which
-   * records its terminal fact outside the database.
+   * it is valid precisely while that database survives the operation. The
+   * launch session, which adopted a prepared cutover, is refused outright and
+   * before anything is observed: reversing it would mean restoring the
+   * pre-launch database, and the machinery that could do that was retired.
    *
    * Legal only while the old lineage is still a truthful account of what
    * happened. The driver's return is not taken as proof: the restored topology
@@ -486,8 +388,8 @@ export class ReleaseOrchestrator {
    */
   async rollback(sessionId: string, ownerId: string): Promise<ReleaseOutcome> {
     if (!this.ports.recovery) throw new ReleaseOrchestrationError("ROLLBACK_REQUIRES_RECOVERY_DRIVER");
+    if (this.ports.sessions.read(sessionId)?.adoptedCutoverId) throw new ReleaseOrchestrationError("LAUNCH_SESSION_NOT_ROLLBACKABLE");
     const session = this.ports.sessions.observeTopology(sessionId, ownerId, await this.ports.topology.observe());
-    if (session.adoptedCutoverId) throw new ReleaseOrchestrationError("CROSS_LINEAGE_ROLLBACK_REQUIRES_REVERSE_HANDOFF");
     if (session.rollbackAuthority !== "OLD_LINEAGE_ALLOWED") throw new ReleaseOrchestrationError("OLD_LINEAGE_ROLLBACK_FORBIDDEN");
     if (!session.preDeployTopology) throw new ReleaseOrchestrationError("PRE_DEPLOY_TOPOLOGY_REQUIRED");
 

@@ -35,13 +35,13 @@ beforeEach(() => { directory = mkdtempSync(join(tmpdir(), "release-candidates-")
 
 describe("deriving a candidate from the commit it is for", () => {
   it("reads the expectation out of that commit's own tree", async () => {
-    const candidate = await deriveCandidate(tree(), { sha: MAIN, releaseClass: "LAUNCH_BASELINE" });
+    const candidate = await deriveCandidate(tree(), { sha: MAIN, releaseClass: "MAINTENANCE_REQUIRED" });
 
     // Nothing here was supplied by whoever asked for the publication. A
     // candidate that could claim an expectation its tree does not have is the
     // one way readiness could be made to admit the wrong release.
     expect(candidate).toEqual({
-      id: MAIN, sha: MAIN, releaseClass: "LAUNCH_BASELINE",
+      id: MAIN, sha: MAIN, releaseClass: "MAINTENANCE_REQUIRED",
       expectation: {
         schemaInventory: schemaInventoryExpectation(["0001_launch_baseline.sql"]),
         legalVersion: expectedLegal.version,
@@ -56,32 +56,30 @@ describe("deriving a candidate from the commit it is for", () => {
       .rejects.toThrow("RELEASE_CANDIDATE_NOT_ON_MAIN");
   });
 
-  it("refuses a launch baseline that is not the current tip of main", async () => {
-    // The launch cutover destroys the predecessor database. Publishing an
-    // ancestor would deploy a tree main has already moved past, with no second
-    // launch to correct it with.
-    await expect(deriveCandidate(tree(), { sha: OLDER, releaseClass: "LAUNCH_BASELINE" }))
-      .rejects.toThrow("LAUNCH_BASELINE_MUST_BE_MAIN_TIP");
-    // The same commit is publishable as an ordinary maintenance release.
+  it("never derives the retired launch baseline, even for main's tip", async () => {
+    await expect(deriveCandidate(tree(), { sha: MAIN, releaseClass: "LAUNCH_BASELINE" }))
+      .rejects.toThrow("LAUNCH_BASELINE_RETIRED");
+    // An ancestor on main is publishable as an ordinary maintenance release.
     await expect(deriveCandidate(tree(), { sha: OLDER, releaseClass: "MAINTENANCE_REQUIRED" })).resolves.toMatchObject({ sha: OLDER });
   });
 
   it("refuses a tree whose legal manifest it cannot believe", async () => {
-    await expect(deriveCandidate(tree({ "commerce/legal/production-manifest.json": "{}" }), { sha: MAIN, releaseClass: "LAUNCH_BASELINE" }))
+    await expect(deriveCandidate(tree({ "commerce/legal/production-manifest.json": "{}" }), { sha: MAIN, releaseClass: "MAINTENANCE_REQUIRED" }))
       .rejects.toThrow("RELEASE_CANDIDATE_LEGAL_MANIFEST_INVALID");
-    await expect(deriveCandidate(tree({ "commerce/legal/production-manifest.json": "" }), { sha: MAIN, releaseClass: "LAUNCH_BASELINE" }))
+    await expect(deriveCandidate(tree({ "commerce/legal/production-manifest.json": "" }), { sha: MAIN, releaseClass: "MAINTENANCE_REQUIRED" }))
       .rejects.toThrow("RELEASE_CANDIDATE_LEGAL_MANIFEST_INVALID");
   });
 
   it("refuses a tree with no migrations rather than publishing an empty inventory", async () => {
     // An empty inventory is a digest that every schema-less runtime matches.
     const bare: CommitTreeReader = { ...tree(), async list() { return []; } };
-    await expect(deriveCandidate(bare, { sha: MAIN, releaseClass: "LAUNCH_BASELINE" }))
+    await expect(deriveCandidate(bare, { sha: MAIN, releaseClass: "MAINTENANCE_REQUIRED" }))
       .rejects.toThrow("RELEASE_CANDIDATE_NO_MIGRATIONS");
   });
 });
 
 describe("a published candidate is written once", () => {
+  // A historical launch candidate: still readable, and still write-once.
   const candidate = {
     id: MAIN, sha: MAIN, releaseClass: "LAUNCH_BASELINE" as const,
     expectation: { schemaInventory: schemaInventoryExpectation(["0001_launch_baseline.sql"]), legalVersion: "2026-09-20.1", legalManifestSha256: "e".repeat(64) },

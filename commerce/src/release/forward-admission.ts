@@ -2,7 +2,6 @@ import { readFileSync } from "node:fs";
 import type { ReleaseCandidate } from "./candidate";
 import { deriveCandidate, type CommitTreeReader } from "./candidate-publication";
 import { assertCandidate, candidateDigest, CandidateStoreError } from "./candidate-store";
-import type { MainTipRefresh } from "./launch-baseline-admission";
 import type { ReleaseBinding } from "./forward-target";
 
 /**
@@ -14,10 +13,25 @@ import type { ReleaseBinding } from "./forward-target";
  * CI evidence read here - is the authority, and resuming it never asks again
  * whether it is still main's tip: if main moves while revision N deploys,
  * revision N must still be finishable. See docs/release/FORWARD_SUPERSESSION.md.
- *
- * `LaunchBaselineAdmissionGuard` does not apply: it admits LAUNCH_BASELINE and
- * nothing else. A forward release is MAINTENANCE_REQUIRED.
  */
+
+export type MainTipRefresh = () => Promise<string>;
+
+/**
+ * Builds a fresh origin/main reader. Updating the tracking ref is intentional:
+ * the admission decision must not be made from the checkout's earlier fetch.
+ */
+export const remoteMainTipRefresh = (
+  options: {
+    readonly remote: string;
+    readonly cwd: string;
+    readonly tree: CommitTreeReader;
+    readonly git: (args: readonly string[], cwd: string) => Promise<string>;
+  },
+): MainTipRefresh => async () => {
+  await options.git(["fetch", "--no-tags", options.remote, "main:refs/remotes/origin/main"], options.cwd);
+  return options.tree.resolve("origin/main");
+};
 
 export class ForwardAdmissionError extends Error {
   constructor(readonly code: string, readonly detail?: string) {

@@ -6,35 +6,29 @@
  * replaced by the deploy it is driving; a controller inside the workflow job
  * would be a process whose survival depends on a network it cannot influence,
  * holding the only handle on a closed sales gate. This one lives beside the
- * database and the envelope directory, and the workflow's whole job is to start
- * it and wait for its exit.
+ * database, and the workflow's whole job is to start it and wait for its exit.
  *
  *   observe                  read both layers and the readiness evidence; mutates nothing
  *   publish-candidate <sha> <class>
  *                            derive and publish a candidate; deploys nothing
- *   prepare-bootstrap <candidate> <expires-at> [cutover-id]
- *                            durable legacy DB handoff; deploys nothing
- *   deploy  <candidate> [cutover-id]
- *                            run the release for that published candidate; a
- *                            LAUNCH_BASELINE must name the prepared cutover it
- *                            is adopting, because its predecessor is archived
+ *   deploy  <candidate>      run the release for that published candidate
  *   forward-deploy <session> <candidate>
  *                            carry an armed, stuck cutover session forward to a
  *                            newer MAINTENANCE_REQUIRED release; resumable
  *   certify <session>  the attended half: arm, buy, refund, shut the fixture
  *   verify  <session>  prove a finished cutover, changing nothing
  *   resume  <session>  take over a session whose lease expired and report the plan
- *   rollback <session> restore the pre-deploy vector; launch rollback resumes from its external receipt
- *   rollback-prepared <cutover-id>
- *                            restore the predecessor from a prepared cutover
- *                            that no session ever adopted
+ *   rollback <session> restore the pre-deploy vector
  *
  * Every state the runner can produce has exactly one recovery owner:
  *
- *   before the envelope is durable   prepare-bootstrap cleans up internally
- *   envelope durable, not adopted    rollback-prepared <cutover-id>
- *   adopted, session exists          rollback <session>
+ *   session exists, nothing armed    rollback <session>
  *   external effects armed           forward-deploy <session> <candidate>
+ *
+ * The one-time launch commands (`prepare-bootstrap`, `rollback-prepared`, the
+ * cross-lineage `rollback`) and the LAUNCH_BASELINE class they served were
+ * retired once the launch cutover verified on 2026-09-24. They are in git
+ * history at 3ad07cf; see docs/release/DEPLOYMENT_INVARIANTS.md.
  *
  * Exit codes are the contract the workflow reads:
  *   0   succeeded, or observe/verify/resume completed
@@ -53,7 +47,8 @@ import { buildCandidatePublisher, buildProductionRelease, buildReadOnlyRelease, 
 import { deriveCandidate } from "../../commerce/src/release/candidate-publication";
 import { verifyCutover } from "../../commerce/src/release/verify-cutover";
 
-const RELEASE_CLASSES: readonly ReleaseClass[] = ["LAUNCH_BASELINE", "ROLLING_COMPATIBLE", "MAINTENANCE_REQUIRED"];
+/** What may still be published. LAUNCH_BASELINE remains readable, never publishable. */
+const PUBLISHABLE_RELEASE_CLASSES: readonly ReleaseClass[] = ["ROLLING_COMPATIBLE", "MAINTENANCE_REQUIRED"];
 
 const EXIT_BY_OUTCOME: Record<string, number> = {
   SUCCEEDED: 0, SAFE_ABORTED: 10, ROLLED_BACK: 11, RECOVERY_REQUIRED: 12, AWAITING_OPERATOR: 13,
@@ -67,20 +62,6 @@ const say = (payload: Record<string, unknown>) => process.stdout.write(`${JSON.s
 export const runCutoverCommand = async (release: ProductionRelease, argv: readonly string[], ownerId: string): Promise<number> => {
   const [command, argument] = argv;
   switch (command) {
-    case "prepare-bootstrap": {
-      if (!argument || !argv[2]) throw new Error("BOOTSTRAP_PREPARATION_ARGUMENTS_REQUIRED");
-      const candidate = release.candidates.get(argument);
-      if (!candidate) throw new Error(`RELEASE_CANDIDATE_NOT_PUBLISHED: ${argument}`);
-      if (candidate.releaseClass !== "LAUNCH_BASELINE") throw new Error("BOOTSTRAP_PREPARATION_REQUIRES_LAUNCH_BASELINE");
-      if (!release.bootstrapPreparation) throw new Error("BOOTSTRAP_PREPARATION_PREDECESSOR_UNAVAILABLE");
-      await release.launchBaselineAdmission.admit(candidate);
-      const prepared = await release.bootstrapPreparation.prepare({
-        targetSha: candidate.sha, expiresAt: argv[2]!, cutoverId: argv[3],
-      });
-      release.journal.record("bootstrap.prepared", { cutoverId: prepared.envelope.cutoverId, target: candidate.sha, resumed: prepared.alreadyPrepared });
-      say({ command, cutoverId: prepared.envelope.cutoverId, target: candidate.sha, resumed: prepared.alreadyPrepared });
-      return 0;
-    }
     case "deploy": {
       if (!argument) throw new Error("RELEASE_CANDIDATE_REQUIRED");
       // Resolved out of the write-once store by its commit. A deploy cannot be
@@ -88,23 +69,13 @@ export const runCutoverCommand = async (release: ProductionRelease, argv: readon
       // being released, and the two could disagree.
       const candidate = release.candidates.get(argument);
       if (!candidate) throw new Error(`RELEASE_CANDIDATE_NOT_PUBLISHED: ${argument}`);
-      // A launch baseline is always the second half of a prepared handoff:
-      // nothing else creates the launch database, and by the time this runs the
-      // predecessor it would otherwise read has already been archived. So the
-      // cutover id is required rather than optional, and naming it is how the
-      // deploy says which prepared handoff it is finishing.
-      const adoptedCutoverId = candidate.releaseClass === "LAUNCH_BASELINE" ? argv[2] : undefined;
-      if (candidate.releaseClass === "LAUNCH_BASELINE") {
-        // Admission first, and deliberately: whether this artifact is still the
-        // launch baseline does not depend on what else the command was given,
-        // and a stale candidate must be refused on its own terms.
-        await release.launchBaselineAdmission.admit(candidate);
-        if (!adoptedCutoverId) throw new Error("LAUNCH_DEPLOY_REQUIRES_PREPARED_CUTOVER");
-      }
-      release.journal.record("deploy.start", { candidate: candidate.id, sha: candidate.sha, releaseClass: candidate.releaseClass, cutoverId: adoptedCutoverId });
+      // The launch replaced the database from a prepared handoff that no longer
+      // exists. Its candidates stay readable as history, never deployable.
+      if (candidate.releaseClass === "LAUNCH_BASELINE") throw new Error("LAUNCH_BASELINE_RETIRED");
+      release.journal.record("deploy.start", { candidate: candidate.id, sha: candidate.sha, releaseClass: candidate.releaseClass });
       const outcome = candidate.releaseClass === "ROLLING_COMPATIBLE"
         ? await release.orchestrator.runRolling({ ownerId, candidate })
-        : await release.orchestrator.runMaintenanceCutover({ ownerId, candidate, adoptedCutoverId });
+        : await release.orchestrator.runMaintenanceCutover({ ownerId, candidate });
       release.journal.record("deploy.outcome", { kind: outcome.kind, session: outcome.session.id, state: outcome.session.state });
       say({ command, outcome: outcome.kind, session: outcome.session.id, code: "code" in outcome ? outcome.code : undefined });
       // Handing control to a person: this process is done with the session, and
@@ -191,53 +162,22 @@ export const runCutoverCommand = async (release: ProductionRelease, argv: readon
       release.sessions.yieldLease(session.id, ownerId);
       return 12;
     }
-    case "rollback-prepared": {
-      // The other half of the recovery split. `rollback` speaks for a successor
-      // session; this speaks for a prepared cutover that never became one, and
-      // the two may never address the same handoff.
-      if (!argument) throw new Error("RELEASE_CUTOVER_REQUIRED");
-      if (!release.bootstrapRollback) throw new Error("PREPARED_ROLLBACK_PREDECESSOR_UNAVAILABLE");
-      try {
-        const receipt = await release.bootstrapRollback.rollbackPrepared(argument);
-        release.journal.record("prepared-rollback.outcome", { cutoverId: argument, rollback: receipt.intent.rollbackId, stage: receipt.stage });
-        say({ command, outcome: "ROLLED_BACK", cutoverId: argument, rollback: receipt.intent.rollbackId });
-        return 11;
-      } catch (error) {
-        // Before durable intent exists this is an ordinary pre-mutation
-        // refusal; after it, production is mid-restore and only an operator
-        // decides what happens next.
-        if (!release.bootstrapRollback.isPreparedStarted(argument)) throw error;
-        release.journal.record("prepared-rollback.recovery-required", {
-          cutoverId: argument,
-          code: error instanceof Error ? error.message.split(":")[0] : "UNKNOWN_RELEASE_FAILURE",
-        });
-        say({ command, outcome: "RECOVERY_REQUIRED", cutoverId: argument });
-        return 12;
-      }
-    }
     case "rollback": {
       if (!argument) throw new Error("RELEASE_SESSION_REQUIRED");
-      // The restored predecessor may not contain the successor's release tables
-      // at all. An external receipt must therefore be consulted before any
-      // attempt to read that now-noncanonical session row.
-      const startedCrossLineage = release.bootstrapRollback?.isStarted(argument) ?? false;
-      const session = startedCrossLineage ? undefined : release.sessions.read(argument);
-      const crossLineage = release.bootstrapRollback
-        && (startedCrossLineage || Boolean(session?.adoptedCutoverId));
-      if (crossLineage) {
+      const session = release.sessions.read(argument);
+      if (!session) throw new Error(`DEPLOY_SESSION_NOT_FOUND: ${argument}`);
+      // The launch session adopted a prepared cutover: reversing it means
+      // restoring the pre-launch database, and that machinery is retired.
+      // Refused here, before the takeover below could write anything.
+      if (session.adoptedCutoverId) throw new Error("LAUNCH_SESSION_NOT_ROLLBACKABLE");
+      // A failed deploy stood down and exited; the rollback is a different
+      // process with its own owner id. As with `certify`, it claims a lapsed
+      // lease and refuses one somebody still holds.
+      if (session.ownerId !== ownerId) {
         try {
-          const receipt = await release.bootstrapRollback!.rollback(argument, ownerId);
-          release.journal.record("bootstrap-rollback.outcome", { session: argument, rollback: receipt.intent.rollbackId, stage: receipt.stage });
-          say({ command, outcome: "ROLLED_BACK", session: argument, rollback: receipt.intent.rollbackId });
-          return 11;
+          release.sessions.takeOverExpiredLease(argument, ownerId);
         } catch (error) {
-          if (!release.bootstrapRollback!.isStarted(argument)) throw error;
-          release.journal.record("bootstrap-rollback.recovery-required", {
-            session: argument,
-            code: error instanceof Error ? error.message.split(":")[0] : "UNKNOWN_RELEASE_FAILURE",
-          });
-          say({ command, outcome: "RECOVERY_REQUIRED", session: argument });
-          return 12;
+          throw new Error(`DEPLOY_SESSION_HELD_BY_ANOTHER_RUNNER: ${argument} is held by ${session.ownerId} (${error instanceof Error ? error.message : "unknown"})`);
         }
       }
       const outcome = await release.orchestrator.rollback(argument, ownerId);
@@ -266,7 +206,8 @@ export const runCutoverCommand = async (release: ProductionRelease, argv: readon
  */
 const publishCandidate = async (sha: string, named: string | undefined): Promise<number> => {
   const releaseClass = (named ?? "").trim() as ReleaseClass;
-  if (!RELEASE_CLASSES.includes(releaseClass)) throw new Error(`RELEASE_CLASS_INVALID: ${releaseClass || "absent"}`);
+  if (releaseClass === "LAUNCH_BASELINE") throw new Error("LAUNCH_BASELINE_RETIRED");
+  if (!PUBLISHABLE_RELEASE_CLASSES.includes(releaseClass)) throw new Error(`RELEASE_CLASS_INVALID: ${releaseClass || "absent"}`);
   const publisher = buildCandidatePublisher(loadCandidatePublicationConfig());
   await publisher.fetch(sha);
   const derived = await deriveCandidate(publisher.tree, { sha, releaseClass });

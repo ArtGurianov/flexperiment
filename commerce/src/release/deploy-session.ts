@@ -79,7 +79,7 @@ export type DeploySession = {
   readonly candidateId?: string;
 };
 
-export type DeploySessionPatch = Partial<Pick<DeploySession, "ownerId" | "state" | "rollbackAuthority" | "mutationObserved" | "leaseExpiresAt" | "preDeployTopology" | "observedTopology" | "bootstrapRollbackId">>;
+export type DeploySessionPatch = Partial<Pick<DeploySession, "ownerId" | "state" | "rollbackAuthority" | "mutationObserved" | "leaseExpiresAt" | "preDeployTopology" | "observedTopology">>;
 
 /**
  * Session state and the deployment sales gate are one operational fact, so one
@@ -120,10 +120,6 @@ export interface ReleaseAuthorityStore {
   takeOverExpiredLease(id: string, newOwnerId: string, now: Date, leaseExpiresAt: string): DeploySession;
   /** The holder standing down, so the next command need not wait out the lease. */
   yieldLease(id: string, ownerId: string, now: Date): void;
-  /** Chooses recovery direction once and for all, in the same write that checks it may be chosen. */
-  reserveBootstrapRollback(id: string, ownerId: string, now: Date, rollbackId: string): DeploySession;
-  /** Re-proves ownership of a reservation across a long external step. Guarded no-op. */
-  assertBootstrapRollbackOwned(id: string, ownerId: string, now: Date, rollbackId: string): DeploySession;
   /** Shaped like SalesGateState's own view, so a capability can be bound to the owning session. */
   deploymentGate(): DeploymentGateView;
   /** Every forward revision of a session, in order. */
@@ -302,33 +298,6 @@ export class InMemoryReleaseAuthorityStore implements ReleaseAuthorityStore {
     return this.write(id, ownerId, now, NON_TERMINAL, { leaseExpiresAt });
   }
 
-  reserveBootstrapRollback(id: string, ownerId: string, now: Date, rollbackId: string): DeploySession {
-    const session = this.required(id);
-    // Idempotent for the same rollback, refused for a different one: a second
-    // reverse handoff over the first would archive the successor twice and
-    // leave two receipts each believing it owns the restore.
-    if (session.bootstrapRollbackId) {
-      if (session.bootstrapRollbackId !== rollbackId) throw new Error("BOOTSTRAP_ROLLBACK_ALREADY_RESERVED");
-      // Idempotent is not unauthenticated. Returning early here let a runner
-      // that had already lost its lease repeat the same id, read success, and
-      // carry on archiving the successor.
-      return this.write(id, ownerId, now, ["DEPLOYING", "RECOVERY_REQUIRED"], { state: "RECOVERY_REQUIRED" });
-    }
-    if (!session.adoptedCutoverId) throw new Error("BOOTSTRAP_ROLLBACK_NOT_A_CUTOVER_SESSION");
-    if (session.rollbackAuthority !== "OLD_LINEAGE_ALLOWED") throw new Error("OLD_LINEAGE_ROLLBACK_FORBIDDEN");
-    if (this.#gateOwnerSessionId !== id) throw new Error("DEPLOYMENT_GATE_NOT_OWNED");
-    return this.write(id, ownerId, now, ["DEPLOYING", "RECOVERY_REQUIRED"], {
-      bootstrapRollbackId: rollbackId,
-      state: "RECOVERY_REQUIRED",
-    });
-  }
-
-  assertBootstrapRollbackOwned(id: string, ownerId: string, now: Date, rollbackId: string): DeploySession {
-    const session = this.write(id, ownerId, now, NON_TERMINAL, {});
-    if (session.bootstrapRollbackId !== rollbackId) throw new Error("BOOTSTRAP_ROLLBACK_NOT_RESERVED");
-    return session;
-  }
-
   yieldLease(id: string, ownerId: string, now: Date): void {
     const session = this.#sessions.get(id);
     if (!session || session.ownerId !== ownerId || TERMINAL.has(session.state)) return;
@@ -401,16 +370,6 @@ export type AcquireInput = {
   readonly ownerId: string;
   readonly mode: DeployMode;
   readonly targetSha: string;
-  readonly adoptedCutoverId?: string;
-  /**
-   * The predecessor archive this session was handed, copied out of the envelope
-   * at adoption. Without it, a retry that finds the session already committed
-   * has nothing to check the leftover envelope against, and a file that merely
-   * reused a cutover id would read as the same handoff.
-   */
-  readonly predecessorDatabaseRef?: string;
-  readonly predecessorDatabaseSha256?: string;
-  readonly adoptedEnvelopeSha256?: string;
   readonly candidateId?: string;
 };
 
@@ -453,10 +412,6 @@ export class DeploySessions {
       id: input.id ?? randomUUID(), ownerId: input.ownerId, mode: input.mode, targetSha: input.targetSha,
       state: "ACQUIRED", rollbackAuthority: "OLD_LINEAGE_ALLOWED", mutationObserved: false,
       createdAt: now.toISOString(), leaseExpiresAt: new Date(now.getTime() + this.leaseMs).toISOString(),
-      adoptedCutoverId: input.adoptedCutoverId,
-      predecessorDatabaseRef: input.predecessorDatabaseRef,
-      predecessorDatabaseSha256: input.predecessorDatabaseSha256,
-      adoptedEnvelopeSha256: input.adoptedEnvelopeSha256,
       candidateId: input.candidateId,
     };
   }
@@ -607,10 +562,6 @@ export class DeploySessions {
     return Date.parse(session.leaseExpiresAt) > this.clock().getTime()
       ? this.renewLease(id, ownerId)
       : this.takeOverExpiredLease(id, ownerId);
-  }
-
-  reserveBootstrapRollback(id: string, ownerId: string, rollbackId: string): DeploySession {
-    return this.store.reserveBootstrapRollback(id, ownerId, this.clock(), rollbackId);
   }
 
   yieldLease(id: string, ownerId: string): void {

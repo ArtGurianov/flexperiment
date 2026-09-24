@@ -40,7 +40,6 @@ const harness = (options: {
   retainedFails?: string;
   certifyFails?: string;
   preflightFails?: string;
-  withoutPredecessor?: boolean;
   evidence?: ReleaseReadinessEvidence;
 } ) => {
   const log: string[] = [];
@@ -53,11 +52,6 @@ const harness = (options: {
     clock: () => now,
     topology: {
       async observe() { last = queue.shift() ?? last; log.push(`observe:${last.runtime.commerce}`); return last; },
-    },
-    // A launch cutover captures its snapshot from the lineage it is leaving,
-    // where the canonical reader has no evidence table to read.
-    predecessor: options.withoutPredecessor ? undefined : {
-      async observe() { last = queue.shift() ?? last; log.push(`predecessor:${last.runtime.commerce}`); return last; },
     },
     evidence: { async read() { log.push("readiness"); return options.evidence ?? admittedEvidence(); } },
     deployment: {
@@ -77,7 +71,7 @@ const harness = (options: {
   return { log, ports, store, orchestrator: new ReleaseOrchestrator(ports) };
 };
 
-const cutoverRequest = { ownerId: "owner", candidate: candidateFor("LAUNCH_BASELINE") } as const;
+const cutoverRequest = { ownerId: "owner", candidate: candidateFor("MAINTENANCE_REQUIRED") } as const;
 const rollingRequest = { ownerId: "owner", candidate: candidateFor("ROLLING_COMPATIBLE") } as const;
 
 describe("maintenance cutover ordering", () => {
@@ -86,7 +80,7 @@ describe("maintenance cutover ordering", () => {
     const prepared = await orchestrator.runMaintenanceCutover(cutoverRequest);
 
     expect(prepared.kind).toBe("AWAITING_OPERATOR");
-    expect(log).toEqual([`predecessor:${old}`, `recoverable:${old}`, `deploy:${target}`, `observe:${target}`, `retained:${old}`, "readiness", "capability-issued"]);
+    expect(log).toEqual([`observe:${old}`, `recoverable:${old}`, `deploy:${target}`, `observe:${target}`, `retained:${old}`, "readiness", "capability-issued"]);
     // Issuing a capability is a record this system keeps about itself. Nothing
     // has left it, so the archived database is still a truthful account and a
     // rollback is still legal - which is exactly what a run the operator never
@@ -109,7 +103,7 @@ describe("maintenance cutover ordering", () => {
     // point of no return is crossed immediately before the payment, not before
     // the capability that might never be spent.
     expect(log).toEqual([
-      `predecessor:${old}`, `recoverable:${old}`, `deploy:${target}`, `observe:${target}`, `retained:${old}`, "readiness",
+      `observe:${old}`, `recoverable:${old}`, `deploy:${target}`, `observe:${target}`, `retained:${old}`, "readiness",
       // Preflight is read-only and sits before the point of no return: an
       // unreachable runtime or an absent operator is an ordinary refusal, not
       // a release that can no longer be rolled back.
@@ -130,7 +124,7 @@ describe("maintenance cutover ordering", () => {
     const outcome = await orchestrator.runMaintenanceCutover(cutoverRequest);
 
     expect(outcome).toMatchObject({ kind: "RECOVERY_REQUIRED", code: "PREDECESSOR_IMAGE_RECHECK_FAILED:COMPOSE_ROLLBACK_PREDECESSOR_IMAGE_MISSING" });
-    expect(log).toEqual([`predecessor:${old}`, `recoverable:${old}`, `deploy:${target}`, `observe:${target}`, `retained:${old}`]);
+    expect(log).toEqual([`observe:${old}`, `recoverable:${old}`, `deploy:${target}`, `observe:${target}`, `retained:${old}`]);
     expect(log).not.toContain("readiness");
     expect(log).not.toContain("capability-issued");
     expect(store.deploymentGate().closed).toBe(true);
@@ -191,13 +185,10 @@ describe("maintenance cutover ordering", () => {
     });
   });
 
-  it("refuses a launch cutover with no reader for the lineage it is leaving", async () => {
-    // Not a fallback: the canonical reader would throw on the predecessor
-    // database, and a cutover that began without a snapshot would have nothing
-    // to prove a safe abort against.
-    const { log, store, orchestrator } = harness({ topologies: [topology(old), topology(target)], withoutPredecessor: true });
+  it("refuses a launch candidate: the launch is history, never a release", async () => {
+    const { log, store, orchestrator } = harness({ topologies: [topology(old), topology(target)] });
 
-    await expect(orchestrator.runMaintenanceCutover(cutoverRequest)).rejects.toThrow("LAUNCH_CUTOVER_REQUIRES_PREDECESSOR_READER");
+    await expect(orchestrator.runMaintenanceCutover({ ownerId: "owner", candidate: candidateFor("LAUNCH_BASELINE") })).rejects.toThrow("LAUNCH_BASELINE_RETIRED");
     expect(log).toEqual([]);
     expect(store.deploymentGate().closed).toBe(false);
   });

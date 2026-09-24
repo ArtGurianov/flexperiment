@@ -160,29 +160,6 @@ export class SqliteReleaseAuthorityStore implements ReleaseAuthorityStore {
     return this.write(id, ownerId, now, NON_TERMINAL, { leaseExpiresAt });
   }
 
-  reserveBootstrapRollback(id: string, ownerId: string, now: Date, rollbackId: string): DeploySession {
-    const session = this.required(id);
-    if (session.bootstrapRollbackId) {
-      if (session.bootstrapRollbackId !== rollbackId) throw new Error("BOOTSTRAP_ROLLBACK_ALREADY_RESERVED");
-      // Idempotent is not unauthenticated: the repeat still has to prove it
-      // holds the lease, or a runner that lost it reads success and carries on.
-      return this.write(id, ownerId, now, ["DEPLOYING", "RECOVERY_REQUIRED"], { state: "RECOVERY_REQUIRED" });
-    }
-    if (!session.adoptedCutoverId) throw new Error("BOOTSTRAP_ROLLBACK_NOT_A_CUTOVER_SESSION");
-    if (session.rollbackAuthority !== "OLD_LINEAGE_ALLOWED") throw new Error("OLD_LINEAGE_ROLLBACK_FORBIDDEN");
-    if (this.deploymentGate().deploymentSessionId !== id) throw new Error("DEPLOYMENT_GATE_NOT_OWNED");
-    return this.write(id, ownerId, now, ["DEPLOYING", "RECOVERY_REQUIRED"], {
-      bootstrapRollbackId: rollbackId,
-      state: "RECOVERY_REQUIRED",
-    });
-  }
-
-  assertBootstrapRollbackOwned(id: string, ownerId: string, now: Date, rollbackId: string): DeploySession {
-    const session = this.write(id, ownerId, now, NON_TERMINAL, {});
-    if (session.bootstrapRollbackId !== rollbackId) throw new Error("BOOTSTRAP_ROLLBACK_NOT_RESERVED");
-    return session;
-  }
-
   forwardTargets(id: string): readonly ForwardTarget[] {
     return readForwardTargets(this.db, id);
   }
@@ -252,7 +229,6 @@ export class SqliteReleaseAuthorityStore implements ReleaseAuthorityStore {
     if (patch.mutationObserved !== undefined) { assignments.push("mutation_observed = ?"); values.push(patch.mutationObserved ? 1 : 0); }
     if (patch.leaseExpiresAt !== undefined) { assignments.push("lease_expires_at = ?"); values.push(patch.leaseExpiresAt); }
     if (patch.observedTopology !== undefined) { assignments.push("observed_topology = ?"); values.push(JSON.stringify(patch.observedTopology)); }
-    if (patch.bootstrapRollbackId !== undefined) { assignments.push("bootstrap_rollback_id = ?"); values.push(patch.bootstrapRollbackId); }
     if (extra) assignments.push(extra);
     // A patch that changes nothing still has to prove ownership, so it writes
     // the lease back to itself rather than skipping the guarded statement.

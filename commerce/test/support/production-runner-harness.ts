@@ -34,6 +34,8 @@ export type Harness = {
   /** What the control plane says the commerce application is doing. */
   applicationStatus(): string;
   setApplicationStatus(value: string): void;
+  /** Runs when Coolify is asked to deploy: what production looks like once it has. */
+  onDeploy(effect: (() => void) | undefined): void;
   close(): Promise<void>;
 };
 
@@ -70,14 +72,12 @@ const listen = async (server: Server): Promise<string> => {
 export const harness = async (root: string): Promise<Harness> => {
   const origin = join(root, "origin");
   const worktree = join(root, "worktree");
-  const replacementRoot = join(root, "commerce-volume");
+  const volume = join(root, "commerce-volume");
   const stateDirectory = join(root, "release-state");
-  const archiveDirectory = join(stateDirectory, "archive");
-  const envelopeDirectory = join(stateDirectory, "envelopes");
   const lockDirectory = join(stateDirectory, "locks");
   const journalDirectory = join(stateDirectory, "journal");
   const candidateDirectory = join(stateDirectory, "candidates");
-  for (const path of [origin, worktree, replacementRoot, archiveDirectory, envelopeDirectory, lockDirectory, journalDirectory, candidateDirectory]) mkdirSync(path, { recursive: true });
+  for (const path of [origin, worktree, volume, lockDirectory, journalDirectory, candidateDirectory]) mkdirSync(path, { recursive: true });
   git(origin, "init", "--bare", "--initial-branch=main", ".");
   git(worktree, "init", "--initial-branch=main", ".");
   git(worktree, "config", "user.email", "test@example.invalid");
@@ -102,7 +102,7 @@ export const harness = async (root: string): Promise<Harness> => {
   }));
   writeFileSync(join(root, "certification-checkout.json"), JSON.stringify({ customer_email: "certification@example.invalid" }));
 
-  const databasePath = join(replacementRoot, "commerce.sqlite");
+  const databasePath = join(volume, "commerce.sqlite");
   const db = new Database(databasePath);
   db.pragma("foreign_keys = ON");
   migrate(db);
@@ -116,6 +116,7 @@ export const harness = async (root: string): Promise<Harness> => {
   // The only runtime state the runner is now allowed to care about, and it
   // comes from the control plane rather than from a container listing.
   let applicationStatus = "running:healthy";
+  let deployEffect: (() => void) | undefined;
   // Overridable so a test can make Coolify disagree with configuration.
   const buildPacks: Record<string, string> = Object.fromEntries(APPLICATIONS.map((a) => [a.uuid, a.buildPack]));
   const pinned: Record<string, string | null> = Object.fromEntries(APPLICATIONS.map((a) => [a.uuid, null]));
@@ -138,7 +139,7 @@ export const harness = async (root: string): Promise<Harness> => {
     // Checked before the deploy branch: `/deployments/x` also starts with `/deploy`.
     if (url.includes("/deployments/")) return send({ status: deploymentStatus, commit: targetSha });
     if (url.endsWith("/stop")) { applicationStatus = "exited:unhealthy"; return send({ message: "stopped" }); }
-    if (url.includes("/deploy")) { applicationStatus = "running:healthy"; return send({ deployments: [{ deployment_uuid: "dep-1" }] }); }
+    if (url.includes("/deploy")) { applicationStatus = "running:healthy"; deployEffect?.(); return send({ deployments: [{ deployment_uuid: "dep-1" }] }); }
     if (request.method === "PATCH") return send({ uuid, git_commit_sha: pinned[uuid ?? ""] });
     const application = APPLICATIONS.find((entry) => entry.uuid === uuid);
     return send({
@@ -166,12 +167,9 @@ export const harness = async (root: string): Promise<Harness> => {
     setBuildPack(uuid, buildPack) { buildPacks[uuid] = buildPack; },
     applicationStatus: () => applicationStatus,
     setApplicationStatus(value: string) { applicationStatus = value; },
+    onDeploy(effect) { deployEffect = effect; },
     config: {
       databasePath,
-      replacementRoot,
-      stateDirectory,
-      archiveDirectory,
-      envelopeDirectory,
       lockPath: join(lockDirectory, "release.lock"),
       journalPath: join(journalDirectory, "release.jsonl"),
       candidateDirectory,
