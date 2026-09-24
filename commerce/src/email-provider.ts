@@ -27,6 +27,8 @@ export type UnisenderDumpEvent = {
   jobId: string;
   status: string;
   deliveryStatus: string;
+  /** Raw, as the dump carried it; sanitized before anything stores it. */
+  destinationResponse?: string;
   metadata: unknown;
 };
 
@@ -154,7 +156,9 @@ const dumpEvidenceFromCsv = (csv: string) => {
     const deliveryStatus = row[columns.get("delivery_status")!];
     const rawMetadata = row[columns.get("metadata")!];
     if (![eventTime, jobId, status, deliveryStatus, rawMetadata].every((value) => typeof value === "string")) return [];
-    try { return [{ eventTime, jobId, status, deliveryStatus, metadata: JSON.parse(rawMetadata) }]; }
+    const responseColumn = columns.get("destination_response");
+    const destinationResponse = responseColumn === undefined ? undefined : row[responseColumn];
+    try { return [{ eventTime, jobId, status, deliveryStatus, ...(destinationResponse ? { destinationResponse } : {}), metadata: JSON.parse(rawMetadata) }]; }
     catch { return []; }
   }) };
 };
@@ -221,10 +225,11 @@ export class UnisenderGoProvider implements EmailProvider, EmailDeliveryEvidence
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "application/json", "X-API-KEY": this.config.apiKey },
       // Batch one small time window. Request only fields needed for strict
-      // opaque correlation; the export never includes recipient/address data.
+      // opaque correlation, plus the receiver's answer, which is sanitized
+      // before it is stored; the export never includes recipient/address data.
       body: JSON.stringify({ start_time: input.startTime, end_time: input.endTime, limit: UNISENDER_EVENT_DUMP_EVENT_LIMIT,
         ...(input.jobId ? { filter: { job_id: input.jobId } } : {}),
-        dump_fields: ["event_time", "job_id", "status", "delivery_status", "metadata"], format: "csv" }),
+        dump_fields: ["event_time", "job_id", "status", "delivery_status", "destination_response", "metadata"], format: "csv" }),
     });
     const payload = await response.json().catch(() => undefined) as UnisenderDumpCreateResponse | undefined;
     if (!response.ok) {

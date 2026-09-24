@@ -220,12 +220,29 @@ describe("provider contracts", () => {
     });
     await expect(provider.createEventDump({ startTime: "2026-08-24 08:00:00", endTime: "2026-08-24 09:00:00" })).resolves.toEqual({ dumpId: "dump-1" });
     const create = await requests[0].json() as Record<string, unknown>;
-    expect(create).toMatchObject({ start_time: "2026-08-24 08:00:00", end_time: "2026-08-24 09:00:00", dump_fields: ["event_time", "job_id", "status", "delivery_status", "metadata"] });
+    expect(create).toMatchObject({ start_time: "2026-08-24 08:00:00", end_time: "2026-08-24 09:00:00", dump_fields: ["event_time", "job_id", "status", "delivery_status", "destination_response", "metadata"] });
     expect(create.limit).toBe(100_000);
     expect(JSON.stringify(create)).not.toContain("email");
     expect(requests[0].signal).toBeInstanceOf(AbortSignal);
     await expect(provider.getEventDump({ dumpId: "dump-1" })).resolves.toEqual({ status: "ready", returnedEventCount: 2, events: [{ eventTime: "2026-08-24 08:35:20", jobId: "job-1", status: "delivered", deliveryStatus: "ok_delivered", metadata: { outbox_id: "outbox-1" } }] });
     expect(requests).toHaveLength(3);
+  });
+
+  it("carries the receiver's answer from an Event Dump, and still reads a dump without that column", async () => {
+    const csv = [
+      'event_time,job_id,status,delivery_status,destination_response,metadata',
+      '2026-09-24 06:52:10,job-1,soft_bounced,err_will_retry,"451 4.7.1 Try again later","{""outbox_id"":""outbox-1""}"',
+      '2026-09-24 06:51:59,job-2,sent,ok_sent,,"{""outbox_id"":""outbox-2""}"',
+    ].join("\n");
+    const provider = new UnisenderGoProvider({ apiKey: "test-key-not-a-secret", fromEmail: "noreply@example.test", fromName: "Flexperiment", replyToEmail: "hello@example.test" }, async (input, init) => {
+      const request = new Request(input, init);
+      if (request.url.endsWith("event-dump/get.json")) return Response.json({ status: "success", event_dump: { dump_status: "ready", files: [{ url: "https://go2.unisender.ru/event-dump/dump-1.csv" }] } });
+      return new Response(csv, { headers: { "Content-Type": "text/csv" } });
+    });
+    await expect(provider.getEventDump({ dumpId: "dump-1" })).resolves.toEqual({ status: "ready", returnedEventCount: 2, events: [
+      { eventTime: "2026-09-24 06:52:10", jobId: "job-1", status: "soft_bounced", deliveryStatus: "err_will_retry", destinationResponse: "451 4.7.1 Try again later", metadata: { outbox_id: "outbox-1" } },
+      { eventTime: "2026-09-24 06:51:59", jobId: "job-2", status: "sent", deliveryStatus: "ok_sent", metadata: { outbox_id: "outbox-2" } },
+    ] });
   });
 
   it("accepts queued Event Dump state without files and distinguishes deterministic create rejection", async () => {

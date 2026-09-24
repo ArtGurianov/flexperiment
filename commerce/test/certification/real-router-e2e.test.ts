@@ -242,7 +242,7 @@ describe("a production certification against the real commerce runtime", () => {
     await world.driver.preflight(capability);
 
     const failure = await world.driver.certify(capability).then(() => undefined, (error: Error) => error.message);
-    expect(failure).toMatch(/^INCOMPLETE:CERTIFICATION_EMAIL_TIMEOUT:TICKET last_status=SENT last_provider=sent@\S+ provider_events=\d+ queued_at=\S+ first_sent_at=\S+ waited=\d+m\d{2}s observed_at=\S+$/);
+    expect(failure).toMatch(/^INCOMPLETE:CERTIFICATION_EMAIL_TIMEOUT:TICKET last_status=SENT last_provider=sent@\S+ provider_events=\d+ queued_at=\S+ first_sent_at=\S+ waited=\d+m\d{2}s observed_at=\S+ delivery_status=\w+ evidence_source=\w+ destination_response=(UNAVAILABLE|"[^"]*")$/);
     expect(failure).not.toContain("certification@example.test");
     const run = new SqliteCertificationRunStore(world.db).load(capability.runId)!;
     expect(run.failure?.code).toMatch(/^CERTIFICATION_EMAIL_TIMEOUT:TICKET last_status=SENT /);

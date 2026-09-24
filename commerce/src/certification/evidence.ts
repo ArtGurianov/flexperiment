@@ -1,3 +1,5 @@
+import { sanitizeDeliveryStatus, sanitizeDestinationResponse } from "../email-delivery-evidence";
+
 /**
  * Classification of what production actually reports, kept entirely separate
  * from the code that talks to it.
@@ -149,9 +151,17 @@ const duration = (ms: number): string => {
  * stopped at `sent` for the whole wait and was delivered three minutes after -
  * a recipient deferral - and that was not visible from the failure itself.
  *
- * Built only from states, provider status words and timestamps: never an
- * address, a subject or an SMTP payload, because this becomes a durable
- * failure code and a log line.
+ * The cancellation and refund emails that followed (same day) stayed `sent`
+ * for hours, and "sent" alone could not say whether the receiver was deferring
+ * them or the provider never tried again. So the report also carries the
+ * provider's delivery classification and the receiving server's answer, when
+ * either was recorded - and says UNKNOWN / UNAVAILABLE when not, rather than
+ * leaving the reader to guess.
+ *
+ * Built from states, provider status words, timestamps and the receiver's
+ * answer as email-delivery-evidence.ts sanitized it (sanitized again here):
+ * never an address, a subject or a URL, because this becomes a durable failure
+ * code and a log line.
  */
 export const emailTimeoutDiagnosis = (evidence: OrderEvidence, type: string, payloadRef: string, waitedFrom: Date, observedAt: Date): string => {
   const outbox = rows(evidence.email_outbox).filter((row) => row.type === type && row.payload_ref === payloadRef);
@@ -171,7 +181,27 @@ export const emailTimeoutDiagnosis = (evidence: OrderEvidence, type: string, pay
     `queued_at=${instant(row.created_at) ?? "unknown"}`,
     `first_sent_at=${firstSent}`,
     waited,
+    ...deliveryDiagnosis(rows(evidence.email_provider_events).filter((event) => event.outbox_id === row.id)),
   ].join(" ");
+};
+
+/**
+ * The most recent event that says anything about delivery, else the most
+ * recent event. The receiver's answer is last and quoted: it is the one field
+ * with spaces in it.
+ */
+const deliveryDiagnosis = (events: readonly Record<string, unknown>[]): string[] => {
+  const ordered = [...events].sort((left, right) =>
+    (instant(left.provider_event_time) ?? instant(left.received_at) ?? "").localeCompare(instant(right.provider_event_time) ?? instant(right.received_at) ?? ""));
+  const informative = ordered.filter((event) => sanitizeDeliveryStatus(event.delivery_status) || sanitizeDestinationResponse(event.destination_response));
+  const chosen = informative.at(-1) ?? ordered.at(-1);
+  const source = chosen?.evidence_source === "WEBHOOK" || chosen?.evidence_source === "EVENT_DUMP" ? chosen.evidence_source : chosen ? "UNRECORDED" : "NONE";
+  const response = sanitizeDestinationResponse(chosen?.destination_response);
+  return [
+    `delivery_status=${sanitizeDeliveryStatus(chosen?.delivery_status) ?? "UNKNOWN"}`,
+    `evidence_source=${source}`,
+    `destination_response=${response ? `"${response.replace(/"/g, "'")}"` : "UNAVAILABLE"}`,
+  ];
 };
 
 /**

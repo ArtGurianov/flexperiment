@@ -115,7 +115,33 @@ describe("what an email timeout reports", () => {
     expect(emailTimeoutDiagnosis(r1Ticket, "TICKET", "ticket-1",
       new Date("2026-09-24T06:17:58.000Z"), new Date("2026-09-24T06:32:49.000Z"))).toBe(
       "last_status=SENT last_provider=sent@2026-09-24T06:23:25Z provider_events=4 queued_at=2026-09-24T06:17:43Z "
-      + "first_sent_at=2026-09-24T06:17:58Z waited=14m51s observed_at=2026-09-24T06:32:49.000Z");
+      + "first_sent_at=2026-09-24T06:17:58Z waited=14m51s observed_at=2026-09-24T06:32:49.000Z "
+      + "delivery_status=UNKNOWN evidence_source=UNRECORDED destination_response=UNAVAILABLE");
+  });
+
+  it("says what the receiver answered, from the latest event that says anything", () => {
+    const deferred = {
+      ...r1Ticket,
+      email_provider_events: [
+        ...r1Ticket.email_provider_events,
+        { outbox_id: "outbox-ticket", status: "BOUNCED", provider_status: "soft_bounced", received_at: "2026-09-24 06:24:10", provider_event_time: "2026-09-24T06:24:09Z",
+          evidence_source: "WEBHOOK", delivery_status: "err_mailbox_full", destination_response: "452 4.2.2 Mailbox full" },
+        { outbox_id: "outbox-ticket", status: "SENT", provider_status: "sent", received_at: "2026-09-24 06:25:00", evidence_source: "EVENT_DUMP" },
+      ],
+    };
+    expect(emailTimeoutDiagnosis(deferred, "TICKET", "ticket-1", new Date("2026-09-24T06:17:58Z"), new Date("2026-09-24T06:32:58Z")))
+      .toMatch(/ delivery_status=err_mailbox_full evidence_source=WEBHOOK destination_response="452 4\.2\.2 Mailbox full"$/);
+  });
+
+  it("re-sanitizes a stored answer rather than trusting it", () => {
+    const hostile = {
+      ...r1Ticket,
+      email_provider_events: [{ outbox_id: "outbox-ticket", status: "SENT", provider_status: "sent", received_at: "2026-09-24 06:17:58",
+        evidence_source: "EVENT_DUMP", delivery_status: "err_will_retry", destination_response: '451 "try" someone@example.invalid\nhttps://x.invalid/a' }],
+    };
+    const report = emailTimeoutDiagnosis(hostile, "TICKET", "ticket-1", new Date("2026-09-24T06:17:58Z"), new Date("2026-09-24T06:32:58Z"));
+    expect(report).toMatch(/ destination_response="451 'try' <address> <url>"$/);
+    expect(report).not.toMatch(/someone|https|\n/);
   });
 
   it("never carries an address or a provider's free text", () => {

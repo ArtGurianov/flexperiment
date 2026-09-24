@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import { canonical, canonicalV2, decryptTicketCapability, id, now, publicId, sha256 } from "./crypto";
 import { EmailProviderRejectedError, EventDumpCreateRejectedError, isEmailDeliveryEvidenceProvider, type EmailProvider, type UnisenderDumpEvent, UNISENDER_EVENT_DUMP_EVENT_LIMIT, UnconfiguredEmailProvider } from "./email-provider";
+import { deliveryEvidence } from "./email-delivery-evidence";
 import type { LegalManifest } from "./legal-manifest";
 import { loadCanonicalLegalRelease, verifyCurrentLegalSourceHashes, type CanonicalLegalRelease } from "./legal-release";
 import { providerErrorEvidence, type PaymentProvider } from "./provider";
@@ -688,7 +689,8 @@ export class CommerceDomain {
         OR EXISTS (SELECT 1 FROM refunds r WHERE r.order_id = ? AND r.id = outbox.payload_ref)
       ORDER BY outbox.created_at`, orderId, ticket?.id ?? "", booking?.id ?? "", orderId);
     const emailProviderEvents = many(this.db, `SELECT event.outbox_id, event.semantic_key,
-      event.status, event.provider_status, event.job_id, event.received_at
+      event.status, event.provider_status, event.job_id, event.received_at,
+      event.evidence_source, event.delivery_status, event.destination_response, event.provider_event_time
       FROM email_provider_events event JOIN email_outbox outbox ON outbox.id = event.outbox_id
       WHERE outbox.payload_ref = ? OR outbox.payload_ref = ? OR outbox.payload_ref = ?
         OR EXISTS (SELECT 1 FROM refunds r WHERE r.order_id = ? AND r.id = outbox.payload_ref)
@@ -1527,7 +1529,8 @@ export class CommerceDomain {
     if (!event.eventTime || !event.deliveryStatus) return;
     const providerStatus = event.status.toLowerCase();
     const semanticKey = `unisender:event-dump:${sha256(canonical({ outbox_id: target.outbox_id, job_id: event.jobId, status: providerStatus, delivery_status: event.deliveryStatus, event_time: event.eventTime }))}`;
-    const observation = normalizeUnisenderReconciliationEvent({ outboxId: String(target.outbox_id), providerStatus, jobId: event.jobId, semanticKey });
+    const observation = normalizeUnisenderReconciliationEvent({ outboxId: String(target.outbox_id), providerStatus, jobId: event.jobId, semanticKey, source: "EVENT_DUMP",
+      delivery: deliveryEvidence({ deliveryStatus: event.deliveryStatus, destinationResponse: event.destinationResponse, eventTime: event.eventTime }) });
     if (observation) this.applyUnisenderDelivery(observation);
   }
 
@@ -1805,7 +1808,14 @@ export class CommerceDomain {
     return withImmediateTransaction(this.db, () => {
       const outbox = one(this.db, "SELECT id FROM email_outbox WHERE id = ?", input.outboxId);
       if (!outbox) throw new DomainError("UNISENDER_OUTBOX_NOT_FOUND", 404);
-      const inserted = this.db.prepare("INSERT OR IGNORE INTO email_provider_events(id, outbox_id, semantic_key, status, provider_status, job_id) VALUES (?, ?, ?, ?, ?, ?)").run(id(), input.outboxId, input.semanticKey, input.status, input.providerStatus, input.jobId ?? null);
+      // The one seam every provider path writes through sanitizes again, so no
+      // caller has to be trusted to have done it; the schema's `@` check is
+      // only the backstop.
+      const delivery = deliveryEvidence(input.delivery ?? {});
+      const inserted = this.db.prepare(`INSERT OR IGNORE INTO email_provider_events(id, outbox_id, semantic_key, status, provider_status, job_id,
+          evidence_source, delivery_status, destination_response, sender_ip, provider_event_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+.run(id(), input.outboxId, input.semanticKey, input.status, input.providerStatus, input.jobId ?? null,
+          input.source, delivery.deliveryStatus, delivery.destinationResponse, delivery.senderIp, delivery.eventTime);
       if (!inserted.changes) return { duplicate: true };
       if (input.providerStatus === "delivered") {
         this.completeDeliveredCityInterest(input.outboxId);

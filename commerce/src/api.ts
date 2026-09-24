@@ -14,6 +14,7 @@ import { clientIpRateLimitKey, rateLimit, trustedClientIp } from "./rate-limit";
 import { TochkaWebhookVerifier, webhookAmountKopecks } from "./tochka-webhook";
 import { verifyUnisenderWebhook } from "./unisender-webhook";
 import { normalizeUnisenderReconciliationEvent } from "./email-provider-reconciliation";
+import { webhookDeliveryEvidence } from "./email-delivery-evidence";
 import { type SmartCaptchaVerifier, UnconfiguredSmartCaptchaVerifier } from "./smartcaptcha";
 import { adminReauthSchema, agentPatchSchema, agentSchema, checkoutContextSchema, checkoutRequestSchema, cityCreateSchema, cityInterestSchema, cityInterestWithdrawalSchema, cityPatchSchema, compensationRefundSchema, customerCancellationSchema, customerRefundRequestSchema, customerRefundTokenSchema, emailAttentionAcknowledgeSchema, emergencySalesCommandSchema, occurrenceCancelSchema, occurrenceCompleteSchema, occurrenceCreateSchema, occurrenceNotificationSchema, occurrencePatchSchema, promoPatchSchema, promoSchema, providerReferenceSchema, reservationAbandonSchema, settlementCancelSchema, settlementDocumentSchema, settlementPaymentMadeSchema, settlementPrepareSchema, settlementRecoverySchema } from "./types";
 import { createAgentReferralsPartnerRouter } from "./agent-referrals-api-partner";
@@ -294,7 +295,7 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
         const data = eventRecord.event_data as Record<string, unknown>;
         const metadata = data.metadata as Record<string, unknown> | undefined;
         const semanticKey = `unisender:${sha256(canonicalWebhookPayload(data))}`;
-        const observation = normalizeUnisenderReconciliationEvent({ outboxId: metadata?.outbox_id, providerStatus: data.status, jobId: data.job_id, semanticKey });
+        const observation = normalizeUnisenderReconciliationEvent({ outboxId: metadata?.outbox_id, providerStatus: data.status, jobId: data.job_id, semanticKey, source: "WEBHOOK", delivery: webhookDeliveryEvidence(data) });
         if (!observation) continue;
         try { domain.applyUnisenderDelivery(observation); handled += 1; } catch (error) { if (!(error instanceof DomainError) || error.code !== "UNISENDER_OUTBOX_NOT_FOUND") throw error; }
       }

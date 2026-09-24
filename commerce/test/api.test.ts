@@ -954,6 +954,72 @@ describe("commerce HTTP boundary", () => {
     db.close();
   });
 
+  it("stores what the receiver answered, sanitized, and nothing about the recipient", async () => {
+    const { db } = appFixture();
+    const outboxId = randomUUID();
+    db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot)
+      VALUES (?, 'REFUND_SUCCEEDED', 'buyer@example.test', 'hash', 'refund-succeeded', '{}')`).run(outboxId);
+    const apiKey = "test-api-key-not-a-secret";
+    const app = createApp(db, new MockProvider(), new UnisenderGoProvider({ apiKey, fromEmail: "noreply@example.test", fromName: "Flexperiment", replyToEmail: "hello@example.test" }, async () => Response.json({ status: "success", job_id: "job" })));
+    const unsigned = JSON.stringify({ auth: "pending", events_by_user: [{ user_id: 1, events: [{ event_name: "transactional_email_status", event_data: {
+      job_id: "job-3", metadata: { outbox_id: outboxId }, email: "buyer@example.test", status: "soft_bounced", event_time: "2026-09-24 06:52:10",
+      delivery_info: { delivery_status: "err_mailbox_full", destination_response: "452 4.2.2 <buyer@example.test>: Mailbox full", sender_ip: "192.0.2.10", ip: "203.0.113.7", city: "Berlin" },
+    } }] }] });
+    const body = unsigned.replace("pending", createHash("md5").update(unsigned.replace("pending", apiKey)).digest("hex"));
+    expect((await app.request("http://flexperiment.ru/v1/webhooks/unisender", { method: "POST", headers: { "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.1" }, body })).status).toBe(200);
+    const stored = db.prepare("SELECT * FROM email_provider_events WHERE outbox_id = ?").get(outboxId) as Record<string, unknown>;
+    expect(stored).toMatchObject({
+      provider_status: "soft_bounced", evidence_source: "WEBHOOK", delivery_status: "err_mailbox_full",
+      destination_response: "452 4.2.2 <address>: Mailbox full", sender_ip: "192.0.2.10", provider_event_time: "2026-09-24T06:52:10Z",
+    });
+    expect(JSON.stringify(stored)).not.toMatch(/buyer@|203\.0\.113|Berlin/);
+    db.close();
+  });
+
+  it("sanitizes at the storage seam even when a caller passes raw provider text", async () => {
+    const { db } = appFixture();
+    const outboxId = randomUUID();
+    db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot)
+      VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}')`).run(outboxId);
+    new CommerceDomain(db, new MockProvider()).applyUnisenderDelivery({
+      source: "EVENT_DUMP", outboxId, status: "SENT", providerStatus: "sent", semanticKey: "raw-caller",
+      delivery: { deliveryStatus: "err_will_retry", destinationResponse: "451 <buyer@example.test>\r\nlater", senderIp: "not-an-ip", eventTime: "2026-09-24 06:51:59" },
+    });
+    expect(db.prepare("SELECT delivery_status, destination_response, sender_ip, provider_event_time FROM email_provider_events WHERE outbox_id = ?").get(outboxId))
+      .toEqual({ delivery_status: "err_will_retry", destination_response: "451 <address> later", sender_ip: null, provider_event_time: "2026-09-24T06:51:59Z" });
+    db.close();
+  });
+
+  it("never lets a poorer later observation erase a richer earlier one", async () => {
+    const { db } = appFixture();
+    const outboxId = randomUUID();
+    db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot)
+      VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}')`).run(outboxId);
+    const domain = new CommerceDomain(db, new MockProvider());
+    const rich = { source: "WEBHOOK" as const, outboxId, status: "SENT" as const, providerStatus: "sent" as const, jobId: "job-1", semanticKey: "rich",
+      delivery: { deliveryStatus: "err_will_retry", destinationResponse: "451 4.7.1 Try again later", senderIp: "192.0.2.10", eventTime: "2026-09-24 06:52:10" } };
+    domain.applyUnisenderDelivery(rich);
+    // The same event replayed without its detail, and a later export that says less.
+    domain.applyUnisenderDelivery({ ...rich, delivery: undefined });
+    domain.applyUnisenderDelivery({ source: "EVENT_DUMP", outboxId, status: "SENT", providerStatus: "sent", jobId: "job-1", semanticKey: "poor", delivery: { deliveryStatus: "ok_sent", destinationResponse: null, senderIp: null, eventTime: "2026-09-24 07:30:00" } });
+    expect(db.prepare(`SELECT semantic_key, evidence_source, delivery_status, destination_response, sender_ip, provider_event_time
+      FROM email_provider_events WHERE outbox_id = ? ORDER BY semantic_key`).all(outboxId)).toEqual([
+      { semantic_key: "poor", evidence_source: "EVENT_DUMP", delivery_status: "ok_sent", destination_response: null, sender_ip: null, provider_event_time: "2026-09-24T07:30:00Z" },
+      { semantic_key: "rich", evidence_source: "WEBHOOK", delivery_status: "err_will_retry", destination_response: "451 4.7.1 Try again later", sender_ip: "192.0.2.10", provider_event_time: "2026-09-24T06:52:10Z" },
+    ]);
+    db.close();
+  });
+
+  it("refuses to store a receiver's answer that still carries an address, whatever the writer", () => {
+    const { db } = appFixture();
+    const outboxId = randomUUID();
+    db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot)
+      VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}')`).run(outboxId);
+    expect(() => db.prepare(`INSERT INTO email_provider_events(id, outbox_id, semantic_key, status, provider_status, destination_response)
+      VALUES (?, ?, 'raw', 'SENT', 'sent', '550 buyer@example.test unknown')`).run(randomUUID(), outboxId)).toThrow(/CHECK constraint/);
+    db.close();
+  });
+
   it("decomposes REVIEW_REQUIRED into per-table dashboard counters whose predicates match their filtered destinations", async () => {
     const { db, app } = appFixture();
     const occurrenceId = (db.prepare("SELECT id FROM occurrences").get() as { id: string }).id;

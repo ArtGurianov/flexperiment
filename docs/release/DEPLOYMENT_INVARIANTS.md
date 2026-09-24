@@ -827,11 +827,36 @@ what the wait saw:
 CERTIFICATION_EMAIL_TIMEOUT:TICKET last_status=SENT last_provider=sent@2026-09-24T06:23:25Z
   provider_events=4 queued_at=2026-09-24T06:17:43Z first_sent_at=2026-09-24T06:17:58Z
   waited=14m51s observed_at=2026-09-24T06:32:49.000Z
+  delivery_status=err_mailbox_full evidence_source=WEBHOOK
+  destination_response="452 4.2.2 <address>: Mailbox full"
 ```
 
-That line separates a send that never left, a receiver deferring the message,
-and a delivery webhook that never arrived. It carries only states, provider
-status words and times: never an address or an SMTP payload.
+The last three fields come from the most recent provider event that said
+anything about delivery. When no event did, they read `delivery_status=UNKNOWN`
+and `destination_response=UNAVAILABLE`, which is itself a finding: we don't
+know, rather than a guess that the receiver deferred the message. The same day's
+cancellation and refund emails stayed `sent` for hours, and without these fields
+nothing could tell a receiver deferring them from a provider that never tried
+again.
+
+The line carries states, provider status words, times, and the receiving
+server's answer after sanitizing: addresses, URLs and long opaque tokens are
+removed, and the answer is at most 300 characters. It never carries an address,
+a subject or a URL. The database refuses a stored answer containing `@`, whoever
+writes it.
+
+### Where the delivery fields come from
+
+Both provider paths store the same sanitized fields on `email_provider_events`
+(migration 0006): `evidence_source`, `delivery_status`, `destination_response`,
+`sender_ip` and `provider_event_time`.
+
+- **Webhook**: only when the Unisender webhook has `delivery_info = 1`. Only
+  `delivery_status`, `destination_response` and `sender_ip` are read from it.
+  The recipient's IP, user agent, device and location in the same object are
+  never read.
+- **Event dump**: the export requests `destination_response` alongside
+  `delivery_status`. It has no `sender_ip`.
 
 ## Installing the release runner on the VPS
 

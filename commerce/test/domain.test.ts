@@ -434,8 +434,8 @@ describe("commerce domain", () => {
       setup.db.prepare("UPDATE email_outbox SET status = ? WHERE id = ?").run(status, outbox.id);
       setup.domain.patchOccurrence(setup.occurrenceId, { title: `Second ${status}`, reason: "Second change", expected_revision: 2 }, randomUUID(), "admin");
       expect(setup.db.prepare("SELECT status, superseded_at FROM email_outbox WHERE id = ?").get(outbox.id)).toEqual({ status, superseded_at: expect.any(String) });
-      expect(setup.domain.applyUnisenderDelivery({ outboxId: outbox.id, status: "SENT", providerStatus: "sent", semanticKey: `sent-${status}` })).toEqual({ duplicate: false });
-      expect(setup.domain.applyUnisenderDelivery({ outboxId: outbox.id, status: "DELIVERED", providerStatus: "delivered", semanticKey: `delivered-${status}` })).toEqual({ duplicate: false });
+      expect(setup.domain.applyUnisenderDelivery({ source: "WEBHOOK", outboxId: outbox.id, status: "SENT", providerStatus: "sent", semanticKey: `sent-${status}` })).toEqual({ duplicate: false });
+      expect(setup.domain.applyUnisenderDelivery({ source: "WEBHOOK", outboxId: outbox.id, status: "DELIVERED", providerStatus: "delivered", semanticKey: `delivered-${status}` })).toEqual({ duplicate: false });
       expect(setup.db.prepare("SELECT status FROM email_outbox WHERE id = ?").get(outbox.id)).toEqual({ status: "DELIVERED" });
     }
   });
@@ -469,8 +469,8 @@ describe("commerce domain", () => {
     });
     await domain.processEmailOutbox();
     expect(sentOutboxIds).not.toContain(outbox.id);
-    expect(domain.applyUnisenderDelivery({ outboxId: outbox.id, status: "SENT", providerStatus: "sent", semanticKey: "superseded-stale-sent" })).toEqual({ duplicate: false });
-    expect(domain.applyUnisenderDelivery({ outboxId: outbox.id, status: "DELIVERED", providerStatus: "delivered", semanticKey: "superseded-stale-delivered" })).toEqual({ duplicate: false });
+    expect(domain.applyUnisenderDelivery({ source: "WEBHOOK", outboxId: outbox.id, status: "SENT", providerStatus: "sent", semanticKey: "superseded-stale-sent" })).toEqual({ duplicate: false });
+    expect(domain.applyUnisenderDelivery({ source: "WEBHOOK", outboxId: outbox.id, status: "DELIVERED", providerStatus: "delivered", semanticKey: "superseded-stale-delivered" })).toEqual({ duplicate: false });
     expect(setup.db.prepare("SELECT status FROM email_outbox WHERE id = ?").get(outbox.id)).toEqual({ status: "DELIVERED" });
   });
 
@@ -1291,17 +1291,17 @@ describe("commerce domain", () => {
     expect(domain.processCityInterestLifecycle()).toEqual({ expired_deleted: 0, intents_created: 0 });
     await domain.processEmailOutbox();
     expect(setup.db.prepare("SELECT status, recipient_email, recipient_email_hash, payload_snapshot FROM email_outbox WHERE id = ?").get(outbox.id)).toEqual({ status: "ACCEPTED", recipient_email: "novosibirsk@example.test", recipient_email_hash: expect.any(String), payload_snapshot: expect.stringContaining("Новосибирск") });
-    domain.applyUnisenderDelivery({ outboxId: outbox.id, status: "SENT", providerStatus: "sent", semanticKey: "city-interest-sent" });
+    domain.applyUnisenderDelivery({ source: "WEBHOOK", outboxId: outbox.id, status: "SENT", providerStatus: "sent", semanticKey: "city-interest-sent" });
     expect(setup.db.prepare("SELECT status, recipient_email, payload_snapshot FROM email_outbox WHERE id = ?").get(outbox.id)).toEqual({ status: "SENT", recipient_email: "novosibirsk@example.test", payload_snapshot: expect.stringContaining("Новосибирск") });
-    domain.applyUnisenderDelivery({ outboxId: outbox.id, status: "BOUNCED", providerStatus: "soft_bounced", semanticKey: "city-interest-soft-bounced" });
+    domain.applyUnisenderDelivery({ source: "WEBHOOK", outboxId: outbox.id, status: "BOUNCED", providerStatus: "soft_bounced", semanticKey: "city-interest-soft-bounced" });
     expect(setup.db.prepare("SELECT COUNT(*) AS count FROM city_interest_requests WHERE city_slug = 'novosibirsk'").get()).toEqual({ count: 1 });
     expect(setup.db.prepare("SELECT recipient_email FROM email_outbox WHERE id = ?").get(outbox.id)).toEqual({ recipient_email: "novosibirsk@example.test" });
     expect(setup.db.prepare("SELECT provider_status FROM email_provider_events WHERE outbox_id = ? ORDER BY received_at").all(outbox.id)).toEqual(expect.arrayContaining([{ provider_status: "sent" }, { provider_status: "soft_bounced" }]));
-    domain.applyUnisenderDelivery({ outboxId: outbox.id, status: "DELIVERED", providerStatus: "delivered", semanticKey: "city-interest-delivered" });
+    domain.applyUnisenderDelivery({ source: "WEBHOOK", outboxId: outbox.id, status: "DELIVERED", providerStatus: "delivered", semanticKey: "city-interest-delivered" });
     expect(setup.db.prepare("SELECT COUNT(*) AS count FROM city_interest_requests WHERE city_slug = 'novosibirsk'").get()).toEqual({ count: 0 });
     expect(setup.db.prepare("SELECT status, recipient_email, recipient_email_hash, payload_snapshot FROM email_outbox WHERE id = ?").get(outbox.id)).toEqual({ status: "DELIVERED", recipient_email: "", recipient_email_hash: "", payload_snapshot: "{}" });
-    expect(domain.applyUnisenderDelivery({ outboxId: outbox.id, status: "DELIVERED", providerStatus: "delivered", semanticKey: "city-interest-delivered" })).toEqual({ duplicate: true });
-    domain.applyUnisenderDelivery({ outboxId: outbox.id, status: "BOUNCED", providerStatus: "spam", semanticKey: "city-interest-spam" });
+    expect(domain.applyUnisenderDelivery({ source: "WEBHOOK", outboxId: outbox.id, status: "DELIVERED", providerStatus: "delivered", semanticKey: "city-interest-delivered" })).toEqual({ duplicate: true });
+    domain.applyUnisenderDelivery({ source: "WEBHOOK", outboxId: outbox.id, status: "BOUNCED", providerStatus: "spam", semanticKey: "city-interest-spam" });
     expect(setup.db.prepare("SELECT status FROM email_outbox WHERE id = ?").get(outbox.id)).toEqual({ status: "DELIVERED" });
   });
 
@@ -1314,10 +1314,10 @@ describe("commerce domain", () => {
       JOIN email_outbox outbox ON outbox.id = intent.outbox_id
       WHERE request.email_normalized = 'delivery-sequence@example.test'`).get() as { request_id: string; outbox_id: string };
 
-    setup.domain.applyUnisenderDelivery({ outboxId: row.outbox_id, status: "ACCEPTED", providerStatus: "accepted", semanticKey: "delivery-sequence-accepted", jobId: "job-delivery-sequence" });
-    setup.domain.applyUnisenderDelivery({ outboxId: row.outbox_id, status: "SENT", providerStatus: "sent", semanticKey: "delivery-sequence-sent", jobId: "job-delivery-sequence" });
-    setup.domain.applyUnisenderDelivery({ outboxId: row.outbox_id, status: "DELIVERED", providerStatus: "delivered", semanticKey: "delivery-sequence-delivered", jobId: "job-delivery-sequence" });
-    setup.domain.applyUnisenderDelivery({ outboxId: row.outbox_id, status: "SENT", providerStatus: "sent", semanticKey: "delivery-sequence-late-sent", jobId: "job-delivery-sequence" });
+    setup.domain.applyUnisenderDelivery({ source: "WEBHOOK", outboxId: row.outbox_id, status: "ACCEPTED", providerStatus: "accepted", semanticKey: "delivery-sequence-accepted", jobId: "job-delivery-sequence" });
+    setup.domain.applyUnisenderDelivery({ source: "WEBHOOK", outboxId: row.outbox_id, status: "SENT", providerStatus: "sent", semanticKey: "delivery-sequence-sent", jobId: "job-delivery-sequence" });
+    setup.domain.applyUnisenderDelivery({ source: "WEBHOOK", outboxId: row.outbox_id, status: "DELIVERED", providerStatus: "delivered", semanticKey: "delivery-sequence-delivered", jobId: "job-delivery-sequence" });
+    setup.domain.applyUnisenderDelivery({ source: "WEBHOOK", outboxId: row.outbox_id, status: "SENT", providerStatus: "sent", semanticKey: "delivery-sequence-late-sent", jobId: "job-delivery-sequence" });
 
     expect(setup.db.prepare("SELECT id FROM city_interest_requests WHERE id = ?").get(row.request_id)).toBeUndefined();
     expect(setup.db.prepare("SELECT id FROM city_interest_notification_intents WHERE outbox_id = ?").get(row.outbox_id)).toBeUndefined();
@@ -1344,7 +1344,7 @@ describe("commerce domain", () => {
     await domain.processEmailOutbox();
     expect(setup.db.prepare("SELECT status FROM email_outbox WHERE id = ?").get(outbox.id)).toEqual({ status: "ACCEPTED" });
     expect(attemptJobId(setup.db, outbox.id)).toBe("sent-job");
-    domain.applyUnisenderDelivery({ outboxId: outbox.id, status: "SENT", providerStatus: "sent", jobId: "sent-job", semanticKey: "sent-no-resend" });
+    domain.applyUnisenderDelivery({ source: "WEBHOOK", outboxId: outbox.id, status: "SENT", providerStatus: "sent", jobId: "sent-job", semanticKey: "sent-no-resend" });
     await domain.processEmailOutbox();
 
     expect(sends).toBe(1);
@@ -1368,7 +1368,7 @@ describe("commerce domain", () => {
         return { status: "ready", events: [
           { eventTime: "2026-08-24 08:35:01", jobId: "1wyQ8z-000RJT-KwD8", status: "accepted", deliveryStatus: "ok_accepted", metadata: { outbox_id: outboxId } },
           { eventTime: "2026-08-24 08:35:19", jobId: "1wyQ8z-000RJT-KwD8", status: "sent", deliveryStatus: "ok_sent", metadata: { outbox_id: outboxId } },
-          { eventTime: "2026-08-24 08:35:20", jobId: "1wyQ8z-000RJT-KwD8", status: "delivered", deliveryStatus: "ok_delivered", metadata: { outbox_id: outboxId } },
+          { eventTime: "2026-08-24 08:35:20", jobId: "1wyQ8z-000RJT-KwD8", status: "delivered", deliveryStatus: "ok_delivered", destinationResponse: "250 2.0.0 Ok: queued as 4Xyz for <buyer@example.test>", metadata: { outbox_id: outboxId } },
         ] };
       },
     };
@@ -1379,7 +1379,7 @@ describe("commerce domain", () => {
     domain.markPaymentPaid(payment.id, 100_000, "provider-payment");
     outboxId = (setup.db.prepare("SELECT id FROM email_outbox WHERE type = 'TICKET'").get() as { id: string }).id;
     await domain.processEmailOutbox();
-    domain.applyUnisenderDelivery({ outboxId, status: "SENT", providerStatus: "sent", jobId: "1wyQ8z-000RJT-KwD8", semanticKey: "webhook-sent-production-fixture" });
+    domain.applyUnisenderDelivery({ source: "WEBHOOK", outboxId, status: "SENT", providerStatus: "sent", jobId: "1wyQ8z-000RJT-KwD8", semanticKey: "webhook-sent-production-fixture" });
     setup.db.prepare("UPDATE email_outbox SET created_at = ? WHERE id = ?").run(new Date(timestamp - 10 * 60_000).toISOString(), outboxId);
     // A settled attempt is immutable by design (0041), so "this was dispatched
     // ten minutes ago" is expressed by advancing the clock, not by rewriting
@@ -1394,6 +1394,11 @@ describe("commerce domain", () => {
     expect(polls).toBe(1); expect(sends).toBe(1);
     expect(setup.db.prepare("SELECT status, delivered_at FROM email_outbox WHERE id = ?").get(outboxId)).toEqual({ status: "DELIVERED", delivered_at: expect.any(String) });
     expect(setup.db.prepare("SELECT provider_status, job_id FROM email_provider_events WHERE outbox_id = ? AND provider_status = 'delivered'").get(outboxId)).toEqual({ provider_status: "delivered", job_id: "1wyQ8z-000RJT-KwD8" });
+    // The export's evidence is kept, sanitized, and marked as the export's.
+    expect(setup.db.prepare(`SELECT evidence_source, delivery_status, destination_response, provider_event_time
+      FROM email_provider_events WHERE outbox_id = ? AND provider_status = 'delivered'`).get(outboxId)).toEqual({
+      evidence_source: "EVENT_DUMP", delivery_status: "ok_delivered", destination_response: "250 2.0.0 Ok: queued as 4Xyz for <address>", provider_event_time: "2026-08-24T08:35:20Z",
+    });
     await domain.reconcileUnisenderEventDumps();
     expect(creates).toBe(1); expect(polls).toBe(1);
   });
@@ -1418,7 +1423,7 @@ describe("commerce domain", () => {
     domain.markPaymentPaid(payment.id, 100_000, "provider-payment");
     outboxId = (setup.db.prepare("SELECT id FROM email_outbox WHERE type = 'TICKET'").get() as { id: string }).id;
     await domain.processEmailOutbox();
-    domain.applyUnisenderDelivery({ outboxId, status: "SENT", providerStatus: "sent", jobId: "target-job", semanticKey: "webhook-sent-mismatch" });
+    domain.applyUnisenderDelivery({ source: "WEBHOOK", outboxId, status: "SENT", providerStatus: "sent", jobId: "target-job", semanticKey: "webhook-sent-mismatch" });
     setup.db.prepare("UPDATE email_outbox SET created_at = ? WHERE id = ?").run(new Date(timestamp - 10 * 60_000).toISOString(), outboxId);
     // A settled attempt is immutable by design (0041), so "this was dispatched
     // ten minutes ago" is expressed by advancing the clock, not by rewriting
@@ -1795,7 +1800,7 @@ describe("commerce domain", () => {
     const row = setup.db.prepare("SELECT id, payload_ref FROM email_outbox WHERE type = 'CITY_INTEREST_AVAILABLE'").get() as { id: string; payload_ref: string };
     outboxId = row.id;
     await domain.processEmailOutbox();
-    domain.applyUnisenderDelivery({ outboxId, status: "SENT", providerStatus: "sent", jobId: "city-dump-job", semanticKey: "city-dump-sent" });
+    domain.applyUnisenderDelivery({ source: "WEBHOOK", outboxId, status: "SENT", providerStatus: "sent", jobId: "city-dump-job", semanticKey: "city-dump-sent" });
     setup.db.prepare("UPDATE email_outbox SET created_at = ? WHERE id = ?").run(new Date(timestamp - 10 * 60_000).toISOString(), outboxId);
     // A settled attempt is immutable by design (0041), so "this was dispatched
     // ten minutes ago" is expressed by advancing the clock, not by rewriting
@@ -1814,7 +1819,7 @@ describe("commerce domain", () => {
     setup.domain.registerCityInterest({ email: "hard-bounce@example.test", city: "novosibirsk" });
     setup.domain.patchOccurrence(setup.occurrenceId, { visibility: "PUBLISHED", reason: "Publish schedule", expected_revision: 1 }, "hard-bounce-publish", "admin");
     const outbox = setup.db.prepare("SELECT id FROM email_outbox WHERE type = 'CITY_INTEREST_AVAILABLE'").get() as { id: string };
-    setup.domain.applyUnisenderDelivery({ outboxId: outbox.id, status: "BOUNCED", providerStatus: "hard_bounced", semanticKey: "city-interest-hard-bounced" });
+    setup.domain.applyUnisenderDelivery({ source: "WEBHOOK", outboxId: outbox.id, status: "BOUNCED", providerStatus: "hard_bounced", semanticKey: "city-interest-hard-bounced" });
     expect(setup.db.prepare("SELECT COUNT(*) AS count FROM city_interest_requests WHERE email_normalized = 'hard-bounce@example.test'").get()).toEqual({ count: 1 });
     expect(setup.db.prepare("SELECT recipient_email FROM email_outbox WHERE id = ?").get(outbox.id)).toEqual({ recipient_email: "hard-bounce@example.test" });
 
@@ -1840,10 +1845,10 @@ describe("commerce domain", () => {
       JOIN city_interest_notification_intents intent ON intent.city_interest_request_id = request.id
       JOIN email_outbox outbox ON outbox.id = intent.outbox_id
       WHERE request.email_normalized = 'renew-hard@example.test'`).get() as { request_id: string; outbox_id: string };
-    setup.domain.applyUnisenderDelivery({ outboxId: hard.outbox_id, status: "BOUNCED", providerStatus: "hard_bounced", semanticKey: "renew-hard-bounced" });
+    setup.domain.applyUnisenderDelivery({ source: "WEBHOOK", outboxId: hard.outbox_id, status: "BOUNCED", providerStatus: "hard_bounced", semanticKey: "renew-hard-bounced" });
     // A later non-delivery event must not make established final hard-bounce
     // evidence disappear merely because it is the latest provider callback.
-    setup.domain.applyUnisenderDelivery({ outboxId: hard.outbox_id, status: "BOUNCED", providerStatus: "spam", semanticKey: "renew-hard-late-spam" });
+    setup.domain.applyUnisenderDelivery({ source: "WEBHOOK", outboxId: hard.outbox_id, status: "BOUNCED", providerStatus: "spam", semanticKey: "renew-hard-late-spam" });
     setup.domain.registerCityInterest({ email: "renew-hard@example.test", city: "novosibirsk" });
     const supersededHard = setup.db.prepare(`SELECT request.email_normalized, request.email_hash,
         request.superseded_at, request.superseded_by_request_id,
@@ -1875,7 +1880,7 @@ describe("commerce domain", () => {
       JOIN city_interest_requests request ON request.id = intent.city_interest_request_id
       WHERE request.id = ? AND request.superseded_at IS NULL
         AND intent.superseded_at IS NULL`).get(renewedHard.request_id)).toEqual({ count: 1 });
-    setup.domain.applyUnisenderDelivery({ outboxId: hard.outbox_id, status: "DELIVERED", providerStatus: "delivered", semanticKey: "renew-hard-late-delivered" });
+    setup.domain.applyUnisenderDelivery({ source: "WEBHOOK", outboxId: hard.outbox_id, status: "DELIVERED", providerStatus: "delivered", semanticKey: "renew-hard-late-delivered" });
     expect(setup.db.prepare("SELECT COUNT(*) AS count FROM city_interest_requests WHERE id = ?").get(hard.request_id)).toEqual({ count: 1 });
     expect(setup.db.prepare("SELECT status, recipient_email FROM email_outbox WHERE id = ?").get(hard.outbox_id)).toEqual({ status: "DELIVERED", recipient_email: "" });
     expect(setup.db.prepare("SELECT status FROM email_outbox WHERE id = ?").get(renewedHardOutbox)).toEqual({ status: "PENDING" });
@@ -1907,7 +1912,7 @@ describe("commerce domain", () => {
         JOIN email_outbox outbox ON outbox.id = intent.outbox_id
         WHERE request.email_normalized = ?`).get(email) as { request_id: string; outbox_id: string };
       if (state === "soft_bounced" || state === "spam") {
-        setup.domain.applyUnisenderDelivery({ outboxId: row.outbox_id, status: "BOUNCED", providerStatus: state, semanticKey: `retain-${state}` });
+        setup.domain.applyUnisenderDelivery({ source: "WEBHOOK", outboxId: row.outbox_id, status: "BOUNCED", providerStatus: state, semanticKey: `retain-${state}` });
       } else {
         setup.db.prepare("UPDATE email_outbox SET status = ? WHERE id = ?").run(state, row.outbox_id);
       }
@@ -1945,7 +1950,7 @@ describe("commerce domain", () => {
     const pending = setup.db.prepare("SELECT id FROM email_outbox WHERE type = 'CITY_INTEREST_AVAILABLE'").get() as { id: string };
     setup.domain.withdrawCityInterest("withdraw-pending@example.test", "Consent withdrawal received", "admin");
     expect(setup.db.prepare("SELECT status, recipient_email, recipient_email_hash, payload_snapshot FROM email_outbox WHERE id = ?").get(pending.id)).toEqual({ status: "SKIPPED", recipient_email: "", recipient_email_hash: "", payload_snapshot: "{}" });
-    expect(setup.domain.applyUnisenderDelivery({ outboxId: pending.id, status: "DELIVERED", providerStatus: "delivered", semanticKey: "withdrawn-late-delivered" })).toEqual({ duplicate: false });
+    expect(setup.domain.applyUnisenderDelivery({ source: "WEBHOOK", outboxId: pending.id, status: "DELIVERED", providerStatus: "delivered", semanticKey: "withdrawn-late-delivered" })).toEqual({ duplicate: false });
     expect(setup.db.prepare("SELECT status, recipient_email, payload_snapshot FROM email_outbox WHERE id = ?").get(pending.id)).toEqual({ status: "DELIVERED", recipient_email: "", payload_snapshot: "{}" });
 
     const sends: string[] = [];
@@ -1995,7 +2000,7 @@ describe("commerce domain", () => {
     await dispatch;
     expect(setup.db.prepare("SELECT status, recipient_email, recipient_email_hash, payload_snapshot, suppressed_at FROM email_outbox WHERE id = ?").get(outbox.id)).toEqual({ status: "SKIPPED", recipient_email: "", recipient_email_hash: "", payload_snapshot: "{}", suppressed_at: expect.any(String) });
     expect(attemptJobId(setup.db, outbox.id)).toBe("withdrawn-in-flight-job");
-    expect(domain.applyUnisenderDelivery({ outboxId: outbox.id, status: "ACCEPTED", providerStatus: "accepted", jobId: "withdrawn-in-flight-job", semanticKey: "withdrawn-in-flight-accepted" })).toEqual({ duplicate: false });
+    expect(domain.applyUnisenderDelivery({ source: "WEBHOOK", outboxId: outbox.id, status: "ACCEPTED", providerStatus: "accepted", jobId: "withdrawn-in-flight-job", semanticKey: "withdrawn-in-flight-accepted" })).toEqual({ duplicate: false });
     expect(setup.db.prepare("SELECT status FROM email_outbox WHERE id = ?").get(outbox.id)).toEqual({ status: "SKIPPED" });
     expect(setup.db.prepare("SELECT provider_status FROM email_provider_events WHERE semantic_key = 'withdrawn-in-flight-accepted'").get()).toEqual({ provider_status: "accepted" });
     await domain.processEmailOutbox();
@@ -2025,7 +2030,7 @@ describe("commerce domain", () => {
     const activeOutbox = setup.db.prepare("SELECT id FROM email_outbox WHERE type = 'CITY_INTEREST_AVAILABLE'").get() as { id: string };
     setup.db.exec(`CREATE TRIGGER fail_city_interest_redaction BEFORE UPDATE OF recipient_email ON email_outbox
       WHEN NEW.id = '${activeOutbox.id}' AND NEW.recipient_email = '' BEGIN SELECT RAISE(ABORT, 'redaction failed'); END;`);
-    expect(() => setup.domain.applyUnisenderDelivery({ outboxId: activeOutbox.id, status: "DELIVERED", providerStatus: "delivered", semanticKey: "atomic-delivered" })).toThrow("redaction failed");
+    expect(() => setup.domain.applyUnisenderDelivery({ source: "WEBHOOK", outboxId: activeOutbox.id, status: "DELIVERED", providerStatus: "delivered", semanticKey: "atomic-delivered" })).toThrow("redaction failed");
     expect(setup.db.prepare("SELECT COUNT(*) AS count FROM city_interest_requests WHERE email_normalized = 'atomic@example.test'").get()).toEqual({ count: 1 });
     expect(setup.db.prepare("SELECT COUNT(*) AS count FROM email_provider_events WHERE semantic_key = 'atomic-delivered'").get()).toEqual({ count: 0 });
   });

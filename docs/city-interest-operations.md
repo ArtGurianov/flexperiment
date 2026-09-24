@@ -179,6 +179,12 @@ delivery callback.
 
 It must be active, use JSON POST (not gzip unless Commerce is extended), and
 subscribe at minimum to `delivered`, `soft_bounced`, `hard_bounced`, and `spam`.
+Set `delivery_info = 1` so each callback carries Unisender's delivery
+classification and the receiving server's answer. Commerce stores only a
+sanitized `delivery_status`, `destination_response` and `sender_ip` from it.
+The recipient's IP, user agent and location in the same object are never read.
+Without it, a message stuck at `sent` cannot be told apart from one the receiver
+is deferring (see `docs/release/DEPLOYMENT_INVARIANTS.md`).
 Also enable `accepted`/`sent` when available for the configured Unisender
 account so intermediate evidence is visible. The repository verifies raw-body
 MD5 authentication and event deduplication; it cannot prove the provider-side
