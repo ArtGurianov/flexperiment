@@ -1,6 +1,6 @@
 import Database from "better-sqlite3";
 import { ForwardDeploy } from "./forward-deploy";
-import { ForwardAdmissionError, ForwardSupersessionAdmissionGuard, GitHubCheckRunsAttestation, remoteMainTipRefresh, type CiAttestation, type InstalledRunner } from "./forward-admission";
+import { ForwardSupersessionAdmissionGuard, GitHubCheckRunsAttestation, ReleaseAdmissionError, ReleaseAdmissionGuard, remoteMainTipRefresh, type CiAttestation, type InstalledRunner } from "./forward-admission";
 import { currentBindingIn } from "./forward-target";
 import { liveCapabilityBlocking, supersessionDefect } from "./supersession-safety";
 import { revisionRunId } from "../certification/no-effect-retry";
@@ -235,6 +235,8 @@ export const buildCandidatePublisher = (config: CandidatePublicationConfig, opti
   };
 };
 
+export type ReleaseAdmission = { admit(candidate: ReleaseCandidate): Promise<{ readonly ciEvidence: string }> };
+
 export type ProductionRelease = {
   readonly ports: ReleasePorts;
   /** The durable authority itself, for the gate and for resuming a session by id. */
@@ -246,6 +248,8 @@ export type ProductionRelease = {
   readonly deployRef: ProductionDeployRefStore;
   readonly deployment: CoolifyDeploymentDriver;
   readonly candidates: FileReleaseCandidateStore;
+  /** What an ordinary `deploy` must prove about its candidate before anything moves. */
+  readonly admission: ReleaseAdmission;
   /** Carries an armed, stuck cutover session forward to a newer release. */
   readonly forwardDeploy: ForwardDeploy;
   /**
@@ -282,9 +286,11 @@ export type BuildOptions = {
    * its fixture forward instead of time.
    */
   readonly convergence?: ConvergencePolicy;
-  /** Test seams for forward admission: the runner's own checkout, and CI. */
+  /** Test seams for admission: the runner's own checkout, and CI. */
   readonly installedRunner?: InstalledRunner;
   readonly ciAttestation?: CiAttestation;
+  /** Replaces an ordinary deploy's whole admission; for suites whose subject is the deploy. */
+  readonly admission?: ReleaseAdmission;
 };
 
 /**
@@ -398,26 +404,28 @@ export const buildProductionRelease = (config: ProductionReleaseConfig, options:
 
     const orchestrator = new ReleaseOrchestrator(ports);
     const git = options.git ?? defaultGit;
+    // What any release must prove before its first mutation. The same four
+    // sources for `deploy` and `forward-deploy`: today's main, the commit's own
+    // tree, the runner's own checkout, and the exact commit's CI.
+    const mainTip = remoteMainTipRefresh({ remote: config.deployRef.remote, cwd: config.deployRef.worktree, tree: admissionTree, git });
+    const installedRunner: InstalledRunner = options.installedRunner ?? (async (candidateSha) => {
+      const cwd = process.cwd();
+      return {
+        sha: (await git(["rev-parse", "HEAD"], cwd)).trim(),
+        tree: (await git(["rev-parse", "HEAD^{tree}"], cwd)).trim(),
+        candidateTree: (await git(["rev-parse", `${candidateSha}^{tree}`], cwd)).trim(),
+        clean: (await git(["status", "--porcelain"], cwd)).trim() === "",
+      };
+    });
+    const ci: CiAttestation = options.ciAttestation ?? (config.ciAttestation
+      ? new GitHubCheckRunsAttestation({ repository: config.ciAttestation.repository, tokenFile: config.ciAttestation.tokenFile, fetch: options.fetch, now })
+      : { async attest() { throw new ReleaseAdmissionError("RELEASE_ADMISSION_REFUSED", "FLEXPERIMENT_CI_REPOSITORY is not configured"); } });
+    const admission = options.admission ?? new ReleaseAdmissionGuard(admissionTree, mainTip, installedRunner, ci);
     const forwardDeploy = new ForwardDeploy({
       sessions,
       gate: () => authority.deploymentGate(),
       candidates,
-      admission: new ForwardSupersessionAdmissionGuard(
-        admissionTree,
-        remoteMainTipRefresh({ remote: config.deployRef.remote, cwd: config.deployRef.worktree, tree: admissionTree, git }),
-        options.installedRunner ?? (async (candidateSha) => {
-          const cwd = process.cwd();
-          return {
-            sha: (await git(["rev-parse", "HEAD"], cwd)).trim(),
-            tree: (await git(["rev-parse", "HEAD^{tree}"], cwd)).trim(),
-            candidateTree: (await git(["rev-parse", `${candidateSha}^{tree}`], cwd)).trim(),
-            clean: (await git(["status", "--porcelain"], cwd)).trim() === "",
-          };
-        }),
-        options.ciAttestation ?? (config.ciAttestation
-          ? new GitHubCheckRunsAttestation({ repository: config.ciAttestation.repository, tokenFile: config.ciAttestation.tokenFile, fetch: options.fetch, now })
-          : { async attest() { throw new ForwardAdmissionError("FORWARD_DEPLOY_ADMISSION_REFUSED", "FLEXPERIMENT_CI_REPOSITORY is not configured"); } }),
-      ),
+      admission: new ForwardSupersessionAdmissionGuard(admissionTree, mainTip, installedRunner, ci),
       supersessionDefect: (sessionId, releaseSha) => supersessionDefect(opened, sessionId, releaseSha),
       liveCapability: (sessionId) => liveCapabilityBlocking(opened, sessionId, now()),
       revokeCapability: (capabilityId, sessionId) => new SqliteCertificationCapabilityStore(opened).revokeForForwardSupersession(capabilityId, sessionId),
@@ -434,7 +442,7 @@ export const buildProductionRelease = (config: ProductionReleaseConfig, options:
     });
 
     return {
-      ports, sessions, journal, lock, deployRef, authority, candidates, forwardDeploy, certificationFor, database: opened,
+      ports, sessions, journal, lock, deployRef, authority, candidates, admission, forwardDeploy, certificationFor, database: opened,
       deployment: ports.deployment as CoolifyDeploymentDriver,
       orchestrator,
       close() {

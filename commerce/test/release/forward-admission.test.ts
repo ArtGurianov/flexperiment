@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { ReleaseCandidate } from "../../src/release/candidate";
 import { deriveCandidate, type CommitTreeReader } from "../../src/release/candidate-publication";
-import { ForwardSupersessionAdmissionGuard, GitHubCheckRunsAttestation, remoteMainTipRefresh, type InstalledRunner } from "../../src/release/forward-admission";
+import { ForwardSupersessionAdmissionGuard, GitHubCheckRunsAttestation, ReleaseAdmissionGuard, remoteMainTipRefresh, type InstalledRunner } from "../../src/release/forward-admission";
 import type { ReleaseBinding } from "../../src/release/forward-target";
 
 /**
@@ -36,6 +36,36 @@ const runnerAt = (over: Partial<Awaited<ReturnType<InstalledRunner>>> = {}): Ins
 const ci = (evidence = "ci-evidence") => ({ attest: async () => evidence });
 const guard = (options: { tree?: CommitTreeReader; main?: () => Promise<string>; runner?: InstalledRunner; attest?: { attest(sha: string): Promise<string> } } = {}) =>
   new ForwardSupersessionAdmissionGuard(options.tree ?? tree(), options.main ?? (async () => MAIN), options.runner ?? runnerAt(), options.attest ?? ci());
+
+describe("release admission: what every deploy must prove first", () => {
+  const release = (options: { main?: () => Promise<string>; runner?: InstalledRunner; attest?: { attest(sha: string): Promise<string> } } = {}) =>
+    new ReleaseAdmissionGuard(tree(), options.main ?? (async () => MAIN), options.runner ?? runnerAt(), options.attest ?? ci());
+
+  it("admits main's exact tip, run by itself, with green CI - no forward ancestry asked", async () => {
+    await expect(release().admit(await mainCandidate())).resolves.toEqual({ ciEvidence: "ci-evidence" });
+  });
+
+  it("refuses every other case with its own code, DEPLOY_ADMISSION_REFUSED", async () => {
+    const candidate = await mainCandidate();
+    const cases: [string, ReleaseAdmissionGuard, typeof candidate, string][] = [
+      ["a rolling candidate", release(), { ...candidate, releaseClass: "ROLLING_COMPATIBLE" }, "is ROLLING_COMPATIBLE"],
+      ["main moved on", release({ main: async () => SIDE }), candidate, "is not main's tip"],
+      ["another runner", release({ runner: runnerAt({ sha: SIDE }) }), candidate, `installed runner is ${SIDE}`],
+      ["an edited runner", release({ runner: runnerAt({ clean: false }) }), candidate, "not clean"],
+      ["CI not green", release({ attest: { attest: async () => { throw new Error("CI check test is completed/failure"); } } }), candidate, "admission evidence unreadable"],
+    ];
+    for (const [, guardFor, subject, detail] of cases) {
+      const refused = guardFor.admit(subject);
+      await expect(refused).rejects.toThrow("DEPLOY_ADMISSION_REFUSED");
+      await expect(refused).rejects.toThrow(detail);
+    }
+  });
+
+  it("passes a CI refusal through with its own detail", async () => {
+    const attestation = new GitHubCheckRunsAttestation({ repository: "o/r", fetch: (async () => Response.json({ total_count: 0, check_runs: [] })) as typeof fetch });
+    await expect(release({ attest: attestation }).admit(await mainCandidate())).rejects.toThrow(`DEPLOY_ADMISSION_REFUSED: CI check test missing for ${MAIN}`);
+  });
+});
 
 describe("forward supersession admission", () => {
   it("admits main's exact tip, descended from the current target, run by itself, with green CI", async () => {

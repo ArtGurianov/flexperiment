@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { runCutoverCommand } from "../../../scripts/release/cutover-runner";
+import { publishableReleaseClass, runCutoverCommand } from "../../../scripts/release/cutover-runner";
 import type { HistoricalCandidate } from "../../src/release/candidate";
 import { FileReleaseCandidateStore } from "../../src/release/candidate-store";
 import type { ProductionRelease } from "../../src/release/production-runner";
@@ -105,5 +105,16 @@ describe("rollback from a different process", () => {
     const runner = release(store, { id: "session-1", ownerId: "the-rollback" });
     await expect(runCutoverCommand(runner, ["rollback", "session-1"], "the-rollback")).resolves.toBe(11);
     expect(runner.sessions.takeOverExpiredLease).not.toHaveBeenCalled();
+  });
+});
+
+describe("what may be published", () => {
+  it("is only MAINTENANCE_REQUIRED: the deploy mode is derived, never chosen", () => {
+    expect(publishableReleaseClass("MAINTENANCE_REQUIRED")).toBe("MAINTENANCE_REQUIRED");
+    // Naming ROLLING_COMPATIBLE would be choosing to skip the fence and the
+    // certification, and nothing can prove a candidate compatible yet.
+    expect(() => publishableReleaseClass("ROLLING_COMPATIBLE")).toThrow("ROLLING_COMPATIBLE_REQUIRES_COMPATIBILITY_PROOF");
+    expect(() => publishableReleaseClass("LAUNCH_BASELINE")).toThrow("LAUNCH_BASELINE_RETIRED");
+    expect(() => publishableReleaseClass(undefined)).toThrow("RELEASE_CLASS_INVALID: absent");
   });
 });

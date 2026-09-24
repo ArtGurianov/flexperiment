@@ -33,13 +33,16 @@ export const remoteMainTipRefresh = (
   return options.tree.resolve("origin/main");
 };
 
-export class ForwardAdmissionError extends Error {
+export class ReleaseAdmissionError extends Error {
   constructor(readonly code: string, readonly detail?: string) {
     super(detail ? `${code}: ${detail}` : code);
   }
 }
+/** The forward name for the same refusal, kept for its callers. */
+export const ForwardAdmissionError = ReleaseAdmissionError;
+export type ForwardAdmissionError = ReleaseAdmissionError;
 
-const refusal = (detail: string) => new ForwardAdmissionError("FORWARD_DEPLOY_ADMISSION_REFUSED", detail);
+const refusal = (detail: string, code = "FORWARD_DEPLOY_ADMISSION_REFUSED") => new ReleaseAdmissionError(code, detail);
 
 /** The runner process's own checkout, which must be the candidate it deploys. */
 export type InstalledRunner = (candidateSha: string) => Promise<{
@@ -54,47 +57,103 @@ export interface CiAttestation {
   attest(sha: string): Promise<string>;
 }
 
-export class ForwardSupersessionAdmissionGuard {
+/**
+ * Whether this candidate may be deployed at all: what every release must prove
+ * before the first mutation, whether it starts a session (`deploy`) or carries
+ * one forward (`forward-deploy`).
+ *
+ *   - a MAINTENANCE_REQUIRED candidate: nothing can prove a candidate rolling-
+ *     compatible yet, so the rolling path is not admitted;
+ *   - main's exact tip, read afresh after the lock, and the candidate
+ *     re-derived from that exact commit rather than trusted as published;
+ *   - the runner doing it *is* that commit: same SHA, same tree, clean - so the
+ *     migrations it knows are the candidate's;
+ *   - the exact commit's own CI (`test`, `docker-build`) succeeded.
+ *
+ * Until #164 only `forward-deploy` asked any of this: an ordinary `deploy`
+ * checked only that a candidate had been published, and publication through
+ * the CLI checks no CI.
+ */
+export class ReleaseAdmissionGuard {
   constructor(
     private readonly tree: CommitTreeReader,
     private readonly refreshMainTip: MainTipRefresh,
     private readonly installedRunner: InstalledRunner,
     private readonly ci: CiAttestation,
+    private readonly code = "DEPLOY_ADMISSION_REFUSED",
   ) {}
 
-  /** Returns the CI evidence to record with the revision. Refuses with FORWARD_DEPLOY_ADMISSION_REFUSED. */
-  async admit(candidate: ReleaseCandidate, current: ReleaseBinding): Promise<{ readonly ciEvidence: string }> {
+  /** Returns the CI evidence read. Refuses with this guard's code; only stable codes leave. */
+  async admit(candidate: ReleaseCandidate): Promise<{ readonly ciEvidence: string }> {
+    try {
+      await this.admitWithout(candidate);
+      return { ciEvidence: await this.ci.attest(candidate.sha) };
+    } catch (error) {
+      throw this.normalized(error);
+    }
+  }
+
+  /** Everything but CI, for a caller with checks of its own to make before paying for the CI read. */
+  async admitWithout(candidate: ReleaseCandidate): Promise<void> {
     try {
       assertCandidate(candidate);
-      if (candidate.releaseClass !== "MAINTENANCE_REQUIRED") throw refusal(`candidate ${candidate.id} is ${candidate.releaseClass}`);
+      if (candidate.releaseClass !== "MAINTENANCE_REQUIRED") throw refusal(`candidate ${candidate.id} is ${candidate.releaseClass}`, this.code);
 
       // Today's main, fetched after the lock, and the candidate re-derived from
       // that exact commit rather than trusted as published.
       const main = await this.refreshMainTip();
       const expected = await deriveCandidate(this.tree, { sha: main, releaseClass: "MAINTENANCE_REQUIRED", mainRef: main });
       const confirmed = await this.refreshMainTip();
-      if (confirmed !== main) throw refusal(`origin/main changed from ${main} to ${confirmed}`);
-      if (candidate.sha !== main || candidate.id !== main) throw refusal(`${candidate.sha} is not main's tip ${main}`);
-      if (candidateDigest(candidate) !== candidateDigest(expected)) throw refusal(`${candidate.sha} does not re-derive from its commit`);
-
-      // Forward only: a successor of what the session deploys now.
-      if (candidate.sha === current.targetSha) throw refusal(`${candidate.sha} is the current target`);
-      if (!await this.tree.isAncestor(current.targetSha, candidate.sha)) {
-        throw refusal(`${current.targetSha} is not an ancestor of ${candidate.sha}`);
-      }
+      if (confirmed !== main) throw refusal(`origin/main changed from ${main} to ${confirmed}`, this.code);
+      if (candidate.sha !== main || candidate.id !== main) throw refusal(`${candidate.sha} is not main's tip ${main}`, this.code);
+      if (candidateDigest(candidate) !== candidateDigest(expected)) throw refusal(`${candidate.sha} does not re-derive from its commit`, this.code);
 
       // The runner deploying it is it: same commit, same tree, nothing edited.
       const runner = await this.installedRunner(candidate.sha);
-      if (runner.sha !== candidate.sha) throw refusal(`installed runner is ${runner.sha}`);
-      if (runner.tree !== runner.candidateTree) throw refusal(`installed runner tree ${runner.tree} != ${runner.candidateTree}`);
-      if (!runner.clean) throw refusal("installed runner worktree is not clean");
+      if (runner.sha !== candidate.sha) throw refusal(`installed runner is ${runner.sha}`, this.code);
+      if (runner.tree !== runner.candidateTree) throw refusal(`installed runner tree ${runner.tree} != ${runner.candidateTree}`, this.code);
+      if (!runner.clean) throw refusal("installed runner worktree is not clean", this.code);
+    } catch (error) {
+      throw this.normalized(error);
+    }
+  }
 
+  get ciAttestation(): CiAttestation { return this.ci; }
+  get commits(): CommitTreeReader { return this.tree; }
+
+  private normalized(error: unknown): ReleaseAdmissionError {
+    if (error instanceof ReleaseAdmissionError) return error.code === this.code ? error : new ReleaseAdmissionError(this.code, error.detail);
+    // Git and transport errors can carry credentialed URLs; only stable codes leave.
+    return refusal(error instanceof CandidateStoreError ? error.code : "admission evidence unreadable", this.code);
+  }
+}
+
+/**
+ * Admission of a NEW forward revision: everything any release must prove
+ * (`ReleaseAdmissionGuard`), plus that it is a successor of what the session
+ * deploys now.
+ */
+export class ForwardSupersessionAdmissionGuard {
+  private readonly common: ReleaseAdmissionGuard;
+
+  constructor(tree: CommitTreeReader, refreshMainTip: MainTipRefresh, installedRunner: InstalledRunner, ci: CiAttestation) {
+    this.common = new ReleaseAdmissionGuard(tree, refreshMainTip, installedRunner, ci, "FORWARD_DEPLOY_ADMISSION_REFUSED");
+  }
+
+  /** Returns the CI evidence to record with the revision. Refuses with FORWARD_DEPLOY_ADMISSION_REFUSED. */
+  async admit(candidate: ReleaseCandidate, current: ReleaseBinding): Promise<{ readonly ciEvidence: string }> {
+    await this.common.admitWithout(candidate);
+    try {
+      // Forward only: a successor of what the session deploys now.
+      if (candidate.sha === current.targetSha) throw refusal(`${candidate.sha} is the current target`);
+      if (!await this.common.commits.isAncestor(current.targetSha, candidate.sha)) {
+        throw refusal(`${current.targetSha} is not an ancestor of ${candidate.sha}`);
+      }
       // The real-router certification E2E is part of `test`, so this is what
       // makes it a gate rather than a convention.
-      return { ciEvidence: await this.ci.attest(candidate.sha) };
+      return { ciEvidence: await this.common.ciAttestation.attest(candidate.sha) };
     } catch (error) {
-      if (error instanceof ForwardAdmissionError) throw error;
-      // Git and transport errors can carry credentialed URLs; only stable codes leave.
+      if (error instanceof ReleaseAdmissionError) throw error;
       throw refusal(error instanceof CandidateStoreError ? error.code : "admission evidence unreadable");
     }
   }
