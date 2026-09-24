@@ -105,11 +105,15 @@ describe("a new forward revision", () => {
     expect(w.log).not.toContain("migrate");
     expect(w.sessions.forwardTargets("armed")).toEqual([]);
     expect(w.pointer()).toBe(original);
+    // And it stood down: another process may claim the session at once, with
+    // no clock advance, instead of waiting out a lease nobody holds.
+    expect(() => w.sessions.takeOverExpiredLease("armed", "next-process")).not.toThrow();
   });
 
   it("refuses an unpublished candidate, and a session that is not armed and stuck", async () => {
     const w = world();
     await expect(w.runner.run("armed", "e".repeat(40), "operator")).rejects.toThrow("RELEASE_CANDIDATE_NOT_PUBLISHED");
+    expect(() => w.sessions.takeOverExpiredLease("armed", "next-process")).not.toThrow();
 
     const store = new InMemoryReleaseAuthorityStore();
     const sessions = new DeploySessions(store, () => now);

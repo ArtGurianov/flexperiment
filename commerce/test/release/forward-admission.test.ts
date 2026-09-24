@@ -90,11 +90,14 @@ describe("forward supersession admission", () => {
 describe("the exact-SHA CI attestation", () => {
   const run = (name: string, over: Record<string, unknown> = {}) =>
     ({ id: Math.floor(Math.random() * 1e6), name, head_sha: MAIN, status: "completed", conclusion: "success", completed_at: "2026-09-24T10:00:00Z", ...over });
-  const github = (body: unknown, status = 200, seen: { headers?: Record<string, string>; url?: string } = {}) =>
+  /** GitHub's shape: `total_count` is every run for the commit, `check_runs` this page of them. */
+  const github = (body: { check_runs?: unknown[]; total_count?: number; message?: string }, status = 200, seen: { headers?: Record<string, string>; url?: string; signal?: AbortSignal | null } = {}) =>
     (async (url: string | URL | Request, init?: RequestInit) => {
       seen.url = String(url);
       seen.headers = init?.headers as Record<string, string>;
-      return new Response(JSON.stringify(body), { status });
+      seen.signal = init?.signal;
+      const full = body.check_runs && body.total_count === undefined ? { ...body, total_count: body.check_runs.length } : body;
+      return new Response(JSON.stringify(full), { status });
     }) as typeof globalThis.fetch;
   const attest = (fetch: typeof globalThis.fetch, tokenFile?: string) =>
     new GitHubCheckRunsAttestation({ repository: "ArtGurianov/flexperiment", fetch, tokenFile, now: () => new Date("2026-09-24T11:00:00Z") }).attest(MAIN);
@@ -114,6 +117,17 @@ describe("the exact-SHA CI attestation", () => {
     ["a check is for another commit", { check_runs: [run("test", { head_sha: SIDE }), run("docker-build")] }, `test is for ${SIDE}`],
   ])("refuses when %s", async (_label, body, message) => {
     await expect(attest(github(body))).rejects.toThrow(message);
+  });
+
+  it("refuses when GitHub has more check runs than the page it returned", async () => {
+    await expect(attest(github({ total_count: 150, check_runs: [run("test"), run("docker-build")] })))
+      .rejects.toThrow("CI_ATTESTATION_INCOMPLETE: 150 check runs, 2 read");
+  });
+
+  it("reads GitHub with a bounded timeout", async () => {
+    const seen: { signal?: AbortSignal | null } = {};
+    await attest(github({ check_runs: [run("test"), run("docker-build")] }, 200, seen));
+    expect(seen.signal).toBeInstanceOf(AbortSignal);
   });
 
   it("refuses when GitHub cannot be read", async () => {

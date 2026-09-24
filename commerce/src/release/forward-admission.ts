@@ -106,6 +106,8 @@ export class GitHubCheckRunsAttestation implements CiAttestation {
     readonly tokenFile?: string;
     readonly fetch?: typeof globalThis.fetch;
     readonly now?: () => Date;
+    /** Bounded: the read happens while the runner lock and the session lease are held. */
+    readonly timeoutMs?: number;
   }) {}
 
   async attest(sha: string): Promise<string> {
@@ -119,13 +121,19 @@ export class GitHubCheckRunsAttestation implements CiAttestation {
     let body: { total_count?: unknown; check_runs?: unknown };
     try {
       const response = await (this.options.fetch ?? globalThis.fetch)(
-        `https://api.github.com/repos/${this.options.repository}/commits/${sha}/check-runs?per_page=100`, { headers });
+        `https://api.github.com/repos/${this.options.repository}/commits/${sha}/check-runs?per_page=100`,
+        { headers, signal: AbortSignal.timeout(this.options.timeoutMs ?? 15_000) });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       body = await response.json() as typeof body;
     } catch (error) {
       throw refusal(`CI attestation unreadable (${error instanceof Error ? error.message.slice(0, 40) : "unknown"})`);
     }
     const runs = Array.isArray(body.check_runs) ? body.check_runs as CheckRun[] : [];
+    // "Every run of a required check succeeded" is a claim about all of them.
+    // A second page this read did not fetch could hold a failed one.
+    if (typeof body.total_count !== "number" || body.total_count > runs.length) {
+      throw refusal(`CI_ATTESTATION_INCOMPLETE: ${String(body.total_count)} check runs, ${runs.length} read`);
+    }
     const evidence: { name: string; id: unknown; conclusion: unknown; completed_at: unknown }[] = [];
     for (const name of REQUIRED_CHECKS) {
       const named = runs.filter((run) => run.name === name);

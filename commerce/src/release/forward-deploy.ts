@@ -97,7 +97,18 @@ export class ForwardDeploy {
     const latest = sessions.forwardTargets(sessionId).at(-1);
     if (latest && latest.candidateId === candidateId) return this.resume(sessionId, latest, ownerId);
 
-    const admitted = await this.admitRevision(sessionId, candidateId);
+    // An ordinary refusal here is exit 20: nothing changed. It must not leave a
+    // five-minute lease behind a process that is about to exit, with sales
+    // fenced and the next command made to wait it out. Only this region: after
+    // the first durable write, failures are RECOVERY_REQUIRED, whose outcome
+    // path already stands down.
+    let admitted: { candidate: ReleaseCandidate; ciEvidence: string };
+    try {
+      admitted = await this.admitRevision(sessionId, candidateId);
+    } catch (error) {
+      sessions.yieldLease(sessionId, ownerId);
+      throw error;
+    }
     let revision: ForwardTarget;
     try {
       revision = this.commitRevision(sessionId, admitted, ownerId);

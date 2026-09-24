@@ -178,6 +178,8 @@ runner lock is taken:
 6. **The prior target is safe to supersede**
    (`certificationSafeToSupersede`). For every certification run of the
    current binding's target:
+   - the run is terminal: it recorded a failure, or it is `COMPLETE` with its
+     completion recorded. A run that never ran is not abandoned;
    - no pending command;
    - every catalogue fixture it created is `CLOSED` and `HIDDEN`;
    - no payment is unresolved (no `CREATE_UNKNOWN`, nothing awaiting provider
@@ -196,6 +198,17 @@ runner lock is taken:
    before any migration or ref movement. A spent capability does not occupy
    the live slot and does not block. Attempt 5's last capability (`6a259177…`)
    expires 2026-09-24T07:29:00Z.
+
+A refusal anywhere in admission is an ordinary exit 20 and changes nothing.
+It also stands the session's lease down before it propagates, so the next
+command can claim the session at once rather than wait out a lease held by a
+process that has exited. Only the admission region does this: after the first
+durable write, failures are `RECOVERY_REQUIRED`, whose path already stands down.
+
+`GitHubCheckRunsAttestation` reads with a bounded timeout, because it runs
+while the runner lock and the lease are held. It refuses with
+`CI_ATTESTATION_INCOMPLETE` when GitHub reports more check runs than it
+returned: "every run succeeded" is a claim about all of them.
 
 ### New revision: order
 

@@ -613,6 +613,14 @@ describe("the whole path production has to walk, through the real composition ro
       expect(await early.deployRef.read()).toBe(vps.targetSha);
     } finally { early.close(); }
 
+    // Process A has exited after an ordinary refusal. Process B, at the same
+    // instant, may claim the session: the refusal stood down its lease.
+    const processB = forwardRoot();
+    try {
+      expect(() => processB.sessions.takeOverExpiredLease(sessionId, "runner-x")).not.toThrow();
+      processB.sessions.yieldLease(sessionId, "runner-x");
+    } finally { processB.close(); }
+
     // Past its expiry. The old runtime is still up and beating.
     at = new Date(NOW.getTime() + 4 * 60 * 60_000 + 1_000);
     vps.db.prepare("UPDATE runtime_instance_evidence SET heartbeat_at = ?").run(at.toISOString());

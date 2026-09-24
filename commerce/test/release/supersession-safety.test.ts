@@ -97,6 +97,25 @@ describe("certification safe to supersede", () => {
     expect(supersessionDefect(db, SESSION, SHA)).toBeUndefined();
   });
 
+  it("refuses a run that never ran: not failed, not complete, nothing pending, no effects", () => {
+    // A revision-scoped run issued and never certified, its capability expired.
+    run({ phase: "NEW", direction: "NORMAL", failure: null }, "run-r1");
+    expect(supersessionDefect(db, SESSION, SHA)).toBe("RUN_NOT_TERMINAL:run-r1");
+  });
+
+  it("accepts a clean run that failed, and a clean run that completed", () => {
+    run({}, "failed-clean");
+    expect(supersessionDefect(db, SESSION, SHA)).toBeUndefined();
+    run({ phase: "COMPLETE", direction: "CATALOGUE_CLEAN", failure: null, completedAt: now.toISOString() }, "complete-clean");
+    fixture("complete-clean");
+    expect(supersessionDefect(db, SESSION, SHA)).toBeUndefined();
+  });
+
+  it("refuses a COMPLETE phase that never recorded its completion", () => {
+    run({ phase: "COMPLETE", direction: "CATALOGUE_CLEAN", failure: null }, "half");
+    expect(supersessionDefect(db, SESSION, SHA)).toBe("RUN_NOT_TERMINAL:half");
+  });
+
   it("refuses a pending command", () => {
     run({ pendingCommand: { kind: "CREATE_OCCURRENCE", idempotencyKey: "k", draft: { cityId: "city", startsAt: "s", endsAt: "e", venueDisclosureText: "v", venueAnnounceBy: "a" } } });
     expect(supersessionDefect(db, SESSION, SHA)).toBe("COMMAND_PENDING:run");

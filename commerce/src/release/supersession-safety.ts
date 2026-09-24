@@ -10,6 +10,9 @@ import type Database from "better-sqlite3";
  * resolving, or captured and not yet refunded. So the answer is read from the
  * state that matters, for every run the session certified this release with:
  *
+ *   - the run is terminal: it recorded a failure, or it is COMPLETE. A run that
+ *     simply never ran is not a certification that can be abandoned - leaving
+ *     it would supersede a release nobody tried to certify;
  *   - no command is pending;
  *   - every catalogue fixture it created is CLOSED and HIDDEN;
  *   - no payment is unresolved (CREATING, CREATE_UNKNOWN), and each ended
@@ -25,8 +28,13 @@ export const supersessionDefect = (db: Database.Database, sessionId: string, rel
     .map((row) => row.run_id);
 
   for (const runId of runs) {
-    const run = db.prepare("SELECT pending_command FROM certification_runs WHERE run_id = ?").get(runId) as { pending_command: string | null } | undefined;
+    const run = db.prepare("SELECT pending_command, failure_outcome, phase, completed_at FROM certification_runs WHERE run_id = ?").get(runId) as
+      { pending_command: string | null; failure_outcome: string | null; phase: string; completed_at: string | null } | undefined;
     if (!run) return `RUN_MISSING:${runId}`;
+    // Terminal first, then its effects: being terminal alone proves nothing
+    // about money or fixtures, which are checked below either way.
+    const terminal = run.failure_outcome !== null || (run.phase === "COMPLETE" && run.completed_at !== null);
+    if (!terminal) return `RUN_NOT_TERMINAL:${runId}`;
     if (run.pending_command) return `COMMAND_PENDING:${runId}`;
 
     const fixtures = db.prepare(`SELECT DISTINCT m.occurrence_id, o.sales_status, o.visibility
