@@ -13,6 +13,7 @@ import { SqliteCertificationCapabilityStore, SqliteCertificationRunStore } from 
 import type { ReleaseCandidate } from "../../src/release/candidate";
 import { schemaInventoryExpectation } from "../../src/release/expectation";
 import { TEST_CAPABILITY_KEY, testSecret } from "../support/certification-secret";
+import { CERTIFICATION_CAPABILITY_TTL_MS } from "../../src/certification/scope";
 
 /**
  * Attempt 5's durable state, reproduced row for row, and the one way forward
@@ -75,11 +76,11 @@ const session = (over: { state?: string; gate?: 0 | 1; authority?: string } = {}
     T0.toISOString(), T0.toISOString(), over.gate ?? 1,
   );
 
-const world = (options: { run?: Partial<CertificationRun>; session?: Parameters<typeof session>[0] } = {}) => {
+const world = (options: { run?: Partial<CertificationRun>; session?: Parameters<typeof session>[0]; ttlMs?: number } = {}) => {
   session(options.session);
   new SqliteCertificationRunStore(db).create(failedFirstRun(options.run));
   issueCapability(new SqliteCertificationCapabilityStore(db),
-    { runId: BASE, deploymentSessionId: SESSION, releaseSha: SHA, maxAmountKopecks: 100, ttlMs: TTL }, T0, testSecret());
+    { runId: BASE, deploymentSessionId: SESSION, releaseSha: SHA, maxAmountKopecks: 100, ttlMs: options.ttlMs ?? TTL }, T0, testSecret());
 };
 
 const driver = () => new ProductionCertificationDriver({
@@ -155,6 +156,17 @@ describe("a no-effect certification retry from attempt 5's durable state", () =>
     // question: real-router-e2e.test.ts runs a certification through the real
     // app. What matters here is that nothing ran under the first run's name.
     expect(db.prepare("SELECT COUNT(*) AS n FROM certification_catalogue_mutations WHERE run_id = ?").get(BASE)).toEqual({ n: 0 });
+  });
+
+  it("with the production lifetime: waits out the first hour, then gives -a2 an hour of its own", () => {
+    world({ ttlMs: CERTIFICATION_CAPABILITY_TTL_MS });
+    clock = new Date(T0.getTime() + CERTIFICATION_CAPABILITY_TTL_MS - 60_000);
+    expect(() => driver().retryAfterNoEffectFailure(SESSION)).toThrow("CERTIFICATION_RETRY_CAPABILITY_STILL_LIVE");
+    clock = new Date(T0.getTime() + CERTIFICATION_CAPABILITY_TTL_MS + 60_000);
+    expect(driver().retryAfterNoEffectFailure(SESSION)).toEqual({ kind: "RETRY_ISSUED" });
+    const retry = db.prepare("SELECT run_id, expires_at FROM certification_capabilities WHERE consumed_at IS NULL AND retired_at IS NULL").get() as { run_id: string; expires_at: string };
+    expect(retry.run_id).toBe(RETRY);
+    expect(Date.parse(retry.expires_at)).toBe(clock.getTime() + CERTIFICATION_CAPABILITY_TTL_MS);
   });
 
   it("is idempotent: a second certify continues -a2 and never makes -a3", () => {

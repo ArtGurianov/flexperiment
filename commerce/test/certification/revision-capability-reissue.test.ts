@@ -13,6 +13,7 @@ import { SqliteCertificationCapabilityStore, SqliteCertificationRunStore } from 
 import type { ReleaseCandidate } from "../../src/release/candidate";
 import { schemaInventoryExpectation } from "../../src/release/expectation";
 import { TEST_CAPABILITY_KEY, testSecret } from "../support/certification-secret";
+import { CERTIFICATION_CAPABILITY_TTL_MS } from "../../src/certification/scope";
 
 /**
  * A forward revision whose capability expired before anyone spent it.
@@ -43,7 +44,7 @@ let scopePath: string;
 const topology = (sha: string) => JSON.stringify({ runtime: { frontend: sha, admin: sha, commerce: sha, worker: sha }, controlPlane: { productionDeployRefSha: sha } });
 
 /** Revision 1 exactly as forward-deploy leaves it: armed, stuck, fenced, its run fresh, one capability. */
-const world = (options: { run?: Partial<CertificationRun>; state?: string; revision?: boolean; revisionTarget?: string } = {}) => {
+const world = (options: { run?: Partial<CertificationRun>; state?: string; revision?: boolean; revisionTarget?: string; ttlMs?: number } = {}) => {
   db.prepare(`INSERT INTO deploy_sessions(id, owner_id, mode, target_sha, candidate_id, state, rollback_authority,
       pre_deploy_topology, observed_topology, created_at, lease_expires_at, deployment_gate_closed, mutation_observed)
     VALUES (?, 'runner', 'MAINTENANCE_CUTOVER', ?, ?, ?, 'NEW_LINEAGE_ONLY', ?, ?, ?, ?, ?, 1)`).run(
@@ -63,7 +64,7 @@ const world = (options: { run?: Partial<CertificationRun>; state?: string; revis
     runId: RUN, revision: 1, releaseSha: SHA, phase: "NEW", direction: "NORMAL", startedAt: T0.toISOString(), ...options.run,
   });
   return issueCapability(new SqliteCertificationCapabilityStore(db),
-    { runId: RUN, deploymentSessionId: SESSION, releaseSha: SHA, maxAmountKopecks: 100, ttlMs: TTL }, T0, testSecret()).capability;
+    { runId: RUN, deploymentSessionId: SESSION, releaseSha: SHA, maxAmountKopecks: 100, ttlMs: options.ttlMs ?? TTL }, T0, testSecret()).capability;
 };
 
 const driver = () => new ProductionCertificationDriver({
@@ -264,6 +265,16 @@ describe("reissuing an expired, unspent revision capability", () => {
     const before = snapshot();
     expect(driver().reissueExpiredRevisionCapability(SESSION)).toEqual({ kind: "INELIGIBLE", reason: "CAPABILITY_COUNT_0" });
     expect(snapshot()).toBe(before);
+  });
+
+  it("with the production lifetime: live until the hour is up, then reissued for another hour", () => {
+    world({ ttlMs: CERTIFICATION_CAPABILITY_TTL_MS });
+    clock = new Date(T0.getTime() + CERTIFICATION_CAPABILITY_TTL_MS - 1);
+    expect(driver().reissueExpiredRevisionCapability(SESSION)).toEqual({ kind: "CAPABILITY_LIVE" });
+    clock = new Date(T0.getTime() + CERTIFICATION_CAPABILITY_TTL_MS + 1_000);
+    expect(driver().reissueExpiredRevisionCapability(SESSION)).toEqual({ kind: "REISSUED" });
+    const replacement = db.prepare("SELECT expires_at FROM certification_capabilities WHERE consumed_at IS NULL AND retired_at IS NULL").get() as { expires_at: string };
+    expect(Date.parse(replacement.expires_at)).toBe(clock.getTime() + CERTIFICATION_CAPABILITY_TTL_MS);
   });
 });
 
