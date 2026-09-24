@@ -476,7 +476,7 @@ directories on disk) and this file.
 | `phase0` | 4 | 2 | `.gitignore` (three entries) and `.dockerignore` (one). Tombstones: they stop the rotated `.phase0-*.env` files and the backport patch being re-added. |
 | `DORMANT` | 7 | 3 | `baseline-schema.test.ts` asserts the CHECK refuses it; `BASELINE_SPECIFICATION.md` and `BASELINE_OBJECT_DIFF.md` record its removal. All three assert its absence. Lowercase `dormant` appears elsewhere as ordinary English - a dormant capability, a variable, a test address - and is not this state. |
 | `\bLEGACY\b` | 28 | 13 | **All live.** `SchemaLineage`'s own member, `LEGACY_PRELAUNCH_DATABASE_NOT_SUPPORTED`, the classifier and every test of it. The last six historical uses - prose about the two-authority outbox - were rewritten rather than classified. |
-| `cutover` | 310 | 38 | **All live.** The `MAINTENANCE_CUTOVER` mode, the cutover envelope and its handoff across the lineage boundary, `adoptedCutoverId`, `bootstrap-rollback`. A current protocol, not a past one. |
+| `cutover` | — | — | **Live:** the `MAINTENANCE_CUTOVER` mode and its sessions, `cutover-runner`, `verify-cutover`. The launch's cutover envelope, its adoption and `bootstrap-rollback` were retired on 2026-09-24; `adoptedCutoverId` survives only as a read-only field of the launch session. Recount at the next registry refresh. |
 
 `epoch` survives in three unrelated senses, none of them the release model:
 Unix epoch milliseconds in the admin UI, the city-interest request/consent

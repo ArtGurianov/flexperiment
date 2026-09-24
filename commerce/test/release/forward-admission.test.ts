@@ -1,10 +1,10 @@
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { ReleaseCandidate } from "../../src/release/candidate";
 import { deriveCandidate, type CommitTreeReader } from "../../src/release/candidate-publication";
-import { ForwardSupersessionAdmissionGuard, GitHubCheckRunsAttestation, type InstalledRunner } from "../../src/release/forward-admission";
+import { ForwardSupersessionAdmissionGuard, GitHubCheckRunsAttestation, remoteMainTipRefresh, type InstalledRunner } from "../../src/release/forward-admission";
 import type { ReleaseBinding } from "../../src/release/forward-target";
 
 /**
@@ -43,7 +43,8 @@ describe("forward supersession admission", () => {
   });
 
   it("admits only a MAINTENANCE_REQUIRED candidate", async () => {
-    const launch = await deriveCandidate(tree(), { sha: MAIN, releaseClass: "LAUNCH_BASELINE", mainRef: MAIN });
+    // A historical launch candidate: no longer derivable, still on disk.
+    const launch = { ...await mainCandidate(), releaseClass: "LAUNCH_BASELINE" as const };
     await expect(guard().admit(launch, binding)).rejects.toThrow("is LAUNCH_BASELINE");
   });
 
@@ -142,5 +143,19 @@ describe("the exact-SHA CI attestation", () => {
     await attest(github({ check_runs: [run("test"), run("docker-build")] }, 200, seen), file);
     expect(seen.headers?.Authorization).toBe("Bearer github-token-value");
     expect(seen.url).not.toContain("github-token-value");
+  });
+});
+
+describe("the main tip admission reads", () => {
+  it("refreshes origin/main from the trusted remote on every read", async () => {
+    const MAIN = "a".repeat(40);
+    const git = vi.fn(async () => "");
+    const resolve = vi.fn(async () => MAIN);
+    const commitTree = { list: async () => [], read: async () => "", isAncestor: async () => true, resolve } as unknown as CommitTreeReader;
+    const refresh = remoteMainTipRefresh({ remote: "trusted-origin", cwd: "/repo", tree: commitTree, git });
+
+    await expect(refresh()).resolves.toBe(MAIN);
+    expect(git).toHaveBeenCalledWith(["fetch", "--no-tags", "trusted-origin", "main:refs/remotes/origin/main"], "/repo");
+    expect(resolve).toHaveBeenCalledWith("origin/main");
   });
 });

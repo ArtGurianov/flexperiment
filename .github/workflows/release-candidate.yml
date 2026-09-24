@@ -38,11 +38,12 @@ jobs:
           [[ "$CANDIDATE_SHA" =~ ^[a-f0-9]{40}$ ]] || { echo "CANDIDATE_SHA_INVALID" >&2; exit 1; }
           git merge-base --is-ancestor "$CANDIDATE_SHA" origin/main \
             || { echo "CANDIDATE_SHA_NOT_ON_MAIN" >&2; exit 1; }
-          # An ancestor that was green once is not the same claim. The launch
-          # cutover destroys the predecessor database, so it may only ever be
-          # the exact current tip.
+          # An ancestor that was green once is not the same claim. A release is
+          # carried forward only to main's exact tip (forward admission refuses
+          # anything else), so publishing an ancestor would publish a candidate
+          # nothing may deploy.
           [[ "$CANDIDATE_SHA" == "$(git rev-parse origin/main)" ]] \
-            || { echo "LAUNCH_BASELINE_MUST_BE_MAIN_HEAD" >&2; exit 1; }
+            || { echo "CANDIDATE_MUST_BE_MAIN_HEAD" >&2; exit 1; }
 
       # Green on this exact commit, not somewhere in its history. A candidate
       # inherits nothing from its ancestors.
@@ -77,9 +78,10 @@ jobs:
         env:
           RELEASE_HOST: ${{ secrets.RELEASE_RUNNER_HOST }}
           CANDIDATE_SHA: ${{ inputs.candidate_sha }}
-          # Launch publication is the only P2 classifier. Future rolling
-          # publication must come from a compatibility proof, never dispatch.
-          RELEASE_CLASS: LAUNCH_BASELINE
+          # The launch (LAUNCH_BASELINE) is retired. Without a compatibility
+          # proof a release is MAINTENANCE_REQUIRED; rolling publication must
+          # come from such a proof, never from dispatch.
+          RELEASE_CLASS: MAINTENANCE_REQUIRED
         run: |
           set -euo pipefail
           [[ -n "$RELEASE_HOST" ]] || { echo "RELEASE_RUNNER_HOST_UNCONFIGURED" >&2; exit 1; }

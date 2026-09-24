@@ -45,60 +45,6 @@ afterEach(async () => {
 const client = (apiUrl: string, over: Partial<ConstructorParameters<typeof CoolifyClient>[0]> = {}) =>
   new CoolifyClient({ apiUrl, token: "probe-token", pollIntervalMs: 1, sleep: async () => {}, ...over });
 
-describe("stopping an application, and proving it stopped", () => {
-  /**
-   * The runner asks the control plane to stop one application while it replaces
-   * that application's database. Both halves of that sentence are dangerous if
-   * this is wrong: a cleanup we did not ask for, or a "stopped" that is not.
-   */
-  it("disables Docker cleanup explicitly rather than by omission", async () => {
-    const paths: string[] = [];
-    const url = await listen((_method, path) => { paths.push(path); return { status: 200, body: "{}" }; });
-    await client(url).stopApplication("app-1");
-    // The parameter defaults to true and prunes networks and volumes. A cutover
-    // is the worst possible moment for housekeeping.
-    expect(paths).toEqual([expect.stringMatching(/\/applications\/app-1\/stop\?docker_cleanup=false$/)]);
-  });
-
-  it("waits for a positive exited state rather than trusting the queued request", async () => {
-    const statuses = ["running:healthy", "running:unhealthy", "exited:unhealthy"];
-    const url = await listen(() => ({ status: 200, body: JSON.stringify({ uuid: "app-1", status: statuses.shift() ?? "exited:unhealthy" }) }));
-    await expect(client(url, { pollIntervalMs: 1, sleep: async () => {} }).awaitApplicationStopped("app-1"))
-      .resolves.toBe("exited:unhealthy");
-  });
-
-  it("refuses a runtime that never stops, instead of timing out into a swap", async () => {
-    let now = 0;
-    const url = await listen(() => ({ status: 200, body: JSON.stringify({ uuid: "app-1", status: "running:healthy" }) }));
-    await expect(client(url, {
-      pollIntervalMs: 1, sleep: async () => { now += 60_000; }, clock: () => now, deploymentTimeoutMs: 120_000,
-    }).awaitApplicationStopped("app-1")).rejects.toMatchObject({ code: "COOLIFY_APPLICATION_NOT_STOPPED" });
-  });
-
-  it("refuses an absent status instead of reading it as stopped", async () => {
-    // Exactly what a token without visibility returns on this installation.
-    // Read as "stopped", it would replace the database under a live runtime.
-    const url = await listen(() => ({ status: 200, body: JSON.stringify({ uuid: "app-1" }) }));
-    await expect(client(url, { pollIntervalMs: 1, sleep: async () => {} }).awaitApplicationStopped("app-1"))
-      .rejects.toMatchObject({ code: "COOLIFY_APPLICATION_STATUS_UNREADABLE" });
-  });
-
-  it("refuses an unknown status rather than waiting it out", async () => {
-    const url = await listen(() => ({ status: 200, body: JSON.stringify({ uuid: "app-1", status: "unknown" }) }));
-    await expect(client(url, { pollIntervalMs: 1, sleep: async () => {} }).awaitApplicationStopped("app-1"))
-      .rejects.toMatchObject({ code: "COOLIFY_APPLICATION_STATUS_UNKNOWN" });
-  });
-
-  it.each(["starting:unhealthy", "restarting:unhealthy", "degraded:unhealthy"])(
-    "does not read %s as stopped", async (status) => {
-      let now = 0;
-      const url = await listen(() => ({ status: 200, body: JSON.stringify({ uuid: "app-1", status }) }));
-      await expect(client(url, {
-        pollIntervalMs: 1, sleep: async () => { now += 60_000; }, clock: () => now, deploymentTimeoutMs: 120_000,
-      }).awaitApplicationStopped("app-1")).rejects.toMatchObject({ code: "COOLIFY_APPLICATION_NOT_STOPPED" });
-    });
-});
-
 describe("the Coolify client", () => {
   it("rejects a listen startup error immediately instead of waiting for a test timeout", async () => {
     const occupied = createServer();
@@ -116,31 +62,10 @@ describe("the Coolify client", () => {
   });
 
   it("reads an application", async () => {
-    const url = await listen(() => ({ status: 200, body: JSON.stringify({ uuid: "app-1", name: "commerce", build_pack: "dockercompose", git_branch: "production-deploy", git_commit_sha: null, settings: { docker_images_to_keep: 2 } }) }));
+    const url = await listen(() => ({ status: 200, body: JSON.stringify({ uuid: "app-1", name: "commerce", build_pack: "dockercompose", git_branch: "production-deploy", git_commit_sha: null }) }));
     expect(await client(url).application("app-1")).toEqual({
-      uuid: "app-1", name: "commerce", buildPack: "dockercompose", gitBranch: "production-deploy", gitCommitSha: null, dockerImagesToKeep: 2,
+      uuid: "app-1", name: "commerce", buildPack: "dockercompose", gitBranch: "production-deploy", gitCommitSha: null,
     });
-  });
-
-  it("reads server retention and rejects a malformed cleanup policy", async () => {
-    const url = await listen(() => ({ status: 200, body: JSON.stringify({ disable_application_image_retention: false }) }));
-    await expect(client(url).serverDockerCleanup("server-1")).resolves.toEqual({ applicationImageRetentionDisabled: false });
-    await new Promise<void>((resolve) => server!.close(() => resolve()));
-    const malformed = await listen(() => ({ status: 200, body: JSON.stringify({}) }));
-    await expect(client(malformed).serverDockerCleanup("server-1")).rejects.toMatchObject({ code: "COOLIFY_SERVER_CLEANUP_MALFORMED" });
-  });
-
-  it("lists servers and only accepts resource rows that carry an id, UUID and type", async () => {
-    const url = await listen((_method, path) => path.endsWith("/servers")
-      ? { status: 200, body: JSON.stringify([{ uuid: "server-1" }]) }
-      : { status: 200, body: JSON.stringify([{ id: 3, uuid: "app-1", type: "application" }]) });
-    const coolify = client(url);
-    await expect(coolify.servers()).resolves.toEqual([{ uuid: "server-1" }]);
-    await expect(coolify.serverResources("server-1")).resolves.toEqual([{ id: "3", uuid: "app-1", type: "application" }]);
-
-    await new Promise<void>((resolve) => server!.close(() => resolve()));
-    const malformed = await listen(() => ({ status: 200, body: JSON.stringify([{ uuid: "app-1", type: "application" }]) }));
-    await expect(client(malformed).serverResources("server-1")).rejects.toMatchObject({ code: "COOLIFY_SERVER_RESOURCES_MALFORMED" });
   });
 
   it("returns only terminally-unsettled deployments as an active queue", async () => {
@@ -153,24 +78,6 @@ describe("the Coolify client", () => {
       ],
     }) }));
     await expect(client(url).activeDeploymentQueue("app-1")).resolves.toEqual(["queued", "running"]);
-  });
-
-  it("refuses a pin the API accepted but did not store", async () => {
-    // The failure this read-back exists for: a 200 that changed nothing leaves
-    // the next deploy taking whatever the branch points at, silently.
-    const url = await listen((method) => method === "PATCH"
-      ? { status: 200, body: "{}" }
-      : { status: 200, body: JSON.stringify({ uuid: "app-1", git_commit_sha: "HEAD" }) });
-    await expect(client(url).pinCommit("app-1", COMMIT)).rejects.toThrow("COOLIFY_COMMIT_PIN_NOT_STORED");
-  });
-
-  it("accepts a pin the API stored", async () => {
-    let stored: string | null = "HEAD";
-    const url = await listen((method, _path, body) => {
-      if (method === "PATCH") { stored = (JSON.parse(body) as { git_commit_sha: string }).git_commit_sha; return { status: 200, body: "{}" }; }
-      return { status: 200, body: JSON.stringify({ uuid: "app-1", git_commit_sha: stored }) };
-    });
-    expect((await client(url).pinCommit("app-1", COMMIT)).gitCommitSha).toBe(COMMIT);
   });
 
   it("follows a deployment to a terminal state rather than trusting the POST", async () => {

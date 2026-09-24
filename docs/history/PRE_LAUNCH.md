@@ -37,3 +37,11 @@ reading it.
 - The provider integration was proved through a hand-run Phase 0 checkout
   procedure with a shape that no longer matches the product. The current
   procedure is [Production E2E certification](../commerce-production-e2e-certification.md).
+
+- The launch itself crossed that lineage boundary with one-time machinery: a
+  predecessor reader, a prepared-cutover envelope that the launch `deploy`
+  adopted, a bootstrap archive and restore protocol with its own rollback
+  commands, and a `LAUNCH_BASELINE` release class. It certified on 2026-09-24
+  (session `e4cb1a91`, `3ad07cf`) and was deleted afterwards. Launch candidates
+  and the launch session remain readable as records; none can be deployed or
+  rolled back.

@@ -56,7 +56,6 @@ export class CoolifyDeploymentDriver implements DeploymentDriver {
    * cannot be undone must not begin.
    */
   async assertRecoverable(sha: string): Promise<void> {
-    const binding = await this.serverBinding();
     for (const application of this.options.applications) {
       const configured = await this.options.client.application(application.uuid);
       this.assertDeploymentKind(application, configured.buildPack);
@@ -68,7 +67,6 @@ export class CoolifyDeploymentDriver implements DeploymentDriver {
     // system to reimplement Docker; the pointer and the build pipeline are the
     // things a redeploy actually depends on.
     await this.options.refs.assertResolvable(sha);
-    void binding;
   }
 
   /**
@@ -96,38 +94,6 @@ export class CoolifyDeploymentDriver implements DeploymentDriver {
     // recovery source can quietly stop existing. Under the redeploy contract
     // that source is the commit, so that is what is re-proved.
     await this.options.refs.assertResolvable(sha);
-  }
-
-  /**
-   * A server policy is meaningful only for the server these applications
-   * actually inhabit. The resource API supplies the hidden numeric Compose id
-   * and proves every trusted application UUID resolves on exactly one server.
-   */
-  private async serverBinding(): Promise<{ readonly serverUuid: string; resourceId(uuid: string): string }> {
-    const wanted = new Set(this.options.applications.map((application) => application.uuid));
-    const matches: { serverUuid: string; resources: ReadonlyMap<string, string> }[] = [];
-    for (const server of await this.options.client.servers()) {
-      const resources = await this.options.client.serverResources(server.uuid);
-      const ids = new Map(resources
-        .filter((resource) => resource.type === "application")
-        .map((resource) => [resource.uuid, resource.id]));
-      if ([...wanted].every((uuid) => ids.has(uuid))) matches.push({ serverUuid: server.uuid, resources: ids });
-    }
-    if (matches.length !== 1) throw new DeploymentError("COOLIFY_APPLICATION_SERVER_BINDING_INVALID", `${matches.length} matching servers`);
-    const match = matches[0]!;
-    return {
-      serverUuid: match.serverUuid,
-      resourceId(uuid) {
-        const id = match.resources.get(uuid);
-        if (!id || !/^\d+$/.test(id)) throw new DeploymentError("COOLIFY_COMPOSE_RESOURCE_ID_INVALID", uuid);
-        return id;
-      },
-    };
-  }
-
-  /** Used by the physical Compose quiescer only after the same server binding. */
-  async composeResourceId(applicationUuid: string): Promise<string> {
-    return (await this.serverBinding()).resourceId(applicationUuid);
   }
 
   /**

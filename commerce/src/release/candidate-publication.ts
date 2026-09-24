@@ -15,7 +15,8 @@ import { CandidateStoreError } from "./candidate-store";
  */
 
 const SHA = /^[a-f0-9]{40}$/;
-const RELEASE_CLASSES: readonly ReleaseClass[] = ["LAUNCH_BASELINE", "ROLLING_COMPATIBLE", "MAINTENANCE_REQUIRED"];
+/** LAUNCH_BASELINE is retired: its candidates stay readable, and none is derived again. */
+const RELEASE_CLASSES: readonly ReleaseClass[] = ["ROLLING_COMPATIBLE", "MAINTENANCE_REQUIRED"];
 
 /** Reads a commit's tree. Injected so the publication can be proved against a real repository. */
 export interface CommitTreeReader {
@@ -32,18 +33,13 @@ export const deriveCandidate = async (
   input: { readonly sha: string; readonly releaseClass: ReleaseClass; readonly mainRef?: string },
 ): Promise<ReleaseCandidate> => {
   if (!SHA.test(input.sha)) throw new CandidateStoreError("RELEASE_CANDIDATE_SHA_INVALID", input.sha);
+  if (input.releaseClass === "LAUNCH_BASELINE") throw new CandidateStoreError("LAUNCH_BASELINE_RETIRED", input.sha);
   if (!RELEASE_CLASSES.includes(input.releaseClass)) throw new CandidateStoreError("RELEASE_CANDIDATE_CLASS_INVALID", String(input.releaseClass));
 
   const mainRef = input.mainRef ?? "origin/main";
   const main = await tree.resolve(mainRef);
   if (!await tree.isAncestor(input.sha, main)) {
     throw new CandidateStoreError("RELEASE_CANDIDATE_NOT_ON_MAIN", `${input.sha} is not an ancestor of ${mainRef}`);
-  }
-  // A launch baseline replaces the database. Publishing an ancestor would
-  // deploy a tree main has already moved past, with no way back to the commits
-  // in between - and no second launch to correct it with.
-  if (input.releaseClass === "LAUNCH_BASELINE" && input.sha !== main) {
-    throw new CandidateStoreError("LAUNCH_BASELINE_MUST_BE_MAIN_TIP", `${input.sha} != ${main}`);
   }
 
   const migrations = (await tree.list(input.sha, "commerce/migrations")).filter((name) => name.endsWith(".sql"));

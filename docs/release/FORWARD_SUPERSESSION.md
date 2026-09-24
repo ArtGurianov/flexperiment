@@ -34,7 +34,7 @@ orchestrator has no way to do that today:
 | only one non-terminal session may exist, and this one owns the gate | `deploy_sessions_single_non_terminal_idx` |
 | `FIX_FORWARD_ONLY` is a plan kind with no executor | `planResume()` |
 | the runtime judges certification against `deploy_sessions.target_sha` | `performCertificationCatalogueCommand()` |
-| the consumption guard admits only `LAUNCH_BASELINE` | `LaunchBaselineAdmissionGuard.admit()` |
+| the consumption guard admits only `LAUNCH_BASELINE` | `LaunchBaselineAdmissionGuard.admit()` (retired with the launch, 2026-09-24) |
 | nothing on the runner's publication path checks CI | `deriveCandidate()`, `FileReleaseCandidateStore.publish()`. The green-CI check lives only in `release-candidate.yml`, which this cutover's candidates never went through. |
 
 ## Principle

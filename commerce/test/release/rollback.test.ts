@@ -74,7 +74,7 @@ describe("rollback after a partial cutover", () => {
     expect(restored).toEqual([]);
   });
 
-  it("refuses a cutover session outright and points at the reverse handoff", async () => {
+  it("refuses the launch session outright, before observing or writing anything", async () => {
     // Reversing a cutover replaces commerce.sqlite. Settling the session in the
     // database being discarded would either be impossible or land in one the
     // restored predecessor will never read.
@@ -87,13 +87,21 @@ describe("rollback after a partial cutover", () => {
       deployment: { async assertRecoverable() { throw new Error("unused"); }, async assertPredecessorRetained() { throw new Error("unused"); }, async deploy() { throw new Error("unused"); } },
       recovery: { async restorePreDeployTopology() { throw new Error("must not be called"); } },
     };
-    sessions.acquireFenced({
+    // Nothing creates an adopted session any more; this is the launch session
+    // as production recorded it.
+    store.acquire({
       id: "cutover", ownerId: "owner", mode: "MAINTENANCE_CUTOVER", targetSha: target,
+      state: "FENCED", rollbackAuthority: "OLD_LINEAGE_ALLOWED", mutationObserved: false,
+      createdAt: now.toISOString(), leaseExpiresAt: new Date(now.getTime() + 60_000).toISOString(),
       adoptedCutoverId: "cutover-1", predecessorDatabaseRef: "prelaunch.sqlite", predecessorDatabaseSha256: "e".repeat(64),
-    }, before);
+      preDeployTopology: before,
+    });
     sessions.beginDeploying("cutover", "owner");
+    const recorded = store.get("cutover");
 
     await expect(new ReleaseOrchestrator(ports).rollback("cutover", "owner"))
-      .rejects.toThrow("CROSS_LINEAGE_ROLLBACK_REQUIRES_REVERSE_HANDOFF");
+      .rejects.toThrow("LAUNCH_SESSION_NOT_ROLLBACKABLE");
+    // Refused before anything is observed or written.
+    expect(store.get("cutover")).toEqual(recorded);
   });
 });

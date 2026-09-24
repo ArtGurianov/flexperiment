@@ -8,7 +8,6 @@ import { buildProductionRelease, buildReadOnlyRelease, holdSalesOnSignal, Releas
 import Database from "better-sqlite3";
 import { harness, recordInstance, type Harness } from "../support/production-runner-harness";
 import { TEST_CAPABILITY_KEY } from "../support/certification-secret";
-import type { ReleaseCandidate } from "../../src/release/candidate";
 
 const NOW = new Date("2026-09-20T12:00:00.000Z");
 const now = () => NOW;
@@ -25,47 +24,6 @@ afterEach(async () => { await vps.close(); });
 const journal = (path: string) => readFileSync(path, "utf8").trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
 
 describe("the production composition root", () => {
-  it("does not cache main before the lock and refreshes it only at consumption admission", async () => {
-    const candidate: ReleaseCandidate = {
-      id: vps.targetSha,
-      sha: vps.targetSha,
-      releaseClass: "LAUNCH_BASELINE",
-      expectation: {
-        schemaInventory: `inventory-sha256:${"1".repeat(64)}`,
-        legalVersion: "2026-08-28.1",
-        legalManifestSha256: "2".repeat(64),
-      },
-    };
-    let main = vps.targetSha;
-    const gitCalls: string[][] = [];
-    const manifest = readFileSync("commerce/legal/production-manifest.json", "utf8");
-    const git = async (args: readonly string[]) => {
-      gitCalls.push([...args]);
-      if (args[0] === "fetch" || args[0] === "merge-base") return "";
-      if (args[0] === "rev-parse") return main;
-      if (args[0] === "ls-tree") return "0001_launch_baseline.sql\n";
-      if (args[0] === "show") return manifest;
-      throw new Error(`unexpected git call: ${args.join(" ")}`);
-    };
-
-    const release = buildProductionRelease(vps.config, { now, git });
-    try {
-      // Acquiring the composition (and therefore its release lock) performs no
-      // main lookup. A value observed before the lock cannot authorize work.
-      expect(gitCalls).toEqual([]);
-      expect(release.lock.ownerId).toBeTruthy();
-      main = "d".repeat(40);
-
-      await expect(release.launchBaselineAdmission.admit(candidate))
-        .rejects.toThrow("LAUNCH_BASELINE_MUST_BE_MAIN_TIP");
-      expect(gitCalls[0]).toEqual([
-        "fetch", "--no-tags", vps.config.deployRef.remote, "main:refs/remotes/origin/main",
-      ]);
-    } finally {
-      release.close();
-    }
-  });
-
   it("builds every port and reads production through them", async () => {
     recordInstance(vps.db, "COMMERCE", "api-1", vps.preSha, NOW);
     recordInstance(vps.db, "WORKER", "worker-1", vps.preSha, NOW, NOW.toISOString());
@@ -140,28 +98,11 @@ describe("the production composition root", () => {
       release.close();
     }
   });
-
-  it("writes an envelope that survives the database being replaced", () => {
-    const release = buildProductionRelease(vps.config, { now });
-    try {
-      expect(existsSync(vps.config.envelopeDirectory)).toBe(true);
-      // The envelope directory is outside the database file, which is the only
-      // reason a handoff can outlive the lineage boundary at all.
-      expect(vps.config.envelopeDirectory.startsWith(root)).toBe(true);
-      expect(vps.config.envelopeDirectory).not.toContain(vps.config.databasePath);
-    } finally {
-      release.close();
-    }
-  });
 });
 
 describe("what the runner refuses to start without", () => {
   const complete = () => ({
     FLEXPERIMENT_RELEASE_DATABASE: vps.config.databasePath,
-    FLEXPERIMENT_RELEASE_REPLACEMENT_ROOT: vps.config.replacementRoot,
-    FLEXPERIMENT_RELEASE_STATE_DIR: vps.config.stateDirectory,
-    FLEXPERIMENT_RELEASE_ARCHIVE_DIR: vps.config.archiveDirectory,
-    FLEXPERIMENT_RELEASE_ENVELOPE_DIR: vps.config.envelopeDirectory,
     FLEXPERIMENT_RELEASE_LOCK: vps.config.lockPath,
     FLEXPERIMENT_RELEASE_JOURNAL: vps.config.journalPath,
     FLEXPERIMENT_RELEASE_CANDIDATE_DIR: vps.config.candidateDirectory,
@@ -174,8 +115,6 @@ describe("what the runner refuses to start without", () => {
     CERTIFICATION_CHECKOUT_BODY: vps.config.certification.checkoutBodyPath,
     COOLIFY_API_URL: vps.config.coolify.apiUrl,
     COOLIFY_TOKEN: "test-token",
-    FLEXPERIMENT_COMMERCE_IMAGE_REPOSITORY: vps.config.composeRepositories.commerce,
-    FLEXPERIMENT_COMMERCE_WORKER_IMAGE_REPOSITORY: vps.config.composeRepositories["commerce-worker"],
     COOLIFY_APPLICATION_FRONTEND: "app-frontend",
     COOLIFY_APPLICATION_ADMIN: "app-admin",
     COOLIFY_APPLICATION_COMMERCE: "app-commerce",
@@ -331,19 +270,6 @@ describe("looking at production is a different program from changing it", () => 
     return path;
   };
 
-  const predecessorEnv = (databasePath: string) => ({
-    ...readOnlyEnv(),
-    FLEXPERIMENT_RELEASE_DATABASE: databasePath,
-    FLEXPERIMENT_PREDECESSOR_SHA: vps.preSha,
-    FLEXPERIMENT_PREDECESSOR_LEDGER: "61",
-    FLEXPERIMENT_PREDECESSOR_READY_URL: "https://commerce.invalid/readyz",
-  });
-
-  const predecessorFetch = (async (input: string | URL | Request) => new Response(
-    String(input).includes("readyz") ? "{}" : JSON.stringify({ source_commit: vps.preSha }),
-    { status: 200 },
-  )) as typeof fetch;
-
   it("observes both layers with no writer in the composition at all", async () => {
     recordInstance(vps.db, "COMMERCE", "api-1", vps.preSha, NOW);
     recordInstance(vps.db, "WORKER", "worker-1", vps.preSha, NOW, NOW.toISOString());
@@ -363,33 +289,11 @@ describe("looking at production is a different program from changing it", () => 
     }
   });
 
-  it("selects the trusted predecessor reader for a legacy database", async () => {
-    const config = loadReadOnlyReleaseConfig(predecessorEnv(legacyDatabase()) as unknown as NodeJS.ProcessEnv);
-    const release = buildReadOnlyRelease(config, {
-      now, fetch: predecessorFetch,
-      git: async () => `${vps.preSha}\trefs/heads/production-deploy\n`,
-    });
-    try {
-      expect(await release.topology.observe()).toEqual({
-        runtime: { frontend: vps.preSha, admin: vps.preSha, commerce: vps.preSha, worker: vps.preSha },
-        controlPlane: { productionDeployRefSha: vps.preSha },
-      });
-      expect((await release.evidence.read()).schema.lineage).toBe("LEGACY");
-      expect(Object.keys(release).sort()).toEqual(["close", "evidence", "topology"]);
-    } finally { release.close(); }
-  });
-
-  it("refuses a legacy database without an exact predecessor binding", () => {
+  it("refuses a pre-launch database outright: the reader for it was retired with the launch", () => {
     const config = loadReadOnlyReleaseConfig({
       ...readOnlyEnv(), FLEXPERIMENT_RELEASE_DATABASE: legacyDatabase(),
     } as unknown as NodeJS.ProcessEnv);
-    expect(() => buildReadOnlyRelease(config, { now })).toThrow("READ_ONLY_PREDECESSOR_CONFIGURATION_MISSING");
-  });
-
-  it("validates the optional predecessor binding as one fail-closed tuple", () => {
-    const partial = { ...readOnlyEnv(), FLEXPERIMENT_PREDECESSOR_SHA: vps.preSha };
-    expect(() => loadReadOnlyReleaseConfig(partial as unknown as NodeJS.ProcessEnv))
-      .toThrow("FLEXPERIMENT_PREDECESSOR_LEDGER is not a migration count");
+    expect(() => buildReadOnlyRelease(config, { now })).toThrow("READ_ONLY_SCHEMA_LINEAGE_UNOBSERVABLE: LEGACY");
   });
 
   it("needs none of the writer configuration to start", () => {
@@ -420,29 +324,3 @@ describe("looking at production is a different program from changing it", () => 
   });
 });
 
-describe("the predecessor bridge is present only while there is a predecessor", () => {
-  it("is absent on a launched database, so no later release can reach for it", () => {
-    // The harness migrates the database, so the launch lineage is already
-    // there. The bridge is not gated by a flag - it is simply not in the
-    // composition.
-    const release = buildProductionRelease({ ...vps.config, predecessor: {
-      expectedSha: "7".repeat(40), expectedLedgerLength: 61,
-      commerceReadyUrl: "https://commerce.invalid/readyz",
-    } }, { now });
-    try {
-      expect(release.ports.predecessor).toBeUndefined();
-    } finally {
-      release.close();
-    }
-  });
-
-  it("is absent when no predecessor is configured at all", () => {
-    const release = buildProductionRelease(vps.config, { now });
-    try {
-      expect(release.ports.predecessor).toBeUndefined();
-      expect(vps.config.predecessor).toBeUndefined();
-    } finally {
-      release.close();
-    }
-  });
-});
