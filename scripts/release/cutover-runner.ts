@@ -118,6 +118,14 @@ export const runCutoverCommand = async (release: ProductionRelease, argv: readon
       // on to the ordinary path below, which reconciles it.
       const retry = driver.retryAfterNoEffectFailure(argument);
       if (retry.kind !== "NOT_FAILED") release.journal.record("certify.retry", { session: argument, ...retry });
+      // The same for a forward revision: a capability that expired unspent -
+      // the operator came back after its TTL - is replaced on the same run, so
+      // the revision stays certifiable without a new commit. Anything spent,
+      // paid for or failed is left to the ordinary path.
+      const reissue = driver.reissueExpiredRevisionCapability(argument);
+      if (reissue.kind === "REISSUED" || reissue.kind === "INELIGIBLE") {
+        release.journal.record("certify.revision-capability", { session: argument, ...reissue });
+      }
       // The deploy that produced this session has exited and stood down. This
       // is a different process with its own owner id, so it claims the session
       // before arming anything. A lease somebody is still holding is refused,
