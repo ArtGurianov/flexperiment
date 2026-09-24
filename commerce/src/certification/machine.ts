@@ -216,11 +216,21 @@ class CertificationMachine {
 
     switch (command.kind) {
       case "CREATE_OCCURRENCE": {
-        const occurrence = await this.ports.admin.runCatalogueCommand(run.runId, command, this.occurrenceBody(command.draft), reason);
+        const created = await this.ports.admin.runCatalogueCommand(run.runId, command, this.occurrenceBody(command.draft), reason);
+        // The id first, durably: whatever is wrong with the occurrence, this
+        // run now knows which one it made, and cleanup shuts that one.
+        const recorded = this.commit(run, { pendingCommand: null, occurrenceId: created.id, phase: "OCCURRENCE_CREATED" });
+        // Then judged on the runtime's own read of it, not on the create
+        // response. That response is the domain's mutation row, which carries
+        // `city_id` and not `city_slug`; the certification read joins the city.
+        // Judging the create response failed the fixed attempt 5 retry with
+        // CERTIFICATION_OCCURRENCE_CITY_MISMATCH on a correct occurrence.
+        const occurrence = await this.ports.admin.occurrence(created.id);
+        if (occurrence.id !== created.id) throw new CertificationFailed("CERTIFICATION_OCCURRENCE_READ_DIVERGED");
         if (occurrence.visibility !== "HIDDEN" || occurrence.sales_status !== "CLOSED") throw new CertificationFailed("CERTIFICATION_OCCURRENCE_BORN_SELLABLE");
         const defect = occurrenceIdentityDefect(occurrence, this.input.scope);
         if (defect) throw new CertificationFailed(defect);
-        return this.commit(run, { pendingCommand: null, occurrenceId: occurrence.id, phase: "OCCURRENCE_CREATED" });
+        return recorded;
       }
       case "PUBLISH_OCCURRENCE":
       case "OPEN_SALES": {
