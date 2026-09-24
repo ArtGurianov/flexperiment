@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import type { ReleaseCandidate } from "../release/candidate";
 import type { CertificationRun } from "./run";
 import { SqliteCertificationRunStore } from "./store-sqlite";
+import { currentBindingIn } from "../release/forward-target";
 
 /**
  * A second certification for a deploy session, when - and only when - the
@@ -32,11 +33,27 @@ export const certificationRunId = (deploymentSessionId: string): string => `cert
 
 export const retryRunId = (deploymentSessionId: string): string => `${certificationRunId(deploymentSessionId)}-a2`;
 
-/** The run the session is certifying with: its retry once one exists, otherwise its first. */
-export const effectiveCertificationRunId = (db: Database.Database, deploymentSessionId: string): string =>
-  new SqliteCertificationRunStore(db).load(retryRunId(deploymentSessionId))
+/**
+ * The certification run for a forward revision of a session.
+ *
+ * Revision 0 - the session's own target - keeps the original id, so existing
+ * runs keep their meaning. A release the session was carried forward to gets
+ * its own run: nothing certified for one target counts for another.
+ */
+export const revisionRunId = (deploymentSessionId: string, revision: number): string =>
+  revision === 0 ? certificationRunId(deploymentSessionId) : `${certificationRunId(deploymentSessionId)}-r${revision}`;
+
+/**
+ * The run the session is certifying with now: the current forward revision's,
+ * or at revision 0 its no-effect retry once one exists, otherwise its first.
+ */
+export const effectiveCertificationRunId = (db: Database.Database, deploymentSessionId: string): string => {
+  const revision = currentBindingIn(db, deploymentSessionId)?.revision ?? 0;
+  if (revision > 0) return revisionRunId(deploymentSessionId, revision);
+  return new SqliteCertificationRunStore(db).load(retryRunId(deploymentSessionId))
     ? retryRunId(deploymentSessionId)
     : certificationRunId(deploymentSessionId);
+};
 
 type SessionRow = {
   state: string; rollback_authority: string; deployment_gate_closed: number;

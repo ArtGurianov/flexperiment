@@ -18,6 +18,9 @@
  *                            run the release for that published candidate; a
  *                            LAUNCH_BASELINE must name the prepared cutover it
  *                            is adopting, because its predecessor is archived
+ *   forward-deploy <session> <candidate>
+ *                            carry an armed, stuck cutover session forward to a
+ *                            newer MAINTENANCE_REQUIRED release; resumable
  *   certify <session>  the attended half: arm, buy, refund, shut the fixture
  *   verify  <session>  prove a finished cutover, changing nothing
  *   resume  <session>  take over a session whose lease expired and report the plan
@@ -31,7 +34,7 @@
  *   before the envelope is durable   prepare-bootstrap cleans up internally
  *   envelope durable, not adopted    rollback-prepared <cutover-id>
  *   adopted, session exists          rollback <session>
- *   external effects armed           forward recovery only
+ *   external effects armed           forward-deploy <session> <candidate>
  *
  * Exit codes are the contract the workflow reads:
  *   0   succeeded, or observe/verify/resume completed
@@ -54,6 +57,9 @@ const RELEASE_CLASSES: readonly ReleaseClass[] = ["LAUNCH_BASELINE", "ROLLING_CO
 
 const EXIT_BY_OUTCOME: Record<string, number> = {
   SUCCEEDED: 0, SAFE_ABORTED: 10, ROLLED_BACK: 11, RECOVERY_REQUIRED: 12, AWAITING_OPERATOR: 13,
+  // A forward revision whose certification run already exists: the same
+  // handoff, found rather than made.
+  ALREADY_AWAITING_OPERATOR: 13,
 };
 
 const say = (payload: Record<string, unknown>) => process.stdout.write(`${JSON.stringify(payload)}\n`);
@@ -108,6 +114,19 @@ export const runCutoverCommand = async (release: ProductionRelease, argv: readon
       if (outcome.kind === "AWAITING_OPERATOR") release.sessions.yieldLease(outcome.session.id, ownerId);
       return EXIT_BY_OUTCOME[outcome.kind] ?? 20;
     }
+    case "forward-deploy": {
+      if (!argument || !argv[2]) throw new Error("FORWARD_DEPLOY_ARGUMENTS_REQUIRED");
+      release.journal.record("forward-deploy.start", { session: argument, candidate: argv[2] });
+      const outcome = await release.forwardDeploy.run(argument, argv[2], ownerId);
+      release.journal.record("forward-deploy.outcome", { kind: outcome.kind, session: outcome.session.id, state: outcome.session.state });
+      say({ command, outcome: outcome.kind, session: outcome.session.id, code: "code" in outcome ? outcome.code : undefined });
+      // Handed to the attended `certify`, a separate process with its own
+      // owner: this one stands down rather than leave it waiting out a lease.
+      if (outcome.kind === "AWAITING_OPERATOR" || outcome.kind === "ALREADY_AWAITING_OPERATOR" || outcome.kind === "RECOVERY_REQUIRED") {
+        release.sessions.yieldLease(outcome.session.id, ownerId);
+      }
+      return EXIT_BY_OUTCOME[outcome.kind] ?? 20;
+    }
     case "certify": {
       // The attended half. Attendance is proved inside `preflight`, before
       // anything can be armed, so an unattended dispatch costs a refusal while
@@ -115,8 +134,11 @@ export const runCutoverCommand = async (release: ProductionRelease, argv: readon
       if (!argument) throw new Error("RELEASE_SESSION_REQUIRED");
       const session = release.sessions.read(argument);
       if (!session) throw new Error(`DEPLOY_SESSION_NOT_FOUND: ${argument}`);
-      const candidate = release.candidates.get(session.candidateId ?? "");
-      if (!candidate) throw new Error(`RELEASE_CANDIDATE_NOT_PUBLISHED: ${session.candidateId ?? "none"}`);
+      // The release the session is deploying now: its latest forward revision,
+      // or its own target when it has none.
+      const binding = release.sessions.binding(argument);
+      const candidate = release.candidates.get(binding.candidateId ?? "");
+      if (!candidate) throw new Error(`RELEASE_CANDIDATE_NOT_PUBLISHED: ${binding.candidateId ?? "none"}`);
       const driver = release.certificationFor(candidate);
       // A first certification that failed before doing anything gets exactly
       // one retry (see `no-effect-retry.ts`). Decided before the session is

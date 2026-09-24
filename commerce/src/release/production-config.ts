@@ -109,6 +109,12 @@ export type ProductionReleaseConfig = {
   readonly applications: readonly SurfaceApplicationConfig[];
   readonly topology: { readonly frontendReleaseUrl: string; readonly adminReleaseUrl: string };
   readonly deployRef: { readonly remote: string; readonly ref: string; readonly worktree: string };
+  /**
+   * Where a forward revision's exact-SHA CI is read. Only `forward-deploy`
+   * needs it, and it refuses without it; every other command runs as before.
+   * The token file is optional because the repository is public.
+   */
+  readonly ciAttestation?: { readonly repository: string; readonly tokenFile?: string };
 };
 
 const UUID = /^[0-9a-zA-Z][0-9a-zA-Z._-]{7,63}$/;
@@ -274,6 +280,9 @@ export const loadProductionReleaseConfig = (env: NodeJS.ProcessEnv = process.env
   httpUrl(value("FLEXPERIMENT_ADMIN_RELEASE_URL"), "FLEXPERIMENT_ADMIN_RELEASE_URL", problems);
 
   const ref = deployRefName(env, problems);
+  const ciRepository = (env.FLEXPERIMENT_CI_REPOSITORY ?? "").trim();
+  const ciTokenFile = (env.FLEXPERIMENT_CI_TOKEN_FILE ?? "").trim();
+  if (ciRepository && !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(ciRepository)) problems.push("FLEXPERIMENT_CI_REPOSITORY is not owner/name");
 
   const uuids = APPLICATIONS.map((application) => value(application.variable));
   if (new Set(uuids).size !== uuids.length) {
@@ -324,6 +333,7 @@ export const loadProductionReleaseConfig = (env: NodeJS.ProcessEnv = process.env
       ref,
       worktree: value("FLEXPERIMENT_DEPLOY_REF_WORKTREE"),
     },
+    ciAttestation: ciRepository ? { repository: ciRepository, tokenFile: ciTokenFile || undefined } : undefined,
   };
 };
 

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { isSourceCommit } from "./runtime-identity";
+import { releaseBinding, type ForwardTarget, type ReleaseBinding } from "./forward-target";
 
 export type DeployMode = "MAINTENANCE_CUTOVER" | "ROLLING_SAFE";
 export type DeploySurface = "frontend" | "admin" | "commerce" | "worker";
@@ -125,7 +126,23 @@ export interface ReleaseAuthorityStore {
   assertBootstrapRollbackOwned(id: string, ownerId: string, now: Date, rollbackId: string): DeploySession;
   /** Shaped like SalesGateState's own view, so a capability can be bound to the owning session. */
   deploymentGate(): DeploymentGateView;
+  /** Every forward revision of a session, in order. */
+  forwardTargets(id: string): readonly ForwardTarget[];
+  /**
+   * Carries an armed, stuck session forward to a new release, as one guarded
+   * write: the caller owns the session and its lease is live; the session is
+   * RECOVERY_REQUIRED, NEW_LINEAGE_ONLY, fenced by itself and has no rollback
+   * reserved; and the revision is the next one, starting where the current
+   * binding ends. A row in the right state is not authorisation on its own.
+   */
+  appendForwardTarget(id: string, ownerId: string, now: Date, input: ForwardTargetInput): ForwardTarget;
 }
+
+export type ForwardTargetInput = {
+  readonly targetSha: string;
+  readonly candidateId: string;
+  readonly ciEvidence: string;
+};
 
 export type DeploymentGateView = {
   readonly closed: boolean;
@@ -136,6 +153,31 @@ export type TerminalState = Extract<DeploySessionState, "SAFE_ABORTED" | "SUCCEE
 export const TERMINAL = new Set<DeploySessionState>(["SAFE_ABORTED", "SUCCEEDED", "ROLLED_BACK"]);
 export const NON_TERMINAL: readonly DeploySessionState[] = ["ACQUIRED", "FENCED", "DEPLOYING", "RECOVERY_REQUIRED"];
 const surfaces: readonly DeploySurface[] = ["frontend", "admin", "commerce", "worker"];
+
+/**
+ * What both stores prove before a forward revision, besides ownership and the
+ * lease, which their own guarded write already proves.
+ */
+export const assertSupersedable = (session: DeploySession, gateOwnerSessionId: string | null): void => {
+  if (session.mode !== "MAINTENANCE_CUTOVER") throw new Error("FORWARD_TARGET_REQUIRES_MAINTENANCE_CUTOVER");
+  if (session.state !== "RECOVERY_REQUIRED") throw new Error(`FORWARD_TARGET_SESSION_STATE:${session.state}`);
+  if (session.rollbackAuthority !== "NEW_LINEAGE_ONLY") throw new Error("FORWARD_TARGET_SESSION_NOT_ARMED");
+  if (gateOwnerSessionId !== session.id) throw new Error("DEPLOYMENT_GATE_NOT_OWNED");
+  if (session.bootstrapRollbackId) throw new Error("BOOTSTRAP_ROLLBACK_RESERVED");
+};
+
+/** The next revision after `current`, validated the way the schema will. */
+export const forwardTargetFor = (session: DeploySession, current: ReleaseBinding, input: ForwardTargetInput, now: Date): ForwardTarget => {
+  if (!isSourceCommit(input.targetSha)) throw new Error("FORWARD_TARGET_SHA_INVALID");
+  if (input.targetSha === current.targetSha) throw new Error("FORWARD_TARGET_IS_CURRENT");
+  if (!input.candidateId) throw new Error("FORWARD_TARGET_CANDIDATE_REQUIRED");
+  if (!input.ciEvidence) throw new Error("FORWARD_TARGET_CI_EVIDENCE_REQUIRED");
+  return {
+    sessionId: session.id, revision: current.revision + 1, fromSha: current.targetSha,
+    targetSha: input.targetSha, candidateId: input.candidateId, ciEvidence: input.ciEvidence,
+    createdAt: now.toISOString(),
+  };
+};
 
 export const runtimeEquals = (left: RuntimeTopology, right: RuntimeTopology): boolean =>
   surfaces.every((surface) => left[surface] === right[surface]);
@@ -226,6 +268,20 @@ export class InMemoryReleaseAuthorityStore implements ReleaseAuthorityStore {
 
   deploymentGate(): DeploymentGateView {
     return { closed: this.#gateOwnerSessionId !== null, deploymentSessionId: this.#gateOwnerSessionId };
+  }
+
+  #forwardTargets = new Map<string, ForwardTarget[]>();
+
+  forwardTargets(id: string): readonly ForwardTarget[] { return [...(this.#forwardTargets.get(id) ?? [])]; }
+
+  appendForwardTarget(id: string, ownerId: string, now: Date, input: ForwardTargetInput): ForwardTarget {
+    const session = this.write(id, ownerId, now, ["RECOVERY_REQUIRED"], {});
+    assertSupersedable(session, this.#gateOwnerSessionId);
+    const targets = this.#forwardTargets.get(id) ?? [];
+    const current = releaseBinding(session, targets);
+    const target = forwardTargetFor(session, current, input, now);
+    this.#forwardTargets.set(id, [...targets, target]);
+    return target;
   }
 
   recordTopology(id: string, ownerId: string, now: Date, kind: "PRE_DEPLOY" | "OBSERVED", observation: DeploymentObservation): DeploySession {
@@ -474,8 +530,12 @@ export class DeploySessions {
     if (session.bootstrapRollbackId) throw new Error("BOOTSTRAP_ROLLBACK_RESERVED");
     // Readiness stays the orchestrator's job, but arming certification on a
     // knowingly partial deployment is the one misuse worth making impossible
-    // here rather than trusting a call order.
-    if (!session.observedTopology || !runtimeIsTarget(session.observedTopology.runtime, session.targetSha)) {
+    // here rather than trusting a call order. The target is the current
+    // binding's: a session carried forward is certified at the release it was
+    // carried to, and comparing against the frozen original would refuse the
+    // very certification that forward step exists to make possible.
+    const target = this.binding(id).targetSha;
+    if (!session.observedTopology || !runtimeIsTarget(session.observedTopology.runtime, target)) {
       throw new Error("TARGET_TOPOLOGY_NOT_OBSERVED");
     }
     if (session.rollbackAuthority === "NEW_LINEAGE_ONLY") return session;
@@ -490,6 +550,26 @@ export class DeploySessions {
   enterRecoveryRequired(id: string, ownerId: string): DeploySession {
     this.owned(id, ownerId);
     return this.store.transitionNonTerminal(id, ownerId, this.clock(), ["DEPLOYING", "RECOVERY_REQUIRED"], { state: "RECOVERY_REQUIRED" });
+  }
+
+  /**
+   * What the session is deploying now: revision, SHA and candidate together.
+   * Every decision about a target reads this, never `session.targetSha`, which
+   * stays the historical fact of what the cutover first set out to deploy.
+   */
+  binding(id: string): ReleaseBinding {
+    const session = this.store.get(id);
+    if (!session) throw new Error("DEPLOY_SESSION_NOT_FOUND");
+    return releaseBinding(session, this.store.forwardTargets(id));
+  }
+
+  forwardTargets(id: string): readonly ForwardTarget[] {
+    return this.store.forwardTargets(id);
+  }
+
+  /** See ReleaseAuthorityStore.appendForwardTarget. */
+  appendForwardTarget(id: string, ownerId: string, input: ForwardTargetInput): ForwardTarget {
+    return this.store.appendForwardTarget(id, ownerId, this.clock(), input);
   }
 
   renewLease(id: string, ownerId: string): DeploySession {
@@ -546,7 +626,8 @@ export class DeploySessions {
   completeTarget(id: string, ownerId: string, observation: DeploymentObservation): DeploySession {
     const observed = this.observeTopology(id, ownerId, observation);
     if (observed.bootstrapRollbackId) throw new Error("BOOTSTRAP_ROLLBACK_RESERVED");
-    if (!runtimeIsTarget(observation.runtime, observed.targetSha)) throw new Error("TARGET_TOPOLOGY_NOT_CONVERGED");
+    // Settled only against what the session is deploying now.
+    if (!runtimeIsTarget(observation.runtime, this.binding(id).targetSha)) throw new Error("TARGET_TOPOLOGY_NOT_CONVERGED");
     if (observed.mode === "MAINTENANCE_CUTOVER" && observed.rollbackAuthority !== "NEW_LINEAGE_ONLY") {
       throw new Error("MAINTENANCE_CUTOVER_EXTERNAL_EFFECTS_NOT_ARMED");
     }

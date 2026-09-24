@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -16,7 +16,10 @@ import { buildProductionRelease, type BuildOptions, type ProductionRelease } fro
 import { certificationRunId, retryRunId } from "../../src/certification/no-effect-retry";
 import { SqliteCertificationRunStore } from "../../src/certification/store-sqlite";
 import { verifyCutover } from "../../src/release/verify-cutover";
-import { harness, recordInstance, type Harness } from "../support/production-runner-harness";
+import { deriveCandidate, GitCommitTreeReader } from "../../src/release/candidate-publication";
+import { defaultGit } from "../../src/release/deploy-ref";
+import { revisionRunId } from "../../src/certification/no-effect-retry";
+import { git, harness, recordInstance, type Harness } from "../support/production-runner-harness";
 
 /**
  * The seam between the two halves of a launch cutover.
@@ -534,6 +537,125 @@ describe("the whole path production has to walk, through the real composition ro
       expect(report.checks.superseded_certification_had_no_effect).toBe(true);
       expect(report.checks.certification_not_failed).toBe(true);
     } finally { late.close(); }
+  });
+
+  it("carries attempt 5's armed session forward to a newer release, and certifies it there", async () => {
+    /**
+     * The production situation of 2026-09-24, end to end through the CLI and
+     * the real composition root: an armed session stuck on an uncertifiable
+     * target, carried forward to a newer MAINTENANCE_REQUIRED release, then
+     * certified and settled at that release.
+     */
+    prepareEnvelope();
+    publish(launchCandidate(vps.targetSha));
+    convergeOnTarget();
+    const processA = build(launchConfig(), { now });
+    let sessionId = "";
+    try {
+      expect(await runCutoverCommand(cli(processA), ["deploy", vps.targetSha, CUTOVER], "runner-a")).toBe(13);
+      sessionId = processA.authority.deploymentGate().deploymentSessionId!;
+    } finally { processA.close(); }
+
+    // Attempt 5: armed, then its first command refused; the run failed clean.
+    const runs = new SqliteCertificationRunStore(vps.db);
+    let first = runs.load(certificationRunId(sessionId))!;
+    first = runs.update(first.runId, first.revision, { direction: "CATALOGUE_CLEAN" });
+    runs.update(first.runId, first.revision, { failure: { outcome: "INCOMPLETE", code: "CERTIFICATION_CATALOGUE_COMMAND_FAILED (500)", recordedAt: NOW.toISOString() } });
+    const attempt5 = build(launchConfig(), { now, certification: certification() });
+    try {
+      attempt5.sessions.takeOverExpiredLease(sessionId, "runner-b");
+      attempt5.sessions.armExternalEffects(sessionId, "runner-b");
+      attempt5.sessions.enterRecoveryRequired(sessionId, "runner-b");
+      attempt5.sessions.yieldLease(sessionId, "runner-b");
+    } finally { attempt5.close(); }
+
+    // The fixed release lands on main: the same migrations and legal manifest
+    // the runtime already carries, on a commit descended from the target.
+    const worktree = vps.config.deployRef.worktree;
+    mkdirSync(join(worktree, "commerce/migrations"), { recursive: true });
+    mkdirSync(join(worktree, "commerce/legal"), { recursive: true });
+    for (const name of readdirSync("commerce/migrations").filter((file) => file.endsWith(".sql"))) {
+      copyFileSync(join("commerce/migrations", name), join(worktree, "commerce/migrations", name));
+    }
+    copyFileSync("commerce/legal/production-manifest.json", join(worktree, "commerce/legal/production-manifest.json"));
+    git(worktree, "add", "commerce");
+    git(worktree, "commit", "-m", "fixed runtime");
+    git(worktree, "push", "origin", "main");
+    const forwardSha = git(worktree, "rev-parse", "HEAD");
+    const forwardCandidate = await deriveCandidate(new GitCommitTreeReader(worktree, defaultGit), { sha: forwardSha, releaseClass: "MAINTENANCE_REQUIRED" });
+    publish(forwardCandidate);
+
+    let at = new Date(NOW.getTime() + 10 * 60_000);
+    let switched = false;
+    const forwardRoot = () => build(launchConfig(), {
+      now: () => at,
+      installedRunner: async () => ({ sha: forwardSha, tree: "t".repeat(40), candidateTree: "t".repeat(40), clean: true }),
+      ciAttestation: { attest: async (sha) => JSON.stringify({ sha, checks: ["test", "docker-build"] }) },
+      // The runtime switches a poll after Coolify finishes, as in production.
+      convergence: { ...PRODUCTION_CONVERGENCE, sleep: async () => {
+        if (switched) return;
+        switched = true;
+        vps.serving.frontend = forwardSha;
+        vps.serving.admin = forwardSha;
+        vps.db.prepare("DELETE FROM runtime_instance_evidence").run();
+        recordInstance(vps.db, "COMMERCE", "api-2", forwardSha, at);
+        recordInstance(vps.db, "WORKER", "worker-2", forwardSha, at, at.toISOString());
+      } },
+    });
+
+    // Ten minutes in, attempt 5's capability is still live: refused before
+    // anything moves.
+    const early = forwardRoot();
+    try {
+      await expect(runCutoverCommand(cli(early), ["forward-deploy", sessionId, forwardSha], "runner-c"))
+        .rejects.toThrow("FORWARD_DEPLOY_CAPABILITY_STILL_LIVE");
+      expect(early.sessions.forwardTargets(sessionId)).toEqual([]);
+      expect(await early.deployRef.read()).toBe(vps.targetSha);
+    } finally { early.close(); }
+
+    // Process A has exited after an ordinary refusal. Process B, at the same
+    // instant, may claim the session: the refusal stood down its lease.
+    const processB = forwardRoot();
+    try {
+      expect(() => processB.sessions.takeOverExpiredLease(sessionId, "runner-x")).not.toThrow();
+      processB.sessions.yieldLease(sessionId, "runner-x");
+    } finally { processB.close(); }
+
+    // Past its expiry. The old runtime is still up and beating.
+    at = new Date(NOW.getTime() + 4 * 60 * 60_000 + 1_000);
+    vps.db.prepare("UPDATE runtime_instance_evidence SET heartbeat_at = ?").run(at.toISOString());
+    const forward = forwardRoot();
+    try {
+      expect(await runCutoverCommand(cli(forward), ["forward-deploy", sessionId, forwardSha], "runner-c")).toBe(13);
+      expect(forward.sessions.binding(sessionId)).toEqual({ revision: 1, targetSha: forwardSha, candidateId: forwardSha });
+      expect(forward.sessions.read(sessionId)).toMatchObject({ targetSha: vps.targetSha, state: "RECOVERY_REQUIRED", rollbackAuthority: "NEW_LINEAGE_ONLY" });
+      expect(await forward.deployRef.read()).toBe(forwardSha);
+      // Its own certification run and capability; attempt 5's retired.
+      expect(runs.load(revisionRunId(sessionId, 1))).toMatchObject({ releaseSha: forwardSha, phase: "NEW", failure: null });
+      const live = vps.db.prepare("SELECT run_id, release_sha FROM certification_capabilities WHERE consumed_at IS NULL AND retired_at IS NULL").all();
+      expect(live).toEqual([{ run_id: revisionRunId(sessionId, 1), release_sha: forwardSha }]);
+      expect(forward.authority.deploymentGate()).toEqual({ closed: true, deploymentSessionId: sessionId });
+    } finally { forward.close(); }
+
+    // The attended half, at the release the session was carried to.
+    const certified: string[] = [];
+    const operator = build(launchConfig(), {
+      now: () => at,
+      certification: {
+        issueCapability: vi.fn(),
+        preflight: vi.fn(async () => {}),
+        certify: vi.fn(async (capability: { runId: string }) => { certified.push(capability.runId); }),
+      } as unknown as CertificationDriver,
+    });
+    try {
+      expect(await runCutoverCommand(cli(operator), ["certify", sessionId], "runner-d")).toBe(0);
+      expect(certified).toEqual([revisionRunId(sessionId, 1)]);
+      expect(operator.sessions.read(sessionId)?.state).toBe("SUCCEEDED");
+      expect(operator.authority.deploymentGate().closed).toBe(false);
+
+      const report = await verifyCutover(operator, sessionId);
+      expect(report.checks).toMatchObject({ runtime_converged: true, deploy_pointer_at_target: true, superseded_revision_0_safe: true });
+    } finally { operator.close(); }
   });
 
   it("still makes a live lease wait, so a running holder is never evicted", async () => {

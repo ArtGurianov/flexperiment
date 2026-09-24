@@ -1,6 +1,12 @@
 # Forward supersession of an armed cutover session
 
-Status: design, for review before implementation. Nothing here is built yet.
+Status: implemented. `forward-deploy` is in `scripts/release/cutover-runner.ts`
+(`commerce/src/release/forward-deploy.ts`). The migration is
+`0004_deploy_session_forward_targets.sql`, admission is `forward-admission.ts`,
+and the safety predicate is `supersession-safety.ts`. The runner needs
+`FLEXPERIMENT_CI_REPOSITORY` (`owner/name`) for the CI attestation, and
+optionally `FLEXPERIMENT_CI_TOKEN_FILE`; without the repository,
+`forward-deploy` refuses and every other command runs as before.
 
 ## The situation this exists for
 
@@ -172,6 +178,12 @@ runner lock is taken:
 6. **The prior target is safe to supersede**
    (`certificationSafeToSupersede`). For every certification run of the
    current binding's target:
+   - there is at least one. A target whose certification was never created
+     (revision N deployed, then a failure before issuance) is refused with
+     `CERTIFICATION_NOT_STARTED`; `forward-deploy` with N's own candidate
+     resumes it instead;
+   - the run is terminal: it recorded a failure, or it is `COMPLETE` with its
+     completion recorded. A run that never ran is not abandoned;
    - no pending command;
    - every catalogue fixture it created is `CLOSED` and `HIDDEN`;
    - no payment is unresolved (no `CREATE_UNKNOWN`, nothing awaiting provider
@@ -190,6 +202,17 @@ runner lock is taken:
    before any migration or ref movement. A spent capability does not occupy
    the live slot and does not block. Attempt 5's last capability (`6a259177…`)
    expires 2026-09-24T07:29:00Z.
+
+A refusal anywhere in admission is an ordinary exit 20 and changes nothing.
+It also stands the session's lease down before it propagates, so the next
+command can claim the session at once rather than wait out a lease held by a
+process that has exited. Only the admission region does this: after the first
+durable write, failures are `RECOVERY_REQUIRED`, whose path already stands down.
+
+`GitHubCheckRunsAttestation` reads with a bounded timeout, because it runs
+while the runner lock and the lease are held. It refuses with
+`CI_ATTESTATION_INCOMPLETE` when GitHub reports more check runs than it
+returned: "every run succeeded" is a claim about all of them.
 
 ### New revision: order
 
