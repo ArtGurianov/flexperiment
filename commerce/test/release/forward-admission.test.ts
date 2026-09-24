@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { ReleaseCandidate } from "../../src/release/candidate";
 import { deriveCandidate, type CommitTreeReader } from "../../src/release/candidate-publication";
-import { ForwardSupersessionAdmissionGuard, GitHubCheckRunsAttestation, ReleaseAdmissionGuard, remoteMainTipRefresh, type InstalledRunner } from "../../src/release/forward-admission";
+import { ForwardSupersessionAdmissionGuard, GitHubCheckRunsAttestation, ReleaseAdmissionError, ReleaseAdmissionGuard, remoteMainTipRefresh, type InstalledRunner } from "../../src/release/forward-admission";
 import type { ReleaseBinding } from "../../src/release/forward-target";
 
 /**
@@ -64,6 +64,22 @@ describe("release admission: what every deploy must prove first", () => {
   it("passes a CI refusal through with its own detail", async () => {
     const attestation = new GitHubCheckRunsAttestation({ repository: "o/r", fetch: (async () => Response.json({ total_count: 0, check_runs: [] })) as typeof fetch });
     await expect(release({ attest: attestation }).admit(await mainCandidate())).rejects.toThrow(`DEPLOY_ADMISSION_REFUSED: CI check test missing for ${MAIN}`);
+  });
+});
+
+describe("every refusal carries its guard's own code", () => {
+  // The composition root's CI source when FLEXPERIMENT_CI_REPOSITORY is unset
+  // throws an already-coded refusal. Each guard must still answer with its own.
+  const unconfigured = { attest: async () => { throw new ReleaseAdmissionError("RELEASE_ADMISSION_REFUSED", "FLEXPERIMENT_CI_REPOSITORY is not configured"); } };
+
+  it("forward-deploy: FORWARD_DEPLOY_ADMISSION_REFUSED, detail kept", async () => {
+    await expect(guard({ attest: unconfigured }).admit(await mainCandidate(), binding))
+      .rejects.toThrow("FORWARD_DEPLOY_ADMISSION_REFUSED: FLEXPERIMENT_CI_REPOSITORY is not configured");
+  });
+
+  it("deploy: DEPLOY_ADMISSION_REFUSED, detail kept", async () => {
+    await expect(new ReleaseAdmissionGuard(tree(), async () => MAIN, runnerAt(), unconfigured).admit(await mainCandidate()))
+      .rejects.toThrow("DEPLOY_ADMISSION_REFUSED: FLEXPERIMENT_CI_REPOSITORY is not configured");
   });
 });
 

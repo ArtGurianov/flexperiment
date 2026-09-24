@@ -85,8 +85,13 @@ export class ReleaseAdmissionGuard {
 
   /** Returns the CI evidence read. Refuses with this guard's code; only stable codes leave. */
   async admit(candidate: ReleaseCandidate): Promise<{ readonly ciEvidence: string }> {
+    await this.admitWithout(candidate);
+    return this.attest(candidate);
+  }
+
+  /** The exact commit's CI, refused - whatever the source threw - with this guard's code. */
+  async attest(candidate: ReleaseCandidate): Promise<{ readonly ciEvidence: string }> {
     try {
-      await this.admitWithout(candidate);
       return { ciEvidence: await this.ci.attest(candidate.sha) };
     } catch (error) {
       throw this.normalized(error);
@@ -118,7 +123,6 @@ export class ReleaseAdmissionGuard {
     }
   }
 
-  get ciAttestation(): CiAttestation { return this.ci; }
   get commits(): CommitTreeReader { return this.tree; }
 
   private normalized(error: unknown): ReleaseAdmissionError {
@@ -149,13 +153,15 @@ export class ForwardSupersessionAdmissionGuard {
       if (!await this.common.commits.isAncestor(current.targetSha, candidate.sha)) {
         throw refusal(`${current.targetSha} is not an ancestor of ${candidate.sha}`);
       }
-      // The real-router certification E2E is part of `test`, so this is what
-      // makes it a gate rather than a convention.
-      return { ciEvidence: await this.common.ciAttestation.attest(candidate.sha) };
     } catch (error) {
       if (error instanceof ReleaseAdmissionError) throw error;
       throw refusal(error instanceof CandidateStoreError ? error.code : "admission evidence unreadable");
     }
+    // The real-router certification E2E is part of `test`, so this is what
+    // makes it a gate rather than a convention. Normalized by the common
+    // guard, so a refusal is FORWARD_DEPLOY_ADMISSION_REFUSED whatever the CI
+    // source threw.
+    return this.common.attest(candidate);
   }
 }
 
