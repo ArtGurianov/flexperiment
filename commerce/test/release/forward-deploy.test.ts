@@ -45,7 +45,8 @@ const world = (options: { pointer?: string; serving?: string } = {}) => {
     unsafe: undefined as string | undefined,
     /** When set, the safety predicate the world answers with instead of `unsafe`. */
     defect: undefined as ((sessionId: string, releaseSha: string) => string | undefined) | undefined,
-    live: undefined as string | undefined,
+    live: undefined as { id: string; releaseSha: string; expiresAt: string } | undefined,
+    revokeFails: false,
     unknown: [] as string[],
     admission: async (value: ReleaseCandidate) => { log.push(`admit:${value.sha}`); return { ciEvidence: `ci:${value.sha}` }; },
     migrate: () => { log.push("migrate"); },
@@ -58,6 +59,10 @@ const world = (options: { pointer?: string; serving?: string } = {}) => {
     admission: { admit: (value) => state.admission(value) },
     supersessionDefect: (sessionId, releaseSha) => (state.defect ? state.defect(sessionId, releaseSha) : state.unsafe),
     liveCapability: () => state.live,
+    revokeCapability: (capabilityId) => {
+      if (state.revokeFails) throw new Error("CERTIFICATION_CAPABILITY_NOT_REVOCABLE");
+      log.push(`revoke:${capabilityId}`);
+    },
     migrate: () => state.migrate(),
     unknownMigrations: () => state.unknown,
     refs: { read: async () => pointer },
@@ -101,7 +106,7 @@ describe("a new forward revision", () => {
   it.each([
     ["admission refuses", (w: ReturnType<typeof world>) => { w.state.admission = async () => { throw new Error("FORWARD_DEPLOY_ADMISSION_REFUSED: not main"); }; }, "FORWARD_DEPLOY_ADMISSION_REFUSED"],
     ["the prior target is not safe to leave", (w: ReturnType<typeof world>) => { w.state.unsafe = "PAYMENT_UNRESOLVED:p1"; }, "FORWARD_DEPLOY_PRIOR_TARGET_NOT_SAFE"],
-    ["a live capability would block the new one", (w: ReturnType<typeof world>) => { w.state.live = "cap expires later"; }, "FORWARD_DEPLOY_CAPABILITY_STILL_LIVE"],
+    ["a live capability belongs to some other release", (w: ReturnType<typeof world>) => { w.state.live = { id: "cap-other", releaseSha: later, expiresAt: "2026-09-24T16:00:00.000Z" }; }, "FORWARD_DEPLOY_CAPABILITY_STILL_LIVE"],
     ["the database carries a migration the candidate does not", (w: ReturnType<typeof world>) => { w.state.unknown = ["0005_other.sql"]; }, "FORWARD_DEPLOY_MIGRATIONS_NOT_CARRIED"],
   ])("refuses before the first durable write when %s", async (_label, arrange, code) => {
     const w = world();
@@ -131,6 +136,39 @@ describe("a new forward revision", () => {
     const w = world();
     w.sessions.takeOverExpiredLease("armed", "someone-running");
     await expect(w.runner.run("armed", forward, "operator")).rejects.toThrow("DEPLOY_SESSION_HELD_BY_ANOTHER_RUNNER");
+  });
+});
+
+describe("a live capability of the target being left", () => {
+  it("is revoked inside the revision's own commit, so no wait for its TTL", async () => {
+    const w = world();
+    w.state.live = { id: "cap-a2", releaseSha: original, expiresAt: "2026-09-24T16:00:00.000Z" };
+    expect((await w.runner.run("armed", forward, "operator")).kind).toBe("AWAITING_OPERATOR");
+    const steps = w.log.filter((entry) => !entry.startsWith("journal:"));
+    // After migration, inside the append, before the pointer moves.
+    expect(steps.slice(0, 4)).toEqual([`admit:${forward}`, "migrate", "revoke:cap-a2", `cas:${original}->${forward}`]);
+    expect(w.sessions.binding("armed").revision).toBe(1);
+  });
+
+  it("is not revoked, and no revision is recorded, when the commit fails", async () => {
+    const w = world();
+    w.state.live = { id: "cap-a2", releaseSha: original, expiresAt: "2026-09-24T16:00:00.000Z" };
+    w.state.revokeFails = true;
+    const outcome = await w.runner.run("armed", forward, "operator");
+    expect(outcome).toMatchObject({ kind: "RECOVERY_REQUIRED", code: expect.stringContaining("FORWARD_DEPLOY_REVISION_NOT_COMMITTED") });
+    expect(w.sessions.forwardTargets("armed")).toEqual([]);
+    expect(w.pointer()).toBe(original);
+  });
+
+  it("re-proves safety inside the commit, and refuses if it changed after admission", async () => {
+    const w = world();
+    let checks = 0;
+    w.state.defect = () => (checks++ === 0 ? undefined : "PAYMENT_UNRESOLVED:late");
+    w.state.live = { id: "cap-a2", releaseSha: original, expiresAt: "2026-09-24T16:00:00.000Z" };
+    const outcome = await w.runner.run("armed", forward, "operator");
+    expect(outcome).toMatchObject({ kind: "RECOVERY_REQUIRED", code: expect.stringContaining("PAYMENT_UNRESOLVED:late") });
+    expect(w.log).not.toContain("revoke:cap-a2");
+    expect(w.sessions.forwardTargets("armed")).toEqual([]);
   });
 });
 

@@ -28,7 +28,7 @@ import { GitCommitTreeReader, type CommitTreeReader } from "./candidate-publicat
 import { activeLegalBinding } from "./legal-binding";
 import { LegacyPredecessorTopologyReader } from "./legacy-predecessor-topology";
 import { migrate, readSchemaIdentity } from "../db";
-import { SqliteCertificationRunStore } from "../certification/store-sqlite";
+import { SqliteCertificationCapabilityStore, SqliteCertificationRunStore } from "../certification/store-sqlite";
 import { DatabaseRuntimeEvidenceReader, ProductionTopologyReader } from "./topology-reader";
 import { SqliteCutoverStorage } from "./sqlite-cutover-storage";
 import { BootstrapCutoverPreparation, type PreparationRequest, type PreparationResult } from "./cutover-preparation";
@@ -720,6 +720,7 @@ export const buildProductionRelease = (config: ProductionReleaseConfig, options:
       ),
       supersessionDefect: (sessionId, releaseSha) => supersessionDefect(opened, sessionId, releaseSha),
       liveCapability: (sessionId) => liveCapabilityBlocking(opened, sessionId, now()),
+      revokeCapability: (capabilityId, sessionId) => new SqliteCertificationCapabilityStore(opened).revokeForForwardSupersession(capabilityId, sessionId),
       // The runner's own checkout is the candidate (admission proved it), so
       // its migrations are the candidate's.
       migrate: () => migrate(opened),

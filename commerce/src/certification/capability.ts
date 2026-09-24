@@ -36,8 +36,10 @@ export type CertificationCapability = {
    */
   readonly nonceDigest: string;
   readonly consumedAt?: string | null;
-  /** Set when the capability was replaced after expiry rather than spent. One-way, and never both. */
+  /** Set when the capability ended without being spent. One-way, and never both. */
   readonly retiredAt?: string | null;
+  /** Why it was retired: replaced after expiry, or revoked early by forward supersession. */
+  readonly retirementReason?: "EXPIRED_REPLACED" | "FORWARD_SUPERSESSION" | null;
 };
 
 /**

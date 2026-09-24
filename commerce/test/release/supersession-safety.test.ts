@@ -186,7 +186,7 @@ describe("a live capability blocking the next one", () => {
     new SqliteCertificationRunStore(db).create({ runId: "run", revision: 1, releaseSha: SHA, phase: "NEW", direction: "NORMAL", startedAt: now.toISOString() });
     const { capability } = issueCapability(new SqliteCertificationCapabilityStore(db),
       { runId: "run", deploymentSessionId: SESSION, releaseSha: SHA, maxAmountKopecks: 100, ttlMs: 60_000 }, now, testSecret());
-    expect(liveCapabilityBlocking(db, SESSION, now)).toContain(capability.id);
+    expect(liveCapabilityBlocking(db, SESSION, now)).toEqual({ id: capability.id, releaseSha: SHA, expiresAt: capability.expiresAt });
     expect(liveCapabilityBlocking(db, SESSION, new Date(now.getTime() + 61_000))).toBeUndefined();
     db.prepare("UPDATE certification_capabilities SET consumed_at = ? WHERE id = ?").run(now.toISOString(), capability.id);
     expect(liveCapabilityBlocking(db, SESSION, now)).toBeUndefined();
