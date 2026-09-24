@@ -6,7 +6,7 @@ import { certifyProduction, type CertifyPorts } from "./machine";
 import { HttpCertificationAdminPort, HttpCertificationPublicPort } from "./http-ports";
 import { TerminalOperator, type OperatorScope, type TerminalChannel } from "./operator-terminal";
 import { SqliteCertificationCapabilityStore, SqliteCertificationRunStore } from "./store-sqlite";
-import { CERTIFICATION_OCCURRENCE_TITLE, CERTIFICATION_PRICE_KOPECKS, CERTIFICATION_TIMEZONE } from "./scope";
+import { CERTIFICATION_CAPABILITY_TTL_MS, CERTIFICATION_OCCURRENCE_TITLE, CERTIFICATION_PRICE_KOPECKS, CERTIFICATION_TIMEZONE } from "./scope";
 import { certificationRunId, effectiveCertificationRunId, noEffectDefect, retryRunId, revisionRunId } from "./no-effect-retry";
 import { currentBindingIn } from "../release/forward-target";
 import type { CertificationDriver } from "../release/orchestrator";
@@ -143,7 +143,7 @@ export class ProductionCertificationDriver implements CertificationDriver {
     const { capability } = issueCapability(new SqliteCertificationCapabilityStore(this.options.db), {
       runId, deploymentSessionId: sessionId, releaseSha: this.options.candidate.sha,
       maxAmountKopecks: CERTIFICATION_PRICE_KOPECKS,
-      ttlMs: this.options.capabilityTtlMs ?? 4 * 60 * 60_000,
+      ttlMs: this.options.capabilityTtlMs ?? CERTIFICATION_CAPABILITY_TTL_MS,
     }, this.now(), this.issuingKey());
     // The bearer is deliberately dropped here. It is derived again when it is
     // needed, so nothing carries it between these two moments.
@@ -319,7 +319,7 @@ export class ProductionCertificationDriver implements CertificationDriver {
         issueCapability(new SqliteCertificationCapabilityStore(this.options.db), {
           runId: retry, deploymentSessionId: sessionId, releaseSha: this.options.candidate.sha,
           maxAmountKopecks: CERTIFICATION_PRICE_KOPECKS,
-          ttlMs: this.options.capabilityTtlMs ?? 4 * 60 * 60_000,
+          ttlMs: this.options.capabilityTtlMs ?? CERTIFICATION_CAPABILITY_TTL_MS,
         }, this.now(), this.issuingKey());
       } catch (error) {
         if (error instanceof CertificationCapabilityError && error.code === "CERTIFICATION_CAPABILITY_ALREADY_LIVE") {
@@ -353,7 +353,7 @@ export class ProductionCertificationDriver implements CertificationDriver {
     issueCapability(new SqliteCertificationCapabilityStore(this.options.db), {
       runId: retry, deploymentSessionId: sessionId, releaseSha: this.options.candidate.sha,
       maxAmountKopecks: CERTIFICATION_PRICE_KOPECKS,
-      ttlMs: this.options.capabilityTtlMs ?? 4 * 60 * 60_000,
+      ttlMs: this.options.capabilityTtlMs ?? CERTIFICATION_CAPABILITY_TTL_MS,
     }, this.now(), this.issuingKey());
     return { kind: "RETRY_CAPABILITY_REISSUED" };
   }
@@ -433,7 +433,7 @@ export class ProductionCertificationDriver implements CertificationDriver {
       issueCapability(new SqliteCertificationCapabilityStore(db), {
         runId: run.runId, deploymentSessionId: sessionId, releaseSha: this.options.candidate.sha,
         maxAmountKopecks: CERTIFICATION_PRICE_KOPECKS,
-        ttlMs: this.options.capabilityTtlMs ?? 4 * 60 * 60_000,
+        ttlMs: this.options.capabilityTtlMs ?? CERTIFICATION_CAPABILITY_TTL_MS,
       }, this.now(), this.issuingKey());
       return { kind: "REISSUED" };
     });

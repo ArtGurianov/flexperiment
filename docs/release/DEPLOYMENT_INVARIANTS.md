@@ -650,7 +650,11 @@ arming (rollback forbidden, sales fenced), `forward-deploy <session>
   capability is never replaced, because the checkout, refund and cleanup
   continue under it. Catalogue progress may stand, because the ledger and the
   fixture belong to the run and nothing durable names a capability id. This is
-  what makes a shorter capability TTL safe.
+  what made the shorter capability lifetime safe: an issued capability now
+  lives one hour (`CERTIFICATION_CAPABILITY_TTL_MS`), down from four. That hour
+  bounds only the window before the checkout spends it (minutes in practice).
+  After the spend, the payment, refund and cleanup prove possession, not
+  freshness.
 
 ## Certification is proved against the real runtime, end to end
 

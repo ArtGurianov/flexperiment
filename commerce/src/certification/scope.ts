@@ -15,6 +15,22 @@ export const CERTIFICATION_PRICE_KOPECKS = 100;
 export const CERTIFICATION_TIMEZONE = "Europe/Moscow";
 
 /**
+ * How long an issued capability may be spent.
+ *
+ * It bounds an unspent capability only: the checkout spends it, and from then
+ * on the payment, the refund and cleanup need possession, not freshness. So
+ * this is the window between `deploy`/`forward-deploy` handing over (exit 13)
+ * and the operator's checkout - minutes in practice (2026-09-24: 5, 6 and 3) -
+ * and a backstop for a capability nobody comes back for.
+ *
+ * It was four hours while an expired capability could strand a session.
+ * Revisions now get a same-run reissue, as `-a2` does, so an operator who
+ * comes back later is given a new one rather than being locked out, and the
+ * window a leaked bearer could be used in is an hour.
+ */
+export const CERTIFICATION_CAPABILITY_TTL_MS = 60 * 60_000;
+
+/**
  * Who the audit log records for a certification's catalogue commands.
  *
  * A fixed, recognisable actor rather than a real administrator's id: nobody
