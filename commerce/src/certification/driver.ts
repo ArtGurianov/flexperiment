@@ -61,11 +61,11 @@ export type CertificationDriverOptions = {
 export { certificationRunId };
 
 /**
- * What `certify` found about the current forward revision's capability.
+ * What `certify` found about the current certification attempt's capability.
  * INELIGIBLE writes nothing: the ordinary path then meets whatever the
  * capability is, and a spent or corrupt one is never replaced.
  */
-export type RevisionReissueOutcome =
+export type CapabilityReissueOutcome =
   | { readonly kind: "NOT_APPLICABLE" }
   | { readonly kind: "CAPABILITY_LIVE" }
   | { readonly kind: "REISSUED" }
@@ -75,8 +75,8 @@ export type RevisionReissueOutcome =
 const PAYMENT_EVIDENCE = ["statusId", "orderId", "paymentId", "bookingId", "ticketId", "refundObligationId", "refundId", "humanTicketVerifiedAt", "completedAt"] as const;
 
 /**
- * What `retryAfterNoEffectFailure` found. RETRY_ISSUED and RETRY_CAPABILITY_REISSUED
- * wrote certification rows; the others changed nothing.
+ * What `retryAfterNoEffectFailure` found. RETRY_ISSUED wrote certification
+ * rows; the others changed nothing.
  *
  * INELIGIBLE is not an error: a first run that failed after doing something
  * still has to be reconciled - a captured payment refunded - and that is the
@@ -85,8 +85,6 @@ const PAYMENT_EVIDENCE = ["statusId", "orderId", "paymentId", "bookingId", "tick
 export type NoEffectRetryOutcome =
   | { readonly kind: "NOT_FAILED" }
   | { readonly kind: "RETRY_EXISTS" }
-  /** `-a2`'s own capability had expired unspent; the same run was given a new one. */
-  | { readonly kind: "RETRY_CAPABILITY_REISSUED" }
   | { readonly kind: "INELIGIBLE"; readonly reason: string }
   | { readonly kind: "RETRY_ISSUED" }
   /** The session has been carried forward; the retry belongs to its original target only. */
@@ -188,6 +186,13 @@ export class ProductionCertificationDriver implements CertificationDriver {
     // the key this capability was issued under, and finding that out after
     // arming would be finding it out too late.
     this.bearerFor(recovered);
+    // Spendable, if it is not yet spent. An expired, unspent capability would
+    // be refused by the runtime on the first command - after arming, which is
+    // exactly attempt 5's trap. `certify` reissues one before this point, so
+    // reaching here with an expired capability means it could not be.
+    if (!recovered.consumedAt && !(Date.parse(recovered.expiresAt) > this.now().getTime())) {
+      throw new Error("CERTIFICATION_CAPABILITY_EXPIRED");
+    }
     // Opened here, before anything can be armed - not first reached after it.
     // Retained, so `certify` speaks on the channel whose presence was proved.
     this.openTerminal();
@@ -347,26 +352,22 @@ export class ProductionCertificationDriver implements CertificationDriver {
       throw new CertificationCapabilityError("CERTIFICATION_RETRY_CAPABILITY_CORRUPT",
         held.map((row) => `${row.id}:${row.run_id}`).join(",") || "none");
     }
-    const [capability] = held;
-    if (capability.consumed_at) return { kind: "RETRY_EXISTS" };
-    if (Date.parse(capability.expires_at) > this.now().getTime()) return { kind: "RETRY_EXISTS" };
-    issueCapability(new SqliteCertificationCapabilityStore(this.options.db), {
-      runId: retry, deploymentSessionId: sessionId, releaseSha: this.options.candidate.sha,
-      maxAmountKopecks: CERTIFICATION_PRICE_KOPECKS,
-      ttlMs: this.options.capabilityTtlMs ?? CERTIFICATION_CAPABILITY_TTL_MS,
-    }, this.now(), this.issuingKey());
-    return { kind: "RETRY_CAPABILITY_REISSUED" };
+    // An expired, unspent `-a2` capability is replaced by the same same-run
+    // reissue every certification attempt gets (`reissueExpiredCapability`).
+    return { kind: "RETRY_EXISTS" };
   }
 
   /**
-   * A new capability for the current forward revision's own run, when the one
-   * it was issued expired before anyone spent it.
+   * A new capability for the current certification attempt's own run, when
+   * the one it was issued expired before anyone spent it.
    *
-   * `forward-deploy` issues revision N its run and one capability. An operator
-   * who starts `certify` after that capability's TTL would be refused in
-   * preflight, and `forward-deploy` with the same commit only finds the run
-   * again - so without this the session could be finished only by a new
-   * commit. The same same-run reissue `-a2` has, under the same rules:
+   * One rule for every attempt: an ordinary deploy's first run, its no-effect
+   * retry `-a2`, and a forward revision's `-rN`. Each is handed over with one
+   * capability that lives an hour. An operator who comes back later must not
+   * be locked out - nor, worse, armed on a capability the runtime will refuse
+   * (preflight now refuses one; see `preflight`). `forward-deploy` with the same
+   * commit only finds the run again, and a first run has no other way to get
+   * one. So `certify` replaces it on the same run, under these rules:
    *
    *   - only the current run's own capability, which must be the session's
    *     one live slot: earlier revisions' spent capabilities are history and
@@ -375,7 +376,8 @@ export class ProductionCertificationDriver implements CertificationDriver {
    *   - only an expired capability, and only an unspent one: a spent one is
    *     the identity the checkout, the refund and cleanup continue with;
    *   - only for the session's current binding - revision, release and
-   *     candidate - and only while the session is armed, stuck and fenced;
+   *     candidate - and only while it is handed over and unsettled: fenced,
+   *     DEPLOYING (not yet armed) or RECOVERY_REQUIRED;
    *   - only while the run has reached no checkout: no payment evidence on the
    *     run, no order under its name, no command in flight, no failure. Its
    *     catalogue progress may stand: the ledger and the fixture belong to the
@@ -386,22 +388,23 @@ export class ProductionCertificationDriver implements CertificationDriver {
    *   - idempotent: once reissued, the next call finds it live and writes
    *     nothing.
    */
-  reissueExpiredRevisionCapability(sessionId: string): RevisionReissueOutcome {
+  reissueExpiredCapability(sessionId: string): CapabilityReissueOutcome {
     const db = this.options.db;
-    if ((currentBindingIn(db, sessionId)?.revision ?? 0) === 0) return { kind: "NOT_APPLICABLE" };
-    const ineligible = (reason: string): RevisionReissueOutcome => ({ kind: "INELIGIBLE", reason });
-    const work = db.transaction((): RevisionReissueOutcome => {
+    const ineligible = (reason: string): CapabilityReissueOutcome => ({ kind: "INELIGIBLE", reason });
+    const work = db.transaction((): CapabilityReissueOutcome => {
       const binding = currentBindingIn(db, sessionId);
-      if (!binding || binding.revision === 0) return { kind: "NOT_APPLICABLE" };
-      const session = db.prepare(`SELECT state, rollback_authority, deployment_gate_closed FROM deploy_sessions WHERE id = ?`)
-        .get(sessionId) as { state: string; rollback_authority: string; deployment_gate_closed: number } | undefined;
+      if (!binding) return { kind: "NOT_APPLICABLE" };
+      const session = db.prepare(`SELECT state, deployment_gate_closed FROM deploy_sessions WHERE id = ?`)
+        .get(sessionId) as { state: string; deployment_gate_closed: number } | undefined;
       if (!session) return ineligible("SESSION_NOT_FOUND");
-      if (session.state !== "RECOVERY_REQUIRED") return ineligible(`SESSION_STATE_${session.state}`);
-      if (session.rollback_authority !== "NEW_LINEAGE_ONLY") return ineligible(`SESSION_AUTHORITY_${session.rollback_authority}`);
+      // Handed over and not yet settled: fenced, whether or not it has armed.
+      if (session.state !== "DEPLOYING" && session.state !== "RECOVERY_REQUIRED") return ineligible(`SESSION_STATE_${session.state}`);
       if (session.deployment_gate_closed !== 1) return ineligible("SESSION_GATE_OPEN");
       if (binding.targetSha !== this.options.candidate.sha || binding.candidateId !== this.options.candidate.id) return ineligible("CANDIDATE_NOT_CURRENT_BINDING");
 
-      const run = new SqliteCertificationRunStore(db).load(revisionRunId(sessionId, binding.revision));
+      // The attempt the session is certifying with now: its revision's run, or
+      // at revision 0 its no-effect retry once one exists, otherwise its first.
+      const run = new SqliteCertificationRunStore(db).load(effectiveCertificationRunId(db, sessionId));
       if (!run) return ineligible("RUN_MISSING");
       if (run.releaseSha !== this.options.candidate.sha) return ineligible("RUN_RELEASE_MISMATCH");
 

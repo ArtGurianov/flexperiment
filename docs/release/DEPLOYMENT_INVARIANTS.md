@@ -632,8 +632,9 @@ arming (rollback forbidden, sales fenced), `forward-deploy <session>
   run `certification-<session>-r<N>` and its own capability. The earlier runs
   stay as history, and `verify` re-proves that each target left behind is
   safe.
-- **A revision's capability that expired unspent is reissued, on the same
-  run.** An operator who starts `certify` after the TTL would otherwise be
+- **A capability that expired unspent is reissued, on the same run, for every
+  certification attempt:** an ordinary deploy's first run, its `-a2`, and a
+  revision's `-rN` (one rule, `reissueExpiredCapability`). For a revision: An operator who starts `certify` after the TTL would otherwise be
   refused in preflight, and `forward-deploy` with the same commit only finds
   the existing run, so the session could be finished only by a new commit.
   `certify` replaces it first (`reissueExpiredRevisionCapability`), under the
@@ -655,6 +656,14 @@ arming (rollback forbidden, sales fenced), `forward-deploy <session>
   bounds only the window before the checkout spends it (minutes in practice).
   After the spend, the payment, refund and cleanup prove possession, not
   freshness.
+
+**Preflight refuses an expired, unspent capability before arming.** It used
+not to look at expiry. An operator who started `certify` after the
+capability's hour was armed, the point of no return, and then the runtime
+refused the first command: the run failed after arming, which is attempt 5's
+trap. `certify` reissues an expired capability before preflight, so preflight
+sees one only when the reissue refused, and then it stops while a rollback is
+still legal.
 
 ## Certification is proved against the real runtime, end to end
 
