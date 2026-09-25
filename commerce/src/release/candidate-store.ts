@@ -26,7 +26,7 @@ export class CandidateStoreError extends Error {
 
 const SHA = /^[a-f0-9]{40}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
-const RELEASE_CLASSES: readonly ReleaseClass[] = ["ROLLING_COMPATIBLE", "MAINTENANCE_REQUIRED"];
+const RELEASE_CLASSES: readonly ReleaseClass[] = ["MAINTENANCE_REQUIRED"];
 const HISTORICAL_CLASSES: readonly HistoricalCandidate["releaseClass"][] = [...RELEASE_CLASSES, "LAUNCH_BASELINE"];
 
 /** Field order fixed here, so the digest of a candidate does not depend on how it was built. */

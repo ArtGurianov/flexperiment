@@ -74,14 +74,6 @@ describe.each(releaseAuthorityStores)("deploy sessions (%s)", (_name, makeStore)
       .toMatchObject({ state: "SUCCEEDED", rollbackAuthority: "NEW_LINEAGE_ONLY" });
   });
 
-  it("lets a rolling release close on convergence alone - it crosses no external boundary", () => {
-    const store = makeStore();
-    const sessions = new DeploySessions(store, () => new Date("2026-09-19T00:00:00.000Z"));
-    const session = sessions.acquireRolling({ id: "rolling-complete", ownerId: "owner", mode: "ROLLING_SAFE", targetSha: target, candidateId: "candidate" }, topology(old));
-    expect(sessions.completeTarget(session.id, "owner", topology(target)))
-      .toMatchObject({ state: "SUCCEEDED", rollbackAuthority: "OLD_LINEAGE_ALLOWED" });
-  });
-
   it("spends rollback authority when external effects are armed, and never returns it", () => {
     const store = makeStore();
     const sessions = new DeploySessions(store, () => new Date("2026-09-19T00:00:00.000Z"));
@@ -104,18 +96,17 @@ describe.each(releaseAuthorityStores)("deploy sessions (%s)", (_name, makeStore)
       .toMatchObject({ state: "SUCCEEDED", rollbackAuthority: "NEW_LINEAGE_ONLY" });
   });
 
-  it("does not close sales for rolling releases and transfers expired ownership without changing state", () => {
+  it("transfers expired ownership without changing state", () => {
     let clock = new Date("2026-09-19T00:00:00.000Z");
     const store = makeStore();
     const sessions = new DeploySessions(store, () => clock, 1_000);
-    expect(() => sessions.acquireFenced({ id: "not-rolling", ownerId: "first", mode: "ROLLING_SAFE", targetSha: target, candidateId: "candidate" }, topology(old)))
-      .toThrow("ROLLING_SAFE_DOES_NOT_FENCE_SALES");
-    const session = sessions.acquireRolling({ id: "rolling", ownerId: "first", mode: "ROLLING_SAFE", targetSha: target, candidateId: "candidate" }, topology(old));
+    const session = sessions.acquireFenced({ id: "fenced", ownerId: "first", mode: "MAINTENANCE_CUTOVER", targetSha: target, candidateId: "candidate" }, topology(old));
     clock = new Date("2026-09-19T00:00:02.000Z");
-    expect(sessions.takeOverExpiredLease(session.id, "second")).toMatchObject({ state: "DEPLOYING", ownerId: "second" });
+    expect(sessions.takeOverExpiredLease(session.id, "second")).toMatchObject({ state: "FENCED", ownerId: "second" });
+    expect(store.deploymentGate()).toEqual({ closed: true, deploymentSessionId: "fenced" });
   });
 
-  it("admits one deployment session at a time, whatever its mode", () => {
+  it("admits one deployment session at a time", () => {
     // Production has one topology. A workflow concurrency group is an
     // operational guard a takeover or a hand-run script can step around; this
     // is the authority, and it has to stay right when they do.
@@ -124,18 +115,6 @@ describe.each(releaseAuthorityStores)("deploy sessions (%s)", (_name, makeStore)
     sessions.acquireFenced({ id: "first", ownerId: "owner", mode: "MAINTENANCE_CUTOVER", targetSha: target, candidateId: "candidate" }, topology(old));
 
     expect(() => sessions.acquireFenced({ id: "second", ownerId: "owner", mode: "MAINTENANCE_CUTOVER", targetSha: target, candidateId: "candidate" }, topology(old)))
-      .toThrow("DEPLOY_SESSION_ALREADY_ACTIVE");
-    expect(() => sessions.acquireRolling({ id: "third", ownerId: "owner", mode: "ROLLING_SAFE", targetSha: target, candidateId: "candidate" }, topology(old)))
-      .toThrow("DEPLOY_SESSION_ALREADY_ACTIVE");
-  });
-
-  it("refuses a maintenance session while a rolling one is still in flight", () => {
-    const store = makeStore();
-    const sessions = new DeploySessions(store, () => new Date("2026-09-20T00:00:00.000Z"));
-    sessions.acquireRolling({ id: "rolling-first", ownerId: "owner", mode: "ROLLING_SAFE", targetSha: target, candidateId: "candidate" }, topology(old));
-
-    expect(store.deploymentGate()).toEqual({ closed: false, deploymentSessionId: null });
-    expect(() => sessions.acquireFenced({ id: "cutover", ownerId: "owner", mode: "MAINTENANCE_CUTOVER", targetSha: target, candidateId: "candidate" }, topology(old)))
       .toThrow("DEPLOY_SESSION_ALREADY_ACTIVE");
   });
 
@@ -169,7 +148,8 @@ describe.each(releaseAuthorityStores)("deploy sessions (%s)", (_name, makeStore)
 
   it("refuses a session whose initial state contradicts its own mode", () => {
     // The gate follows from the mode, so a maintenance session that starts
-    // unfenced, or a rolling one that starts fenced, has no coherent meaning.
+    // unfenced has no coherent meaning - nor does the non-fencing mode the frozen
+    // schema still admits, which nothing creates any more.
     const store = makeStore();
     const blank = {
       id: "mismatched", ownerId: "owner", targetSha: target, rollbackAuthority: "OLD_LINEAGE_ALLOWED" as const,
@@ -178,7 +158,7 @@ describe.each(releaseAuthorityStores)("deploy sessions (%s)", (_name, makeStore)
     };
     expect(() => store.acquire({ ...blank, mode: "MAINTENANCE_CUTOVER", state: "DEPLOYING" }))
       .toThrow("DEPLOY_SESSION_INITIAL_STATE_INVALID");
-    expect(() => store.acquire({ ...blank, mode: "ROLLING_SAFE", state: "FENCED" }))
+    expect(() => store.acquire({ ...blank, mode: "ROLLING_SAFE" as never, state: "FENCED" }))
       .toThrow("DEPLOY_SESSION_INITIAL_STATE_INVALID");
     expect(store.deploymentGate()).toEqual({ closed: false, deploymentSessionId: null });
   });

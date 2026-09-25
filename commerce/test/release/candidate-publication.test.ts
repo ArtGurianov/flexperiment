@@ -95,10 +95,6 @@ describe("a published candidate is written once", () => {
   it("refuses a different release wearing a published commit's name", () => {
     const store = new FileReleaseCandidateStore(directory);
     store.publish(candidate);
-    // A rolling reclassification of an already-published commit would let a
-    // schema-incompatible release skip the maintenance fence.
-    expect(() => store.publish({ ...candidate, releaseClass: "ROLLING_COMPATIBLE" }))
-      .toThrow("RELEASE_CANDIDATE_ALREADY_PUBLISHED_DIFFERENTLY");
     expect(() => store.publish({ ...candidate, expectation: { ...candidate.expectation, legalManifestSha256: "f".repeat(64) } }))
       .toThrow("RELEASE_CANDIDATE_ALREADY_PUBLISHED_DIFFERENTLY");
     expect(store.get(MAIN)?.releaseClass).toBe("MAINTENANCE_REQUIRED");

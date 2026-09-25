@@ -52,15 +52,14 @@ import { deriveCandidate } from "../../commerce/src/release/candidate-publicatio
 import { verifyCutover } from "../../commerce/src/release/verify-cutover";
 
 /**
- * What may be published. The deploy mode is derived from the class, never
- * chosen - so an operator naming ROLLING_COMPATIBLE would be choosing to skip
- * the fence and the certification. Nothing can prove a candidate compatible
- * yet, so only MAINTENANCE_REQUIRED is publishable; LAUNCH_BASELINE is history.
+ * What may be published: MAINTENANCE_REQUIRED, the only class. Every release
+ * fences sales and is certified. LAUNCH_BASELINE is history, and the rolling
+ * class was removed (2026-09-25); both are refused by name.
  */
 export const publishableReleaseClass = (named: string | undefined): ReleaseClass => {
   const requested = (named ?? "").trim();
   if (requested === "LAUNCH_BASELINE") throw new Error("LAUNCH_BASELINE_RETIRED");
-  if (requested === "ROLLING_COMPATIBLE") throw new Error("ROLLING_COMPATIBLE_REQUIRES_COMPATIBILITY_PROOF");
+  if (requested === "ROLLING_COMPATIBLE") throw new Error("ROLLING_COMPATIBLE_REMOVED");
   if (requested !== "MAINTENANCE_REQUIRED") throw new Error(`RELEASE_CLASS_INVALID: ${requested || "absent"}`);
   return requested;
 };
@@ -91,9 +90,7 @@ export const runCutoverCommand = async (release: ProductionRelease, argv: readon
       // CI green. A refusal is exit 20 - nothing has been touched.
       const { ciEvidence } = await release.admission.admit(candidate);
       release.journal.record("deploy.start", { candidate: candidate.id, sha: candidate.sha, releaseClass: candidate.releaseClass, ci: ciEvidence });
-      const outcome = candidate.releaseClass === "ROLLING_COMPATIBLE"
-        ? await release.orchestrator.runRolling({ ownerId, candidate })
-        : await release.orchestrator.runMaintenanceCutover({ ownerId, candidate });
+      const outcome = await release.orchestrator.runMaintenanceCutover({ ownerId, candidate });
       release.journal.record("deploy.outcome", { kind: outcome.kind, session: outcome.session.id, state: outcome.session.state });
       say({ command, outcome: outcome.kind, session: outcome.session.id, code: "code" in outcome ? outcome.code : undefined });
       // Handing control to a person: this process is done with the session, and

@@ -2,7 +2,12 @@ import { randomUUID } from "node:crypto";
 import { isSourceCommit } from "./runtime-identity";
 import { releaseBinding, type ForwardTarget, type ReleaseBinding } from "./forward-target";
 
-export type DeployMode = "MAINTENANCE_CUTOVER" | "ROLLING_SAFE";
+/**
+ * Every session fences sales. The schema's CHECK still admits `ROLLING_SAFE`
+ * (frozen in 0001); nothing creates one since rolling releases were removed
+ * (2026-09-25), and production never had one.
+ */
+export type DeployMode = "MAINTENANCE_CUTOVER";
 export type DeploySurface = "frontend" | "admin" | "commerce" | "worker";
 export type RuntimeTopology = Readonly<Record<DeploySurface, string>>;
 
@@ -74,12 +79,11 @@ export type DeploySessionPatch = Partial<Pick<DeploySession, "ownerId" | "state"
  */
 export interface ReleaseAuthorityStore {
   get(id: string): DeploySession | undefined;
-  /** The session that adopted this cutover, if any. Makes handoff retry idempotent. */
   /**
    * Creates the session. Whether the gate closes follows from the session's own
-   * mode, never from a caller's flag: a maintenance cutover that did not close
-   * it and a rolling release that did are both simply wrong, and an argument
-   * lets a caller ask for either.
+   * mode, never from a caller's flag: every session fences, and an argument
+   * would let a caller ask for one that did not. (The stores still refuse a
+   * gate for a non-fencing mode the frozen schema admits; nothing creates one.)
    */
   acquire(session: DeploySession): DeploySession;
   /**
@@ -345,16 +349,8 @@ export class DeploySessions {
    * gate closed by a session that does not exist.
    */
   acquireFenced(input: AcquireInput, preDeployTopology: PreDeploySnapshot): DeploySession {
-    if (input.mode !== "MAINTENANCE_CUTOVER") throw new Error("ROLLING_SAFE_DOES_NOT_FENCE_SALES");
     assertSnapshot(preDeployTopology);
     return this.store.acquire({ ...this.blank(input), state: "FENCED", preDeployTopology });
-  }
-
-  /** A rolling release never touches the gate, so its creation says so explicitly. */
-  acquireRolling(input: AcquireInput, preDeployTopology: PreDeploySnapshot): DeploySession {
-    if (input.mode !== "ROLLING_SAFE") throw new Error("ROLLING_RELEASE_REQUIRES_ROLLING_SAFE");
-    assertSnapshot(preDeployTopology);
-    return this.store.acquire({ ...this.blank(input), state: "DEPLOYING", preDeployTopology });
   }
 
   beginDeploying(id: string, ownerId: string): DeploySession {
@@ -437,7 +433,6 @@ export class DeploySessions {
    */
   armExternalEffects(id: string, ownerId: string): DeploySession {
     const session = this.owned(id, ownerId);
-    if (session.mode !== "MAINTENANCE_CUTOVER") throw new Error("ROLLING_SAFE_ARMS_NO_EXTERNAL_EFFECTS");
     // The reverse handoff may already have archived the successor and be about
     // to replace this database. Letting a payment through now would make the
     // predecessor archive an untrue account of what happened.
@@ -535,7 +530,6 @@ export class DeploySessions {
    * a cutover whose irreversible boundary can never be recorded at all - the
    * ordering would live only in a runbook. Requiring the armed authority here
    * makes "certification ran before this release was called done" structural.
-   * A rolling release crosses no external boundary and needs no such proof.
    */
   completeTarget(id: string, ownerId: string, observation: DeploymentObservation): DeploySession {
     const observed = this.observeTopology(id, ownerId, observation);

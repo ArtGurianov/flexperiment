@@ -12,7 +12,7 @@ const now = new Date("2026-09-20T00:00:00.000Z");
 const versions = ["0001_launch_baseline.sql"];
 const topology = (sha: string): PreDeploySnapshot => ({ runtime: { frontend: sha, admin: sha, commerce: sha, worker: sha }, controlPlane: { productionDeployRefSha: sha } });
 
-const candidateFor = (releaseClass: "ROLLING_COMPATIBLE" | "MAINTENANCE_REQUIRED") => ({
+const candidateFor = (releaseClass: "MAINTENANCE_REQUIRED") => ({
   id: `candidate-${releaseClass}`, sha: target, releaseClass, expectation,
 });
 
@@ -72,7 +72,6 @@ const harness = (options: {
 };
 
 const cutoverRequest = { ownerId: "owner", candidate: candidateFor("MAINTENANCE_REQUIRED") } as const;
-const rollingRequest = { ownerId: "owner", candidate: candidateFor("ROLLING_COMPATIBLE") } as const;
 
 describe("maintenance cutover ordering", () => {
   it("fences, deploys, proves readiness and then stops for the operator", async () => {
@@ -249,35 +248,3 @@ describe("maintenance cutover ordering", () => {
   });
 });
 
-describe("rolling release ordering", () => {
-  it("never touches the sales fence, arms nothing and certifies nothing", async () => {
-    const { log, store, orchestrator } = harness({ topologies: [topology(old), topology(target)] });
-    const outcome = await orchestrator.runRolling(rollingRequest);
-
-    expect(outcome.kind).toBe("SUCCEEDED");
-    expect(outcome.session).toMatchObject({ state: "SUCCEEDED", rollbackAuthority: "OLD_LINEAGE_ALLOWED" });
-    expect(log).toEqual([`observe:${old}`, `deploy:${target}`, `observe:${target}`, "readiness"]);
-    expect(store.deploymentGate().closed).toBe(false);
-  });
-
-  it("leaves the sales fence untouched when a rolling deploy fails", async () => {
-    // The rolling path never closed the gate, so it has no business opening it
-    // either - the shared failure classifier must not reopen on its behalf.
-    const { store, orchestrator } = harness({ topologies: [topology(old), topology(old)], deployFails: "IMAGE_BUILD_FAILED" });
-    const outcome = await orchestrator.runRolling(rollingRequest);
-
-    expect(outcome).toMatchObject({ kind: "SAFE_ABORTED", code: "IMAGE_BUILD_FAILED" });
-    // The rolling path never closed the gate, so it must not have opened one.
-    expect(store.deploymentGate().closed).toBe(false);
-  });
-
-  it("refuses a cutover request on the rolling path and the reverse", async () => {
-    const { orchestrator } = harness({ topologies: [topology(old)] });
-    // The mode is derived from the candidate's class, so the paths refuse each
-    // other's candidates instead of trusting a flag a caller set.
-    await expect(orchestrator.runRolling(cutoverRequest))
-      .rejects.toThrow("ROLLING_RELEASE_REQUIRES_ROLLING_SAFE");
-    await expect(orchestrator.runMaintenanceCutover(rollingRequest))
-      .rejects.toThrow("CUTOVER_REQUIRES_MAINTENANCE_CUTOVER");
-  });
-});

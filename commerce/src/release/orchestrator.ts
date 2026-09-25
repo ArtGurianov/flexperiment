@@ -1,4 +1,4 @@
-import { deployMode, readinessExpectation, type ReleaseCandidate, type ReleaseCandidateReader } from "./candidate";
+import { readinessExpectation, type ReleaseCandidate, type ReleaseCandidateReader } from "./candidate";
 import { evaluateReadiness, type ReleaseReadinessEvidence } from "./readiness";
 import {
   DeploySessions, planResume, runtimeIsTarget, snapshotEquals,
@@ -130,45 +130,12 @@ export class ReleaseOrchestrator {
   }
 
   /**
-   * A rolling release crosses no external boundary: sales stay open, nothing is
-   * armed, and convergence plus readiness is the whole contract. It is only
-   * legal for a revision whose schema the previous one can still read.
-   */
-  async runRolling(request: ReleaseRequest): Promise<ReleaseOutcome> {
-    if (deployMode(request.candidate) !== "ROLLING_SAFE") throw new ReleaseOrchestrationError("ROLLING_RELEASE_REQUIRES_ROLLING_SAFE");
-    const { sessions } = this.ports;
-    const before = await this.ports.topology.observe();
-    const session = sessions.acquireRolling({
-      id: request.sessionId, ownerId: request.ownerId, mode: "ROLLING_SAFE",
-      targetSha: request.candidate.sha, candidateId: request.candidate.id,
-    }, before);
-
-    try {
-      await this.ports.deployment.deploy(request.candidate.sha);
-    } catch (error) {
-      return this.classify(session.id, request.ownerId, failureCode(error));
-    }
-
-    return this.finishRolling(session.id, request);
-  }
-
-  /** Everything a rolling release does once its deployment has been handed over. */
-  private async finishRolling(sessionId: string, request: ReleaseRequest): Promise<ReleaseOutcome> {
-    const converged = await this.requireTargetTopology(sessionId, request);
-    if ("kind" in converged) return converged;
-    const admitted = await this.requireReadiness(sessionId, request);
-    if (admitted) return admitted;
-    return { kind: "SUCCEEDED", session: this.ports.sessions.completeTarget(sessionId, request.ownerId, converged.topology) };
-  }
-
-  /**
    * The destructive path. The ordering below is the contract: the fence closes
    * before anything is deployed, the irreversible boundary is armed only once
    * the exact target topology is proved and readiness has admitted it, and the
    * certification capability does not exist until after that arming.
    */
   async runMaintenanceCutover(request: ReleaseRequest): Promise<ReleaseOutcome> {
-    if (deployMode(request.candidate) !== "MAINTENANCE_CUTOVER") throw new ReleaseOrchestrationError("CUTOVER_REQUIRES_MAINTENANCE_CUTOVER");
     if (!this.ports.certification) throw new ReleaseOrchestrationError("CUTOVER_REQUIRES_CERTIFICATION_DRIVER");
     const { sessions } = this.ports;
     // Captured before the gate closes and before anything is deployed, so a
@@ -494,10 +461,8 @@ export class ReleaseOrchestrator {
     try {
       if (plan.kind === "RETRY_DEPLOY") {
         try {
-          if (session.mode === "MAINTENANCE_CUTOVER") {
-            if (!session.preDeployTopology) throw new ReleaseOrchestrationError("PRE_DEPLOY_TOPOLOGY_REQUIRED");
-            await this.ports.deployment.assertRecoverable(uniformSha(session.preDeployTopology));
-          }
+          if (!session.preDeployTopology) throw new ReleaseOrchestrationError("PRE_DEPLOY_TOPOLOGY_REQUIRED");
+          await this.ports.deployment.assertRecoverable(uniformSha(session.preDeployTopology));
           await this.ports.deployment.deploy(binding.targetSha);
         } catch (error) {
           // Coolify can take longer than the lease; the classification after it
@@ -507,7 +472,7 @@ export class ReleaseOrchestrator {
         }
         this.ports.sessions.holdLease(sessionId, ownerId);
       }
-      return await (session.mode === "MAINTENANCE_CUTOVER" ? this.finishCutover(sessionId, full) : this.finishRolling(sessionId, full));
+      return await this.finishCutover(sessionId, full);
     } catch (error) {
       try { this.ports.sessions.holdLease(sessionId, ownerId); } catch { /* recovery below says whether it still owns the session */ }
       return this.recovery(sessionId, ownerId, `RESUME_CONTINUATION_FAILED:${failureCode(error)}`);
@@ -560,8 +525,7 @@ export class ReleaseOrchestrator {
   private async classify(sessionId: string, ownerId: string, code: string): Promise<ReleaseOutcome> {
     const observed = await this.ports.topology.observe();
     const session = this.ports.sessions.classifyFailure(sessionId, ownerId, observed);
-    // classifyFailure settles and releases the gate together when it aborts,
-    // and a rolling session never had the gate to release.
+    // classifyFailure settles and releases the gate together when it aborts.
     if (session.state === "SAFE_ABORTED") return { kind: "SAFE_ABORTED", session, code };
     return this.handBack(session, ownerId, code);
   }
