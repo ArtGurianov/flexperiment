@@ -171,7 +171,7 @@ still resolvable and deployable — rather than against an image inventory. One
 mechanism serves every application:
 
 ```text
-sales already closed (maintenance) or never closed (rolling)
+sales already closed
 → production-deploy CAS back to the predecessor
 → Coolify deploys the predecessor
 → topology and readiness prove the predecessor, exactly the recorded vector
@@ -309,23 +309,21 @@ Requiring an operator to re-supply the dead or departed process's owner id made
 an ordinary recovery depend on reading it out of the database by hand. A lease
 that has not lapsed still belongs to whoever holds it.
 
-## The deploy mode is derived, never chosen
+## Every release is a maintenance release
 
-`ROLLING_COMPATIBLE` earns `ROLLING_SAFE`; everything else takes
-`MAINTENANCE_CUTOVER`. The absence of a compatibility proof is not
-compatibility. Nothing can produce that proof yet, so `publish-candidate`
-refuses `ROLLING_COMPATIBLE` (`ROLLING_COMPATIBLE_REQUIRES_COMPATIBILITY_PROOF`)
-and admission refuses anything but `MAINTENANCE_REQUIRED`. Before #164 the CLI
-took the class as an operator's argument, which let an operator choose to skip
-the fence and the certification.
-An operator who could select the rolling path for a schema-incompatible release
-would skip the fence and the certification with it, so the choice belongs to
-whoever classified the candidate.
+There is one release class, `MAINTENANCE_REQUIRED`, and one deploy mode,
+`MAINTENANCE_CUTOVER`: every release closes sales, deploys, is certified by a
+person, and only then reopens them.
 
-The two differ in exactly one thing that matters here: `ROLLING_SAFE` never
-closes the deployment gate, and `MAINTENANCE_CUTOVER` always does. A rolling
-release that closed sales, and a maintenance cutover that did not, are both
-simply wrong, and the schema refuses to record either.
+A rolling class ("proved readable by the running revision, so sales need not
+close") existed until 2026-09-25. Nothing in the system could produce that
+proof, and until #164 the CLI took the class as an operator's argument, so an
+operator could choose to skip the fence and the certification. It was removed
+rather than left as a choice (#166). Production never ran a rolling session.
+`publish-candidate` refuses the name (`ROLLING_COMPATIBLE_REMOVED`), and a
+candidate file claiming it fails validation. The frozen `0001` schema still
+admits `ROLLING_SAFE` in its CHECK, and the stores still refuse a gate for it.
+Nothing creates one.
 
 ## Webhook acceptance is not deployment convergence
 
@@ -418,9 +416,8 @@ and nothing above it.
 ## A deploy session owns both its state and its fence
 
 One authority owns the session and the deployment gate, because they are one
-operational fact. A `SUCCEEDED` session with sales still shut, or a rolling
-release that closed them, are both simply wrong, and no amount of caller
-discipline makes two independent writes safe.
+operational fact. A `SUCCEEDED` session with sales still shut is simply wrong,
+and no amount of caller discipline makes two independent writes safe.
 
 ```text
 ACQUIRED -> FENCED -> DEPLOYING -> SAFE_ABORTED | SUCCEEDED | ROLLED_BACK

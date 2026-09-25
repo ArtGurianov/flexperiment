@@ -109,11 +109,10 @@ describe("rollback from a different process", () => {
 });
 
 describe("what may be published", () => {
-  it("is only MAINTENANCE_REQUIRED: the deploy mode is derived, never chosen", () => {
+  it("is only MAINTENANCE_REQUIRED: every release fences sales and is certified", () => {
     expect(publishableReleaseClass("MAINTENANCE_REQUIRED")).toBe("MAINTENANCE_REQUIRED");
-    // Naming ROLLING_COMPATIBLE would be choosing to skip the fence and the
-    // certification, and nothing can prove a candidate compatible yet.
-    expect(() => publishableReleaseClass("ROLLING_COMPATIBLE")).toThrow("ROLLING_COMPATIBLE_REQUIRES_COMPATIBILITY_PROOF");
+    // The rolling class is gone; naming it is refused by name, not as a typo.
+    expect(() => publishableReleaseClass("ROLLING_COMPATIBLE")).toThrow("ROLLING_COMPATIBLE_REMOVED");
     expect(() => publishableReleaseClass("LAUNCH_BASELINE")).toThrow("LAUNCH_BASELINE_RETIRED");
     expect(() => publishableReleaseClass(undefined)).toThrow("RELEASE_CLASS_INVALID: absent");
   });

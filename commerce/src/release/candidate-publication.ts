@@ -16,7 +16,7 @@ import { CandidateStoreError } from "./candidate-store";
 
 const SHA = /^[a-f0-9]{40}$/;
 /** LAUNCH_BASELINE is retired: its candidates stay readable, and none is derived again. */
-const RELEASE_CLASSES: readonly ReleaseClass[] = ["ROLLING_COMPATIBLE", "MAINTENANCE_REQUIRED"];
+const RELEASE_CLASSES: readonly ReleaseClass[] = ["MAINTENANCE_REQUIRED"];
 
 /** Reads a commit's tree. Injected so the publication can be proved against a real repository. */
 export interface CommitTreeReader {

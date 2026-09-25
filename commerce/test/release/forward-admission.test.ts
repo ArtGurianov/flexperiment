@@ -48,7 +48,7 @@ describe("release admission: what every deploy must prove first", () => {
   it("refuses every other case with its own code, DEPLOY_ADMISSION_REFUSED", async () => {
     const candidate = await mainCandidate();
     const cases: [string, ReleaseAdmissionGuard, typeof candidate, string][] = [
-      ["a rolling candidate", release(), { ...candidate, releaseClass: "ROLLING_COMPATIBLE" }, "is ROLLING_COMPATIBLE"],
+      ["a foreign class (a hand-edited file)", release(), { ...candidate, releaseClass: "ROLLING_COMPATIBLE" as never }, "RELEASE_CANDIDATE_INVALID"],
       ["main moved on", release({ main: async () => SIDE }), candidate, "is not main's tip"],
       ["another runner", release({ runner: runnerAt({ sha: SIDE }) }), candidate, `installed runner is ${SIDE}`],
       ["an edited runner", release({ runner: runnerAt({ clean: false }) }), candidate, "not clean"],
@@ -89,8 +89,9 @@ describe("forward supersession admission", () => {
   });
 
   it("admits only a MAINTENANCE_REQUIRED candidate", async () => {
-    const rolling = { ...await mainCandidate(), releaseClass: "ROLLING_COMPATIBLE" as const };
-    await expect(guard().admit(rolling, binding)).rejects.toThrow("is ROLLING_COMPATIBLE");
+    // No other class exists; a file claiming one fails validation first.
+    const foreign = { ...await mainCandidate(), releaseClass: "ROLLING_COMPATIBLE" as never };
+    await expect(guard().admit(foreign, binding)).rejects.toThrow("RELEASE_CANDIDATE_INVALID");
   });
 
   it("refuses a candidate that is not main's tip, read afresh", async () => {

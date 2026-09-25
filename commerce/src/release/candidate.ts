@@ -1,4 +1,3 @@
-import type { DeployMode } from "./deploy-session";
 import type { ReleaseReadinessExpectation } from "./readiness";
 
 /**
@@ -11,11 +10,14 @@ import type { ReleaseReadinessExpectation } from "./readiness";
  * and nothing in the type system had an opinion. They travel together now
  * because they are one fact.
  */
-export type ReleaseClass =
-  /** Proved readable by the previous revision, so sales need not close. */
-  | "ROLLING_COMPATIBLE"
-  /** Anything else. Absence of proof is not compatibility. */
-  | "MAINTENANCE_REQUIRED";
+/**
+ * Every release closes sales, deploys, and is certified by a person before it
+ * reopens them. A rolling class - "proved readable by the running revision,
+ * so sales need not close" - existed until 2026-09-25 with nothing able to
+ * produce that proof, and was removed rather than left as a choice an
+ * operator could make.
+ */
+export type ReleaseClass = "MAINTENANCE_REQUIRED";
 
 /**
  * The launch cutover's class. It replaced the database once, on 2026-09-24,
@@ -49,15 +51,6 @@ export const readinessExpectation = (candidate: ReleaseCandidate): ReleaseReadin
   ...candidate.expectation,
   sourceCommit: candidate.sha,
 });
-
-/**
- * Derived, never chosen. An operator who could pick ROLLING_SAFE for a launch
- * baseline would skip the fence and the certification along with it, so the
- * decision belongs to whoever classified the candidate - and only an explicit
- * proof of compatibility earns the rolling path.
- */
-export const deployMode = (candidate: ReleaseCandidate): DeployMode =>
-  candidate.releaseClass === "ROLLING_COMPATIBLE" ? "ROLLING_SAFE" : "MAINTENANCE_CUTOVER";
 
 export interface ReleaseCandidateReader {
   get(candidateId: string): ReleaseCandidate | undefined;

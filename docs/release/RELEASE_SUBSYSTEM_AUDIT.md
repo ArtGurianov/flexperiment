@@ -274,6 +274,9 @@ Coolify, not in this file. They are outside this audit.
   invocation. Plain `resume` names the next command, yields its lease and exits
   12. `continueSession` refuses `FIX_FORWARD_ONLY`, which it used to finish a
   second time.
+- #166: the rolling path is removed (`runRolling`, `ROLLING_COMPATIBLE`,
+  `acquireRolling`, `deployMode`). No compatibility proof is planned, and
+  production never ran a rolling session.
 
 ## Recommended order
 

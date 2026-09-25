@@ -62,8 +62,7 @@ export interface CiAttestation {
  * before the first mutation, whether it starts a session (`deploy`) or carries
  * one forward (`forward-deploy`).
  *
- *   - a MAINTENANCE_REQUIRED candidate: nothing can prove a candidate rolling-
- *     compatible yet, so the rolling path is not admitted;
+ *   - a MAINTENANCE_REQUIRED candidate, the only class there is;
  *   - main's exact tip, read afresh after the lock, and the candidate
  *     re-derived from that exact commit rather than trusted as published;
  *   - the runner doing it *is* that commit: same SHA, same tree, clean - so the
