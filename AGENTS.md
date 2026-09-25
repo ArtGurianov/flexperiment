@@ -21,3 +21,15 @@ arbitrary force primitive. After legal publication, do not adopt a new repair;
 recover the exact durable source instead. Controller commits must not enter
 legal-promotion ancestry, and exact durable recovery takes precedence over
 current `main`.
+
+## Agent Referrals feature freeze
+
+`commerce/src/agent-referrals-*` and the partner surfaces in `apps/admin` are
+under a FEATURE FREEZE while Refref reaches parity (Refref
+`docs/28-rc2-checkout-resolution-and-payment-obligations.md` §14). Allowed:
+bug fixes, security, compliance, production incidents, and migration
+prerequisites. Not allowed: new partner features, new settlement capabilities,
+new attribution mechanics. The subsystem stays production-critical: new
+participations continue here until the Refref parity gate (attribution, promo,
+ORD, commission, settlement, acts/NPD, operational recovery) is met; only then
+does a separate no-new-participations freeze apply.
