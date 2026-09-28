@@ -11,6 +11,12 @@ exist - a document describing a mechanism is worse than no document once the
 mechanism is gone, because it is read as normative. The reasoning worth keeping
 is below; the incidents that produced it are in the git history.
 
+**Scope.** These invariants govern Flexperiment v1: the `flexperiment-launch`
+schema lineage and its release subsystem, tagged `flexperiment-v1-final`. They
+stay true for that lineage and keep binding v1 while it runs frozen, until the
+cutover removes it. Flexperiment v2 does not continue that lineage; see
+[v1 is retired by replacement, not by reset](#v1-is-retired-by-replacement-not-by-reset).
+
 ## Authority and observation are different things
 
 The single distinction everything else rests on:
@@ -524,6 +530,66 @@ a legal consent, a submission to the advertising register, a real subscriber or
 lead each close it just as finally. Before that the database was disposable and
 the ledger could be replaced wholesale. After it, the schema is append-only
 from `0002`, and a database is brought forward by migration or not at all.
+
+This rule is not relaxed for `flexperiment-launch`, and nothing below reopens
+its window. Flexperiment v2 does not reset this database: it is a new lineage
+that replaces it.
+
+## v1 is retired by replacement, not by reset
+
+**Owner decision, 2026-09-28.** Flexperiment v2 is a new system with a schema
+lineage of its own. It replaces `flexperiment-launch`; it does not reset that
+database, migrate it or backfill from it. The rule above stays true: this
+database is never replaced inside its own lineage. It is retired whole, with its
+release subsystem and the rules in this document, and v2 starts from an empty
+database of its own.
+
+**Why that is admissible.** The rule above exists because external evidence - a
+payment, an acceptance, a consent, a register submission, a subscriber -
+outlives the database that recorded it. Retiring a lineage is safe only when no
+such evidence is left open. The read-only production audit (F1.4; the script
+and both of its runs are recorded in Linear, ART-155) found none outside v1's
+own certification runs, and each of those is closed:
+
+```text
+audit         F1.4-v1; query set sha256
+              74b64fcbc2532a3341c5add64ed88ad83fca58d0e13617d4e713244b0d0891cd
+observed      2026-09-28T04:53:21.573Z; read-only, one transaction, aggregates only
+running       3ad07cfcb53e861fc481c44d806b91743eb239c6 (SOURCE_COMMIT, and the
+              COMMERCE and WORKER heartbeats)
+schema        flexperiment-launch / 0001_launch_baseline, established
+              2026-09-23 14:42:59; 7 migrations, latest 0007
+frozen        emergency sales gate paused since 2026-09-28T04:43:22Z; Agent
+              Referrals SUSPENDED since 04:43:47; lead forms closed (owner)
+certification 3 orders; 3 payments of 1 ₽, each refunded in full, refund
+              receipts confirmed in the Точка cabinet; 3 bookings cancelled,
+              3 tickets void; 9 emails to 2 addresses, both the owner's
+nothing else  no leads or lead consents; no partners, invites, acceptances,
+              engagements or promo codes; no rewards, settlements, acts,
+              payouts or НПД receipts; nothing submitted to ОРД
+```
+
+The tails a database does not hold are closed too: Flexperiment's own Точка JWT
+is revoked and its webhook deleted, and nothing was ever registered with ОРД.
+The removed subsystems' secrets and `partner.flexperiment.ru` go at the cutover.
+
+**What was retired, at which commit.** `flexperiment-v1-final` tags `f09f7b6`,
+v1's last commit before this decision: the executable specification that v2 and
+Refref read v1 from. Production ran `3ad07cf`, ten commits earlier: #158-#167
+were merged and never deployed.
+
+**Until the cutover** v1 runs frozen, and this document still governs any v1
+release. The cutover runs the audit again and stops on any new evidence outside
+certification. It keeps an encrypted offline dump with a deletion date -
+insurance, not a way back - and only then removes the database.
+
+**v2's decisions**, recorded here so that the replacement is not read as a
+reset. They belong to v2's own documents:
+
+- payments go through Refref to Точка; v2 holds no provider credential or
+  webhook of its own, and refunds are executed by Refref at v2's request;
+- workshop seats are held locally: idempotent, with a TTL, failing closed;
+- a deploy names main's exact head, and the running build states that commit.
 
 ## Three things the incidents taught
 
