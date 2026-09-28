@@ -548,8 +548,12 @@ database of its own.
 payment, an acceptance, a consent, a register submission, a subscriber -
 outlives the database that recorded it. Retiring a lineage is safe only when no
 such evidence is left open. The read-only production audit (F1.4; the script
-and both of its runs are recorded in Linear, ART-155) found none outside v1's
-own certification runs, and each of those is closed:
+and both of its runs are recorded in Linear, ART-155) found no external evidence
+outside v1's own certification runs.
+
+The runs themselves are not all finished, and nothing here claims they are.
+What is closed is what they left outside the database: every external effect
+and tail.
 
 ```text
 audit         F1.4-v1; query set sha256
@@ -561,17 +565,31 @@ schema        flexperiment-launch / 0001_launch_baseline, established
               2026-09-23 14:42:59; 7 migrations, latest 0007
 frozen        emergency sales gate paused since 2026-09-28T04:43:22Z; Agent
               Referrals SUSPENDED since 04:43:47; lead forms closed (owner)
-certification 3 orders; 3 payments of 1 ₽, each refunded in full, refund
-              receipts confirmed in the Точка cabinet; 3 bookings cancelled,
-              3 tickets void; 9 emails to 2 addresses, both the owner's
-nothing else  no leads or lead consents; no partners, invites, acceptances,
-              engagements or promo codes; no rewards, settlements, acts,
-              payouts or НПД receipts; nothing submitted to ОРД
 ```
 
-The tails a database does not hold are closed too: Flexperiment's own Точка JWT
-is revoked and its webhook deleted, and nothing was ever registered with ОРД.
-The removed subsystems' secrets and `partner.flexperiment.ru` go at the cutover.
+Every non-zero aggregate of that run is certification-only. Each is listed
+below with how its external effect is closed:
+
+| Non-zero in the audit | Its external effect, and how it is closed |
+|---|---|
+| certification runs: 1 `COMPLETE`, 2 `PAYMENT_PROVEN`, 2 `NEW` | A run's phase is v1's internal state and goes with the database. The four runs not in `COMPLETE` stay unfinished. What they did outside the database is in the rows below. |
+| 3 orders: 3 PD consents and 3 offer acceptances, from 2 distinct buyers | Both buyers are the owner's own addresses, so there is no third party's consent or acceptance. They are kept only in the encrypted offline dump, until its deletion date. |
+| 3 payments `REFUNDED`, 300 kopecks captured | Refunded in full: 3 refunds `SUCCEEDED` (300 kopecks), 3 refund obligations `FULFILLED`. The refund receipts are confirmed in the Точка cabinet. |
+| 3 Точка webhooks `APPLIED` | All applied, none pending. None can arrive: the webhook is deleted and Flexperiment's own Точка JWT revoked. |
+| 3 bookings, 3 tickets | 3 bookings `CANCELLED`, 3 tickets `VOID`. |
+| 9 emails `DELIVERED`: ticket, booking cancelled, refund succeeded, 3 each | Sent to 2 recipients, both the owner's own addresses. |
+| 9 Unisender event dumps `CONSUMED` | The delivery evidence is read back. Unisender holds only the owner's 2 addresses and their delivery logs. |
+| 1 legal release `PUBLISHED` | v1's public documents. They are historical, and v2 publishes its own. |
+
+Everything else is zero:
+- leads and lead consents;
+- partners, invites, acceptances, ORD delegations, engagements and promo codes;
+- referral rewards, settlements, acts, payout authorizations, payouts and НПД
+  receipts;
+- every ОРД table.
+
+Outside the database, nothing was ever registered with ОРД. The removed
+subsystems' secrets and `partner.flexperiment.ru` go at the cutover.
 
 **What was retired, at which commit.** `flexperiment-v1-final` tags `f09f7b6`,
 v1's last commit before this decision: the executable specification that v2 and
