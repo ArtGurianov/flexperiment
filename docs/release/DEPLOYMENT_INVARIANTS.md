@@ -567,8 +567,10 @@ frozen        emergency sales gate paused since 2026-09-28T04:43:22Z; Agent
               Referrals SUSPENDED since 04:43:47; lead forms closed (owner)
 ```
 
-Every non-zero aggregate of that run is certification-only. Each is listed
-below with how its external effect is closed:
+Two things in that run are not from certification: the freeze state above, and
+v1's historical legal publication. Every other non-zero aggregate comes from
+certification. Each non-zero aggregate is listed below with how its external
+effect is closed:
 
 | Non-zero in the audit | Its external effect, and how it is closed |
 |---|---|
