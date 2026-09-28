@@ -11,6 +11,12 @@ exist - a document describing a mechanism is worse than no document once the
 mechanism is gone, because it is read as normative. The reasoning worth keeping
 is below; the incidents that produced it are in the git history.
 
+**Scope.** These invariants govern Flexperiment v1: the `flexperiment-launch`
+schema lineage and its release subsystem, tagged `flexperiment-v1-final`. They
+stay true for that lineage and keep binding v1 while it runs frozen, until the
+cutover removes it. Flexperiment v2 does not continue that lineage; see
+[v1 is retired by replacement, not by reset](#v1-is-retired-by-replacement-not-by-reset).
+
 ## Authority and observation are different things
 
 The single distinction everything else rests on:
@@ -524,6 +530,86 @@ a legal consent, a submission to the advertising register, a real subscriber or
 lead each close it just as finally. Before that the database was disposable and
 the ledger could be replaced wholesale. After it, the schema is append-only
 from `0002`, and a database is brought forward by migration or not at all.
+
+This rule is not relaxed for `flexperiment-launch`, and nothing below reopens
+its window. Flexperiment v2 does not reset this database: it is a new lineage
+that replaces it.
+
+## v1 is retired by replacement, not by reset
+
+**Owner decision, 2026-09-28.** Flexperiment v2 is a new system with a schema
+lineage of its own. It replaces `flexperiment-launch`; it does not reset that
+database, migrate it or backfill from it. The rule above stays true: this
+database is never replaced inside its own lineage. It is retired whole, with its
+release subsystem and the rules in this document, and v2 starts from an empty
+database of its own.
+
+**Why that is admissible.** The rule above exists because external evidence - a
+payment, an acceptance, a consent, a register submission, a subscriber -
+outlives the database that recorded it. Retiring a lineage is safe only when no
+such evidence is left open. The read-only production audit (F1.4; the script
+and both of its runs are recorded in Linear, ART-155) found no external evidence
+outside v1's own certification runs.
+
+The runs themselves are not all finished, and nothing here claims they are.
+What is closed is what they left outside the database: every external effect
+and tail.
+
+```text
+audit         F1.4-v1; query set sha256
+              74b64fcbc2532a3341c5add64ed88ad83fca58d0e13617d4e713244b0d0891cd
+observed      2026-09-28T04:53:21.573Z; read-only, one transaction, aggregates only
+running       3ad07cfcb53e861fc481c44d806b91743eb239c6 (SOURCE_COMMIT, and the
+              COMMERCE and WORKER heartbeats)
+schema        flexperiment-launch / 0001_launch_baseline, established
+              2026-09-23 14:42:59; 7 migrations, latest 0007
+frozen        emergency sales gate paused since 2026-09-28T04:43:22Z; Agent
+              Referrals SUSPENDED since 04:43:47; lead forms closed (owner)
+```
+
+Two things in that run are not from certification: the freeze state above, and
+v1's historical legal publication. Every other non-zero aggregate comes from
+certification. Each non-zero aggregate is listed below with how its external
+effect is closed:
+
+| Non-zero in the audit | Its external effect, and how it is closed |
+|---|---|
+| certification runs: 1 `COMPLETE`, 2 `PAYMENT_PROVEN`, 2 `NEW` | A run's phase is v1's internal state and goes with the database. The four runs not in `COMPLETE` stay unfinished. What they did outside the database is in the rows below. |
+| 3 orders: 3 PD consents and 3 offer acceptances, from 2 distinct buyers | Both buyers are the owner's own addresses, so there is no third party's consent or acceptance. They are kept only in the encrypted offline dump, until its deletion date. |
+| 3 payments `REFUNDED`, 300 kopecks captured | Refunded in full: 3 refunds `SUCCEEDED` (300 kopecks), 3 refund obligations `FULFILLED`. The refund receipts are confirmed in the Точка cabinet. |
+| 3 Точка webhooks `APPLIED` | All applied, none pending. None can arrive: the webhook is deleted and Flexperiment's own Точка JWT revoked. |
+| 3 bookings, 3 tickets | 3 bookings `CANCELLED`, 3 tickets `VOID`. |
+| 9 emails `DELIVERED`: ticket, booking cancelled, refund succeeded, 3 each | Sent to 2 recipients, both the owner's own addresses. |
+| 9 Unisender event dumps `CONSUMED` | The delivery evidence is read back. Unisender holds only the owner's 2 addresses and their delivery logs. |
+| 1 legal release `PUBLISHED` | v1's public documents. They are historical, and v2 publishes its own. |
+
+Everything else is zero:
+- leads and lead consents;
+- partners, invites, acceptances, ORD delegations, engagements and promo codes;
+- referral rewards, settlements, acts, payout authorizations, payouts and НПД
+  receipts;
+- every ОРД table.
+
+Outside the database, nothing was ever registered with ОРД. The removed
+subsystems' secrets and `partner.flexperiment.ru` go at the cutover.
+
+**What was retired, at which commit.** `flexperiment-v1-final` tags `f09f7b6`,
+v1's last commit before this decision: the executable specification that v2 and
+Refref read v1 from. Production ran `3ad07cf`, ten commits earlier: #158-#167
+were merged and never deployed.
+
+**Until the cutover** v1 runs frozen, and this document still governs any v1
+release. The cutover runs the audit again and stops on any new evidence outside
+certification. It keeps an encrypted offline dump with a deletion date -
+insurance, not a way back - and only then removes the database.
+
+**v2's decisions**, recorded here so that the replacement is not read as a
+reset. They belong to v2's own documents:
+
+- payments go through Refref to Точка; v2 holds no provider credential or
+  webhook of its own, and refunds are executed by Refref at v2's request;
+- workshop seats are held locally: idempotent, with a TTL, failing closed;
+- a deploy names main's exact head, and the running build states that commit.
 
 ## Three things the incidents taught
 

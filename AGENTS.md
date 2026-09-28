@@ -22,14 +22,17 @@ recover the exact durable source instead. Controller commits must not enter
 legal-promotion ancestry, and exact durable recovery takes precedence over
 current `main`.
 
-## Agent Referrals feature freeze
+## v1 is retired
+
+Flexperiment v1 is retired by replacement, not reset: the hard cut was admitted
+on 2026-09-28, and v1 is tagged `flexperiment-v1-final` (see
+[`docs/release/DEPLOYMENT_INVARIANTS.md`](docs/release/DEPLOYMENT_INVARIANTS.md),
+"v1 is retired by replacement, not by reset"). v1 runs frozen until the
+cutover: sales closed, Agent Referrals suspended.
 
 `commerce/src/agent-referrals-*` and the partner surfaces in `apps/admin` are
-under a FEATURE FREEZE while Refref reaches parity (Refref
-`docs/28-rc2-checkout-resolution-and-payment-obligations.md` §14). Allowed:
-bug fixes, security, compliance, production incidents, and migration
-prerequisites. Not allowed: new partner features, new settlement capabilities,
-new attribution mechanics. The subsystem stays production-critical: new
-participations continue here until the Refref parity gate (attribution, promo,
-ORD, commission, settlement, acts/NPD, operational recovery) is met; only then
-does a separate no-new-participations freeze apply.
+in retirement mode. No new partner, referral, attribution or settlement
+operations, and no new participations. Allowed: only what the hard cut needs -
+the freeze, the evidence audit, closing external tails, and remediation of a v1
+production incident or security issue until the cutover. Referral capability
+moves to Refref; it is not rebuilt here.
