@@ -196,5 +196,8 @@ jobs:
           flexperiment-commerce-v2:test commerce-v2-smoke 3002 3102 commerce-v2
           --env DEPLOY_ENV=staging
           --env PAYMENT_MODE=disabled
+          --env BETTER_AUTH_SECRET=ci-runtime-better-auth-secret-not-for-production
+          --env AUTH_EMAIL_OUTBOX_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+          --env PUBLIC_COMMERCE_ORIGIN=http://127.0.0.1:3102
         env:
           SOURCE_COMMIT: ${{ github.sha }}
