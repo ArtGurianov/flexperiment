@@ -8,6 +8,9 @@ import { entitledCourse } from "@/lib/content/entitled";
 import { getCommercialSummaries } from "@/lib/commerce-summary";
 import { relationId } from "@/lib/content/editorial";
 import CourseCheckout from "@/components/checkout/CourseCheckout";
+import { RichText } from "@payloadcms/richtext-lexical/react";
+import type { SerializedEditorState } from "@payloadcms/richtext-lexical/lexical";
+import { lessonAccessLabel } from "@/lib/course-access-labels";
 
 type Props = { params: Promise<{ slug: string }> };
 const buildShellSlug = "__build-shell__";
@@ -37,6 +40,7 @@ async function CourseContent({ params }: Props) {
   if (!result) notFound();
   const commercial = (await getCommercialSummaries()).get(result.course.courseRef);
   if (commercial?.withdrawn) notFound();
+  const courseDescription = result.course.description as SerializedEditorState | null | undefined;
   const lessonsBySection = new Map<string, typeof result.outline.lessons>();
   for (const lesson of result.outline.lessons) {
     const key = String(relationId(lesson.section));
@@ -58,12 +62,13 @@ async function CourseContent({ params }: Props) {
       <nav className="nav" aria-label="Основная навигация"><Link className="wordmark" href="/">FLEXPERIMENT<span>®</span></Link><Link href="/courses">← Все курсы</Link></nav>
       <header className="courseHero"><p className="eyebrow">{state}</p><h1>{result.course.title}</h1><p>{result.course.summary}</p></header>
       {commercial?.accessModel === "PAID" && <CourseCheckout courseRef={result.course.courseRef} offerRef={commercial.offerRef} saleMode={commercial.saleMode} priceKopecks={commercial.priceKopecks} />}
+      {courseDescription && <section className="richCopy courseDescription" aria-label="О курсе"><RichText data={courseDescription} /></section>}
       <section className="syllabus" aria-labelledby="syllabus-title">
         <p className="sectionNumber">Программа</p><h2 id="syllabus-title">Что внутри</h2>
         {result.outline.sections.map((section, index) => (
           <article className="syllabusSection" key={String(section.id)}>
             <header><span>{String(index + 1).padStart(2, "0")}</span><h3>{section.title}</h3></header>
-            <ol>{(lessonsBySection.get(String(section.id)) ?? []).map((lesson) => <li key={lesson.lessonRef}><Link href={`/courses/${result.course.slug}/lessons/${lesson.slug}`}>{lesson.title}</Link>{lesson.freePreview && <small>превью</small>}</li>)}</ol>
+            <ol>{(lessonsBySection.get(String(section.id)) ?? []).map((lesson) => <li key={lesson.lessonRef}><Link href={`/courses/${result.course.slug}/lessons/${lesson.slug}`}>{lesson.title}</Link><small>{lessonAccessLabel(commercial, Boolean(lesson.freePreview))}</small></li>)}</ol>
           </article>
         ))}
       </section>

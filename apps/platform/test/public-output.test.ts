@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { buildPublicSearchIndex } from "../lib/public-search";
+import { buildPublicSearchIndex, parsePublicSearchIndex } from "../lib/public-search";
 import { analyticsConsentFromCookie, safeAnalyticsLocation } from "../lib/analytics-consent";
+import { lessonAccessLabel } from "../lib/course-access-labels";
 
 describe("public discovery output", () => {
   it("includes listed lessons, excludes withdrawn courses, and exposes only the public contract", () => {
@@ -16,6 +17,17 @@ describe("public discovery output", () => {
     const index = buildPublicSearchIndex(documents, commercial);
     expect(index.map(({ type, ref }) => `${type}:${ref}`)).toEqual(["course:course-one", "lesson:lesson-one"]);
     expect(JSON.stringify(index)).not.toMatch(/videoId|active_video|token|secret/i);
+    expect(parsePublicSearchIndex(index)).toEqual(index);
+    expect(parsePublicSearchIndex({ documents: index })).toEqual([]);
+    expect(parsePublicSearchIndex([{ ...index[0], url: "https://attacker.invalid" }])).toEqual([]);
+  });
+
+  it("labels lesson access from the commerce authority", () => {
+    const freeCourse = { courseRef: "free", offerRef: null, accessModel: "FREE" as const, withdrawn: false, saleMode: "CLOSED" as const, priceKopecks: 0 };
+    const paidCourse = { courseRef: "paid", offerRef: "offer", accessModel: "PAID" as const, withdrawn: false, saleMode: "PUBLIC" as const, priceKopecks: 10000 };
+    expect(lessonAccessLabel(freeCourse, false)).toBe("Бесплатно после регистрации");
+    expect(lessonAccessLabel(paidCourse, true)).toBe("Бесплатный превью-урок");
+    expect(lessonAccessLabel(paidCourse, false)).toBe("Доступ по покупке курса");
   });
 
   it("keeps analytics opt-in explicit and strips sensitive query parameters", () => {

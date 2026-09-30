@@ -3,20 +3,12 @@
 import Link from "next/link";
 import MiniSearch from "minisearch";
 import { useEffect, useMemo, useState } from "react";
-
-type SearchDocument = {
-  type: "course" | "lesson";
-  ref: string;
-  courseRef: string;
-  title: string;
-  summary: string;
-  url: string;
-};
+import { parsePublicSearchIndex, type PublicSearchIndexEntry } from "@/lib/public-search";
 
 const normalize = (term: string) => term.toLocaleLowerCase("ru-RU").replaceAll("ё", "е");
 
 export default function CourseSearch() {
-  const [documents, setDocuments] = useState<SearchDocument[]>([]);
+  const [documents, setDocuments] = useState<PublicSearchIndexEntry[]>([]);
   const [query, setQuery] = useState("");
   const [unavailable, setUnavailable] = useState(false);
 
@@ -25,9 +17,9 @@ export default function CourseSearch() {
     void fetch("/search-index.json", { signal: controller.signal })
       .then((response) => {
         if (!response.ok) throw new Error("SEARCH_UNAVAILABLE");
-        return response.json() as Promise<{ documents?: SearchDocument[] }>;
+        return response.json() as Promise<unknown>;
       })
-      .then((body) => setDocuments(body.documents ?? []))
+      .then((body) => setDocuments(parsePublicSearchIndex(body)))
       .catch((error: unknown) => {
         if (!(error instanceof DOMException && error.name === "AbortError")) setUnavailable(true);
       });
@@ -35,9 +27,9 @@ export default function CourseSearch() {
   }, []);
 
   const index = useMemo(() => {
-    const next = new MiniSearch<SearchDocument>({
+    const next = new MiniSearch<PublicSearchIndexEntry>({
       fields: ["title", "summary"],
-      storeFields: ["type", "ref", "courseRef", "title", "summary", "url"],
+      storeFields: ["type", "ref", "title", "summary", "url"],
       idField: "ref",
       processTerm: normalize,
     });
@@ -47,7 +39,7 @@ export default function CourseSearch() {
 
   const results = query.trim().length < 2
     ? []
-    : index.search(query, { prefix: true, fuzzy: 0.2 }).slice(0, 12) as unknown as SearchDocument[];
+    : index.search(query, { prefix: true, fuzzy: 0.2 }).slice(0, 12) as unknown as PublicSearchIndexEntry[];
 
   return <section className="courseSearch" aria-labelledby="course-search-title">
     <label id="course-search-title" htmlFor="course-search">Поиск по курсам и урокам</label>
