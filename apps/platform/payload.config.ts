@@ -14,6 +14,7 @@ import { AccessOperations } from "@/collections/AccessOperations";
 import { reconcileCourseManifestsTask, syncCourseManifestTask } from "@/lib/manifest/tasks";
 import { platformSearchPlugin } from "@/lib/search-plugin";
 import { assertPayloadTransactions } from "@/lib/payload-transaction-assertion";
+import { publicMediaFileURL } from "@/lib/public-media";
 import { serializeDatabaseTransactions } from "@/lib/serialized-transactions";
 
 const filename = fileURLToPath(import.meta.url);
@@ -25,9 +26,24 @@ const requireEnvironment = (name: string) => {
   return value;
 };
 
+const requireConfiguredEnvironment = (name: string) => {
+  const value = process.env[name];
+  if (!value) throw new Error(`${name}_REQUIRED`);
+  return value;
+};
+
 requireEnvironment("SOURCE_COMMIT");
 
 const s3Bucket = process.env.S3_BUCKET;
+const s3Config = s3Bucket ? {
+  endpoint: requireConfiguredEnvironment("S3_ENDPOINT"),
+  region: process.env.S3_REGION ?? "ru-central-1",
+  credentials: {
+    accessKeyId: requireConfiguredEnvironment("S3_ACCESS_KEY_ID"),
+    secretAccessKey: requireConfiguredEnvironment("S3_SECRET_ACCESS_KEY"),
+  },
+  forcePathStyle: true,
+} : {};
 
 export default buildConfig({
   onInit: assertPayloadTransactions,
@@ -54,19 +70,19 @@ export default buildConfig({
     shouldAutoRun: async () => process.env.PAYLOAD_JOBS_ENABLED !== "false",
     tasks: [syncCourseManifestTask, reconcileCourseManifestsTask],
   },
-  plugins: [platformSearchPlugin, ...(s3Bucket ? [s3Storage({
-    bucket: s3Bucket,
-    collections: { media: true },
-    config: {
-      endpoint: requireEnvironment("S3_ENDPOINT"),
-      region: process.env.S3_REGION ?? "ru-central-1",
-      credentials: {
-        accessKeyId: requireEnvironment("S3_ACCESS_KEY_ID")!,
-        secretAccessKey: requireEnvironment("S3_SECRET_ACCESS_KEY")!,
+  plugins: [platformSearchPlugin, s3Storage({
+    acl: "public-read",
+    alwaysInsertFields: true,
+    bucket: s3Bucket ?? "local-media",
+    collections: {
+      media: {
+        generateFileURL: publicMediaFileURL,
+        prefix: "media",
       },
-      forcePathStyle: true,
     },
-  })] : [])],
+    config: s3Config,
+    enabled: Boolean(s3Bucket),
+  })],
   sharp,
   typescript: { outputFile: path.resolve(dirname, "payload-types.ts") },
 });

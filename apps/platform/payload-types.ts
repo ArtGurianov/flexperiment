@@ -174,6 +174,8 @@ export interface User {
 export interface Media {
   id: number;
   alt: string;
+  prefix?: string | null;
+  _objectKey?: string | null;
   updatedAt: string;
   createdAt: string;
   url?: string | null;
@@ -195,6 +197,14 @@ export interface Media {
       filename?: string | null;
     };
     hero?: {
+      url?: string | null;
+      width?: number | null;
+      height?: number | null;
+      mimeType?: string | null;
+      filesize?: number | null;
+      filename?: string | null;
+    };
+    og?: {
       url?: string | null;
       width?: number | null;
       height?: number | null;
@@ -567,6 +577,8 @@ export interface UsersSelect<T extends boolean = true> {
  */
 export interface MediaSelect<T extends boolean = true> {
   alt?: T;
+  prefix?: T;
+  _objectKey?: T;
   updatedAt?: T;
   createdAt?: T;
   url?: T;
@@ -592,6 +604,16 @@ export interface MediaSelect<T extends boolean = true> {
               filename?: T;
             };
         hero?:
+          | T
+          | {
+              url?: T;
+              width?: T;
+              height?: T;
+              mimeType?: T;
+              filesize?: T;
+              filename?: T;
+            };
+        og?:
           | T
           | {
               url?: T;

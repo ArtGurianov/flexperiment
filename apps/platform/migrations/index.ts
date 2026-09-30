@@ -1,6 +1,7 @@
 import * as migration_20260930_101858_initial from './20260930_101858_initial';
 import * as migration_20260930_105005_manifest_outbox from './20260930_105005_manifest_outbox';
 import * as migration_20260930_112419_search_index from './20260930_112419_search_index';
+import * as migration_20260930_181108_public_media_storage from './20260930_181108_public_media_storage';
 
 export const migrations = [
   {
@@ -16,6 +17,11 @@ export const migrations = [
   {
     up: migration_20260930_112419_search_index.up,
     down: migration_20260930_112419_search_index.down,
-    name: '20260930_112419_search_index'
+    name: '20260930_112419_search_index',
+  },
+  {
+    up: migration_20260930_181108_public_media_storage.up,
+    down: migration_20260930_181108_public_media_storage.down,
+    name: '20260930_181108_public_media_storage',
   },
 ];
