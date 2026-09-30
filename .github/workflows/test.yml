@@ -158,7 +158,9 @@ jobs:
           push: false
           load: true
           tags: flexperiment-platform-v2:test
-          build-args: SOURCE_COMMIT=${{ github.sha }}
+          build-args: |
+            SOURCE_COMMIT=${{ github.sha }}
+            NEXT_PUBLIC_SERVER_URL=https://ci.platform.invalid
           cache-from: type=gha,scope=platform-v2
           cache-to: type=gha,mode=max,scope=platform-v2
 
@@ -180,9 +182,12 @@ jobs:
           flexperiment-platform-v2:test platform-v2-smoke 3001 3101 platform
           --env PAYLOAD_SECRET=ci-runtime-only-not-a-production-secret
           --env PAYLOAD_JOBS_ENABLED=false
+          --env PLATFORM_REVALIDATE_TOKEN=${PLATFORM_REVALIDATE_TOKEN}
           --env NEXT_PUBLIC_SERVER_URL=http://127.0.0.1:3101
         env:
           SOURCE_COMMIT: ${{ github.sha }}
+          PLATFORM_CANONICAL_ORIGIN: https://ci.platform.invalid
+          PLATFORM_REVALIDATE_TOKEN: ci-rendered-server-revalidation-token
 
       - name: Boot and verify the Commerce v2 image
         run: >-
