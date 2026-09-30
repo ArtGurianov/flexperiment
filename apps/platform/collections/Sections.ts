@@ -1,6 +1,6 @@
 import type { CollectionConfig } from "payload";
 import { authorOnly, publicPublishedAndListed } from "@/lib/access";
-import { blockPublishedDelete, enforcePublishedLifecycle, immutableRef, immutableRelationAfterPublish } from "@/lib/content-lifecycle";
+import { blockPublishedDelete, clearDraftOperation, enforcePublishedLifecycle, immutableRef, immutableRelationAfterPublish, markDraftOperation } from "@/lib/content-lifecycle";
 import { commitManifestChange, prepareManifestChange } from "@/lib/manifest/hooks";
 
 export const Sections: CollectionConfig = {
@@ -9,8 +9,10 @@ export const Sections: CollectionConfig = {
   versions: { drafts: { schedulePublish: true, autosave: true }, maxPerDoc: 50 },
   access: { read: publicPublishedAndListed, create: authorOnly, update: authorOnly, delete: authorOnly },
   hooks: {
+    beforeOperation: [markDraftOperation],
     beforeChange: [enforcePublishedLifecycle, prepareManifestChange("section")],
     afterChange: [commitManifestChange("section")],
+    afterOperation: [clearDraftOperation],
     beforeDelete: [blockPublishedDelete],
   },
   fields: [

@@ -1,6 +1,6 @@
 import type { CollectionConfig } from "payload";
 import { authorOnly, publicPublishedAndListed } from "@/lib/access";
-import { blockPublishedDelete, enforcePublishedLifecycle, immutableRef, immutableSlugAfterPublish } from "@/lib/content-lifecycle";
+import { blockPublishedDelete, clearDraftOperation, enforcePublishedLifecycle, immutableRef, immutableSlugAfterPublish, markDraftOperation } from "@/lib/content-lifecycle";
 import { commitManifestChange, prepareManifestChange } from "@/lib/manifest/hooks";
 import { courseCommercialEndpoints } from "@/lib/course-commercial-endpoints";
 
@@ -11,8 +11,10 @@ export const Courses: CollectionConfig = {
   versions: { drafts: { schedulePublish: true, autosave: true }, maxPerDoc: 50 },
   access: { read: publicPublishedAndListed, create: authorOnly, update: authorOnly, delete: authorOnly },
   hooks: {
+    beforeOperation: [markDraftOperation],
     beforeChange: [enforcePublishedLifecycle, prepareManifestChange("course")],
     afterChange: [commitManifestChange("course")],
+    afterOperation: [clearDraftOperation],
     beforeDelete: [blockPublishedDelete],
   },
   fields: [

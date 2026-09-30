@@ -1,6 +1,19 @@
 import { randomUUID } from "node:crypto";
-import type { CollectionBeforeChangeHook, CollectionBeforeDeleteHook, FieldHook } from "payload";
+import type { CollectionAfterOperationHook, CollectionBeforeChangeHook, CollectionBeforeDeleteHook, CollectionBeforeOperationHook, FieldHook } from "payload";
 import { getDocumentForLifecycle } from "@/lib/content/editorial";
+
+const draftOperationKey = "__lmsDraftOperation";
+
+export const markDraftOperation: CollectionBeforeOperationHook = ({ args, operation, req }) => {
+  if (operation === "create" || operation === "update" || operation === "updateByID") {
+    (req.context as Record<string, unknown>)[draftOperationKey] = Boolean((args as { draft?: boolean }).draft);
+  }
+};
+
+export const clearDraftOperation: CollectionAfterOperationHook = ({ req, result }) => {
+  delete (req.context as Record<string, unknown>)[draftOperationKey];
+  return result;
+};
 
 export const immutableRef = (field: string): FieldHook => ({ originalDoc, value }) => {
   const existing = originalDoc?.[field];
@@ -24,8 +37,9 @@ export const immutableRelationAfterPublish = (field: string): FieldHook => ({ or
   return value;
 };
 
-export const enforcePublishedLifecycle: CollectionBeforeChangeHook = ({ data, originalDoc }) => {
-  if (originalDoc?.everPublished && originalDoc?._status === "published" && data?._status === "draft") {
+export const enforcePublishedLifecycle: CollectionBeforeChangeHook = ({ data, originalDoc, req }) => {
+  const isDraftSave = (req.context as Record<string, unknown>)[draftOperationKey] === true;
+  if (!isDraftSave && originalDoc?.everPublished && originalDoc?._status === "published" && data?._status === "draft") {
     throw new Error("EVER_PUBLISHED_CONTENT_CANNOT_BE_UNPUBLISHED");
   }
   if (data?._status === "published") data.everPublished = true;

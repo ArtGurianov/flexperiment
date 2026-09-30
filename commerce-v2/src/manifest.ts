@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 
 export type Visibility = "LISTED" | "UNLISTED";
@@ -49,21 +49,39 @@ export function lessonEffectiveVisibility(manifest: CourseManifest, lessonRef: s
 
 function validateManifest(manifest: CourseManifest) {
   if (!manifest.courseRef || !Number.isInteger(manifest.version) || manifest.version < 1) throw new ManifestError("MANIFEST_INVALID");
+  if (manifest.visibility !== "LISTED" && manifest.visibility !== "UNLISTED") throw new ManifestError("MANIFEST_INVALID");
   const expectedHash = manifestContentHash({
     courseRef: manifest.courseRef, version: manifest.version, visibility: manifest.visibility,
     sections: manifest.sections, lessons: manifest.lessons, operations: manifest.operations,
   });
   if (manifest.contentHash !== expectedHash) throw new ManifestError("MANIFEST_HASH_MISMATCH");
   const sectionRefs = new Set<string>();
-  for (const section of manifest.sections) {
+  const sectionPositions = new Set<number>();
+  for (const [index, section] of manifest.sections.entries()) {
+    if (!section.sectionRef || !["LISTED", "UNLISTED"].includes(section.visibility)) throw new ManifestError("MANIFEST_INVALID");
     if (sectionRefs.has(section.sectionRef)) throw new ManifestError("DUPLICATE_SECTION_REF");
+    const position = section.position ?? index;
+    if (!Number.isInteger(position) || position < 0) throw new ManifestError("SECTION_POSITION_INVALID");
+    if (sectionPositions.has(position)) throw new ManifestError("DUPLICATE_SECTION_POSITION");
     sectionRefs.add(section.sectionRef);
+    sectionPositions.add(position);
   }
   const lessonRefs = new Set<string>();
-  for (const lesson of manifest.lessons) {
+  const lessonPositions = new Map<string, Set<number>>();
+  for (const [index, lesson] of manifest.lessons.entries()) {
+    if (!lesson.lessonRef || !lesson.sectionRef || !["LISTED", "UNLISTED"].includes(lesson.visibility)) throw new ManifestError("MANIFEST_INVALID");
     if (!sectionRefs.has(lesson.sectionRef)) throw new ManifestError("LESSON_SECTION_MISSING");
     if (lessonRefs.has(lesson.lessonRef)) throw new ManifestError("DUPLICATE_LESSON_REF");
+    const position = lesson.position ?? index;
+    if (!Number.isInteger(position) || position < 0) throw new ManifestError("LESSON_POSITION_INVALID");
+    const positions = lessonPositions.get(lesson.sectionRef) ?? new Set<number>();
+    if (positions.has(position)) throw new ManifestError("DUPLICATE_LESSON_POSITION");
+    positions.add(position);
+    lessonPositions.set(lesson.sectionRef, positions);
     lessonRefs.add(lesson.lessonRef);
+  }
+  if (manifest.operations.some(({ operationId, committedVersion }) => !operationId || !Number.isInteger(committedVersion) || committedVersion < 1)) {
+    throw new ManifestError("MANIFEST_INVALID");
   }
   if (new Set(manifest.operations.map(({ operationId }) => operationId)).size !== manifest.operations.length) {
     throw new ManifestError("DUPLICATE_OPERATION_ID");
@@ -77,6 +95,7 @@ type OverrideRow = {
   scope_ref: string;
   expected_kind: "EFFECTIVE_VISIBILITY" | "FREE_PREVIEW";
   committed_version: number | null;
+  state: "PENDING" | "FINALIZED" | "SUPERSEDED" | "RELEASED_ROLLED_BACK";
 };
 
 const expectedRestrictionPresent = (manifest: CourseManifest, override: OverrideRow): boolean => {
@@ -110,14 +129,24 @@ export function applyCourseManifest(db: Database.Database, manifest: CourseManif
   if (current && manifest.version <= current.version) throw new ManifestError("MANIFEST_VERSION_REJECTED");
 
   const decisions: Array<{ operationId: string; outcome: "FINALIZED" | "SUPERSEDED" }> = [];
+  const lateCommits: Array<{ operationId: string; committedVersion: number }> = [];
   for (const operation of manifest.operations) {
-    const override = db.prepare("SELECT operation_id, course_ref, scope_level, scope_ref, expected_kind, committed_version FROM access_overrides WHERE operation_id = ? AND state = 'PENDING'").get(operation.operationId) as OverrideRow | undefined;
+    const override = db.prepare("SELECT operation_id, course_ref, scope_level, scope_ref, expected_kind, committed_version, state FROM access_overrides WHERE operation_id = ?").get(operation.operationId) as OverrideRow | undefined;
     if (!override) continue;
     if (override.course_ref !== manifest.courseRef || (override.committed_version !== null && override.committed_version !== operation.committedVersion)) {
       db.prepare("UPDATE access_overrides SET attention_reason = ? WHERE operation_id = ?").run("OPERATION_MANIFEST_MISMATCH", operation.operationId);
       throw new ManifestError("OPERATION_MANIFEST_MISMATCH");
     }
     const present = expectedRestrictionPresent(manifest, override);
+    if (override.state === "RELEASED_ROLLED_BACK") {
+      if (!present) {
+        db.prepare("UPDATE access_overrides SET attention_reason = ? WHERE operation_id = ?").run("COMMITTED_RESTRICTION_ABSENT", operation.operationId);
+        throw new ManifestError("COMMITTED_RESTRICTION_ABSENT");
+      }
+      lateCommits.push({ operationId: operation.operationId, committedVersion: operation.committedVersion });
+      continue;
+    }
+    if (override.state !== "PENDING") continue;
     if (present && manifest.version >= operation.committedVersion) decisions.push({ operationId: operation.operationId, outcome: "FINALIZED" });
     else if (!present && manifest.version > operation.committedVersion) decisions.push({ operationId: operation.operationId, outcome: "SUPERSEDED" });
     else {
@@ -148,10 +177,32 @@ export function applyCourseManifest(db: Database.Database, manifest: CourseManif
     manifest.lessons.forEach((item, index) => lesson.run(item.lessonRef, manifest.courseRef, item.sectionRef, Number(item.everPublished), item.visibility, Number(item.freePreview), item.position ?? index));
     for (const decision of decisions) {
       const committedVersion = manifest.operations.find(({ operationId }) => operationId === decision.operationId)!.committedVersion;
+      const evidence = {
+        outcome: decision.outcome,
+        committedVersion,
+        resolvingManifestVersion: manifest.version,
+        resolvingManifestHash: manifest.contentHash,
+      };
       db.prepare(`UPDATE access_overrides SET state=?, committed_version=COALESCE(committed_version,?), resolved_at=?,
         resolving_manifest_version=?, resolving_manifest_hash=?, resolution_evidence_json=? WHERE operation_id=? AND state='PENDING'`)
         .run(decision.outcome, committedVersion, now, manifest.version, manifest.contentHash,
-          JSON.stringify({ outcome: decision.outcome, committedVersion }), decision.operationId);
+          JSON.stringify(evidence), decision.operationId);
+      db.prepare(`INSERT INTO audit_log(id,actor,action,subject_type,subject_ref,evidence_json,created_at)
+        VALUES (?,?,?,?,?,?,?)`).run(
+        randomUUID(), "commerce-manifest", `ACCESS_OVERRIDE_${decision.outcome}`, "access_override", decision.operationId,
+        JSON.stringify(evidence), now,
+      );
+    }
+    for (const lateCommit of lateCommits) {
+      db.prepare(`UPDATE access_overrides SET committed_version=COALESCE(committed_version,?),
+        resolving_manifest_version=?,resolving_manifest_hash=?,attention_reason='COMMIT_AFTER_ROLLBACK_RELEASE'
+        WHERE operation_id=? AND state='RELEASED_ROLLED_BACK'`)
+        .run(lateCommit.committedVersion, manifest.version, manifest.contentHash, lateCommit.operationId);
+      db.prepare(`INSERT INTO audit_log(id,actor,action,subject_type,subject_ref,evidence_json,created_at)
+        VALUES (?,?,?,?,?,?,?)`).run(
+        randomUUID(), "commerce-manifest", "ACCESS_OVERRIDE_LATE_COMMIT", "access_override", lateCommit.operationId,
+        JSON.stringify({ committedVersion: lateCommit.committedVersion, manifestVersion: manifest.version, manifestHash: manifest.contentHash }), now,
+      );
     }
   });
   apply.immediate();

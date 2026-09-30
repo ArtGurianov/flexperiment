@@ -1,6 +1,6 @@
 import type { CollectionConfig } from "payload";
 import { authorOnly, publicPublishedAndListed } from "@/lib/access";
-import { blockPublishedDelete, enforcePublishedLifecycle, immutableRef, immutableRelationAfterPublish, immutableSlugAfterPublish } from "@/lib/content-lifecycle";
+import { blockPublishedDelete, clearDraftOperation, enforcePublishedLifecycle, immutableRef, immutableRelationAfterPublish, immutableSlugAfterPublish, markDraftOperation } from "@/lib/content-lifecycle";
 import { commitManifestChange, prepareManifestChange } from "@/lib/manifest/hooks";
 import { videoUploadEndpoints } from "@/lib/video-upload-endpoints";
 
@@ -11,8 +11,10 @@ export const Lessons: CollectionConfig = {
   versions: { drafts: { schedulePublish: true, autosave: true }, maxPerDoc: 50 },
   access: { read: publicPublishedAndListed, create: authorOnly, update: authorOnly, delete: authorOnly },
   hooks: {
+    beforeOperation: [markDraftOperation],
     beforeChange: [enforcePublishedLifecycle, prepareManifestChange("lesson")],
     afterChange: [commitManifestChange("lesson")],
+    afterOperation: [clearDraftOperation],
     beforeDelete: [blockPublishedDelete],
   },
   fields: [

@@ -14,6 +14,7 @@ import { AccessOperations } from "@/collections/AccessOperations";
 import { reconcileCourseManifestsTask, syncCourseManifestTask } from "@/lib/manifest/tasks";
 import { platformSearchPlugin } from "@/lib/search-plugin";
 import { assertPayloadTransactions } from "@/lib/payload-transaction-assertion";
+import { serializeDatabaseTransactions } from "@/lib/serialized-transactions";
 
 const filename = fileURLToPath(import.meta.url);
 const dirname = path.dirname(filename);
@@ -40,14 +41,14 @@ export default buildConfig({
   graphQL: { disable: true },
   editor: lexicalEditor(),
   collections: [Users, Media, Courses, Sections, Lessons, AccessOperations],
-  db: sqliteAdapter({
+  db: serializeDatabaseTransactions(sqliteAdapter({
     client: { url: requireEnvironment("PAYLOAD_DATABASE_URL") ?? "file:./platform-data/payload.sqlite" },
     migrationDir: path.resolve(dirname, "migrations"),
     push: process.env.NODE_ENV !== "production",
     transactionOptions: {},
     wal: true,
     busyTimeout: 5000,
-  }),
+  })),
   jobs: {
     autoRun: [{ cron: "*/5 * * * *", queue: "default", limit: 50 }],
     shouldAutoRun: async () => process.env.PAYLOAD_JOBS_ENABLED !== "false",

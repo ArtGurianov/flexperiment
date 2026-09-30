@@ -15,7 +15,7 @@ shift 5
 
 expected_commit=${SOURCE_COMMIT:?SOURCE_COMMIT is required}
 identity_file=/app/.identity/identity.json
-response_file=$(mktemp)
+response_file=$(mktemp "${TMPDIR:-/tmp}/flexperiment-v2-smoke.XXXXXX")
 
 cleanup() {
   docker logs "$container_name" || true
