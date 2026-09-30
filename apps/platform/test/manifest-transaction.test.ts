@@ -1,10 +1,12 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createLocalReq, getPayload, type Payload } from "payload";
 import { rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { listPublicCourses } from "../lib/content/editorial";
 
-const databasePath = `/private/tmp/flexperiment-platform-test-${process.pid}.sqlite`;
-const mediaPath = `/private/tmp/flexperiment-platform-media-${process.pid}`;
+const databasePath = join(tmpdir(), `flexperiment-platform-test-${process.pid}.sqlite`);
+const mediaPath = join(tmpdir(), `flexperiment-platform-media-${process.pid}`);
 let payload: Payload;
 let courseId: number | string;
 let initialJobCount: number;
@@ -43,7 +45,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await payload.destroy();
+  if (payload) await payload.destroy();
   await Promise.all([
     rm(databasePath, { force: true }),
     rm(`${databasePath}-shm`, { force: true }),
