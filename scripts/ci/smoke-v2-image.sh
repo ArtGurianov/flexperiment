@@ -72,11 +72,20 @@ if [[ $service == platform ]]; then
   grep -q 'Каталог курсов' "$response_file"
   grep -q 'Первый курс готовится к публикации.' "$response_file"
   grep -q "${canonical_origin}" "$response_file"
+  grep -q '<html lang="ru"' "$response_file"
+  grep -q 'property="og:locale" content="ru_RU"' "$response_file"
+  grep -q 'rel="canonical" href="https://ci.platform.invalid/courses"' "$response_file"
+  grep -q '"@type":"Organization"' "$response_file"
+  grep -q 'name="yandex-verification" content="ci-yandex-verification"' "$response_file"
   if grep -q 'https://build.invalid' "$response_file"; then
     echo "platform rendered output retained the image-build placeholder origin" >&2
     exit 1
   fi
   grep -Eiq '^content-security-policy:.*https://flexperiment\.s3\.cloud\.ru' "$headers_file"
+
+  curl --fail --silent --show-error \
+    "http://127.0.0.1:${host_port}/robots.txt" >"$response_file"
+  grep -q '^Disallow: /$' "$response_file"
 
   curl --fail --silent --show-error \
     "http://127.0.0.1:${host_port}/search-index.json" >"$response_file"

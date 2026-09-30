@@ -4,6 +4,20 @@ import { getCommercialSummaries } from "@/lib/commerce-summary";
 import CourseSearch from "@/components/search/CourseSearch";
 import { Suspense } from "react";
 import { connection } from "next/server";
+import type { Metadata } from "next";
+
+export const metadata: Metadata = {
+  title: "Курсы",
+  description: "Авторские видео-курсы Арта Гурьянова по флексингу: техника, музыкальность и собственный язык движения.",
+  alternates: { canonical: "/courses" },
+  openGraph: {
+    title: "Курсы по флексингу",
+    description: "Авторские видео-курсы Арта Гурьянова по флексингу.",
+    url: "/courses",
+    type: "website",
+    locale: "ru_RU",
+  },
+};
 
 const money = (kopecks: number) => new Intl.NumberFormat("ru-RU", {
   style: "currency", currency: "RUB", maximumFractionDigits: 0,

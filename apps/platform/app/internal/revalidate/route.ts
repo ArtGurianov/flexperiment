@@ -1,5 +1,6 @@
 import { revalidatePath, revalidateTag } from "next/cache";
 import { timingSafeEqual } from "node:crypto";
+import { notifyIndexNow } from "@/lib/cache-invalidation";
 
 const equal = (left: string, right: string) => {
   const a = Buffer.from(left);
@@ -18,5 +19,6 @@ export async function POST(request: Request) {
   revalidatePath("/search-index.json");
   revalidatePath("/sitemap.xml");
   if (body.slug) revalidatePath(`/courses/${body.slug}`);
+  await notifyIndexNow(["/courses", "/search-index.json", "/sitemap.xml", ...(body.slug ? [`/courses/${body.slug}`] : [])]);
   return Response.json({ revalidated: true, mode: body.mode ?? "swr" });
 }

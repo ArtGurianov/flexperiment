@@ -27,6 +27,7 @@ export type PublicSearchDocument = {
   title: string;
   summary: string;
   url: string;
+  lastModified?: string | null;
 };
 
 export const publicSearchDocuments = unstable_cache(async (): Promise<PublicSearchDocument[]> => {
@@ -35,7 +36,7 @@ export const publicSearchDocuments = unstable_cache(async (): Promise<PublicSear
   const documents = await Promise.all(courses.map(async (course) => {
     const outline = await listPublicCourseOutline(cms, course.id);
     return [
-      { type: "course" as const, ref: course.courseRef, courseRef: course.courseRef, title: course.title, summary: course.summary, url: `/courses/${course.slug}` },
+      { type: "course" as const, ref: course.courseRef, courseRef: course.courseRef, title: course.title, summary: course.summary, url: `/courses/${course.slug}`, lastModified: course.publicContentUpdatedAt },
       ...outline.lessons.map((lesson) => ({
         type: "lesson" as const,
         ref: String(lesson.lessonRef),
@@ -43,6 +44,7 @@ export const publicSearchDocuments = unstable_cache(async (): Promise<PublicSear
         title: String(lesson.title),
         summary: course.title,
         url: `/courses/${course.slug}/lessons/${String(lesson.slug)}`,
+        lastModified: course.publicContentUpdatedAt,
       })),
     ];
   }));

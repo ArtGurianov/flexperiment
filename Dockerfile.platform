@@ -10,11 +10,13 @@ FROM dependencies AS build
 ARG SOURCE_COMMIT
 ARG NEXT_PUBLIC_SERVER_URL=https://flexperiment.ru
 ARG S3_PUBLIC_URL=https://flexperiment.s3.cloud.ru
+ARG YANDEX_WEBMASTER_VERIFICATION
 ENV SOURCE_COMMIT=${SOURCE_COMMIT} \
     PAYLOAD_SECRET=build-only-not-a-runtime-secret \
     PAYLOAD_DATABASE_URL=file:/tmp/platform-build.sqlite \
     NEXT_PUBLIC_SERVER_URL=${NEXT_PUBLIC_SERVER_URL} \
     S3_PUBLIC_URL=${S3_PUBLIC_URL} \
+    YANDEX_WEBMASTER_VERIFICATION=${YANDEX_WEBMASTER_VERIFICATION} \
     DEPLOY_ENV=staging \
     PAYLOAD_JOBS_ENABLED=false
 COPY . .
@@ -31,12 +33,14 @@ WORKDIR /app
 ARG SOURCE_COMMIT
 ARG NEXT_PUBLIC_SERVER_URL=https://flexperiment.ru
 ARG S3_PUBLIC_URL=https://flexperiment.s3.cloud.ru
+ARG YANDEX_WEBMASTER_VERIFICATION
 ENV NODE_ENV=production \
     HOSTNAME=0.0.0.0 \
     PORT=3001 \
     SOURCE_COMMIT=${SOURCE_COMMIT} \
     NEXT_PUBLIC_SERVER_URL=${NEXT_PUBLIC_SERVER_URL} \
     S3_PUBLIC_URL=${S3_PUBLIC_URL} \
+    YANDEX_WEBMASTER_VERIFICATION=${YANDEX_WEBMASTER_VERIFICATION} \
     BUILD_IDENTITY_FILE=/app/.identity/identity.json \
     PAYLOAD_DATABASE_URL=file:/var/lib/flexperiment-v2/platform.sqlite
 COPY --from=dependencies /app/node_modules ./node_modules

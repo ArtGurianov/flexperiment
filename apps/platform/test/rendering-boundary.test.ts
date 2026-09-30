@@ -32,4 +32,10 @@ describe("static-first storefront rendering", () => {
       expect(await source(path)).toContain("await connection()");
     }
   });
+
+  it("keeps Yandex clean parameters scoped to non-content campaign keys", async () => {
+    const robots = await source("app/robots.txt/route.ts");
+    expect(robots).toContain("Clean-param: utm_source&utm_medium&utm_campaign&utm_content&utm_term&yclid&gclid /courses");
+    expect(robots).not.toMatch(/Clean-param:[^\n]*(?:rt|state|auth|return)/);
+  });
 });

@@ -7,6 +7,16 @@ export const metadata: Metadata = {
   metadataBase: new URL(process.env.NEXT_PUBLIC_SERVER_URL ?? "http://localhost:3001"),
   title: { default: "Flexperiment — курсы по флексингу", template: "%s — Flexperiment" },
   description: "Видео-курсы Арта Гурьянова: техника, музыкальность и личная пластика во флексинге.",
+  openGraph: {
+    type: "website",
+    locale: "ru_RU",
+    siteName: "Flexperiment",
+    title: "Flexperiment — курсы по флексингу",
+    description: "Видео-курсы Арта Гурьянова: техника, музыкальность и личная пластика во флексинге.",
+  },
+  verification: process.env.YANDEX_WEBMASTER_VERIFICATION
+    ? { yandex: process.env.YANDEX_WEBMASTER_VERIFICATION }
+    : undefined,
 };
 
 export default function FrontendLayout({ children }: { children: ReactNode }) {

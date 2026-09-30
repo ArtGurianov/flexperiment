@@ -1,7 +1,7 @@
 import type { CourseCommercialSummary } from "./commerce-summary";
 import type { PublicSearchDocument } from "./content/public";
 
-export type PublicSearchIndexEntry = Omit<PublicSearchDocument, "courseRef">;
+export type PublicSearchIndexEntry = Omit<PublicSearchDocument, "courseRef" | "lastModified">;
 
 const isSearchIndexEntry = (value: unknown): value is PublicSearchIndexEntry => {
   if (!value || typeof value !== "object") return false;
@@ -22,5 +22,11 @@ export function buildPublicSearchIndex(
   documents: readonly PublicSearchDocument[],
   commercial: ReadonlyMap<string, CourseCommercialSummary>,
 ): PublicSearchIndexEntry[] {
-  return documents.flatMap(({ courseRef, ...document }) => commercial.get(courseRef)?.withdrawn ? [] : [document]);
+  return documents.flatMap((document) => commercial.get(document.courseRef)?.withdrawn ? [] : [{
+    type: document.type,
+    ref: document.ref,
+    title: document.title,
+    summary: document.summary,
+    url: document.url,
+  }]);
 }

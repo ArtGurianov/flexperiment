@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { buildPublicSearchIndex, parsePublicSearchIndex } from "../lib/public-search";
 import { analyticsConsentFromCookie, safeAnalyticsLocation } from "../lib/analytics-consent";
 import { lessonAccessLabel } from "../lib/course-access-labels";
+import { breadcrumbJsonLd, courseOfferJsonLd, lessonIsAccessibleForFree } from "../lib/seo";
 
 describe("public discovery output", () => {
   it("includes listed lessons, excludes withdrawn courses, and exposes only the public contract", () => {
@@ -17,9 +18,29 @@ describe("public discovery output", () => {
     const index = buildPublicSearchIndex(documents, commercial);
     expect(index.map(({ type, ref }) => `${type}:${ref}`)).toEqual(["course:course-one", "lesson:lesson-one"]);
     expect(JSON.stringify(index)).not.toMatch(/videoId|active_video|token|secret/i);
+    expect(JSON.stringify(index)).not.toMatch(/lastModified/);
     expect(parsePublicSearchIndex(index)).toEqual(index);
     expect(parsePublicSearchIndex({ documents: index })).toEqual([]);
     expect(parsePublicSearchIndex([{ ...index[0], url: "https://attacker.invalid" }])).toEqual([]);
+  });
+
+  it("builds commerce-authoritative structured data", () => {
+    const freeCourse = { courseRef: "free", offerRef: null, accessModel: "FREE" as const, withdrawn: false, saleMode: "CLOSED" as const, priceKopecks: 0 };
+    const paidCourse = { courseRef: "paid", offerRef: "offer", accessModel: "PAID" as const, withdrawn: false, saleMode: "ACCEPTANCE_ONLY" as const, priceKopecks: 10000 };
+    expect(courseOfferJsonLd(freeCourse)).toMatchObject({ price: "0", availability: "https://schema.org/InStock" });
+    expect(courseOfferJsonLd(paidCourse)).toMatchObject({ price: "100", availability: "https://schema.org/LimitedAvailability" });
+    expect(lessonIsAccessibleForFree(freeCourse, false)).toBe(true);
+    expect(lessonIsAccessibleForFree(paidCourse, true)).toBe(true);
+    expect(lessonIsAccessibleForFree(paidCourse, false)).toBe(false);
+    expect(breadcrumbJsonLd("https://flexperiment.ru", [
+      { name: "Курсы", path: "/courses" }, { name: "Курс", path: "/courses/one" },
+    ])).toMatchObject({
+      "@type": "BreadcrumbList",
+      itemListElement: [
+        { position: 1, item: "https://flexperiment.ru/courses" },
+        { position: 2, item: "https://flexperiment.ru/courses/one" },
+      ],
+    });
   });
 
   it("labels lesson access from the commerce authority", () => {

@@ -16,6 +16,7 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     }]),
     ...searchDocuments.flatMap((document) => document.type !== "lesson" || commercial.get(document.courseRef)?.withdrawn ? [] : [{
       url: `${origin}${document.url}`,
+      lastModified: document.lastModified ?? undefined,
       changeFrequency: "weekly" as const,
       priority: 0.6,
     }]),

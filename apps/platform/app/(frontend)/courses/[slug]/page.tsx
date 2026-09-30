@@ -11,6 +11,7 @@ import CourseCheckout from "@/components/checkout/CourseCheckout";
 import { RichText } from "@payloadcms/richtext-lexical/react";
 import type { SerializedEditorState } from "@payloadcms/richtext-lexical/lexical";
 import { lessonAccessLabel } from "@/lib/course-access-labels";
+import { breadcrumbJsonLd, courseOfferJsonLd } from "@/lib/seo";
 
 type Props = { params: Promise<{ slug: string }> };
 const buildShellSlug = "__build-shell__";
@@ -24,11 +25,13 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   if (slug === buildShellSlug) return { robots: { index: false, follow: false } };
   const result = await publicCourse(slug);
   if (!result) return { robots: { index: false, follow: false } };
+  const title = result.course.seo?.title || result.course.title;
+  const description = result.course.seo?.description || result.course.summary;
   return {
-    title: result.course.title,
-    description: result.course.summary,
+    title,
+    description,
     alternates: { canonical: `/courses/${result.course.slug}` },
-    openGraph: { title: result.course.title, description: result.course.summary, type: "website" },
+    openGraph: { title, description, type: "website", url: `/courses/${result.course.slug}`, locale: "ru_RU" },
   };
 }
 
@@ -47,16 +50,18 @@ async function CourseContent({ params }: Props) {
     lessonsBySection.set(key, [...(lessonsBySection.get(key) ?? []), lesson]);
   }
   const state = !commercial ? "Скоро" : commercial.accessModel === "FREE" ? "Бесплатный курс" : commercial.saleMode === "CLOSED" ? "Продажи закрыты" : "Доступен";
+  const origin = process.env.NEXT_PUBLIC_SERVER_URL ?? "http://localhost:3001";
   const jsonLd = {
     "@context": "https://schema.org", "@type": "Course",
     name: result.course.title, description: result.course.summary,
     provider: { "@type": "Organization", name: "Flexperiment" },
-    ...(commercial ? { offers: {
-      "@type": "Offer", priceCurrency: "RUB",
-      price: commercial.accessModel === "FREE" ? "0" : commercial.priceKopecks === null ? undefined : String(commercial.priceKopecks / 100),
-      availability: commercial.saleMode === "PUBLIC" ? "https://schema.org/InStock" : "https://schema.org/PreOrder",
-    } } : {}),
+    ...(commercial ? { offers: courseOfferJsonLd(commercial) } : {}),
   };
+  const breadcrumbs = breadcrumbJsonLd(origin, [
+    { name: "Главная", path: "/" },
+    { name: "Курсы", path: "/courses" },
+    { name: result.course.title, path: `/courses/${result.course.slug}` },
+  ]);
   return (
     <main className="courseDetail">
       <nav className="nav" aria-label="Основная навигация"><Link className="wordmark" href="/">FLEXPERIMENT<span>®</span></Link><Link href="/courses">← Все курсы</Link></nav>
@@ -73,6 +78,7 @@ async function CourseContent({ params }: Props) {
         ))}
       </section>
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd).replace(/</g, "\\u003c") }} />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbs).replace(/</g, "\\u003c") }} />
     </main>
   );
 }

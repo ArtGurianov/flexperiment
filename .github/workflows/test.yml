@@ -161,6 +161,7 @@ jobs:
           build-args: |
             SOURCE_COMMIT=${{ github.sha }}
             NEXT_PUBLIC_SERVER_URL=https://ci.platform.invalid
+            YANDEX_WEBMASTER_VERIFICATION=ci-yandex-verification
           cache-from: type=gha,scope=platform-v2
           cache-to: type=gha,mode=max,scope=platform-v2
 
