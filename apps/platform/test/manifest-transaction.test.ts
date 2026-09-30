@@ -184,4 +184,91 @@ describe("Payload manifest transaction", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     fetchMock.mockRestore();
   });
+
+  it("converges a committed publication through the manifest job and live revalidation boundary", async () => {
+    vi.stubEnv("NEXT_PUBLIC_SERVER_URL", "https://platform.test");
+    vi.stubEnv("PLATFORM_REVALIDATE_TOKEN", "revalidation-token");
+    vi.stubEnv("INDEXNOW_KEY", "");
+    const requests: Array<{ body: unknown; url: string }> = [];
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input instanceof Request ? input.url : input);
+      const body = typeof init?.body === "string" ? JSON.parse(init.body) as unknown : null;
+      requests.push({ body, url });
+      if (url.endsWith("/v1/internal/course-manifests")) {
+        const manifest = body as { operations: Array<{ operationId: string }> };
+        return new Response(JSON.stringify({
+          kind: "APPLIED",
+          finalized: manifest.operations.map(({ operationId }) => operationId),
+          superseded: [],
+          stillOpen: [],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (url === "https://platform.test/internal/revalidate") {
+        expect(new Headers(init?.headers).get("authorization")).toBe("Bearer revalidation-token");
+        return new Response(JSON.stringify({ revalidated: true, mode: "immediate" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      throw new Error(`UNEXPECTED_FETCH:${url}`);
+    });
+
+    try {
+      const before = await payload.findByID({ collection: "courses", id: courseId, draft: false, overrideAccess: true });
+      const req = await createLocalReq({}, payload);
+      const published = await payload.update({
+        collection: "courses",
+        id: courseId,
+        data: { summary: "Converged summary", visibility: "unlisted", _status: "published" },
+        draft: false,
+        overrideAccess: true,
+        req,
+      });
+      expect(published.summary).toBe("Converged summary");
+      const committed = await payload.findByID({ collection: "courses", id: courseId, draft: false, overrideAccess: true });
+      expect(committed.manifestVersion).toBe(Number(before.manifestVersion) + 1);
+      const pendingOperations = await payload.find({
+        collection: "access-operations",
+        limit: 10,
+        overrideAccess: true,
+        pagination: false,
+        where: { state: { equals: "COMMITTED_UNACKED" } },
+      });
+      expect(pendingOperations.docs).toHaveLength(1);
+
+      const jobs = await payload.find({
+        collection: "payload-jobs",
+        limit: 1,
+        overrideAccess: true,
+        pagination: false,
+        sort: "-id",
+        where: { taskSlug: { equals: "syncCourseManifest" } },
+      });
+      expect(jobs.docs).toHaveLength(1);
+      await payload.jobs.runByID({ id: jobs.docs[0]!.id, overrideAccess: true, silent: true });
+
+      const manifestRequest = requests.find(({ url }) => url.endsWith("/v1/internal/course-manifests"));
+      expect(manifestRequest?.body).toMatchObject({
+        courseRef: "course:transaction-test",
+        version: committed.manifestVersion,
+        visibility: "UNLISTED",
+        operations: [{
+          operationId: pendingOperations.docs[0]!.operationId,
+          committedVersion: pendingOperations.docs[0]!.committedVersion,
+        }],
+      });
+      expect(requests.find(({ url }) => url === "https://platform.test/internal/revalidate")?.body)
+        .toEqual({ mode: "immediate" });
+      const operations = await payload.find({
+        collection: "access-operations",
+        limit: 10,
+        overrideAccess: true,
+        pagination: false,
+      });
+      expect(operations.docs.map(({ state }) => state)).toEqual(["ACKED"]);
+    } finally {
+      fetchMock.mockRestore();
+      vi.unstubAllEnvs();
+    }
+  });
 });
