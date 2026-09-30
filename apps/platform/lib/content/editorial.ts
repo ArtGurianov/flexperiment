@@ -2,6 +2,53 @@ import type { CollectionSlug, Payload, PayloadRequest } from "payload";
 
 export type EditorialDocument = Record<string, unknown> & { id: number | string };
 
+const sectionOrderField = "_sections_sections_order";
+const lessonOrderField = "_lessons_lessons_order";
+
+const asEditorial = (document: { id: number | string }) => document as unknown as EditorialDocument;
+
+const numericPosition = (document: { id: number | string }) => Number.isInteger(asEditorial(document).position)
+  ? Number(asEditorial(document).position)
+  : Number.MAX_SAFE_INTEGER;
+
+const compareOrder = (field: string) => <T extends { id: number | string }>(left: T, right: T) => {
+  const leftKey = asEditorial(left)[field];
+  const rightKey = asEditorial(right)[field];
+  if (typeof leftKey === "string" && typeof rightKey === "string") return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+  if (typeof leftKey === "string") return -1;
+  if (typeof rightKey === "string") return 1;
+  return numericPosition(left) - numericPosition(right);
+};
+
+export function orderCourseTree<
+  SectionDocument extends { id: number | string },
+  LessonDocument extends { id: number | string; section: unknown },
+>(sections: SectionDocument[], lessons: LessonDocument[]) {
+  const orderedSections = [...sections].sort(compareOrder(sectionOrderField));
+  const sectionRank = new Map(orderedSections.map((section, index) => [String(section.id), index]));
+  const orderedLessons = [...lessons].sort((left, right) => {
+    const sectionDifference = (sectionRank.get(String(relationId(left.section))) ?? Number.MAX_SAFE_INTEGER)
+      - (sectionRank.get(String(relationId(right.section))) ?? Number.MAX_SAFE_INTEGER);
+    return sectionDifference || compareOrder(lessonOrderField)(left, right);
+  });
+  const lessonPositions = new Map<string, number>();
+  return {
+    sections: orderedSections.map((document, position) => {
+      const section = { ...document } as SectionDocument & Record<string, unknown>;
+      delete section[sectionOrderField];
+      return { ...section, position } as SectionDocument & { position: number };
+    }),
+    lessons: orderedLessons.map((document) => {
+      const sectionId = String(relationId(document.section));
+      const position = lessonPositions.get(sectionId) ?? 0;
+      lessonPositions.set(sectionId, position + 1);
+      const lesson = { ...document } as LessonDocument & Record<string, unknown>;
+      delete lesson[lessonOrderField];
+      return { ...lesson, position } as LessonDocument & { position: number };
+    }),
+  };
+}
+
 const relationId = (value: unknown): number | string => {
   if (typeof value === "string" || typeof value === "number") return value;
   if (value && typeof value === "object" && "id" in value) {
@@ -53,9 +100,9 @@ export async function listPublishedCourseState(payload: Payload, courseId: numbe
       overrideAccess: true,
       pagination: false,
       req,
-      sort: "position",
+      sort: sectionOrderField,
       where: { and: [{ course: { equals: courseId } }, { _status: { equals: "published" } }] },
-      select: { sectionRef: true, visibility: true, position: true, course: true, everPublished: true },
+      select: { sectionRef: true, visibility: true, position: true, course: true, everPublished: true, _sections_sections_order: true },
     }),
     payload.find({
       collection: "lessons",
@@ -65,7 +112,7 @@ export async function listPublishedCourseState(payload: Payload, courseId: numbe
       overrideAccess: true,
       pagination: false,
       req,
-      sort: "position",
+      sort: lessonOrderField,
       where: { and: [{ course: { equals: courseId } }, { _status: { equals: "published" } }] },
       select: {
         lessonRef: true,
@@ -75,13 +122,11 @@ export async function listPublishedCourseState(payload: Payload, courseId: numbe
         freePreview: true,
         position: true,
         course: true,
+        _lessons_lessons_order: true,
       },
     }),
   ]);
-  return {
-    sections: sections.docs as EditorialDocument[],
-    lessons: lessons.docs as EditorialDocument[],
-  };
+  return orderCourseTree(sections.docs, lessons.docs);
 }
 
 export async function listUnacknowledgedOperations(payload: Payload, courseRef: string, req?: PayloadRequest) {
@@ -205,9 +250,9 @@ export async function listPublicCourseOutline(payload: Payload, courseId: number
       limit: 1000,
       overrideAccess: false,
       pagination: false,
-      sort: "position",
+      sort: sectionOrderField,
       where: { and: [{ course: { equals: courseId } }, { _status: { equals: "published" } }, { visibility: { equals: "listed" } }] },
-      select: { sectionRef: true, title: true, position: true, course: true, visibility: true },
+      select: { sectionRef: true, title: true, position: true, course: true, visibility: true, _sections_sections_order: true },
     }),
     payload.find({
       collection: "lessons",
@@ -217,58 +262,25 @@ export async function listPublicCourseOutline(payload: Payload, courseId: number
       limit: 5000,
       overrideAccess: false,
       pagination: false,
-      sort: "position",
+      sort: lessonOrderField,
       where: { and: [{ course: { equals: courseId } }, { _status: { equals: "published" } }, { visibility: { equals: "listed" } }] },
-      select: { lessonRef: true, section: true, title: true, slug: true, description: true, position: true, durationSeconds: true, freePreview: true, visibility: true, seo: true },
+      select: { lessonRef: true, section: true, title: true, slug: true, description: true, position: true, durationSeconds: true, freePreview: true, visibility: true, seo: true, _lessons_lessons_order: true },
     }),
   ]);
-  const listedSectionIds = new Set(sections.docs.map(({ id }) => String(id)));
+  const ordered = orderCourseTree(sections.docs, lessons.docs);
+  const listedSectionIds = new Set(ordered.sections.map(({ id }) => String(id)));
   return {
-    sections: sections.docs,
-    lessons: lessons.docs.filter((lesson) => listedSectionIds.has(String(relationId(lesson.section)))),
+    sections: ordered.sections,
+    lessons: ordered.lessons.filter((lesson) => listedSectionIds.has(String(relationId(lesson.section)))),
   };
 }
 
 export async function getPublicLessonBySlugs(payload: Payload, courseSlug: string, lessonSlug: string) {
   const course = await getPublicCourseBySlug(payload, courseSlug);
   if (!course) return null;
-  const lessonResult = await payload.find({
-    collection: "lessons",
-    context: { storefront: true },
-    depth: 0,
-    draft: false,
-    limit: 1,
-    overrideAccess: false,
-    pagination: false,
-    where: {
-      and: [
-        { course: { equals: course.id } }, { slug: { equals: lessonSlug } },
-        { _status: { equals: "published" } }, { visibility: { equals: "listed" } },
-      ],
-    },
-    select: {
-      lessonRef: true, section: true, title: true, slug: true, description: true,
-      position: true, durationSeconds: true, freePreview: true, visibility: true, seo: true,
-    },
-  });
-  const lesson = lessonResult.docs[0] as unknown as PublicLesson | undefined;
+  const outline = await listPublicCourseOutline(payload, course.id);
+  const lesson = outline.lessons.find((candidate) => candidate.slug === lessonSlug) as unknown as PublicLesson | undefined;
   if (!lesson) return null;
-  const sectionResult = await payload.find({
-    collection: "sections",
-    context: { storefront: true },
-    depth: 0,
-    draft: false,
-    limit: 1,
-    overrideAccess: false,
-    pagination: false,
-    where: {
-      and: [
-        { id: { equals: relationId(lesson.section) } }, { course: { equals: course.id } },
-        { _status: { equals: "published" } }, { visibility: { equals: "listed" } },
-      ],
-    },
-    select: { sectionRef: true, title: true, position: true, course: true, visibility: true },
-  });
-  const section = sectionResult.docs[0];
+  const section = outline.sections.find(({ id }) => String(id) === String(relationId(lesson.section)));
   return section ? { course, lesson, section } : null;
 }

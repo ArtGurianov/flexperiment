@@ -80,7 +80,14 @@ export interface Config {
     'payload-preferences': PayloadPreference;
     'payload-migrations': PayloadMigration;
   };
-  collectionsJoins: {};
+  collectionsJoins: {
+    courses: {
+      sections: 'sections';
+    };
+    sections: {
+      lessons: 'lessons';
+    };
+  };
   collectionsSelect: {
     users: UsersSelect<false> | UsersSelect<true>;
     media: MediaSelect<false> | MediaSelect<true>;
@@ -220,6 +227,11 @@ export interface Media {
  */
 export interface Course {
   id: number;
+  sections?: {
+    docs?: (number | Section)[];
+    hasNextPage?: boolean;
+    totalDocs?: number;
+  };
   courseRef?: string | null;
   title: string;
   slug: string;
@@ -260,6 +272,12 @@ export interface Course {
  */
 export interface Section {
   id: number;
+  _sections_sections_order?: string | null;
+  lessons?: {
+    docs?: (number | Lesson)[];
+    hasNextPage?: boolean;
+    totalDocs?: number;
+  };
   sectionRef?: string | null;
   course: number | Course;
   title: string;
@@ -276,6 +294,7 @@ export interface Section {
  */
 export interface Lesson {
   id: number;
+  _lessons_lessons_order?: string | null;
   lessonRef?: string | null;
   course: number | Course;
   section: number | Section;
@@ -630,6 +649,7 @@ export interface MediaSelect<T extends boolean = true> {
  * via the `definition` "courses_select".
  */
 export interface CoursesSelect<T extends boolean = true> {
+  sections?: T;
   courseRef?: T;
   title?: T;
   slug?: T;
@@ -657,6 +677,8 @@ export interface CoursesSelect<T extends boolean = true> {
  * via the `definition` "sections_select".
  */
 export interface SectionsSelect<T extends boolean = true> {
+  _sections_sections_order?: T;
+  lessons?: T;
   sectionRef?: T;
   course?: T;
   title?: T;
@@ -672,6 +694,7 @@ export interface SectionsSelect<T extends boolean = true> {
  * via the `definition` "lessons_select".
  */
 export interface LessonsSelect<T extends boolean = true> {
+  _lessons_lessons_order?: T;
   lessonRef?: T;
   course?: T;
   section?: T;

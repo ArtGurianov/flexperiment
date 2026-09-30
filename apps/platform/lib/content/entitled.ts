@@ -1,6 +1,7 @@
 import { getPayload, type Where } from "payload";
 import config from "@payload-config";
 import {
+  orderCourseTree,
   relationId,
   type PublicCourse,
   type PublicLesson,
@@ -56,22 +57,24 @@ async function entitledOutline(courseId: number | string) {
   const [sections, lessons] = await Promise.all([
     payload.find({
       collection: "sections", depth: 0, draft: false, limit: 1000,
-      overrideAccess: true, pagination: false, sort: "position",
+      overrideAccess: true, pagination: false, sort: "_sections_sections_order",
       where: { and: [{ course: { equals: courseId } }, { _status: { equals: "published" } }, { everPublished: { equals: true } }] },
-      select: { sectionRef: true, title: true, position: true, course: true, visibility: true, everPublished: true },
+      select: { sectionRef: true, title: true, position: true, course: true, visibility: true, everPublished: true, _sections_sections_order: true },
     }),
     payload.find({
       collection: "lessons", depth: 0, draft: false, limit: 5000,
-      overrideAccess: true, pagination: false, sort: "position",
+      overrideAccess: true, pagination: false, sort: "_lessons_lessons_order",
       where: { and: [{ course: { equals: courseId } }, { _status: { equals: "published" } }, { everPublished: { equals: true } }] },
       select: {
         lessonRef: true, section: true, title: true, slug: true, description: true,
         position: true, durationSeconds: true, freePreview: true, visibility: true, seo: true, everPublished: true,
+        _lessons_lessons_order: true,
       },
     }),
   ]);
-  const sectionIds = new Set(sections.docs.map(({ id }) => String(id)));
-  return { sections: sections.docs, lessons: lessons.docs.filter((lesson) => sectionIds.has(String(relationId(lesson.section)))) };
+  const ordered = orderCourseTree(sections.docs, lessons.docs);
+  const sectionIds = new Set(ordered.sections.map(({ id }) => String(id)));
+  return { sections: ordered.sections, lessons: ordered.lessons.filter((lesson) => sectionIds.has(String(relationId(lesson.section)))) };
 }
 
 export async function listEntitledCourses(cookieHeader: string): Promise<PublicCourse[]> {
@@ -102,20 +105,7 @@ export async function entitledCourse(cookieHeader: string, slug: string) {
 export async function entitledLesson(cookieHeader: string, courseSlug: string, lessonSlug: string) {
   const courseResult = await entitledCourse(cookieHeader, courseSlug);
   if (!courseResult) return null;
-  const payload = await getPayload({ config });
-  const lessonResult = await payload.find({
-    collection: "lessons", depth: 0, draft: false, limit: 1,
-    overrideAccess: true, pagination: false,
-    where: { and: [
-      { course: { equals: courseResult.course.id } }, { slug: { equals: lessonSlug } },
-      { _status: { equals: "published" } }, { everPublished: { equals: true } },
-    ] },
-    select: {
-      lessonRef: true, section: true, title: true, slug: true, description: true,
-      position: true, durationSeconds: true, freePreview: true, visibility: true, seo: true, everPublished: true,
-    },
-  });
-  const lesson = lessonResult.docs[0] as unknown as PublicLesson | undefined;
+  const lesson = courseResult.outline.lessons.find((candidate) => candidate.slug === lessonSlug) as unknown as PublicLesson | undefined;
   if (!lesson) return null;
   const section = courseResult.outline.sections.find(({ id }) => String(id) === String(relationId(lesson.section)));
   return section ? { course: courseResult.course, lesson, section } : null;

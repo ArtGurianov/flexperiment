@@ -16,6 +16,15 @@ export const Sections: CollectionConfig = {
     beforeDelete: [blockPublishedDelete],
   },
   fields: [
+    {
+      name: "lessons",
+      type: "join",
+      collection: "lessons",
+      on: "section",
+      orderable: true,
+      defaultSort: "_lessons_lessons_order",
+      admin: { defaultColumns: ["title", "visibility", "freePreview", "_status"] },
+    },
     { name: "sectionRef", type: "text", unique: true, index: true, admin: { readOnly: true }, hooks: { beforeChange: [immutableRef("sectionRef")] } },
     { name: "course", type: "relationship", relationTo: "courses", required: true, index: true, hooks: { beforeChange: [immutableRelationAfterPublish("course")] } },
     { name: "title", type: "text", required: true },

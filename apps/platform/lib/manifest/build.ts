@@ -32,9 +32,9 @@ export async function buildCourseManifest(
     sections: sections.map((section, position) => ({
       sectionRef: requiredString(section, "sectionRef"),
       visibility: visibility(section.visibility),
-      position: integer(section.position, position),
+      position,
     })),
-    lessons: lessons.map((lesson, position) => {
+    lessons: lessons.map((lesson) => {
       const sectionRef = sectionRefById.get(String(relationId(lesson.section)));
       if (!sectionRef) throw new Error("LESSON_SECTION_MISSING");
       return {
@@ -43,7 +43,7 @@ export async function buildCourseManifest(
         everPublished: lesson.everPublished === true,
         visibility: visibility(lesson.visibility),
         freePreview: lesson.freePreview === true,
-        position: integer(lesson.position, position),
+        position: integer(lesson.position),
       };
     }),
     operations: operations.map((operation) => ({

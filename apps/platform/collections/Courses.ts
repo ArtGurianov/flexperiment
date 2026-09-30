@@ -20,6 +20,15 @@ export const Courses: CollectionConfig = {
   fields: [
     { name: "commercialSummary", type: "ui", admin: { position: "sidebar", components: { Field: "@/components/admin/CourseCommercialSummaryField#CourseCommercialSummaryField" } } },
     { name: "campaignComposer", type: "ui", admin: { components: { Field: "@/components/admin/CourseCampaignField#CourseCampaignField" } } },
+    {
+      name: "sections",
+      type: "join",
+      collection: "sections",
+      on: "course",
+      orderable: true,
+      defaultSort: "_sections_sections_order",
+      admin: { defaultColumns: ["title", "visibility", "_status"] },
+    },
     { name: "courseRef", type: "text", unique: true, index: true, admin: { readOnly: true }, hooks: { beforeChange: [immutableRef("courseRef")] } },
     { name: "title", type: "text", required: true },
     { name: "slug", type: "text", required: true, unique: true, index: true, hooks: { beforeChange: [immutableSlugAfterPublish] } },
