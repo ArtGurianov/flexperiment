@@ -29,7 +29,7 @@ docker run --detach --name "$container_name" --publish "127.0.0.1:${host_port}:$
 
 ready=false
 for _ in $(seq 1 30); do
-  if curl --fail --silent --show-error "http://127.0.0.1:${host_port}/readyz" >"$response_file"; then
+  if curl --fail-with-body --silent --show-error "http://127.0.0.1:${host_port}/readyz" >"$response_file"; then
     ready=true
     break
   fi
@@ -37,6 +37,11 @@ for _ in $(seq 1 30); do
 done
 if [[ $ready != true ]]; then
   echo "${service} did not become ready" >&2
+  if [[ -s $response_file ]]; then
+    echo "last readiness response:" >&2
+    cat "$response_file" >&2
+    echo >&2
+  fi
   exit 1
 fi
 
