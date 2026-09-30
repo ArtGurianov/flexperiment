@@ -367,7 +367,7 @@ export function createCommerceV2App(deps: Dependencies) {
 
   app.post("/v1/internal/campaigns", async (context) => {
     try {
-      return context.json({ id: createCampaign(deps.db, await context.req.json<{ courseRef: string; payload: Record<string, unknown> }>()) }, 201, noStore);
+      return context.json(createCampaign(deps.db, await context.req.json<{ courseRef: string; payload: Record<string, unknown> }>()), 201, noStore);
     } catch (error) {
       return context.json({ code: error instanceof Error ? error.message : "CAMPAIGN_CREATE_FAILED" }, 409, noStore);
     }

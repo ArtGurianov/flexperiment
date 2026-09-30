@@ -22,11 +22,11 @@ describe("campaign consent boundary", () => {
   it("rechecks unsubscribe after confirmation and before dispatch", async () => {
     db.prepare(`INSERT INTO marketing_consents(id,customer_id,granted,document_version,recorded_at,source)
       VALUES ('consent','customer',1,'v1','2026-09-30T10:00:00Z','ACCOUNT')`).run();
-    const campaign = createCampaign(db, { courseRef: "course-one", payload: { subject: "Новый урок" } });
-    expect(confirmCampaign(db, campaign, "author")).toEqual({ recipients: 1 });
+    const campaign = createCampaign(db, { courseRef: "course-one", payload: { subject: "Новый урок", lessons: [{ lessonRef: "lesson-one", title: "Lesson", slug: "lesson" }] } });
+    expect(confirmCampaign(db, campaign.id, "author")).toEqual({ recipients: 1, eligibleRecipients: 1 });
     unsubscribeCustomer(db, unsubscribeToken("customer", "secret"), "secret");
     const send = vi.fn(async (_message: CampaignEmail) => undefined);
-    expect(await dispatchCampaign(db, campaign, { secret: "secret", publicOrigin: "https://flexperiment.ru", send })).toEqual({ processed: 1, failed: 0 });
+    expect(await dispatchCampaign(db, campaign.id, { secret: "secret", publicOrigin: "https://flexperiment.ru", send })).toEqual({ processed: 1, failed: 0 });
     expect(send).not.toHaveBeenCalled();
     expect(db.prepare("SELECT state FROM notification_campaign_recipients").get()).toEqual({ state: "SKIPPED_SUPPRESSED" });
   });
@@ -34,11 +34,37 @@ describe("campaign consent boundary", () => {
   it("sends once with one-click unsubscribe headers when consent remains active", async () => {
     db.prepare(`INSERT INTO marketing_consents(id,customer_id,granted,document_version,recorded_at,source)
       VALUES ('consent','customer',1,'v1','2026-09-30T10:00:00Z','ACCOUNT')`).run();
-    const campaign = createCampaign(db, { courseRef: "course-one", payload: { subject: "Новый урок" } });
-    confirmCampaign(db, campaign, "author");
+    const campaign = createCampaign(db, { courseRef: "course-one", payload: { subject: "Новый урок", lessons: [{ lessonRef: "lesson-one", title: "Lesson", slug: "lesson" }] } });
+    confirmCampaign(db, campaign.id, "author");
     const send = vi.fn(async (_message: CampaignEmail) => undefined);
-    await dispatchCampaign(db, campaign, { secret: "secret", publicOrigin: "https://flexperiment.ru", send });
+    await dispatchCampaign(db, campaign.id, { secret: "secret", publicOrigin: "https://flexperiment.ru", send });
     expect(send).toHaveBeenCalledOnce();
     expect(send.mock.calls[0][0].headers).toMatchObject({ "List-Unsubscribe-Post": "List-Unsubscribe=One-Click" });
+  });
+
+  it("previews only lessons not covered by a confirmed campaign", () => {
+    const first = createCampaign(db, { courseRef: "course-one", payload: {
+      subject: "Первый", lessons: [{ lessonRef: "lesson-one", title: "One", slug: "one" }],
+    } });
+    confirmCampaign(db, first.id, "author");
+
+    const second = createCampaign(db, { courseRef: "course-one", payload: {
+      subject: "Второй",
+      lessons: [
+        { lessonRef: "lesson-one", title: "One", slug: "one" },
+        { lessonRef: "lesson-two", title: "Two", slug: "two" },
+      ],
+    } });
+    expect(second.preview.lessons).toEqual([{ lessonRef: "lesson-two", title: "Two", slug: "two" }]);
+  });
+
+  it("rechecks new lessons at confirmation when two drafts overlap", () => {
+    const input = { courseRef: "course-one", payload: {
+      subject: "Урок", lessons: [{ lessonRef: "lesson-one", title: "One", slug: "one" }],
+    } };
+    const first = createCampaign(db, input);
+    const second = createCampaign(db, input);
+    confirmCampaign(db, first.id, "author");
+    expect(() => confirmCampaign(db, second.id, "author")).toThrow("NO_NEWLY_PUBLISHED_LESSONS");
   });
 });

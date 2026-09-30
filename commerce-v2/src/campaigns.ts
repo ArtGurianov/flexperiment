@@ -7,27 +7,66 @@ export type CampaignEmail = {
   headers: { "List-Unsubscribe": string; "List-Unsubscribe-Post": "List-Unsubscribe=One-Click" };
 };
 
+type CampaignLesson = { lessonRef: string; title: string; slug: string };
+
+const campaignLessons = (value: unknown): CampaignLesson[] => Array.isArray(value)
+  ? value.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const lesson = item as Partial<CampaignLesson>;
+    return typeof lesson.lessonRef === "string" && typeof lesson.title === "string" && typeof lesson.slug === "string"
+      ? [{ lessonRef: lesson.lessonRef, title: lesson.title, slug: lesson.slug }]
+      : [];
+  })
+  : [];
+
+const previouslyNotifiedLessons = (db: Database.Database, courseRef: string) => {
+  const rows = db.prepare("SELECT payload_json FROM notification_campaigns WHERE course_ref=? AND state<>'DRAFT'")
+    .all(courseRef) as Array<{ payload_json: string }>;
+  return new Set(rows.flatMap(({ payload_json }) => {
+    try {
+      return campaignLessons((JSON.parse(payload_json) as { lessons?: unknown }).lessons).map(({ lessonRef }) => lessonRef);
+    } catch {
+      return [];
+    }
+  }));
+};
+
 export function createCampaign(db: Database.Database, input: { courseRef: string; payload: Record<string, unknown> }) {
+  const notified = previouslyNotifiedLessons(db, input.courseRef);
+  const lessons = campaignLessons(input.payload.lessons).filter(({ lessonRef }) => !notified.has(lessonRef));
+  if (lessons.length === 0) throw new Error("NO_NEWLY_PUBLISHED_LESSONS");
   const id = randomUUID();
+  const payload = { ...input.payload, lessons };
   db.prepare("INSERT INTO notification_campaigns(id,course_ref,payload_json,state) VALUES (?,?,?,'DRAFT')")
-    .run(id, input.courseRef, JSON.stringify(input.payload));
-  return id;
+    .run(id, input.courseRef, JSON.stringify(payload));
+  return { id, preview: payload };
 }
 
 export function confirmCampaign(db: Database.Database, campaignId: string, actor: string, now = new Date().toISOString()) {
   const confirm = db.transaction(() => {
-    const changed = db.prepare(`UPDATE notification_campaigns SET state='CONFIRMED',confirmed_by=?,confirmed_at=?
-      WHERE id=? AND state='DRAFT'`).run(actor, now, campaignId);
+    const campaign = db.prepare("SELECT course_ref,payload_json FROM notification_campaigns WHERE id=? AND state='DRAFT'")
+      .get(campaignId) as { course_ref: string; payload_json: string } | undefined;
+    if (!campaign) throw new Error("CAMPAIGN_NOT_CONFIRMABLE");
+    const payload = JSON.parse(campaign.payload_json) as Record<string, unknown>;
+    const notified = previouslyNotifiedLessons(db, campaign.course_ref);
+    const lessons = campaignLessons(payload.lessons).filter(({ lessonRef }) => !notified.has(lessonRef));
+    if (lessons.length === 0) throw new Error("NO_NEWLY_PUBLISHED_LESSONS");
+    const changed = db.prepare(`UPDATE notification_campaigns SET state='CONFIRMED',payload_json=?,confirmed_by=?,confirmed_at=?
+      WHERE id=? AND state='DRAFT'`).run(JSON.stringify({ ...payload, lessons }), actor, now, campaignId);
     if (changed.changes !== 1) throw new Error("CAMPAIGN_NOT_CONFIRMABLE");
-    const campaign = db.prepare("SELECT course_ref FROM notification_campaigns WHERE id=?").get(campaignId) as { course_ref: string };
-    const customers = db.prepare(`SELECT DISTINCT customer_id FROM course_entitlements WHERE revoked_at IS NULL
-      AND (scope='ALL_COURSES' OR (scope='COURSE' AND course_ref=?))`).all(campaign.course_ref) as Array<{ customer_id: string }>;
+    const customers = db.prepare(`SELECT DISTINCT entitlement.customer_id,customer.email_normalized FROM course_entitlements entitlement
+      JOIN customers customer ON customer.id=entitlement.customer_id WHERE entitlement.revoked_at IS NULL
+      AND (entitlement.scope='ALL_COURSES' OR (entitlement.scope='COURSE' AND entitlement.course_ref=?))`)
+      .all(campaign.course_ref) as Array<{ customer_id: string; email_normalized: string }>;
     const insert = db.prepare(`INSERT INTO notification_campaign_recipients(id,campaign_id,customer_id,state)
       VALUES (?,?,?,'PENDING') ON CONFLICT(campaign_id,customer_id) DO NOTHING`);
     for (const customer of customers) insert.run(randomUUID(), campaignId, customer.customer_id);
-    return customers.length;
+    return {
+      recipients: customers.length,
+      eligibleRecipients: customers.filter(({ customer_id, email_normalized }) => marketingAllowed(db, customer_id, email_normalized)).length,
+    };
   });
-  return { recipients: confirm.immediate() };
+  return confirm.immediate();
 }
 
 const signature = (value: string, secret: string) => createHmac("sha256", secret).update(value).digest("base64url");

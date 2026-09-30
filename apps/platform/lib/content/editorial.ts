@@ -117,6 +117,8 @@ export async function listPublishedCourseState(payload: Payload, courseId: numbe
       select: {
         lessonRef: true,
         section: true,
+        title: true,
+        slug: true,
         everPublished: true,
         visibility: true,
         freePreview: true,
@@ -157,6 +159,35 @@ export async function listPublishedCourses(payload: Payload, req?: PayloadReques
     select: { courseRef: true, manifestVersion: true, visibility: true },
   });
   return result.docs as EditorialDocument[];
+}
+
+export async function getCampaignCourseSnapshot(payload: Payload, courseRef: string, req?: PayloadRequest) {
+  const courseResult = await payload.find({
+    collection: "courses",
+    depth: 0,
+    draft: false,
+    limit: 1,
+    overrideAccess: true,
+    pagination: false,
+    req,
+    where: { and: [
+      { courseRef: { equals: courseRef } },
+      { _status: { equals: "published" } },
+      { everPublished: { equals: true } },
+    ] },
+    select: { courseRef: true, title: true, visibility: true, everPublished: true },
+  });
+  const course = courseResult.docs[0];
+  if (!course) return null;
+  const { lessons } = await listPublishedCourseState(payload, course.id, req);
+  return {
+    course,
+    lessons: lessons.map((lesson) => ({
+      lessonRef: String(lesson.lessonRef ?? ""),
+      title: String(lesson.title ?? ""),
+      slug: String(lesson.slug ?? ""),
+    })).filter(({ lessonRef, title, slug }) => lessonRef && title && slug),
+  };
 }
 
 export async function hasCommittedAccessOperation(payload: Payload, operationId: string, req?: PayloadRequest) {

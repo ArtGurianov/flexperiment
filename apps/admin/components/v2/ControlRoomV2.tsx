@@ -1,6 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useSearchParams } from "next/navigation";
 import { useState } from "react";
 import { api, AdminApiError } from "../../lib/api";
 import type {
@@ -139,8 +140,13 @@ function CourseEditor({ course }: { course: CatalogueResponse["courses"][number]
 
 export function CourseCatalogue() {
   const query = useControlRoomQuery<CatalogueResponse>("catalogue", "/catalogue");
+  const initialCourseRef = useSearchParams()?.get("courseRef") ?? undefined;
   const [selected, setSelected] = useState<string | null>(null);
-  const selectedCourse = query.data?.courses.find((course) => course.productRef === selected) ?? null;
+  const linkedProductRef = initialCourseRef
+    ? query.data?.courses.find((course) => course.courseRef === initialCourseRef)?.productRef
+    : undefined;
+  const effectiveSelected = selected ?? linkedProductRef ?? null;
+  const selectedCourse = query.data?.courses.find((course) => course.productRef === effectiveSelected) ?? null;
   return <>
     <PageTitle eyebrow="КАТАЛОГ / КУРСЫ" title={<>Редакция отдельно.<br /><i>Продажа отдельно.</i></>} text="Payload публикует содержание. Здесь видна только коммерческая истина: бесплатность, цена, режим продажи и отзыв продукта." />
     <Panel title="Коммерческое состояние курсов">
@@ -157,8 +163,8 @@ export function CourseCatalogue() {
       </QueryState>}
       <button onClick={() => setSelected("__new__")}>Добавить коммерческий курс</button>
     </Panel>
-    {selected ? <Panel title={selected === "__new__" ? "Новый продукт" : "Коммерческая команда"}>
-      <CourseEditor key={selected === "__new__" ? "new" : `${selectedCourse?.productRef}:${selectedCourse?.version}`} course={selectedCourse} />
+    {effectiveSelected ? <Panel title={effectiveSelected === "__new__" ? "Новый продукт" : "Коммерческая команда"}>
+      <CourseEditor key={effectiveSelected === "__new__" ? "new" : `${selectedCourse?.productRef}:${selectedCourse?.version}`} course={selectedCourse} />
     </Panel> : null}
   </>;
 }
