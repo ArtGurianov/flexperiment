@@ -46,7 +46,9 @@ COPY --from=build /app/apps/platform ./apps/platform
 COPY --from=identity --chmod=0444 /identity/identity.json /app/.identity/identity.json
 RUN corepack enable \
   && mkdir -p /var/lib/flexperiment-v2 \
-  && chown -R node:node /var/lib/flexperiment-v2 /app
+  && chown -R node:node /var/lib/flexperiment-v2 /app \
+  && chmod 0555 /app/.identity \
+  && chmod 0444 /app/.identity/identity.json
 USER node
 EXPOSE 3001
 CMD ["sh", "-c", "pnpm --filter @flexperiment/platform migrate && pnpm --filter @flexperiment/platform start"]

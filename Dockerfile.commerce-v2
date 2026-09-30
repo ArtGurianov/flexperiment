@@ -24,7 +24,9 @@ COPY commerce-v2 ./commerce-v2
 COPY --from=identity --chmod=0444 /identity/identity.json /app/.identity/identity.json
 RUN corepack enable \
   && mkdir -p /var/lib/flexperiment-v2 \
-  && chown -R node:node /var/lib/flexperiment-v2 /app
+  && chown -R node:node /var/lib/flexperiment-v2 /app \
+  && chmod 0555 /app/.identity \
+  && chmod 0444 /app/.identity/identity.json
 USER node
 EXPOSE 3002
 CMD ["pnpm", "commerce-v2:start"]

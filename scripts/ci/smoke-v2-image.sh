@@ -27,6 +27,14 @@ trap cleanup EXIT
 
 docker run --detach --name "$container_name" --publish "127.0.0.1:${host_port}:${container_port}" "$@" "$image" >/dev/null
 
+test "$(docker exec "$container_name" stat -c '%a' "$identity_file")" = "444"
+docker exec "$container_name" node -e '
+  const fs = require("node:fs");
+  const [file, service, commit] = process.argv.slice(1);
+  const identity = JSON.parse(fs.readFileSync(file, "utf8"));
+  if (identity.schema !== "flexperiment.build-identity/1" || identity.service !== service || identity.sourceCommit !== commit) process.exit(1);
+' "$identity_file" "$service" "$expected_commit"
+
 ready=false
 for _ in $(seq 1 30); do
   if curl --fail-with-body --silent --show-error "http://127.0.0.1:${host_port}/readyz" >"$response_file"; then
@@ -54,14 +62,6 @@ node -e '
     throw new Error(`identity mismatch: ${JSON.stringify(identity)}`);
   }
 ' "$response_file" "$service" "$expected_commit"
-
-test "$(docker exec "$container_name" stat -c '%a' "$identity_file")" = "444"
-docker exec "$container_name" node -e '
-  const fs = require("node:fs");
-  const [file, service, commit] = process.argv.slice(1);
-  const identity = JSON.parse(fs.readFileSync(file, "utf8"));
-  if (identity.service !== service || identity.sourceCommit !== commit) process.exit(1);
-' "$identity_file" "$service" "$expected_commit"
 
 if [[ $service == platform ]]; then
   canonical_origin=${PLATFORM_CANONICAL_ORIGIN:?PLATFORM_CANONICAL_ORIGIN is required for the platform smoke}
