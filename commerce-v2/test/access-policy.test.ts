@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { decideLessonAccess, type LessonAccessInput } from "../src/access-policy";
+import { lessonEffectiveVisibility, withManifestHash } from "../src/manifest";
 
 const base = (): LessonAccessInput => ({
   customerId: "customer",
@@ -39,5 +40,31 @@ describe("decideLessonAccess policy order", () => {
   it("distinguishes purchase required from not for sale", () => {
     expect(decideLessonAccess(base())).toBe("PURCHASE_REQUIRED");
     expect(decideLessonAccess({ ...base(), courseProduct: { ...base().courseProduct!, saleMode: "CLOSED" } })).toBe("NOT_FOR_SALE");
+  });
+
+  it("stops section-scoped previews while preserving both lessons for an entitled customer", () => {
+    const manifest = withManifestHash({
+      courseRef: "course", version: 1, visibility: "LISTED",
+      sections: [{ sectionRef: "section", visibility: "UNLISTED" }],
+      lessons: [
+        { lessonRef: "preview", sectionRef: "section", everPublished: true, visibility: "LISTED", freePreview: true },
+        { lessonRef: "paid", sectionRef: "section", everPublished: true, visibility: "LISTED", freePreview: false },
+      ],
+      operations: [],
+    });
+    const input = (lessonRef: "preview" | "paid", entitled: boolean): LessonAccessInput => ({
+      ...base(),
+      lesson: {
+        ...base().lesson!,
+        effectiveVisibility: lessonEffectiveVisibility(manifest, lessonRef),
+        freePreview: lessonRef === "preview",
+      },
+      grants: entitled ? [{ scope: "COURSE", courseRef: "course", revoked: false }] : [],
+    });
+
+    expect(decideLessonAccess(input("preview", false))).toBe("DENY");
+    expect(decideLessonAccess(input("paid", false))).toBe("DENY");
+    expect(decideLessonAccess(input("preview", true))).toBe("ALLOW");
+    expect(decideLessonAccess(input("paid", true))).toBe("ALLOW");
   });
 });

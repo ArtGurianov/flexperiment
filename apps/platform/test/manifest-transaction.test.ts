@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createLocalReq, getPayload, type Payload } from "payload";
 import { rm } from "node:fs/promises";
+import { listPublicCourses } from "../lib/content/editorial";
 
 const databasePath = `/private/tmp/flexperiment-platform-test-${process.pid}.sqlite`;
 const mediaPath = `/private/tmp/flexperiment-platform-media-${process.pid}`;
@@ -130,6 +131,7 @@ describe("Payload manifest transaction", () => {
     expect(published._status).toBe("published");
     expect(published.visibility).toBe("listed");
     expect(published.manifestVersion).toBe(1);
+    expect((await listPublicCourses(payload)).map(({ courseRef }) => courseRef)).toContain("course:transaction-test");
     expect(operations.totalDocs).toBe(0);
     expect(jobs.totalDocs).toBe(initialJobCount);
     expect(fetchMock).not.toHaveBeenCalled();
@@ -156,5 +158,28 @@ describe("Payload manifest transaction", () => {
     const jobs = await payload.count({ collection: "payload-jobs", overrideAccess: true });
     expect(published.manifestVersion).toBe(Number(before.manifestVersion) + 2);
     expect(jobs.totalDocs).toBe(beforeJobs.totalDocs + 2);
+  });
+
+  it("removes an effectively unlisted publication from the public Local API contract", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(
+      JSON.stringify({ state: "PENDING", enforced: true }),
+      { status: 201, headers: { "content-type": "application/json" } },
+    ));
+    const req = await createLocalReq({}, payload);
+
+    await payload.update({
+      collection: "courses",
+      id: courseId,
+      data: { visibility: "unlisted", _status: "published" },
+      draft: false,
+      overrideAccess: true,
+      req,
+    });
+
+    const publicCourses = await listPublicCourses(payload);
+    expect(publicCourses.map(({ courseRef }) => courseRef)).not.toContain("course:transaction-test");
+    expect(JSON.stringify(publicCourses)).not.toMatch(/manifestVersion|everPublished|operationId|videoId|secret/i);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    fetchMock.mockRestore();
   });
 });
