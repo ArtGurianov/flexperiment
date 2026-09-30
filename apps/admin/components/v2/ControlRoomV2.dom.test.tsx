@@ -1,0 +1,125 @@
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createTestQueryClient, QueryClientWrapper } from "../../lib/test-query-client";
+import { CourseCatalogue, RefundsView } from "./ControlRoomV2";
+
+const generatedAt = "2026-09-30T10:00:00.000Z";
+
+function response(body: unknown, status = 200): Response {
+  return { ok: status >= 200 && status < 300, status, json: async () => body } as Response;
+}
+
+describe("Control Room v2", () => {
+  let originalFetch: typeof fetch;
+
+  beforeEach(() => { originalFetch = global.fetch; });
+  afterEach(() => { global.fetch = originalFetch; vi.restoreAllMocks(); });
+
+  it("renders the typed catalogue contract without legacy row coercion", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(response({
+      generatedAt,
+      courses: [{
+        courseRef: "course/merchant-authority",
+        productRef: "product/merchant-authority",
+        accessModel: "PAID",
+        withdrawn: false,
+        withdrawnReason: null,
+        withdrawnTermsRef: null,
+        version: 3,
+        offer: { offerRef: "offer/base", priceKopecks: 1_000_000, saleMode: "PUBLIC", acceptanceAllowlist: [] },
+        projection: { version: 7, visibility: "LISTED", lastReconciledAt: generatedAt },
+      }],
+    }));
+    global.fetch = fetchMock;
+
+    const client = createTestQueryClient();
+    const user = userEvent.setup();
+    render(<CourseCatalogue />, { wrapper: (props) => <QueryClientWrapper client={client}>{props.children}</QueryClientWrapper> });
+
+    expect(await screen.findByText("course/merchant-authority")).toBeInTheDocument();
+    expect(screen.getByText("PAID")).toBeInTheDocument();
+    expect(screen.getByText("PUBLIC")).toBeInTheDocument();
+    expect(screen.getByText("LISTED")).toBeInTheDocument();
+    expect(screen.getByText(/10\s*000\s*₽/)).toBeInTheDocument();
+    expect(global.fetch).toHaveBeenCalledWith("/v1/admin/v2/catalogue", expect.objectContaining({ credentials: "same-origin", cache: "no-store" }));
+    await user.click(screen.getByRole("button", { name: "Изменить" }));
+    const price = screen.getByLabelText("Цена, коп.");
+    await user.clear(price);
+    await user.type(price, "1200000");
+    await user.click(screen.getByRole("button", { name: "Сохранить v4" }));
+    await waitFor(() => expect(fetchMock.mock.calls.some(([, init]) => init?.method === "POST")).toBe(true));
+    const commandCall = fetchMock.mock.calls.find(([, init]) => init?.method === "POST");
+    expect(JSON.parse(String(commandCall?.[1]?.body))).toMatchObject({ expectedVersion: 3, priceKopecks: 1_200_000 });
+    expect(JSON.parse(String(commandCall?.[1]?.body))).not.toHaveProperty("actor");
+  });
+
+  it("submits a refund decision without accepting a browser-supplied actor", async () => {
+    const refund = {
+      requestPublicId: "refund/request-1",
+      orderPublicId: "FX-V2-1",
+      reasonCode: "CUSTOMER_REQUEST",
+      state: "REQUESTED",
+      policyFacts: {
+        schema: "flexperiment.refund-policy-facts/1",
+        productKind: "ONLINE_COURSE",
+        productRef: "product/course-1",
+        courseRef: "course-1",
+        paidLineAmountKopecks: 25_000,
+        orderedAt: generatedAt,
+        courseAccessStartedAt: null,
+        requestedAt: generatedAt,
+        automatedEligibility: "NOT_EVALUATED",
+      },
+      requestedAt: generatedAt,
+      outcome: null,
+      amountKopecks: null,
+      policyBasis: null,
+      rationale: null,
+      decidedBy: null,
+      decidedAt: null,
+      executionState: null,
+      providerExecutionId: null,
+      supportReference: null,
+      lastErrorCode: null,
+    };
+    const fetchMock = vi.fn().mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = input.toString();
+      if (url.endsWith("/v2/refunds") && (!init?.method || init.method === "GET")) return response({ generatedAt, refunds: [refund] });
+      if (url.endsWith("/v2/refunds/refund/request-1/decision") && init?.method === "POST") return response({ refund: { ...refund, state: "APPROVED" } });
+      throw new Error(`unhandled fetch: ${url}`);
+    });
+    global.fetch = fetchMock;
+
+    const client = createTestQueryClient();
+    const user = userEvent.setup();
+    render(<RefundsView />, { wrapper: (props) => <QueryClientWrapper client={client}>{props.children}</QueryClientWrapper> });
+
+    await user.click(await screen.findByRole("button", { name: /FX-V2-1/ }));
+    await user.type(screen.getByLabelText("Основание"), "offer/2026-09");
+    await user.type(screen.getByLabelText("Мотивировка"), "Подтверждено оператором");
+    await user.click(screen.getByRole("button", { name: "Зафиксировать решение" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      "/v1/admin/v2/refunds/refund/request-1/decision",
+      expect.objectContaining({ method: "POST" }),
+    ));
+    const decisionCall = fetchMock.mock.calls.find(([input, init]) => input.toString().endsWith("/decision") && init?.method === "POST");
+    expect(decisionCall).toBeDefined();
+    expect(JSON.parse(String(decisionCall?.[1]?.body))).toEqual({
+      outcome: "APPROVE",
+      amountKopecks: 25_000,
+      policyBasis: "offer/2026-09",
+      rationale: "Подтверждено оператором",
+    });
+  });
+
+  it("shows a terminal read error instead of an endless loading state", async () => {
+    global.fetch = vi.fn().mockResolvedValue(response({ error: { code: "CONTROL_ROOM_FORBIDDEN" } }, 403));
+    const client = createTestQueryClient();
+    render(<CourseCatalogue />, { wrapper: (props) => <QueryClientWrapper client={client}>{props.children}</QueryClientWrapper> });
+
+    expect(await screen.findByText("CONTROL_ROOM_FORBIDDEN")).toBeInTheDocument();
+    expect(screen.queryByText("Загрузка…")).not.toBeInTheDocument();
+  });
+});

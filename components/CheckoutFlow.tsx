@@ -3,9 +3,6 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { commerceApiUrl } from "@/lib/commerce-api";
-import { ensureCurrentReferralCapture } from "@/components/referral-capture-client";
-import { referralCaptureCoordinator } from "@/components/referral-capture-state";
-import { storedReferralSlug } from "@/components/referral-marker";
 import CityInterestForm from "@/components/CityInterestForm";
 import OccurrenceNotifyForm from "@/components/OccurrenceNotifyForm";
 import { findCityBySlug, type CitySlug } from "@/lib/city-catalog";
@@ -188,11 +185,9 @@ export default function CheckoutFlow({ onViewChange, onBookingTitle, initialOccu
     if (!id) return false;
     setLoading(true); if (options?.clearMessage !== false) setMessage(null);
     try {
-      await ensureCurrentReferralCapture();
-      await referralCaptureCoordinator.waitForCurrentCapture();
       const response = await fetch(commerceApiUrl("/v1/public/checkout-context"), {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ occurrence_id: id, promo_code: promo || undefined, referral_slug: storedReferralSlug(document.cookie) ?? undefined }),
+        body: JSON.stringify({ occurrence_id: id, promo_code: promo || undefined }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error?.code ?? "QUOTE_UNAVAILABLE");

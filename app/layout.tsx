@@ -2,7 +2,6 @@ import type { Metadata, Viewport } from "next";
 import { Geist_Mono, Monomakh as Shafarik } from "next/font/google";
 import { Suspense } from "react";
 import AnalyticsConsent from "@/components/AnalyticsConsent";
-import ReferralCapture from "@/components/ReferralCapture";
 import { OPEN_GRAPH_BASE, SITE_ORIGIN, TWITTER_CARD } from "@/lib/seo/site";
 
 import "./globals.css";
@@ -104,7 +103,6 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
           jumped to the left edge. A full-width body has no auto margins to
           convert, so the rewrite becomes a no-op. */}
       <body className="min-h-full w-full flex flex-col">
-        <Suspense fallback={null}><ReferralCapture /></Suspense>
         <Suspense fallback={null}><AnalyticsConsent /></Suspense>
         {/* React hoists these into <head>, so they land in the streamed HTML
             and the preload scanner issues the requests before it has parsed the

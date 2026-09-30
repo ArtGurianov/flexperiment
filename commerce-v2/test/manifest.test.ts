@@ -1,0 +1,92 @@
+import Database from "better-sqlite3";
+import { beforeEach, describe, expect, it } from "vitest";
+import { createRestrictiveOverride, releaseRolledBackOverride, OverrideProofError } from "../src/access-overrides";
+import { migrateV2 } from "../src/db";
+import { applyCourseManifest, ManifestError, withManifestHash, type CourseManifest } from "../src/manifest";
+
+let db: Database.Database;
+beforeEach(() => { db = new Database(":memory:"); db.pragma("foreign_keys = ON"); migrateV2(db); });
+
+const manifest = (version: number, overrides: Partial<Omit<CourseManifest, "contentHash" | "version">> = {}) => withManifestHash({
+  courseRef: "course", version, visibility: "LISTED",
+  sections: [{ sectionRef: "section", visibility: "LISTED" }],
+  lessons: [
+    { lessonRef: "preview", sectionRef: "section", everPublished: true, visibility: "LISTED", freePreview: true },
+    { lessonRef: "paid", sectionRef: "section", everPublished: true, visibility: "LISTED", freePreview: false },
+  ],
+  operations: [],
+  ...overrides,
+});
+
+const createOverride = (operationId = "op", level: "COURSE" | "SECTION" | "LESSON" = "SECTION", ref = "section") =>
+  createRestrictiveOverride(db, {
+    operationId, courseRef: "course", scope: { level, ref },
+    expected: { kind: "EFFECTIVE_VISIBILITY", value: "UNLISTED" },
+    deadlineAt: "2026-09-30T01:01:00.000Z", platformEpoch: "epoch-1",
+  });
+
+describe("manifest ordering and convergence", () => {
+  it("applies once, no-ops the same hash and rejects same-version drift and older versions", () => {
+    const first = manifest(1);
+    expect(applyCourseManifest(db, first).kind).toBe("APPLIED");
+    expect(applyCourseManifest(db, first).kind).toBe("NO_OP");
+    expect(() => applyCourseManifest(db, manifest(1, { visibility: "UNLISTED" }))).toThrow(new ManifestError("MANIFEST_VERSION_REJECTED"));
+    expect(applyCourseManifest(db, manifest(2)).kind).toBe("APPLIED");
+    expect(() => applyCourseManifest(db, first)).toThrow(new ManifestError("MANIFEST_VERSION_REJECTED"));
+  });
+
+  it("rejects the whole manifest when a lesson section is missing", () => {
+    const invalid = manifest(1, { sections: [] });
+    expect(() => applyCourseManifest(db, invalid)).toThrow(new ManifestError("LESSON_SECTION_MISSING"));
+    expect(db.prepare("SELECT COUNT(*) AS n FROM catalog_course_projection").get()).toEqual({ n: 0 });
+  });
+
+  it("replaces the complete section and lesson projection instead of retaining absent rows", () => {
+    applyCourseManifest(db, manifest(1));
+    applyCourseManifest(db, manifest(2, { sections: [], lessons: [] }));
+    expect(db.prepare("SELECT COUNT(*) AS n FROM catalog_section_projection WHERE course_ref='course'").get()).toEqual({ n: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM catalog_lesson_projection WHERE course_ref='course'").get()).toEqual({ n: 0 });
+  });
+});
+
+describe("restrictive override resolution", () => {
+  it("finalizes a section override by effective visibility while lesson rows remain listed", () => {
+    createOverride();
+    const restricted = manifest(1, {
+      sections: [{ sectionRef: "section", visibility: "UNLISTED" }],
+      operations: [{ operationId: "op", committedVersion: 1 }],
+    });
+    expect(applyCourseManifest(db, restricted).finalized).toEqual(["op"]);
+    expect(db.prepare("SELECT state FROM access_overrides WHERE operation_id='op'").get()).toEqual({ state: "FINALIZED" });
+    expect(db.prepare("SELECT DISTINCT visibility FROM catalog_lesson_projection").all()).toEqual([{ visibility: "LISTED" }]);
+  });
+
+  it("supersedes only with a newer committed manifest", () => {
+    createOverride();
+    applyCourseManifest(db, manifest(1));
+    const relisted = manifest(2, { operations: [{ operationId: "op", committedVersion: 1 }] });
+    expect(applyCourseManifest(db, relisted).superseded).toEqual(["op"]);
+    expect(db.prepare("SELECT state FROM access_overrides WHERE operation_id='op'").get()).toEqual({ state: "SUPERSEDED" });
+  });
+
+  it("rejects an inconsistent manifest at the committed version and keeps enforcement", () => {
+    createOverride();
+    const inconsistent = manifest(1, { operations: [{ operationId: "op", committedVersion: 1 }] });
+    expect(() => applyCourseManifest(db, inconsistent)).toThrow(new ManifestError("COMMITTED_RESTRICTION_ABSENT"));
+    expect(db.prepare("SELECT state, attention_reason FROM access_overrides WHERE operation_id='op'").get())
+      .toEqual({ state: "PENDING", attention_reason: "COMMITTED_RESTRICTION_ABSENT" });
+  });
+
+  it("never releases a rollback from timeout alone", () => {
+    createOverride();
+    expect(() => releaseRolledBackOverride(db, "op", {
+      checkedAt: "2026-09-30T02:00:00.000Z", currentPlatformEpoch: "epoch-1",
+      committedRecordExists: false, operationInFlight: false, transactionEnded: false,
+    })).toThrow(new OverrideProofError("TRANSACTION_END_NOT_PROVEN"));
+    releaseRolledBackOverride(db, "op", {
+      checkedAt: "2026-09-30T02:00:00.000Z", currentPlatformEpoch: "epoch-1",
+      committedRecordExists: false, operationInFlight: false, transactionEnded: true,
+    });
+    expect(db.prepare("SELECT state FROM access_overrides WHERE operation_id='op'").get()).toEqual({ state: "RELEASED_ROLLED_BACK" });
+  });
+});

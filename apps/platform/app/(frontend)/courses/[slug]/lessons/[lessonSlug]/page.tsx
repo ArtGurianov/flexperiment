@@ -1,0 +1,48 @@
+import type { Metadata } from "next";
+import Link from "next/link";
+import { notFound } from "next/navigation";
+import { headers } from "next/headers";
+import { Suspense } from "react";
+import LessonPlayer from "@/components/kinescope/LessonPlayer";
+import { publicLesson } from "@/lib/content/public";
+import { entitledLesson } from "@/lib/content/entitled";
+import { getCommercialSummaries } from "@/lib/commerce-summary";
+
+type Props = { params: Promise<{ slug: string; lessonSlug: string }> };
+const buildShellSlug = "__build-shell__";
+
+export function generateStaticParams() { return [{ slug: buildShellSlug, lessonSlug: buildShellSlug }]; }
+
+export async function generateMetadata({ params }: Props): Promise<Metadata> {
+  const { slug, lessonSlug } = await params;
+  if (slug === buildShellSlug || lessonSlug === buildShellSlug) return { robots: { index: false, follow: false } };
+  const result = await publicLesson(slug, lessonSlug);
+  if (!result) return { robots: { index: false, follow: false } };
+  const description = result.lesson.seo?.description || `${result.lesson.title} — урок курса «${result.course.title}».`;
+  return {
+    title: result.lesson.seo?.title || result.lesson.title,
+    description,
+    robots: result.lesson.description ? undefined : { index: false, follow: true },
+    alternates: { canonical: `/courses/${slug}/lessons/${lessonSlug}` },
+    openGraph: { title: result.lesson.title, description, type: "video.other" },
+  };
+}
+
+async function LessonContent({ params }: Props) {
+  const { slug, lessonSlug } = await params;
+  if (slug === buildShellSlug || lessonSlug === buildShellSlug) notFound();
+  const publicResult = await publicLesson(slug, lessonSlug);
+  const result = publicResult ?? await entitledLesson((await headers()).get("cookie") ?? "", slug, lessonSlug);
+  if (!result) notFound();
+  if ((await getCommercialSummaries()).get(result.course.courseRef)?.withdrawn) notFound();
+  const jsonLd = {
+    "@context": "https://schema.org", "@type": "LearningResource",
+    name: result.lesson.title, isPartOf: { "@type": "Course", name: result.course.title },
+    isAccessibleForFree: result.lesson.freePreview,
+  };
+  return <main className="lessonPage"><nav className="nav"><Link className="wordmark" href="/">FLEXPERIMENT<span>®</span></Link><Link href={`/courses/${slug}`}>← {result.course.title}</Link></nav><header className="lessonHeader"><p className="eyebrow">{result.section.title}</p><h1>{result.lesson.title}</h1></header><section className="playerSection"><LessonPlayer lessonRef={result.lesson.lessonRef} title={result.lesson.title} /></section><script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd).replace(/</g, "\\u003c") }} /></main>;
+}
+
+export default function LessonPage(props: Props) {
+  return <Suspense fallback={<main className="lessonPage"><p className="emptyState">Загружаем урок…</p></main>}><LessonContent {...props} /></Suspense>;
+}

@@ -6,6 +6,7 @@ import { configDefaults, defineConfig } from "vitest/config";
 // only after a build. See the `export` project below.
 const nodeInclude = [
   "commerce/test/**/*.test.ts",
+  "commerce-v2/test/**/*.test.ts",
   "apps/admin/**/*.test.ts",
   "components/**/*.test.ts",
   "lib/**/*.test.ts",
