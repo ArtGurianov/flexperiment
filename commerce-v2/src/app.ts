@@ -7,7 +7,7 @@ import { assertPaymentCreationEnabled, type CommerceRuntimeConfig } from "./paym
 import { saveResumePosition } from "./resume";
 import { confirmCheckout, prepareCheckout, reconcileCheckout, type PaymentRail } from "./checkout";
 import { activateSales, configureProduct, withdrawProduct } from "./catalog-control";
-import { confirmCampaign, createCampaign, dispatchCampaign, unsubscribeCustomer, type CampaignEmail } from "./campaigns";
+import { campaignStatus, confirmCampaign, createCampaign, dispatchCampaign, retryCampaign, unsubscribeCustomer, type CampaignEmail } from "./campaigns";
 import { observeKinescopeStatus, pollKinescopeUpload, startVideoUpload, type KinescopeClient, type KinescopeStatus } from "./kinescope";
 import { activateLegalRelease, currentLegalRelease, type LegalReleaseManifest } from "./legal-control";
 import { issueCheckoutHandoffState, issueCheckoutPaymentReturnState, verifyCheckoutHandoffState, verifyCheckoutNavigationState } from "./checkout-handoff";
@@ -49,6 +49,7 @@ type Dependencies = {
   readonly paymentRail?: PaymentRail;
   readonly invalidatePlatformCache?: (mode: "swr" | "immediate", courseRef?: string) => Promise<void>;
   readonly campaignUnsubscribeSecret?: string;
+  readonly marketingBroadcastsEnabled?: boolean;
   readonly origins?: CommerceOrigins;
   readonly sendCampaignEmail?: (message: CampaignEmail) => Promise<void>;
   readonly controlRoomAuth?: ControlRoomAuthConfig;
@@ -413,13 +414,18 @@ export function createCommerceV2App(deps: Dependencies) {
 
   app.post("/v1/internal/campaigns", async (context) => {
     try {
-      return context.json(createCampaign(deps.db, await context.req.json<{ courseRef: string; payload: Record<string, unknown> }>()), 201, noStore);
+      const input = await context.req.json<{ courseRef: string; payload: Record<string, unknown> }>();
+      return context.json(createCampaign(deps.db, {
+        ...input,
+        idempotencyKey: context.req.header("idempotency-key") ?? "",
+      }), 201, noStore);
     } catch (error) {
       return context.json({ code: error instanceof Error ? error.message : "CAMPAIGN_CREATE_FAILED" }, 409, noStore);
     }
   });
 
   app.post("/v1/internal/campaigns/:id/confirm", async (context) => {
+    if (!deps.marketingBroadcastsEnabled) return context.json({ code: "MARKETING_BROADCASTS_DISABLED" }, 503, noStore);
     try {
       const body = await context.req.json<{ actor: string }>();
       return context.json(confirmCampaign(deps.db, context.req.param("id"), body.actor, now().toISOString()), 200, noStore);
@@ -429,6 +435,7 @@ export function createCommerceV2App(deps: Dependencies) {
   });
 
   app.post("/v1/internal/campaigns/:id/dispatch", async (context) => {
+    if (!deps.marketingBroadcastsEnabled) return context.json({ code: "MARKETING_BROADCASTS_DISABLED" }, 503, noStore);
     if (!deps.campaignUnsubscribeSecret || !deps.sendCampaignEmail) return context.json({ code: "CAMPAIGN_DELIVERY_NOT_CONFIGURED" }, 503, noStore);
     try {
       return context.json(await dispatchCampaign(deps.db, context.req.param("id"), {
@@ -436,6 +443,23 @@ export function createCommerceV2App(deps: Dependencies) {
       }, now().toISOString()), 200, noStore);
     } catch (error) {
       return context.json({ code: error instanceof Error ? error.message : "CAMPAIGN_DISPATCH_FAILED" }, 409, noStore);
+    }
+  });
+
+  app.get("/v1/internal/campaigns/:id/status", (context) => {
+    try {
+      return context.json(campaignStatus(deps.db, context.req.param("id")), 200, noStore);
+    } catch (error) {
+      return context.json({ code: error instanceof Error ? error.message : "CAMPAIGN_STATUS_FAILED" }, 404, noStore);
+    }
+  });
+
+  app.post("/v1/internal/campaigns/:id/retry", (context) => {
+    if (!deps.marketingBroadcastsEnabled) return context.json({ code: "MARKETING_BROADCASTS_DISABLED" }, 503, noStore);
+    try {
+      return context.json(retryCampaign(deps.db, context.req.param("id"), now().toISOString()), 200, noStore);
+    } catch (error) {
+      return context.json({ code: error instanceof Error ? error.message : "CAMPAIGN_RETRY_FAILED" }, 409, noStore);
     }
   });
 

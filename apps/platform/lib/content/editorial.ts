@@ -175,13 +175,21 @@ export async function getCampaignCourseSnapshot(payload: Payload, courseRef: str
       { _status: { equals: "published" } },
       { everPublished: { equals: true } },
     ] },
-    select: { courseRef: true, title: true, visibility: true, everPublished: true },
+    select: {
+      courseRef: true, title: true, slug: true, visibility: true, everPublished: true,
+      manifestVersion: true, publicContentUpdatedAt: true,
+    },
   });
   const course = courseResult.docs[0];
   if (!course) return null;
   const { lessons } = await listPublishedCourseState(payload, course.id, req);
   return {
-    course,
+    course: {
+      courseRef: String(course.courseRef ?? ""),
+      title: String(course.title ?? ""),
+      slug: String(course.slug ?? ""),
+      contentVersion: String(course.publicContentUpdatedAt ?? course.manifestVersion ?? ""),
+    },
     lessons: lessons.map((lesson) => ({
       lessonRef: String(lesson.lessonRef ?? ""),
       title: String(lesson.title ?? ""),

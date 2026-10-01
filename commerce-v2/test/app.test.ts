@@ -53,6 +53,17 @@ const seedPlayableLesson = async (server: ReturnType<typeof createCommerceV2App>
 };
 
 describe("commerce v2 boundaries", () => {
+  it("keeps marketing broadcast confirmation disabled until the legal gate is enabled", async () => {
+    const disabled = await app().request("/v1/internal/campaigns/campaign/confirm", internal({ actor: "author" }));
+    expect(disabled.status).toBe(503);
+    expect(await disabled.json()).toEqual({ code: "MARKETING_BROADCASTS_DISABLED" });
+
+    const enabled = await app("disabled", { marketingBroadcastsEnabled: true })
+      .request("/v1/internal/campaigns/campaign/confirm", internal({ actor: "author" }));
+    expect(enabled.status).toBe(409);
+    expect(await enabled.json()).toEqual({ code: "CAMPAIGN_NOT_CONFIRMABLE" });
+  });
+
   it("exposes the immutable build identity contract", async () => {
     const response = await app().request("/identity");
     expect(response.status).toBe(200);

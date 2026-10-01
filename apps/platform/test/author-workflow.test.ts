@@ -54,7 +54,15 @@ describe("Payload author workflow", () => {
     vi.stubEnv("COMMERCE_INTERNAL_ORIGIN", "https://commerce.internal");
     vi.stubEnv("PLATFORM_COMMERCE_SERVICE_TOKEN", "token");
     const find = vi.fn(async ({ collection }: { collection: string }) => {
-      if (collection === "courses") return { docs: [{ id: 7, courseRef: "course:one", everPublished: true }] };
+      if (collection === "courses") return { docs: [{
+        id: 7,
+        courseRef: "course:one",
+        title: "Курс",
+        slug: "course",
+        everPublished: true,
+        manifestVersion: 3,
+        publicContentUpdatedAt: "2026-10-01T06:00:00Z",
+      }] };
       if (collection === "sections") return { docs: [{ id: 3, course: 7, sectionRef: "section:one", position: 0 }] };
       return { docs: [{
         id: 9,
@@ -72,6 +80,7 @@ describe("Payload author workflow", () => {
     }, { status: 201 }));
 
     const response = await endpoint("/campaigns/:courseRef").handler({
+      headers: new Headers({ "idempotency-key": "campaign:author-action" }),
       json: async () => ({ subject: "Subject", message: "Message" }),
       payload: { find },
       routeParams: { courseRef: "course:one" },
@@ -81,7 +90,11 @@ describe("Payload author workflow", () => {
     expect(response.status).toBe(201);
     expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({
       courseRef: "course:one",
-      payload: { lessons: [{ lessonRef: "lesson:one", title: "Первый урок", slug: "first" }] },
+      payload: {
+        course: { title: "Курс", slug: "course", contentVersion: "2026-10-01T06:00:00Z" },
+        lessons: [{ lessonRef: "lesson:one", title: "Первый урок", slug: "first" }],
+      },
     });
+    expect(fetchMock.mock.calls[0]?.[1]?.headers).toMatchObject({ "idempotency-key": "campaign:author-action" });
   });
 });

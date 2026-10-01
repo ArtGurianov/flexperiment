@@ -135,8 +135,15 @@ does.
   callback even while an already minted token has time remaining.
 - `lesson_resume_positions` uses `(customer_id, lesson_ref)` as its identity;
   updates are accepted only when their client ordering tuple is newer.
-- Campaign recipients are unique per `(campaign_id, customer_id)`. Consent and
-  suppression are still re-checked when a recipient is dispatched.
+- Campaign creation is keyed by the author's stable idempotency key and freezes
+  the published course/version, lesson selection and recipient rows. Author
+  confirmation only queues the campaign; a leased commerce worker dispatches
+  it asynchronously. Recipients are unique per `(campaign_id, customer_id)`
+  and carry a stable provider idempotency key across an explicit failed retry.
+  Consent and suppression are still re-checked immediately before each send.
+  Production confirmation and dispatch remain disabled unless
+  `MARKETING_BROADCASTS_ENABLED=true`; that switch is gated by ART-232 and the
+  Unisender account review.
 - Legal releases are activated by an audited internal command. Stage A refuses
   a manifest without privacy, personal-data, account-terms and marketing
   documents; Stage B additionally requires the course offer, receipt-contact,

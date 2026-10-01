@@ -10,6 +10,7 @@ import { RefrefPaymentRail } from "./refref-payment-rail";
 import { readBuildIdentity } from "./build-identity";
 import { reconcilePendingRefunds } from "./refunds";
 import { loadCommerceOrigins } from "./origins";
+import { dispatchPendingCampaigns, type CampaignEmail } from "./campaigns";
 
 const config = loadCommerceRuntimeConfig();
 const origins = loadCommerceOrigins();
@@ -24,6 +25,10 @@ const emailDeliveryEndpoint = process.env.AUTH_EMAIL_DELIVERY_ENDPOINT;
 if (!emailDeliveryEndpoint && config.deployEnvironment === "production") throw new Error("AUTH_EMAIL_DELIVERY_ENDPOINT_REQUIRED");
 const campaignUnsubscribeSecret = process.env.CAMPAIGN_UNSUBSCRIBE_SECRET;
 if (!campaignUnsubscribeSecret && config.deployEnvironment === "production") throw new Error("CAMPAIGN_UNSUBSCRIBE_SECRET_REQUIRED");
+const marketingBroadcastsEnabled = process.env.MARKETING_BROADCASTS_ENABLED === "true";
+if (marketingBroadcastsEnabled && (!campaignUnsubscribeSecret || !emailDeliveryEndpoint)) {
+  throw new Error("CAMPAIGN_DELIVERY_CONFIGURATION_REQUIRED");
+}
 const controlRoomSessionSecret = process.env.COMMERCE_SESSION_SECRET;
 const controlRoomPasswordScrypt = process.env.COMMERCE_ADMIN_PASSWORD_SCRYPT;
 const controlRoomOrigin = origins.admin;
@@ -72,6 +77,20 @@ const paymentRail = config.paymentMode === "mock" ? new MockPaymentRail()
     paymentMethod: config.refref.receiptPaymentMethod,
   }) : undefined;
 
+const sendCampaignEmail = emailDeliveryEndpoint ? async (message: CampaignEmail) => {
+  const response = await fetch(emailDeliveryEndpoint, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "idempotency-key": message.idempotencyKey,
+      ...(process.env.AUTH_EMAIL_DELIVERY_TOKEN ? { authorization: `Bearer ${process.env.AUTH_EMAIL_DELIVERY_TOKEN}` } : {}),
+    },
+    body: JSON.stringify({ type: "CAMPAIGN", ...message }),
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!response.ok) throw new Error(`CAMPAIGN_EMAIL_HTTP_${response.status}`);
+} : undefined;
+
 const app = createCommerceV2App({
   db,
   config,
@@ -108,25 +127,34 @@ const app = createCommerceV2App({
     if (!response.ok) throw new Error(`PLATFORM_REVALIDATION_HTTP_${response.status}`);
   },
   campaignUnsubscribeSecret,
+  marketingBroadcastsEnabled,
   origins,
-  sendCampaignEmail: emailDeliveryEndpoint ? async (message) => {
-    const response = await fetch(emailDeliveryEndpoint, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        ...(process.env.AUTH_EMAIL_DELIVERY_TOKEN ? { authorization: `Bearer ${process.env.AUTH_EMAIL_DELIVERY_TOKEN}` } : {}),
-      },
-      body: JSON.stringify({ type: "CAMPAIGN", ...message }),
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!response.ok) throw new Error(`CAMPAIGN_EMAIL_HTTP_${response.status}`);
-  } : undefined,
+  sendCampaignEmail,
   controlRoomAuth: controlRoomSessionSecret && controlRoomPasswordScrypt && controlRoomOrigin ? {
     sessionSecret: controlRoomSessionSecret,
     passwordScrypt: controlRoomPasswordScrypt,
     origin: controlRoomOrigin,
   } : undefined,
 });
+
+if (marketingBroadcastsEnabled && campaignUnsubscribeSecret && sendCampaignEmail) {
+  let campaignDispatchRunning = false;
+  const campaignDispatch = async () => {
+    if (campaignDispatchRunning) return;
+    campaignDispatchRunning = true;
+    try {
+      await dispatchPendingCampaigns(db, {
+        secret: campaignUnsubscribeSecret,
+        publicOrigin: origins.platform,
+        send: sendCampaignEmail,
+      });
+    } catch (error) { console.error("campaign dispatch sweep failed", error); }
+    finally { campaignDispatchRunning = false; }
+  };
+  const campaignDispatchTimer = setInterval(() => { void campaignDispatch(); }, Number(process.env.CAMPAIGN_DISPATCH_INTERVAL_MS ?? 5_000));
+  campaignDispatchTimer.unref();
+  void campaignDispatch();
+}
 
 if (paymentRail) {
   let checkoutPollRunning = false;
