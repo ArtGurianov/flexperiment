@@ -5,10 +5,14 @@ const SCRIPT_ID = "__kinescope_course_player_api";
 
 export type KinescopePlayerInstance = {
   Events: Record<string, string>;
-  on: (event: string, handler: (payload: unknown) => void) => void;
+  on: (event: string, handler: (payload: KinescopePlayerEvent) => void) => void;
   getCurrentTime: () => Promise<number>;
   seekTo: (seconds: number) => Promise<void>;
   destroy: () => Promise<void>;
+};
+
+export type KinescopePlayerEvent = {
+  data?: { currentTime?: number };
 };
 
 type KinescopeIframePlayerApi = {

@@ -18,7 +18,9 @@ const adminPasswordScrypt = ["scrypt", "v1", "16384", "8", "1", adminSalt.toStri
 
 beforeEach(() => { db = new Database(":memory:"); db.pragma("foreign_keys = ON"); migrateV2(db); });
 
-const app = (paymentMode: "disabled" | "mock" = "disabled") => createCommerceV2App({
+type AppDependencies = Parameters<typeof createCommerceV2App>[0];
+
+const app = (paymentMode: "disabled" | "mock" = "disabled", overrides: Partial<AppDependencies> = {}) => createCommerceV2App({
   db,
   config: loadCommerceRuntimeConfig({ DEPLOY_ENV: paymentMode === "mock" ? "test" : "production", PAYMENT_MODE: paymentMode, KINESCOPE_DELIVERY_MODE: "open", MERCHANT_PROMOTION_PREFIX: "FX-" }),
   sourceCommit: "a".repeat(40),
@@ -27,6 +29,7 @@ const app = (paymentMode: "disabled" | "mock" = "disabled") => createCommerceV2A
   authenticateCustomer: async (headers) => headers.get("authorization") === "Session customer" ? "customer" : null,
   now: () => new Date("2026-09-30T12:00:00.000Z"),
   controlRoomAuth: { origin: "https://admin.flexperiment.ru", sessionSecret: "test-control-room-secret", passwordScrypt: adminPasswordScrypt },
+  ...overrides,
 });
 
 const internal = (body: unknown) => ({
@@ -34,6 +37,19 @@ const internal = (body: unknown) => ({
   headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
   body: JSON.stringify(body),
 });
+
+const seedPlayableLesson = async (server: ReturnType<typeof createCommerceV2App>) => {
+  const manifest = withManifestHash({
+    courseRef: "course", version: 1, visibility: "LISTED",
+    sections: [{ sectionRef: "section", visibility: "LISTED" as const }],
+    lessons: [{ lessonRef: "lesson", sectionRef: "section", everPublished: true, visibility: "LISTED" as const, freePreview: true }], operations: [],
+  });
+  await server.request("/v1/internal/course-manifests", internal(manifest));
+  db.prepare("INSERT INTO customers(id,email_normalized) VALUES ('customer','student@example.com')").run();
+  db.prepare("INSERT INTO products(id,product_ref,kind,access_model,course_ref) VALUES ('p','course:course','ONLINE_COURSE','PAID','course')").run();
+  db.prepare("INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode) VALUES ('o','course:course','p',100,'CLOSED')").run();
+  db.prepare("INSERT INTO lesson_video_bindings(lesson_ref,active_video_id,bound_at,updated_at) VALUES ('lesson','private-video','now','now')").run();
+};
 
 describe("commerce v2 boundaries", () => {
   it("exposes the immutable build identity contract", async () => {
@@ -303,6 +319,60 @@ describe("commerce v2 boundaries", () => {
     expect(allowed.status).toBe(200);
     expect(await allowed.json()).toEqual({ mode: "open", videoId: "private-video", resumeAt: 0 });
     expect(allowed.headers.get("cache-control")).toBe("no-store");
+  });
+
+  it("returns a short-lived protected playback grant without making it cacheable", async () => {
+    const server = app("disabled", {
+      config: loadCommerceRuntimeConfig({
+        DEPLOY_ENV: "production", PAYMENT_MODE: "disabled", KINESCOPE_DELIVERY_MODE: "protected", MERCHANT_PROMOTION_PREFIX: "FX-",
+      }),
+      createProtectedPlaybackToken: async (videoId, customerId) => ({
+        token: `signed:${videoId}:${customerId}`, expiresAt: "2026-09-30T12:05:00.000Z",
+      }),
+    });
+    await seedPlayableLesson(server);
+
+    const response = await server.request("/v1/lessons/lesson/playback", {
+      method: "POST", headers: { authorization: "Session customer" },
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(await response.json()).toEqual({
+      mode: "protected", videoId: "private-video", token: "signed:private-video:customer",
+      expiresAt: "2026-09-30T12:05:00.000Z", resumeAt: 0,
+    });
+  });
+
+  it("keeps upload init internal and accepts only authenticated Kinescope status webhooks", async () => {
+    const kinescopeClient = {
+      initUpload: async () => ({ endpoint: "https://tus.example/upload", videoId: "new-video" }),
+      getVideo: async (videoId: string) => ({ id: videoId, status: "done" as const, durationSeconds: 180 }),
+    };
+    const server = app("disabled", {
+      kinescopeClient,
+      kinescopeLessonsFolderId: "lessons-folder",
+      kinescopeWebhookCredentials: { username: "webhook", password: "secret" },
+    });
+    expect((await server.request("/v1/internal/video-uploads", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ lessonRef: "lesson", title: "Lesson" }),
+    })).status).toBe(401);
+    const initialized = await server.request("/v1/internal/video-uploads", internal({ lessonRef: "lesson", title: "Lesson" }));
+    expect(initialized.status).toBe(201);
+    expect(await initialized.json()).toEqual({ uploadSessionId: expect.any(String), endpoint: "https://tus.example/upload" });
+
+    const webhookBody = JSON.stringify({ event: "media.update.status", data: { id: "new-video", status: "done" } });
+    expect((await server.request("/v1/webhooks/kinescope", {
+      method: "POST", headers: { "content-type": "application/json" }, body: webhookBody,
+    })).status).toBe(401);
+    const webhook = await server.request("/v1/webhooks/kinescope", {
+      method: "POST",
+      headers: { authorization: `Basic ${Buffer.from("webhook:secret").toString("base64")}`, "content-type": "application/json" },
+      body: webhookBody,
+    });
+    expect(webhook.status).toBe(200);
+    expect(db.prepare("SELECT active_video_id,duration_seconds FROM lesson_video_bindings WHERE lesson_ref='lesson'").get())
+      .toEqual({ active_video_id: "new-video", duration_seconds: 180 });
   });
 
   it("accepts beacon-style resume writes and restarts a completed lesson", async () => {

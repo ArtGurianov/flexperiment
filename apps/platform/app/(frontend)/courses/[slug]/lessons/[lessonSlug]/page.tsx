@@ -4,6 +4,7 @@ import { notFound } from "next/navigation";
 import { headers } from "next/headers";
 import { Suspense } from "react";
 import LessonPlayer from "@/components/kinescope/LessonPlayer";
+import LessonNavigation from "@/components/courses/LessonNavigation";
 import { publicLesson } from "@/lib/content/public";
 import { entitledLesson } from "@/lib/content/entitled";
 import { getCommercialSummaries } from "@/lib/commerce-summary";
@@ -53,7 +54,7 @@ async function LessonContent({ params }: Props) {
     { name: result.course.title, path: `/courses/${slug}` },
     { name: result.lesson.title, path: `/courses/${slug}/lessons/${lessonSlug}` },
   ]);
-  return <main className="lessonPage"><nav className="nav"><Link className="wordmark" href="/">FLEXPERIMENT<span>®</span></Link><Link href={`/courses/${slug}`}>← {result.course.title}</Link></nav><header className="lessonHeader"><p className="eyebrow">{result.section.title}</p><h1>{result.lesson.title}</h1><p className="lessonAccess">{lessonAccessLabel(commercial, Boolean(result.lesson.freePreview))}</p></header>{lessonDescription && <section className="richCopy lessonDescription" aria-label="Об уроке"><RichText data={lessonDescription} /></section>}<section className="playerSection"><LessonPlayer lessonRef={result.lesson.lessonRef} title={result.lesson.title} /></section><script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd).replace(/</g, "\\u003c") }} /><script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbs).replace(/</g, "\\u003c") }} /></main>;
+  return <main className="lessonPage"><nav className="nav"><Link className="wordmark" href="/">FLEXPERIMENT<span>®</span></Link><Link href={`/courses/${slug}`}>← {result.course.title}</Link></nav><header className="lessonHeader"><p className="eyebrow">{result.section.title}</p><h1>{result.lesson.title}</h1><p className="lessonAccess">{lessonAccessLabel(commercial, Boolean(result.lesson.freePreview))}</p></header>{lessonDescription && <section className="richCopy lessonDescription" aria-label="Об уроке"><RichText data={lessonDescription} /></section>}<section className="playerSection"><LessonPlayer lessonRef={result.lesson.lessonRef} title={result.lesson.title} /></section><LessonNavigation courseSlug={slug} currentLessonRef={result.lesson.lessonRef} lessons={result.outline.lessons} /><script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd).replace(/</g, "\\u003c") }} /><script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbs).replace(/</g, "\\u003c") }} /></main>;
 }
 
 export default function LessonPage(props: Props) {

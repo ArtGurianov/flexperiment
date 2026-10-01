@@ -313,5 +313,5 @@ export async function getPublicLessonBySlugs(payload: Payload, courseSlug: strin
   const lesson = outline.lessons.find((candidate) => candidate.slug === lessonSlug) as unknown as PublicLesson | undefined;
   if (!lesson) return null;
   const section = outline.sections.find(({ id }) => String(id) === String(relationId(lesson.section)));
-  return section ? { course, lesson, section } : null;
+  return section ? { course, lesson, section, outline } : null;
 }

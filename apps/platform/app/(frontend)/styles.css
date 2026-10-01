@@ -91,6 +91,14 @@ a { color: inherit; text-decoration: none; }
 .lessonPlayerHost { position: absolute; inset: 0; }
 .playerGate { min-height: min(60vw, 42rem); padding: 3rem; background: var(--ink); color: var(--paper); display: grid; place-content: center; justify-items: start; gap: 1.5rem; }
 .playerGate .primary { justify-self: start; }
+.lessonNavigation { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: stretch; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.lessonNavigation > div { min-width: 0; }
+.lessonNavigation > div:last-child { text-align: right; }
+.lessonNavigation a { min-height: 7rem; padding: 1.25rem; display: flex; flex-direction: column; justify-content: center; gap: .35rem; text-decoration: none; }
+.lessonNavigation a span { font-size: .72rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+.lessonNavigation a strong { overflow: hidden; text-overflow: ellipsis; }
+.lessonNavigationCourse { border-inline: 1px solid var(--line); align-items: center; font-size: .8rem; text-transform: uppercase; letter-spacing: .08em; }
+@media (max-width: 700px) { .lessonNavigation { grid-template-columns: 1fr 1fr; } .lessonNavigationCourse { grid-column: 1 / -1; grid-row: 2; border: 0; border-top: 1px solid var(--line); min-height: auto !important; } }
 .accountPanel { padding: 8rem 4vw; max-width: 64rem; }
 .accountPanel h1 { font: 500 clamp(3.5rem, 10vw, 8rem)/.85 "Unbounded", sans-serif; letter-spacing: -.07em; margin: 1.5rem 0 4rem; }
 .accountSection { margin-top: 5rem; border-top: 1px solid var(--ink); }

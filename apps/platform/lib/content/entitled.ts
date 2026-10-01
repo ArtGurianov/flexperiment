@@ -188,5 +188,5 @@ export async function entitledLesson(cookieHeader: string, courseSlug: string, l
   const lesson = courseResult.outline.lessons.find((candidate) => candidate.slug === lessonSlug) as unknown as PublicLesson | undefined;
   if (!lesson) return null;
   const section = courseResult.outline.sections.find(({ id }) => String(id) === String(relationId(lesson.section)));
-  return section ? { course: courseResult.course, lesson, section } : null;
+  return section ? { course: courseResult.course, lesson, section, outline: courseResult.outline } : null;
 }

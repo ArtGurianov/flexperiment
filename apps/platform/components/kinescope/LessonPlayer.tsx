@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { loadIframeApi, type KinescopePlayerInstance } from "./iframeApi";
 
-type PlaybackGrant = {
+export type PlaybackGrant = {
   mode: "open" | "protected";
   videoId: string;
   resumeAt: number;
@@ -15,6 +15,24 @@ type PlaybackGrant = {
 let playerSequence = 0;
 
 const resumePath = (lessonRef: string) => `/v1/lessons/${encodeURIComponent(lessonRef)}/resume`;
+const playbackPath = (lessonRef: string) => `/v1/lessons/${encodeURIComponent(lessonRef)}/playback`;
+
+export const playbackEmbedUrl = (grant: PlaybackGrant) => {
+  const url = new URL(`https://kinescope.io/embed/${encodeURIComponent(grant.videoId)}`);
+  if (grant.mode === "protected") {
+    if (!grant.token) throw new Error("PROTECTED_PLAYBACK_TOKEN_MISSING");
+    url.searchParams.set("drmauthtoken", grant.token);
+  }
+  return url.toString();
+};
+
+const parseGrant = async (response: Response) => {
+  if (!response.ok) return null;
+  const grant = await response.json() as PlaybackGrant;
+  if (!grant.videoId || !Number.isFinite(grant.resumeAt)) return null;
+  if (grant.mode === "protected" && (!grant.token || !grant.expiresAt || !Number.isFinite(Date.parse(grant.expiresAt)))) return null;
+  return grant;
+};
 
 export default function LessonPlayer({ lessonRef, title }: { lessonRef: string; title: string }) {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -27,15 +45,15 @@ export default function LessonPlayer({ lessonRef, title }: { lessonRef: string; 
 
   useEffect(() => {
     const controller = new AbortController();
-    void fetch(`/v1/lessons/${encodeURIComponent(lessonRef)}/playback`, {
+    void fetch(playbackPath(lessonRef), {
       method: "POST",
       cache: "no-store",
       credentials: "same-origin",
       signal: controller.signal,
     }).then(async (response) => {
       if (response.status === 401) { setState("signin"); return; }
-      if (!response.ok) { setState("denied"); return; }
-      const next = await response.json() as PlaybackGrant;
+      const next = await parseGrant(response);
+      if (!next) { setState("denied"); return; }
       setGrant(next);
       positionRef.current = next.resumeAt;
       setState("ready");
@@ -44,6 +62,32 @@ export default function LessonPlayer({ lessonRef, title }: { lessonRef: string; 
     });
     return () => controller.abort();
   }, [lessonRef]);
+
+  useEffect(() => {
+    if (grant?.mode !== "protected" || !grant.expiresAt) return;
+    const controller = new AbortController();
+    let timer: number | undefined;
+    const expiresAt = Date.parse(grant.expiresAt);
+    const schedule = (delay: number) => { timer = window.setTimeout(() => { void refresh(); }, delay); };
+    const refresh = async () => {
+      try {
+        const response = await fetch(playbackPath(lessonRef), {
+          method: "POST", cache: "no-store", credentials: "same-origin", signal: controller.signal,
+        });
+        if (response.status === 401) { setState("signin"); setGrant(null); return; }
+        const next = await parseGrant(response);
+        if (!next) { setState("denied"); setGrant(null); return; }
+        setGrant(next);
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        const remaining = expiresAt - Date.now();
+        if (remaining > 1_500) schedule(Math.min(5_000, remaining - 1_000));
+        else { setState("error"); setGrant(null); }
+      }
+    };
+    schedule(Math.max(1_000, expiresAt - Date.now() - 30_000));
+    return () => { controller.abort(); if (timer !== undefined) window.clearTimeout(timer); };
+  }, [grant, lessonRef]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -56,12 +100,15 @@ export default function LessonPlayer({ lessonRef, title }: { lessonRef: string; 
     mount.style.height = "100%";
     host.replaceChildren(mount);
 
-    const save = async (force = false) => {
+    const save = async (force = false, observedSeconds?: number) => {
+      if (Number.isFinite(observedSeconds)) positionRef.current = Math.max(0, Math.floor(observedSeconds!));
       const now = Date.now();
       if (!force && now - lastSavedAtRef.current < 15_000) return;
       lastSavedAtRef.current = now;
-      const current = player ? await player.getCurrentTime().catch(() => positionRef.current) : positionRef.current;
-      positionRef.current = Math.max(0, Math.floor(current));
+      if (observedSeconds === undefined) {
+        const current = player ? await player.getCurrentTime().catch(() => positionRef.current) : positionRef.current;
+        positionRef.current = Math.max(0, Math.floor(current));
+      }
       sequenceRef.current += 1;
       await fetch(resumePath(lessonRef), {
         method: "PUT",
@@ -73,7 +120,7 @@ export default function LessonPlayer({ lessonRef, title }: { lessonRef: string; 
     };
 
     void loadIframeApi().then((api) => api.create(mount.id, {
-      url: `https://kinescope.io/embed/${encodeURIComponent(grant.videoId)}`,
+      url: playbackEmbedUrl(grant),
       size: { width: "100%", height: "100%" },
       behavior: { playsInline: true, preload: "metadata", localStorage: false },
       ui: { controls: true, mainPlayButton: true },
@@ -81,8 +128,9 @@ export default function LessonPlayer({ lessonRef, title }: { lessonRef: string; 
       if (cancelled) { await created.destroy().catch(() => undefined); return; }
       player = created;
       playerRef.current = created;
-      if (grant.resumeAt > 0) await created.seekTo(grant.resumeAt).catch(() => undefined);
-      created.on(created.Events.TimeUpdate, () => { void save(false); });
+      const resumeAt = Math.max(grant.resumeAt, positionRef.current);
+      if (resumeAt > 0) await created.seekTo(resumeAt).catch(() => undefined);
+      created.on(created.Events.TimeUpdate, (event) => { void save(false, event.data?.currentTime); });
       created.on(created.Events.Pause, () => { void save(true); });
       created.on(created.Events.Error, () => setState("error"));
       created.on(created.Events.Unsupported, () => setState("error"));
