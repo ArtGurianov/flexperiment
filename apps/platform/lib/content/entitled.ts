@@ -17,6 +17,26 @@ type CourseAuthorization = {
   courseRefs: string[];
 };
 
+type AuthorizedLibraryCourse = {
+  courseRef: string;
+  access: "ENTITLED" | "FREE" | "PREVIEW";
+  lessons: Array<{ lessonRef: string; sectionRef: string; access: "ENTITLED" | "FREE" | "PREVIEW" }>;
+};
+
+export type AccountLibraryCourse = {
+  courseRef: string;
+  title: string;
+  url: string;
+  access: "ENTITLED" | "FREE" | "PREVIEW";
+  lessons: Array<{
+    lessonRef: string;
+    title: string;
+    sectionTitle: string;
+    url: string;
+    access: "ENTITLED" | "FREE" | "PREVIEW";
+  }>;
+};
+
 async function authorizeCourses(cookieHeader: string): Promise<CourseAuthorization | null> {
   const origin = process.env.COMMERCE_INTERNAL_ORIGIN;
   if (!origin || !cookieHeader) return null;
@@ -33,6 +53,19 @@ async function authorizeCourses(cookieHeader: string): Promise<CourseAuthorizati
     allCourses: entitlements.some(({ scope }) => scope === "ALL_COURSES"),
     courseRefs: entitlements.flatMap(({ scope, course_ref }) => scope === "COURSE" && course_ref ? [course_ref] : []),
   };
+}
+
+async function authorizeLibrary(cookieHeader: string): Promise<AuthorizedLibraryCourse[]> {
+  const origin = process.env.COMMERCE_INTERNAL_ORIGIN;
+  if (!origin || !cookieHeader) return [];
+  const response = await fetch(new URL("/v1/library", origin), {
+    headers: { cookie: cookieHeader },
+    cache: "no-store",
+    signal: AbortSignal.timeout(3_000),
+  });
+  if (!response.ok) return [];
+  const body = await response.json() as { courses?: AuthorizedLibraryCourse[] };
+  return body.courses ?? [];
 }
 
 const entitledCourseWhere = (authorization: CourseAuthorization, slug?: string) => {
@@ -87,6 +120,53 @@ export async function listEntitledCourses(cookieHeader: string): Promise<PublicC
     where: entitledCourseWhere(authorization), select: courseSelect,
   });
   return result.docs as unknown as PublicCourse[];
+}
+
+export async function accountLibrary(cookieHeader: string): Promise<AccountLibraryCourse[]> {
+  const authorized = await authorizeLibrary(cookieHeader);
+  if (authorized.length === 0) return [];
+  const payload = await getPayload({ config });
+  const result = await payload.find({
+    collection: "courses", depth: 1, draft: false, limit: 1000,
+    overrideAccess: true, pagination: false, sort: "-displayDate",
+    where: { and: [
+      { _status: { equals: "published" } },
+      { everPublished: { equals: true } },
+      { courseRef: { in: authorized.map(({ courseRef }) => courseRef) } },
+    ] },
+    select: courseSelect,
+  });
+  const courses = new Map((result.docs as unknown as PublicCourse[]).map((course) => [course.courseRef, course]));
+  const library: AccountLibraryCourse[] = [];
+  for (const authorization of authorized) {
+    const course = courses.get(authorization.courseRef);
+    if (!course) continue;
+    const outline = await entitledOutline(course.id);
+    const allowedLessons = new Map(authorization.lessons.map((lesson) => [lesson.lessonRef, lesson]));
+    const sections = new Map(outline.sections.map((section) => [section.sectionRef, section]));
+    library.push({
+      courseRef: course.courseRef,
+      title: course.title,
+      url: `/courses/${course.slug}`,
+      access: authorization.access,
+      lessons: outline.lessons.flatMap((lesson) => {
+        const lessonRef = lesson.lessonRef;
+        if (!lessonRef) return [];
+        const access = allowedLessons.get(lessonRef)?.access;
+        const sectionId = relationId(lesson.section);
+        const section = outline.sections.find(({ id }) => String(id) === String(sectionId));
+        const stableSection = section ? sections.get(section.sectionRef) : undefined;
+        return access && stableSection ? [{
+          lessonRef,
+          title: lesson.title,
+          sectionTitle: stableSection.title,
+          url: `/courses/${course.slug}/lessons/${lesson.slug}`,
+          access,
+        }] : [];
+      }),
+    });
+  }
+  return library;
 }
 
 export async function entitledCourse(cookieHeader: string, slug: string) {

@@ -8,7 +8,7 @@ export default defineConfig({
   resolve: { alias: { "@": root } },
   test: {
     environment: "node",
-    include: ["test/**/*.test.ts"],
+    include: ["test/**/*.test.ts", "test/**/*.test.tsx"],
     testTimeout: 30_000,
     fileParallelism: false,
   },

@@ -16,6 +16,7 @@ import { issueCheckoutHandoffState, verifyCheckoutHandoffState } from "./checkou
 import { listMerchantPromotions, saveMerchantPromotion, type MerchantPromotionInput } from "./promotions";
 import { decideRefund, executeApprovedRefund, listCustomerRefunds, listRefundCases, recordCourseAccessStart, requestRefund, type RefundDecisionInput, type RefundReason } from "./refunds";
 import { grantManualEntitlement, revokeManualEntitlement } from "./entitlements";
+import { listCustomerLibrary, listCustomerOrderHistory } from "./library";
 import { controlRoomAttention, controlRoomAudit, controlRoomCatalogue, controlRoomCities, controlRoomCustomers, controlRoomEmailOperations, controlRoomEntitlements, controlRoomIncidents, controlRoomIntegrationSummary, controlRoomLabOccurrences, controlRoomOrders } from "./control-room";
 import { auditControlRoom, consumeControlRoomLoginLimit, CONTROL_ROOM_SESSION_TTL_MS, controlRoomSessionCookie, issueControlRoomSession, parseControlRoomSession, verifyControlRoomPassword, type ControlRoomAuthConfig } from "./control-room-auth";
 import type { MerchantPromotionCommand, ProductConfigurationCommand, ProductWithdrawalCommand } from "@flexperiment/control-room-contracts";
@@ -647,6 +648,23 @@ export function createCommerceV2App(deps: Dependencies) {
     const entitlements = deps.db.prepare(`SELECT scope,course_ref,granted_at FROM course_entitlements
       WHERE customer_id=? AND revoked_at IS NULL ORDER BY granted_at`).all(customerId);
     return context.json({ customer, entitlements }, 200, noStore);
+  });
+
+  app.get("/v1/library", async (context) => {
+    const customerId = await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;
+    if (!customerId) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
+    return context.json(listCustomerLibrary(
+      deps.db,
+      customerId,
+      now(),
+      Number(process.env.CATALOG_LEASE_MS ?? 24 * 60 * 60 * 1000),
+    ), 200, { "Cache-Control": "private, no-store" });
+  });
+
+  app.get("/v1/me/orders", async (context) => {
+    const customerId = await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;
+    if (!customerId) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
+    return context.json({ orders: listCustomerOrderHistory(deps.db, customerId) }, 200, { "Cache-Control": "private, no-store" });
   });
 
   app.on(["PUT", "POST"], "/v1/lessons/:lessonRef/resume", async (context) => {

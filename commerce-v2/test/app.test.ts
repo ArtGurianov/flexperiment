@@ -152,6 +152,21 @@ describe("commerce v2 boundaries", () => {
     expect(await response.json()).toMatchObject({ ok: true, core: { paymentMode: "disabled" }, capabilities: { refref: "not_required" } });
   });
 
+  it("keeps the customer library and purchase history authenticated and private", async () => {
+    const server = app();
+    expect((await server.request("/v1/library")).status).toBe(401);
+    expect((await server.request("/v1/me/orders")).status).toBe(401);
+    const headers = { authorization: "Session customer" };
+    const library = await server.request("/v1/library", { headers });
+    expect(library.status).toBe(200);
+    expect(library.headers.get("cache-control")).toBe("private, no-store");
+    expect(await library.json()).toEqual({ courses: [] });
+    const orders = await server.request("/v1/me/orders", { headers });
+    expect(orders.status).toBe(200);
+    expect(orders.headers.get("cache-control")).toBe("private, no-store");
+    expect(await orders.json()).toEqual({ orders: [] });
+  });
+
   it("returns PAYMENTS_DISABLED at payment creation", async () => {
     const response = await app().request("/v1/checkout", { method: "POST" });
     expect(response.status).toBe(503);

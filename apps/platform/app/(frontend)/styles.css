@@ -93,6 +93,25 @@ a { color: inherit; text-decoration: none; }
 .playerGate .primary { justify-self: start; }
 .accountPanel { padding: 8rem 4vw; max-width: 64rem; }
 .accountPanel h1 { font: 500 clamp(3.5rem, 10vw, 8rem)/.85 "Unbounded", sans-serif; letter-spacing: -.07em; margin: 1.5rem 0 4rem; }
+.accountSection { margin-top: 5rem; border-top: 1px solid var(--ink); }
+.accountSection > header { display: grid; grid-template-columns: 4rem 1fr; align-items: baseline; padding: 1rem 0 2rem; }
+.accountSection > header span { font: 700 .78rem/1 "Unbounded", sans-serif; }
+.accountSection h2 { margin: 0; font: 500 clamp(1.5rem, 4vw, 3rem)/1 "Unbounded", sans-serif; letter-spacing: -.04em; }
+.accountCourses { display: grid; gap: 1px; background: var(--ink); border: 1px solid var(--ink); }
+.accountCourses article { display: grid; grid-template-columns: minmax(13rem, .8fr) minmax(18rem, 1.2fr); gap: 2rem; padding: 2rem; background: var(--paper); }
+.accountCourses article > div p { margin: 0 0 1rem; color: var(--orange); font: 700 .72rem/1 "Unbounded", sans-serif; text-transform: uppercase; }
+.accountCourses h3 { margin: 0; font: 500 clamp(1.3rem, 3vw, 2.3rem)/1.05 "Unbounded", sans-serif; letter-spacing: -.04em; }
+.accountCourses h3 a, .accountCourses li a { color: inherit; }
+.accountCourses ol { margin: 0; padding: 0; list-style: none; }
+.accountCourses li { display: grid; grid-template-columns: minmax(7rem, .55fr) 1fr auto; gap: 1rem; padding: .85rem 0; border-top: 1px solid #9a9b91; align-items: baseline; }
+.accountCourses li:first-child { border-top: 0; }
+.accountCourses li span, .accountCourses li small { color: #5a5b53; font-size: .72rem; text-transform: uppercase; }
+.purchaseHistory { margin: 0; padding: 0; list-style: none; border: 1px solid var(--ink); }
+.purchaseHistory li { display: grid; grid-template-columns: 1fr auto; gap: 2rem; padding: 1.25rem; border-top: 1px solid var(--ink); }
+.purchaseHistory li:first-child { border-top: 0; }
+.purchaseHistory div { display: grid; gap: .35rem; }
+.purchaseHistory div:last-child { text-align: right; }
+.purchaseHistory span { color: #5a5b53; font-size: .78rem; text-transform: uppercase; }
 .authForm { display: grid; gap: 1.5rem; max-width: 42rem; }
 .authForm > label:not(.check) { display: grid; gap: .6rem; font-weight: 700; }
 .authForm input[type="email"] { border: 1px solid var(--ink); background: transparent; color: inherit; padding: 1rem; font: inherit; font-size: 1.1rem; }
@@ -126,4 +145,8 @@ footer { display: flex; justify-content: space-between; padding: 2rem 4vw; font-
   .orbit span { font-size: 2rem; }
   .principles { grid-template-columns: 1fr; }
   .principles article, .principles article + article { padding: 2rem 0; border-right: 0; border-bottom: 1px solid #55564e; }
+  .accountCourses article { grid-template-columns: 1fr; }
+  .accountCourses li { grid-template-columns: 1fr; gap: .35rem; }
+  .purchaseHistory li { grid-template-columns: 1fr; }
+  .purchaseHistory div:last-child { text-align: left; }
 }
