@@ -2,6 +2,7 @@ import { sqliteAdapter } from "@payloadcms/db-sqlite";
 import { lexicalEditor } from "@payloadcms/richtext-lexical";
 import { s3Storage } from "@payloadcms/storage-s3";
 import { buildConfig } from "payload";
+import { platformOrigin } from "./lib/origins";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import sharp from "sharp";
@@ -48,7 +49,7 @@ const s3Config = s3Bucket ? {
 export default buildConfig({
   onInit: assertPayloadTransactions,
   secret: requireEnvironment("PAYLOAD_SECRET") ?? "development-only-payload-secret-change-me",
-  serverURL: process.env.NEXT_PUBLIC_SERVER_URL ?? "http://localhost:3001",
+  serverURL: platformOrigin(),
   admin: {
     user: Users.slug,
     importMap: { baseDir: path.resolve(dirname) },

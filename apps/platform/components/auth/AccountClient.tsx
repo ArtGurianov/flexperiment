@@ -117,7 +117,10 @@ export default function AccountClient({ nextPath, captchaSiteKey }: { nextPath: 
       credentials: "same-origin",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        email: data.get("email"), callbackURL: nextPath,
+        email: data.get("email"),
+        storefront: "COURSES",
+        metadata: { storefront: "COURSES" },
+        callbackURL: new URL(nextPath, window.location.origin).toString(),
         captchaToken,
         personalDataConsent: data.get("personalDataConsent") === "on",
         personalDataVersion: personalData.version,

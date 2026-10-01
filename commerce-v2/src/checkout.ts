@@ -3,6 +3,7 @@ import type Database from "better-sqlite3";
 import { buildCheckoutSnapshot, canonicalCheckoutSnapshotJson, type CheckoutSnapshotConfig, type SharedCheckoutSnapshotV1 } from "./checkout-snapshot";
 import { customerCanAccessCourse, grantEntitlement, revokeEntitlementForOrderLine } from "./entitlements";
 import { legalManifestHash, type LegalReleaseManifest } from "./legal-control";
+import type { Storefront } from "./origins";
 import { assertMerchantPromotionStillApplicable, resolveCheckoutCode, type MerchantPromotionSnapshot } from "./promotions";
 
 export type RailState = "PENDING" | "CUSTOMER_ACTION_REQUIRED" | "PAID" | "DECLINED" | "EXPIRED" | "REFUND_PENDING" | "REFUNDED" | "REVIEW_REQUIRED";
@@ -149,9 +150,11 @@ const attemptState = (state: RailState) => state;
 
 type LegalRow = { id: string; version: string; manifest_json: string };
 
-const legalRelease = (db: Database.Database) => db.prepare(
-  "SELECT id,version,manifest_json FROM legal_releases WHERE storefront='COURSES' AND active=1",
-).get() as LegalRow | undefined;
+const legalRelease = (db: Database.Database, storefront: Storefront) => db.prepare(
+  "SELECT id,version,manifest_json FROM legal_releases WHERE storefront=? AND active=1",
+).get(storefront) as LegalRow | undefined;
+
+const storefrontForOffer = (offer: OfferRow): Storefront => offer.kind === "LAB" ? "LAB" : "COURSES";
 
 type FrozenLineSnapshot = {
   readonly unitRef?: string;
@@ -250,7 +253,7 @@ const storedPricing = (quote: StoredCheckoutQuote): CheckoutQuotePricing => ({
 export async function prepareCheckout(
   db: Database.Database,
   rail: PaymentRail,
-  input: { customerId: string; customerEmail: string; offerRef: string; previewIdempotencyKey: string; scenario?: string; handoffToken?: string; checkoutCode?: string; orderPublicId?: string },
+  input: { customerId: string; customerEmail: string; offerRef: string; previewIdempotencyKey: string; scenario?: string; handoffToken?: string; checkoutCode?: string; orderPublicId?: string; storefront?: Storefront },
   now = new Date().toISOString(),
   merchantPromotionPrefix = "FX-",
 ) {
@@ -268,7 +271,9 @@ export async function prepareCheckout(
   }
 
   const offer = assertOfferCanBePurchased(db, offerByRef(db, input.offerRef), input.customerId, input.customerEmail);
-  const legal = legalRelease(db);
+  const storefront = storefrontForOffer(offer);
+  if (input.storefront && input.storefront !== storefront) throw new Error("CHECKOUT_STOREFRONT_MISMATCH");
+  const legal = legalRelease(db, storefront);
   if (!legal) throw new Error("LEGAL_RELEASE_REQUIRED");
   const orderPublicId = input.orderPublicId ?? randomUUID();
   if (input.orderPublicId) {
@@ -337,6 +342,7 @@ export async function confirmCheckout(
     quoteId: string;
     idempotencyKey: string;
     expectedOrderPublicId?: string;
+    storefront?: Storefront;
     successUrl?: string;
   },
   now = new Date().toISOString(),
@@ -374,7 +380,9 @@ export async function confirmCheckout(
   }
   if (!pending.line_snapshot_json) throw new Error("CHECKOUT_QUOTE_STALE");
   const offer = assertOfferCanBePurchased(db, offerByRef(db, pending.offer_ref), input.customerId, input.customerEmail);
-  const activeLegal = legalRelease(db);
+  const storefront = storefrontForOffer(offer);
+  if (input.storefront && input.storefront !== storefront) throw new Error("CHECKOUT_STOREFRONT_MISMATCH");
+  const activeLegal = legalRelease(db, storefront);
   const frozenLine = JSON.parse(pending.line_snapshot_json) as FrozenLineSnapshot;
   if (offer.offer_id !== pending.offer_id || offer.price_kopecks !== pending.catalog_amount_kopecks
     || activeLegal?.id !== pending.legal_release_id

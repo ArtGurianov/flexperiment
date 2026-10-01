@@ -46,7 +46,7 @@ describe("RefrefPaymentRail", () => {
         checkoutCodeOutcome: "NONE",
         lines: [{ lineRef: "line", referralDiscountAmountKopecks: 500 }] }, 201));
     const rail = new RefrefPaymentRail({ apiBaseUrl: "https://api.refref.ru/v1-rc/", apiKey: "key",
-      merchantId: "00000000-0000-4000-8000-000000000001", successUrl: "https://flexperiment.ru/checkout/return",
+      merchantId: "00000000-0000-4000-8000-000000000001",
       paymentMethod: "full_prepayment", fetch: request });
     const resolution = await rail.resolve(input);
     expect(resolution).toMatchObject({ state: "PRICE_REVIEW_REQUIRED", quote: { discountKopecks: 500, finalAmountKopecks: 9500, checkoutCodeOutcome: "NONE" } });
@@ -92,7 +92,7 @@ describe("RefrefPaymentRail", () => {
     const request = vi.fn<typeof fetch>().mockResolvedValue(response({ status: "CUSTOMER_ACTION_REQUIRED",
       referralResolutionId: "10000000-0000-4000-8000-000000000001", customerActionUrl: "https://checkout.refref.ru/conflict" }));
     const rail = new RefrefPaymentRail({ apiBaseUrl: "https://api.refref.ru/v1-rc/", apiKey: "key",
-      merchantId: "00000000-0000-4000-8000-000000000001", successUrl: "https://flexperiment.ru/checkout/return",
+      merchantId: "00000000-0000-4000-8000-000000000001",
       paymentMethod: "full_prepayment", fetch: request });
     expect(await rail.resolve(input)).toMatchObject({ state: "CUSTOMER_ACTION_REQUIRED", checkoutUrl: "https://checkout.refref.ru/conflict" });
     expect(request).toHaveBeenCalledOnce();
@@ -108,7 +108,7 @@ describe("RefrefPaymentRail", () => {
         status: "REFUND_PROCESSING", refundExecutionId: "refund-execution", supportReference: "support-refund",
       }, 202));
     const rail = new RefrefPaymentRail({ apiBaseUrl: "https://api.refref.ru/v1-rc/", apiKey: "key",
-      merchantId: "00000000-0000-4000-8000-000000000001", successUrl: "https://flexperiment.ru/checkout/return",
+      merchantId: "00000000-0000-4000-8000-000000000001",
       paymentMethod: "full_prepayment", fetch: request });
     await expect(rail.refund({
       idempotencyKey: "refund:request", orderPublicId: "order", attemptId: "attempt", amountKopecks: 10_000,

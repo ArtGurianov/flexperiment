@@ -71,7 +71,7 @@ jobs:
           SOURCE_COMMIT: ${{ github.sha }}
           PAYLOAD_SECRET: ci-build-only-not-a-runtime-secret
           PAYLOAD_DATABASE_URL: file:/tmp/flexperiment-platform-ci.sqlite
-          NEXT_PUBLIC_SERVER_URL: https://build.invalid
+          PLATFORM_ORIGIN: https://build.invalid
           DEPLOY_ENV: staging
           PAYLOAD_JOBS_ENABLED: "false"
       - name: Static-export conformance
@@ -160,7 +160,7 @@ jobs:
           tags: flexperiment-platform-v2:test
           build-args: |
             SOURCE_COMMIT=${{ github.sha }}
-            NEXT_PUBLIC_SERVER_URL=https://ci.platform.invalid
+            PLATFORM_ORIGIN=https://ci.platform.invalid
             YANDEX_WEBMASTER_VERIFICATION=ci-yandex-verification
           cache-from: type=gha,scope=platform-v2
           cache-to: type=gha,mode=max,scope=platform-v2
@@ -184,7 +184,7 @@ jobs:
           --env PAYLOAD_SECRET=ci-runtime-only-not-a-production-secret
           --env PAYLOAD_JOBS_ENABLED=false
           --env "PLATFORM_REVALIDATE_TOKEN=${PLATFORM_REVALIDATE_TOKEN}"
-          --env NEXT_PUBLIC_SERVER_URL=http://127.0.0.1:3101
+          --env PLATFORM_ORIGIN=http://127.0.0.1:3101
         env:
           SOURCE_COMMIT: ${{ github.sha }}
           PLATFORM_CANONICAL_ORIGIN: https://ci.platform.invalid
@@ -198,6 +198,9 @@ jobs:
           --env PAYMENT_MODE=disabled
           --env BETTER_AUTH_SECRET=ci-runtime-better-auth-secret-not-for-production
           --env AUTH_EMAIL_OUTBOX_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
-          --env PUBLIC_COMMERCE_ORIGIN=http://127.0.0.1:3102
+          --env PLATFORM_ORIGIN=http://127.0.0.1:3101
+          --env LAB_ORIGIN=http://127.0.0.1:3100
+          --env ADMIN_ORIGIN=http://127.0.0.1:3103
+          --env API_ORIGIN=http://127.0.0.1:3102
         env:
           SOURCE_COMMIT: ${{ github.sha }}

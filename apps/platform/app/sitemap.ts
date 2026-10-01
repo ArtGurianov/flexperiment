@@ -1,9 +1,10 @@
 import type { MetadataRoute } from "next";
 import { publicCourses, publicSearchDocuments } from "@/lib/content/public";
 import { getCommercialSummaries } from "@/lib/commerce-summary";
+import { platformOrigin } from "@/lib/origins";
 
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
-  const origin = process.env.NEXT_PUBLIC_SERVER_URL ?? "http://localhost:3001";
+  const origin = platformOrigin();
   const [courses, searchDocuments, commercial] = await Promise.all([publicCourses(), publicSearchDocuments(), getCommercialSummaries()]);
   return [
     { url: origin, changeFrequency: "weekly", priority: 1 },

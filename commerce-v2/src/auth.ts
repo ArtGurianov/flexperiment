@@ -4,6 +4,7 @@ import { betterAuth } from "better-auth";
 import { magicLink } from "better-auth/plugins";
 import { bindVerifiedAuthUser, customerIdForAuthUser, getOrCreateCustomer, recordAccountConsents, type ConsentInput } from "./customers";
 import { currentLegalRelease } from "./legal-control";
+import { loadCommerceOrigins, storefrontOrigin, type Storefront } from "./origins";
 
 type AuthEnvironment = Readonly<Record<string, string | undefined>>;
 
@@ -50,8 +51,9 @@ export function createAuthRuntime(dependencies: AuthRuntimeDependencies) {
   const environment = dependencies.environment ?? process.env;
   const production = environment.NODE_ENV === "production" || environment.DEPLOY_ENV === "production";
   const secret = production ? required(environment, "BETTER_AUTH_SECRET") : environment.BETTER_AUTH_SECRET ?? "development-better-auth-secret-change-me";
-  const baseURL = production ? required(environment, "PUBLIC_COMMERCE_ORIGIN") : environment.PUBLIC_COMMERCE_ORIGIN ?? "http://localhost:3002";
-  const trustedOrigins = (environment.AUTH_TRUSTED_ORIGINS ?? baseURL).split(",").map((value) => value.trim()).filter(Boolean);
+  const origins = loadCommerceOrigins(environment);
+  const baseURL = origins.api;
+  const trustedOrigins = [origins.platform, origins.lab, origins.api];
   const key = encryptionKey(environment, secret);
 
   const auth = betterAuth({
@@ -81,10 +83,16 @@ export function createAuthRuntime(dependencies: AuthRuntimeDependencies) {
       expiresIn: 10 * 60,
       rateLimit: { window: 60, max: 5 },
       storeToken: "hashed",
-      sendMagicLink: async ({ email, url }) => {
+      sendMagicLink: async ({ email, url, metadata }) => {
+        const storefront = (metadata as { storefront?: unknown } | undefined)?.storefront;
+        if (storefront !== "COURSES" && storefront !== "LAB") throw new Error("AUTH_STOREFRONT_REQUIRED");
+        const target = new URL(url);
+        const publicOrigin = new URL(storefrontOrigin(origins, storefront));
+        target.protocol = publicOrigin.protocol;
+        target.host = publicOrigin.host;
         const id = randomUUID();
         const normalized = email.trim().toLocaleLowerCase("en-US");
-        const payload = { email: normalized, url };
+        const payload = { email: normalized, url: target.toString() };
         const serialized = JSON.stringify(payload);
         dependencies.db.prepare(`INSERT INTO auth_email_outbox
           (id,recipient_normalized,kind,encrypted_payload,payload_sha256,state)
@@ -113,6 +121,7 @@ export function createAuthRuntime(dependencies: AuthRuntimeDependencies) {
     auth,
     prepareMagicLinkInitiation(input: {
       email: string;
+      storefront: Storefront;
       personalDataConsent: boolean;
       personalDataVersion: string;
       personalDataSha256: string;
@@ -123,7 +132,7 @@ export function createAuthRuntime(dependencies: AuthRuntimeDependencies) {
       marketingDocumentSha256: string;
     }) {
       if (input.personalDataConsent !== true) throw new Error("PERSONAL_DATA_CONSENT_REQUIRED");
-      const release = currentLegalRelease(dependencies.db, "COURSES");
+      const release = currentLegalRelease(dependencies.db, input.storefront);
       if (!release) throw new Error("LEGAL_RELEASE_NOT_FOUND");
       const document = (kind: string) => release.manifest.documents.find((candidate) => candidate.kind === kind);
       const personalData = document("personal_data");

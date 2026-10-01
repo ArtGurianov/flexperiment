@@ -12,6 +12,7 @@ import { lessonAccessLabel } from "@/lib/course-access-labels";
 import { RichText } from "@payloadcms/richtext-lexical/react";
 import type { SerializedEditorState } from "@payloadcms/richtext-lexical/lexical";
 import { breadcrumbJsonLd, lessonIsAccessibleForFree } from "@/lib/seo";
+import { platformOrigin } from "@/lib/origins";
 
 type Props = { params: Promise<{ slug: string; lessonSlug: string }> };
 const buildShellSlug = "__build-shell__";
@@ -42,7 +43,7 @@ async function LessonContent({ params }: Props) {
   const commercial = (await getCommercialSummaries()).get(result.course.courseRef);
   if (commercial?.withdrawn) notFound();
   const lessonDescription = result.lesson.description as SerializedEditorState | null | undefined;
-  const origin = process.env.NEXT_PUBLIC_SERVER_URL ?? "http://localhost:3001";
+  const origin = platformOrigin();
   const jsonLd = {
     "@context": "https://schema.org", "@type": "LearningResource",
     name: result.lesson.title, isPartOf: { "@type": "Course", name: result.course.title },

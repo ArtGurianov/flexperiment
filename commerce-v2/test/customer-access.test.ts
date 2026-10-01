@@ -68,11 +68,11 @@ describe("customer identity", () => {
       environment: {
         NODE_ENV: "test",
         BETTER_AUTH_SECRET: "a-test-secret-that-is-long-enough-for-auth",
-        PUBLIC_COMMERCE_ORIGIN: "http://localhost:3002",
       },
     });
     runtime.prepareMagicLinkInitiation({
       email: "student@example.com",
+      storefront: "COURSES",
       personalDataConsent: true,
       personalDataVersion: "personal_data-v1",
       personalDataSha256: legalHash,
@@ -85,10 +85,15 @@ describe("customer identity", () => {
     const response = await runtime.auth.handler(new Request("http://localhost:3002/v1/auth/sign-in/magic-link", {
       method: "POST",
       headers: { "content-type": "application/json", origin: "http://localhost:3002" },
-      body: JSON.stringify({ email: "student@example.com", callbackURL: "/courses" }),
+      body: JSON.stringify({
+        email: "student@example.com",
+        callbackURL: "http://localhost:3001/courses",
+        metadata: { storefront: "COURSES" },
+      }),
     }));
     expect(response.status).toBe(200);
     expect(send).toHaveBeenCalledOnce();
+    expect(new URL(link).origin).toBe("http://localhost:3001");
     expect(db.prepare("SELECT state FROM auth_email_outbox").get()).toEqual({ state: "SENT" });
     expect(db.prepare("SELECT COUNT(*) AS count FROM account_consents").get()).toEqual({ count: 2 });
     expect(db.prepare("SELECT COUNT(*) AS count FROM account_consents WHERE document_sha256=?").get(legalHash)).toEqual({ count: 2 });
@@ -108,6 +113,7 @@ describe("customer identity", () => {
     });
     expect(() => runtime.prepareMagicLinkInitiation({
       email: "student@example.com",
+      storefront: "COURSES",
       personalDataConsent: true,
       personalDataVersion: "personal_data-v0",
       personalDataSha256: "c".repeat(64),
@@ -118,6 +124,47 @@ describe("customer identity", () => {
       marketingDocumentSha256: legalHash,
     })).toThrow("LEGAL_RELEASE_STALE");
     expect(db.prepare("SELECT COUNT(*) AS count FROM customers").get()).toEqual({ count: 0 });
+  });
+
+  it("builds a LAB magic link and callback on the LAB storefront origin", async () => {
+    activateLegalRelease(db, { storefront: "LAB", version: "lab-stage-a-v1", manifest: stageALegal, actor: "owner" });
+    let link = "";
+    const runtime = createAuthRuntime({
+      db,
+      sendMagicLinkEmail: async ({ url }) => { link = url; },
+      environment: {
+        NODE_ENV: "test",
+        BETTER_AUTH_SECRET: "a-test-secret-that-is-long-enough-for-auth",
+        PLATFORM_ORIGIN: "https://flexperiment.test",
+        LAB_ORIGIN: "https://lab.flexperiment.test",
+        ADMIN_ORIGIN: "https://admin.flexperiment.test",
+        API_ORIGIN: "https://api.flexperiment.test",
+      },
+    });
+    runtime.prepareMagicLinkInitiation({
+      email: "lab@example.com",
+      storefront: "LAB",
+      personalDataConsent: true,
+      personalDataVersion: "personal_data-v1",
+      personalDataSha256: legalHash,
+      accountTermsVersion: "account_terms-v1",
+      accountTermsSha256: legalHash,
+      marketingConsent: false,
+      marketingDocumentVersion: "marketing_consent-v1",
+      marketingDocumentSha256: legalHash,
+    });
+    const response = await runtime.auth.handler(new Request("https://api.flexperiment.test/v1/auth/sign-in/magic-link", {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "https://lab.flexperiment.test" },
+      body: JSON.stringify({
+        email: "lab@example.com",
+        callbackURL: "https://lab.flexperiment.test/account",
+        metadata: { storefront: "LAB" },
+      }),
+    }));
+    expect(response.status).toBe(200);
+    expect(new URL(link).origin).toBe("https://lab.flexperiment.test");
+    expect(new URL(new URL(link).searchParams.get("callbackURL")!).origin).toBe("https://lab.flexperiment.test");
   });
 });
 

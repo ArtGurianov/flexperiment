@@ -1,7 +1,9 @@
+import { platformOrigin } from "./origins";
+
 export async function invalidatePlatformCache(mode: "swr" | "immediate") {
-  const origin = process.env.NEXT_PUBLIC_SERVER_URL;
+  const origin = platformOrigin();
   const token = process.env.PLATFORM_REVALIDATE_TOKEN ?? process.env.PLATFORM_COMMERCE_SERVICE_TOKEN;
-  if (!origin || !token) {
+  if (!token) {
     if (process.env.DEPLOY_ENV === "production") throw new Error("PLATFORM_REVALIDATION_CONFIGURATION_REQUIRED");
     return;
   }
@@ -17,8 +19,8 @@ export async function invalidatePlatformCache(mode: "swr" | "immediate") {
 
 export async function notifyIndexNow(paths: readonly string[]) {
   const key = process.env.INDEXNOW_KEY;
-  const origin = process.env.NEXT_PUBLIC_SERVER_URL;
-  if (!key || !origin || paths.length === 0) return;
+  const origin = platformOrigin();
+  if (!key || paths.length === 0) return;
   try {
     const host = new URL(origin).host;
     await fetch("https://api.indexnow.org/indexnow", {

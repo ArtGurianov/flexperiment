@@ -18,6 +18,21 @@ Payload's editorial SQLite database is separate. It stores drafts, published
 content, media metadata, versions and Payload jobs. Neither database attaches
 the other, and neither schema contains tables owned by the other service.
 
+## Public origin boundary
+
+The four public authorities are configured independently: `PLATFORM_ORIGIN`
+for the course storefront, `LAB_ORIGIN` for the LAB storefront,
+`ADMIN_ORIGIN` for Control Room and `API_ORIGIN` for the commerce API. A
+production commerce process refuses to start unless all four are explicit
+HTTPS origins without credentials, paths, queries or fragments. The older
+generic public-origin and provider-return variables are not v2 authorities.
+
+Authentication and checkout carry `COURSES` or `LAB` as signed state. That
+storefront selects the active legal release, the public magic-link host and the
+payment return host; it is checked again against the purchased offer before an
+order can be confirmed. Admin links and platform metadata use their own named
+origins and cannot select a customer storefront.
+
 ## Identity and migration
 
 `schema_identity.lineage` is exactly `flexperiment-v2`. A v1 database, a

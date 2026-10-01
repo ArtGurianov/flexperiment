@@ -247,21 +247,30 @@ describe("commerce v2 boundaries", () => {
       REFREF_MERCHANT_SLUG: "flexperiment",
       REFREF_MERCHANT_ID: "00000000-0000-4000-8000-000000000001",
       REFREF_API_BASE_URL: "https://api.refref.ru/v1-rc",
-      REFREF_RETURN_URL: "https://flexperiment.ru/checkout/return",
       REFREF_CHECKOUT_ORIGIN: "https://checkout.refref.ru",
       REFREF_RECEIPT_PAYMENT_METHOD: "full_prepayment",
       REFREF_HANDOFF_STATE_SECRET: "secret",
     });
-    const server = app("disabled", { config, paymentRail: new MockPaymentRail() });
+    const server = app("disabled", {
+      config,
+      paymentRail: new MockPaymentRail(),
+      origins: {
+        platform: "https://flexperiment.ru",
+        lab: "https://lab.flexperiment.ru",
+        admin: "https://admin.flexperiment.ru",
+        api: "https://api.flexperiment.ru",
+      },
+    });
     const headers = { authorization: "Session customer", "content-type": "application/json" };
     const issued = await server.request("/v1/checkout/handoff", {
-      method: "POST", headers, body: JSON.stringify({ returnPath: "/courses/one" }),
+      method: "POST", headers, body: JSON.stringify({ returnPath: "/courses/one", storefront: "COURSES" }),
     });
     const handoffUrl = new URL((await issued.json() as { url: string }).url);
     const handoffState = handoffUrl.searchParams.get("state")!;
     const orderPublicId = handoffUrl.searchParams.get("merchantOrderRef")!;
+    expect(handoffUrl.searchParams.get("returnUrl")).toBe("https://flexperiment.ru/checkout/return");
     expect(await (await server.request(`/v1/checkout/handoff/return?state=${encodeURIComponent(handoffState)}`, { headers })).json())
-      .toEqual({ phase: "HANDOFF", returnPath: "/courses/one", orderPublicId });
+      .toEqual({ phase: "HANDOFF", returnPath: "/courses/one", orderPublicId, storefront: "COURSES" });
 
     const preview = await server.request("/v1/checkout/preview", {
       method: "POST",
@@ -278,9 +287,10 @@ describe("commerce v2 boundaries", () => {
 
     const stored = db.prepare("SELECT request_payload_json FROM checkout_attempts").get() as { request_payload_json: string };
     const successUrl = new URL((JSON.parse(stored.request_payload_json) as { successUrl: string }).successUrl);
+    expect(successUrl.origin).toBe("https://flexperiment.ru");
     const paymentState = successUrl.searchParams.get("state")!;
     expect(await (await server.request(`/v1/checkout/handoff/return?state=${encodeURIComponent(paymentState)}`, { headers })).json())
-      .toEqual({ phase: "PAYMENT_RETURN", returnPath: "/courses/one", orderPublicId });
+      .toEqual({ phase: "PAYMENT_RETURN", returnPath: "/courses/one", orderPublicId, storefront: "COURSES" });
   });
 
   it("requires a customer request and explicit operator decision before refund execution", async () => {

@@ -1,10 +1,11 @@
 import type { Endpoint } from "payload";
 import { getCampaignCourseSnapshot } from "@/lib/content/editorial";
+import { adminOrigin } from "@/lib/origins";
 
 const authorRequired = (user: unknown) => Boolean(user && typeof user === "object" && "collection" in user && user.collection === "users");
 
 const controlRoomCourseUrl = (courseRef: string) => {
-  const url = new URL("/courses/", process.env.COMMERCE_ADMIN_ORIGIN ?? "https://admin.flexperiment.ru");
+  const url = new URL("/courses/", adminOrigin());
   url.searchParams.set("courseRef", courseRef);
   return url.toString();
 };

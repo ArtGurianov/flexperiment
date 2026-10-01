@@ -18,7 +18,7 @@ describe("Payload author workflow", () => {
   it("returns a course-specific Control Room deep link with the read-only summary", async () => {
     vi.stubEnv("COMMERCE_INTERNAL_ORIGIN", "https://commerce.internal");
     vi.stubEnv("PLATFORM_COMMERCE_SERVICE_TOKEN", "token");
-    vi.stubEnv("COMMERCE_ADMIN_ORIGIN", "https://admin.flexperiment.test");
+    vi.stubEnv("ADMIN_ORIGIN", "https://admin.flexperiment.test");
     vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({
       courses: [{ courseRef: "course:one", accessModel: "PAID" }],
     }));

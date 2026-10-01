@@ -97,7 +97,7 @@ export default function CourseCheckout({ courseRef, offerRef, saleMode, priceKop
       if (!handoffToken) {
         const handoffResponse = await fetch("/v1/checkout/handoff", {
           method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" },
-          body: JSON.stringify({ returnPath: pathname }),
+          body: JSON.stringify({ returnPath: pathname, storefront: "COURSES" }),
         });
         const handoff = await handoffResponse.json() as { required?: boolean; url?: string; code?: string };
         if (!handoffResponse.ok) throw new Error(handoff.code || "CHECKOUT_HANDOFF_FAILED");

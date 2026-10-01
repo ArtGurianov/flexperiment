@@ -12,6 +12,7 @@ import { RichText } from "@payloadcms/richtext-lexical/react";
 import type { SerializedEditorState } from "@payloadcms/richtext-lexical/lexical";
 import { lessonAccessLabel } from "@/lib/course-access-labels";
 import { breadcrumbJsonLd, courseOfferJsonLd } from "@/lib/seo";
+import { platformOrigin } from "@/lib/origins";
 
 type Props = { params: Promise<{ slug: string }> };
 const buildShellSlug = "__build-shell__";
@@ -50,7 +51,7 @@ async function CourseContent({ params }: Props) {
     lessonsBySection.set(key, [...(lessonsBySection.get(key) ?? []), lesson]);
   }
   const state = !commercial ? "Скоро" : commercial.accessModel === "FREE" ? "Бесплатный курс" : commercial.saleMode === "CLOSED" ? "Продажи закрыты" : "Доступен";
-  const origin = process.env.NEXT_PUBLIC_SERVER_URL ?? "http://localhost:3001";
+  const origin = platformOrigin();
   const jsonLd = {
     "@context": "https://schema.org", "@type": "Course",
     name: result.course.title, description: result.course.summary,

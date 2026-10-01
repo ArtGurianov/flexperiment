@@ -9,8 +9,10 @@ import { MockPaymentRail, reconcilePendingCheckouts } from "./checkout";
 import { RefrefPaymentRail } from "./refref-payment-rail";
 import { readBuildIdentity } from "./build-identity";
 import { reconcilePendingRefunds } from "./refunds";
+import { loadCommerceOrigins } from "./origins";
 
 const config = loadCommerceRuntimeConfig();
+const origins = loadCommerceOrigins();
 const db = openV2Database();
 migrateV2(db);
 const buildIdentity = readBuildIdentity("commerce-v2");
@@ -24,7 +26,7 @@ const campaignUnsubscribeSecret = process.env.CAMPAIGN_UNSUBSCRIBE_SECRET;
 if (!campaignUnsubscribeSecret && config.deployEnvironment === "production") throw new Error("CAMPAIGN_UNSUBSCRIBE_SECRET_REQUIRED");
 const controlRoomSessionSecret = process.env.COMMERCE_SESSION_SECRET;
 const controlRoomPasswordScrypt = process.env.COMMERCE_ADMIN_PASSWORD_SCRYPT;
-const controlRoomOrigin = process.env.COMMERCE_ADMIN_ORIGIN;
+const controlRoomOrigin = origins.admin;
 if (config.deployEnvironment === "production" && (!controlRoomSessionSecret || !controlRoomPasswordScrypt || !controlRoomOrigin)) {
   throw new Error("CONTROL_ROOM_AUTH_CONFIGURATION_REQUIRED");
 }
@@ -67,7 +69,6 @@ const paymentRail = config.paymentMode === "mock" ? new MockPaymentRail()
     apiBaseUrl: config.refref.apiBaseUrl,
     apiKey: config.refref.apiKey,
     merchantId: config.refref.merchantId,
-    successUrl: config.refref.returnUrl,
     paymentMethod: config.refref.receiptPaymentMethod,
   }) : undefined;
 
@@ -94,7 +95,7 @@ const app = createCommerceV2App({
   },
   paymentRail,
   invalidatePlatformCache: async (mode, courseRef) => {
-    const origin = process.env.NEXT_PUBLIC_SERVER_URL;
+    const origin = origins.platform;
     const token = process.env.PLATFORM_REVALIDATE_TOKEN ?? serviceToken;
     if (!origin || !token) {
       if (config.deployEnvironment === "production") throw new Error("PLATFORM_REVALIDATION_CONFIGURATION_REQUIRED");
@@ -107,7 +108,7 @@ const app = createCommerceV2App({
     if (!response.ok) throw new Error(`PLATFORM_REVALIDATION_HTTP_${response.status}`);
   },
   campaignUnsubscribeSecret,
-  publicOrigin: process.env.NEXT_PUBLIC_SERVER_URL ?? process.env.PUBLIC_COMMERCE_ORIGIN,
+  origins,
   sendCampaignEmail: emailDeliveryEndpoint ? async (message) => {
     const response = await fetch(emailDeliveryEndpoint, {
       method: "POST",

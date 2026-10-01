@@ -1,10 +1,12 @@
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
+import type { Storefront } from "./origins";
 
 type CheckoutState = {
   phase: "HANDOFF" | "PAYMENT_RETURN";
   customerId: string;
   orderPublicId: string;
   returnPath: string;
+  storefront: Storefront;
   expiresAt: number;
 };
 
@@ -25,19 +27,21 @@ const verifyState = (secret: string, token: string, customerId: string, now: num
   try { state = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as CheckoutState; }
   catch { throw new Error("CHECKOUT_STATE_INVALID"); }
   if (!["HANDOFF", "PAYMENT_RETURN"].includes(state.phase) || state.customerId !== customerId || state.expiresAt < now
+    || !["COURSES", "LAB"].includes(state.storefront)
     || !state.returnPath.startsWith("/") || state.returnPath.startsWith("//")) {
     throw new Error("CHECKOUT_STATE_INVALID");
   }
   return state;
 };
 
-export function issueCheckoutHandoffState(secret: string, input: { customerId: string; returnPath: string }, now = Date.now()) {
+export function issueCheckoutHandoffState(secret: string, input: { customerId: string; returnPath: string; storefront: Storefront }, now = Date.now()) {
   if (!input.returnPath.startsWith("/") || input.returnPath.startsWith("//")) throw new Error("CHECKOUT_RETURN_PATH_INVALID");
   return issueState(secret, {
     phase: "HANDOFF",
     customerId: input.customerId,
     orderPublicId: randomUUID(),
     returnPath: input.returnPath,
+    storefront: input.storefront,
     expiresAt: now + 10 * 60_000,
   });
 }

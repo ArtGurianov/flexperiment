@@ -186,7 +186,7 @@ describe("Payload manifest transaction", () => {
   });
 
   it("converges a committed publication through the manifest job and live revalidation boundary", async () => {
-    vi.stubEnv("NEXT_PUBLIC_SERVER_URL", "https://platform.test");
+    vi.stubEnv("PLATFORM_ORIGIN", "https://platform.test");
     vi.stubEnv("PLATFORM_REVALIDATE_TOKEN", "revalidation-token");
     vi.stubEnv("INDEXNOW_KEY", "");
     const requests: Array<{ body: unknown; url: string }> = [];

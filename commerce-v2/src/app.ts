@@ -21,6 +21,7 @@ import type { MerchantPromotionCommand, ProductConfigurationCommand, ProductWith
 import { resolvePlaybackAccess } from "./playback-access";
 import { issuePlaybackToken, verifyPlaybackToken } from "./playback-auth";
 import { recordPlaybackAccessEvent } from "./playback-telemetry";
+import { loadCommerceOrigins, storefrontOrigin, type CommerceOrigins, type Storefront } from "./origins";
 
 type Dependencies = {
   readonly db: Database.Database;
@@ -30,7 +31,7 @@ type Dependencies = {
   readonly authenticateCustomer?: (headers: Headers) => Promise<string | null>;
   readonly authHandler?: (request: Request) => Promise<Response>;
   readonly prepareMagicLinkInitiation?: (input: {
-    email: string; personalDataConsent: boolean; personalDataVersion: string; personalDataSha256: string;
+    email: string; storefront: "COURSES" | "LAB"; personalDataConsent: boolean; personalDataVersion: string; personalDataSha256: string;
     accountTermsVersion: string; accountTermsSha256: string;
     marketingConsent?: boolean; marketingDocumentVersion: string; marketingDocumentSha256: string;
   }) => void;
@@ -48,7 +49,7 @@ type Dependencies = {
   readonly paymentRail?: PaymentRail;
   readonly invalidatePlatformCache?: (mode: "swr" | "immediate", courseRef?: string) => Promise<void>;
   readonly campaignUnsubscribeSecret?: string;
-  readonly publicOrigin?: string;
+  readonly origins?: CommerceOrigins;
   readonly sendCampaignEmail?: (message: CampaignEmail) => Promise<void>;
   readonly controlRoomAuth?: ControlRoomAuthConfig;
 };
@@ -67,6 +68,7 @@ const CONTROL_ROOM_SESSION_SECONDS = CONTROL_ROOM_SESSION_TTL_MS / 1000;
 export function createCommerceV2App(deps: Dependencies) {
   const app = new Hono<AppBindings>();
   const now = deps.now ?? (() => new Date());
+  const origins = deps.origins ?? loadCommerceOrigins({ NODE_ENV: "test" });
 
   app.use("*", async (context, next) => {
     await next();
@@ -427,10 +429,10 @@ export function createCommerceV2App(deps: Dependencies) {
   });
 
   app.post("/v1/internal/campaigns/:id/dispatch", async (context) => {
-    if (!deps.campaignUnsubscribeSecret || !deps.publicOrigin || !deps.sendCampaignEmail) return context.json({ code: "CAMPAIGN_DELIVERY_NOT_CONFIGURED" }, 503, noStore);
+    if (!deps.campaignUnsubscribeSecret || !deps.sendCampaignEmail) return context.json({ code: "CAMPAIGN_DELIVERY_NOT_CONFIGURED" }, 503, noStore);
     try {
       return context.json(await dispatchCampaign(deps.db, context.req.param("id"), {
-        secret: deps.campaignUnsubscribeSecret, publicOrigin: deps.publicOrigin, send: deps.sendCampaignEmail,
+        secret: deps.campaignUnsubscribeSecret, publicOrigin: origins.platform, send: deps.sendCampaignEmail,
       }, now().toISOString()), 200, noStore);
     } catch (error) {
       return context.json({ code: error instanceof Error ? error.message : "CAMPAIGN_DISPATCH_FAILED" }, 409, noStore);
@@ -513,6 +515,7 @@ export function createCommerceV2App(deps: Dependencies) {
         handoffToken: body.handoffToken,
         checkoutCode: body.checkoutCode,
         orderPublicId: handoff?.orderPublicId,
+        storefront: handoff?.storefront,
       }, now().toISOString(), deps.config.merchantPromotionPrefix);
       return context.json(result, 200, noStore);
     } catch (error) {
@@ -536,7 +539,7 @@ export function createCommerceV2App(deps: Dependencies) {
       const paymentReturn = handoff
         ? issueCheckoutPaymentReturnState(deps.config.refref!.handoffStateSecret, handoff, now().getTime())
         : undefined;
-      const successUrl = paymentReturn ? new URL(deps.config.refref!.returnUrl) : undefined;
+      const successUrl = paymentReturn ? new URL("/checkout/return", storefrontOrigin(origins, paymentReturn.state.storefront)) : undefined;
       successUrl?.searchParams.set("state", paymentReturn!.token);
       const result = await confirmCheckout(deps.db, deps.paymentRail, {
         customerId,
@@ -544,6 +547,7 @@ export function createCommerceV2App(deps: Dependencies) {
         quoteId: body.quoteId,
         idempotencyKey: context.req.header("idempotency-key") ?? "",
         expectedOrderPublicId: handoff?.orderPublicId,
+        storefront: handoff?.storefront,
         successUrl: successUrl?.toString(),
       }, now().toISOString());
       return context.json(result, result.state === "CREATE_UNKNOWN" ? 202 : 201, noStore);
@@ -557,12 +561,13 @@ export function createCommerceV2App(deps: Dependencies) {
     if (!customerId) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
     if (deps.config.paymentMode !== "refref") return context.json({ required: false }, 200, noStore);
     try {
-      const { returnPath } = await context.req.json<{ returnPath: string }>();
-      const issued = issueCheckoutHandoffState(deps.config.refref!.handoffStateSecret, { customerId, returnPath }, now().getTime());
+      const { returnPath, storefront } = await context.req.json<{ returnPath: string; storefront: Storefront }>();
+      if (storefront !== "COURSES" && storefront !== "LAB") throw new Error("CHECKOUT_STOREFRONT_INVALID");
+      const issued = issueCheckoutHandoffState(deps.config.refref!.handoffStateSecret, { customerId, returnPath, storefront }, now().getTime());
       const target = new URL("/v1-rc/public/attribution-handoff", deps.config.refref!.checkoutOrigin);
       target.searchParams.set("merchant", deps.config.refref!.merchantSlug);
       target.searchParams.set("merchantOrderRef", issued.state.orderPublicId);
-      target.searchParams.set("returnUrl", deps.config.refref!.returnUrl);
+      target.searchParams.set("returnUrl", new URL("/checkout/return", storefrontOrigin(origins, storefront)).toString());
       target.searchParams.set("state", issued.token);
       return context.json({ required: true, url: target.toString() }, 200, noStore);
     } catch (error) {
@@ -576,7 +581,7 @@ export function createCommerceV2App(deps: Dependencies) {
     if (deps.config.paymentMode !== "refref") return context.json({ code: "CHECKOUT_HANDOFF_NOT_REQUIRED" }, 409, noStore);
     try {
       const state = verifyCheckoutNavigationState(deps.config.refref!.handoffStateSecret, context.req.query("state") ?? "", customerId, now().getTime());
-      return context.json({ phase: state.phase, returnPath: state.returnPath, orderPublicId: state.orderPublicId }, 200, noStore);
+      return context.json({ phase: state.phase, returnPath: state.returnPath, orderPublicId: state.orderPublicId, storefront: state.storefront }, 200, noStore);
     } catch (error) {
       return context.json({ code: error instanceof Error ? error.message : "CHECKOUT_STATE_INVALID" }, 422, noStore);
     }

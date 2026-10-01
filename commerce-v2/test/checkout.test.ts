@@ -38,6 +38,14 @@ describe("scripted mock checkout orchestration", () => {
     expect(db.prepare("SELECT state FROM checkout_quotes").get()).toEqual({ state: "CONSUMED" });
   });
 
+  it("refuses a handoff storefront that does not own the offer", async () => {
+    await expect(prepareCheckout(db, rail, {
+      ...input,
+      previewIdempotencyKey: "wrong-storefront",
+      storefront: "LAB",
+    }, "2026-09-30T10:00:00Z")).rejects.toThrow("CHECKOUT_STOREFRONT_MISMATCH");
+  });
+
   it("binds confirmation and the persisted provider return URL to the signed order", async () => {
     const prepared = await prepareCheckout(db, rail, {
       ...input, previewIdempotencyKey: "preview-return", orderPublicId: "signed-order",
@@ -114,6 +122,8 @@ describe("scripted mock checkout orchestration", () => {
   });
 
   it("freezes LAB occurrence times into the priced line and order evidence", async () => {
+    db.prepare(`INSERT INTO legal_releases(id,storefront,version,manifest_json,effective_at,active)
+      VALUES ('lab-legal','LAB','lab-stage-a-v1',?,'2026-09-30T00:00:00Z',1)`).run(stageALegalManifestJson);
     db.prepare("INSERT INTO cities(id,slug,title) VALUES ('city','nsk','Новосибирск')").run();
     db.prepare(`INSERT INTO lab_occurrences(id,occurrence_ref,city_id,title,starts_at,ends_at,timezone,capacity,sales_status)
       VALUES ('occurrence','lab:november','city','LAB в ноябре','2026-11-01T09:00:00Z','2026-11-01T17:00:00Z','Asia/Novosibirsk',20,'PUBLIC')`).run();
@@ -143,6 +153,8 @@ describe("scripted mock checkout orchestration", () => {
       timezone: "Asia/Novosibirsk",
       cityId: "city",
     });
+    expect(db.prepare("SELECT legal_release_ref FROM order_lines WHERE product_id='lab-product'").get())
+      .toEqual({ legal_release_ref: "lab-stage-a-v1" });
   });
 
   it.each([

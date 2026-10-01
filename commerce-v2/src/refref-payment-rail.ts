@@ -6,7 +6,6 @@ type RefrefConfig = {
   apiBaseUrl: string;
   apiKey: string;
   merchantId: string;
-  successUrl: string;
   paymentMethod: string;
   fetch?: Fetch;
 };
@@ -131,8 +130,9 @@ export class RefrefPaymentRail implements PaymentRail {
     const attemptId = String(created.checkoutAttemptId ?? "");
     if (!attemptId) throw new Error("REFREF_ATTEMPT_INVALID");
     if (created.snapshotHash !== input.snapshotHash) throw new Error("REFREF_SNAPSHOT_HASH_MISMATCH");
+    if (!input.successUrl) throw new Error("REFREF_SUCCESS_URL_REQUIRED");
     const session = await this.call("POST", `/integrations/orders/${encodeURIComponent(input.orderPublicId)}/checkout-attempts/${encodeURIComponent(attemptId)}/obligations/full/payment-session`, {
-      successUrl: input.successUrl ?? this.config.successUrl, receiptContact: { email: input.customerEmail },
+      successUrl: input.successUrl, receiptContact: { email: input.customerEmail },
     });
     const evidence = { resolutionId: quote.resolutionId, snapshotHash: input.snapshotHash };
     if (session.status === "PAYMENT_READY" && typeof session.providerPaymentUrl === "string") return { attemptId, state: "CUSTOMER_ACTION_REQUIRED", checkoutUrl: session.providerPaymentUrl, ...evidence };

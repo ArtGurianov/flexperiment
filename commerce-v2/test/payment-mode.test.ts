@@ -24,7 +24,7 @@ describe("PAYMENT_MODE", () => {
       DEPLOY_ENV: "production", PAYMENT_MODE: "refref", KINESCOPE_DELIVERY_MODE: "protected",
       MERCHANT_PROMOTION_PREFIX: "FX-",
       REFREF_API_KEY: "key", REFREF_MERCHANT_SLUG: "flexperiment", REFREF_MERCHANT_ID: "00000000-0000-4000-8000-000000000001",
-      REFREF_API_BASE_URL: "https://api.refref.ru/v1-rc", REFREF_RETURN_URL: "https://flexperiment.ru/checkout/return",
+      REFREF_API_BASE_URL: "https://api.refref.ru/v1-rc",
       REFREF_CHECKOUT_ORIGIN: "https://checkout.refref.ru", REFREF_RECEIPT_PAYMENT_METHOD: "full_prepayment", REFREF_HANDOFF_STATE_SECRET: "secret",
     }).refref?.merchantSlug).toBe("flexperiment");
   });

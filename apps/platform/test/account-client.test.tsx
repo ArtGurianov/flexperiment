@@ -83,7 +83,9 @@ describe("AccountClient", () => {
       method: "POST",
       body: JSON.stringify({
         email: "student@example.com",
-        callbackURL: "/courses",
+        storefront: "COURSES",
+        metadata: { storefront: "COURSES" },
+        callbackURL: "http://localhost:3000/courses",
         captchaToken: "",
         personalDataConsent: true,
         personalDataVersion: "personal_data-v1",

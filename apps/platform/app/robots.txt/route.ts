@@ -1,8 +1,9 @@
 import { connection } from "next/server";
+import { platformOrigin } from "@/lib/origins";
 
 export async function GET() {
   await connection();
-  const origin = process.env.NEXT_PUBLIC_SERVER_URL ?? "http://localhost:3001";
+  const origin = platformOrigin();
   const body = process.env.DEPLOY_ENV !== "production"
     ? "User-agent: *\nDisallow: /\n"
     : [

@@ -17,7 +17,6 @@ export type CommerceRuntimeConfig = {
     readonly merchantId: string;
     readonly apiBaseUrl: string;
     readonly checkoutOrigin: string;
-    readonly returnUrl: string;
     readonly receiptPaymentMethod: string;
     readonly handoffStateSecret: string;
   };
@@ -51,8 +50,6 @@ export function loadCommerceRuntimeConfig(env: Environment = process.env): Comme
 
   if (paymentMode !== "refref") return { deployEnvironment, paymentMode, kinescopeDeliveryMode, merchantPromotionPrefix };
   if (kinescopeDeliveryMode !== "protected") throw new CommerceConfigurationError("REFREF_REQUIRES_PROTECTED_KINESCOPE");
-  const returnUrl = required(env, "REFREF_RETURN_URL");
-  try { new URL(returnUrl); } catch { throw new CommerceConfigurationError("REFREF_RETURN_URL_INVALID"); }
   const apiBaseUrl = required(env, "REFREF_API_BASE_URL");
   try { new URL(apiBaseUrl); } catch { throw new CommerceConfigurationError("REFREF_API_BASE_URL_INVALID"); }
   const checkoutOrigin = required(env, "REFREF_CHECKOUT_ORIGIN");
@@ -72,7 +69,6 @@ export function loadCommerceRuntimeConfig(env: Environment = process.env): Comme
       merchantId,
       apiBaseUrl,
       checkoutOrigin,
-      returnUrl,
       receiptPaymentMethod: required(env, "REFREF_RECEIPT_PAYMENT_METHOD"),
       handoffStateSecret: required(env, "REFREF_HANDOFF_STATE_SECRET"),
     },
