@@ -18,7 +18,9 @@ describe("protected playback token", () => {
       .toThrow("PLAYBACK_TOKEN_EXPIRED");
     expect(() => verifyPlaybackToken(secret, grant.token, "other-video", new Date("2026-10-01T04:01:00.000Z")))
       .toThrow("PLAYBACK_TOKEN_VIDEO_MISMATCH");
-    expect(() => verifyPlaybackToken(secret, `${grant.token.slice(0, -1)}x`, "video", new Date("2026-10-01T04:01:00.000Z")))
+    const [header, payload, signature] = grant.token.split(".");
+    const tamperedSignature = `${signature?.startsWith("a") ? "b" : "a"}${signature?.slice(1)}`;
+    expect(() => verifyPlaybackToken(secret, `${header}.${payload}.${tamperedSignature}`, "video", new Date("2026-10-01T04:01:00.000Z")))
       .toThrow("PLAYBACK_TOKEN_SIGNATURE_INVALID");
   });
 });

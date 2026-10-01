@@ -3,6 +3,7 @@ import type Database from "better-sqlite3";
 import { betterAuth } from "better-auth";
 import { magicLink } from "better-auth/plugins";
 import { bindVerifiedAuthUser, customerIdForAuthUser, getOrCreateCustomer, recordAccountConsents, type ConsentInput } from "./customers";
+import { currentLegalRelease } from "./legal-control";
 
 type AuthEnvironment = Readonly<Record<string, string | undefined>>;
 
@@ -114,17 +115,35 @@ export function createAuthRuntime(dependencies: AuthRuntimeDependencies) {
       email: string;
       personalDataConsent: boolean;
       personalDataVersion: string;
+      personalDataSha256: string;
       accountTermsVersion: string;
+      accountTermsSha256: string;
       marketingConsent?: boolean;
-      marketingDocumentVersion?: string;
+      marketingDocumentVersion: string;
+      marketingDocumentSha256: string;
     }) {
       if (input.personalDataConsent !== true) throw new Error("PERSONAL_DATA_CONSENT_REQUIRED");
+      const release = currentLegalRelease(dependencies.db, "COURSES");
+      if (!release) throw new Error("LEGAL_RELEASE_NOT_FOUND");
+      const document = (kind: string) => release.manifest.documents.find((candidate) => candidate.kind === kind);
+      const personalData = document("personal_data");
+      const accountTerms = document("account_terms");
+      const marketing = document("marketing_consent");
+      if (!personalData || !accountTerms || !marketing) throw new Error("LEGAL_RELEASE_INCOMPLETE");
+      if (personalData.version !== input.personalDataVersion || personalData.sha256 !== input.personalDataSha256
+        || accountTerms.version !== input.accountTermsVersion || accountTerms.sha256 !== input.accountTermsSha256
+        || marketing.version !== input.marketingDocumentVersion || marketing.sha256 !== input.marketingDocumentSha256) {
+        throw new Error("LEGAL_RELEASE_STALE");
+      }
       const customer = getOrCreateCustomer(dependencies.db, input.email);
       const consent: ConsentInput = {
         personalDataVersion: input.personalDataVersion,
+        personalDataSha256: input.personalDataSha256,
         accountTermsVersion: input.accountTermsVersion,
+        accountTermsSha256: input.accountTermsSha256,
         marketingConsent: input.marketingConsent === true,
         marketingDocumentVersion: input.marketingDocumentVersion,
+        marketingDocumentSha256: input.marketingDocumentSha256,
         source: "MAGIC_LINK_INITIATION",
       };
       recordAccountConsents(dependencies.db, customer.id, consent);

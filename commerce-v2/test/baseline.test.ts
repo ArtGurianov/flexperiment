@@ -58,6 +58,18 @@ describe("v2 baseline invariants", () => {
     expect(() => db.prepare("INSERT INTO customers(id,email_normalized,auth_user_id) VALUES (?,?,?)").run("other", "other@example.test", "u")).toThrow(/UNIQUE/);
   });
 
+  it("requires SHA-256 evidence on every newly recorded consent", () => {
+    const db = database(); migrateV2(db);
+    db.prepare("INSERT INTO customers(id,email_normalized) VALUES ('customer','student@example.com')").run();
+    expect(() => db.prepare(`INSERT INTO account_consents(id,customer_id,kind,document_version,recorded_at,source)
+      VALUES ('consent','customer','PERSONAL_DATA','v1','now','test')`).run()).toThrow("ACCOUNT_CONSENT_DOCUMENT_HASH_INVALID");
+    expect(() => db.prepare(`INSERT INTO marketing_consents(id,customer_id,granted,document_version,recorded_at,source)
+      VALUES ('marketing','customer',1,'v1','now','test')`).run()).toThrow("MARKETING_CONSENT_DOCUMENT_HASH_INVALID");
+    db.prepare(`INSERT INTO account_consents(id,customer_id,kind,document_version,document_sha256,recorded_at,source)
+      VALUES ('consent','customer','PERSONAL_DATA','v1',?,'now','test')`).run("a".repeat(64));
+    expect(db.prepare("SELECT document_sha256 FROM account_consents").get()).toEqual({ document_sha256: "a".repeat(64) });
+  });
+
   it("requires withdrawal reason and terms evidence", () => {
     const db = database(); migrateV2(db);
     expect(() => db.prepare("INSERT INTO products(id,product_ref,kind,access_model,course_ref,withdrawn_at) VALUES ('p','course:x','ONLINE_COURSE','PAID','x','now')").run()).toThrow(/CHECK/);

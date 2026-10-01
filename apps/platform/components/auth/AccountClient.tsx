@@ -32,6 +32,9 @@ type AccountOrder = {
   createdAt: string;
 };
 
+type LegalDocument = { kind: string; version: string; sha256: string; url: string };
+type LegalRelease = { version: string; manifest: { stage: "A" | "B"; documents: LegalDocument[] } };
+
 const accessLabel = (access: AccountCourse["access"]) => access === "ENTITLED" ? "Ваш доступ" : access === "FREE" ? "Бесплатно" : "Превью";
 const money = (kopecks: number) => new Intl.NumberFormat("ru-RU", { style: "currency", currency: "RUB", maximumFractionDigits: 0 }).format(kopecks / 100);
 const date = (value: string) => new Intl.DateTimeFormat("ru-RU", { dateStyle: "medium" }).format(new Date(value));
@@ -47,6 +50,7 @@ export default function AccountClient({ nextPath, captchaSiteKey }: { nextPath: 
   const [courses, setCourses] = useState<AccountCourse[]>([]);
   const [orders, setOrders] = useState<AccountOrder[]>([]);
   const [captchaToken, setCaptchaToken] = useState("");
+  const [legalRelease, setLegalRelease] = useState<LegalRelease | null>(null);
   const [message, setMessage] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
@@ -66,6 +70,13 @@ export default function AccountClient({ nextPath, captchaSiteKey }: { nextPath: 
           setCourses([]);
           setOrders([]);
         });
+        else void fetch("/v1/legal/current?storefront=COURSES", { cache: "no-store", credentials: "same-origin" })
+          .then((response) => {
+            if (!response.ok) throw new Error("LEGAL_RELEASE_NOT_FOUND");
+            return response.json() as Promise<LegalRelease>;
+          })
+          .then(setLegalRelease)
+          .catch(() => setLegalRelease(null));
       }).catch(() => setMe({ customer: null }));
   }, []);
 
@@ -91,6 +102,14 @@ export default function AccountClient({ nextPath, captchaSiteKey }: { nextPath: 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
+    const legalByKind = new Map(legalRelease?.manifest.documents.map((item) => [item.kind, item]));
+    const personalData = legalByKind.get("personal_data");
+    const accountTerms = legalByKind.get("account_terms");
+    const marketing = legalByKind.get("marketing_consent");
+    if (!personalData || !accountTerms || !marketing) {
+      setMessage("Регистрация временно недоступна: не опубликован комплект документов.");
+      return;
+    }
     setSubmitting(true);
     setMessage("");
     const response = await fetch("/v1/auth/sign-in/magic-link", {
@@ -101,10 +120,13 @@ export default function AccountClient({ nextPath, captchaSiteKey }: { nextPath: 
         email: data.get("email"), callbackURL: nextPath,
         captchaToken,
         personalDataConsent: data.get("personalDataConsent") === "on",
-        personalDataVersion: "privacy-stage-a-v1",
-        accountTermsVersion: "account-stage-a-v1",
+        personalDataVersion: personalData.version,
+        personalDataSha256: personalData.sha256,
+        accountTermsVersion: accountTerms.version,
+        accountTermsSha256: accountTerms.sha256,
         marketingConsent: data.get("marketingConsent") === "on",
-        marketingDocumentVersion: "marketing-stage-a-v1",
+        marketingDocumentVersion: marketing.version,
+        marketingDocumentSha256: marketing.sha256,
       }),
     });
     setSubmitting(false);
@@ -113,5 +135,11 @@ export default function AccountClient({ nextPath, captchaSiteKey }: { nextPath: 
 
   if (me?.customer) return <section className="accountPanel"><p className="eyebrow">Аккаунт · {me.customer.email_normalized}</p><h1>Мои курсы</h1><section className="accountSection" aria-labelledby="available-lessons"><header><span>01</span><h2 id="available-lessons">Можно открыть сейчас</h2></header>{courses.length > 0 ? <div className="accountCourses">{courses.map((course) => <article key={course.courseRef}><div><p>{accessLabel(course.access)}</p><h3><a href={course.url}>{course.title}</a></h3></div><ol>{course.lessons.map((lesson) => <li key={lesson.lessonRef}><span>{lesson.sectionTitle}</span><a href={lesson.url}>{lesson.title}</a><small>{accessLabel(lesson.access)}</small></li>)}</ol></article>)}</div> : <p className="emptyState">Доступных уроков пока нет. Бесплатные и preview-уроки появятся здесь после публикации.</p>}</section><section className="accountSection" aria-labelledby="purchase-history"><header><span>02</span><h2 id="purchase-history">История покупок</h2></header>{orders.length > 0 ? <ol className="purchaseHistory">{orders.map((order) => <li key={order.orderPublicId}><div><strong>{order.title}</strong><span>{order.orderPublicId}</span></div><div><strong>{money(order.amountKopecks)}</strong><span>{date(order.createdAt)} · {order.state}</span></div></li>)}</ol> : <p className="emptyState">Покупок пока нет.</p>}</section></section>;
 
-  return <section className="accountPanel"><p className="eyebrow">Вход без пароля</p><h1>Мои курсы</h1><form className="authForm" onSubmit={submit}><label>Электронная почта<input required name="email" type="email" autoComplete="email" /></label><label className="check"><input required name="personalDataConsent" type="checkbox" />Согласен с обработкой персональных данных и условиями аккаунта</label><label className="check"><input name="marketingConsent" type="checkbox" />Хочу получать новости о курсах</label>{captchaSiteKey && <div id="smartcaptcha-account" className="smartCaptcha" />}<button className="primary" disabled={submitting || Boolean(captchaSiteKey && !captchaToken)} type="submit">{submitting ? "Отправляем…" : "Получить ссылку →"}</button>{message && <p role="status">{message}</p>}</form></section>;
+  const legalByKind = new Map(legalRelease?.manifest.documents.map((item) => [item.kind, item]));
+  const privacy = legalByKind.get("privacy");
+  const personalData = legalByKind.get("personal_data");
+  const accountTerms = legalByKind.get("account_terms");
+  const marketing = legalByKind.get("marketing_consent");
+  const legalReady = Boolean(privacy && personalData && accountTerms && marketing);
+  return <section className="accountPanel"><p className="eyebrow">Вход без пароля</p><h1>Мои курсы</h1><form className="authForm" onSubmit={submit}><label>Электронная почта<input required name="email" type="email" autoComplete="email" /></label><label className="check"><input required name="personalDataConsent" type="checkbox" />Согласен с <a href={personalData?.url} target="_blank" rel="noreferrer">обработкой персональных данных</a>, <a href={accountTerms?.url} target="_blank" rel="noreferrer">условиями аккаунта</a> и ознакомлен с <a href={privacy?.url} target="_blank" rel="noreferrer">политикой конфиденциальности</a></label><label className="check"><input name="marketingConsent" type="checkbox" />Хочу получать новости о курсах по <a href={marketing?.url} target="_blank" rel="noreferrer">условиям рассылки</a></label>{captchaSiteKey && <div id="smartcaptcha-account" className="smartCaptcha" />}<button className="primary" disabled={submitting || !legalReady || Boolean(captchaSiteKey && !captchaToken)} type="submit">{submitting ? "Отправляем…" : legalReady ? "Получить ссылку →" : "Документы не опубликованы"}</button>{message && <p role="status">{message}</p>}</form></section>;
 }

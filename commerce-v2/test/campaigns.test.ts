@@ -20,8 +20,8 @@ beforeEach(() => {
 
 describe("campaign consent boundary", () => {
   it("rechecks unsubscribe after confirmation and before dispatch", async () => {
-    db.prepare(`INSERT INTO marketing_consents(id,customer_id,granted,document_version,recorded_at,source)
-      VALUES ('consent','customer',1,'v1','2026-09-30T10:00:00Z','ACCOUNT')`).run();
+    db.prepare(`INSERT INTO marketing_consents(id,customer_id,granted,document_version,document_sha256,recorded_at,source)
+      VALUES ('consent','customer',1,'v1',?,'2026-09-30T10:00:00Z','ACCOUNT')`).run("a".repeat(64));
     const campaign = createCampaign(db, { courseRef: "course-one", payload: { subject: "Новый урок", lessons: [{ lessonRef: "lesson-one", title: "Lesson", slug: "lesson" }] } });
     expect(confirmCampaign(db, campaign.id, "author")).toEqual({ recipients: 1, eligibleRecipients: 1 });
     unsubscribeCustomer(db, unsubscribeToken("customer", "secret"), "secret");
@@ -32,8 +32,8 @@ describe("campaign consent boundary", () => {
   });
 
   it("sends once with one-click unsubscribe headers when consent remains active", async () => {
-    db.prepare(`INSERT INTO marketing_consents(id,customer_id,granted,document_version,recorded_at,source)
-      VALUES ('consent','customer',1,'v1','2026-09-30T10:00:00Z','ACCOUNT')`).run();
+    db.prepare(`INSERT INTO marketing_consents(id,customer_id,granted,document_version,document_sha256,recorded_at,source)
+      VALUES ('consent','customer',1,'v1',?,'2026-09-30T10:00:00Z','ACCOUNT')`).run("a".repeat(64));
     const campaign = createCampaign(db, { courseRef: "course-one", payload: { subject: "Новый урок", lessons: [{ lessonRef: "lesson-one", title: "Lesson", slug: "lesson" }] } });
     confirmCampaign(db, campaign.id, "author");
     const send = vi.fn(async (_message: CampaignEmail) => undefined);

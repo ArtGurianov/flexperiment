@@ -5,9 +5,16 @@ import { bindVerifiedAuthUser, getOrCreateCustomer } from "../src/customers";
 import { migrateV2 } from "../src/db";
 import { customerCanAccessCourse, grantEntitlement, revokeEntitlementForOrderLine } from "../src/entitlements";
 import { listCustomerOrderHistory } from "../src/library";
+import { activateLegalRelease, type LegalReleaseManifest } from "../src/legal-control";
 import { playbackResumeAt, saveResumePosition } from "../src/resume";
 
 let db: Database.Database;
+const legalHash = "b".repeat(64);
+const legalDocument = (kind: string) => ({ kind, version: `${kind}-v1`, sha256: legalHash, url: `https://flexperiment.ru/legal/${kind}` });
+const stageALegal: LegalReleaseManifest = {
+  stage: "A",
+  documents: ["privacy", "personal_data", "account_terms", "marketing_consent"].map(legalDocument),
+};
 
 beforeEach(() => {
   db = new Database(":memory:");
@@ -52,6 +59,7 @@ describe("customer identity", () => {
   });
 
   it("runs magic-link auth at /v1/auth, records consent, and binds the customer after verification", async () => {
+    activateLegalRelease(db, { storefront: "COURSES", version: "stage-a-v1", manifest: stageALegal, actor: "owner" });
     let link = "";
     const send = vi.fn(async ({ url }: { url: string }) => { link = url; });
     const runtime = createAuthRuntime({
@@ -66,9 +74,13 @@ describe("customer identity", () => {
     runtime.prepareMagicLinkInitiation({
       email: "student@example.com",
       personalDataConsent: true,
-      personalDataVersion: "privacy-v1",
-      accountTermsVersion: "account-v1",
+      personalDataVersion: "personal_data-v1",
+      personalDataSha256: legalHash,
+      accountTermsVersion: "account_terms-v1",
+      accountTermsSha256: legalHash,
       marketingConsent: false,
+      marketingDocumentVersion: "marketing_consent-v1",
+      marketingDocumentSha256: legalHash,
     });
     const response = await runtime.auth.handler(new Request("http://localhost:3002/v1/auth/sign-in/magic-link", {
       method: "POST",
@@ -79,10 +91,33 @@ describe("customer identity", () => {
     expect(send).toHaveBeenCalledOnce();
     expect(db.prepare("SELECT state FROM auth_email_outbox").get()).toEqual({ state: "SENT" });
     expect(db.prepare("SELECT COUNT(*) AS count FROM account_consents").get()).toEqual({ count: 2 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM account_consents WHERE document_sha256=?").get(legalHash)).toEqual({ count: 2 });
+    expect(db.prepare("SELECT document_sha256 FROM marketing_consents").get()).toEqual({ document_sha256: legalHash });
 
     const verify = await runtime.auth.handler(new Request(link, { headers: { origin: "http://localhost:3002" }, redirect: "manual" }));
     expect([200, 302]).toContain(verify.status);
     expect(db.prepare("SELECT auth_user_id IS NOT NULL AS bound FROM customers WHERE email_normalized='student@example.com'").get()).toEqual({ bound: 1 });
+  });
+
+  it("rejects stale consent evidence before creating a customer or sending email", () => {
+    activateLegalRelease(db, { storefront: "COURSES", version: "stage-a-v1", manifest: stageALegal, actor: "owner" });
+    const runtime = createAuthRuntime({
+      db,
+      sendMagicLinkEmail: async () => undefined,
+      environment: { NODE_ENV: "test", BETTER_AUTH_SECRET: "a-test-secret-that-is-long-enough-for-auth" },
+    });
+    expect(() => runtime.prepareMagicLinkInitiation({
+      email: "student@example.com",
+      personalDataConsent: true,
+      personalDataVersion: "personal_data-v0",
+      personalDataSha256: "c".repeat(64),
+      accountTermsVersion: "account_terms-v1",
+      accountTermsSha256: legalHash,
+      marketingConsent: false,
+      marketingDocumentVersion: "marketing_consent-v1",
+      marketingDocumentSha256: legalHash,
+    })).toThrow("LEGAL_RELEASE_STALE");
+    expect(db.prepare("SELECT COUNT(*) AS count FROM customers").get()).toEqual({ count: 0 });
   });
 });
 

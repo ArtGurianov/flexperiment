@@ -30,8 +30,9 @@ type Dependencies = {
   readonly authenticateCustomer?: (headers: Headers) => Promise<string | null>;
   readonly authHandler?: (request: Request) => Promise<Response>;
   readonly prepareMagicLinkInitiation?: (input: {
-    email: string; personalDataConsent: boolean; personalDataVersion: string; accountTermsVersion: string;
-    marketingConsent?: boolean; marketingDocumentVersion?: string;
+    email: string; personalDataConsent: boolean; personalDataVersion: string; personalDataSha256: string;
+    accountTermsVersion: string; accountTermsSha256: string;
+    marketingConsent?: boolean; marketingDocumentVersion: string; marketingDocumentSha256: string;
   }) => void;
   readonly verifyCaptcha?: (token: string, ip: string | undefined) => Promise<boolean>;
   readonly kinescopeDrmAuth?: { tokenSecret: string; username: string; password: string };

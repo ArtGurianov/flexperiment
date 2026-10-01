@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import AccountClient from "../components/auth/AccountClient";
 
@@ -55,5 +55,45 @@ describe("AccountClient", () => {
 
     expect(await screen.findByText(/Доступных уроков пока нет/)).toBeInTheDocument();
     expect(screen.getByText("Покупок пока нет.")).toBeInTheDocument();
+  });
+
+  it("submits the active legal document versions and hashes for registration", async () => {
+    const hash = "a".repeat(64);
+    global.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = input.toString();
+      if (path === "/v1/me") return response({ customer: null });
+      if (path === "/v1/legal/current?storefront=COURSES") return response({
+        version: "stage-a-v1",
+        manifest: { stage: "A", documents: ["privacy", "personal_data", "account_terms", "marketing_consent"].map((kind) => ({
+          kind, version: `${kind}-v1`, sha256: hash, url: `https://flexperiment.ru/legal/${kind}`,
+        })) },
+      });
+      if (path === "/v1/auth/sign-in/magic-link" && init?.method === "POST") return response({ ok: true });
+      throw new Error(`unhandled fetch: ${path}`);
+    });
+
+    render(<AccountClient nextPath="/courses" />);
+    const submit = await screen.findByRole("button", { name: "Получить ссылку →" });
+    expect(screen.getByRole("link", { name: "обработкой персональных данных" })).toHaveAttribute("href", "https://flexperiment.ru/legal/personal_data");
+    fireEvent.change(screen.getByRole("textbox", { name: "Электронная почта" }), { target: { value: "student@example.com" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: /Согласен/ }));
+    fireEvent.click(submit);
+
+    await waitFor(() => expect(vi.mocked(global.fetch)).toHaveBeenCalledWith("/v1/auth/sign-in/magic-link", expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({
+        email: "student@example.com",
+        callbackURL: "/courses",
+        captchaToken: "",
+        personalDataConsent: true,
+        personalDataVersion: "personal_data-v1",
+        personalDataSha256: hash,
+        accountTermsVersion: "account_terms-v1",
+        accountTermsSha256: hash,
+        marketingConsent: false,
+        marketingDocumentVersion: "marketing_consent-v1",
+        marketingDocumentSha256: hash,
+      }),
+    })));
   });
 });
