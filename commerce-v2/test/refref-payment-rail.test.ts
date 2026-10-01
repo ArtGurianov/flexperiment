@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { buildCheckoutSnapshot } from "../src/checkout-snapshot";
 import { RefrefPaymentRail, refrefSnapshotDigest } from "../src/refref-payment-rail";
-import type { PaymentResolveInput } from "../src/checkout";
+import { AmbiguousRailCreateError, type PaymentCreateInput, type PaymentResolveInput } from "../src/checkout";
 
 const input: PaymentResolveInput = {
   idempotencyKey: "idem", orderPublicId: "order", amountKopecks: 10_000,
@@ -10,6 +10,33 @@ const input: PaymentResolveInput = {
 };
 
 const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+
+const createInput = (rail: RefrefPaymentRail): PaymentCreateInput => {
+  const quote = {
+    resolutionId: "10000000-0000-4000-8000-000000000001",
+    termsVersionId: null,
+    baseAmountKopecks: input.amountKopecks,
+    discountKopecks: 0,
+    finalAmountKopecks: input.amountKopecks,
+    checkoutCodeOutcome: "NONE" as const,
+  };
+  const frozen = buildCheckoutSnapshot({
+    config: rail.checkoutSnapshotConfig,
+    merchantOrderRef: input.orderPublicId,
+    line: {
+      lineRef: input.lineRef,
+      offerRef: input.offerRef,
+      merchantOfferAmountKopecks: input.amountKopecks,
+      referralDiscountAmountKopecks: 0,
+      fiscalName: input.productRef,
+    },
+    referralResolutionId: quote.resolutionId,
+    termsVersionId: quote.termsVersionId,
+    legalReleaseRef: input.legalReleaseRef,
+    legalReleaseHash: input.legalReleaseHash,
+  });
+  return { ...input, quote, ...frozen, successUrl: "https://flexperiment.ru/checkout/return?state=signed" };
+};
 
 describe("RefrefPaymentRail", () => {
   it("reproduces the independently pinned Refref RC.2 digest", () => {
@@ -98,11 +125,75 @@ describe("RefrefPaymentRail", () => {
     expect(request).toHaveBeenCalledOnce();
   });
 
+  it("reads the merchant order before recovering an ambiguous attempt", async () => {
+    const request = vi.fn<typeof fetch>();
+    const rail = new RefrefPaymentRail({ apiBaseUrl: "https://api.refref.ru/v1-rc/", apiKey: "key",
+      merchantId: "00000000-0000-4000-8000-000000000001", paymentMethod: "full_prepayment", fetch: request });
+    const recoveredInput = createInput(rail);
+    request
+      .mockResolvedValueOnce(response({
+        id: "merchant-order", merchantOrderId: "order", status: "OPEN",
+        checkoutAttempts: [{
+          id: "20000000-0000-4000-8000-000000000002",
+          status: "OPEN",
+          referralResolutionId: recoveredInput.quote.resolutionId,
+          snapshotHash: recoveredInput.snapshotHash,
+          lineItems: [{ lineRef: "line", offerRef: "course:one", refundableAmountKopecks: 0 }],
+          obligations: [{ obligationRef: "full", status: "OUTSTANDING", payment: null }],
+        }],
+      }))
+      .mockResolvedValueOnce(response({ status: "PAYMENT_READY", providerPaymentUrl: "https://pay.refref.ru/replayed" }));
+
+    await expect(rail.recoverCreate(recoveredInput)).resolves.toMatchObject({
+      attemptId: "20000000-0000-4000-8000-000000000002",
+      state: "CUSTOMER_ACTION_REQUIRED",
+      checkoutUrl: "https://pay.refref.ru/replayed",
+    });
+    expect(request.mock.calls.map(([url]) => new URL(String(url)).pathname)).toEqual([
+      "/v1-rc/integrations/merchant-orders/order",
+      "/v1-rc/integrations/orders/order/checkout-attempts/20000000-0000-4000-8000-000000000002/obligations/full/payment-session",
+    ]);
+  });
+
+  it("carries the created attempt identity across an ambiguous payment-session response", async () => {
+    const request = vi.fn<typeof fetch>();
+    const rail = new RefrefPaymentRail({ apiBaseUrl: "https://api.refref.ru/v1-rc/", apiKey: "key",
+      merchantId: "00000000-0000-4000-8000-000000000001", paymentMethod: "full_prepayment", fetch: request });
+    const command = createInput(rail);
+    request
+      .mockResolvedValueOnce(response({
+        checkoutAttemptId: "20000000-0000-4000-8000-000000000002",
+        snapshotHash: command.snapshotHash,
+        obligations: [],
+      }, 201))
+      .mockResolvedValueOnce(response({ error: { code: "UPSTREAM_UNAVAILABLE", message: "unknown", requestId: "request" } }, 502));
+
+    const error = await rail.create(command).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(AmbiguousRailCreateError);
+    expect((error as AmbiguousRailCreateError).evidence).toEqual({
+      attemptId: "20000000-0000-4000-8000-000000000002",
+      resolutionId: command.quote.resolutionId,
+      snapshotHash: command.snapshotHash,
+    });
+  });
+
+  it("surfaces the nested OpenAPI error code", async () => {
+    const request = vi.fn<typeof fetch>().mockResolvedValue(response({
+      error: { code: "HANDOFF_TOKEN_INVALID", message: "invalid", requestId: "request" },
+    }, 422));
+    const rail = new RefrefPaymentRail({ apiBaseUrl: "https://api.refref.ru/v1-rc/", apiKey: "key",
+      merchantId: "00000000-0000-4000-8000-000000000001", paymentMethod: "full_prepayment", fetch: request });
+    await expect(rail.resolve(input)).rejects.toThrow("REFREF_HANDOFF_TOKEN_INVALID");
+  });
+
   it("preserves Refref refund execution evidence without claiming the refund fact exists", async () => {
     const request = vi.fn<typeof fetch>()
       .mockResolvedValueOnce(response({
-        id: "attempt", status: "SETTLED", lineItems: [{ lineRef: "line", offerRef: "course:one" }],
-        obligations: [{ obligationRef: "full", status: "SATISFIED", payment: { id: "payment", status: "SUCCEEDED" } }],
+        id: "attempt", status: "SETTLED", referralResolutionId: "resolution", snapshotHash: "refref-jcs-1:snapshot",
+        lineItems: [{ lineRef: "line", offerRef: "course:one", refundableAmountKopecks: 10_000 }],
+        obligations: [{ obligationRef: "full", status: "SATISFIED", payment: {
+          id: "payment", status: "SUCCEEDED", amountKopecks: 10_000, remainingRefundableAmountKopecks: 10_000,
+        } }],
       }))
       .mockResolvedValueOnce(response({
         status: "REFUND_PROCESSING", refundExecutionId: "refund-execution", supportReference: "support-refund",
@@ -112,11 +203,43 @@ describe("RefrefPaymentRail", () => {
       paymentMethod: "full_prepayment", fetch: request });
     await expect(rail.refund({
       idempotencyKey: "refund:request", orderPublicId: "order", attemptId: "attempt", amountKopecks: 10_000,
-      customerEmail: "student@example.com",
+      customerEmail: "student@example.com", lineRef: "line",
+      fiscalItem: { lineRef: "line", name: "Курс", quantity: 1, amountKopecks: 10_000,
+        vatCode: "NONE", paymentMethod: "full_prepayment", paymentObject: "SERVICE" },
     })).resolves.toMatchObject({
       state: "REFUND_PENDING", refundExecutionId: "refund-execution", supportReference: "support-refund",
     });
     expect(new URL(String(request.mock.calls[1]?.[0])).pathname).toBe("/v1-rc/integrations/refunds");
     expect((request.mock.calls[1]?.[1] as RequestInit).headers).toMatchObject({ "idempotency-key": "refund:request:refund" });
+    const refundBody = JSON.parse(String((request.mock.calls[1]?.[1] as RequestInit).body));
+    expect(refundBody).toMatchObject({ fiscal: { items: [{ lineRef: "line", name: "Курс", amountKopecks: 10_000 }] } });
+    expect(refundBody).not.toHaveProperty("lineAllocations");
+  });
+
+  it("sends explicit line allocation and the frozen fiscal item for a partial refund", async () => {
+    const request = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(response({
+        id: "attempt", status: "SETTLED", referralResolutionId: "resolution", snapshotHash: "refref-jcs-1:snapshot",
+        lineItems: [{ lineRef: "line", offerRef: "course:one", refundableAmountKopecks: 10_000 }],
+        obligations: [{ obligationRef: "full", status: "SATISFIED", payment: {
+          id: "payment", status: "SUCCEEDED", amountKopecks: 10_000, remainingRefundableAmountKopecks: 10_000,
+        } }],
+      }))
+      .mockResolvedValueOnce(response({
+        status: "REFUND_SUBMITTED", refundExecutionId: "refund-execution", supportReference: "support-refund",
+      }, 202));
+    const rail = new RefrefPaymentRail({ apiBaseUrl: "https://api.refref.ru/v1-rc/", apiKey: "key",
+      merchantId: "00000000-0000-4000-8000-000000000001", paymentMethod: "full_prepayment", fetch: request });
+    await expect(rail.refund({
+      idempotencyKey: "refund:partial", orderPublicId: "order", attemptId: "attempt", amountKopecks: 4_000,
+      customerEmail: "student@example.com", lineRef: "line",
+      fiscalItem: { lineRef: "line", name: "Курс по TypeScript", quantity: 1, amountKopecks: 10_000,
+        vatCode: "NONE", paymentMethod: "full_prepayment", paymentObject: "SERVICE" },
+    })).resolves.toMatchObject({ state: "REFUND_PENDING", expectedRemainingRefundableAmountKopecks: 6_000 });
+    const refundBody = JSON.parse(String((request.mock.calls[1]?.[1] as RequestInit).body));
+    expect(refundBody).toMatchObject({
+      lineAllocations: [{ lineRef: "line", amountKopecks: 4_000 }],
+      fiscal: { items: [{ lineRef: "line", name: "Курс по TypeScript", amountKopecks: 4_000 }] },
+    });
   });
 });

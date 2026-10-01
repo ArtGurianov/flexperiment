@@ -1,4 +1,5 @@
-import { AmbiguousRailCreateError, type CheckoutCodeOutcome, type PaymentCreateInput, type PaymentRail, type PaymentResolveInput, type RailProjection, type RailResolution } from "./checkout";
+import { z } from "zod";
+import { AmbiguousRailCreateError, type CheckoutCodeOutcome, type PaymentCreateInput, type PaymentRail, type PaymentRefundInput, type PaymentResolveInput, type RailProjection, type RailResolution } from "./checkout";
 import { checkoutSnapshotHash, type SharedCheckoutSnapshotV1 } from "./checkout-snapshot";
 
 type Fetch = typeof fetch;
@@ -10,13 +11,84 @@ type RefrefConfig = {
   fetch?: Fetch;
 };
 
-type Obligation = {
-  obligationRef: string;
-  status: "OUTSTANDING" | "IN_PROGRESS" | "SATISFIED" | "LATE_PAYMENT" | "CANCELLED";
-  payment: null | { id: string; status: "CREATED" | "PENDING" | "AUTHORIZED" | "SUCCEEDED" | "FAILED" | "CANCELLED" | "PARTIALLY_REFUNDED" | "REFUNDED" };
-};
+const paymentSchema = z.object({
+  id: z.string(),
+  status: z.enum(["CREATED", "PENDING", "AUTHORIZED", "SUCCEEDED", "FAILED", "CANCELLED", "PARTIALLY_REFUNDED", "REFUNDED"]),
+  amountKopecks: z.number().int().nonnegative(),
+  remainingRefundableAmountKopecks: z.number().int().nonnegative(),
+}).passthrough();
+const obligationSchema = z.object({
+  obligationRef: z.string(),
+  status: z.enum(["OUTSTANDING", "IN_PROGRESS", "SATISFIED", "LATE_PAYMENT", "CANCELLED"]),
+  payment: paymentSchema.nullable(),
+}).passthrough();
+const lineItemSchema = z.object({
+  lineRef: z.string(),
+  offerRef: z.string(),
+  refundableAmountKopecks: z.number().int().nonnegative(),
+}).passthrough();
+const attemptSchema = z.object({
+  id: z.string(),
+  status: z.enum(["OPEN", "SETTLED", "CANCELLED", "EXPIRED"]),
+  obligations: z.array(obligationSchema),
+  lineItems: z.array(lineItemSchema),
+  referralResolutionId: z.string(),
+  snapshotHash: z.string(),
+}).passthrough();
+type Attempt = z.infer<typeof attemptSchema>;
 
-type Attempt = { id: string; status: "OPEN" | "SETTLED" | "CANCELLED" | "EXPIRED"; obligations: Obligation[]; referralResolutionId?: string; snapshotHash?: string };
+const checkoutCodeOutcomeSchema = z.enum([
+  "NONE", "APPLIED", "NOT_APPLICABLE", "NOT_RECOGNIZED",
+  "NOT_APPLIED_ATTRIBUTION_LOCKED", "NOT_APPLIED_CUSTOMER_KEPT_CURRENT",
+]);
+const resolutionSchema = z.discriminatedUnion("status", [
+  z.object({
+    status: z.literal("RESOLVED"),
+    referralResolutionId: z.string(),
+    termsVersionId: z.string().nullable(),
+    checkoutCodeOutcome: checkoutCodeOutcomeSchema,
+    lines: z.array(z.object({
+      lineRef: z.string(),
+      referralDiscountAmountKopecks: z.number().int().nonnegative(),
+    }).passthrough()),
+  }).passthrough(),
+  z.object({
+    status: z.literal("CUSTOMER_ACTION_REQUIRED"),
+    referralResolutionId: z.string(),
+    customerActionUrl: z.string(),
+  }).passthrough(),
+]);
+const createAttemptSchema = z.object({
+  checkoutAttemptId: z.string(),
+  snapshotHash: z.string(),
+  obligations: z.array(obligationSchema),
+}).passthrough();
+const paymentSessionSchema = z.object({
+  status: z.enum(["PAYMENT_READY", "PAYMENT_PROCESSING", "PAYMENT_FAILED"]),
+  providerPaymentUrl: z.string().optional(),
+}).passthrough();
+const merchantOrderSchema = z.object({ checkoutAttempts: z.array(attemptSchema) }).passthrough();
+const refundExecutionSchema = z.object({
+  status: z.enum(["REFUND_SUBMITTED", "REFUND_PROCESSING", "REFUND_FAILED"]),
+  refundExecutionId: z.string(),
+  supportReference: z.string(),
+  failureCode: z.enum(["REFUND_DECLINED", "REFUND_REJECTED", "REFUND_UNAVAILABLE"]).optional(),
+}).passthrough();
+const fulfillmentSchema = z.object({
+  checkoutAttemptId: z.string(),
+  status: z.enum(["NOT_READY", "READY", "DELIVERED", "FAILED", "ACTION_REQUIRED"]),
+}).passthrough();
+
+class RefrefHttpError extends Error {
+  constructor(readonly status: number, readonly code: string) {
+    super(`REFREF_${code}`);
+  }
+}
+
+const isAmbiguousSideEffect = (error: unknown) => error instanceof TypeError
+  || error instanceof DOMException
+  || (error instanceof RefrefHttpError && (error.status === 408 || error.status === 429 || error.status >= 500))
+  || (error instanceof Error && error.message.startsWith("REFREF_RESPONSE_INVALID:"));
 
 export const refrefSnapshotDigest = (snapshot: Record<string, unknown>) =>
   checkoutSnapshotHash(snapshot as SharedCheckoutSnapshotV1);
@@ -36,7 +108,7 @@ export class RefrefPaymentRail implements PaymentRail {
     };
   }
 
-  private async call(method: string, path: string, body?: unknown, idempotencyKey?: string) {
+  private async call<T>(method: string, path: string, schema: z.ZodType<T>, body?: unknown, idempotencyKey?: string): Promise<T> {
     const target = new URL(this.config.apiBaseUrl);
     target.pathname = `${target.pathname.replace(/\/$/, "")}${path}`;
     const response = await this.request(target, {
@@ -51,20 +123,31 @@ export class RefrefPaymentRail implements PaymentRail {
       cache: "no-store",
       signal: AbortSignal.timeout(10_000),
     });
-    const payload = await response.json().catch(() => ({ code: `REFREF_HTTP_${response.status}` })) as Record<string, unknown>;
-    if (!response.ok) throw new Error(typeof payload.code === "string" ? `REFREF_${payload.code}` : `REFREF_HTTP_${response.status}`);
-    return payload;
+    const payload = await response.json().catch(() => null) as unknown;
+    if (!response.ok) {
+      const parsed = z.object({ error: z.object({ code: z.string() }).passthrough() }).safeParse(payload);
+      throw new RefrefHttpError(response.status, parsed.success ? parsed.data.error.code : `HTTP_${response.status}`);
+    }
+    const parsed = schema.safeParse(payload);
+    if (!parsed.success) throw new Error(`REFREF_RESPONSE_INVALID:${path}`);
+    return parsed.data;
   }
 
   private projection(attempt: Attempt): RailProjection {
     const evidence = { resolutionId: attempt.referralResolutionId, snapshotHash: attempt.snapshotHash };
     const payments = attempt.obligations.flatMap(({ payment }) => payment ? [payment] : []);
-    if (payments.some(({ status }) => status === "REFUNDED")) return { attemptId: attempt.id, state: "REFUNDED", ...evidence };
-    if (attempt.status === "SETTLED" || attempt.obligations.every(({ status }) => status === "SATISFIED")) return { attemptId: attempt.id, state: "PAID", ...evidence };
+    const payment = payments[0];
+    const paymentEvidence = payment ? {
+      paymentAmountKopecks: payment.amountKopecks,
+      remainingRefundableAmountKopecks: payment.remainingRefundableAmountKopecks,
+    } : {};
+    if (payments.some(({ status }) => status === "REFUNDED")) return { attemptId: attempt.id, state: "REFUNDED", ...evidence, ...paymentEvidence };
+    if (attempt.status === "SETTLED" || attempt.obligations.every(({ status }) => status === "SATISFIED")) return { attemptId: attempt.id, state: "PAID", ...evidence, ...paymentEvidence };
+    if (attempt.obligations.some(({ status }) => status === "LATE_PAYMENT")) return { attemptId: attempt.id, state: "REFUND_PENDING", ...evidence, ...paymentEvidence };
     if (attempt.status === "EXPIRED") return { attemptId: attempt.id, state: "EXPIRED", ...evidence };
     if (attempt.status === "CANCELLED") return { attemptId: attempt.id, state: "DECLINED", ...evidence };
     if (payments.some(({ status }) => status === "FAILED" || status === "CANCELLED")) return { attemptId: attempt.id, state: "DECLINED", ...evidence };
-    return { attemptId: attempt.id, state: "PENDING", ...evidence };
+    return { attemptId: attempt.id, state: "PENDING", ...evidence, ...paymentEvidence };
   }
 
   async resolve(input: PaymentResolveInput): Promise<RailResolution> {
@@ -78,37 +161,32 @@ export class RefrefPaymentRail implements PaymentRail {
       ...(input.serviceStartsAt === undefined ? {} : { serviceStartsAt: input.serviceStartsAt }),
       ...(input.serviceEndsAt === undefined ? {} : { serviceEndsAt: input.serviceEndsAt }),
     };
-    let resolution: Record<string, unknown>;
+    let resolution: z.infer<typeof resolutionSchema>;
     try {
-      resolution = await this.call("POST", "/integrations/referral-resolutions", {
+      resolution = await this.call("POST", "/integrations/referral-resolutions", resolutionSchema, {
         handoffToken: input.handoffToken, merchantOrderRef: input.orderPublicId, currency: "RUB", lines: [line],
         ...(input.checkoutCode ? { checkoutCode: input.checkoutCode } : {}),
       });
     } catch (error) {
-      if (error instanceof TypeError || error instanceof DOMException) throw new AmbiguousRailCreateError();
+      if (isAmbiguousSideEffect(error)) throw new AmbiguousRailCreateError();
       throw error;
     }
     if (resolution.status === "CUSTOMER_ACTION_REQUIRED") {
       return { resolutionId: String(resolution.referralResolutionId), state: "CUSTOMER_ACTION_REQUIRED", checkoutUrl: String(resolution.customerActionUrl) };
     }
-    if (resolution.status !== "RESOLVED" || !Array.isArray(resolution.lines)) throw new Error("REFREF_RESOLUTION_INVALID");
-    const resolvedLine = (resolution.lines as Array<Record<string, unknown>>).filter((item) => item.lineRef === input.lineRef)[0];
+    const resolvedLine = resolution.lines.filter((item) => item.lineRef === input.lineRef)[0];
     const discount = Number(resolvedLine?.referralDiscountAmountKopecks);
     if (!Number.isSafeInteger(discount) || discount < 0 || discount > input.amountKopecks) throw new Error("REFREF_RESOLUTION_LINE_INVALID");
     const finalAmount = input.amountKopecks - discount;
     if (finalAmount <= 0) throw new Error("REFREF_ZERO_PAYMENT_UNSUPPORTED");
-    const checkoutCodeOutcome = resolution.checkoutCodeOutcome;
-    const validOutcomes: CheckoutCodeOutcome[] = ["NONE", "APPLIED", "NOT_APPLICABLE", "NOT_RECOGNIZED", "NOT_APPLIED_ATTRIBUTION_LOCKED", "NOT_APPLIED_CUSTOMER_KEPT_CURRENT"];
-    if (typeof checkoutCodeOutcome !== "string" || !validOutcomes.includes(checkoutCodeOutcome as CheckoutCodeOutcome)) {
-      throw new Error("REFREF_CHECKOUT_CODE_OUTCOME_INVALID");
-    }
+    const checkoutCodeOutcome: CheckoutCodeOutcome = resolution.checkoutCodeOutcome;
     return { state: "PRICE_REVIEW_REQUIRED", quote: {
       resolutionId: String(resolution.referralResolutionId),
-      termsVersionId: typeof resolution.termsVersionId === "string" ? resolution.termsVersionId : null,
+      termsVersionId: resolution.termsVersionId,
       baseAmountKopecks: input.amountKopecks,
       discountKopecks: discount,
       finalAmountKopecks: finalAmount,
-      checkoutCodeOutcome: checkoutCodeOutcome as CheckoutCodeOutcome,
+      checkoutCodeOutcome,
     } };
   }
 
@@ -118,61 +196,104 @@ export class RefrefPaymentRail implements PaymentRail {
       || quote.finalAmountKopecks !== input.amountKopecks - quote.discountKopecks
       || quote.finalAmountKopecks <= 0) throw new Error("REFREF_QUOTE_INVALID");
     if (checkoutSnapshotHash(input.snapshot) !== input.snapshotHash) throw new Error("REFREF_SNAPSHOT_HASH_INVALID");
-    let created: Record<string, unknown>;
+    let created: z.infer<typeof createAttemptSchema>;
     try {
-      created = await this.call("POST", `/integrations/orders/${encodeURIComponent(input.orderPublicId)}/checkout-attempts`, {
+      created = await this.call("POST", `/integrations/orders/${encodeURIComponent(input.orderPublicId)}/checkout-attempts`, createAttemptSchema, {
         referralResolutionId: quote.resolutionId, snapshot: input.snapshot, snapshotHash: input.snapshotHash,
       }, input.idempotencyKey);
     } catch (error) {
-      if (error instanceof TypeError || error instanceof DOMException) throw new AmbiguousRailCreateError();
+      if (isAmbiguousSideEffect(error)) throw new AmbiguousRailCreateError();
       throw error;
     }
-    const attemptId = String(created.checkoutAttemptId ?? "");
-    if (!attemptId) throw new Error("REFREF_ATTEMPT_INVALID");
+    const attemptId = created.checkoutAttemptId;
     if (created.snapshotHash !== input.snapshotHash) throw new Error("REFREF_SNAPSHOT_HASH_MISMATCH");
+    return this.createPaymentSession(input, attemptId);
+  }
+
+  private async createPaymentSession(input: PaymentCreateInput, attemptId: string): Promise<RailProjection> {
     if (!input.successUrl) throw new Error("REFREF_SUCCESS_URL_REQUIRED");
-    const session = await this.call("POST", `/integrations/orders/${encodeURIComponent(input.orderPublicId)}/checkout-attempts/${encodeURIComponent(attemptId)}/obligations/full/payment-session`, {
-      successUrl: input.successUrl, receiptContact: { email: input.customerEmail },
-    });
-    const evidence = { resolutionId: quote.resolutionId, snapshotHash: input.snapshotHash };
+    const evidence = { resolutionId: input.quote.resolutionId, snapshotHash: input.snapshotHash };
+    let session: z.infer<typeof paymentSessionSchema>;
+    try {
+      session = await this.call("POST", `/integrations/orders/${encodeURIComponent(input.orderPublicId)}/checkout-attempts/${encodeURIComponent(attemptId)}/obligations/full/payment-session`, paymentSessionSchema, {
+        successUrl: input.successUrl, receiptContact: { email: input.customerEmail },
+      });
+    } catch (error) {
+      if (isAmbiguousSideEffect(error)) throw new AmbiguousRailCreateError({ attemptId, ...evidence });
+      throw error;
+    }
     if (session.status === "PAYMENT_READY" && typeof session.providerPaymentUrl === "string") return { attemptId, state: "CUSTOMER_ACTION_REQUIRED", checkoutUrl: session.providerPaymentUrl, ...evidence };
     if (session.status === "PAYMENT_PROCESSING") return { attemptId, state: "PENDING", ...evidence };
     if (session.status === "PAYMENT_FAILED") return { attemptId, state: "DECLINED", ...evidence };
     throw new Error("REFREF_PAYMENT_SESSION_INVALID");
   }
 
+  async recoverCreate(input: PaymentCreateInput, knownAttemptId?: string): Promise<RailProjection> {
+    let attempt: Attempt | undefined;
+    if (knownAttemptId) {
+      attempt = await this.call("GET", `/integrations/orders/${encodeURIComponent(input.orderPublicId)}/checkout-attempts/${encodeURIComponent(knownAttemptId)}`, attemptSchema);
+    } else {
+      try {
+        const order = await this.call("GET", `/integrations/merchant-orders/${encodeURIComponent(input.orderPublicId)}`, merchantOrderSchema);
+        attempt = order.checkoutAttempts.find((candidate) => candidate.snapshotHash === input.snapshotHash
+          && candidate.referralResolutionId === input.quote.resolutionId);
+        if (!attempt && order.checkoutAttempts.length > 0) throw new Error("REFREF_RECOVERY_ATTEMPT_MISMATCH");
+      } catch (error) {
+        if (!(error instanceof RefrefHttpError) || error.status !== 404) throw error;
+      }
+    }
+    if (!attempt) return this.create(input);
+    const projection = this.projection(attempt);
+    if (projection.state !== "PENDING" && projection.state !== "CUSTOMER_ACTION_REQUIRED") return projection;
+    return this.createPaymentSession(input, attempt.id);
+  }
+
   async reconcile(input: { orderPublicId: string; attemptId: string }): Promise<RailProjection> {
     if (!input.attemptId || input.attemptId.startsWith("resolution:")) throw new Error("REFREF_ATTEMPT_NOT_CREATED");
-    const attempt = await this.call("GET", `/integrations/orders/${encodeURIComponent(input.orderPublicId)}/checkout-attempts/${encodeURIComponent(input.attemptId)}`) as unknown as Attempt;
+    const attempt = await this.call("GET", `/integrations/orders/${encodeURIComponent(input.orderPublicId)}/checkout-attempts/${encodeURIComponent(input.attemptId)}`, attemptSchema);
     return this.projection(attempt);
   }
 
   async acknowledgeFulfillment(input: { idempotencyKey: string; orderPublicId: string; attemptId: string }) {
-    await this.call("POST", `/integrations/orders/${encodeURIComponent(input.orderPublicId)}/checkout-attempts/${encodeURIComponent(input.attemptId)}/fulfillment-ack`, {
+    await this.call("POST", `/integrations/orders/${encodeURIComponent(input.orderPublicId)}/checkout-attempts/${encodeURIComponent(input.attemptId)}/fulfillment-ack`, fulfillmentSchema, {
       status: "DELIVERED", externalFulfillmentId: input.orderPublicId,
     }, `${input.idempotencyKey}:fulfillment`);
   }
 
-  async refund(input: { idempotencyKey: string; orderPublicId: string; attemptId: string; amountKopecks: number; customerEmail: string }): Promise<RailProjection> {
-    const attempt = await this.call("GET", `/integrations/orders/${encodeURIComponent(input.orderPublicId)}/checkout-attempts/${encodeURIComponent(input.attemptId)}`) as unknown as Attempt & { lineItems?: Array<{ lineRef: string; offerRef: string }> };
+  async refund(input: PaymentRefundInput): Promise<RailProjection> {
+    const attempt = await this.call("GET", `/integrations/orders/${encodeURIComponent(input.orderPublicId)}/checkout-attempts/${encodeURIComponent(input.attemptId)}`, attemptSchema);
     const payment = attempt.obligations.flatMap(({ payment }) => payment ? [payment] : []).filter(({ status }) => ["SUCCEEDED", "PARTIALLY_REFUNDED"].includes(status))[0];
-    const line = attempt.lineItems?.[0];
+    const line = attempt.lineItems.find(({ lineRef }) => lineRef === input.lineRef);
     if (!payment || !line) throw new Error("REFREF_REFUND_PAYMENT_NOT_FOUND");
-    const execution = await this.call("POST", "/integrations/refunds", {
-      paymentId: payment.id, amountKopecks: input.amountKopecks,
-      fiscal: { items: [{ lineRef: line.lineRef, name: line.offerRef, quantity: 1, amountKopecks: input.amountKopecks,
-        vatCode: "NONE", paymentMethod: this.config.paymentMethod, paymentObject: "SERVICE" }] },
-      receiptContact: { email: input.customerEmail },
-    }, `${input.idempotencyKey}:refund`);
-    const refundExecutionId = typeof execution.refundExecutionId === "string" ? execution.refundExecutionId : undefined;
-    const supportReference = typeof execution.supportReference === "string" ? execution.supportReference : undefined;
-    if (!refundExecutionId || !supportReference) throw new Error("REFREF_REFUND_EXECUTION_INVALID");
+    if (!Number.isSafeInteger(input.amountKopecks) || input.amountKopecks <= 0
+      || input.amountKopecks > payment.remainingRefundableAmountKopecks
+      || input.amountKopecks > line.refundableAmountKopecks) throw new Error("REFREF_REFUND_AMOUNT_INVALID");
+    if (input.fiscalItem.lineRef !== input.lineRef) throw new Error("REFREF_REFUND_FISCAL_LINE_MISMATCH");
+    const expectedRemainingRefundableAmountKopecks = payment.remainingRefundableAmountKopecks - input.amountKopecks;
+    let execution: z.infer<typeof refundExecutionSchema>;
+    try {
+      execution = await this.call("POST", "/integrations/refunds", refundExecutionSchema, {
+        paymentId: payment.id,
+        amountKopecks: input.amountKopecks,
+        ...(input.amountKopecks < payment.remainingRefundableAmountKopecks
+          ? { lineAllocations: [{ lineRef: input.lineRef, amountKopecks: input.amountKopecks }] }
+          : {}),
+        fiscal: { items: [{ ...input.fiscalItem, amountKopecks: input.amountKopecks }] },
+        receiptContact: { email: input.customerEmail },
+      }, `${input.idempotencyKey}:refund`);
+    } catch (error) {
+      if (isAmbiguousSideEffect(error)) {
+        return { attemptId: input.attemptId, state: "REFUND_PENDING", expectedRemainingRefundableAmountKopecks };
+      }
+      throw error;
+    }
     return {
       attemptId: input.attemptId,
       state: execution.status === "REFUND_FAILED" ? "REVIEW_REQUIRED" : "REFUND_PENDING",
-      refundExecutionId,
-      supportReference,
-      failureCode: typeof execution.failureCode === "string" ? execution.failureCode : undefined,
+      refundExecutionId: execution.refundExecutionId,
+      supportReference: execution.supportReference,
+      failureCode: execution.failureCode,
+      expectedRemainingRefundableAmountKopecks,
     };
   }
 }

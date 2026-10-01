@@ -34,6 +34,7 @@ class CapturingRail implements PaymentRail {
     this.snapshotHash = input.snapshotHash;
     return { attemptId: "attempt", state: "PAID", snapshotHash: input.snapshotHash };
   }
+  async recoverCreate(input: PaymentCreateInput): Promise<RailProjection> { return this.create(input); }
 
   async reconcile(): Promise<RailProjection> { return { attemptId: "attempt", state: "PAID", snapshotHash: this.snapshotHash }; }
   async acknowledgeFulfillment(): Promise<void> {}

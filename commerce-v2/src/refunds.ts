@@ -18,6 +18,8 @@ type RequestContext = {
   customer_id: string;
   email_normalized: string;
   refref_attempt_id: string | null;
+  line_ref: string;
+  fiscal_item_json: string;
 };
 
 const cleanRequired = (value: string, code: string) => {
@@ -127,7 +129,7 @@ export function decideRefund(
 
 const requestContext = (db: Database.Database, publicId: string) => db.prepare(`SELECT request.id AS request_id,request.public_id AS request_public_id,
     request.state AS request_state,request.order_line_id,orders.id AS order_id,orders.public_id AS order_public_id,line.unit_amount_kopecks,
-    orders.customer_id,customer.email_normalized,attempt.refref_attempt_id
+    orders.customer_id,customer.email_normalized,attempt.refref_attempt_id,line.id AS line_ref,line.fiscal_item_json
   FROM refund_requests request JOIN order_lines line ON line.id=request.order_line_id JOIN orders ON orders.id=line.order_id
   JOIN customers customer ON customer.id=orders.customer_id JOIN checkout_attempts attempt ON attempt.order_id=orders.id
   WHERE request.public_id=?`).get(publicId) as RequestContext | undefined;
@@ -197,6 +199,8 @@ export async function executeApprovedRefund(
       orderPublicId: context.order_public_id,
       idempotencyKey,
       customerEmail: context.email_normalized,
+      lineRef: context.line_ref,
+      fiscalItem: JSON.parse(context.fiscal_item_json),
     });
   } catch (error) {
     db.prepare("UPDATE refund_executions SET last_error_code=?,updated_at=? WHERE id=?")
@@ -216,8 +220,12 @@ export async function executeApprovedRefund(
 }
 
 export async function reconcilePendingRefunds(db: Database.Database, rail: PaymentRail, now = new Date().toISOString()) {
-  const rows = db.prepare(`SELECT request.public_id FROM refund_requests request JOIN refund_executions execution ON execution.refund_request_id=request.id
-    WHERE execution.state='PROCESSING' ORDER BY execution.updated_at LIMIT 100`).all() as Array<{ public_id: string }>;
+  const rows = db.prepare(`SELECT request.public_id,execution.observed_projection_json FROM refund_requests request
+    JOIN refund_executions execution ON execution.refund_request_id=request.id
+    WHERE execution.state='PROCESSING' ORDER BY execution.updated_at LIMIT 100`).all() as Array<{
+      public_id: string;
+      observed_projection_json: string | null;
+    }>;
   let reconciled = 0;
   let failed = 0;
   for (const row of rows) {
@@ -225,7 +233,18 @@ export async function reconcilePendingRefunds(db: Database.Database, rail: Payme
     if (!context?.refref_attempt_id) { failed += 1; continue; }
     try {
       const projection = await rail.reconcile({ idempotencyKey: `refund:${row.public_id}`, orderPublicId: context.order_public_id, attemptId: context.refref_attempt_id });
-      if (projection.state === "REFUNDED") finishRefund(db, context, projection, now);
+      const submitted = row.observed_projection_json
+        ? JSON.parse(row.observed_projection_json) as RailProjection
+        : null;
+      const expectedRemaining = submitted?.expectedRemainingRefundableAmountKopecks;
+      const refundObserved = projection.state === "REFUNDED"
+        || (expectedRemaining !== undefined
+          && projection.remainingRefundableAmountKopecks !== undefined
+          && projection.remainingRefundableAmountKopecks <= expectedRemaining);
+      if (refundObserved) finishRefund(db, context, { ...projection,
+        refundExecutionId: submitted?.refundExecutionId,
+        supportReference: submitted?.supportReference,
+      }, now);
       else if (projection.state === "REVIEW_REQUIRED") requireReview(db, context, projection, "REFUND_RECONCILIATION_REVIEW", now);
       else db.prepare("UPDATE refund_executions SET observed_projection_json=?,updated_at=? WHERE refund_request_id=?")
         .run(JSON.stringify(projection), now, context.request_id);

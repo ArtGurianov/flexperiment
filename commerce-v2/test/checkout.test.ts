@@ -92,6 +92,7 @@ describe("scripted mock checkout orchestration", () => {
     expect(duplicate).toMatchObject({ orderPublicId: first.orderPublicId, state: "PAID" });
     expect(db.prepare("SELECT COUNT(*) AS count FROM orders").get()).toEqual({ count: 1 });
     expect(db.prepare("SELECT COUNT(*) AS count FROM course_entitlements").get()).toEqual({ count: 1 });
+    expect(rail.fulfillmentAcknowledgementCount(input.idempotencyKey)).toBe(1);
     const order = db.prepare("SELECT total_kopecks,checkout_snapshot_json,snapshot_hash FROM orders").get() as {
       total_kopecks: number; checkout_snapshot_json: string; snapshot_hash: string;
     };
@@ -161,6 +162,17 @@ describe("scripted mock checkout orchestration", () => {
     ["decline", "DECLINED"], ["customer_action", "CUSTOMER_ACTION_REQUIRED"], ["expiry", "EXPIRED"],
   ] as const)("reproduces the %s scenario", async (scenario, state) => {
     expect((await checkout(db, rail, { ...input, idempotencyKey: `checkout-${scenario}`, scenario })).state).toBe(state);
+  });
+
+  it("returns a Refref attribution decision before any quote or order is frozen", async () => {
+    const resolved = await prepareCheckout(db, rail, {
+      ...input,
+      previewIdempotencyKey: "resolution-action",
+      scenario: "resolution_action",
+    });
+    expect(resolved).toMatchObject({ state: "CUSTOMER_ACTION_REQUIRED", checkoutUrl: expect.stringContaining("/referral/") });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM checkout_quotes").get()).toEqual({ count: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM orders").get()).toEqual({ count: 0 });
   });
 
   it("turns a late payment into one grant on reconciliation", async () => {

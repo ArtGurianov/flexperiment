@@ -16,6 +16,9 @@ export type RailProjection = {
   refundExecutionId?: string;
   supportReference?: string;
   failureCode?: string;
+  paymentAmountKopecks?: number;
+  remainingRefundableAmountKopecks?: number;
+  expectedRemainingRefundableAmountKopecks?: number;
 };
 export type RailQuote = {
   resolutionId: string;
@@ -39,17 +42,29 @@ export type PaymentResolveInput = {
 export type PaymentCreateInput = PaymentResolveInput & {
   quote: RailQuote; successUrl?: string; snapshot: SharedCheckoutSnapshotV1; snapshotHash: string;
 };
+export type PaymentRefundInput = {
+  idempotencyKey: string;
+  orderPublicId: string;
+  attemptId: string;
+  amountKopecks: number;
+  customerEmail: string;
+  lineRef: string;
+  fiscalItem: SharedCheckoutSnapshotV1["paymentObligations"][number]["fiscal"]["items"][number];
+};
 export interface PaymentRail {
   readonly checkoutSnapshotConfig: CheckoutSnapshotConfig;
   resolve(input: PaymentResolveInput): Promise<RailResolution>;
   create(input: PaymentCreateInput): Promise<RailProjection>;
+  recoverCreate(input: PaymentCreateInput, knownAttemptId?: string): Promise<RailProjection>;
   reconcile(input: { idempotencyKey: string; orderPublicId: string; attemptId: string }): Promise<RailProjection>;
   acknowledgeFulfillment(input: { idempotencyKey: string; orderPublicId: string; attemptId: string }): Promise<void>;
-  refund(input: { idempotencyKey: string; orderPublicId: string; attemptId: string; amountKopecks: number; customerEmail: string }): Promise<RailProjection>;
+  refund(input: PaymentRefundInput): Promise<RailProjection>;
 }
 
 export class AmbiguousRailCreateError extends Error {
-  constructor() { super("PAYMENT_CREATE_UNKNOWN"); }
+  constructor(readonly evidence?: Pick<RailProjection, "attemptId" | "resolutionId" | "snapshotHash">) {
+    super("PAYMENT_CREATE_UNKNOWN");
+  }
 }
 
 type MockRecord = RailProjection & { scenario: string; reconciliations: number; fulfillmentAcks: number };
@@ -85,7 +100,7 @@ export class MockPaymentRail implements PaymentRail {
     } };
   }
 
-  async create(input: PaymentCreateInput) {
+  async create(input: PaymentCreateInput): Promise<RailProjection> {
     const existing = this.records.get(input.idempotencyKey);
     if (existing) return existing;
     const scenario = input.scenario ?? "success";
@@ -106,7 +121,13 @@ export class MockPaymentRail implements PaymentRail {
     return record;
   }
 
-  async reconcile(input: { idempotencyKey: string }) {
+  async recoverCreate(input: PaymentCreateInput): Promise<RailProjection> {
+    const record = this.records.get(input.idempotencyKey);
+    if (!record) return this.create(input);
+    return record;
+  }
+
+  async reconcile(input: { idempotencyKey: string; orderPublicId: string; attemptId: string }): Promise<RailProjection> {
     const record = this.records.get(input.idempotencyKey);
     if (!record) throw new Error("PAYMENT_ATTEMPT_NOT_FOUND");
     record.reconciliations += 1;
@@ -114,17 +135,21 @@ export class MockPaymentRail implements PaymentRail {
     return record;
   }
 
-  async acknowledgeFulfillment(input: { attemptId: string }) {
+  async acknowledgeFulfillment(input: { idempotencyKey: string; orderPublicId: string; attemptId: string }) {
     for (const record of this.records.values()) if (record.attemptId === input.attemptId) record.fulfillmentAcks += 1;
   }
 
-  async refund(input: { attemptId: string }) {
+  async refund(input: PaymentRefundInput): Promise<RailProjection> {
     for (const record of this.records.values()) {
       if (record.attemptId !== input.attemptId) continue;
       record.state = record.scenario === "refund_failure" ? "REVIEW_REQUIRED" : "REFUNDED";
       return record;
     }
     throw new Error("PAYMENT_ATTEMPT_NOT_FOUND");
+  }
+
+  fulfillmentAcknowledgementCount(idempotencyKey: string) {
+    return this.records.get(idempotencyKey)?.fulfillmentAcks ?? 0;
   }
 }
 
@@ -451,7 +476,16 @@ export async function confirmCheckout(
     return applyRailProjection(db, rail, publicId, projection, now);
   } catch (error) {
     if (!(error instanceof AmbiguousRailCreateError)) throw error;
-    db.prepare(`UPDATE checkout_attempts SET state='CREATE_UNKNOWN',outcome_unknown_at=?,updated_at=? WHERE idempotency_key=?`).run(now, now, input.idempotencyKey);
+    db.prepare(`UPDATE checkout_attempts SET state='CREATE_UNKNOWN',refref_attempt_id=COALESCE(?,refref_attempt_id),
+      refref_resolution_id=COALESCE(?,refref_resolution_id),refref_snapshot_hash=COALESCE(?,refref_snapshot_hash),
+      outcome_unknown_at=?,updated_at=? WHERE idempotency_key=?`).run(
+      error.evidence?.attemptId ?? null,
+      error.evidence?.resolutionId ?? null,
+      error.evidence?.snapshotHash ?? null,
+      now,
+      now,
+      input.idempotencyKey,
+    );
     return { orderPublicId: publicId, state: "CREATE_UNKNOWN" as const };
   }
 }
@@ -484,11 +518,11 @@ export async function checkout(
 async function applyRailProjection(db: Database.Database, rail: PaymentRail, orderPublicId: string, projection: RailProjection, now: string) {
   const context = db.prepare(`SELECT orders.id AS order_id,orders.customer_id,line.id AS line_id,product.kind,product.course_ref,
     orders.snapshot_hash,json_extract(orders.checkout_snapshot_json,'$.schema') AS snapshot_schema,
-    attempt.id AS attempt_id,attempt.idempotency_key FROM orders JOIN order_lines line ON line.order_id=orders.id JOIN products product ON product.id=line.product_id
+    attempt.id AS attempt_id,attempt.idempotency_key,attempt.fulfillment_acknowledged_at FROM orders JOIN order_lines line ON line.order_id=orders.id JOIN products product ON product.id=line.product_id
     JOIN checkout_attempts attempt ON attempt.order_id=orders.id WHERE orders.public_id=?`).get(orderPublicId) as {
       order_id: string; customer_id: string; line_id: string; kind: "ONLINE_COURSE" | "COURSE_BUNDLE" | "LAB";
       course_ref: string | null; snapshot_hash: string; snapshot_schema: string | null;
-      attempt_id: string; idempotency_key: string;
+      attempt_id: string; idempotency_key: string; fulfillment_acknowledged_at: string | null;
     } | undefined;
   if (!context) throw new Error("ORDER_NOT_FOUND");
   if (context.snapshot_schema === "refref.shared-checkout-snapshot/1"
@@ -513,7 +547,7 @@ async function applyRailProjection(db: Database.Database, rail: PaymentRail, ord
     else if (projection.state === "REVIEW_REQUIRED") db.prepare("UPDATE orders SET state='REVIEW_REQUIRED',updated_at=? WHERE id=?").run(now, context.order_id);
   });
   apply.immediate();
-  if (projection.state === "PAID") {
+  if (projection.state === "PAID" && !context.fulfillment_acknowledged_at) {
     await rail.acknowledgeFulfillment({ attemptId: projection.attemptId, orderPublicId, idempotencyKey: context.idempotency_key });
     db.prepare("UPDATE checkout_attempts SET fulfillment_acknowledged_at=?,updated_at=? WHERE id=? AND fulfillment_acknowledged_at IS NULL")
       .run(now, now, context.attempt_id);
@@ -525,8 +559,8 @@ export async function reconcileCheckout(db: Database.Database, rail: PaymentRail
   const attempt = db.prepare(`SELECT attempt.idempotency_key,attempt.refref_attempt_id,attempt.state,attempt.request_payload_json FROM checkout_attempts attempt JOIN orders ON orders.id=attempt.order_id
     WHERE orders.public_id=?`).get(orderPublicId) as { idempotency_key: string; refref_attempt_id: string | null; state: string; request_payload_json: string } | undefined;
   if (!attempt) throw new Error("ORDER_NOT_FOUND");
-  const projection = !attempt.refref_attempt_id && attempt.state === "CREATE_UNKNOWN"
-    ? await rail.create(JSON.parse(attempt.request_payload_json) as PaymentCreateInput)
+  const projection = attempt.state === "CREATE_UNKNOWN"
+    ? await rail.recoverCreate(JSON.parse(attempt.request_payload_json) as PaymentCreateInput, attempt.refref_attempt_id ?? undefined)
     : await rail.reconcile({ idempotencyKey: attempt.idempotency_key, orderPublicId, attemptId: attempt.refref_attempt_id ?? "" });
   return applyRailProjection(db, rail, orderPublicId, projection, now);
 }

@@ -1,9 +1,9 @@
 import Database from "better-sqlite3";
 import { beforeEach, describe, expect, it } from "vitest";
-import { checkout, MockPaymentRail, type PaymentRail } from "../src/checkout";
+import { checkout, MockPaymentRail, type PaymentRail, type PaymentRefundInput, type RailProjection } from "../src/checkout";
 import { migrateV2 } from "../src/db";
 import { stageBLegalManifestJson } from "./fixtures/legal";
-import { decideRefund, executeApprovedRefund, listRefundCases, recordCourseAccessStart, requestRefund } from "../src/refunds";
+import { decideRefund, executeApprovedRefund, listRefundCases, reconcilePendingRefunds, recordCourseAccessStart, requestRefund } from "../src/refunds";
 
 let db: Database.Database;
 let rail: MockPaymentRail;
@@ -96,5 +96,53 @@ describe("refund authority", () => {
     expect(await executeApprovedRefund(db, uncertainRail, request.requestPublicId)).toMatchObject({ state: "PROCESSING" });
     expect(calls).toBe(1);
     expect(db.prepare("SELECT state,last_error_code FROM refund_executions").get()).toEqual({ state: "PROCESSING", last_error_code: "network timeout" });
+  });
+
+  it("projects a proven refund failure to review without revoking access", async () => {
+    const order = await paidOrder("refund_failure");
+    const request = requestRefund(db, {
+      customerId: "customer", orderPublicId: order.orderPublicId, idempotencyKey: "refund-request-failure",
+      reasonCode: "CUSTOMER_REQUEST",
+    });
+    decideRefund(db, request.requestPublicId, {
+      outcome: "APPROVE", amountKopecks: 10_000, policyBasis: "manual decision", rationale: "approved", actor: "operator",
+    });
+    expect(await executeApprovedRefund(db, rail, request.requestPublicId)).toMatchObject({ state: "REVIEW_REQUIRED" });
+    expect(db.prepare("SELECT state FROM orders").get()).toEqual({ state: "REVIEW_REQUIRED" });
+    expect(db.prepare("SELECT revoked_at FROM course_entitlements").get()).toEqual({ revoked_at: null });
+  });
+
+  it("finishes a partial refund only after the payment projection reaches its expected remainder", async () => {
+    class PendingPartialRail extends MockPaymentRail {
+      async refund(input: PaymentRefundInput): Promise<RailProjection> {
+        return {
+          attemptId: input.attemptId,
+          state: "REFUND_PENDING",
+          refundExecutionId: "refund-execution",
+          supportReference: "support",
+          expectedRemainingRefundableAmountKopecks: 6_000,
+        };
+      }
+      async reconcile(input: { idempotencyKey: string; orderPublicId: string; attemptId: string }): Promise<RailProjection> {
+        return { attemptId: input.attemptId, state: "PAID", remainingRefundableAmountKopecks: 6_000 };
+      }
+    }
+    const partialRail = new PendingPartialRail();
+    const order = await checkout(db, partialRail, {
+      customerId: "customer", customerEmail: "student@example.com", offerRef: "course:one",
+      idempotencyKey: "checkout-partial-projection",
+    }, "2026-09-30T10:00:00Z");
+    const request = requestRefund(db, {
+      customerId: "customer", orderPublicId: order.orderPublicId, idempotencyKey: "refund-partial-projection",
+      reasonCode: "CUSTOMER_REQUEST",
+    });
+    decideRefund(db, request.requestPublicId, {
+      outcome: "APPROVE", amountKopecks: 4_000, policyBasis: "manual exception", rationale: "partial remedy", actor: "operator",
+    });
+    expect(await executeApprovedRefund(db, partialRail, request.requestPublicId)).toMatchObject({ state: "PROCESSING" });
+    expect(await reconcilePendingRefunds(db, partialRail)).toEqual({ selected: 1, reconciled: 1, failed: 0 });
+    expect(db.prepare("SELECT state FROM refund_requests WHERE public_id=?").get(request.requestPublicId)).toEqual({ state: "REFUNDED" });
+    expect(db.prepare("SELECT state FROM orders").get()).toEqual({ state: "FULFILLED" });
+    expect(db.prepare("SELECT revoked_at FROM course_entitlements").get()).toEqual({ revoked_at: null });
   });
 });
