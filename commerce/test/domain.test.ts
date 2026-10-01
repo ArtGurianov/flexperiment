@@ -10,6 +10,7 @@ import { EventDumpCreateRejectedError, UnisenderGoProvider, type EmailDeliveryEv
 import { MockProvider, TochkaProviderError, type PaymentProvider } from "../src/provider";
 import { canonical, decryptTicketCapability, emailHash, sha256 } from "../src/crypto";
 import { emailTimeoutDiagnosis } from "../src/certification/evidence";
+import { LEGACY_FIXTURE_NOW, legacyFixtureClock } from "./support/legacy-fixture-clock";
 
 const legalManifest = { documents: Object.fromEntries(["PUBLIC_OFFER", "PRIVACY_POLICY", "PD_CONSENT", "CHECKOUT_DISCLOSURE"].map((document) => [document, { document_id: document, version: "test-1", sha256: "0".repeat(64), current_url: `https://example.test/legal/${document}`, archive_url: `https://example.test/archive/${document}`, checkout_relevant: true }])) };
 const unisenderTestConfig = { apiKey: "test-key-not-a-secret", fromEmail: "noreply@example.test", fromName: "Flexperiment", replyToEmail: "hello@example.test" };
@@ -21,7 +22,7 @@ function fixture(filename = ":memory:") {
   db.prepare("INSERT INTO legal_releases(id, version, effective_at, manifest_json, active) VALUES (?, '2026-08-20.1', datetime('now'), ?, 1)").run(releaseId, JSON.stringify(legalManifest));
   db.prepare(`INSERT INTO occurrences(id, city_id, title, starts_at, ends_at, timezone, price_kopecks, capacity, visibility, venue_status, venue_name, venue_address)
     VALUES (?, ?, 'FLEXPERIMENT', '2026-10-01T10:00:00.000Z', '2026-10-01T13:00:00.000Z', 'Asia/Novosibirsk', 100000, 5, 'PUBLISHED', 'CONFIRMED', 'Studio', 'Lenina 1')`).run(occurrenceId, cityId);
-  return { db, domain: new CommerceDomain(db, new MockProvider()), occurrenceId };
+  return { db, domain: new CommerceDomain(db, new MockProvider(), undefined, legacyFixtureClock), occurrenceId };
 }
 
 function checkoutPayload(quoteId: string) {
@@ -193,7 +194,7 @@ describe("commerce domain", () => {
       async send() { throw new Error("stale occurrence notification must not send"); },
       async lookup() { return { status: "UNKNOWN" }; },
     };
-    const domain = new CommerceDomain(setup.db, new MockProvider(), email);
+    const domain = new CommerceDomain(setup.db, new MockProvider(), email, legacyFixtureClock);
     (domain as unknown as { occurrenceNotificationsAvailable: () => boolean }).occurrenceNotificationsAvailable = () => true;
     setup.db.prepare("UPDATE occurrences SET capacity = 0 WHERE id = ?").run(setup.occurrenceId);
     domain.registerOccurrenceNotification({ email: "availability@example.test", occurrence_id: setup.occurrenceId });
@@ -223,7 +224,7 @@ describe("commerce domain", () => {
       async send() { throw new Error("SEND_UNKNOWN must reconcile before any resend"); },
       async lookup() { lookups += 1; return { status: "ACCEPTED", jobId: "already-accepted" }; },
     };
-    const domain = new CommerceDomain(setup.db, new MockProvider(), email);
+    const domain = new CommerceDomain(setup.db, new MockProvider(), email, legacyFixtureClock);
     (domain as unknown as { occurrenceNotificationsAvailable: () => boolean }).occurrenceNotificationsAvailable = () => true;
     setup.db.prepare("UPDATE occurrences SET capacity = 0 WHERE id = ?").run(setup.occurrenceId);
     domain.registerOccurrenceNotification({ email: "unknown@example.test", occurrence_id: setup.occurrenceId });
@@ -448,7 +449,7 @@ describe("commerce domain", () => {
       async lookup() { throw new Error("superseded notice must not be reconciled by worker"); },
       async send(input) { sentOutboxIds.push(String(input.outboxId)); throw new Error("test provider unavailable"); },
     };
-    const domain = new CommerceDomain(setup.db, new MockProvider(), email);
+    const domain = new CommerceDomain(setup.db, new MockProvider(), email, legacyFixtureClock);
     const quote = domain.checkoutContext({ occurrenceId: setup.occurrenceId });
     const checkout = await domain.checkoutAsync(checkoutPayload(quote.quote_id), randomUUID(), "https://flexperiment.ru");
     const payment = setup.db.prepare("SELECT p.id FROM payments p JOIN orders o ON o.id = p.order_id WHERE o.public_status_id = ?").get(checkout.status_id) as { id: string };
@@ -596,7 +597,7 @@ describe("commerce domain", () => {
     const setup = fixture(); databases.push(setup.db);
     const provider: PaymentProvider = new MockProvider();
     provider.reconcilePayment = async () => ({ status: "FAILED" as const });
-    const domain = new CommerceDomain(setup.db, provider);
+    const domain = new CommerceDomain(setup.db, provider, undefined, legacyFixtureClock);
     const quote = domain.checkoutContext({ occurrenceId: setup.occurrenceId });
     await domain.checkoutAsync({ quote_id: quote.quote_id, customer_email: "art@example.test", customer_adult_confirmed: true, participant_age_band: "ADULT", offer_accepted: true, pd_consent_accepted: true }, "8f3a27bc-77c6-47b1-b6d0-000000000010", "https://flexperiment.ru");
     expect(setup.db.prepare("SELECT status FROM bookings").get()).toMatchObject({ status: "RESERVED" });
@@ -609,7 +610,7 @@ describe("commerce domain", () => {
     const setup = fixture(); databases.push(setup.db);
     const provider: PaymentProvider = new MockProvider();
     provider.createPayment = async () => { throw Object.assign(new Error("certificate details must not be stored"), { code: "SELF_SIGNED_CERT_IN_CHAIN" }); };
-    const domain = new CommerceDomain(setup.db, provider);
+    const domain = new CommerceDomain(setup.db, provider, undefined, legacyFixtureClock);
     const quote = domain.checkoutContext({ occurrenceId: setup.occurrenceId });
     await domain.checkoutAsync({ quote_id: quote.quote_id, customer_email: "art@example.test", customer_adult_confirmed: true, participant_age_band: "ADULT", offer_accepted: true, pd_consent_accepted: true }, "8f3a27bc-77c6-47b1-b6d0-000000000011", "https://flexperiment.ru");
     await domain.reconcilePendingPayments();
@@ -1022,8 +1023,9 @@ describe("commerce domain", () => {
     const result = await setup.domain.checkoutAsync({ quote_id: quote.quote_id, customer_email: "art@example.test", customer_adult_confirmed: true, participant_age_band: "ADULT", offer_accepted: true, pd_consent_accepted: true }, "8f3a27bc-77c6-47b1-b6d0-000000000015", "https://flexperiment.ru");
     const order = setup.db.prepare("SELECT o.id, o.public_order_number, p.id AS payment_id FROM orders o JOIN payments p ON p.order_id = o.id WHERE o.public_status_id = ?").get(result.status_id) as { id: string; public_order_number: string; payment_id: string };
     setup.domain.markPaymentPaid(order.payment_id, 100000, "provider-payment");
-    setup.db.prepare("UPDATE occurrences SET starts_at = ? WHERE id = ?").run(new Date(Date.now() + 30 * 60_000).toISOString(), setup.occurrenceId);
-    expect(setup.domain.requestCustomerRefund(order.public_order_number)).toEqual({ accepted: true });
+    // Thirty minutes before the start, on the fixture's own clock: inside the one-hour cutoff.
+    setup.db.prepare("UPDATE occurrences SET starts_at = ? WHERE id = ?").run(new Date(LEGACY_FIXTURE_NOW + 30 * 60_000).toISOString(), setup.occurrenceId);
+    expect(setup.domain.requestCustomerRefund(order.public_order_number.replace(/-/g, ""))).toEqual({ accepted: true });
     expect(setup.db.prepare("SELECT COUNT(*) AS count FROM customer_refund_confirmation_tokens WHERE order_id = ?").get(order.id)).toMatchObject({ count: 0 });
   });
 
@@ -1051,7 +1053,7 @@ describe("commerce domain", () => {
     const setup = fixture(); databases.push(setup.db);
     const calls: string[] = [];
     const email: EmailProvider = { async lookup() { return { status: "UNKNOWN" }; }, async send(input) { if (input.template === "customer-refund-confirmation" && input.outboxId) calls.push(input.outboxId); return { jobId: `mail-${calls.length}` }; } };
-    const domain = new CommerceDomain(setup.db, new MockProvider(), email);
+    const domain = new CommerceDomain(setup.db, new MockProvider(), email, legacyFixtureClock);
     const quote = domain.checkoutContext({ occurrenceId: setup.occurrenceId });
     const result = await domain.checkoutAsync({ quote_id: quote.quote_id, customer_email: "art@example.test", customer_adult_confirmed: true, participant_age_band: "ADULT", offer_accepted: true, pd_consent_accepted: true }, "8f3a27bc-77c6-47b1-b6d0-000000000019", "https://flexperiment.ru");
     const order = setup.db.prepare("SELECT o.id, o.public_order_number, p.id AS payment_id FROM orders o JOIN payments p ON p.order_id = o.id WHERE o.public_status_id = ?").get(result.status_id) as { id: string; public_order_number: string; payment_id: string };
@@ -1069,7 +1071,7 @@ describe("commerce domain", () => {
 
   it("retains an in-flight refund confirmation capability instead of creating a second usable link", async () => {
     const setup = fixture(); databases.push(setup.db);
-    const domain = new CommerceDomain(setup.db, new MockProvider());
+    const domain = new CommerceDomain(setup.db, new MockProvider(), undefined, legacyFixtureClock);
     const quote = domain.checkoutContext({ occurrenceId: setup.occurrenceId });
     const result = await domain.checkoutAsync({ quote_id: quote.quote_id, customer_email: "art@example.test", customer_adult_confirmed: true, participant_age_band: "ADULT", offer_accepted: true, pd_consent_accepted: true }, "8f3a27bc-77c6-47b1-b6d0-000000000024", "https://flexperiment.ru");
     const order = setup.db.prepare("SELECT o.id, o.public_order_number, p.id AS payment_id FROM orders o JOIN payments p ON p.order_id = o.id WHERE o.public_status_id = ?").get(result.status_id) as { id: string; public_order_number: string; payment_id: string };
@@ -1087,7 +1089,7 @@ describe("commerce domain", () => {
   it("reconciles a SEND_UNKNOWN confirmation email before considering the token obsolete", async () => {
     const setup = fixture(); databases.push(setup.db);
     const email: EmailProvider = { async lookup() { return { status: "ACCEPTED", jobId: "mail-reconciled" }; }, async send() { throw new Error("must not resend before reconciliation"); } };
-    const domain = new CommerceDomain(setup.db, new MockProvider(), email);
+    const domain = new CommerceDomain(setup.db, new MockProvider(), email, legacyFixtureClock);
     const quote = domain.checkoutContext({ occurrenceId: setup.occurrenceId });
     const result = await domain.checkoutAsync({ quote_id: quote.quote_id, customer_email: "art@example.test", customer_adult_confirmed: true, participant_age_band: "ADULT", offer_accepted: true, pd_consent_accepted: true }, "8f3a27bc-77c6-47b1-b6d0-000000000025", "https://flexperiment.ru");
     const order = setup.db.prepare("SELECT o.id, o.public_order_number, p.id AS payment_id FROM orders o JOIN payments p ON p.order_id = o.id WHERE o.public_status_id = ?").get(result.status_id) as { id: string; public_order_number: string; payment_id: string };
@@ -1103,7 +1105,7 @@ describe("commerce domain", () => {
 
   it("cannot turn a newer SEND_UNKNOWN confirmation email into SKIPPED from a stale PENDING snapshot", async () => {
     const setup = fixture(); databases.push(setup.db);
-    const domain = new CommerceDomain(setup.db, new MockProvider());
+    const domain = new CommerceDomain(setup.db, new MockProvider(), undefined, legacyFixtureClock);
     const quote = domain.checkoutContext({ occurrenceId: setup.occurrenceId });
     const result = await domain.checkoutAsync({ quote_id: quote.quote_id, customer_email: "art@example.test", customer_adult_confirmed: true, participant_age_band: "ADULT", offer_accepted: true, pd_consent_accepted: true }, "8f3a27bc-77c6-47b1-b6d0-000000000028", "https://flexperiment.ru");
     const order = setup.db.prepare("SELECT o.id, o.public_order_number, p.id AS payment_id FROM orders o JOIN payments p ON p.order_id = o.id WHERE o.public_status_id = ?").get(result.status_id) as { id: string; public_order_number: string; payment_id: string };
@@ -1158,7 +1160,7 @@ describe("commerce domain", () => {
 
   it("keeps delivery evidence separate from operational email acknowledgement", async () => {
     const setup = fixture(); databases.push(setup.db);
-    const domain = new CommerceDomain(setup.db, new MockProvider());
+    const domain = new CommerceDomain(setup.db, new MockProvider(), undefined, legacyFixtureClock);
     const insert = setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, status, sent_at, bounced_at, delivery_outcome)
       VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}', ?,
       '2026-08-23T00:00:00.000Z', '2026-08-23T00:01:00.000Z',
@@ -1194,7 +1196,7 @@ describe("commerce domain", () => {
       async lookup() { throw new Error("acknowledged terminal row must not be looked up"); },
       async send() { sends += 1; return { jobId: "must-not-send" }; },
     };
-    const domain = new CommerceDomain(setup.db, new MockProvider(), email);
+    const domain = new CommerceDomain(setup.db, new MockProvider(), email, legacyFixtureClock);
     setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, status, ops_acknowledged_at, ops_acknowledged_reason, delivery_outcome)
       VALUES ('acknowledged-terminal', 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}',
       'FAILED', '2026-08-23T00:00:00.000Z', 'LEGACY_PROVIDER_CONFIGURATION',
@@ -1209,7 +1211,7 @@ describe("commerce domain", () => {
 
   it("clears only an acknowledged operational email flag for exact attention states", () => {
     const setup = fixture(); databases.push(setup.db);
-    const domain = new CommerceDomain(setup.db, new MockProvider());
+    const domain = new CommerceDomain(setup.db, new MockProvider(), undefined, legacyFixtureClock);
     const insert = setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, status, sent_at, delivered_at, bounced_at, suppressed_at, ops_acknowledged_at, ops_acknowledged_reason, delivery_outcome)
       VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{"snapshot":true}', ?, '2026-08-23T00:00:00.000Z', '2026-08-23T00:01:00.000Z',
       '2026-08-23T00:02:00.000Z', NULL,
@@ -1335,7 +1337,7 @@ describe("commerce domain", () => {
       async send() { sends += 1; return { jobId: "sent-job" }; },
       async lookup() { lookups += 1; return { status: "UNKNOWN" }; },
     };
-    const domain = new CommerceDomain(setup.db, new MockProvider(), email);
+    const domain = new CommerceDomain(setup.db, new MockProvider(), email, legacyFixtureClock);
     const quote = domain.checkoutContext({ occurrenceId: setup.occurrenceId });
     const checkout = await domain.checkoutAsync(checkoutPayload(quote.quote_id), "sent-no-resend-001", "https://flexperiment.ru");
     const payment = setup.db.prepare("SELECT p.id FROM payments p JOIN orders o ON o.id = p.order_id WHERE o.public_status_id = ?").get(checkout.status_id) as { id: string };
@@ -1996,7 +1998,7 @@ describe("commerce domain", () => {
       SELECT lower(hex(randomblob(16))), message_id, 2, provider_idempotence_key || '-2', datetime('now'), datetime('now'), 1
       FROM outbox_attempt WHERE message_id = ? AND attempt_no = 1`).run(outbox.id);
     const failingLookup: EmailProvider = { async send() { throw new Error("must not send"); }, async lookup() { return { status: "FAILED" }; } };
-    const domain = new CommerceDomain(setup.db, new MockProvider(), failingLookup);
+    const domain = new CommerceDomain(setup.db, new MockProvider(), failingLookup, legacyFixtureClock);
     await domain.processEmailOutbox();
     expect(setup.db.prepare("SELECT status FROM email_outbox WHERE id = ?").get(outbox.id)).toEqual({ status: "FAILED" });
     expect(setup.db.prepare("SELECT COUNT(*) AS count FROM city_interest_requests WHERE email_normalized = 'hard-bounce@example.test'").get()).toEqual({ count: 1 });
@@ -2057,7 +2059,7 @@ describe("commerce domain", () => {
       JOIN email_outbox outbox ON outbox.id = intent.outbox_id
       WHERE request.email_normalized = 'renew-failed@example.test'`).get() as { request_id: string; outbox_id: string };
     setup.db.prepare("UPDATE email_outbox SET status = 'SEND_UNKNOWN' WHERE id = ?").run(failed.outbox_id);
-    await new CommerceDomain(setup.db, new MockProvider(), { async send() { throw new Error("must not send"); }, async lookup() { return { status: "FAILED" }; } }).processEmailOutbox();
+    await new CommerceDomain(setup.db, new MockProvider(), { async send() { throw new Error("must not send"); }, async lookup() { return { status: "FAILED" }; } }, legacyFixtureClock).processEmailOutbox();
     setup.domain.registerCityInterest({ email: "renew-failed@example.test", city: "novosibirsk" });
     const failedOld = setup.db.prepare("SELECT email_normalized, email_hash, superseded_at, superseded_by_request_id FROM city_interest_requests WHERE id = ?").get(failed.request_id);
     expect(failedOld).toEqual({ email_normalized: "", email_hash: "", superseded_at: expect.any(String), superseded_by_request_id: expect.any(String) });
@@ -2120,7 +2122,7 @@ describe("commerce domain", () => {
 
     const sends: string[] = [];
     const email: EmailProvider = { async send(input) { sends.push(input.recipientEmail); return { jobId: "must-not-send" }; }, async lookup() { return { status: "UNKNOWN" }; } };
-    await new CommerceDomain(setup.db, new MockProvider(), email).processEmailOutbox();
+    await new CommerceDomain(setup.db, new MockProvider(), email, legacyFixtureClock).processEmailOutbox();
     expect(sends).toEqual([]);
 
     setup.domain.registerCityInterest({ email: "expired-unknown@example.test", city: "novosibirsk" });
@@ -2132,7 +2134,7 @@ describe("commerce domain", () => {
     setup.db.prepare("UPDATE city_interest_requests SET expires_at = '2020-01-01T00:00:00.000Z' WHERE email_normalized = 'expired-unknown@example.test'").run();
     expect(setup.domain.processCityInterestLifecycle()).toMatchObject({ expired_deleted: 1 });
     expect(setup.db.prepare("SELECT status, recipient_email, payload_snapshot FROM email_outbox WHERE id = ?").get(unknown.id)).toEqual({ status: "SKIPPED", recipient_email: "", payload_snapshot: "{}" });
-    await new CommerceDomain(setup.db, new MockProvider(), email).processEmailOutbox();
+    await new CommerceDomain(setup.db, new MockProvider(), email, legacyFixtureClock).processEmailOutbox();
     expect(sends).toEqual([]);
     expect(setup.db.prepare("SELECT COUNT(*) AS count FROM city_interest_requests WHERE email_normalized = 'expired-unknown@example.test'").get()).toEqual({ count: 0 });
   });
@@ -2154,7 +2156,7 @@ describe("commerce domain", () => {
     };
     setup.domain.registerCityInterest({ email: "sending@example.test", city: "novosibirsk" });
     const outbox = setup.db.prepare("SELECT id FROM email_outbox WHERE type = 'CITY_INTEREST_AVAILABLE'").get() as { id: string };
-    const domain = new CommerceDomain(setup.db, new MockProvider(), email);
+    const domain = new CommerceDomain(setup.db, new MockProvider(), email, legacyFixtureClock);
     const dispatch = domain.processEmailOutbox();
     await started;
     expect(setup.db.prepare("SELECT status FROM email_outbox WHERE id = ?").get(outbox.id)).toEqual({ status: "SENDING" });
