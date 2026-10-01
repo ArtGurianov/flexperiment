@@ -31,13 +31,14 @@ jobs:
       # structural ones before merge.
       - name: Lint the workflows
         uses: raven-actions/actionlint@v2
-      # next-env.d.ts imports ./.next/types/*.d.ts, which only exist after a
+      # apps/lab/next-env.d.ts imports ./.next/types/*.d.ts, which only exist after a
       # build or typegen. Without them that file fails to load, taking its
       # next/image-types/global reference down with it, so a clean checkout
       # reports PageProps/LayoutProps and every image module as missing.
-      # Locally these are masked by leftover .next/dev/types from next dev.
-      - run: pnpm exec next typegen
+      # Locally these are masked by leftover apps/lab/.next/dev/types from next dev.
+      - run: pnpm --filter @flexperiment/lab exec next typegen
       - run: pnpm exec tsc --noEmit
+      - run: pnpm lab:typecheck
       # The root tsconfig EXCLUDES apps/admin, so the line above never saw a
       # single admin/partner component. The admin app carries its own
       # tsconfig (its own jsx/lib/bundler settings) and needs its own
@@ -58,13 +59,14 @@ jobs:
       # HTML is the authoritative SEO artifact. Every metadata defect this work
       # fixed was invisible in the TypeScript source and visible only here.
       #
-      # Must come after `pnpm exec next typegen` above, or PageProps<"/events/
+      # Must come after the LAB `next typegen` above, or PageProps<"/events/
       # [slug]"> does not resolve. `pnpm build` refuses a SOURCE_COMMIT that is
       # not exactly 40 lowercase hex characters; github.sha already is one.
       - name: Build the static export
         run: pnpm build
         env:
           SOURCE_COMMIT: ${{ github.sha }}
+          LAB_ORIGIN: https://lab.flexperiment.ru
       - name: Build the Payload platform
         run: pnpm platform:build
         env:
@@ -119,7 +121,9 @@ jobs:
           context: .
           file: Dockerfile.frontend
           push: false
-          build-args: SOURCE_COMMIT=${{ github.sha }}
+          build-args: |
+            SOURCE_COMMIT=${{ github.sha }}
+            LAB_ORIGIN=https://lab.flexperiment.ru
           cache-from: type=gha,scope=frontend
           cache-to: type=gha,mode=max,scope=frontend
 
@@ -184,7 +188,6 @@ jobs:
           --env PAYLOAD_SECRET=ci-runtime-only-not-a-production-secret
           --env PAYLOAD_JOBS_ENABLED=false
           --env "PLATFORM_REVALIDATE_TOKEN=${PLATFORM_REVALIDATE_TOKEN}"
-          --env PLATFORM_ORIGIN=http://127.0.0.1:3101
         env:
           SOURCE_COMMIT: ${{ github.sha }}
           PLATFORM_CANONICAL_ORIGIN: https://ci.platform.invalid

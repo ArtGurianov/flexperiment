@@ -7,7 +7,7 @@ import {
   occurrenceTimeLabelInZone,
   publicVenueDisclosure,
   type Occurrence,
-} from "@/lib/occurrence-format";
+} from "@repo/lib/occurrence-format";
 
 /**
  * Two registers, and the boundary between them.

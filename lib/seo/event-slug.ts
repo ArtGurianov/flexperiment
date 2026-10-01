@@ -1,4 +1,4 @@
-import { isCitySlug } from "@/lib/city-catalog";
+import { isCitySlug } from "@repo/lib/city-catalog";
 
 /**
  * The canonical shape of an occurrence id as Commerce issues it.

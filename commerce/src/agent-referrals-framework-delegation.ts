@@ -7,7 +7,7 @@ import { id } from "./crypto";
  * Immutable framework-agreement and delegation-template content revisions,
  * per plan section B-13. These are Agent Referrals partner-facing evidence,
  * deliberately NOT added to legalDocumentIds (legal-manifest.ts) and with no
- * checkout legal-release side effect - they never touch public/legal/**,
+ * checkout legal-release side effect - they never touch apps/lab/public/legal/**,
  * commerce/legal/**, or the checkout legal bundle.
  *
  * Not partner-scoped in PR3: these are the reviewed template text a future

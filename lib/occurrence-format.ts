@@ -1,5 +1,5 @@
-import type { PurchaseStatus } from "@/lib/occurrence-sales";
-import type { SeoDeparture } from "@/lib/seo/occurrence-snapshot";
+import type { PurchaseStatus } from "@repo/lib/occurrence-sales";
+import type { SeoDeparture } from "@repo/lib/seo/occurrence-snapshot";
 
 /**
  * The live public occurrence as the browser sees it, and the formatters that

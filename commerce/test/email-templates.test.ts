@@ -40,7 +40,7 @@ describe("refund email wording", () => {
   });
 
   it("uses order-time age-band wording consistently in the new checkout UI and ticket email", () => {
-    const checkoutUi = readFileSync("components/CheckoutFlow.tsx", "utf8");
+    const checkoutUi = readFileSync("apps/lab/components/CheckoutFlow.tsx", "utf8");
     const ticket = renderEmailTemplate("ticket", { participant_requires_adult_accompaniment: true });
     expect(checkoutUi).toContain("Возрастная категория участника");
     expect(checkoutUi).toContain("на момент оформления заказа не исполнилось 14 лет");
@@ -51,7 +51,7 @@ describe("refund email wording", () => {
   });
 
   it("waits for explicit event selection before requesting a checkout quote", () => {
-    const checkoutUi = readFileSync("components/CheckoutFlow.tsx", "utf8");
+    const checkoutUi = readFileSync("apps/lab/components/CheckoutFlow.tsx", "utf8");
     expect(checkoutUi).toContain('setOccurrences(available); setOccurrenceId("")');
     expect(checkoutUi).not.toContain("const initial = available.find(canRequestCheckout)");
     expect(checkoutUi).toContain("quote?.venue_disclosure ?? publicVenueDisclosure(selected)");

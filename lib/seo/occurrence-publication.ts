@@ -1,12 +1,12 @@
-import { findCityBySlug } from "@/lib/city-catalog";
-import { isOccurrenceId, parseEventSlug } from "@/lib/seo/event-slug";
+import { findCityBySlug } from "@repo/lib/city-catalog";
+import { isOccurrenceId, parseEventSlug } from "@repo/lib/seo/event-slug";
 import {
   compareOccurrences,
   isDeparted,
   type PublishedRecord,
   type SeoOccurrence,
   type SeoSnapshot,
-} from "@/lib/seo/occurrence-snapshot";
+} from "@repo/lib/seo/occurrence-snapshot";
 
 /**
  * Whether an occurrence may be published, and how far.

@@ -1,5 +1,5 @@
-import type { PublicOccurrence } from "@/lib/seo/public-occurrence";
-import type { SeoOccurrence } from "@/lib/seo/occurrence-snapshot";
+import type { PublicOccurrence } from "@repo/lib/seo/public-occurrence";
+import type { SeoOccurrence } from "@repo/lib/seo/occurrence-snapshot";
 
 /**
  * The reusable public-occurrence factory the repository did not have.

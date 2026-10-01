@@ -1,15 +1,15 @@
 import { describe, expect, it } from "vitest";
 
-import { getCityBySlug, type CitySlug } from "@/lib/city-catalog";
-import type { SeoDeparture, SeoTombstone } from "@/lib/seo/occurrence-snapshot";
-import { seoOccurrence } from "@/lib/seo/public-occurrence-fixture";
+import { getCityBySlug, type CitySlug } from "@repo/lib/city-catalog";
+import type { SeoDeparture, SeoTombstone } from "@repo/lib/seo/occurrence-snapshot";
+import { seoOccurrence } from "@repo/lib/seo/public-occurrence-fixture";
 import {
   actionableUpcomingEvents,
   archivedEvents,
   scheduledCitySlugs,
-} from "@/lib/seo/schedule-presentation";
-import { toScheduleViewModel } from "@/lib/seo/schedule-view-model";
-import type { ScheduleViewModel } from "@/lib/seo/schedule-view-model";
+} from "@repo/lib/seo/schedule-presentation";
+import { toScheduleViewModel } from "@repo/lib/seo/schedule-view-model";
+import type { ScheduleViewModel } from "@repo/lib/seo/schedule-view-model";
 
 /**
  * The ordering contract the two catalogue surfaces share.

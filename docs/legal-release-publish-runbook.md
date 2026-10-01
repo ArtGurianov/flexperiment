@@ -12,7 +12,7 @@ replace legal review or authorize a publication on its own.
    `PENDING_AUTHORITATIVE_PUBLISH_TIMESTAMP`; do not invent a timestamp before
    publication.
 3. Deploy the new version-addressed archive assets without changing the
-   non-versioned `public/legal/*.md` convenience copies.
+   non-versioned `apps/lab/public/legal/*.md` convenience copies.
 4. Fetch every archive URL and verify that its bytes hash to the exact SHA-256
    in the draft manifest.
 5. Verify `GET /v1/public/legal-config` and a fresh checkout context still
@@ -57,7 +57,7 @@ depend on one another, such as the booking-time participant age band.
 5. Confirm `GET /v1/public/legal-config` and a fresh checkout context now
    return the new version and immutable archive URLs. Create a disposable
    checkout context and prove the same release is snapped into the order path.
-6. Switch the non-versioned `public/legal/*.md` convenience copies to the
+6. Switch the non-versioned `apps/lab/public/legal/*.md` convenience copies to the
    byte-identical release text, then reopen sales.
 
 Sales remain paused from step 1 through step 6. Thus no checkout can be

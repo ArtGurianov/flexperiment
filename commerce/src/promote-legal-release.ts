@@ -18,16 +18,16 @@ candidate.publish_time = normalizedPublishTime;
 writeFileSync(resolve(root, "commerce/legal/production-manifest.json"), `${JSON.stringify(candidate, null, 2)}\n`);
 
 const destinations: Record<string, string> = {
-  PUBLIC_OFFER: "public/legal/public-offer.md",
-  PRIVACY_POLICY: "public/legal/privacy-policy.md",
-  PD_CONSENT: "public/legal/personal-data-consent.md",
-  CHECKOUT_DISCLOSURE: "public/legal/disclaimer.md",
+  PUBLIC_OFFER: "apps/lab/public/legal/public-offer.md",
+  PRIVACY_POLICY: "apps/lab/public/legal/privacy-policy.md",
+  PD_CONSENT: "apps/lab/public/legal/personal-data-consent.md",
+  CHECKOUT_DISCLOSURE: "apps/lab/public/legal/disclaimer.md",
 };
 for (const [id, document] of Object.entries(candidate.documents)) {
   const url = new URL(document.archive_url);
-  const archivePath = resolve(root, `public${url.pathname}`);
+  const archivePath = resolve(root, `apps/lab/public${url.pathname}`);
   const destination = destinations[id];
-  if (!destination || !archivePath.startsWith(resolve(root, "public/legal/archive"))) throw new Error(`Unexpected candidate legal document ${id}.`);
+  if (!destination || !archivePath.startsWith(resolve(root, "apps/lab/public/legal/archive"))) throw new Error(`Unexpected candidate legal document ${id}.`);
   writeFileSync(resolve(root, destination), readFileSync(archivePath));
 }
 

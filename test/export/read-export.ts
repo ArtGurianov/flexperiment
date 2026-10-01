@@ -16,7 +16,7 @@ import path from "node:path";
  * `pnpm test:export`, and the guard below fails with that instruction rather
  * than with a confusing ENOENT.
  */
-const OUT = path.join(process.cwd(), "out");
+const OUT = path.join(process.cwd(), "apps/lab/out");
 
 export const outPath = (relative: string): string => path.join(OUT, relative);
 
@@ -30,7 +30,7 @@ export function readExport(relative: string): string {
   const file = outPath(relative);
   if (!existsSync(file)) {
     throw new Error(
-      `out/${relative} is missing. These tests assert against the built export: run \`SOURCE_COMMIT=$(git rev-parse HEAD) pnpm build\` first.`,
+      `apps/lab/out/${relative} is missing. These tests assert against the built export: run \`SOURCE_COMMIT=$(git rev-parse HEAD) LAB_ORIGIN=https://lab.flexperiment.ru pnpm build\` first.`,
     );
   }
   return readFileSync(file, "utf8");

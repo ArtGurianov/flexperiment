@@ -61,10 +61,10 @@ describe("production legal-release publisher", () => {
 
   it("keeps current Flexperiment legal documents free of legacy operator contacts", () => {
     const currentDocuments = [
-      "public/legal/privacy-policy.md",
-      "public/legal/personal-data-consent.md",
-      "public/legal/public-offer.md",
-      "public/legal/disclaimer.md",
+      "apps/lab/public/legal/privacy-policy.md",
+      "apps/lab/public/legal/personal-data-consent.md",
+      "apps/lab/public/legal/public-offer.md",
+      "apps/lab/public/legal/disclaimer.md",
     ].map((filename) => readFileSync(filename, "utf8"));
     for (const document of currentDocuments) {
       expect(document).not.toMatch(/flextatic\.ru|art@artgurianov\.com/i);

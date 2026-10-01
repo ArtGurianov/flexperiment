@@ -1,16 +1,16 @@
 import { describe, expect, it } from "vitest";
 
-import { readSnapshotFile } from "@/commerce/src/seo-snapshot-io";
-import { publishableRecords } from "@/lib/seo/occurrence-publication";
+import { readSnapshotFile } from "@repo/commerce/src/seo-snapshot-io";
+import { publishableRecords } from "@repo/lib/seo/occurrence-publication";
 import {
   actionableUpcomingEvents,
   archivedEvents,
-} from "@/lib/seo/schedule-presentation";
-import { toScheduleViewModel } from "@/lib/seo/schedule-view-model";
+} from "@repo/lib/seo/schedule-presentation";
+import { toScheduleViewModel } from "@repo/lib/seo/schedule-view-model";
 import { canonicalOf, listExport, metaName, metaProperty, readExport, textOf, titleOf } from "./read-export";
 
 const model = () =>
-  toScheduleViewModel(publishableRecords(readSnapshotFile("data/seo/occurrences.v1.json")));
+  toScheduleViewModel(publishableRecords(readSnapshotFile("apps/lab/data/seo/occurrences.v1.json")));
 
 /** Event hrefs in the order the document actually renders them. */
 const eventHrefsInOrder = (html: string): string[] =>
@@ -20,7 +20,7 @@ describe("/schedule", () => {
   const html = readExport("schedule.html");
 
   it("is canonical, indexable, and carries its own social card", () => {
-    expect(canonicalOf(html)).toBe("https://flexperiment.ru/schedule");
+    expect(canonicalOf(html)).toBe("https://lab.flexperiment.ru/schedule");
     expect(metaName(html, "robots")).toBeNull();
     expect(titleOf(html)).toContain("Города и даты");
     expect(metaProperty(html, "og:image")).toContain("opengraph-image.png");

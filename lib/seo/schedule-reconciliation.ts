@@ -1,5 +1,5 @@
-import type { PublicOccurrence } from "@/lib/seo/public-occurrence";
-import type { ScheduleEventView, ScheduleViewModel } from "@/lib/seo/schedule-view-model";
+import type { PublicOccurrence } from "@repo/lib/seo/public-occurrence";
+import type { ScheduleEventView, ScheduleViewModel } from "@repo/lib/seo/schedule-view-model";
 
 /**
  * Reconciles the build-time schedule against a successful live tour read.
