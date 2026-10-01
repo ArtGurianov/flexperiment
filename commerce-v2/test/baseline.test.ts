@@ -76,6 +76,17 @@ describe("v2 baseline invariants", () => {
       VALUES ('duplicate','lab:duplicate','LAB','PAID','lab:one')`).run()).toThrow(/UNIQUE/);
   });
 
+  it("enforces one offer per product and one canonical all-courses bundle", () => {
+    const db = database(); migrateV2(db);
+    db.prepare("INSERT INTO products(id,product_ref,kind,access_model,course_ref) VALUES ('course','course:one','ONLINE_COURSE','PAID','one')").run();
+    db.prepare("INSERT INTO offers(id,offer_ref,product_id,price_kopecks) VALUES ('offer','course:one','course',100)").run();
+    expect(() => db.prepare("INSERT INTO offers(id,offer_ref,product_id,price_kopecks) VALUES ('duplicate','course:other','course',200)").run())
+      .toThrow(/UNIQUE/);
+    db.prepare("INSERT INTO products(id,product_ref,kind,access_model) VALUES ('bundle','bundle:all-courses','COURSE_BUNDLE','PAID')").run();
+    expect(() => db.prepare("INSERT INTO products(id,product_ref,kind,access_model) VALUES ('bad-bundle','bundle:other','COURSE_BUNDLE','PAID')").run())
+      .toThrow(/ALL_COURSES_BUNDLE_REF_INVALID|UNIQUE/);
+  });
+
   it("keeps terminal override evidence complete", () => {
     const db = database(); migrateV2(db);
     expect(() => db.prepare(`INSERT INTO access_overrides

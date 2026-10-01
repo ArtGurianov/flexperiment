@@ -34,7 +34,10 @@ does.
   an existing LAB guest without creating another customer.
 - `products` owns product kind, FREE/PAID access and audited withdrawal.
   `offers` owns live price and `sale_mode` (`CLOSED`, `ACCEPTANCE_ONLY`,
-  `PUBLIC`). One product has one current offer. The product aggregate has a
+  `PUBLIC`). One product has one current offer, enforced by the database. The
+  sole `COURSE_BUNDLE` product is `bundle:all-courses`; its fulfilment stores a
+  durable `ALL_COURSES` entitlement instead of expanding today's catalogue.
+  The product aggregate has a
   monotonic `version`; Control Room creates with expected version zero and
   every edit or withdrawal compares and advances that version, so stale
   browser commands fail without overwriting a newer decision. Public selling

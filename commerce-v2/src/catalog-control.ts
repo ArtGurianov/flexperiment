@@ -25,6 +25,7 @@ export function configureProduct(db: Database.Database, config: CommerceRuntimeC
   if (!Number.isInteger(command.priceKopecks) || command.priceKopecks < 0) throw new Error("PRICE_INVALID");
   if (command.kind === "ONLINE_COURSE" && !command.courseRef) throw new Error("COURSE_REF_REQUIRED");
   if (command.kind !== "ONLINE_COURSE" && command.courseRef) throw new Error("COURSE_REF_FORBIDDEN");
+  if (command.kind === "COURSE_BUNDLE" && command.productRef !== "bundle:all-courses") throw new Error("ALL_COURSES_BUNDLE_REF_INVALID");
   if (command.kind === "LAB" && !command.occurrenceRef) throw new Error("OCCURRENCE_REF_REQUIRED");
   if (command.kind !== "LAB" && command.occurrenceRef) throw new Error("OCCURRENCE_REF_FORBIDDEN");
   if (command.occurrenceRef && !db.prepare("SELECT 1 FROM lab_occurrences WHERE occurrence_ref=?").get(command.occurrenceRef)) {
