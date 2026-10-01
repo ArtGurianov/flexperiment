@@ -184,6 +184,12 @@ export type ControlRoomIntegrationSummary = {
   processingRefundCount: number;
   attentionOverrideCount: number;
   staleProjectionCount: number;
+  playbackAccess24h: {
+    allowed: number;
+    denied: number;
+    rateLimited: number;
+    invalidToken: number;
+  };
 };
 
 export type ControlRoomListResponse<T, K extends string> = { generatedAt: string } & Record<K, T[]>;

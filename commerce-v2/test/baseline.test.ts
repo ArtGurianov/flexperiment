@@ -43,6 +43,7 @@ describe("v2 baseline invariants", () => {
     for (const name of ["user", "session", "account", "verification", "customers", "products", "offers", "sales_activation",
       "course_entitlements", "catalog_course_projection", "catalog_section_projection", "catalog_lesson_projection",
       "access_overrides", "lesson_video_bindings", "video_upload_sessions", "kinescope_webhook_events", "playback_grant_rate_limits",
+      "playback_access_events",
       "lesson_resume_positions", "marketing_consents", "email_suppressions", "notification_campaigns",
       "notification_campaign_recipients", "merchant_promotion", "checkout_quotes", "course_access_starts",
       "refund_requests", "refund_decisions", "refund_executions", "control_room_admin_sessions",

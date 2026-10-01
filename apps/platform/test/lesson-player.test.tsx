@@ -103,6 +103,15 @@ describe("LessonPlayer", () => {
     expect(create.mock.calls[1]?.[1]).toMatchObject({ url: "https://kinescope.io/embed/video?drmauthtoken=second" });
   });
 
+  it("never embeds an already expired protected grant", async () => {
+    global.fetch = vi.fn(async () => response({
+      mode: "protected", videoId: "video", token: "expired", expiresAt: "2020-01-01T00:00:00Z", resumeAt: 0,
+    }));
+    render(<LessonPlayer lessonRef="lesson" title="Lesson" />);
+    await waitFor(() => expect(global.fetch).toHaveBeenCalled());
+    await waitFor(() => expect(create).not.toHaveBeenCalled());
+  });
+
   it("never adds a DRM token to an open embed", () => {
     expect(playbackEmbedUrl({ mode: "open", videoId: "video", resumeAt: 0 })).toBe("https://kinescope.io/embed/video");
   });

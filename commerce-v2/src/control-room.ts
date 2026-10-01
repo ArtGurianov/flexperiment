@@ -13,6 +13,7 @@ import type {
   OrdersResponse,
 } from "@flexperiment/control-room-contracts";
 import type { CommerceRuntimeConfig } from "./payment-mode";
+import { playbackAccessSummary } from "./playback-telemetry";
 
 export function controlRoomCatalogue(db: Database.Database, now = new Date().toISOString()): CatalogueResponse {
   const rows = db.prepare(`SELECT product.product_ref,product.course_ref,product.access_model,product.withdrawn_at,product.version AS product_version,
@@ -156,6 +157,7 @@ export function controlRoomIntegrationSummary(
     processingRefundCount: count("SELECT COUNT(*) AS count FROM refund_executions WHERE state IN ('READY','PROCESSING')"),
     attentionOverrideCount: count("SELECT COUNT(*) AS count FROM access_overrides WHERE attention_reason IS NOT NULL"),
     staleProjectionCount: count("SELECT COUNT(*) AS count FROM catalog_course_projection WHERE last_reconciled_at < ?", new Date(now.getTime() - leaseMs).toISOString()),
+    playbackAccess24h: playbackAccessSummary(db, new Date(now.getTime() - 24 * 60 * 60_000).toISOString()),
   };
 }
 

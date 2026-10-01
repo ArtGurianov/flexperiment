@@ -51,6 +51,17 @@ if (!smartCaptchaSecret && config.deployEnvironment === "production") throw new 
 
 const kinescopeToken = process.env.KINESCOPE_API_TOKEN;
 const kinescopeClient = kinescopeToken ? new HttpKinescopeClient(kinescopeToken) : undefined;
+const kinescopeDrmTokenSecret = process.env.KINESCOPE_DRM_TOKEN_SECRET;
+const kinescopeDrmUsername = process.env.KINESCOPE_DRM_USERNAME;
+const kinescopeDrmPassword = process.env.KINESCOPE_DRM_PASSWORD;
+if (config.kinescopeDeliveryMode === "protected" && (
+  !kinescopeDrmTokenSecret || Buffer.byteLength(kinescopeDrmTokenSecret) < 32 || !kinescopeDrmUsername || !kinescopeDrmPassword
+)) throw new Error("KINESCOPE_DRM_CONFIGURATION_REQUIRED");
+const kinescopeDrmAuth = kinescopeDrmTokenSecret && kinescopeDrmUsername && kinescopeDrmPassword ? {
+  tokenSecret: kinescopeDrmTokenSecret,
+  username: kinescopeDrmUsername,
+  password: kinescopeDrmPassword,
+} : undefined;
 const paymentRail = config.paymentMode === "mock" ? new MockPaymentRail()
   : config.paymentMode === "refref" && config.refref ? new RefrefPaymentRail({
     apiBaseUrl: config.refref.apiBaseUrl,
@@ -75,6 +86,7 @@ const app = createCommerceV2App({
     username: process.env.KINESCOPE_WEBHOOK_USERNAME,
     password: process.env.KINESCOPE_WEBHOOK_PASSWORD,
   } : undefined,
+  kinescopeDrmAuth,
   runtimeCapabilities: {
     authEmailConfigured: Boolean(emailDeliveryEndpoint),
     captchaConfigured: Boolean(smartCaptchaSecret),

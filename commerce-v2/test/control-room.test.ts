@@ -1,7 +1,8 @@
 import Database from "better-sqlite3";
 import { beforeEach, describe, expect, it } from "vitest";
 import { migrateV2 } from "../src/db";
-import { controlRoomAudit, controlRoomEmailOperations, controlRoomIncidents } from "../src/control-room";
+import { controlRoomAudit, controlRoomEmailOperations, controlRoomIncidents, controlRoomIntegrationSummary } from "../src/control-room";
+import { loadCommerceRuntimeConfig } from "../src/payment-mode";
 
 let db: Database.Database;
 const now = "2026-09-30T12:00:00.000Z";
@@ -40,5 +41,23 @@ describe("Control Room operational projections", () => {
       expect.objectContaining({ source: "MERCHANT", actor: "operator", details: { version: 2 } }),
       expect.objectContaining({ source: "CONTROL_ROOM", actor: "singleton-admin", details: {} }),
     ]));
+  });
+
+  it("summarizes recent abnormal playback access without exposing tokens", () => {
+    db.prepare(`INSERT INTO playback_access_events(customer_id,lesson_ref,video_id,event_type,reason,occurred_at)
+      VALUES ('customer','lesson','video','GRANT_ALLOWED','PROTECTED',?),
+      ('customer','lesson','video','GRANT_DENIED','DENY',?),
+      ('customer','lesson','video','GRANT_RATE_LIMITED','PER_CUSTOMER_MINUTE_LIMIT',?),
+      (NULL,NULL,'video','DRM_TOKEN_INVALID','PLAYBACK_TOKEN_EXPIRED',?),
+      ('customer','lesson','video','GRANT_DENIED','OLD',?)`)
+      .run(now, now, now, now, "2026-09-28T12:00:00.000Z");
+
+    const summary = controlRoomIntegrationSummary(
+      db,
+      loadCommerceRuntimeConfig({ DEPLOY_ENV: "test", PAYMENT_MODE: "disabled", MERCHANT_PROMOTION_PREFIX: "FX-" }),
+      new Date(now),
+    );
+    expect(summary.playbackAccess24h).toEqual({ allowed: 1, denied: 1, rateLimited: 1, invalidToken: 1 });
+    expect(JSON.stringify(summary)).not.toContain("playback-secret");
   });
 });

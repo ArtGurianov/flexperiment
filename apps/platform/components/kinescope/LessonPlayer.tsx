@@ -30,7 +30,9 @@ const parseGrant = async (response: Response) => {
   if (!response.ok) return null;
   const grant = await response.json() as PlaybackGrant;
   if (!grant.videoId || !Number.isFinite(grant.resumeAt)) return null;
-  if (grant.mode === "protected" && (!grant.token || !grant.expiresAt || !Number.isFinite(Date.parse(grant.expiresAt)))) return null;
+  if (grant.mode === "protected" && (
+    !grant.token || !grant.expiresAt || !Number.isFinite(Date.parse(grant.expiresAt)) || Date.parse(grant.expiresAt) <= Date.now()
+  )) return null;
   return grant;
 };
 

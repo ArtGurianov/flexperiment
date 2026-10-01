@@ -2,7 +2,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTestQueryClient, QueryClientWrapper } from "../../lib/test-query-client";
-import { CourseCatalogue, EntitlementsView, RefundsView } from "./ControlRoomV2";
+import { CourseCatalogue, EntitlementsView, IntegrationView, RefundsView } from "./ControlRoomV2";
 
 const generatedAt = "2026-09-30T10:00:00.000Z";
 
@@ -163,5 +163,22 @@ describe("Control Room v2", () => {
 
     expect(await screen.findByText("CONTROL_ROOM_FORBIDDEN")).toBeInTheDocument();
     expect(screen.queryByText("Загрузка…")).not.toBeInTheDocument();
+  });
+
+  it("shows abnormal playback access counters in integration operations", async () => {
+    global.fetch = vi.fn(async (input: RequestInfo | URL) => input.toString().endsWith("/integration")
+      ? response({
+        paymentMode: "disabled", lastAcceptedPayment: null, outstandingCheckoutCount: 0, processingRefundCount: 0,
+        attentionOverrideCount: 0, staleProjectionCount: 0,
+        playbackAccess24h: { allowed: 12, denied: 3, rateLimited: 1, invalidToken: 2 },
+      })
+      : response({ generatedAt, items: [] }));
+    const client = createTestQueryClient();
+    render(<IntegrationView />, { wrapper: (props) => <QueryClientWrapper client={client}>{props.children}</QueryClientWrapper> });
+
+    expect(await screen.findByText("Playback / 24 часа")).toBeInTheDocument();
+    expect(screen.getByText("Отказано").parentElement).toHaveTextContent("3");
+    expect(screen.getByText("Rate limited").parentElement).toHaveTextContent("1");
+    expect(screen.getByText("Invalid token").parentElement).toHaveTextContent("2");
   });
 });

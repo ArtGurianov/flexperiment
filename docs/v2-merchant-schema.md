@@ -96,6 +96,17 @@ does.
   proof as JSON because no resolving manifest exists in that case.
 - `lesson_video_bindings`, `video_upload_sessions` and
   `kinescope_webhook_events` keep video identifiers private.
+- `playback_grant_rate_limits` durably caps grant minting per customer and
+  minute. `playback_access_events` records grant, DRM callback, rate-limit and
+  invalid-token outcomes without storing the signed token; Control Room shows
+  the rolling 24-hour outcome counts so abnormal access is visible.
+- Protected playback uses a short-lived HS256 JWT bound to one customer and
+  one active Kinescope video. Kinescope calls
+  `POST /v1/kinescope/drm/authorize` with Basic authentication; commerce
+  validates signature, issuer, audience, expiry and video binding, then
+  re-evaluates the current access policy. A token cannot be replayed for a
+  different video, and a withdrawal or revocation takes effect at the DRM
+  callback even while an already minted token has time remaining.
 - `lesson_resume_positions` uses `(customer_id, lesson_ref)` as its identity;
   updates are accepted only when their client ordering tuple is newer.
 - Campaign recipients are unique per `(campaign_id, customer_id)`. Consent and

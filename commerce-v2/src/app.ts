@@ -1,12 +1,10 @@
 import type Database from "better-sqlite3";
 import { Hono } from "hono";
 import { timingSafeEqual } from "node:crypto";
-import { decideLessonAccess } from "./access-policy";
 import { createRestrictiveOverride, flagOrphanedOverrides, listPendingOverrides, releaseRolledBackOverride, type RestrictiveOverride, type RollbackReleaseProof } from "./access-overrides";
 import { applyCourseManifest, type CourseManifest } from "./manifest";
 import { assertPaymentCreationEnabled, type CommerceRuntimeConfig } from "./payment-mode";
 import { saveResumePosition } from "./resume";
-import { playbackResumeAt } from "./resume";
 import { confirmCheckout, prepareCheckout, reconcileCheckout, type PaymentRail } from "./checkout";
 import { activateSales, configureProduct, withdrawProduct } from "./catalog-control";
 import { confirmCampaign, createCampaign, dispatchCampaign, unsubscribeCustomer, type CampaignEmail } from "./campaigns";
@@ -20,6 +18,9 @@ import { listCustomerLibrary, listCustomerOrderHistory } from "./library";
 import { controlRoomAttention, controlRoomAudit, controlRoomCatalogue, controlRoomCities, controlRoomCustomers, controlRoomEmailOperations, controlRoomEntitlements, controlRoomIncidents, controlRoomIntegrationSummary, controlRoomLabOccurrences, controlRoomOrders } from "./control-room";
 import { auditControlRoom, consumeControlRoomLoginLimit, CONTROL_ROOM_SESSION_TTL_MS, controlRoomSessionCookie, issueControlRoomSession, parseControlRoomSession, verifyControlRoomPassword, type ControlRoomAuthConfig } from "./control-room-auth";
 import type { MerchantPromotionCommand, ProductConfigurationCommand, ProductWithdrawalCommand } from "@flexperiment/control-room-contracts";
+import { resolvePlaybackAccess } from "./playback-access";
+import { issuePlaybackToken, verifyPlaybackToken } from "./playback-auth";
+import { recordPlaybackAccessEvent } from "./playback-telemetry";
 
 type Dependencies = {
   readonly db: Database.Database;
@@ -33,7 +34,7 @@ type Dependencies = {
     marketingConsent?: boolean; marketingDocumentVersion?: string;
   }) => void;
   readonly verifyCaptcha?: (token: string, ip: string | undefined) => Promise<boolean>;
-  readonly createProtectedPlaybackToken?: (videoId: string, customerId: string) => Promise<{ token: string; expiresAt: string }>;
+  readonly kinescopeDrmAuth?: { tokenSecret: string; username: string; password: string };
   readonly now?: () => Date;
   readonly kinescopeClient?: KinescopeClient;
   readonly kinescopeLessonsFolderId?: string;
@@ -79,23 +80,28 @@ export function createCommerceV2App(deps: Dependencies) {
     service: "commerce-v2",
     sourceCommit: deps.sourceCommit,
   }, 200, noStore));
-  app.get("/readyz", (context) => context.json({
-    ok: true,
-    service: "commerce-v2",
-    sourceCommit: deps.sourceCommit,
-    core: { database: "ok", configuration: "ok", paymentMode: deps.config.paymentMode },
-    capabilities: {
-      refref: deps.config.paymentMode === "refref" ? "configured_not_probed" : "not_required",
-      authEmail: deps.runtimeCapabilities?.authEmailConfigured === false ? "missing" : "configured",
-      captcha: deps.runtimeCapabilities?.captchaConfigured === false ? "missing" : "configured",
-      kinescope: deps.runtimeCapabilities?.kinescopeApiConfigured === false ? "missing" : "configured_not_probed",
-      catalog: {
-        projectedCourses: (deps.db.prepare("SELECT COUNT(*) AS count FROM catalog_course_projection").get() as { count: number }).count,
-        pendingOverrides: (deps.db.prepare("SELECT COUNT(*) AS count FROM access_overrides WHERE state='PENDING'").get() as { count: number }).count,
-        attentionOverrides: (deps.db.prepare("SELECT COUNT(*) AS count FROM access_overrides WHERE attention_reason IS NOT NULL").get() as { count: number }).count,
+  app.get("/readyz", (context) => {
+    const protectedKinescopeMissing = deps.config.kinescopeDeliveryMode === "protected"
+      && (deps.runtimeCapabilities?.kinescopeApiConfigured === false || !deps.kinescopeDrmAuth);
+    return context.json({
+      ok: !protectedKinescopeMissing,
+      service: "commerce-v2",
+      sourceCommit: deps.sourceCommit,
+      core: { database: "ok", configuration: protectedKinescopeMissing ? "incomplete" : "ok", paymentMode: deps.config.paymentMode },
+      capabilities: {
+        refref: deps.config.paymentMode === "refref" ? "configured_not_probed" : "not_required",
+        authEmail: deps.runtimeCapabilities?.authEmailConfigured === false ? "missing" : "configured",
+        captcha: deps.runtimeCapabilities?.captchaConfigured === false ? "missing" : "configured",
+        kinescope: deps.runtimeCapabilities?.kinescopeApiConfigured === false ? "missing" : "configured_not_probed",
+        kinescopeDrm: deps.config.kinescopeDeliveryMode === "protected" ? (deps.kinescopeDrmAuth ? "configured" : "missing") : "not_required",
+        catalog: {
+          projectedCourses: (deps.db.prepare("SELECT COUNT(*) AS count FROM catalog_course_projection").get() as { count: number }).count,
+          pendingOverrides: (deps.db.prepare("SELECT COUNT(*) AS count FROM access_overrides WHERE state='PENDING'").get() as { count: number }).count,
+          attentionOverrides: (deps.db.prepare("SELECT COUNT(*) AS count FROM access_overrides WHERE attention_reason IS NOT NULL").get() as { count: number }).count,
+        },
       },
-    },
-  }, 200, noStore));
+    }, protectedKinescopeMissing ? 503 : 200, noStore);
+  });
 
   app.post("/v1/admin/login", async (context) => {
     const auth = deps.controlRoomAuth;
@@ -641,6 +647,60 @@ export function createCommerceV2App(deps: Dependencies) {
     }
   });
 
+  app.post("/v1/kinescope/drm/authorize", async (context) => {
+    const expected = deps.kinescopeDrmAuth;
+    const authorization = context.req.header("authorization") ?? "";
+    if (!expected || !authorization.startsWith("Basic ")) return context.json({ code: "KINESCOPE_DRM_UNAUTHORIZED" }, 401, noStore);
+    const decoded = Buffer.from(authorization.slice(6), "base64").toString("utf8");
+    if (!secureEqual(decoded, `${expected.username}:${expected.password}`)) return context.json({ code: "KINESCOPE_DRM_UNAUTHORIZED" }, 401, noStore);
+    const observedAt = now().toISOString();
+    let body: { id?: unknown; token?: unknown; type?: unknown };
+    try {
+      body = await context.req.json<typeof body>();
+    } catch {
+      return context.json({ code: "KINESCOPE_DRM_SCHEMA_INVALID" }, 400, noStore);
+    }
+    if (typeof body.id !== "string" || !body.id || typeof body.token !== "string" || !body.token || body.type !== "video") {
+      return context.json({ code: "KINESCOPE_DRM_SCHEMA_INVALID" }, 400, noStore);
+    }
+    let claims: ReturnType<typeof verifyPlaybackToken>;
+    try {
+      claims = verifyPlaybackToken(expected.tokenSecret, body.token, body.id, now());
+    } catch (error) {
+      recordPlaybackAccessEvent(deps.db, {
+        videoId: body.id, eventType: "DRM_TOKEN_INVALID",
+        reason: error instanceof Error ? error.message : "PLAYBACK_TOKEN_INVALID", occurredAt: observedAt,
+      });
+      return context.json({ code: "PLAYBACK_TOKEN_INVALID" }, 403, noStore);
+    }
+    const lesson = deps.db.prepare("SELECT lesson_ref FROM lesson_video_bindings WHERE active_video_id=?")
+      .get(body.id) as { lesson_ref: string } | undefined;
+    if (!lesson) {
+      recordPlaybackAccessEvent(deps.db, {
+        customerId: claims.customerId, videoId: body.id, eventType: "DRM_DENIED", reason: "VIDEO_NOT_BOUND", occurredAt: observedAt,
+      });
+      return context.json({ code: "PLAYBACK_DENIED" }, 403, noStore);
+    }
+    const resolution = resolvePlaybackAccess(deps.db, {
+      customerId: claims.customerId,
+      lessonRef: lesson.lesson_ref,
+      now: now(),
+      leaseMs: Number(process.env.CATALOG_LEASE_MS ?? 24 * 60 * 60 * 1000),
+    });
+    if (resolution.decision !== "ALLOW" || resolution.binding?.videoId !== body.id) {
+      recordPlaybackAccessEvent(deps.db, {
+        customerId: claims.customerId, lessonRef: lesson.lesson_ref, videoId: body.id,
+        eventType: "DRM_DENIED", reason: resolution.decision, occurredAt: observedAt,
+      });
+      return context.json({ code: "PLAYBACK_DENIED" }, 403, noStore);
+    }
+    recordPlaybackAccessEvent(deps.db, {
+      customerId: claims.customerId, lessonRef: lesson.lesson_ref, videoId: body.id,
+      eventType: "DRM_ALLOWED", reason: "ALLOW", occurredAt: observedAt,
+    });
+    return context.json({ allowed: true }, 200, noStore);
+  });
+
   app.get("/v1/me", async (context) => {
     const customerId = await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;
     if (!customerId) return context.json({ customer: null }, 200, noStore);
@@ -686,66 +746,65 @@ export function createCommerceV2App(deps: Dependencies) {
     const rate = deps.db.prepare(`INSERT INTO playback_grant_rate_limits(customer_id,window_start,request_count)
       VALUES (?,?,1) ON CONFLICT(customer_id,window_start) DO UPDATE SET request_count=request_count+1
       RETURNING request_count`).get(customerId, windowStart) as { request_count: number };
-    if (rate.request_count > 30) return context.json({ code: "PLAYBACK_RATE_LIMITED" }, 429, { ...noStore, "Retry-After": "60" });
+    if (rate.request_count > 30) {
+      recordPlaybackAccessEvent(deps.db, {
+        customerId, lessonRef: context.req.param("lessonRef"), eventType: "GRANT_RATE_LIMITED",
+        reason: "PER_CUSTOMER_MINUTE_LIMIT", occurredAt: now().toISOString(),
+      });
+      return context.json({ code: "PLAYBACK_RATE_LIMITED" }, 429, { ...noStore, "Retry-After": "60" });
+    }
     const lessonRef = context.req.param("lessonRef");
-    const row = deps.db.prepare(`SELECT
-      lesson.lesson_ref, lesson.course_ref, lesson.ever_published, lesson.visibility AS lesson_visibility,
-      lesson.free_preview, lesson.withdrawn_at AS lesson_withdrawn_at,
-      section.visibility AS section_visibility, course.visibility AS course_visibility,
-      course.last_reconciled_at, product.access_model, product.withdrawn_at AS product_withdrawn_at,
-      COALESCE(offer.sale_mode, 'CLOSED') AS sale_mode
-      FROM catalog_lesson_projection lesson
-      JOIN catalog_section_projection section ON section.section_ref = lesson.section_ref
-      JOIN catalog_course_projection course ON course.course_ref = lesson.course_ref
-      LEFT JOIN products product ON product.course_ref = lesson.course_ref
-      LEFT JOIN offers offer ON offer.product_id = product.id
-      WHERE lesson.lesson_ref = ?`).get(lessonRef) as {
-        lesson_ref: string; course_ref: string; ever_published: number; lesson_visibility: "LISTED" | "UNLISTED";
-        free_preview: number; lesson_withdrawn_at: string | null; section_visibility: "LISTED" | "UNLISTED";
-        course_visibility: "LISTED" | "UNLISTED"; last_reconciled_at: string; access_model: "FREE" | "PAID" | null;
-        product_withdrawn_at: string | null; sale_mode: "CLOSED" | "ACCEPTANCE_ONLY" | "PUBLIC";
-      } | undefined;
-    const grants = deps.db.prepare(`SELECT scope, course_ref, revoked_at FROM course_entitlements
-      WHERE customer_id = ? AND revoked_at IS NULL`).all(customerId) as Array<{ scope: "COURSE" | "ALL_COURSES"; course_ref: string | null; revoked_at: string | null }>;
-    const activeOverride = Boolean(row && deps.db.prepare(`SELECT 1 FROM access_overrides WHERE course_ref=? AND state='PENDING' AND
-      (scope_level='COURSE' OR (scope_level='SECTION' AND scope_ref=(SELECT section_ref FROM catalog_lesson_projection WHERE lesson_ref=?)) OR (scope_level='LESSON' AND scope_ref=?)) LIMIT 1`)
-      .get(row.course_ref, lessonRef, lessonRef));
-    const effectiveVisibility = row && row.course_visibility === "LISTED" && row.section_visibility === "LISTED" && row.lesson_visibility === "LISTED" ? "LISTED" : "UNLISTED";
-    const leaseMs = Number(process.env.CATALOG_LEASE_MS ?? 24 * 60 * 60 * 1000);
-    const decision = decideLessonAccess({
-      customerId,
-      courseRef: row?.course_ref ?? "",
-      lesson: row ? {
-        everPublished: Boolean(row.ever_published), effectiveVisibility,
-        freePreview: Boolean(row.free_preview), withdrawn: Boolean(row.lesson_withdrawn_at),
-      } : undefined,
-      courseProduct: row?.access_model ? {
-        accessModel: row.access_model, withdrawn: Boolean(row.product_withdrawn_at), saleMode: row.sale_mode,
-      } : undefined,
-      grants: grants.map((grant) => ({ scope: grant.scope, courseRef: grant.course_ref ?? undefined, revoked: Boolean(grant.revoked_at) })),
-      activeDenyNonEntitledOverride: activeOverride,
-      projectionStale: row ? now().getTime() - Date.parse(row.last_reconciled_at) > leaseMs : false,
+    const observedAt = now().toISOString();
+    const resolution = resolvePlaybackAccess(deps.db, {
+      customerId, lessonRef, now: now(), leaseMs: Number(process.env.CATALOG_LEASE_MS ?? 24 * 60 * 60 * 1000),
     });
-    if (decision !== "ALLOW") return context.json({ decision }, decision === "PURCHASE_REQUIRED" ? 402 : 403, noStore);
-
-    const binding = deps.db.prepare("SELECT active_video_id,duration_seconds FROM lesson_video_bindings WHERE lesson_ref=?").get(lessonRef) as { active_video_id: string; duration_seconds: number | null } | undefined;
-    if (!binding) return context.json({ decision: "DENY", code: "VIDEO_NOT_READY" }, 409, noStore);
-    const resume = deps.db.prepare("SELECT seconds FROM lesson_resume_positions WHERE customer_id=? AND lesson_ref=?").get(customerId, lessonRef) as { seconds: number } | undefined;
-    const resumeAt = playbackResumeAt(resume?.seconds ?? 0, binding.duration_seconds);
+    if (resolution.decision !== "ALLOW") {
+      recordPlaybackAccessEvent(deps.db, {
+        customerId, lessonRef, eventType: "GRANT_DENIED", reason: resolution.decision, occurredAt: observedAt,
+      });
+      return context.json({ decision: resolution.decision }, resolution.decision === "PURCHASE_REQUIRED" ? 402 : 403, noStore);
+    }
+    if (!resolution.binding) {
+      recordPlaybackAccessEvent(deps.db, {
+        customerId, lessonRef, eventType: "GRANT_DENIED", reason: "VIDEO_NOT_READY", occurredAt: observedAt,
+      });
+      return context.json({ decision: "DENY", code: "VIDEO_NOT_READY" }, 409, noStore);
+    }
     const recordPaidAccessStart = () => {
-      const entitled = grants.some((grant) => grant.scope === "ALL_COURSES" || (grant.scope === "COURSE" && grant.course_ref === row?.course_ref));
-      if (row?.access_model === "PAID" && entitled) {
-        recordCourseAccessStart(deps.db, { customerId, courseRef: row.course_ref, lessonRef }, now().toISOString());
+      if (resolution.courseRef && resolution.paidEntitled) {
+        recordCourseAccessStart(deps.db, { customerId, courseRef: resolution.courseRef, lessonRef }, observedAt);
       }
     };
     if (deps.config.kinescopeDeliveryMode === "open") {
       recordPaidAccessStart();
-      return context.json({ mode: "open", videoId: binding.active_video_id, resumeAt }, 200, noStore);
+      recordPlaybackAccessEvent(deps.db, {
+        customerId, lessonRef, videoId: resolution.binding.videoId, eventType: "GRANT_ALLOWED", reason: "OPEN", occurredAt: observedAt,
+      });
+      return context.json({ mode: "open", videoId: resolution.binding.videoId, resumeAt: resolution.resumeAt }, 200, noStore);
     }
-    if (!deps.createProtectedPlaybackToken) return context.json({ code: "KINESCOPE_GRANT_UNAVAILABLE" }, 503, noStore);
-    const protectedGrant = await deps.createProtectedPlaybackToken(binding.active_video_id, customerId);
-    recordPaidAccessStart();
-    return context.json({ mode: "protected", videoId: binding.active_video_id, ...protectedGrant, resumeAt }, 200, noStore);
+    if (!deps.kinescopeDrmAuth) {
+      recordPlaybackAccessEvent(deps.db, {
+        customerId, lessonRef, videoId: resolution.binding.videoId, eventType: "GRANT_DENIED",
+        reason: "KINESCOPE_GRANT_UNAVAILABLE", occurredAt: observedAt,
+      });
+      return context.json({ code: "KINESCOPE_GRANT_UNAVAILABLE" }, 503, noStore);
+    }
+    try {
+      const protectedGrant = issuePlaybackToken(deps.kinescopeDrmAuth.tokenSecret, {
+        videoId: resolution.binding.videoId, customerId,
+      }, now());
+      recordPaidAccessStart();
+      recordPlaybackAccessEvent(deps.db, {
+        customerId, lessonRef, videoId: resolution.binding.videoId, eventType: "GRANT_ALLOWED", reason: "PROTECTED", occurredAt: observedAt,
+      });
+      return context.json({ mode: "protected", videoId: resolution.binding.videoId, ...protectedGrant, resumeAt: resolution.resumeAt }, 200, noStore);
+    } catch {
+      recordPlaybackAccessEvent(deps.db, {
+        customerId, lessonRef, videoId: resolution.binding.videoId, eventType: "GRANT_DENIED",
+        reason: "KINESCOPE_GRANT_UNAVAILABLE", occurredAt: observedAt,
+      });
+      return context.json({ code: "KINESCOPE_GRANT_UNAVAILABLE" }, 503, noStore);
+    }
   });
 
   return app;

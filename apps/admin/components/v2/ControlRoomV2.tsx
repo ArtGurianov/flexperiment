@@ -74,6 +74,9 @@ export function ControlRoomDashboard() {
           <div className="signal-row"><span>Незавершённые checkout</span><strong>{integration.data.outstandingCheckoutCount}</strong></div>
           <div className="signal-row"><span>Возвраты в обработке</span><strong>{integration.data.processingRefundCount}</strong></div>
           <div className="signal-row"><span>Устаревшие проекции</span><strong>{integration.data.staleProjectionCount}</strong></div>
+          <div className="signal-row"><span>Playback denied / 24ч</span><strong className={integration.data.playbackAccess24h.denied ? "signal-hot" : ""}>{integration.data.playbackAccess24h.denied}</strong></div>
+          <div className="signal-row"><span>Rate limited / 24ч</span><strong className={integration.data.playbackAccess24h.rateLimited ? "signal-hot" : ""}>{integration.data.playbackAccess24h.rateLimited}</strong></div>
+          <div className="signal-row"><span>Invalid token / 24ч</span><strong className={integration.data.playbackAccess24h.invalidToken ? "signal-hot" : ""}>{integration.data.playbackAccess24h.invalidToken}</strong></div>
         </div>
       </Panel>
       <Panel title="Последняя принятая оплата">
@@ -443,6 +446,7 @@ export function IntegrationView() {
     <PageTitle eyebrow="ИНТЕГРАЦИИ / REFREF" title={<>Связь видна.<br /><i>Authority не смешана.</i></>} text="Панель отвечает на вопросы merchant-оператора и не притворяется встроенной админкой Refref." />
     {error ? readError(error) : !integration.data || !attention.data ? <Loading /> : <section className="two-col">
       <Panel title="Refref / checkout"><div className="signal-list"><div className="signal-row"><span>Режим</span><strong>{integration.data.paymentMode}</strong></div><div className="signal-row"><span>Незавершённые checkout</span><strong>{integration.data.outstandingCheckoutCount}</strong></div><div className="signal-row"><span>Возвраты в обработке</span><strong>{integration.data.processingRefundCount}</strong></div></div></Panel>
+      <Panel title="Playback / 24 часа"><div className="signal-list"><div className="signal-row"><span>Разрешено</span><strong>{integration.data.playbackAccess24h.allowed}</strong></div><div className="signal-row"><span>Отказано</span><strong className={integration.data.playbackAccess24h.denied ? "signal-hot" : ""}>{integration.data.playbackAccess24h.denied}</strong></div><div className="signal-row"><span>Rate limited</span><strong className={integration.data.playbackAccess24h.rateLimited ? "signal-hot" : ""}>{integration.data.playbackAccess24h.rateLimited}</strong></div><div className="signal-row"><span>Invalid token</span><strong className={integration.data.playbackAccess24h.invalidToken ? "signal-hot" : ""}>{integration.data.playbackAccess24h.invalidToken}</strong></div></div></Panel>
       <Panel title="Attention queue"><QueryState error={null} empty={!attention.data.items.length}><div className="case-list">{attention.data.items.map((entry) => <article className="case-card" key={entry.operationId}><span><Badge>{entry.state}</Badge><Badge>{entry.scopeLevel}</Badge></span><strong>{entry.courseRef}</strong><small>{entry.attentionReason} · {entry.scopeRef}</small></article>)}</div></QueryState></Panel>
     </section>}
   </>;

@@ -168,6 +168,21 @@ describe("commerce v2 boundaries", () => {
     expect(await response.json()).toMatchObject({ ok: true, core: { paymentMode: "disabled" }, capabilities: { refref: "not_required" } });
   });
 
+  it("refuses readiness when protected Kinescope is not fully configured", async () => {
+    const response = await app("disabled", {
+      config: loadCommerceRuntimeConfig({
+        DEPLOY_ENV: "production", PAYMENT_MODE: "disabled", KINESCOPE_DELIVERY_MODE: "protected", MERCHANT_PROMOTION_PREFIX: "FX-",
+      }),
+      runtimeCapabilities: { authEmailConfigured: true, captchaConfigured: true, kinescopeApiConfigured: false },
+    }).request("/readyz");
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({
+      ok: false,
+      core: { configuration: "incomplete" },
+      capabilities: { kinescope: "missing", kinescopeDrm: "missing" },
+    });
+  });
+
   it("keeps the customer library and purchase history authenticated and private", async () => {
     const server = app();
     expect((await server.request("/v1/library")).status).toBe(401);
@@ -322,13 +337,12 @@ describe("commerce v2 boundaries", () => {
   });
 
   it("returns a short-lived protected playback grant without making it cacheable", async () => {
+    const drm = { tokenSecret: "s".repeat(32), username: "drm", password: "secret" };
     const server = app("disabled", {
       config: loadCommerceRuntimeConfig({
         DEPLOY_ENV: "production", PAYMENT_MODE: "disabled", KINESCOPE_DELIVERY_MODE: "protected", MERCHANT_PROMOTION_PREFIX: "FX-",
       }),
-      createProtectedPlaybackToken: async (videoId, customerId) => ({
-        token: `signed:${videoId}:${customerId}`, expiresAt: "2026-09-30T12:05:00.000Z",
-      }),
+      kinescopeDrmAuth: drm,
     });
     await seedPlayableLesson(server);
 
@@ -337,10 +351,35 @@ describe("commerce v2 boundaries", () => {
     });
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("no-store");
-    expect(await response.json()).toEqual({
-      mode: "protected", videoId: "private-video", token: "signed:private-video:customer",
-      expiresAt: "2026-09-30T12:05:00.000Z", resumeAt: 0,
+    const grant = await response.json() as { mode: string; videoId: string; token: string; expiresAt: string; resumeAt: number };
+    expect(grant).toMatchObject({
+      mode: "protected", videoId: "private-video", expiresAt: "2026-09-30T12:02:00.000Z", resumeAt: 0,
     });
+    expect(grant.token.split(".")).toHaveLength(3);
+
+    const authorize = (id: string, token = grant.token) => server.request("/v1/kinescope/drm/authorize", {
+      method: "POST",
+      headers: {
+        authorization: `Basic ${Buffer.from("drm:secret").toString("base64")}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ id, token, type: "video" }),
+    });
+    expect((await server.request("/v1/kinescope/drm/authorize", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id: "private-video", token: grant.token, type: "video" }),
+    })).status).toBe(401);
+    expect((await authorize("private-video")).status).toBe(200);
+    db.prepare(`UPDATE products SET withdrawn_at='2026-09-30T12:00:30Z',withdrawn_reason='security',withdrawn_terms_ref='terms/v1'
+      WHERE product_ref='course:course'`).run();
+    expect((await authorize("private-video")).status).toBe(403);
+    expect((await authorize("replayed-for-another-video")).status).toBe(403);
+    expect(db.prepare("SELECT event_type,reason FROM playback_access_events ORDER BY id").all()).toEqual([
+      { event_type: "GRANT_ALLOWED", reason: "PROTECTED" },
+      { event_type: "DRM_ALLOWED", reason: "ALLOW" },
+      { event_type: "DRM_DENIED", reason: "DENY" },
+      { event_type: "DRM_TOKEN_INVALID", reason: "PLAYBACK_TOKEN_VIDEO_MISMATCH" },
+    ]);
   });
 
   it("keeps upload init internal and accepts only authenticated Kinescope status webhooks", async () => {
