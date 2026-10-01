@@ -30,11 +30,12 @@ afterEach(() => { while (open.length) open.pop()!.close(); });
 const anchorNow = new Date();
 const MONTH_0 = new Date(Date.UTC(anchorNow.getUTCFullYear(), anchorNow.getUTCMonth() + 1, 1));
 const MONTH_1 = new Date(Date.UTC(MONTH_0.getUTCFullYear(), MONTH_0.getUTCMonth() + 1, 1));
+const MONTH_2 = new Date(Date.UTC(MONTH_1.getUTCFullYear(), MONTH_1.getUTCMonth() + 1, 1));
 const monthKey = (month: Date) => month.toISOString().slice(0, 7);
 const dayIn = (month: Date, day: number) => `${monthKey(month)}-${String(day).padStart(2, "0")}T00:00:00.000Z`;
 const M0 = monthKey(MONTH_0);
 const M1 = monthKey(MONTH_1);
-const M2 = monthKey(new Date(Date.UTC(MONTH_1.getUTCFullYear(), MONTH_1.getUTCMonth() + 1, 1)));
+const M2 = monthKey(MONTH_2);
 const PUBLISHED_AT = dayIn(MONTH_0, 20);
 
 const distributionFor = (db: Database.Database, engagementId: string, publishedAt: string, channelKey = "telegram") => {
@@ -219,7 +220,7 @@ describe("fileOrdDistributionPeriodReport: ordinary CALENDAR_MONTH reporting", (
           submission: { vk_operation_external_id: `vk-${period}`, erir_code: `erir-${period}`, submission_evidence_ref: `ev-submit-${period}` },
         }.reporting_period_key)?.id ?? null);
       }
-      expect(isOrdReportingTailComplete(db, distributionId, "2026-11-15T00:00:00.000Z")).toBe(true);
+      expect(isOrdReportingTailComplete(db, distributionId, dayIn(MONTH_2, 15))).toBe(true);
     });
 
     it("multiple owed periods, one incomplete (submitted but never reconciled is not the failure here - simply never filed): false", () => {
@@ -237,7 +238,7 @@ describe("fileOrdDistributionPeriodReport: ordinary CALENDAR_MONTH reporting", (
         }.reporting_period_key)?.id ?? null);
       }
       // October (in between the two filed periods) was skipped entirely.
-      expect(isOrdReportingTailComplete(db, distributionId, "2026-11-15T00:00:00.000Z")).toBe(false);
+      expect(isOrdReportingTailComplete(db, distributionId, dayIn(MONTH_2, 15))).toBe(false);
     });
 
     it("a distribution ended in a past month owes nothing past its own ended_at, regardless of how far referenceInstantIso advances", () => {
