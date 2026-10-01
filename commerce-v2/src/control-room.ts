@@ -86,16 +86,19 @@ export function controlRoomCustomers(db: Database.Database, now = new Date().toI
 
 export function controlRoomEntitlements(db: Database.Database, now = new Date().toISOString()): EntitlementsResponse {
   const rows = db.prepare(`SELECT entitlement.id,entitlement.customer_id,customer.email_normalized,entitlement.scope,
-      entitlement.course_ref,orders.public_id,entitlement.granted_at,entitlement.revoked_at,entitlement.revocation_reason
+      entitlement.course_ref,orders.public_id,json_extract(orders.checkout_snapshot_json,'$.schema') AS source_schema,
+      entitlement.granted_at,entitlement.revoked_at,entitlement.revocation_reason
     FROM course_entitlements entitlement JOIN customers customer ON customer.id=entitlement.customer_id
     JOIN order_lines line ON line.id=entitlement.source_order_line_id JOIN orders ON orders.id=line.order_id
     ORDER BY entitlement.granted_at DESC`).all() as Array<{
       id: string; customer_id: string; email_normalized: string; scope: "COURSE" | "ALL_COURSES"; course_ref: string | null;
-      public_id: string; granted_at: string; revoked_at: string | null; revocation_reason: string | null;
+      public_id: string; source_schema: string | null; granted_at: string; revoked_at: string | null; revocation_reason: string | null;
     }>;
   return { generatedAt: now, entitlements: rows.map((row) => ({
     entitlementId: row.id, customerId: row.customer_id, customerEmail: row.email_normalized, scope: row.scope,
-    courseRef: row.course_ref, sourceOrderPublicId: row.public_id, grantedAt: row.granted_at,
+    courseRef: row.course_ref, sourceOrderPublicId: row.public_id,
+    sourceKind: row.source_schema === "flexperiment.manual-entitlement/1" ? "MANUAL" : "PURCHASE",
+    grantedAt: row.granted_at,
     revokedAt: row.revoked_at, revocationReason: row.revocation_reason,
   })) };
 }

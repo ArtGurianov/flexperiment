@@ -17,6 +17,8 @@ export type {
   LabOccurrencesResponse,
   MerchantPromotionCommand,
   MerchantPromotionsResponse,
+  ManualEntitlementGrantCommand,
+  ManualEntitlementRevocationCommand,
   OrdersResponse,
   ProductConfigurationCommand,
   ProductWithdrawalCommand,

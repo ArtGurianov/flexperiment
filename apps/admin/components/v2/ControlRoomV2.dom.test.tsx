@@ -2,7 +2,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTestQueryClient, QueryClientWrapper } from "../../lib/test-query-client";
-import { CourseCatalogue, RefundsView } from "./ControlRoomV2";
+import { CourseCatalogue, EntitlementsView, RefundsView } from "./ControlRoomV2";
 
 const generatedAt = "2026-09-30T10:00:00.000Z";
 
@@ -112,6 +112,48 @@ describe("Control Room v2", () => {
       policyBasis: "offer/2026-09",
       rationale: "Подтверждено оператором",
     });
+  });
+
+  it("submits an idempotent manual entitlement without a browser-supplied actor", async () => {
+    const fetchMock = vi.fn().mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = input.toString();
+      if (url.endsWith("/v2/entitlements") && (!init?.method || init.method === "GET")) return response({ generatedAt, entitlements: [] });
+      if (url.endsWith("/v2/customers") && (!init?.method || init.method === "GET")) return response({
+        generatedAt,
+        customers: [{ customerId: "customer-1", email: "student@example.com", displayName: null, authBound: true, orderCount: 0, activeEntitlementCount: 0, createdAt: generatedAt }],
+      });
+      if (url.endsWith("/v2/catalogue") && (!init?.method || init.method === "GET")) return response({
+        generatedAt,
+        courses: [{ courseRef: "course-1", productRef: "course:course-1", accessModel: "PAID", withdrawn: false,
+          withdrawnReason: null, withdrawnTermsRef: null, version: 1, offer: null, projection: null }],
+      });
+      if (url.endsWith("/v2/entitlements/manual") && init?.method === "POST") return response({ entitlementId: "entitlement-1", orderPublicId: "FX-MANUAL-1", created: true }, 201);
+      throw new Error(`unhandled fetch: ${url}`);
+    });
+    global.fetch = fetchMock;
+
+    const client = createTestQueryClient();
+    const user = userEvent.setup();
+    render(<EntitlementsView />, { wrapper: (props) => <QueryClientWrapper client={client}>{props.children}</QueryClientWrapper> });
+
+    await user.selectOptions(await screen.findByLabelText("Клиент"), "customer-1");
+    await user.selectOptions(screen.getByLabelText("Курс"), "course-1");
+    await user.type(screen.getByLabelText("Основание"), "Teacher access");
+    await user.type(screen.getByLabelText("Ссылка на доказательство"), "ART-181/manual-1");
+    await user.click(screen.getByRole("button", { name: "Выдать ручной доступ" }));
+
+    await waitFor(() => expect(fetchMock.mock.calls.some(([input, init]) => input.toString().endsWith("/entitlements/manual") && init?.method === "POST")).toBe(true));
+    const commandCall = fetchMock.mock.calls.find(([input, init]) => input.toString().endsWith("/entitlements/manual") && init?.method === "POST");
+    expect(JSON.parse(String(commandCall?.[1]?.body))).toMatchObject({
+      customerId: "customer-1",
+      scope: "COURSE",
+      courseRef: "course-1",
+      reason: "Teacher access",
+      evidenceRef: "ART-181/manual-1",
+      legalTermsRef: "manual-access-v1",
+      idempotencyKey: expect.any(String),
+    });
+    expect(JSON.parse(String(commandCall?.[1]?.body))).not.toHaveProperty("actor");
   });
 
   it("shows a terminal read error instead of an endless loading state", async () => {

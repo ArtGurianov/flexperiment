@@ -6,6 +6,7 @@ import { migrateV2 } from "../src/db";
 import { loadCommerceRuntimeConfig } from "../src/payment-mode";
 import { withManifestHash } from "../src/manifest";
 import { MockPaymentRail } from "../src/checkout";
+import { controlRoomEntitlements } from "../src/control-room";
 import type { CatalogueResponse, ControlRoomIntegrationSummary, CustomersResponse, EntitlementsResponse, OrdersResponse } from "@flexperiment/control-room-contracts";
 
 let db: Database.Database;
@@ -90,6 +91,59 @@ describe("commerce v2 boundaries", () => {
     expect(await stale.json()).toEqual({ error: { code: "CATALOG_VERSION_CONFLICT" } });
     expect(db.prepare("SELECT actor FROM audit_log WHERE action='PRODUCT_CONFIGURED'").get()).toEqual({ actor: "singleton-admin" });
     expect(db.prepare("SELECT COUNT(*) AS count FROM control_room_audit_log WHERE action='PRODUCT_CONFIGURED'").get()).toEqual({ count: 1 });
+  });
+
+  it("creates and revokes idempotent manual entitlements with an atomic audit trail", async () => {
+    db.prepare("INSERT INTO customers(id,email_normalized) VALUES ('manual-customer','manual@example.com')").run();
+    db.prepare(`INSERT INTO legal_releases(id,storefront,version,manifest_json,effective_at,active)
+      VALUES ('courses-legal','COURSES','stage-a-v1','{}','2026-09-30T00:00:00Z',1)`).run();
+    db.prepare(`INSERT INTO products(id,product_ref,kind,access_model,course_ref)
+      VALUES ('manual-product','course:manual','ONLINE_COURSE','PAID','manual-course')`).run();
+    const server = app();
+    const login = await server.request("/v1/admin/login", {
+      method: "POST", headers: { origin: "https://admin.flexperiment.ru", "content-type": "application/json" },
+      body: JSON.stringify({ password: adminPassword }),
+    });
+    const cookie = login.headers.get("set-cookie")!;
+    const command = {
+      customerId: "manual-customer",
+      scope: "COURSE" as const,
+      courseRef: "manual-course",
+      reason: "Teacher access",
+      evidenceRef: "ART-181/manual-1",
+      legalTermsRef: "manual-access-v1",
+      idempotencyKey: "manual-grant-command-1",
+    };
+    const grant = await server.request("/v1/admin/v2/entitlements/manual", {
+      method: "POST", headers: { cookie, origin: "https://admin.flexperiment.ru", "content-type": "application/json" },
+      body: JSON.stringify(command),
+    });
+    expect(grant.status).toBe(201);
+    const granted = await grant.json() as { entitlementId: string; orderPublicId: string; created: boolean };
+    expect(granted).toMatchObject({ created: true, orderPublicId: expect.stringMatching(/^FX-MANUAL-/) });
+    const replay = await server.request("/v1/admin/v2/entitlements/manual", {
+      method: "POST", headers: { cookie, origin: "https://admin.flexperiment.ru", "content-type": "application/json" },
+      body: JSON.stringify(command),
+    });
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toEqual({ ...granted, created: false });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM course_entitlements").get()).toEqual({ count: 1 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM control_room_audit_log WHERE action='ENTITLEMENT_MANUALLY_GRANTED'").get()).toEqual({ count: 1 });
+    expect(controlRoomEntitlements(db).entitlements[0]).toMatchObject({
+      entitlementId: granted.entitlementId,
+      sourceKind: "MANUAL",
+      sourceOrderPublicId: granted.orderPublicId,
+    });
+
+    const revoked = await server.request(`/v1/admin/v2/entitlements/${granted.entitlementId}/revoke`, {
+      method: "POST", headers: { cookie, origin: "https://admin.flexperiment.ru", "content-type": "application/json" },
+      body: JSON.stringify({ reason: "Access period ended", evidenceRef: "ART-181/manual-1-close" }),
+    });
+    expect(revoked.status).toBe(200);
+    expect(await revoked.json()).toEqual({ entitlementId: granted.entitlementId, revoked: true });
+    expect(db.prepare("SELECT revocation_reason FROM course_entitlements WHERE id=?").get(granted.entitlementId))
+      .toEqual({ revocation_reason: "Access period ended" });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM control_room_audit_log WHERE action='ENTITLEMENT_MANUALLY_REVOKED'").get()).toEqual({ count: 1 });
   });
 
   it("reports core readiness without coupling it to live providers", async () => {

@@ -93,9 +93,25 @@ export type ControlRoomEntitlement = {
   scope: "COURSE" | "ALL_COURSES";
   courseRef: string | null;
   sourceOrderPublicId: string;
+  sourceKind: "PURCHASE" | "MANUAL";
   grantedAt: string;
   revokedAt: string | null;
   revocationReason: string | null;
+};
+
+export type ManualEntitlementGrantCommand = {
+  customerId: string;
+  scope: "COURSE" | "ALL_COURSES";
+  courseRef?: string;
+  reason: string;
+  evidenceRef: string;
+  legalTermsRef: string;
+  idempotencyKey: string;
+};
+
+export type ManualEntitlementRevocationCommand = {
+  reason: string;
+  evidenceRef: string;
 };
 
 export type ControlRoomCity = {

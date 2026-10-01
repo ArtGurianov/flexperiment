@@ -3,7 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "next/navigation";
 import { useState } from "react";
-import { api, AdminApiError } from "../../lib/api";
+import { api, AdminApiError, idempotencyKey } from "../../lib/api";
 import type {
   AttentionResponse,
   AuditResponse,
@@ -18,6 +18,8 @@ import type {
   LabOccurrencesResponse,
   MerchantPromotionCommand,
   MerchantPromotionsResponse,
+  ManualEntitlementGrantCommand,
+  ManualEntitlementRevocationCommand,
   OrdersResponse,
   ProductConfigurationCommand,
   ProductWithdrawalCommand,
@@ -280,14 +282,93 @@ export function CustomersView() {
   </>;
 }
 
+function ManualEntitlementGrant({ customers, courses }: {
+  customers: CustomersResponse["customers"];
+  courses: CatalogueResponse["courses"];
+}) {
+  const client = useQueryClient();
+  const [customerId, setCustomerId] = useState("");
+  const [scope, setScope] = useState<"COURSE" | "ALL_COURSES">("COURSE");
+  const [courseRef, setCourseRef] = useState("");
+  const [reason, setReason] = useState("");
+  const [evidenceRef, setEvidenceRef] = useState("");
+  const [legalTermsRef, setLegalTermsRef] = useState("manual-access-v1");
+  const [commandKey, setCommandKey] = useState(idempotencyKey);
+  const grant = useMutation({
+    mutationFn: (command: ManualEntitlementGrantCommand) => api("/v2/entitlements/manual", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(command),
+    }),
+    onSuccess: () => {
+      setReason("");
+      setEvidenceRef("");
+      setCommandKey(idempotencyKey());
+    },
+    onSettled: () => {
+      void client.invalidateQueries({ queryKey: ["control-room-v2", "entitlements"] });
+      void client.invalidateQueries({ queryKey: ["control-room-v2", "customers"] });
+    },
+  });
+  return <form className="form form-grid" onSubmit={(event) => {
+    event.preventDefault();
+    grant.mutate({
+      customerId,
+      scope,
+      ...(scope === "COURSE" ? { courseRef } : {}),
+      reason,
+      evidenceRef,
+      legalTermsRef,
+      idempotencyKey: commandKey,
+    });
+  }}>
+    <label>Клиент<select required value={customerId} onChange={(event) => setCustomerId(event.target.value)}><option value="">Выберите клиента</option>{customers.map((customer) => <option key={customer.customerId} value={customer.customerId}>{customer.email}</option>)}</select></label>
+    <label>Scope<select value={scope} onChange={(event) => setScope(event.target.value as "COURSE" | "ALL_COURSES")}><option value="COURSE">Один курс</option><option value="ALL_COURSES">Все нынешние и будущие курсы</option></select></label>
+    {scope === "COURSE" ? <label>Курс<select required value={courseRef} onChange={(event) => setCourseRef(event.target.value)}><option value="">Выберите курс</option>{courses.map((course) => <option key={course.courseRef} value={course.courseRef}>{course.courseRef}</option>)}</select></label> : null}
+    <label>Версия условий<input required value={legalTermsRef} onChange={(event) => setLegalTermsRef(event.target.value)} /></label>
+    <label className="wide">Основание<textarea required value={reason} onChange={(event) => setReason(event.target.value)} /></label>
+    <label className="wide">Ссылка на доказательство<input required value={evidenceRef} onChange={(event) => setEvidenceRef(event.target.value)} /></label>
+    {grant.error ? <Notice error={(grant.error as AdminApiError).code} /> : null}
+    <button className="primary wide" disabled={grant.isPending} type="submit">{grant.isPending ? "Фиксируем…" : "Выдать ручной доступ"}</button>
+  </form>;
+}
+
+function ManualEntitlementRevocation({ entitlementId }: { entitlementId: string }) {
+  const client = useQueryClient();
+  const [reason, setReason] = useState("");
+  const [evidenceRef, setEvidenceRef] = useState("");
+  const revoke = useMutation({
+    mutationFn: (command: ManualEntitlementRevocationCommand) => api(`/v2/entitlements/${entitlementId}/revoke`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(command),
+    }),
+    onSettled: () => {
+      void client.invalidateQueries({ queryKey: ["control-room-v2", "entitlements"] });
+      void client.invalidateQueries({ queryKey: ["control-room-v2", "customers"] });
+    },
+  });
+  return <details><summary>Отозвать</summary><form className="form" onSubmit={(event) => {
+    event.preventDefault();
+    revoke.mutate({ reason, evidenceRef });
+  }}>
+    <label>Причина<input required value={reason} onChange={(event) => setReason(event.target.value)} /></label>
+    <label>Доказательство<input required value={evidenceRef} onChange={(event) => setEvidenceRef(event.target.value)} /></label>
+    {revoke.error ? <Notice error={(revoke.error as AdminApiError).code} /> : null}
+    <button className="danger" disabled={revoke.isPending} type="submit">{revoke.isPending ? "Отзываем…" : "Подтвердить отзыв"}</button>
+  </form></details>;
+}
+
 export function EntitlementsView() {
   const query = useControlRoomQuery<EntitlementsResponse>("entitlements", "/entitlements");
+  const customers = useControlRoomQuery<CustomersResponse>("customers", "/customers");
+  const catalogue = useControlRoomQuery<CatalogueResponse>("catalogue", "/catalogue");
   return <>
     <PageTitle eyebrow="ПРОДАЖИ / ДОСТУПЫ" title={<>Доступ — это<br /><i>доказательство.</i></>} text="Каждый grant связан с конкретной строкой заказа. Unlisted не отзывает доступ; refund покрывает только свой источник." />
+    <Panel title="Ручной доступ">
+      {customers.error ? readError(customers.error) : catalogue.error ? readError(catalogue.error) : !customers.data || !catalogue.data ? <Loading />
+        : <ManualEntitlementGrant customers={customers.data.customers} courses={catalogue.data.courses} />}
+    </Panel>
     <Panel title="Entitlements">
       {query.error ? readError(query.error) : !query.data ? <Loading /> : <QueryState error={null} empty={!query.data.entitlements.length}>
-        <table><thead><tr><th>Клиент</th><th>Scope</th><th>Курс</th><th>Источник</th><th>Состояние</th></tr></thead><tbody>
-          {query.data.entitlements.map((item) => <tr key={item.entitlementId}><td>{item.customerEmail}<small>{item.customerId}</small></td><td><Badge>{item.scope}</Badge></td><td>{item.courseRef ?? "Все курсы"}</td><td><code>{item.sourceOrderPublicId}</code></td><td><Badge>{item.revokedAt ? "REVOKED" : "ACTIVE"}</Badge><small>{item.revocationReason ?? dateTime(item.grantedAt)}</small></td></tr>)}
+        <table><thead><tr><th>Клиент</th><th>Scope</th><th>Курс</th><th>Источник</th><th>Состояние</th><th>Команда</th></tr></thead><tbody>
+          {query.data.entitlements.map((item) => <tr key={item.entitlementId}><td>{item.customerEmail}<small>{item.customerId}</small></td><td><Badge>{item.scope}</Badge></td><td>{item.courseRef ?? "Все курсы"}</td><td><Badge>{item.sourceKind}</Badge><small><code>{item.sourceOrderPublicId}</code></small></td><td><Badge>{item.revokedAt ? "REVOKED" : "ACTIVE"}</Badge><small>{item.revocationReason ?? dateTime(item.grantedAt)}</small></td><td>{item.sourceKind === "MANUAL" && !item.revokedAt ? <ManualEntitlementRevocation entitlementId={item.entitlementId} /> : "—"}</td></tr>)}
         </tbody></table>
       </QueryState>}
     </Panel>

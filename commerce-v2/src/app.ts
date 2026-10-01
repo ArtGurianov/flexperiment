@@ -15,6 +15,7 @@ import { activateLegalRelease, currentLegalRelease, type LegalReleaseManifest } 
 import { issueCheckoutHandoffState, verifyCheckoutHandoffState } from "./checkout-handoff";
 import { listMerchantPromotions, saveMerchantPromotion, type MerchantPromotionInput } from "./promotions";
 import { decideRefund, executeApprovedRefund, listCustomerRefunds, listRefundCases, recordCourseAccessStart, requestRefund, type RefundDecisionInput, type RefundReason } from "./refunds";
+import { grantManualEntitlement, revokeManualEntitlement } from "./entitlements";
 import { controlRoomAttention, controlRoomAudit, controlRoomCatalogue, controlRoomCities, controlRoomCustomers, controlRoomEmailOperations, controlRoomEntitlements, controlRoomIncidents, controlRoomIntegrationSummary, controlRoomLabOccurrences, controlRoomOrders } from "./control-room";
 import { auditControlRoom, consumeControlRoomLoginLimit, CONTROL_ROOM_SESSION_TTL_MS, controlRoomSessionCookie, issueControlRoomSession, parseControlRoomSession, verifyControlRoomPassword, type ControlRoomAuthConfig } from "./control-room-auth";
 import type { MerchantPromotionCommand, ProductConfigurationCommand, ProductWithdrawalCommand } from "@flexperiment/control-room-contracts";
@@ -151,6 +152,37 @@ export function createCommerceV2App(deps: Dependencies) {
   app.get("/v1/admin/v2/orders", (context) => context.json(controlRoomOrders(deps.db, now().toISOString()), 200, noStore));
   app.get("/v1/admin/v2/customers", (context) => context.json(controlRoomCustomers(deps.db, now().toISOString()), 200, noStore));
   app.get("/v1/admin/v2/entitlements", (context) => context.json(controlRoomEntitlements(deps.db, now().toISOString()), 200, noStore));
+  app.post("/v1/admin/v2/entitlements/manual", async (context) => {
+    try {
+      const input = await context.req.json<{
+        customerId: string;
+        scope: "COURSE" | "ALL_COURSES";
+        courseRef?: string;
+        reason: string;
+        evidenceRef: string;
+        legalTermsRef: string;
+        idempotencyKey: string;
+      }>();
+      const result = grantManualEntitlement(deps.db, {
+        ...input,
+        actor: context.get("controlRoomAdminId")!,
+      }, now().toISOString());
+      return context.json(result, result.created ? 201 : 200, noStore);
+    } catch (error) {
+      return context.json({ error: { code: error instanceof Error ? error.message : "MANUAL_GRANT_FAILED" } }, 409, noStore);
+    }
+  });
+  app.post("/v1/admin/v2/entitlements/:entitlementId/revoke", async (context) => {
+    try {
+      const input = await context.req.json<{ reason: string; evidenceRef: string }>();
+      return context.json(revokeManualEntitlement(deps.db, context.req.param("entitlementId"), {
+        ...input,
+        actor: context.get("controlRoomAdminId")!,
+      }, now().toISOString()), 200, noStore);
+    } catch (error) {
+      return context.json({ error: { code: error instanceof Error ? error.message : "MANUAL_REVOCATION_FAILED" } }, 409, noStore);
+    }
+  });
   app.get("/v1/admin/v2/cities", (context) => context.json(controlRoomCities(deps.db, now().toISOString()), 200, noStore));
   app.get("/v1/admin/v2/lab", (context) => context.json(controlRoomLabOccurrences(deps.db, now().toISOString()), 200, noStore));
   app.get("/v1/admin/v2/refunds", (context) => context.json(listRefundCases(deps.db, now().toISOString()), 200, noStore));
