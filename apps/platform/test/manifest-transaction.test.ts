@@ -4,6 +4,7 @@ import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { listPublicCourses } from "../lib/content/editorial";
+import { operationIsInFlight, snapshotInFlight } from "../lib/manifest/in-flight";
 
 const databasePath = join(tmpdir(), `flexperiment-platform-test-${process.pid}.sqlite`);
 const mediaPath = join(tmpdir(), `flexperiment-platform-media-${process.pid}`);
@@ -44,6 +45,14 @@ beforeAll(async () => {
   initialJobCount = await payload.count({ collection: "payload-jobs", overrideAccess: true }).then(({ totalDocs }) => totalDocs);
 });
 
+const manifestVersion = async (courseRef = "course:transaction-test") => {
+  const result = await payload.find({
+    collection: "course-manifest-states", depth: 0, limit: 1, overrideAccess: true, pagination: false,
+    where: { courseRef: { equals: courseRef } },
+  });
+  return result.docs[0]?.manifestVersion ?? 0;
+};
+
 afterAll(async () => {
   if (payload) await payload.destroy();
   await Promise.all([
@@ -75,7 +84,7 @@ describe("Payload manifest transaction", () => {
     const operations = await payload.count({ collection: "access-operations", overrideAccess: true });
     const jobs = await payload.count({ collection: "payload-jobs", overrideAccess: true });
     expect(course.visibility).toBe("listed");
-    expect(course.manifestVersion).toBe(1);
+    expect(await manifestVersion()).toBe(1);
     expect(operations.totalDocs).toBe(0);
     expect(jobs.totalDocs).toBe(initialJobCount);
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -88,6 +97,7 @@ describe("Payload manifest transaction", () => {
       { status: 503, headers: { "content-type": "application/json" } },
     ));
     const before = await payload.findByID({ collection: "courses", id: courseId, draft: false, overrideAccess: true });
+    const beforeVersion = await manifestVersion();
     const beforeOperations = await payload.count({ collection: "access-operations", overrideAccess: true });
     const beforeJobs = await payload.count({ collection: "payload-jobs", overrideAccess: true });
     const req = await createLocalReq({}, payload);
@@ -105,7 +115,7 @@ describe("Payload manifest transaction", () => {
     const operations = await payload.count({ collection: "access-operations", overrideAccess: true });
     const jobs = await payload.count({ collection: "payload-jobs", overrideAccess: true });
     expect(published.visibility).toBe(before.visibility);
-    expect(published.manifestVersion).toBe(before.manifestVersion);
+    expect(await manifestVersion()).toBe(beforeVersion);
     expect(operations.totalDocs).toBe(beforeOperations.totalDocs);
     expect(jobs.totalDocs).toBe(beforeJobs.totalDocs);
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -132,7 +142,7 @@ describe("Payload manifest transaction", () => {
     expect(draft.visibility).toBe("unlisted");
     expect(published._status).toBe("published");
     expect(published.visibility).toBe("listed");
-    expect(published.manifestVersion).toBe(1);
+    expect(await manifestVersion()).toBe(1);
     expect((await listPublicCourses(payload)).map(({ courseRef }) => courseRef)).toContain("course:transaction-test");
     expect(operations.totalDocs).toBe(0);
     expect(jobs.totalDocs).toBe(initialJobCount);
@@ -141,7 +151,7 @@ describe("Payload manifest transaction", () => {
   });
 
   it("serializes concurrent publications into distinct committed manifest versions", async () => {
-    const before = await payload.findByID({ collection: "courses", id: courseId, draft: false, overrideAccess: true });
+    const beforeVersion = await manifestVersion();
     const beforeJobs = await payload.count({ collection: "payload-jobs", overrideAccess: true });
     const [firstReq, secondReq] = await Promise.all([createLocalReq({}, payload), createLocalReq({}, payload)]);
 
@@ -156,9 +166,8 @@ describe("Payload manifest transaction", () => {
       }),
     ]);
 
-    const published = await payload.findByID({ collection: "courses", id: courseId, draft: false, overrideAccess: true });
     const jobs = await payload.count({ collection: "payload-jobs", overrideAccess: true });
-    expect(published.manifestVersion).toBe(Number(before.manifestVersion) + 2);
+    expect(await manifestVersion()).toBe(beforeVersion + 2);
     expect(jobs.totalDocs).toBe(beforeJobs.totalDocs + 2);
   });
 
@@ -215,7 +224,7 @@ describe("Payload manifest transaction", () => {
     });
 
     try {
-      const before = await payload.findByID({ collection: "courses", id: courseId, draft: false, overrideAccess: true });
+      const beforeVersion = await manifestVersion();
       const req = await createLocalReq({}, payload);
       const published = await payload.update({
         collection: "courses",
@@ -226,8 +235,8 @@ describe("Payload manifest transaction", () => {
         req,
       });
       expect(published.summary).toBe("Converged summary");
-      const committed = await payload.findByID({ collection: "courses", id: courseId, draft: false, overrideAccess: true });
-      expect(committed.manifestVersion).toBe(Number(before.manifestVersion) + 1);
+      const committedVersion = await manifestVersion();
+      expect(committedVersion).toBe(beforeVersion + 1);
       const pendingOperations = await payload.find({
         collection: "access-operations",
         limit: 10,
@@ -251,7 +260,7 @@ describe("Payload manifest transaction", () => {
       const manifestRequest = requests.find(({ url }) => url.endsWith("/v1/internal/course-manifests"));
       expect(manifestRequest?.body).toMatchObject({
         courseRef: "course:transaction-test",
-        version: committed.manifestVersion,
+        version: committedVersion,
         visibility: "UNLISTED",
         operations: [{
           operationId: pendingOperations.docs[0]!.operationId,
@@ -271,5 +280,158 @@ describe("Payload manifest transaction", () => {
       fetchMock.mockRestore();
       vi.unstubAllEnvs();
     }
+  });
+});
+
+const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), {
+  status, headers: { "content-type": "application/json" },
+});
+const overrideAccepted = () => json({ state: "PENDING", enforced: true }, 201);
+const requestBody = (init?: RequestInit) => JSON.parse(String(init?.body)) as Record<string, unknown>;
+
+async function publishedCourse(slug: string) {
+  const media = await payload.find({ collection: "media", limit: 1, overrideAccess: true, pagination: false });
+  return payload.create({
+    collection: "courses",
+    data: {
+      courseRef: `course:${slug}`, title: slug, slug, summary: slug,
+      hero: media.docs[0]!.id, visibility: "listed", _status: "published",
+    },
+    draft: false,
+    overrideAccess: true,
+  });
+}
+
+const operationsFor = async (courseRef: string) => (await payload.find({
+  collection: "access-operations", limit: 10, overrideAccess: true, pagination: false,
+  where: { courseRef: { equals: courseRef } },
+})).docs;
+
+describe("publication safety", () => {
+  it("bumps the manifest for a child publication without publishing the course's open draft", async () => {
+    const course = await publishedCourse("draft-isolation");
+    await payload.update({
+      collection: "courses", id: course.id, data: { title: "Unpublished draft title" }, draft: true, overrideAccess: true,
+    });
+
+    await payload.create({
+      collection: "sections",
+      data: { course: course.id, title: "Section", position: 0, visibility: "listed", _status: "published" },
+      draft: false,
+      overrideAccess: true,
+    });
+
+    const published = await payload.findByID({ collection: "courses", id: course.id, draft: false, overrideAccess: true });
+    const latest = await payload.findByID({ collection: "courses", id: course.id, draft: true, overrideAccess: true });
+    expect(published).toMatchObject({ _status: "published", title: "draft-isolation" });
+    expect(latest).toMatchObject({ _status: "draft", title: "Unpublished draft title" });
+    expect(await manifestVersion("course:draft-isolation")).toBe(2);
+    const listed = (await listPublicCourses(payload)).find(({ courseRef }) => courseRef === "course:draft-isolation");
+    expect(listed?.title).toBe("draft-isolation");
+    expect(listed?.publicContentUpdatedAt).toEqual(expect.any(String));
+  });
+
+  it("runs field validation before any restrictive commerce call", async () => {
+    const course = await publishedCourse("validate-first");
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () => overrideAccepted());
+    try {
+      await expect(payload.update({
+        collection: "courses", id: course.id, data: { visibility: "unlisted", title: "", _status: "published" },
+        draft: false, overrideAccess: true,
+      })).rejects.toThrow(/title/i);
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      fetchMock.mockRestore();
+    }
+    const published = await payload.findByID({ collection: "courses", id: course.id, draft: false, overrideAccess: true });
+    expect(published.visibility).toBe("listed");
+    expect(await operationsFor("course:validate-first")).toHaveLength(0);
+  });
+
+  it("clears the in-flight proof as soon as a Local API restrictive save commits", async () => {
+    const course = await publishedCourse("local-cleanup");
+    const inFlightDuringCall: boolean[] = [];
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      inFlightDuringCall.push(operationIsInFlight(String(requestBody(init).operationId)));
+      return overrideAccepted();
+    });
+    try {
+      await payload.update({
+        collection: "courses", id: course.id, data: { visibility: "unlisted", _status: "published" },
+        draft: false, overrideAccess: true,
+      });
+    } finally {
+      fetchMock.mockRestore();
+    }
+    const [operation] = await operationsFor("course:local-cleanup");
+    expect(inFlightDuringCall).toEqual([true]);
+    expect(operationIsInFlight(String(operation!.operationId))).toBe(false);
+    expect(snapshotInFlight()).toEqual([]);
+  });
+
+  it("clears the in-flight proof as soon as a scheduled publish commits", async () => {
+    const course = await publishedCourse("scheduled-cleanup");
+    await payload.update({
+      collection: "courses", id: course.id, data: { visibility: "unlisted" }, draft: true, overrideAccess: true,
+    });
+    const inFlightDuringCall: boolean[] = [];
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      inFlightDuringCall.push(operationIsInFlight(String(requestBody(init).operationId)));
+      return overrideAccepted();
+    });
+    try {
+      const job = await payload.jobs.queue({
+        task: "schedulePublish",
+        input: { type: "publish", doc: { relationTo: "courses", value: String(course.id) } },
+        waitUntil: new Date(Date.now() - 1_000),
+      } as never) as { id: number | string };
+      await payload.jobs.runByID({ id: job.id, overrideAccess: true, silent: true });
+    } finally {
+      fetchMock.mockRestore();
+    }
+    const published = await payload.findByID({ collection: "courses", id: course.id, draft: false, overrideAccess: true });
+    const [operation] = await operationsFor("course:scheduled-cleanup");
+    expect(published).toMatchObject({ _status: "published", visibility: "unlisted" });
+    expect(inFlightDuringCall).toEqual([true]);
+    expect(operationIsInFlight(String(operation!.operationId))).toBe(false);
+    expect(snapshotInFlight()).toEqual([]);
+  });
+
+  it("kills a restrictive save past its hard lifetime and fails its later writes instead of autocommitting them", async () => {
+    const course = await publishedCourse("hard-lifetime");
+    const versionBefore = await manifestVersion("course:hard-lifetime");
+    const jobsBefore = await payload.count({ collection: "payload-jobs", overrideAccess: true });
+    vi.stubEnv("PLATFORM_SAVE_HARD_LIFETIME_MS", "200");
+    let operationId = "";
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      operationId = String(requestBody(init).operationId);
+      // Commerce answers only after the platform has already killed the transaction.
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      return overrideAccepted();
+    });
+    try {
+      await expect(payload.update({
+        collection: "courses", id: course.id, data: { visibility: "unlisted", _status: "published" },
+        draft: false, overrideAccess: true,
+      })).rejects.toThrow("TRANSACTION_TERMINATED");
+    } finally {
+      fetchMock.mockRestore();
+      vi.unstubAllEnvs();
+    }
+
+    expect(operationId).not.toBe("");
+    expect(operationIsInFlight(operationId)).toBe(false);
+    const published = await payload.findByID({ collection: "courses", id: course.id, draft: false, overrideAccess: true });
+    expect(published.visibility).toBe("listed");
+    expect(await manifestVersion("course:hard-lifetime")).toBe(versionBefore);
+    expect(await operationsFor("course:hard-lifetime")).toHaveLength(0);
+    expect((await payload.count({ collection: "payload-jobs", overrideAccess: true })).totalDocs).toBe(jobsBefore.totalDocs);
+
+    // The killed transaction released the writer: an ordinary save commits normally.
+    await payload.update({
+      collection: "courses", id: course.id, data: { summary: "After the kill", _status: "published" },
+      draft: false, overrideAccess: true,
+    });
+    expect(await manifestVersion("course:hard-lifetime")).toBe(versionBefore + 1);
   });
 });

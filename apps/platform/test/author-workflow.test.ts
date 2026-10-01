@@ -60,8 +60,9 @@ describe("Payload author workflow", () => {
         title: "Курс",
         slug: "course",
         everPublished: true,
-        manifestVersion: 3,
-        publicContentUpdatedAt: "2026-10-01T06:00:00Z",
+      }] };
+      if (collection === "course-manifest-states") return { docs: [{
+        id: 1, courseRef: "course:one", manifestVersion: 3, publicContentUpdatedAt: "2026-10-01T06:00:00Z",
       }] };
       if (collection === "sections") return { docs: [{ id: 3, course: 7, sectionRef: "section:one", position: 0 }] };
       return { docs: [{

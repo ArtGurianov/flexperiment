@@ -3,6 +3,7 @@ import * as migration_20260930_105005_manifest_outbox from './20260930_105005_ma
 import * as migration_20260930_112419_search_index from './20260930_112419_search_index';
 import * as migration_20260930_181108_public_media_storage from './20260930_181108_public_media_storage';
 import * as migration_20260930_183921 from './20260930_183921';
+import * as migration_20261001_081531_course_manifest_states from './20261001_081531_course_manifest_states';
 
 export const migrations = [
   {
@@ -28,6 +29,11 @@ export const migrations = [
   {
     up: migration_20260930_183921.up,
     down: migration_20260930_183921.down,
-    name: '20260930_183921'
+    name: '20260930_183921',
+  },
+  {
+    up: migration_20261001_081531_course_manifest_states.up,
+    down: migration_20261001_081531_course_manifest_states.down,
+    name: '20261001_081531_course_manifest_states'
   },
 ];

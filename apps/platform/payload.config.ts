@@ -12,6 +12,7 @@ import { Media } from "@/collections/Media";
 import { Sections } from "@/collections/Sections";
 import { Users } from "@/collections/Users";
 import { AccessOperations } from "@/collections/AccessOperations";
+import { CourseManifestStates } from "@/collections/CourseManifestStates";
 import { reconcileCourseManifestsTask, syncCourseManifestTask } from "@/lib/manifest/tasks";
 import { platformSearchPlugin } from "@/lib/search-plugin";
 import { assertPayloadTransactions } from "@/lib/payload-transaction-assertion";
@@ -57,7 +58,7 @@ export default buildConfig({
   routes: { admin: "/admin", api: "/api" },
   graphQL: { disable: true },
   editor: lexicalEditor(),
-  collections: [Users, Media, Courses, Sections, Lessons, AccessOperations],
+  collections: [Users, Media, Courses, Sections, Lessons, AccessOperations, CourseManifestStates],
   db: serializeDatabaseTransactions(sqliteAdapter({
     client: { url: requireEnvironment("PAYLOAD_DATABASE_URL") ?? "file:./platform-data/payload.sqlite" },
     migrationDir: path.resolve(dirname, "migrations"),

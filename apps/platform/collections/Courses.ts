@@ -37,8 +37,6 @@ export const Courses: CollectionConfig = {
     { name: "hero", type: "upload", relationTo: "media", required: true },
     { name: "visibility", type: "select", required: true, defaultValue: "listed", options: ["listed", "unlisted"], index: true },
     { name: "everPublished", type: "checkbox", defaultValue: false, admin: { readOnly: true, hidden: true } },
-    { name: "manifestVersion", type: "number", defaultValue: 0, min: 0, admin: { readOnly: true, hidden: true } },
-    { name: "publicContentUpdatedAt", type: "date", admin: { readOnly: true } },
     { name: "displayDate", type: "date" },
     {
       name: "seo", type: "group", fields: [

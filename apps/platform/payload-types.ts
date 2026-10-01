@@ -73,6 +73,7 @@ export interface Config {
     sections: Section;
     lessons: Lesson;
     'access-operations': AccessOperation;
+    'course-manifest-states': CourseManifestState;
     search: Search;
     'payload-kv': PayloadKv;
     'payload-jobs': PayloadJob;
@@ -95,6 +96,7 @@ export interface Config {
     sections: SectionsSelect<false> | SectionsSelect<true>;
     lessons: LessonsSelect<false> | LessonsSelect<true>;
     'access-operations': AccessOperationsSelect<false> | AccessOperationsSelect<true>;
+    'course-manifest-states': CourseManifestStatesSelect<false> | CourseManifestStatesSelect<true>;
     search: SearchSelect<false> | SearchSelect<true>;
     'payload-kv': PayloadKvSelect<false> | PayloadKvSelect<true>;
     'payload-jobs': PayloadJobsSelect<false> | PayloadJobsSelect<true>;
@@ -254,8 +256,6 @@ export interface Course {
   hero: number | Media;
   visibility: 'listed' | 'unlisted';
   everPublished?: boolean | null;
-  manifestVersion?: number | null;
-  publicContentUpdatedAt?: string | null;
   displayDate?: string | null;
   seo?: {
     title?: string | null;
@@ -339,6 +339,19 @@ export interface AccessOperation {
   committedVersion: number;
   state: 'COMMITTED_UNACKED' | 'ACKED';
   acknowledgedAt?: string | null;
+  updatedAt: string;
+  createdAt: string;
+}
+/**
+ * This interface was referenced by `Config`'s JSON-Schema
+ * via the `definition` "course-manifest-states".
+ */
+export interface CourseManifestState {
+  id: number;
+  courseRef: string;
+  manifestVersion: number;
+  publicContentUpdatedAt: string;
+  invalidatedVersion?: number | null;
   updatedAt: string;
   createdAt: string;
 }
@@ -522,6 +535,10 @@ export interface PayloadLockedDocument {
         value: number | AccessOperation;
       } | null)
     | ({
+        relationTo: 'course-manifest-states';
+        value: number | CourseManifestState;
+      } | null)
+    | ({
         relationTo: 'search';
         value: number | Search;
       } | null);
@@ -658,8 +675,6 @@ export interface CoursesSelect<T extends boolean = true> {
   hero?: T;
   visibility?: T;
   everPublished?: T;
-  manifestVersion?: T;
-  publicContentUpdatedAt?: T;
   displayDate?: T;
   seo?:
     | T
@@ -726,6 +741,18 @@ export interface AccessOperationsSelect<T extends boolean = true> {
   committedVersion?: T;
   state?: T;
   acknowledgedAt?: T;
+  updatedAt?: T;
+  createdAt?: T;
+}
+/**
+ * This interface was referenced by `Config`'s JSON-Schema
+ * via the `definition` "course-manifest-states_select".
+ */
+export interface CourseManifestStatesSelect<T extends boolean = true> {
+  courseRef?: T;
+  manifestVersion?: T;
+  publicContentUpdatedAt?: T;
+  invalidatedVersion?: T;
   updatedAt?: T;
   createdAt?: T;
 }

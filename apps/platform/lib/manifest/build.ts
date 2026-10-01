@@ -1,5 +1,5 @@
 import type { Payload, PayloadRequest } from "payload";
-import { listPublishedCourseState, listUnacknowledgedOperations, relationId, type EditorialDocument } from "@/lib/content/editorial";
+import { getCourseManifestState, listPublishedCourseState, listUnacknowledgedOperations, relationId, type EditorialDocument } from "@/lib/content/editorial";
 import type { CourseManifest, Visibility } from "./contracts";
 import { withManifestHash } from "./hash";
 
@@ -19,7 +19,7 @@ export async function buildCourseManifest(
 ): Promise<CourseManifest> {
   if (course._status !== "published") throw new Error("COURSE_NOT_PUBLISHED");
   const courseRef = requiredString(course, "courseRef");
-  const version = integer(course.manifestVersion);
+  const version = integer((await getCourseManifestState(payload, courseRef, req))?.manifestVersion);
   if (version < 1) throw new Error("MANIFEST_VERSION_NOT_COMMITTED");
   const { sections, lessons } = await listPublishedCourseState(payload, course.id, req);
   const operations = await listUnacknowledgedOperations(payload, courseRef, req);

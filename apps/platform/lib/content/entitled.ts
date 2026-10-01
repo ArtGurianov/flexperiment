@@ -82,7 +82,7 @@ const entitledCourseWhere = (authorization: CourseAuthorization, slug?: string) 
 
 const courseSelect = {
   courseRef: true, title: true, slug: true, summary: true, description: true, hero: true,
-  displayDate: true, publicContentUpdatedAt: true, visibility: true, seo: true,
+  displayDate: true, visibility: true, seo: true,
 } as const;
 
 async function entitledOutline(courseId: number | string) {

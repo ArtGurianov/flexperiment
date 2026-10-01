@@ -146,6 +146,28 @@ export async function listUnacknowledgedOperations(payload: Payload, courseRef: 
   return result.docs as EditorialDocument[];
 }
 
+export type CourseManifestState = {
+  readonly id: number | string;
+  readonly courseRef: string;
+  readonly manifestVersion: number;
+  readonly publicContentUpdatedAt: string;
+  readonly invalidatedVersion?: number | null;
+};
+
+/** Manifest bookkeeping for a course, kept apart from the versioned course document and its drafts. */
+export async function getCourseManifestState(payload: Payload, courseRef: string, req?: PayloadRequest) {
+  const result = await payload.find({
+    collection: "course-manifest-states",
+    depth: 0,
+    limit: 1,
+    overrideAccess: true,
+    pagination: false,
+    req,
+    where: { courseRef: { equals: courseRef } },
+  });
+  return (result.docs[0] as unknown as CourseManifestState | undefined) ?? null;
+}
+
 export async function listPublishedCourses(payload: Payload, req?: PayloadRequest) {
   const result = await payload.find({
     collection: "courses",
@@ -156,7 +178,7 @@ export async function listPublishedCourses(payload: Payload, req?: PayloadReques
     pagination: false,
     req,
     where: { _status: { equals: "published" } },
-    select: { courseRef: true, manifestVersion: true, visibility: true },
+    select: { courseRef: true, visibility: true },
   });
   return result.docs as EditorialDocument[];
 }
@@ -175,20 +197,20 @@ export async function getCampaignCourseSnapshot(payload: Payload, courseRef: str
       { _status: { equals: "published" } },
       { everPublished: { equals: true } },
     ] },
-    select: {
-      courseRef: true, title: true, slug: true, visibility: true, everPublished: true,
-      manifestVersion: true, publicContentUpdatedAt: true,
-    },
+    select: { courseRef: true, title: true, slug: true, visibility: true, everPublished: true },
   });
   const course = courseResult.docs[0];
   if (!course) return null;
-  const { lessons } = await listPublishedCourseState(payload, course.id, req);
+  const [{ lessons }, state] = await Promise.all([
+    listPublishedCourseState(payload, course.id, req),
+    getCourseManifestState(payload, courseRef, req),
+  ]);
   return {
     course: {
       courseRef: String(course.courseRef ?? ""),
       title: String(course.title ?? ""),
       slug: String(course.slug ?? ""),
-      contentVersion: String(course.publicContentUpdatedAt ?? course.manifestVersion ?? ""),
+      contentVersion: String(state?.publicContentUpdatedAt ?? state?.manifestVersion ?? ""),
     },
     lessons: lessons.map((lesson) => ({
       lessonRef: String(lesson.lessonRef ?? ""),
@@ -238,6 +260,23 @@ export type PublicLesson = {
   seo?: { title?: string | null; description?: string | null } | null;
 };
 
+/** Attaches each course's public content date; only that field and the ref leave the state collection. */
+async function withPublicContentDates(payload: Payload, courses: PublicCourse[]): Promise<PublicCourse[]> {
+  if (courses.length === 0) return courses;
+  const states = await payload.find({
+    collection: "course-manifest-states",
+    context: { storefront: true },
+    depth: 0,
+    limit: 1000,
+    overrideAccess: false,
+    pagination: false,
+    where: { courseRef: { in: courses.map(({ courseRef }) => courseRef) } },
+    select: { courseRef: true, publicContentUpdatedAt: true },
+  });
+  const dates = new Map(states.docs.map((state) => [String(state.courseRef), state.publicContentUpdatedAt ?? null]));
+  return courses.map((course) => ({ ...course, publicContentUpdatedAt: dates.get(course.courseRef) ?? null }));
+}
+
 export async function listPublicCourses(payload: Payload): Promise<PublicCourse[]> {
   const result = await payload.find({
     collection: "courses",
@@ -251,10 +290,10 @@ export async function listPublicCourses(payload: Payload): Promise<PublicCourse[
     where: { and: [{ _status: { equals: "published" } }, { visibility: { equals: "listed" } }] },
     select: {
       courseRef: true, title: true, slug: true, summary: true, hero: true,
-      displayDate: true, publicContentUpdatedAt: true, visibility: true,
+      displayDate: true, visibility: true,
     },
   });
-  return result.docs as unknown as PublicCourse[];
+  return withPublicContentDates(payload, result.docs as unknown as PublicCourse[]);
 }
 
 export async function getPublicCourseBySlug(payload: Payload, slug: string): Promise<PublicCourse | null> {
@@ -273,10 +312,11 @@ export async function getPublicCourseBySlug(payload: Payload, slug: string): Pro
     },
     select: {
       courseRef: true, title: true, slug: true, summary: true, description: true, hero: true,
-      displayDate: true, publicContentUpdatedAt: true, visibility: true, seo: true,
+      displayDate: true, visibility: true, seo: true,
     },
   });
-  return (result.docs[0] as unknown as PublicCourse | undefined) ?? null;
+  const course = result.docs[0] as unknown as PublicCourse | undefined;
+  return course ? (await withPublicContentDates(payload, [course]))[0]! : null;
 }
 
 export async function listPublicCourseOutline(payload: Payload, courseId: number | string) {
