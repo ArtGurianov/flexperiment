@@ -46,14 +46,22 @@ export function configureProduct(db: Database.Database, config: CommerceRuntimeC
   }
   assertLiveOfferSaleMode(db, config, command);
   const apply = db.transaction(() => {
-    const existing = db.prepare("SELECT id,withdrawn_at,version FROM products WHERE product_ref=?").get(command.productRef) as { id: string; withdrawn_at: string | null; version: number } | undefined;
+    const existing = db.prepare(`SELECT product.id,product.withdrawn_at,product.version,product.kind,product.course_ref,
+      product.occurrence_ref,offer.offer_ref FROM products product LEFT JOIN offers offer ON offer.product_id=product.id
+      WHERE product.product_ref=?`).get(command.productRef) as {
+        id: string; withdrawn_at: string | null; version: number;
+        kind: ProductCommand["kind"]; course_ref: string | null; occurrence_ref: string | null; offer_ref: string | null;
+      } | undefined;
     if (existing?.withdrawn_at) throw new Error("WITHDRAWN_PRODUCT_IMMUTABLE");
     if ((!existing && command.expectedVersion !== 0) || (existing && existing.version !== command.expectedVersion)) throw new Error("CATALOG_VERSION_CONFLICT");
+    // Orders, entitlements and payment snapshots point at what a product is; only its terms may change.
+    if (existing && (existing.kind !== command.kind || existing.course_ref !== (command.courseRef ?? null)
+      || existing.occurrence_ref !== (command.occurrenceRef ?? null)
+      || (existing.offer_ref !== null && existing.offer_ref !== command.offerRef))) throw new Error("PRODUCT_IDENTITY_IMMUTABLE");
     const productId = existing?.id ?? randomUUID();
     if (existing) {
-      const update = db.prepare(`UPDATE products SET kind=?,access_model=?,course_ref=?,occurrence_ref=?,updated_at=?,version=version+1
-        WHERE id=? AND version=?`).run(command.kind, command.accessModel, command.courseRef ?? null,
-          command.occurrenceRef ?? null, now, productId, command.expectedVersion);
+      const update = db.prepare(`UPDATE products SET access_model=?,updated_at=?,version=version+1
+        WHERE id=? AND version=?`).run(command.accessModel, now, productId, command.expectedVersion);
       if (update.changes !== 1) throw new Error("CATALOG_VERSION_CONFLICT");
     } else {
       db.prepare(`INSERT INTO products(id,product_ref,kind,access_model,course_ref,occurrence_ref,created_at,updated_at,version)
@@ -62,8 +70,8 @@ export function configureProduct(db: Database.Database, config: CommerceRuntimeC
     }
     const offer = db.prepare("SELECT id FROM offers WHERE product_id=?").get(productId) as { id: string } | undefined;
     if (offer) {
-      db.prepare(`UPDATE offers SET offer_ref=?,price_kopecks=?,sale_mode=?,acceptance_allowlist_json=?,updated_at=? WHERE id=?`)
-        .run(command.offerRef, command.priceKopecks, command.saleMode,
+      db.prepare(`UPDATE offers SET price_kopecks=?,sale_mode=?,acceptance_allowlist_json=?,updated_at=? WHERE id=?`)
+        .run(command.priceKopecks, command.saleMode,
           JSON.stringify((command.acceptanceAllowlist ?? []).map((email) => email.trim().toLowerCase())), now, offer.id);
     } else {
       db.prepare(`INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode,acceptance_allowlist_json,created_at,updated_at)
