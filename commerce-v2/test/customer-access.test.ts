@@ -4,6 +4,7 @@ import { createAuthRuntime } from "../src/auth";
 import { bindVerifiedAuthUser, getOrCreateCustomer } from "../src/customers";
 import { migrateV2 } from "../src/db";
 import { customerCanAccessCourse, grantEntitlement, revokeEntitlementForOrderLine } from "../src/entitlements";
+import { listCustomerOrderHistory } from "../src/library";
 import { playbackResumeAt, saveResumePosition } from "../src/resume";
 
 let db: Database.Database;
@@ -21,6 +22,33 @@ describe("customer identity", () => {
     expect(bindVerifiedAuthUser(db, { id: "auth-user", email: "guest@example.com", name: "Guest" })).toBe(guest.id);
     expect(db.prepare("SELECT COUNT(*) AS count FROM customers").get()).toEqual({ count: 1 });
     expect(db.prepare("SELECT auth_user_id FROM customers WHERE id=?").get(guest.id)).toEqual({ auth_user_id: "auth-user" });
+  });
+
+  it("keeps a guest LAB purchase on the one customer after verified registration", () => {
+    const guest = getOrCreateCustomer(db, " Guest@Example.COM ");
+    db.prepare("INSERT INTO cities(id,slug,title) VALUES ('city','moscow','Москва')").run();
+    db.prepare(`INSERT INTO lab_occurrences(id,occurrence_ref,city_id,title,starts_at,ends_at,timezone,capacity)
+      VALUES ('occurrence','lab:moscow:2026-10-10','city','Практикум','2026-10-10T07:00:00Z','2026-10-10T10:00:00Z','Europe/Moscow',12)`).run();
+    db.prepare(`INSERT INTO products(id,product_ref,kind,access_model,occurrence_ref)
+      VALUES ('lab-product','lab:moscow:2026-10-10','LAB','PAID','lab:moscow:2026-10-10')`).run();
+    db.prepare(`INSERT INTO legal_releases(id,storefront,version,manifest_json,effective_at,active)
+      VALUES ('lab-legal','LAB','lab-v1','{}','2026-09-30T00:00:00Z',1)`).run();
+    db.prepare(`INSERT INTO orders(id,public_id,customer_id,state,total_kopecks,checkout_snapshot_json,snapshot_hash,legal_release_id)
+      VALUES ('lab-order','FX-LAB-1',?,'FULFILLED',250000,'{}',?,'lab-legal')`).run(guest.id, "a".repeat(64));
+    db.prepare(`INSERT INTO order_lines(id,order_id,product_id,offer_ref_snapshot,title_snapshot,unit_amount_kopecks,legal_terms_ref)
+      VALUES ('lab-line','lab-order','lab-product','lab:moscow:2026-10-10','Практикум',250000,'lab-v1')`).run();
+    db.prepare('INSERT INTO "user"(id,name,email,email_verified) VALUES (?,?,?,1)').run("auth-user", "Guest", "guest@example.com");
+
+    const customerId = bindVerifiedAuthUser(db, { id: "auth-user", email: "guest@example.com", name: "Guest" });
+
+    expect(customerId).toBe(guest.id);
+    expect(db.prepare("SELECT COUNT(*) AS count FROM customers").get()).toEqual({ count: 1 });
+    expect(listCustomerOrderHistory(db, customerId)).toEqual([expect.objectContaining({
+      orderPublicId: "FX-LAB-1",
+      state: "FULFILLED",
+      productKind: "LAB",
+      offerRef: "lab:moscow:2026-10-10",
+    })]);
   });
 
   it("runs magic-link auth at /v1/auth, records consent, and binds the customer after verification", async () => {
