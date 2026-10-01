@@ -1,6 +1,6 @@
 import Database from "better-sqlite3";
 import { scryptSync } from "node:crypto";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createCommerceV2App } from "../src/app";
 import { migrateV2 } from "../src/db";
 import { stageBLegalManifestJson } from "./fixtures/legal";
@@ -459,7 +459,7 @@ describe("commerce v2 boundaries", () => {
 
   it("keeps upload init internal and accepts only authenticated Kinescope status webhooks", async () => {
     const kinescopeClient = {
-      initUpload: async () => ({ endpoint: "https://tus.example/upload", videoId: "new-video" }),
+      initUpload: vi.fn(async () => ({ endpoint: "https://tus.example/upload", videoId: "new-video" })),
       getVideo: async (videoId: string) => ({ id: videoId, status: "done" as const, durationSeconds: 180 }),
     };
     const server = app("disabled", {
@@ -471,9 +471,16 @@ describe("commerce v2 boundaries", () => {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ lessonRef: "lesson", title: "Lesson" }),
     })).status).toBe(401);
-    const initialized = await server.request("/v1/internal/video-uploads", internal({ lessonRef: "lesson", title: "Lesson" }));
+    expect((await server.request("/v1/internal/video-uploads", internal({ lessonRef: "lesson", title: "Lesson" }))).status).toBe(422);
+    const initialized = await server.request("/v1/internal/video-uploads", internal({
+      lessonRef: "lesson", title: "Lesson", filename: "lesson.mp4", filesize: 1_048_576,
+    }));
     expect(initialized.status).toBe(201);
     expect(await initialized.json()).toEqual({ uploadSessionId: expect.any(String), endpoint: "https://tus.example/upload" });
+    expect(kinescopeClient.initUpload).toHaveBeenCalledTimes(1);
+    expect(kinescopeClient.initUpload).toHaveBeenCalledWith({
+      title: "Lesson", parentId: "lessons-folder", filename: "lesson.mp4", filesize: 1_048_576,
+    });
 
     const webhookBody = JSON.stringify({ event: "media.update.status", data: { id: "new-video", status: "done" } });
     expect((await server.request("/v1/webhooks/kinescope", {

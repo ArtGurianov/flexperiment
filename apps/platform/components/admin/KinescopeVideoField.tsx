@@ -45,7 +45,7 @@ export function KinescopeVideoField() {
     try {
       const response = await fetch("/api/lessons/video-upload", {
         method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ lessonRef, title }),
+        body: JSON.stringify({ lessonRef, title, filename: file.name, filesize: file.size }),
       });
       const initialized = await response.json() as { uploadSessionId?: string; endpoint?: string; code?: string };
       if (!response.ok || !initialized.uploadSessionId || !initialized.endpoint) throw new Error(initialized.code || "Не удалось начать загрузку.");

@@ -8,7 +8,7 @@ import { saveResumePosition } from "./resume";
 import { confirmCheckout, prepareCheckout, reconcileCheckout, type PaymentRail } from "./checkout";
 import { activateSales, configureProduct, withdrawProduct } from "./catalog-control";
 import { campaignStatus, confirmCampaign, createCampaign, dispatchCampaign, retryCampaign, unsubscribeCustomer, type CampaignEmail } from "./campaigns";
-import { observeKinescopeStatus, pollKinescopeUpload, startVideoUpload, type KinescopeClient, type KinescopeStatus } from "./kinescope";
+import { assertVideoUploadInput, observeKinescopeStatus, pollKinescopeUpload, startVideoUpload, type KinescopeClient, type KinescopeStatus } from "./kinescope";
 import { activateLegalRelease, currentLegalRelease, type LegalReleaseManifest } from "./legal-control";
 import { issueCheckoutHandoffState, issueCheckoutPaymentReturnState, verifyCheckoutHandoffState, verifyCheckoutNavigationState } from "./checkout-handoff";
 import { listMerchantPromotions, saveMerchantPromotion, type MerchantPromotionInput } from "./promotions";
@@ -475,14 +475,19 @@ export function createCommerceV2App(deps: Dependencies) {
 
   app.post("/v1/internal/video-uploads", async (context) => {
     if (!deps.kinescopeClient || !deps.kinescopeLessonsFolderId) return context.json({ code: "KINESCOPE_UPLOAD_NOT_CONFIGURED" }, 503, noStore);
+    let input: ReturnType<typeof assertVideoUploadInput>;
     try {
-      const input = await context.req.json<{ lessonRef: string; title: string }>();
-      if (!input.lessonRef || !input.title) throw new Error("VIDEO_UPLOAD_INPUT_INVALID");
+      input = assertVideoUploadInput(await context.req.json<Record<string, unknown>>());
+    } catch (error) {
+      return context.json({ code: error instanceof Error ? error.message : "VIDEO_UPLOAD_INPUT_INVALID" }, 422, noStore);
+    }
+    try {
       return context.json(await startVideoUpload(deps.db, deps.kinescopeClient, {
         ...input, parentId: deps.kinescopeLessonsFolderId,
       }), 201, noStore);
-    } catch (error) {
-      return context.json({ code: error instanceof Error ? error.message : "VIDEO_UPLOAD_INIT_FAILED" }, 422, noStore);
+    } catch {
+      // A provider outage degrades only this boundary; it is not the author's input that failed.
+      return context.json({ code: "KINESCOPE_UPLOAD_INIT_FAILED" }, 503, noStore);
     }
   });
 

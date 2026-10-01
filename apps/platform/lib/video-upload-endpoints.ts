@@ -20,14 +20,17 @@ export const videoUploadEndpoints: Endpoint[] = [
     path: "/video-upload",
     handler: async (req) => {
       if (!authorRequired(req.user)) return Response.json({ code: "AUTHOR_REQUIRED" }, { status: 401 });
-      const body = await req.json?.() as { lessonRef?: unknown; title?: unknown };
-      if (typeof body?.lessonRef !== "string" || typeof body.title !== "string") {
+      const body = await req.json?.() as { lessonRef?: unknown; title?: unknown; filename?: unknown; filesize?: unknown };
+      if (typeof body?.lessonRef !== "string" || typeof body.title !== "string"
+        || typeof body.filename !== "string" || !body.filename
+        || typeof body.filesize !== "number" || !Number.isSafeInteger(body.filesize) || body.filesize <= 0) {
         return Response.json({ code: "VIDEO_UPLOAD_INPUT_INVALID" }, { status: 422 });
       }
+      // Kinescope's Tus init needs the selected file's name and size; forward only the contract fields.
       return commerce("/v1/internal/video-uploads", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
+        body: JSON.stringify({ lessonRef: body.lessonRef, title: body.title, filename: body.filename, filesize: body.filesize }),
       });
     },
   },

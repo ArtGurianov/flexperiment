@@ -10,8 +10,15 @@ export type KinescopeVideo = {
   readonly durationSeconds?: number | null;
 };
 
+export type KinescopeUploadInit = {
+  readonly title: string;
+  readonly parentId: string;
+  readonly filename: string;
+  readonly filesize: number;
+};
+
 export interface KinescopeClient {
-  initUpload(input: { readonly title: string; readonly parentId: string }): Promise<{ readonly endpoint: string; readonly videoId: string }>;
+  initUpload(input: KinescopeUploadInit): Promise<{ readonly endpoint: string; readonly videoId: string }>;
   getVideo(videoId: string): Promise<KinescopeVideo>;
 }
 
@@ -21,11 +28,21 @@ export class HttpKinescopeClient implements KinescopeClient {
     private readonly request: typeof fetch = fetch,
   ) {}
 
-  async initUpload(input: { title: string; parentId: string }) {
+  /**
+   * Tus initialisation: https://docs.kinescope.com/developer-guides/tus-protocol-implementation/
+   * The browser later uploads to the returned endpoint without the API token.
+   */
+  async initUpload(input: KinescopeUploadInit) {
     const response = await this.request("https://uploader.kinescope.io/v2/init", {
       method: "POST",
       headers: { authorization: `Bearer ${this.token}`, "content-type": "application/json" },
-      body: JSON.stringify({ name: input.title, parent_id: input.parentId }),
+      body: JSON.stringify({
+        type: "video",
+        parent_id: input.parentId,
+        title: input.title,
+        filename: input.filename,
+        filesize: input.filesize,
+      }),
       signal: AbortSignal.timeout(10_000),
     });
     const body = await response.json() as { data?: { endpoint?: unknown; id?: unknown; video_id?: unknown } };
@@ -58,15 +75,32 @@ const stateForStatus = (status: KinescopeStatus): VideoState => {
   return "UPLOADING";
 };
 
+const maxFilenameLength = 255;
+
+/** Rejects metadata Kinescope's Tus init cannot accept before any provider call. */
+export function assertVideoUploadInput(input: { lessonRef?: unknown; title?: unknown; filename?: unknown; filesize?: unknown }) {
+  if (typeof input.lessonRef !== "string" || !input.lessonRef.trim()) throw new Error("VIDEO_UPLOAD_INPUT_INVALID");
+  if (typeof input.title !== "string" || !input.title.trim()) throw new Error("VIDEO_UPLOAD_INPUT_INVALID");
+  if (typeof input.filename !== "string" || !input.filename.trim() || input.filename.length > maxFilenameLength
+    || /[\\/]/.test(input.filename)) throw new Error("VIDEO_UPLOAD_FILENAME_INVALID");
+  if (typeof input.filesize !== "number" || !Number.isSafeInteger(input.filesize) || input.filesize <= 0) {
+    throw new Error("VIDEO_UPLOAD_FILESIZE_INVALID");
+  }
+  return { lessonRef: input.lessonRef, title: input.title.trim(), filename: input.filename, filesize: input.filesize };
+}
+
 export async function startVideoUpload(
   db: Database.Database,
   client: KinescopeClient,
-  input: { lessonRef: string; title: string; parentId: string },
+  input: { lessonRef: string; title: string; filename: string; filesize: number; parentId: string },
 ) {
-  const initialized = await client.initUpload({ title: input.title, parentId: input.parentId });
+  const valid = assertVideoUploadInput(input);
+  const initialized = await client.initUpload({
+    title: valid.title, parentId: input.parentId, filename: valid.filename, filesize: valid.filesize,
+  });
   const id = randomUUID();
   db.prepare(`INSERT INTO video_upload_sessions(id,lesson_ref,video_id,status,uploader_endpoint)
-    VALUES (?,?,?,'UPLOADING',?)`).run(id, input.lessonRef, initialized.videoId, initialized.endpoint);
+    VALUES (?,?,?,'UPLOADING',?)`).run(id, valid.lessonRef, initialized.videoId, initialized.endpoint);
   return { uploadSessionId: id, endpoint: initialized.endpoint };
 }
 
