@@ -72,7 +72,11 @@ export function createCommerceV2App(deps: Dependencies) {
     context.header("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
   });
 
-  app.get("/identity", (context) => context.json({ service: "commerce-v2", sourceCommit: deps.sourceCommit }, 200, noStore));
+  app.get("/identity", (context) => context.json({
+    schema: "flexperiment.build-identity/1",
+    service: "commerce-v2",
+    sourceCommit: deps.sourceCommit,
+  }, 200, noStore));
   app.get("/readyz", (context) => context.json({
     ok: true,
     service: "commerce-v2",

@@ -35,6 +35,17 @@ const internal = (body: unknown) => ({
 });
 
 describe("commerce v2 boundaries", () => {
+  it("exposes the immutable build identity contract", async () => {
+    const response = await app().request("/identity");
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(await response.json()).toEqual({
+      schema: "flexperiment.build-identity/1",
+      service: "commerce-v2",
+      sourceCommit: "a".repeat(40),
+    });
+  });
+
   it("authenticates Control Room with an HttpOnly session and durable revocation", async () => {
     const server = app();
     expect((await server.request("/v1/admin/session")).status).toBe(401);
