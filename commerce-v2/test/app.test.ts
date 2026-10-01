@@ -229,6 +229,59 @@ describe("commerce v2 boundaries", () => {
     expect(db.prepare("SELECT state,total_kopecks FROM orders").get()).toEqual({ state: "FULFILLED", total_kopecks: 10000 });
   });
 
+  it("carries the signed order identity from attribution handoff through the payment return", async () => {
+    db.prepare("INSERT INTO customers(id,email_normalized) VALUES ('customer','student@example.com')").run();
+    db.prepare(`INSERT INTO legal_releases(id,storefront,version,manifest_json,effective_at,active)
+      VALUES ('legal','COURSES','stage-b-v1','{}','2026-09-30T00:00:00Z',1)`).run();
+    db.prepare(`INSERT INTO products(id,product_ref,kind,access_model,course_ref)
+      VALUES ('product','course:one','ONLINE_COURSE','PAID','course-one')`).run();
+    db.prepare(`INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode)
+      VALUES ('offer','course:one','product',10000,'PUBLIC')`).run();
+    const config = loadCommerceRuntimeConfig({
+      DEPLOY_ENV: "test",
+      PAYMENT_MODE: "refref",
+      KINESCOPE_DELIVERY_MODE: "protected",
+      MERCHANT_PROMOTION_PREFIX: "FX-",
+      REFREF_API_KEY: "key",
+      REFREF_MERCHANT_SLUG: "flexperiment",
+      REFREF_MERCHANT_ID: "00000000-0000-4000-8000-000000000001",
+      REFREF_API_BASE_URL: "https://api.refref.ru/v1-rc",
+      REFREF_RETURN_URL: "https://flexperiment.ru/checkout/return",
+      REFREF_CHECKOUT_ORIGIN: "https://checkout.refref.ru",
+      REFREF_RECEIPT_PAYMENT_METHOD: "full_prepayment",
+      REFREF_HANDOFF_STATE_SECRET: "secret",
+    });
+    const server = app("disabled", { config, paymentRail: new MockPaymentRail() });
+    const headers = { authorization: "Session customer", "content-type": "application/json" };
+    const issued = await server.request("/v1/checkout/handoff", {
+      method: "POST", headers, body: JSON.stringify({ returnPath: "/courses/one" }),
+    });
+    const handoffUrl = new URL((await issued.json() as { url: string }).url);
+    const handoffState = handoffUrl.searchParams.get("state")!;
+    const orderPublicId = handoffUrl.searchParams.get("merchantOrderRef")!;
+    expect(await (await server.request(`/v1/checkout/handoff/return?state=${encodeURIComponent(handoffState)}`, { headers })).json())
+      .toEqual({ phase: "HANDOFF", returnPath: "/courses/one", orderPublicId });
+
+    const preview = await server.request("/v1/checkout/preview", {
+      method: "POST",
+      headers: { ...headers, "idempotency-key": "preview-return" },
+      body: JSON.stringify({ offerRef: "course:one", handoffToken: "refref-token", state: handoffState }),
+    });
+    const quote = await preview.json() as { quoteId: string };
+    const paid = await server.request("/v1/checkout", {
+      method: "POST",
+      headers: { ...headers, "idempotency-key": "payment-return" },
+      body: JSON.stringify({ quoteId: quote.quoteId, state: handoffState }),
+    });
+    expect(await paid.json()).toMatchObject({ state: "PAID", orderPublicId });
+
+    const stored = db.prepare("SELECT request_payload_json FROM checkout_attempts").get() as { request_payload_json: string };
+    const successUrl = new URL((JSON.parse(stored.request_payload_json) as { successUrl: string }).successUrl);
+    const paymentState = successUrl.searchParams.get("state")!;
+    expect(await (await server.request(`/v1/checkout/handoff/return?state=${encodeURIComponent(paymentState)}`, { headers })).json())
+      .toEqual({ phase: "PAYMENT_RETURN", returnPath: "/courses/one", orderPublicId });
+  });
+
   it("requires a customer request and explicit operator decision before refund execution", async () => {
     db.prepare("INSERT INTO customers(id,email_normalized) VALUES ('customer','student@example.com')").run();
     db.prepare(`INSERT INTO legal_releases(id,storefront,version,manifest_json,effective_at,active)

@@ -10,7 +10,7 @@ import { activateSales, configureProduct, withdrawProduct } from "./catalog-cont
 import { confirmCampaign, createCampaign, dispatchCampaign, unsubscribeCustomer, type CampaignEmail } from "./campaigns";
 import { observeKinescopeStatus, pollKinescopeUpload, startVideoUpload, type KinescopeClient, type KinescopeStatus } from "./kinescope";
 import { activateLegalRelease, currentLegalRelease, type LegalReleaseManifest } from "./legal-control";
-import { issueCheckoutHandoffState, verifyCheckoutHandoffState } from "./checkout-handoff";
+import { issueCheckoutHandoffState, issueCheckoutPaymentReturnState, verifyCheckoutHandoffState, verifyCheckoutNavigationState } from "./checkout-handoff";
 import { listMerchantPromotions, saveMerchantPromotion, type MerchantPromotionInput } from "./promotions";
 import { decideRefund, executeApprovedRefund, listCustomerRefunds, listRefundCases, recordCourseAccessStart, requestRefund, type RefundDecisionInput, type RefundReason } from "./refunds";
 import { grantManualEntitlement, revokeManualEntitlement } from "./entitlements";
@@ -527,13 +527,23 @@ export function createCommerceV2App(deps: Dependencies) {
       if (!deps.paymentRail) return context.json({ code: "PAYMENT_RAIL_UNAVAILABLE" }, 503, noStore);
       const customer = deps.db.prepare("SELECT email_normalized FROM customers WHERE id=?").get(customerId) as { email_normalized: string } | undefined;
       if (!customer) return context.json({ code: "CUSTOMER_NOT_FOUND" }, 409, noStore);
-      const body = await context.req.json<{ quoteId?: string }>();
+      const body = await context.req.json<{ quoteId?: string; state?: string }>();
       if (!body.quoteId) throw new Error("CHECKOUT_QUOTE_REQUIRED");
+      const handoff = deps.config.paymentMode === "refref"
+        ? verifyCheckoutHandoffState(deps.config.refref!.handoffStateSecret, body.state ?? "", customerId, now().getTime())
+        : undefined;
+      const paymentReturn = handoff
+        ? issueCheckoutPaymentReturnState(deps.config.refref!.handoffStateSecret, handoff, now().getTime())
+        : undefined;
+      const successUrl = paymentReturn ? new URL(deps.config.refref!.returnUrl) : undefined;
+      successUrl?.searchParams.set("state", paymentReturn!.token);
       const result = await confirmCheckout(deps.db, deps.paymentRail, {
         customerId,
         customerEmail: customer.email_normalized,
         quoteId: body.quoteId,
         idempotencyKey: context.req.header("idempotency-key") ?? "",
+        expectedOrderPublicId: handoff?.orderPublicId,
+        successUrl: successUrl?.toString(),
       }, now().toISOString());
       return context.json(result, result.state === "CREATE_UNKNOWN" ? 202 : 201, noStore);
     } catch (error) {
@@ -564,8 +574,8 @@ export function createCommerceV2App(deps: Dependencies) {
     if (!customerId) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
     if (deps.config.paymentMode !== "refref") return context.json({ code: "CHECKOUT_HANDOFF_NOT_REQUIRED" }, 409, noStore);
     try {
-      const state = verifyCheckoutHandoffState(deps.config.refref!.handoffStateSecret, context.req.query("state") ?? "", customerId, now().getTime());
-      return context.json({ returnPath: state.returnPath }, 200, noStore);
+      const state = verifyCheckoutNavigationState(deps.config.refref!.handoffStateSecret, context.req.query("state") ?? "", customerId, now().getTime());
+      return context.json({ phase: state.phase, returnPath: state.returnPath, orderPublicId: state.orderPublicId }, 200, noStore);
     } catch (error) {
       return context.json({ code: error instanceof Error ? error.message : "CHECKOUT_STATE_INVALID" }, 422, noStore);
     }

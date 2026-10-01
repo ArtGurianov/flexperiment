@@ -28,6 +28,17 @@ type CheckoutQuote = {
 
 const price = (kopecks: number) => new Intl.NumberFormat("ru-RU", { style: "currency", currency: "RUB", maximumFractionDigits: 0 }).format(kopecks / 100);
 
+const observeCheckout = async (initial: CheckoutResult): Promise<CheckoutResult> => {
+  let result = initial;
+  for (let attempt = 0; result.orderPublicId && ["CREATE_UNKNOWN", "PENDING"].includes(result.state ?? "") && attempt < 15; attempt += 1) {
+    await new Promise((resolve) => window.setTimeout(resolve, 2_000));
+    const response = await fetch(`/v1/checkout/${encodeURIComponent(result.orderPublicId)}`, { cache: "no-store", credentials: "same-origin" });
+    result = await response.json() as CheckoutResult;
+    if (!response.ok) throw new Error(result.code || "CHECKOUT_RECONCILE_FAILED");
+  }
+  return result;
+};
+
 export default function CourseCheckout({ courseRef, offerRef, saleMode, priceKopecks }: Props) {
   const pathname = usePathname();
   const [session, setSession] = useState<"loading" | "anonymous" | "signed-in" | "owned">("loading");
@@ -49,16 +60,31 @@ export default function CourseCheckout({ courseRef, offerRef, saleMode, priceKop
       .catch(() => setSession("anonymous"));
   }, [courseRef]);
 
-  const observe = async (initial: CheckoutResult): Promise<CheckoutResult> => {
-    let result = initial;
-    for (let attempt = 0; result.orderPublicId && ["CREATE_UNKNOWN", "PENDING"].includes(result.state ?? "") && attempt < 15; attempt += 1) {
-      await new Promise((resolve) => window.setTimeout(resolve, 2_000));
-      const response = await fetch(`/v1/checkout/${encodeURIComponent(result.orderPublicId)}`, { cache: "no-store", credentials: "same-origin" });
-      result = await response.json() as CheckoutResult;
-      if (!response.ok) throw new Error(result.code || "CHECKOUT_RECONCILE_FAILED");
-    }
-    return result;
-  };
+  useEffect(() => {
+    const orderPublicId = new URLSearchParams(window.location.search).get("order");
+    if (!orderPublicId) return;
+    let active = true;
+    queueMicrotask(() => {
+      if (!active) return;
+      setBusy(true);
+      setStatus("Платёж принят. Открываем доступ…");
+    });
+    void observeCheckout({ orderPublicId, state: "PENDING" })
+      .then((result) => {
+        if (!active) return;
+        if (result.state === "PAID") {
+          setSession("owned");
+          setStatus("Доступ открыт.");
+        } else {
+          setStatus(result.state === "DECLINED" ? "Платёж отклонён." : result.state === "EXPIRED"
+            ? "Время оплаты истекло."
+            : "Статус платежа уточняется. Доступ откроется автоматически после подтверждения.");
+        }
+      })
+      .catch(() => { if (active) setStatus("Статус платежа уточняется. Доступ откроется автоматически после подтверждения."); })
+      .finally(() => { if (active) setBusy(false); });
+    return () => { active = false; };
+  }, []);
 
   const previewCheckout = async () => {
     if (!offerRef) return;
@@ -112,12 +138,12 @@ export default function CourseCheckout({ courseRef, offerRef, saleMode, priceKop
       const response = await fetch("/v1/checkout", {
         method: "POST", credentials: "same-origin",
         headers: { "content-type": "application/json", "idempotency-key": paymentIdempotencyKey.current },
-        body: JSON.stringify({ quoteId: quote.quoteId }),
+        body: JSON.stringify({ quoteId: quote.quoteId, state: new URLSearchParams(window.location.search).get("state") || undefined }),
       });
       let result = await response.json() as CheckoutResult;
       if (!response.ok) throw new Error(result.code || "CHECKOUT_FAILED");
       if (result.checkoutUrl) { window.location.assign(result.checkoutUrl); return; }
-      result = await observe(result);
+      result = await observeCheckout(result);
       if (result.state === "PAID") { setSession("owned"); setStatus("Доступ открыт."); window.location.reload(); return; }
       setStatus(result.state === "DECLINED" ? "Платёж отклонён." : result.state === "EXPIRED" ? "Время оплаты истекло." : "Статус платежа уточняется. Попробуйте снова через минуту.");
     } catch (error) {

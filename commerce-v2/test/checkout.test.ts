@@ -37,6 +37,45 @@ describe("scripted mock checkout orchestration", () => {
     expect(db.prepare("SELECT state FROM checkout_quotes").get()).toEqual({ state: "CONSUMED" });
   });
 
+  it("binds confirmation and the persisted provider return URL to the signed order", async () => {
+    const prepared = await prepareCheckout(db, rail, {
+      ...input, previewIdempotencyKey: "preview-return", orderPublicId: "signed-order",
+    }, "2026-09-30T10:00:00Z");
+    if (prepared.state !== "PRICE_REVIEW_REQUIRED") throw new Error("expected quote");
+
+    await expect(confirmCheckout(db, rail, {
+      customerId: input.customerId,
+      customerEmail: input.customerEmail,
+      quoteId: prepared.quoteId,
+      idempotencyKey: "mismatched-return",
+      expectedOrderPublicId: "different-order",
+      successUrl: "https://flexperiment.ru/checkout/return?state=signed",
+    }, "2026-09-30T10:01:00Z")).rejects.toThrow("CHECKOUT_STATE_INVALID");
+
+    await confirmCheckout(db, rail, {
+      customerId: input.customerId,
+      customerEmail: input.customerEmail,
+      quoteId: prepared.quoteId,
+      idempotencyKey: "matched-return",
+      expectedOrderPublicId: "signed-order",
+      successUrl: "https://flexperiment.ru/checkout/return?state=signed",
+    }, "2026-09-30T10:01:00Z");
+
+    await expect(confirmCheckout(db, rail, {
+      customerId: input.customerId,
+      customerEmail: input.customerEmail,
+      quoteId: prepared.quoteId,
+      idempotencyKey: "matched-return",
+      expectedOrderPublicId: "different-order",
+    }, "2026-09-30T10:02:00Z")).rejects.toThrow("CHECKOUT_STATE_INVALID");
+
+    const stored = db.prepare("SELECT request_payload_json FROM checkout_attempts").get() as { request_payload_json: string };
+    expect(JSON.parse(stored.request_payload_json)).toMatchObject({
+      orderPublicId: "signed-order",
+      successUrl: "https://flexperiment.ru/checkout/return?state=signed",
+    });
+  });
+
   it("snapshots the live offer and grants exactly once across a duplicate request", async () => {
     const first = await checkout(db, rail, input, "2026-09-30T10:00:00Z");
     const duplicate = await checkout(db, rail, input, "2026-09-30T10:00:01Z");

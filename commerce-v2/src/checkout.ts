@@ -32,7 +32,7 @@ export type PaymentResolveInput = {
   customerEmail: string; offerRef: string; productRef: string; lineRef: string;
   legalReleaseRef: string; legalReleaseHash: string; handoffToken?: string; checkoutCode?: string;
 };
-export type PaymentCreateInput = PaymentResolveInput & { quote: RailQuote };
+export type PaymentCreateInput = PaymentResolveInput & { quote: RailQuote; successUrl?: string };
 export interface PaymentRail {
   resolve(input: PaymentResolveInput): Promise<RailResolution>;
   create(input: PaymentCreateInput): Promise<RailProjection>;
@@ -264,7 +264,14 @@ export async function prepareCheckout(
 export async function confirmCheckout(
   db: Database.Database,
   rail: PaymentRail,
-  input: { customerId: string; customerEmail: string; quoteId: string; idempotencyKey: string },
+  input: {
+    customerId: string;
+    customerEmail: string;
+    quoteId: string;
+    idempotencyKey: string;
+    expectedOrderPublicId?: string;
+    successUrl?: string;
+  },
   now = new Date().toISOString(),
 ) {
   if (!input.idempotencyKey.trim()) throw new Error("IDEMPOTENCY_KEY_REQUIRED");
@@ -272,6 +279,7 @@ export async function confirmCheckout(
     JOIN orders ON orders.id=attempt.order_id WHERE attempt.idempotency_key=?`).get(input.idempotencyKey) as { idempotency_key: string; public_id: string; customer_id: string } | undefined;
   if (existing) {
     if (existing.customer_id !== input.customerId) throw new Error("IDEMPOTENCY_KEY_REUSED");
+    if (input.expectedOrderPublicId && existing.public_id !== input.expectedOrderPublicId) throw new Error("CHECKOUT_STATE_INVALID");
     return reconcileCheckout(db, rail, existing.public_id, now);
   }
 
@@ -289,6 +297,7 @@ export async function confirmCheckout(
       legal_version: string; manifest_json: string;
     } | undefined;
   if (!pending || pending.customer_id !== input.customerId) throw new Error("CHECKOUT_QUOTE_NOT_FOUND");
+  if (input.expectedOrderPublicId && pending.order_public_id !== input.expectedOrderPublicId) throw new Error("CHECKOUT_STATE_INVALID");
   if (pending.state !== "REVIEW") throw new Error("CHECKOUT_QUOTE_UNAVAILABLE");
   if (pending.expires_at <= now) {
     db.prepare("UPDATE checkout_quotes SET state='EXPIRED',updated_at=? WHERE id=? AND state='REVIEW'").run(now, pending.id);
@@ -327,6 +336,7 @@ export async function confirmCheckout(
     customerEmail: input.customerEmail, offerRef: offer.offer_ref,
     productRef: offer.product_ref, lineRef: pending.line_ref, legalReleaseRef: pending.legal_version,
     legalReleaseHash: createHash("sha256").update(pending.manifest_json).digest("hex"), quote,
+    successUrl: input.successUrl,
   };
   const create = db.transaction(() => {
     db.prepare(`INSERT INTO orders(id,public_id,customer_id,state,total_kopecks,checkout_snapshot_json,snapshot_hash,legal_release_id,created_at,updated_at)

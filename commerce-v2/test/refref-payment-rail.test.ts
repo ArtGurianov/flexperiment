@@ -24,13 +24,21 @@ describe("RefrefPaymentRail", () => {
     const resolution = await rail.resolve(input);
     expect(resolution).toMatchObject({ state: "PRICE_REVIEW_REQUIRED", quote: { discountKopecks: 500, finalAmountKopecks: 9500, checkoutCodeOutcome: "NONE" } });
     if (resolution.state !== "PRICE_REVIEW_REQUIRED") throw new Error("expected quote");
-    await expect(rail.create({ ...input, quote: resolution.quote })).resolves.toMatchObject({ attemptId: "20000000-0000-4000-8000-000000000002", state: "CUSTOMER_ACTION_REQUIRED", checkoutUrl: "https://pay.refref.ru/session" });
+    await expect(rail.create({
+      ...input,
+      quote: resolution.quote,
+      successUrl: "https://flexperiment.ru/checkout/return?state=signed",
+    })).resolves.toMatchObject({ attemptId: "20000000-0000-4000-8000-000000000002", state: "CUSTOMER_ACTION_REQUIRED", checkoutUrl: "https://pay.refref.ru/session" });
     expect(new URL(String(request.mock.calls[0]?.[0])).pathname).toBe("/v1-rc/integrations/referral-resolutions");
     expect(new URL(String(request.mock.calls[1]?.[0])).pathname).toBe("/v1-rc/integrations/orders/order/checkout-attempts");
     const attemptBody = JSON.parse(String((request.mock.calls[1]?.[1] as RequestInit).body)) as { snapshot: Record<string, unknown>; snapshotHash: string };
     expect(attemptBody.snapshotHash).toBe(refrefSnapshotDigest(attemptBody.snapshot));
     expect(JSON.stringify(attemptBody.snapshot)).not.toContain("student@example.com");
-    expect(String((request.mock.calls[2]?.[1] as RequestInit).body)).toContain("student@example.com");
+    const sessionBody = JSON.parse(String((request.mock.calls[2]?.[1] as RequestInit).body)) as { successUrl: string; receiptContact: { email: string } };
+    expect(sessionBody).toEqual({
+      successUrl: "https://flexperiment.ru/checkout/return?state=signed",
+      receiptContact: { email: "student@example.com" },
+    });
   });
 
   it("returns customer action without freezing an attempt", async () => {
