@@ -7,8 +7,8 @@ import {
   type SeoSnapshot,
   type SeoTombstone,
   type SeoVenueStatus,
-} from "@/lib/seo/occurrence-snapshot";
-import { mintEventSlug } from "@/lib/seo/event-slug";
+} from "@repo/lib/seo/occurrence-snapshot";
+import { mintEventSlug } from "@repo/lib/seo/event-slug";
 
 /**
  * The `/v1/public/tour` and `/v1/public/occurrences/{id}` response contract, as

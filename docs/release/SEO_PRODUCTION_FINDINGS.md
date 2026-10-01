@@ -146,7 +146,7 @@ URL.
 >
 > Everything in this section is retained as **observed before remediation**. It
 > is the evidence the fail-closed design was built against, and it explains why
-> `data/seo/occurrences.v1.json` was committed empty for the whole of PR #120.
+> `apps/lab/data/seo/occurrences.v1.json` was committed empty for the whole of PR #120.
 
 ### Observed before remediation
 
@@ -182,7 +182,7 @@ Every Siberian city returns `{"occurrences":[]}`.
 this record contradicts it. A page generated from it would show a time five
 hours wrong for an event people plan travel around.
 
-`data/seo/occurrences.v1.json` is therefore committed **empty**, and the build
+`apps/lab/data/seo/occurrences.v1.json` is therefore committed **empty**, and the build
 emits zero event and zero city pages. This is the intended fail-closed
 behaviour, not an incomplete implementation.
 
@@ -290,7 +290,7 @@ operators to invent a distinct title.
    would mutate ephemeral container state and bypass the Git/CI publication
    contract entirely.
 4. ~~Validate: `pnpm commerce:seo-snapshot:validate`.~~ Done.
-5. ~~Review the committed diff to `data/seo/occurrences.v1.json`.~~ Done —
+5. ~~Review the committed diff to `apps/lab/data/seo/occurrences.v1.json`.~~ Done —
    reviewed before publication.
 6. ~~Commit, open a pull request, let CI run.~~ Done — PR #121, merged at
    `29abfefe…`, CI green on that exact SHA.

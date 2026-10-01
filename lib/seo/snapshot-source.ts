@@ -6,8 +6,8 @@ import {
   parseSnapshot,
   type PublishedRecord,
   type SeoSnapshot,
-} from "@/lib/seo/occurrence-snapshot";
-import { publishableRecords } from "@/lib/seo/occurrence-publication";
+} from "@repo/lib/seo/occurrence-snapshot";
+import { publishableRecords } from "@repo/lib/seo/occurrence-publication";
 
 /**
  * Reads the committed snapshot at build time.

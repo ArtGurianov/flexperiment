@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { readSnapshotFile } from "@/commerce/src/seo-snapshot-io";
-import { belongsInSitemap, publishableRecords } from "@/lib/seo/occurrence-publication";
+import { readSnapshotFile } from "@repo/commerce/src/seo-snapshot-io";
+import { belongsInSitemap, publishableRecords } from "@repo/lib/seo/occurrence-publication";
 import { exportExists, LEGAL_SLUGS, listExport, readExport } from "./read-export";
 
 /**
@@ -16,7 +16,7 @@ describe("robots.txt", () => {
   it("is generated and points at the sitemap", () => {
     expect(robots).toContain("User-Agent: *");
     expect(robots).toContain("Allow: /");
-    expect(robots).toContain("Sitemap: https://flexperiment.ru/sitemap.xml");
+    expect(robots).toContain("Sitemap: https://lab.flexperiment.ru/sitemap.xml");
   });
 
   it("does not Disallow the surfaces that are suppressed by header instead", () => {
@@ -33,9 +33,9 @@ describe("sitemap.xml", () => {
   const locations = [...sitemap.matchAll(/<loc>([^<]+)<\/loc>/g)].map((match) => match[1]);
 
   it("lists the home page and every legal document", () => {
-    expect(locations).toContain("https://flexperiment.ru");
+    expect(locations).toContain("https://lab.flexperiment.ru");
     for (const slug of LEGAL_SLUGS) {
-      expect(locations).toContain(`https://flexperiment.ru/legal/${slug}`);
+      expect(locations).toContain(`https://lab.flexperiment.ru/legal/${slug}`);
     }
   });
 
@@ -62,10 +62,10 @@ describe("sitemap.xml", () => {
   });
 
   it("agrees exactly with what the snapshot says is listable", () => {
-    const snapshot = readSnapshotFile("data/seo/occurrences.v1.json");
+    const snapshot = readSnapshotFile("apps/lab/data/seo/occurrences.v1.json");
     const expected = [...snapshot.occurrences, ...snapshot.tombstones]
       .filter(belongsInSitemap)
-      .map((record) => `https://flexperiment.ru/events/${record.event_slug}`);
+      .map((record) => `https://lab.flexperiment.ru/events/${record.event_slug}`);
     const listed = locations.filter((location) => location.includes("/events/"));
     expect(listed.sort()).toEqual(expected.sort());
   });
@@ -82,7 +82,7 @@ describe("the RSC payloads that are the client-side router", () => {
 });
 
 describe("the build agrees with the committed snapshot", () => {
-  const snapshot = readSnapshotFile("data/seo/occurrences.v1.json");
+  const snapshot = readSnapshotFile("apps/lab/data/seo/occurrences.v1.json");
   const records = publishableRecords(snapshot);
 
   /**

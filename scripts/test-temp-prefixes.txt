@@ -106,6 +106,7 @@ flexperiment-phase0
 flexperiment-phase1-gate
 flexperiment-phase1-migration
 flexperiment-phase1-retry
+flexperiment-platform-identity
 flexperiment-readiness-test
 flexperiment-recovery-state
 flexperiment-release-descriptor

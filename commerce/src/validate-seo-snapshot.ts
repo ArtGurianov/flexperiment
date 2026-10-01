@@ -6,7 +6,7 @@ import { readSnapshotFile, serializeSnapshot, SNAPSHOT_PATH } from "./seo-snapsh
 /**
  * Validates the committed snapshot on its own terms.
  *
- *   --snapshot <file>  default: data/seo/occurrences.v1.json
+ *   --snapshot <file>  default: apps/lab/data/seo/occurrences.v1.json
  *
  * Snapshot VALIDITY is a hard failure: a malformed or self-contradictory
  * artifact must never reach a build, because every page generated from it

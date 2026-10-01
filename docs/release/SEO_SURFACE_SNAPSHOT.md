@@ -3,7 +3,7 @@
 **Status: policy requirement. This document does not authorize or execute a
 release, a production data change, or a deploy.**
 
-`data/seo/occurrences.v1.json` is a committed, build-time projection of
+`apps/lab/data/seo/occurrences.v1.json` is a committed, build-time projection of
 Commerce's public tour. The static `/schedule` catalogue and every
 `/events/<slug>` page are generated from it. Commerce remains authoritative for
 every commercial fact in it; this file is a copy, and the obligations below are

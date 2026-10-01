@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { readSnapshotFile } from "@/commerce/src/seo-snapshot-io";
-import { publishableRecords } from "@/lib/seo/occurrence-publication";
+import { readSnapshotFile } from "@repo/commerce/src/seo-snapshot-io";
+import { publishableRecords } from "@repo/lib/seo/occurrence-publication";
 import {
   canonicalOf,
   countIn,
@@ -35,7 +35,7 @@ describe("the home page", () => {
   });
 
   it("declares itself canonical", () => {
-    expect(canonicalOf(html)).toBe("https://flexperiment.ru");
+    expect(canonicalOf(html)).toBe("https://lab.flexperiment.ru");
   });
 
   it("carries a location-neutral title containing the Cyrillic search term", () => {
@@ -98,7 +98,7 @@ describe("the 404 page", () => {
 describe("the legal pages", () => {
   it.each(LEGAL_SLUGS)("/legal/%s keeps its own canonical", (slug) => {
     const html = readExport(`legal/${slug}.html`);
-    expect(canonicalOf(html)).toBe(`https://flexperiment.ru/legal/${slug}`);
+    expect(canonicalOf(html)).toBe(`https://lab.flexperiment.ru/legal/${slug}`);
     expect(countIn(headOf(html), /<title>/g)).toBe(1);
   });
 });
@@ -116,7 +116,7 @@ describe("the legal pages", () => {
 const STATIC_ROUTES = ["index.html", "404.html", "schedule.html", ...LEGAL_SLUGS.map((slug) => `legal/${slug}.html`)];
 
 const snapshotRoutes = (): readonly string[] => {
-  const records = publishableRecords(readSnapshotFile("data/seo/occurrences.v1.json"));
+  const records = publishableRecords(readSnapshotFile("apps/lab/data/seo/occurrences.v1.json"));
   // Only event pages are dynamic now; /schedule is a fixed route and lives in
   // STATIC_ROUTES, and the city layer is retired.
   return records.map((record) => `events/${record.event_slug}.html`);
@@ -147,7 +147,7 @@ describe("the social card", () => {
     // Guards the guard: if snapshotRoutes() silently returned nothing, every
     // it.each above would still pass while proving nothing about event and
     // city pages. This fails instead.
-    const records = publishableRecords(readSnapshotFile("data/seo/occurrences.v1.json"));
+    const records = publishableRecords(readSnapshotFile("apps/lab/data/seo/occurrences.v1.json"));
     expect(snapshotRoutes().length).toBe(records.length);
     for (const route of snapshotRoutes()) expect(exportExists(route), route).toBe(true);
   });

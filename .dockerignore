@@ -7,6 +7,11 @@ apps/**/node_modules
 apps/**/.next
 apps/**/out
 commerce-data
+commerce-v2-data
+platform-data
+.codex-worktrees
+.pnpm-store
+temp-repos
 coverage
 .env
 .env.*

@@ -1,13 +1,13 @@
-import { formatRubles } from "@/lib/money";
+import { formatRubles } from "@repo/lib/money";
 import {
   departureLabel,
   departureNotice,
   occurrenceCompactDateLabelInZone,
   occurrenceDateLabelInZone,
   occurrenceTimeLabelInZone,
-} from "@/lib/occurrence-format";
-import { isUpcoming } from "@/lib/seo/occurrence-publication";
-import { isDeparted, type PublishedRecord } from "@/lib/seo/occurrence-snapshot";
+} from "@repo/lib/occurrence-format";
+import { isUpcoming } from "@repo/lib/seo/occurrence-publication";
+import { isDeparted, type PublishedRecord } from "@repo/lib/seo/occurrence-snapshot";
 
 /**
  * The one shape the schedule is rendered from, wherever it is rendered.

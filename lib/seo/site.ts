@@ -7,7 +7,18 @@
  * sitemap.xml need absolute URLs and are generated outside that resolution, so
  * they read it from here rather than each restating the literal.
  */
-export const SITE_ORIGIN = "https://flexperiment.ru";
+const origin = process.env.LAB_ORIGIN?.trim() || "https://lab.flexperiment.ru";
+const parsedOrigin = new URL(origin);
+
+if (parsedOrigin.origin !== origin || !["http:", "https:"].includes(parsedOrigin.protocol)) {
+  throw new Error("LAB_ORIGIN must be an absolute HTTP(S) origin without a path.");
+}
+
+/** The canonical origin of the LAB storefront. */
+export const LAB_ORIGIN = origin;
+
+/** Compatibility name used throughout the LAB-only SEO view model. */
+export const SITE_ORIGIN = LAB_ORIGIN;
 
 /** An absolute site URL for a root-relative path (`"/"` → the bare origin). */
 export const siteUrl = (path: string): string =>

@@ -18,7 +18,7 @@ ENV NODE_EXTRA_CA_CERTS=/app/commerce/certs/russian-trusted-root-ca.pem
 # Commerce runtime imports the canonical city catalogue from the shared root
 # module. Keep shared runtime dependencies explicit in the production image.
 COPY lib ./lib
-COPY public/legal ./public/legal
+COPY apps/lab/public/legal ./apps/lab/public/legal
 # The runtime stage is a fresh Node image: activate the package manager used
 # by CMD here rather than relying on the dependencies stage's Corepack shim.
 RUN corepack enable \

@@ -1,0 +1,18 @@
+{
+  "cities": [
+    { "slug": "moscow", "title": "Москва" },
+    { "slug": "saint-petersburg", "title": "Санкт-Петербург" },
+    { "slug": "novosibirsk", "title": "Новосибирск" }
+  ],
+  "products": [
+    {
+      "productRef": "bundle:all-courses",
+      "kind": "COURSE_BUNDLE",
+      "accessModel": "PAID",
+      "offerRef": "bundle:all-courses",
+      "priceKopecks": 0,
+      "saleMode": "CLOSED"
+    }
+  ],
+  "labOccurrences": []
+}

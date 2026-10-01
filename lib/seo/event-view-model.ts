@@ -1,10 +1,10 @@
-import type { PublishedRecord } from "@/lib/seo/occurrence-snapshot";
+import type { PublishedRecord } from "@repo/lib/seo/occurrence-snapshot";
 import {
   toScheduleViewModel,
   type ScheduleEventView,
   type ScheduleListing,
   type ScheduleViewModel,
-} from "@/lib/seo/schedule-view-model";
+} from "@repo/lib/seo/schedule-view-model";
 
 /**
  * One event, as the event surface presents it.

@@ -16,7 +16,7 @@ import {
 } from "../../lib/seo/public-occurrence";
 
 /** Where the committed artifact lives, relative to the repository root. */
-export const SNAPSHOT_PATH = "data/seo/occurrences.v1.json";
+export const SNAPSHOT_PATH = "apps/lab/data/seo/occurrences.v1.json";
 
 /**
  * Serialization is `canonicalV2` plus a trailing newline.

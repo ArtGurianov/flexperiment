@@ -1,0 +1,32 @@
+FROM node:22-bookworm-slim AS dependencies
+WORKDIR /app
+RUN corepack enable
+COPY package.json pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
+
+FROM node:22-bookworm-slim AS identity
+WORKDIR /identity
+ARG SOURCE_COMMIT
+COPY scripts/write-build-identity.mjs /tmp/write-build-identity.mjs
+RUN SOURCE_COMMIT=${SOURCE_COMMIT} node /tmp/write-build-identity.mjs /identity/identity.json commerce-v2
+
+FROM node:22-bookworm-slim
+WORKDIR /app
+ARG SOURCE_COMMIT
+ENV NODE_ENV=production \
+    PORT=3002 \
+    SOURCE_COMMIT=${SOURCE_COMMIT} \
+    BUILD_IDENTITY_FILE=/app/.identity/identity.json \
+    COMMERCE_V2_DATABASE_PATH=/var/lib/flexperiment-v2/commerce.sqlite
+COPY --from=dependencies /app/node_modules ./node_modules
+COPY package.json pnpm-lock.yaml ./
+COPY commerce-v2 ./commerce-v2
+COPY --from=identity --chmod=0444 /identity/identity.json /app/.identity/identity.json
+RUN corepack enable \
+  && mkdir -p /var/lib/flexperiment-v2 \
+  && chown -R node:node /var/lib/flexperiment-v2 /app \
+  && chmod 0555 /app/.identity \
+  && chmod 0444 /app/.identity/identity.json
+USER node
+EXPOSE 3002
+CMD ["pnpm", "commerce-v2:start"]

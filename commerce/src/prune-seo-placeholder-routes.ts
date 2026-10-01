@@ -25,7 +25,7 @@ import {
  * when inventory exists. It never inspects or removes anything else, so it
  * cannot quietly delete a real page.
  */
-const OUT = resolve(process.cwd(), "out");
+const OUT = resolve(process.cwd(), "apps/lab/out");
 
 const removed: string[] = [];
 

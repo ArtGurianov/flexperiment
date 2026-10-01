@@ -7,6 +7,7 @@ artifacts/certification/
 artifacts/phase0-backport-30d2201e.patch
 .release/controlled-candidates/
 public/release.json
+apps/lab/public/release.json
 
 # dependencies
 /node_modules

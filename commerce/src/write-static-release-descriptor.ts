@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 
 export function writeStaticReleaseDescriptor({
   sourceCommit = process.env.SOURCE_COMMIT?.trim(),
-  output = resolve(process.cwd(), "public/release.json"),
+  output = resolve(process.cwd(), "apps/lab/public/release.json"),
 }: {
   sourceCommit?: string;
   output?: string;

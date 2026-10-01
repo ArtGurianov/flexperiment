@@ -4,17 +4,18 @@ import type { Page } from "../../lib/page";
 
 const nav: { href: string; page: Page; label: string; index: string }[] = [
   { href: "/", page: "dashboard", label: "Обзор", index: "01" },
-  { href: "/cities/", page: "cities", label: "Города", index: "02" },
-  { href: "/occurrences/", page: "occurrences", label: "События", index: "03" },
-  { href: "/orders/", page: "orders", label: "Заказы", index: "04" },
-  { href: "/refunds/", page: "refunds", label: "Возвраты", index: "05" },
-  { href: "/settlements/", page: "settlements", label: "Расчёты", index: "06" },
-  { href: "/email-attention/", page: "email-attention", label: "Email attention", index: "07" },
-  { href: "/incidents/", page: "incidents", label: "Инциденты", index: "08" },
-  { href: "/audit/", page: "audit", label: "Аудит", index: "09" },
-  { href: "/agents/", page: "agents", label: "Агенты", index: "10" },
-  { href: "/promo-codes/", page: "promo-codes", label: "Промокоды", index: "11" },
-  { href: "/agent-referrals/", page: "agent-referrals", label: "Agent Referrals", index: "12" },
+  { href: "/courses/", page: "courses", label: "Курсы", index: "02" },
+  { href: "/lab/", page: "lab", label: "LAB", index: "03" },
+  { href: "/cities/", page: "cities", label: "Города", index: "04" },
+  { href: "/orders/", page: "orders", label: "Заказы", index: "05" },
+  { href: "/customers/", page: "customers", label: "Клиенты", index: "06" },
+  { href: "/access/", page: "access", label: "Доступы", index: "07" },
+  { href: "/refunds/", page: "refunds", label: "Возвраты", index: "08" },
+  { href: "/promo-codes/", page: "promo-codes", label: "Промо", index: "09" },
+  { href: "/email-attention/", page: "email-attention", label: "Email", index: "10" },
+  { href: "/incidents/", page: "incidents", label: "Инциденты", index: "11" },
+  { href: "/audit/", page: "audit", label: "Аудит", index: "12" },
+  { href: "/integrations/", page: "integrations", label: "Refref", index: "13" },
 ];
 
 export function Shell({ page, children, onLogout }: { page: Page; children: ReactNode; onLogout: () => void }) {

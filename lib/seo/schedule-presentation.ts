@@ -1,5 +1,5 @@
-import { isCitySlug, type CitySlug } from "@/lib/city-catalog";
-import type { ScheduleEventView, ScheduleViewModel } from "@/lib/seo/schedule-view-model";
+import { isCitySlug, type CitySlug } from "@repo/lib/city-catalog";
+import type { ScheduleEventView, ScheduleViewModel } from "@repo/lib/seo/schedule-view-model";
 
 /**
  * Presentation ordering for the catalogue. Deliberately NOT part of domain

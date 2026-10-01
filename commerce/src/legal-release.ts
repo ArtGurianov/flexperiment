@@ -5,10 +5,10 @@ import type Database from "better-sqlite3";
 import { canonicalLegalManifest, legalDocumentIds, parseLegalManifest, type LegalDocumentId, type LegalManifest } from "./legal-manifest";
 
 const currentSourcePaths: Record<LegalDocumentId, string> = {
-  PUBLIC_OFFER: "public/legal/public-offer.md",
-  PRIVACY_POLICY: "public/legal/privacy-policy.md",
-  PD_CONSENT: "public/legal/personal-data-consent.md",
-  CHECKOUT_DISCLOSURE: "public/legal/disclaimer.md",
+  PUBLIC_OFFER: "apps/lab/public/legal/public-offer.md",
+  PRIVACY_POLICY: "apps/lab/public/legal/privacy-policy.md",
+  PD_CONSENT: "apps/lab/public/legal/personal-data-consent.md",
+  CHECKOUT_DISCLOSURE: "apps/lab/public/legal/disclaimer.md",
 };
 
 export class LegalReleasePublishError extends Error {
@@ -29,7 +29,7 @@ export const parseCanonicalLegalRelease = (raw: unknown): CanonicalLegalRelease 
 const archiveSourcePath = (document: LegalManifest["documents"][LegalDocumentId]) => {
   const url = new URL(document.archive_url);
   if (url.origin !== "https://flexperiment.ru" || !url.pathname.startsWith("/legal/archive/")) return undefined;
-  return `public${url.pathname}`;
+  return `apps/lab/public${url.pathname}`;
 };
 
 export const verifyLegalSourceHashes = (manifest: LegalManifest, root = process.cwd()) => {

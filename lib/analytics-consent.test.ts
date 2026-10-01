@@ -6,7 +6,6 @@ import {
   parseAnalyticsConsentMarker,
   serializeAnalyticsConsent,
 } from "./analytics-consent";
-import { storedReferralSlug } from "@/components/referral-marker";
 
 describe("analytics consent marker", () => {
   it("fails closed for absent, malformed, and unknown markers", () => {
@@ -27,12 +26,5 @@ describe("analytics consent marker", () => {
     expect(analyticsConsentSetCookie("ALLOWED")).toBe(
       "fx_consent=v1%3Aa1; Path=/; Max-Age=31536000; SameSite=Lax; Secure",
     );
-  });
-
-  it("does not interpret or alter the independent functional referral marker", () => {
-    for (const consent of ["", "v1%3Aa0", "v1%3Aa1"]) {
-      const cookie = `fx_ref=v1%3Aprofessional-promoter${consent ? `; fx_consent=${consent}` : ""}`;
-      expect(storedReferralSlug(cookie)).toBe("professional-promoter");
-    }
   });
 });

@@ -1,24 +1,13 @@
 "use client";
 
-import { Suspense, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { api } from "../lib/api";
 import type { Page } from "../lib/page";
 import { Loading } from "./ui/Loading";
 import { Shell } from "./ui/Shell";
 import { Login } from "./Login";
-import { Dashboard } from "./dashboard/Dashboard";
-import { Cities } from "./cities/Cities";
-import { Occurrences } from "./occurrences/Occurrences";
-import { Orders } from "./orders/Orders";
-import { Refunds } from "./refunds/Refunds";
-import { Settlements } from "./settlements/Settlements";
-import { EmailAttention } from "./email-attention/EmailAttention";
-import { OperationalIncidents } from "./incidents/Incidents";
-import { Audit } from "./audit/Audit";
-import { Agents } from "./agents/Agents";
-import { PromoCodes } from "./promo-codes/PromoCodes";
-import { AgentReferrals } from "./agent-referrals/AgentReferrals";
+import { AuditView, CitiesCatalogue, ControlRoomDashboard, CourseCatalogue, CustomersView, EmailOperationsView, EntitlementsView, IncidentsView, IntegrationView, LabCatalogue, OrdersView, PromotionsView, RefundsView, V2PendingSurface } from "./v2/ControlRoomV2";
 
 export function AdminApp({ page }: { page: Page }) {
   const router = useRouter();
@@ -40,18 +29,20 @@ export function AdminApp({ page }: { page: Page }) {
   if (authenticated === null) return <main className="boot"><Loading /></main>;
   if (!authenticated) return <main className="boot"><Loading /></main>;
 
-  const view = page === "dashboard" ? <Dashboard />
-    : page === "cities" ? <Cities />
-    : page === "occurrences" ? <Occurrences />
-    : page === "orders" ? <Orders />
-    : page === "refunds" ? <Refunds />
-    : page === "settlements" ? <Suspense fallback={<Loading />}><Settlements /></Suspense>
-    : page === "email-attention" ? <EmailAttention />
-    : page === "incidents" ? <Suspense fallback={<Loading />}><OperationalIncidents /></Suspense>
-    : page === "agents" ? <Agents />
-    : page === "promo-codes" ? <PromoCodes />
-    : page === "agent-referrals" ? <AgentReferrals />
-    : <Audit />;
+  const view = page === "dashboard" ? <ControlRoomDashboard />
+    : page === "courses" ? <CourseCatalogue />
+    : page === "lab" || page === "occurrences" ? <LabCatalogue />
+    : page === "cities" ? <CitiesCatalogue />
+    : page === "orders" ? <OrdersView />
+    : page === "customers" ? <CustomersView />
+    : page === "access" ? <EntitlementsView />
+    : page === "refunds" ? <RefundsView />
+    : page === "promo-codes" ? <PromotionsView />
+    : page === "email-attention" ? <EmailOperationsView />
+    : page === "incidents" ? <IncidentsView />
+    : page === "audit" ? <AuditView />
+    : page === "integrations" ? <IntegrationView />
+    : <V2PendingSurface area={page} />;
 
   return <Shell page={page} onLogout={logout}>{view}</Shell>;
 }

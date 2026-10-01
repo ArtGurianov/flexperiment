@@ -8,6 +8,7 @@
     "start": "next start"
   },
   "dependencies": {
+    "@flexperiment/control-room-contracts": "workspace:*",
     "@tanstack/react-query": "^5.102.2",
     "next": "16.3.0",
     "react": "19.2.8",

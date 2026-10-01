@@ -31,19 +31,22 @@ jobs:
       # structural ones before merge.
       - name: Lint the workflows
         uses: raven-actions/actionlint@v2
-      # next-env.d.ts imports ./.next/types/*.d.ts, which only exist after a
+      # apps/lab/next-env.d.ts imports ./.next/types/*.d.ts, which only exist after a
       # build or typegen. Without them that file fails to load, taking its
       # next/image-types/global reference down with it, so a clean checkout
       # reports PageProps/LayoutProps and every image module as missing.
-      # Locally these are masked by leftover .next/dev/types from next dev.
-      - run: pnpm exec next typegen
+      # Locally these are masked by leftover apps/lab/.next/dev/types from next dev.
+      - run: pnpm --filter @flexperiment/lab exec next typegen
       - run: pnpm exec tsc --noEmit
+      - run: pnpm lab:typecheck
       # The root tsconfig EXCLUDES apps/admin, so the line above never saw a
       # single admin/partner component. The admin app carries its own
       # tsconfig (its own jsx/lib/bundler settings) and needs its own
       # invocation - without this, a type error in the operator UI ships.
       - run: pnpm admin:typecheck
+      - run: pnpm platform:typecheck
       - run: pnpm test
+      - run: pnpm platform:test
       # The committed SEO snapshot is validated on its own terms, without
       # contacting Commerce. Production-versus-snapshot drift is a real thing
       # to watch, but it is an operational check on its own schedule: gating
@@ -56,13 +59,23 @@ jobs:
       # HTML is the authoritative SEO artifact. Every metadata defect this work
       # fixed was invisible in the TypeScript source and visible only here.
       #
-      # Must come after `pnpm exec next typegen` above, or PageProps<"/events/
+      # Must come after the LAB `next typegen` above, or PageProps<"/events/
       # [slug]"> does not resolve. `pnpm build` refuses a SOURCE_COMMIT that is
       # not exactly 40 lowercase hex characters; github.sha already is one.
       - name: Build the static export
         run: pnpm build
         env:
           SOURCE_COMMIT: ${{ github.sha }}
+          LAB_ORIGIN: https://lab.flexperiment.ru
+      - name: Build the Payload platform
+        run: pnpm platform:build
+        env:
+          SOURCE_COMMIT: ${{ github.sha }}
+          PAYLOAD_SECRET: ci-build-only-not-a-runtime-secret
+          PAYLOAD_DATABASE_URL: file:/tmp/flexperiment-platform-ci.sqlite
+          PLATFORM_ORIGIN: https://build.invalid
+          DEPLOY_ENV: staging
+          PAYLOAD_JOBS_ENABLED: "false"
       - name: Static-export conformance
         run: pnpm test:export
       - name: Real-Nginx frontend static-export routing contract
@@ -108,7 +121,9 @@ jobs:
           context: .
           file: Dockerfile.frontend
           push: false
-          build-args: SOURCE_COMMIT=${{ github.sha }}
+          build-args: |
+            SOURCE_COMMIT=${{ github.sha }}
+            LAB_ORIGIN=https://lab.flexperiment.ru
           cache-from: type=gha,scope=frontend
           cache-to: type=gha,mode=max,scope=frontend
 
@@ -135,3 +150,60 @@ jobs:
           push: false
           cache-from: type=gha,scope=commerce
           cache-to: type=gha,mode=max,scope=commerce
+
+      # v2 is a separate lineage and two separate runtime applications. These
+      # builds prove deployability only; this workflow never publishes a v1 or
+      # v2 candidate and never mutates a deployment ref.
+      - name: Payload platform v2 image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.platform
+          push: false
+          load: true
+          tags: flexperiment-platform-v2:test
+          build-args: |
+            SOURCE_COMMIT=${{ github.sha }}
+            PLATFORM_ORIGIN=https://ci.platform.invalid
+            YANDEX_WEBMASTER_VERIFICATION=ci-yandex-verification
+          cache-from: type=gha,scope=platform-v2
+          cache-to: type=gha,mode=max,scope=platform-v2
+
+      - name: Commerce v2 image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.commerce-v2
+          push: false
+          load: true
+          tags: flexperiment-commerce-v2:test
+          build-args: SOURCE_COMMIT=${{ github.sha }}
+          cache-from: type=gha,scope=commerce-v2
+          cache-to: type=gha,mode=max,scope=commerce-v2
+
+      - name: Boot and verify the Payload platform v2 image
+        run: >-
+          bash scripts/ci/smoke-v2-image.sh
+          flexperiment-platform-v2:test platform-v2-smoke 3001 3101 platform
+          --env PAYLOAD_SECRET=ci-runtime-only-not-a-production-secret
+          --env PAYLOAD_JOBS_ENABLED=false
+          --env "PLATFORM_REVALIDATE_TOKEN=${PLATFORM_REVALIDATE_TOKEN}"
+        env:
+          SOURCE_COMMIT: ${{ github.sha }}
+          PLATFORM_CANONICAL_ORIGIN: https://ci.platform.invalid
+          PLATFORM_REVALIDATE_TOKEN: ci-rendered-server-revalidation-token
+
+      - name: Boot and verify the Commerce v2 image
+        run: >-
+          bash scripts/ci/smoke-v2-image.sh
+          flexperiment-commerce-v2:test commerce-v2-smoke 3002 3102 commerce-v2
+          --env DEPLOY_ENV=staging
+          --env PAYMENT_MODE=disabled
+          --env BETTER_AUTH_SECRET=ci-runtime-better-auth-secret-not-for-production
+          --env AUTH_EMAIL_OUTBOX_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+          --env PLATFORM_ORIGIN=http://127.0.0.1:3101
+          --env LAB_ORIGIN=http://127.0.0.1:3100
+          --env ADMIN_ORIGIN=http://127.0.0.1:3103
+          --env API_ORIGIN=http://127.0.0.1:3102
+        env:
+          SOURCE_COMMIT: ${{ github.sha }}

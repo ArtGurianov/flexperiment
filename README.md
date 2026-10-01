@@ -1,36 +1,46 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Flexperiment
 
-## Getting Started
+Flexperiment is a pnpm monorepo with separate storefront and service applications:
 
-First, run the development server:
+- `apps/platform` — course storefront and Payload authoring UI;
+- `apps/lab` — LAB static storefront;
+- `apps/admin` — operator control room;
+- `commerce-v2` — v2 identity, catalogue, access and checkout service;
+- `commerce` — frozen v1 commerce and controlled-release tooling.
+
+## Local development
+
+Install the pinned workspace dependencies, then start the application you need:
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
+pnpm install
 pnpm dev
-# or
-bun dev
+pnpm platform:dev
+pnpm admin:dev
+pnpm commerce-v2:dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+`pnpm dev` starts `apps/lab` on the default Next.js development port. The LAB
+source entry point is `apps/lab/app/page.tsx`.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Validation
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+pnpm --filter @flexperiment/lab exec next typegen
+pnpm exec tsc --noEmit
+pnpm lab:typecheck
+pnpm admin:typecheck
+pnpm platform:typecheck
+pnpm test
+pnpm platform:test
+```
 
-## Learn More
+The static LAB artifact is built with an immutable source identity and a named
+canonical origin:
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+SOURCE_COMMIT=<40-character-git-sha> LAB_ORIGIN=https://lab.flexperiment.ru pnpm build
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Production publication and deployment are controlled workflows. Read
+`docs/release/DEPLOYMENT_INVARIANTS.md` before any release action.

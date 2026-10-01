@@ -6,15 +6,17 @@ import { configDefaults, defineConfig } from "vitest/config";
 // only after a build. See the `export` project below.
 const nodeInclude = [
   "commerce/test/**/*.test.ts",
+  "commerce-v2/test/**/*.test.ts",
   "apps/admin/**/*.test.ts",
-  "components/**/*.test.ts",
+  "apps/lab/components/**/*.test.ts",
   "lib/**/*.test.ts",
 ];
 
 export default defineConfig({
   resolve: {
     alias: {
-      "@": path.dirname(fileURLToPath(import.meta.url)),
+      "@repo": path.dirname(fileURLToPath(import.meta.url)),
+      "@": path.join(path.dirname(fileURLToPath(import.meta.url)), "apps/lab"),
     },
   },
   test: {
@@ -33,7 +35,7 @@ export default defineConfig({
           include: nodeInclude,
           // A .dom.test.tsx picked up by the widened admin glob above would
           // otherwise run in both environments.
-          exclude: [...configDefaults.exclude, "apps/admin/**/*.dom.test.tsx", "components/**/*.dom.test.tsx", "hooks/**/*.dom.test.tsx"],
+          exclude: [...configDefaults.exclude, "apps/admin/**/*.dom.test.tsx", "apps/lab/components/**/*.dom.test.tsx", "apps/lab/hooks/**/*.dom.test.tsx"],
         },
       },
       {
@@ -63,8 +65,8 @@ export default defineConfig({
           // event/city social-image defect ship untested.
           include: [
             "apps/admin/**/*.dom.test.tsx",
-            "components/**/*.dom.test.tsx",
-            "hooks/**/*.dom.test.tsx",
+            "apps/lab/components/**/*.dom.test.tsx",
+            "apps/lab/hooks/**/*.dom.test.tsx",
           ],
           setupFiles: ["./vitest.setup.test-temp-run-worker.ts", "./vitest.setup.test-db-snapshot-worker.ts", "./vitest.setup.dom.ts"],
         },

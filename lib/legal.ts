@@ -7,7 +7,7 @@
  *
  * Deliberately free of any Node import so a client component can pull the list
  * in without dragging `node:fs` into the browser bundle — the pages read the
- * matching `public/legal/<slug>.md` themselves.
+ * matching `apps/lab/public/legal/<slug>.md` themselves.
  */
 export const LEGAL_DOCUMENTS = [
   {

@@ -16,11 +16,11 @@ import {
 } from "./seo-snapshot-io";
 
 /**
- * Regenerates data/seo/occurrences.v1.json from Commerce's public tour.
+ * Regenerates apps/lab/data/seo/occurrences.v1.json from Commerce's public tour.
  *
  *   --source <origin>  the production path, e.g. https://api.flexperiment.ru
  *   --input <file>     a recorded source reading, for fixtures and CI
- *   --out <file>       where to write (default: data/seo/occurrences.v1.json)
+ *   --out <file>       where to write (default: apps/lab/data/seo/occurrences.v1.json)
  *   --previous <file>  the snapshot to preserve frozen slugs from (default: --out)
  *   --check            do not write; exit 1 if the output would differ
  *
