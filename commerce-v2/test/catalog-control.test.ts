@@ -42,6 +42,35 @@ describe("catalog control room commands", () => {
     expect(db.prepare("SELECT COUNT(*) AS count FROM audit_log").get()).toEqual({ count: 2 });
   });
 
+  it("accepts public sales activation only with the acceptance evidence named for its kind", () => {
+    const evidence = { evidenceSha256: "b".repeat(64), actor: "owner" };
+    for (const [kind, evidenceIssue] of [
+      ["ONLINE_COURSE", "ART-243"], ["COURSE_BUNDLE", "ART-243"], ["LAB", "ART-240"],
+      ["ONLINE_COURSE", "ART-999"], ["LAB", "ART-2430"],
+    ] as const) {
+      expect(() => activateSales(db, { kind, evidenceIssue, ...evidence })).toThrow("SALES_ACTIVATION_EVIDENCE_INVALID");
+    }
+    expect(() => activateSales(db, { kind: "ONLINE_COURSE", evidenceIssue: "ART-240", evidenceSha256: "short", actor: "owner" }))
+      .toThrow("SALES_ACTIVATION_EVIDENCE_INVALID");
+    expect(db.prepare("SELECT COUNT(*) AS count FROM sales_activation").get()).toEqual({ count: 0 });
+
+    activateSales(db, { kind: "ONLINE_COURSE", evidenceIssue: "ART-240", ...evidence });
+    activateSales(db, { kind: "COURSE_BUNDLE", evidenceIssue: "ART-240", ...evidence });
+    activateSales(db, { kind: "LAB", evidenceIssue: "ART-243", ...evidence });
+    expect(db.prepare("SELECT product_kind,evidence_issue FROM sales_activation ORDER BY product_kind").all()).toEqual([
+      { product_kind: "COURSE_BUNDLE", evidence_issue: "ART-240" },
+      { product_kind: "LAB", evidence_issue: "ART-243" },
+      { product_kind: "ONLINE_COURSE", evidence_issue: "ART-240" },
+    ]);
+
+    // Checkout trusts the row, so the schema refuses wrong or rewritten evidence even outside the command.
+    db.prepare("UPDATE sales_activation SET revoked_at='2026-09-30T00:00:00Z',revocation_reason='test' WHERE product_kind='LAB'").run();
+    expect(() => db.prepare(`INSERT INTO sales_activation(id,product_kind,evidence_issue,evidence_sha256,activated_by,activated_at)
+      VALUES ('direct','LAB','ART-240',?,'owner','2026-09-30T00:00:00Z')`).run("c".repeat(64))).toThrow("SALES_ACTIVATION_EVIDENCE_INVALID");
+    expect(() => db.prepare("UPDATE sales_activation SET evidence_issue='ART-243' WHERE product_kind='ONLINE_COURSE'").run())
+      .toThrow("SALES_ACTIVATION_EVIDENCE_IMMUTABLE");
+  });
+
   it("rejects stale catalogue edits and withdrawals", () => {
     const config = loadCommerceRuntimeConfig({ DEPLOY_ENV: "test", PAYMENT_MODE: "mock" });
     configureProduct(db, config, { productRef: "course:one", offerRef: "course:one", kind: "ONLINE_COURSE", courseRef: "one",

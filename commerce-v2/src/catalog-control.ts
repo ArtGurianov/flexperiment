@@ -112,12 +112,21 @@ export function withdrawProduct(
   return { productRef: command.productRef, withdrawnAt: now, version };
 }
 
+/** The acceptance run whose evidence may reopen public sales for each product kind. */
+export const salesActivationEvidenceIssue: Readonly<Record<ProductCommand["kind"], string>> = {
+  ONLINE_COURSE: "ART-240",
+  COURSE_BUNDLE: "ART-240",
+  LAB: "ART-243",
+};
+
 export function activateSales(
   db: Database.Database,
   command: { kind: ProductCommand["kind"]; evidenceIssue: string; evidenceSha256: string; actor: string },
   now = new Date().toISOString(),
 ) {
-  if (!/^ART-\d+$/.test(command.evidenceIssue) || !/^[a-f0-9]{64}$/.test(command.evidenceSha256)) throw new Error("SALES_ACTIVATION_EVIDENCE_INVALID");
+  if (!Object.hasOwn(salesActivationEvidenceIssue, command.kind)) throw new Error("SALES_ACTIVATION_KIND_INVALID");
+  if (command.evidenceIssue !== salesActivationEvidenceIssue[command.kind] || !/^[a-f0-9]{64}$/.test(command.evidenceSha256)
+    || !command.actor?.trim()) throw new Error("SALES_ACTIVATION_EVIDENCE_INVALID");
   db.prepare(`INSERT INTO sales_activation(id,product_kind,evidence_issue,evidence_sha256,activated_by,activated_at)
     VALUES (?,?,?,?,?,?)`).run(randomUUID(), command.kind, command.evidenceIssue, command.evidenceSha256, command.actor, now);
   return { kind: command.kind, activatedAt: now };

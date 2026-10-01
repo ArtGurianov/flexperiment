@@ -55,8 +55,14 @@ does.
   The product aggregate has a
   monotonic `version`; Control Room creates with expected version zero and
   every edit or withdrawal compares and advances that version, so stale
-  browser commands fail without overwriting a newer decision. Public selling
-  additionally requires a matching active `sales_activation` record.
+  browser commands fail without overwriting a newer decision. A product's
+  identity (kind, course or occurrence, offer ref) is fixed at creation and
+  guarded by triggers; only access model, price, sale mode and allowlist are
+  editable. Public selling additionally requires a matching active
+  `sales_activation` record, re-checked with the live payment mode at checkout
+  preview and confirmation. An activation must cite the acceptance evidence
+  for its kind — ART-240 for courses and the bundle, ART-243 for LAB — which
+  the command and a schema trigger both enforce.
 - `merchant_promotion` contains only merchant promotion authority: a normalized
   reserved-prefix code, discount rule, optional eligible offer and active
   window. It has no partner, referral, attribution or reward fields. The
