@@ -3,7 +3,7 @@ import { buildCourseManifest } from "./build";
 import { listPendingCommerceOverrides, pushCourseManifest, releaseRolledBackOverride } from "./commerce-client";
 import { getCourseManifestState, getPublishedDocument, hasCommittedAccessOperation, listPublishedCourses } from "@/lib/content/editorial";
 import { getPlatformEpoch, operationIsInFlight } from "./in-flight";
-import { invalidatePlatformCache, notifyIndexNow } from "@/lib/cache-invalidation";
+import { courseIndexNowPaths, invalidatePlatformCache, notifyIndexNow } from "@/lib/cache-invalidation";
 
 type SyncInputOutput = { input: { courseId: string }; output: { courseRef: string; version: number } };
 type ReconcileInputOutput = { input: Record<string, never>; output: { queued: number; released: number } };
@@ -42,7 +42,7 @@ export const syncCourseManifestTask: TaskConfig<SyncInputOutput> = {
     if (state && Number(state.invalidatedVersion ?? 0) < manifest.version) {
       const slug = typeof course.slug === "string" ? course.slug : undefined;
       await invalidatePlatformCache(manifest.operations.length > 0 ? "immediate" : "swr", slug);
-      await notifyIndexNow(["/courses", "/search-index.json", "/sitemap.xml", ...(slug ? [`/courses/${slug}`] : [])]);
+      await notifyIndexNow(courseIndexNowPaths(slug));
       await req.payload.update({
         collection: "course-manifest-states",
         id: state.id,

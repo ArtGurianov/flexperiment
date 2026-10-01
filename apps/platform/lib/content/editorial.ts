@@ -183,6 +183,26 @@ export async function listPublishedCourses(payload: Payload, req?: PayloadReques
   return result.docs as EditorialDocument[];
 }
 
+/** The public slug of an ever-published course, which a commerce change addresses only by its ref. */
+export async function getPublishedCourseSlug(payload: Payload, courseRef: string): Promise<string | null> {
+  const result = await payload.find({
+    collection: "courses",
+    depth: 0,
+    draft: false,
+    limit: 1,
+    overrideAccess: true,
+    pagination: false,
+    where: { and: [
+      { courseRef: { equals: courseRef } },
+      { _status: { equals: "published" } },
+      { everPublished: { equals: true } },
+    ] },
+    select: { slug: true },
+  });
+  const slug = result.docs[0]?.slug;
+  return typeof slug === "string" && slug ? slug : null;
+}
+
 export async function getCampaignCourseSnapshot(payload: Payload, courseRef: string, req?: PayloadRequest) {
   const courseResult = await payload.find({
     collection: "courses",

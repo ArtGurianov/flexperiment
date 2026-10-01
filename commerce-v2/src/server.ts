@@ -113,7 +113,7 @@ const app = createCommerceV2App({
     kinescopeApiConfigured: Boolean(kinescopeClient),
   },
   paymentRail,
-  invalidatePlatformCache: async (mode, courseRef) => {
+  invalidatePlatformCache: async (mode, courseRef, reason) => {
     const origin = origins.platform;
     const token = process.env.PLATFORM_REVALIDATE_TOKEN ?? serviceToken;
     if (!origin || !token) {
@@ -122,7 +122,7 @@ const app = createCommerceV2App({
     }
     const response = await fetch(new URL("/internal/revalidate", origin), {
       method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-      body: JSON.stringify({ mode, courseRef }), signal: AbortSignal.timeout(3_000), cache: "no-store",
+      body: JSON.stringify({ mode, courseRef, reason }), signal: AbortSignal.timeout(3_000), cache: "no-store",
     });
     if (!response.ok) throw new Error(`PLATFORM_REVALIDATION_HTTP_${response.status}`);
   },

@@ -47,7 +47,8 @@ type Dependencies = {
     readonly kinescopeApiConfigured: boolean;
   };
   readonly paymentRail?: PaymentRail;
-  readonly invalidatePlatformCache?: (mode: "swr" | "immediate", courseRef?: string) => Promise<void>;
+  /** `WITHDRAWN` marks the one commercial change that removes public pages; the platform notifies IndexNow for it. */
+  readonly invalidatePlatformCache?: (mode: "swr" | "immediate", courseRef?: string, reason?: "WITHDRAWN") => Promise<void>;
   readonly campaignUnsubscribeSecret?: string;
   readonly marketingBroadcastsEnabled?: boolean;
   readonly origins?: CommerceOrigins;
@@ -234,7 +235,7 @@ export function createCommerceV2App(deps: Dependencies) {
       const result = withdrawProduct(deps.db, { productRef, ...input, actor }, now().toISOString());
       auditControlRoom(deps.db, { adminId: actor, action: "PRODUCT_WITHDRAWN", entityType: "product",
         entityId: productRef, details: { version: result.version, reason: input.reason, termsRef: input.termsRef } }, now().toISOString());
-      await deps.invalidatePlatformCache?.("immediate", product?.course_ref ?? undefined);
+      await deps.invalidatePlatformCache?.("immediate", product?.course_ref ?? undefined, "WITHDRAWN");
       return context.json(result, 200, noStore);
     } catch (error) {
       return context.json({ error: { code: error instanceof Error ? error.message : "WITHDRAWAL_FAILED" } }, 409, noStore);
@@ -362,7 +363,7 @@ export function createCommerceV2App(deps: Dependencies) {
       const body = await context.req.json<{ reason: string; termsRef: string; actor: string; expectedVersion: number }>();
       const product = deps.db.prepare("SELECT course_ref FROM products WHERE product_ref=?").get(context.req.param("productRef")) as { course_ref: string | null } | undefined;
       const result = withdrawProduct(deps.db, { productRef: context.req.param("productRef"), ...body }, now().toISOString());
-      await deps.invalidatePlatformCache?.("immediate", product?.course_ref ?? undefined);
+      await deps.invalidatePlatformCache?.("immediate", product?.course_ref ?? undefined, "WITHDRAWN");
       return context.json(result, 200, noStore);
     } catch (error) {
       return context.json({ code: error instanceof Error ? error.message : "WITHDRAWAL_FAILED" }, 409, noStore);

@@ -17,6 +17,9 @@ export async function invalidatePlatformCache(mode: "swr" | "immediate", slug?: 
   if (!response.ok) throw new Error(`PLATFORM_REVALIDATION_HTTP_${response.status}`);
 }
 
+/** The public URLs that change when a course's content, visibility or availability changes. */
+export const courseIndexNowPaths = (slug?: string) => ["/courses", "/search-index.json", "/sitemap.xml", ...(slug ? [`/courses/${slug}`] : [])];
+
 export async function notifyIndexNow(paths: readonly string[]) {
   const key = process.env.INDEXNOW_KEY;
   const origin = platformOrigin();

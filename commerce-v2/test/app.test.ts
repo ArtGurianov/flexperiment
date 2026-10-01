@@ -122,6 +122,36 @@ describe("commerce v2 boundaries", () => {
     expect(db.prepare("SELECT COUNT(*) AS count FROM control_room_audit_log WHERE action='PRODUCT_CONFIGURED'").get()).toEqual({ count: 1 });
   });
 
+  it("marks only a withdrawal's platform revalidation as a withdrawal", async () => {
+    const invalidatePlatformCache = vi.fn(async () => {});
+    const server = app("disabled", { invalidatePlatformCache });
+    const login = await server.request("/v1/admin/login", {
+      method: "POST", headers: { origin: "https://admin.flexperiment.ru", "content-type": "application/json" },
+      body: JSON.stringify({ password: adminPassword }),
+    });
+    const headers = { cookie: login.headers.get("set-cookie")!, origin: "https://admin.flexperiment.ru", "content-type": "application/json" };
+    expect((await server.request("/v1/admin/v2/catalogue/products", { method: "POST", headers, body: JSON.stringify({
+      productRef: "course:withdrawn", offerRef: "course:withdrawn", kind: "ONLINE_COURSE", courseRef: "withdrawn",
+      accessModel: "FREE", priceKopecks: 0, saleMode: "CLOSED", expectedVersion: 0,
+    }) })).status).toBe(200);
+    expect((await server.request("/v1/admin/v2/catalogue/products/course:withdrawn/withdraw", { method: "POST", headers, body: JSON.stringify({
+      reason: "Rights expired", termsRef: "offer-v1#withdrawal", expectedVersion: 1,
+    }) })).status).toBe(200);
+    expect((await server.request("/v1/internal/catalog/products", internal({
+      productRef: "course:internal", offerRef: "course:internal", kind: "ONLINE_COURSE", courseRef: "internal",
+      accessModel: "FREE", priceKopecks: 0, saleMode: "CLOSED", actor: "operator", expectedVersion: 0,
+    }))).status).toBe(200);
+    expect((await server.request("/v1/internal/catalog/products/course:internal/withdraw", internal({
+      reason: "Rights expired", termsRef: "offer-v1#withdrawal", actor: "operator", expectedVersion: 1,
+    }))).status).toBe(200);
+    expect(invalidatePlatformCache.mock.calls).toEqual([
+      ["swr", "withdrawn"],
+      ["immediate", "withdrawn", "WITHDRAWN"],
+      ["swr", "internal"],
+      ["immediate", "internal", "WITHDRAWN"],
+    ]);
+  });
+
   it("creates and revokes idempotent manual entitlements with an atomic audit trail", async () => {
     db.prepare("INSERT INTO customers(id,email_normalized) VALUES ('manual-customer','manual@example.com')").run();
     db.prepare(`INSERT INTO legal_releases(id,storefront,version,manifest_json,effective_at,active)
