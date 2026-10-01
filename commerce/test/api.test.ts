@@ -11,6 +11,7 @@ import type { SmartCaptchaVerifier } from "../src/smartcaptcha";
 import { materializeInitialActiveFeatureForTest as activateAgentReferrals } from "./support/agent-referrals-feature-state";
 import { provisionPartnerOwner, submitPartnerLegalProfile, verifyPartnerLegalProfile, type AdminPrincipal } from "../src/agent-referrals-partner-identity";
 import { currentAgentReferralsLegalProfile } from "../src/agent-referrals-legal-profile";
+import { legacyFixtureClock } from "./support/legacy-fixture-clock";
 
 process.env.COMMERCE_SESSION_SECRET = "test-session-secret";
 process.env.COMMERCE_ADMIN_PASSWORD_SCRYPT = `salt:${scryptSync("correct horse", "salt", 64).toString("base64url")}`;
@@ -36,7 +37,7 @@ function appFixture(smartCaptcha: SmartCaptchaVerifier = passingCaptcha) {
   db.prepare("INSERT INTO legal_releases(id, version, effective_at, manifest_json, active) VALUES (?, 'test', datetime('now'), ?, 1)").run(releaseId, JSON.stringify(legalManifest));
   db.prepare(`INSERT INTO occurrences(id, city_id, title, starts_at, ends_at, timezone, price_kopecks, capacity, visibility, venue_status, venue_name, venue_address)
     VALUES (?, ?, 'FLEXPERIMENT', '2026-10-01T10:00:00.000Z', '2026-10-01T13:00:00.000Z', 'Asia/Tomsk', 100000, 5, 'PUBLISHED', 'CONFIRMED', 'Studio', 'Lenina 1')`).run(occurrenceId, cityId);
-  return { db, app: createApp(db, new MockProvider(), undefined, smartCaptcha) };
+  return { db, app: createApp(db, new MockProvider(), undefined, smartCaptcha, undefined, legacyFixtureClock) };
 }
 
 function appendV2Event(db: ReturnType<typeof openDatabase>, releaseId: string, action: "ACQUIRED" | "PAUSED" | "REOPENED", details: Record<string, unknown>) {
@@ -89,7 +90,7 @@ describe("commerce HTTP boundary", () => {
   it("uses a ticket capability, not a name, for public admission", async () => {
     const { db, app } = appFixture();
     const occurrenceId = (db.prepare("SELECT id FROM occurrences LIMIT 1").get() as { id: string }).id;
-    const domain = new CommerceDomain(db, new MockProvider());
+    const domain = new CommerceDomain(db, new MockProvider(), undefined, legacyFixtureClock);
     const quote = domain.checkoutContext({ occurrenceId });
     const checkout = await domain.checkoutAsync({
       quote_id: quote.quote_id, customer_email: "buyer@example.test", customer_adult_confirmed: true,
@@ -474,7 +475,7 @@ describe("commerce HTTP boundary", () => {
 
   it("reads refund confirmation context without consuming or cancelling anything", async () => {
     const { db, app } = appFixture();
-    const domain = new CommerceDomain(db, new MockProvider());
+    const domain = new CommerceDomain(db, new MockProvider(), undefined, legacyFixtureClock);
     const occurrenceId = (db.prepare("SELECT id FROM occurrences LIMIT 1").get() as { id: string }).id;
     const quote = domain.checkoutContext({ occurrenceId });
     const checkout = await domain.checkoutAsync({ quote_id: quote.quote_id, customer_email: "art@example.test", customer_adult_confirmed: true, participant_age_band: "ADULT", offer_accepted: true, pd_consent_accepted: true }, "995e27bc-77c6-47b1-b6d0-000000000001", "https://flexperiment.ru");
@@ -835,7 +836,7 @@ describe("commerce HTTP boundary", () => {
     expect(logout.headers.get("set-cookie")).toBe("fx_admin_session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict");
     expect(logout.headers.get("set-cookie")).not.toContain("Domain=");
     expect(db.prepare("SELECT revoked_at FROM admin_sessions").get()).toMatchObject({ revoked_at: expect.any(String) });
-    const restartedApp = createApp(db, new MockProvider());
+    const restartedApp = createApp(db, new MockProvider(), undefined, undefined, undefined, legacyFixtureClock);
     const replay = await restartedApp.request("http://admin.flexperiment.ru/v1/admin/session", { headers });
     expect(replay.status).toBe(401);
     expect(await replay.json()).toEqual({ error: { code: "ADMIN_AUTH_REQUIRED" } });
@@ -907,7 +908,7 @@ describe("commerce HTTP boundary", () => {
     db.prepare(`INSERT INTO outbox_attempt(id, message_id, attempt_no, provider_idempotence_key, provider_job_id, started_at, provider_request_started_at, send_try_count)
       VALUES (?, ?, 1, 'stable-key', 'job-1', datetime('now'), datetime('now'), 1)`).run(randomUUID(), outboxId);
     const apiKey = "test-api-key-not-a-secret";
-    const app = createApp(db, new MockProvider(), new UnisenderGoProvider({ apiKey, fromEmail: "noreply@example.test", fromName: "Flexperiment", replyToEmail: "hello@example.test" }, async () => Response.json({ status: "success", job_id: "job" })));
+    const app = createApp(db, new MockProvider(), new UnisenderGoProvider({ apiKey, fromEmail: "noreply@example.test", fromName: "Flexperiment", replyToEmail: "hello@example.test" }, async () => Response.json({ status: "success", job_id: "job" })), undefined, undefined, legacyFixtureClock);
     const unsigned = JSON.stringify({ auth: "pending", events_by_user: [{ user_id: 1, events: [{ event_name: "transactional_email_status", event_data: { job_id: "job-1", metadata: { outbox_id: outboxId }, status: "delivered", event_time: "2026-08-20 00:00:00" } }] }] });
     const body = unsigned.replace("pending", createHash("md5").update(unsigned.replace("pending", apiKey)).digest("hex"));
     const response = await app.request("http://flexperiment.ru/v1/webhooks/unisender", { method: "POST", headers: { "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.1" }, body });
@@ -922,7 +923,7 @@ describe("commerce HTTP boundary", () => {
   it("offers the Unisender GET verification response and keeps callback POST authentication mandatory", async () => {
     const { db } = appFixture();
     const apiKey = "test-api-key-not-a-secret";
-    const app = createApp(db, new MockProvider(), new UnisenderGoProvider({ apiKey, fromEmail: "noreply@example.test", fromName: "Flexperiment", replyToEmail: "hello@example.test" }, async () => Response.json({ status: "success", job_id: "job" })));
+    const app = createApp(db, new MockProvider(), new UnisenderGoProvider({ apiKey, fromEmail: "noreply@example.test", fromName: "Flexperiment", replyToEmail: "hello@example.test" }, async () => Response.json({ status: "success", job_id: "job" })), undefined, undefined, legacyFixtureClock);
 
     const probe = await app.request("http://api.flexperiment.ru/v1/webhooks/unisender");
     expect(probe.status).toBe(200);
@@ -945,7 +946,7 @@ describe("commerce HTTP boundary", () => {
     db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot)
       VALUES (?, 'BOOKING_CANCELLED', 'buyer@example.test', 'hash', 'booking-cancelled', '{}')`).run(outboxId);
     const apiKey = "test-api-key-not-a-secret";
-    const app = createApp(db, new MockProvider(), new UnisenderGoProvider({ apiKey, fromEmail: "noreply@example.test", fromName: "Flexperiment", replyToEmail: "hello@example.test" }, async () => Response.json({ status: "success", job_id: "job" })));
+    const app = createApp(db, new MockProvider(), new UnisenderGoProvider({ apiKey, fromEmail: "noreply@example.test", fromName: "Flexperiment", replyToEmail: "hello@example.test" }, async () => Response.json({ status: "success", job_id: "job" })), undefined, undefined, legacyFixtureClock);
     const unsigned = JSON.stringify({ auth: "pending", events_by_user: [{ user_id: 1, events: [{ event_name: "transactional_email_status", event_data: { job_id: "job-2", metadata: { outbox_id: outboxId }, status: "soft_bounced", event_time: "2026-08-20 00:00:00" } }] }] });
     const body = unsigned.replace("pending", createHash("md5").update(unsigned.replace("pending", apiKey)).digest("hex"));
     expect((await app.request("http://flexperiment.ru/v1/webhooks/unisender", { method: "POST", headers: { "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.1" }, body })).status).toBe(200);
@@ -960,7 +961,7 @@ describe("commerce HTTP boundary", () => {
     db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot)
       VALUES (?, 'REFUND_SUCCEEDED', 'buyer@example.test', 'hash', 'refund-succeeded', '{}')`).run(outboxId);
     const apiKey = "test-api-key-not-a-secret";
-    const app = createApp(db, new MockProvider(), new UnisenderGoProvider({ apiKey, fromEmail: "noreply@example.test", fromName: "Flexperiment", replyToEmail: "hello@example.test" }, async () => Response.json({ status: "success", job_id: "job" })));
+    const app = createApp(db, new MockProvider(), new UnisenderGoProvider({ apiKey, fromEmail: "noreply@example.test", fromName: "Flexperiment", replyToEmail: "hello@example.test" }, async () => Response.json({ status: "success", job_id: "job" })), undefined, undefined, legacyFixtureClock);
     const unsigned = JSON.stringify({ auth: "pending", events_by_user: [{ user_id: 1, events: [{ event_name: "transactional_email_status", event_data: {
       job_id: "job-3", metadata: { outbox_id: outboxId }, email: "buyer@example.test", status: "soft_bounced", event_time: "2026-09-24 06:52:10",
       delivery_info: { delivery_status: "err_mailbox_full", destination_response: "452 4.2.2 <buyer@example.test>: Mailbox full", sender_ip: "192.0.2.10", ip: "203.0.113.7", city: "Berlin" },
@@ -981,7 +982,7 @@ describe("commerce HTTP boundary", () => {
     const outboxId = randomUUID();
     db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot)
       VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}')`).run(outboxId);
-    new CommerceDomain(db, new MockProvider()).applyUnisenderDelivery({
+    new CommerceDomain(db, new MockProvider(), undefined, legacyFixtureClock).applyUnisenderDelivery({
       source: "EVENT_DUMP", outboxId, status: "SENT", providerStatus: "sent", semanticKey: "raw-caller",
       delivery: { deliveryStatus: "err_will_retry", destinationResponse: "451 <buyer@example.test>\r\nlater", senderIp: "not-an-ip", eventTime: "2026-09-24 06:51:59" },
     });
@@ -995,7 +996,7 @@ describe("commerce HTTP boundary", () => {
     const outboxId = randomUUID();
     db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot)
       VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}')`).run(outboxId);
-    const domain = new CommerceDomain(db, new MockProvider());
+    const domain = new CommerceDomain(db, new MockProvider(), undefined, legacyFixtureClock);
     const rich = { source: "WEBHOOK" as const, outboxId, status: "SENT" as const, providerStatus: "sent" as const, jobId: "job-1", semanticKey: "rich",
       delivery: { deliveryStatus: "err_will_retry", destinationResponse: "451 4.7.1 Try again later", senderIp: "192.0.2.10", eventTime: "2026-09-24 06:52:10" } };
     domain.applyUnisenderDelivery(rich);
