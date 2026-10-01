@@ -8,6 +8,12 @@ let db: Database.Database;
 beforeEach(() => { db = new Database(":memory:"); db.pragma("foreign_keys = ON"); migrateV2(db); });
 
 describe("catalog control room commands", () => {
+  const seedOccurrence = () => {
+    db.prepare("INSERT INTO cities(id,slug,title) VALUES ('city','moscow','Moscow')").run();
+    db.prepare(`INSERT INTO lab_occurrences(id,occurrence_ref,city_id,title,starts_at,ends_at,timezone,capacity)
+      VALUES ('occurrence','lab:2026-11-01','city','LAB','2026-11-01T09:00:00Z','2026-11-01T17:00:00Z','Europe/Moscow',12)`).run();
+  };
+
   it("permits a free Stage A product while paid sales stay closed", () => {
     const config = loadCommerceRuntimeConfig({ DEPLOY_ENV: "production", PAYMENT_MODE: "disabled", MERCHANT_PROMOTION_PREFIX: "FX-" });
     configureProduct(db, config, {
@@ -44,5 +50,31 @@ describe("catalog control room commands", () => {
       accessModel: "FREE", priceKopecks: 0, saleMode: "CLOSED", actor: "author", expectedVersion: 0 })).toThrow("CATALOG_VERSION_CONFLICT");
     expect(() => withdrawProduct(db, { productRef: "course:one", reason: "reason", termsRef: "terms", actor: "owner", expectedVersion: 0 }))
       .toThrow("CATALOG_VERSION_CONFLICT");
+  });
+
+  it("binds each LAB product and offer to exactly one existing occurrence", () => {
+    const config = loadCommerceRuntimeConfig({ DEPLOY_ENV: "production", PAYMENT_MODE: "disabled", MERCHANT_PROMOTION_PREFIX: "FX-" });
+    seedOccurrence();
+    expect(() => configureProduct(db, config, {
+      productRef: "lab:missing", offerRef: "lab:missing", kind: "LAB",
+      accessModel: "PAID", priceKopecks: 100, saleMode: "CLOSED", actor: "author", expectedVersion: 0,
+    })).toThrow("OCCURRENCE_REF_REQUIRED");
+    expect(() => configureProduct(db, config, {
+      productRef: "lab:unknown", offerRef: "lab:unknown", kind: "LAB", occurrenceRef: "lab:unknown",
+      accessModel: "PAID", priceKopecks: 100, saleMode: "CLOSED", actor: "author", expectedVersion: 0,
+    })).toThrow("LAB_OCCURRENCE_NOT_FOUND");
+
+    configureProduct(db, config, {
+      productRef: "lab:2026-11-01", offerRef: "lab:2026-11-01", kind: "LAB", occurrenceRef: "lab:2026-11-01",
+      accessModel: "PAID", priceKopecks: 100, saleMode: "CLOSED", actor: "author", expectedVersion: 0,
+    });
+    expect(db.prepare(`SELECT product.occurrence_ref,offer.offer_ref FROM products product
+      JOIN offers offer ON offer.product_id=product.id`).get()).toEqual({
+      occurrence_ref: "lab:2026-11-01", offer_ref: "lab:2026-11-01",
+    });
+    expect(() => configureProduct(db, config, {
+      productRef: "lab:duplicate", offerRef: "lab:duplicate", kind: "LAB", occurrenceRef: "lab:2026-11-01",
+      accessModel: "PAID", priceKopecks: 200, saleMode: "CLOSED", actor: "author", expectedVersion: 0,
+    })).toThrow(/UNIQUE/);
   });
 });

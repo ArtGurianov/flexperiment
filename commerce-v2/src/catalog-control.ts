@@ -8,6 +8,7 @@ export type ProductCommand = {
   kind: "ONLINE_COURSE" | "COURSE_BUNDLE" | "LAB";
   accessModel: "FREE" | "PAID";
   courseRef?: string;
+  occurrenceRef?: string;
   priceKopecks: number;
   saleMode: SaleMode;
   acceptanceAllowlist?: string[];
@@ -24,6 +25,11 @@ export function configureProduct(db: Database.Database, config: CommerceRuntimeC
   if (!Number.isInteger(command.priceKopecks) || command.priceKopecks < 0) throw new Error("PRICE_INVALID");
   if (command.kind === "ONLINE_COURSE" && !command.courseRef) throw new Error("COURSE_REF_REQUIRED");
   if (command.kind !== "ONLINE_COURSE" && command.courseRef) throw new Error("COURSE_REF_FORBIDDEN");
+  if (command.kind === "LAB" && !command.occurrenceRef) throw new Error("OCCURRENCE_REF_REQUIRED");
+  if (command.kind !== "LAB" && command.occurrenceRef) throw new Error("OCCURRENCE_REF_FORBIDDEN");
+  if (command.occurrenceRef && !db.prepare("SELECT 1 FROM lab_occurrences WHERE occurrence_ref=?").get(command.occurrenceRef)) {
+    throw new Error("LAB_OCCURRENCE_NOT_FOUND");
+  }
   assertOfferSaleModeAllowed(config, command, activeSalesActivation(db, command.kind));
   const apply = db.transaction(() => {
     const existing = db.prepare("SELECT id,withdrawn_at,version FROM products WHERE product_ref=?").get(command.productRef) as { id: string; withdrawn_at: string | null; version: number } | undefined;
@@ -31,12 +37,14 @@ export function configureProduct(db: Database.Database, config: CommerceRuntimeC
     if ((!existing && command.expectedVersion !== 0) || (existing && existing.version !== command.expectedVersion)) throw new Error("CATALOG_VERSION_CONFLICT");
     const productId = existing?.id ?? randomUUID();
     if (existing) {
-      const update = db.prepare(`UPDATE products SET kind=?,access_model=?,course_ref=?,updated_at=?,version=version+1
-        WHERE id=? AND version=?`).run(command.kind, command.accessModel, command.courseRef ?? null, now, productId, command.expectedVersion);
+      const update = db.prepare(`UPDATE products SET kind=?,access_model=?,course_ref=?,occurrence_ref=?,updated_at=?,version=version+1
+        WHERE id=? AND version=?`).run(command.kind, command.accessModel, command.courseRef ?? null,
+          command.occurrenceRef ?? null, now, productId, command.expectedVersion);
       if (update.changes !== 1) throw new Error("CATALOG_VERSION_CONFLICT");
     } else {
-      db.prepare(`INSERT INTO products(id,product_ref,kind,access_model,course_ref,created_at,updated_at,version)
-        VALUES (?,?,?,?,?,?,?,1)`).run(productId, command.productRef, command.kind, command.accessModel, command.courseRef ?? null, now, now);
+      db.prepare(`INSERT INTO products(id,product_ref,kind,access_model,course_ref,occurrence_ref,created_at,updated_at,version)
+        VALUES (?,?,?,?,?,?,?,?,1)`).run(productId, command.productRef, command.kind, command.accessModel,
+          command.courseRef ?? null, command.occurrenceRef ?? null, now, now);
     }
     const offer = db.prepare("SELECT id FROM offers WHERE product_id=?").get(productId) as { id: string } | undefined;
     if (offer) {

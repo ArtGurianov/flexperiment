@@ -29,6 +29,7 @@ export type ProductConfigurationCommand = {
   kind: ProductKind;
   accessModel: AccessModel;
   courseRef?: string;
+  occurrenceRef?: string;
   priceKopecks: number;
   saleMode: SaleMode;
   acceptanceAllowlist?: string[];

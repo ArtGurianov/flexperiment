@@ -62,6 +62,19 @@ describe("v2 baseline invariants", () => {
     expect(() => db.prepare("INSERT INTO products(id,product_ref,kind,access_model,course_ref,withdrawn_at) VALUES ('p','course:x','ONLINE_COURSE','PAID','x','now')").run()).toThrow(/CHECK/);
   });
 
+  it("requires LAB products to identify one existing occurrence", () => {
+    const db = database(); migrateV2(db);
+    db.prepare("INSERT INTO cities(id,slug,title) VALUES ('city','city','City')").run();
+    db.prepare(`INSERT INTO lab_occurrences(id,occurrence_ref,city_id,title,starts_at,ends_at,timezone,capacity)
+      VALUES ('occurrence','lab:one','city','LAB','2026-11-01T09:00:00Z','2026-11-01T17:00:00Z','UTC',1)`).run();
+    expect(() => db.prepare("INSERT INTO products(id,product_ref,kind,access_model) VALUES ('bad','lab:bad','LAB','PAID')").run())
+      .toThrow(/PRODUCT_OCCURRENCE_CONTRACT_INVALID/);
+    db.prepare(`INSERT INTO products(id,product_ref,kind,access_model,occurrence_ref)
+      VALUES ('good','lab:one','LAB','PAID','lab:one')`).run();
+    expect(() => db.prepare(`INSERT INTO products(id,product_ref,kind,access_model,occurrence_ref)
+      VALUES ('duplicate','lab:duplicate','LAB','PAID','lab:one')`).run()).toThrow(/UNIQUE/);
+  });
+
   it("keeps terminal override evidence complete", () => {
     const db = database(); migrateV2(db);
     expect(() => db.prepare(`INSERT INTO access_overrides
@@ -77,5 +90,26 @@ describe("v2 launch seed", () => {
     expect(applyV2Seed(db, catalogue).kind).toBe("APPLIED");
     expect(applyV2Seed(db, catalogue).kind).toBe("ALREADY_APPLIED");
     expect(() => applyV2Seed(db, { ...catalogue, cities: [...catalogue.cities, { slug: "kazan", title: "Казань" }] })).toThrow(new V2SeedError("V2_SEED_CATALOGUE_MISMATCH"));
+  });
+
+  it("seeds LAB occurrences before their targetable products and offers", () => {
+    const db = database(); migrateV2(db);
+    const catalogue = readV2Catalogue();
+    const labCatalogue = {
+      ...catalogue,
+      products: [...catalogue.products, {
+        productRef: "lab:one", kind: "LAB" as const, accessModel: "PAID" as const,
+        occurrenceRef: "lab:one", offerRef: "lab:one", priceKopecks: 50_000, saleMode: "CLOSED" as const,
+      }],
+      labOccurrences: [{
+        occurrenceRef: "lab:one", citySlug: "moscow", title: "LAB One",
+        startsAt: "2026-11-01T09:00:00Z", endsAt: "2026-11-01T17:00:00Z", timezone: "Europe/Moscow", capacity: 12,
+      }],
+    };
+    expect(applyV2Seed(db, labCatalogue).kind).toBe("APPLIED");
+    expect(db.prepare(`SELECT product.occurrence_ref,offer.offer_ref FROM products product
+      JOIN offers offer ON offer.product_id=product.id WHERE product.kind='LAB'`).get()).toEqual({
+      occurrence_ref: "lab:one", offer_ref: "lab:one",
+    });
   });
 });

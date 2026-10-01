@@ -11,6 +11,7 @@ type Catalogue = {
     readonly kind: "ONLINE_COURSE" | "COURSE_BUNDLE" | "LAB";
     readonly accessModel: "FREE" | "PAID";
     readonly courseRef?: string;
+    readonly occurrenceRef?: string;
     readonly offerRef: string;
     readonly priceKopecks: number;
     readonly saleMode: "CLOSED" | "ACCEPTANCE_ONLY" | "PUBLIC";
@@ -54,16 +55,6 @@ export function applyV2Seed(db: Database.Database, catalogue: Catalogue) {
       cityBySlug.set(city.slug, id);
     }
 
-    const insertProduct = db.prepare(`INSERT INTO products
-      (id, product_ref, kind, access_model, course_ref) VALUES (?, ?, ?, ?, ?)`);
-    const insertOffer = db.prepare(`INSERT INTO offers
-      (id, offer_ref, product_id, price_kopecks, sale_mode) VALUES (?, ?, ?, ?, ?)`);
-    for (const product of catalogue.products) {
-      const id = randomUUID();
-      insertProduct.run(id, product.productRef, product.kind, product.accessModel, product.courseRef ?? null);
-      insertOffer.run(randomUUID(), product.offerRef, id, product.priceKopecks, product.saleMode);
-    }
-
     const insertOccurrence = db.prepare(`INSERT INTO lab_occurrences
       (id, occurrence_ref, city_id, title, starts_at, ends_at, timezone, capacity)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
@@ -72,6 +63,17 @@ export function applyV2Seed(db: Database.Database, catalogue: Catalogue) {
       if (!cityId) throw new V2SeedError("V2_SEED_UNKNOWN_CITY");
       insertOccurrence.run(randomUUID(), occurrence.occurrenceRef, cityId, occurrence.title,
         occurrence.startsAt, occurrence.endsAt, occurrence.timezone, occurrence.capacity);
+    }
+
+    const insertProduct = db.prepare(`INSERT INTO products
+      (id, product_ref, kind, access_model, course_ref, occurrence_ref) VALUES (?, ?, ?, ?, ?, ?)`);
+    const insertOffer = db.prepare(`INSERT INTO offers
+      (id, offer_ref, product_id, price_kopecks, sale_mode) VALUES (?, ?, ?, ?, ?)`);
+    for (const product of catalogue.products) {
+      const id = randomUUID();
+      insertProduct.run(id, product.productRef, product.kind, product.accessModel,
+        product.courseRef ?? null, product.occurrenceRef ?? null);
+      insertOffer.run(randomUUID(), product.offerRef, id, product.priceKopecks, product.saleMode);
     }
 
     db.prepare("INSERT INTO launch_seed(singleton, catalogue_sha256) VALUES (1, ?)").run(digest);
