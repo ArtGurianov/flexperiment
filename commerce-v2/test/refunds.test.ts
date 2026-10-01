@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 import { beforeEach, describe, expect, it } from "vitest";
 import { checkout, MockPaymentRail, type PaymentRail } from "../src/checkout";
 import { migrateV2 } from "../src/db";
+import { stageBLegalManifestJson } from "./fixtures/legal";
 import { decideRefund, executeApprovedRefund, listRefundCases, recordCourseAccessStart, requestRefund } from "../src/refunds";
 
 let db: Database.Database;
@@ -14,7 +15,7 @@ beforeEach(() => {
   rail = new MockPaymentRail();
   db.prepare("INSERT INTO customers(id,email_normalized) VALUES ('customer','student@example.com')").run();
   db.prepare(`INSERT INTO legal_releases(id,storefront,version,manifest_json,effective_at,active)
-    VALUES ('legal','COURSES','stage-b-v1','{}','2026-09-30T00:00:00Z',1)`).run();
+    VALUES ('legal','COURSES','stage-b-v1',?,'2026-09-30T00:00:00Z',1)`).run(stageBLegalManifestJson);
   db.prepare(`INSERT INTO products(id,product_ref,kind,access_model,course_ref)
     VALUES ('product','course:one','ONLINE_COURSE','PAID','course-one')`).run();
   db.prepare(`INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode)

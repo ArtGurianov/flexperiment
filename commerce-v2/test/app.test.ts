@@ -3,6 +3,7 @@ import { scryptSync } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createCommerceV2App } from "../src/app";
 import { migrateV2 } from "../src/db";
+import { stageBLegalManifestJson } from "./fixtures/legal";
 import { loadCommerceRuntimeConfig } from "../src/payment-mode";
 import { withManifestHash } from "../src/manifest";
 import { MockPaymentRail } from "../src/checkout";
@@ -207,7 +208,7 @@ describe("commerce v2 boundaries", () => {
   it("requires a visible price review before checkout confirmation", async () => {
     db.prepare("INSERT INTO customers(id,email_normalized) VALUES ('customer','student@example.com')").run();
     db.prepare(`INSERT INTO legal_releases(id,storefront,version,manifest_json,effective_at,active)
-      VALUES ('legal','COURSES','stage-b-v1','{}','2026-09-30T00:00:00Z',1)`).run();
+      VALUES ('legal','COURSES','stage-b-v1',?,'2026-09-30T00:00:00Z',1)`).run(stageBLegalManifestJson);
     db.prepare(`INSERT INTO products(id,product_ref,kind,access_model,course_ref)
       VALUES ('product','course:one','ONLINE_COURSE','PAID','course-one')`).run();
     db.prepare(`INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode)
@@ -232,7 +233,7 @@ describe("commerce v2 boundaries", () => {
   it("carries the signed order identity from attribution handoff through the payment return", async () => {
     db.prepare("INSERT INTO customers(id,email_normalized) VALUES ('customer','student@example.com')").run();
     db.prepare(`INSERT INTO legal_releases(id,storefront,version,manifest_json,effective_at,active)
-      VALUES ('legal','COURSES','stage-b-v1','{}','2026-09-30T00:00:00Z',1)`).run();
+      VALUES ('legal','COURSES','stage-b-v1',?,'2026-09-30T00:00:00Z',1)`).run(stageBLegalManifestJson);
     db.prepare(`INSERT INTO products(id,product_ref,kind,access_model,course_ref)
       VALUES ('product','course:one','ONLINE_COURSE','PAID','course-one')`).run();
     db.prepare(`INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode)
@@ -285,7 +286,7 @@ describe("commerce v2 boundaries", () => {
   it("requires a customer request and explicit operator decision before refund execution", async () => {
     db.prepare("INSERT INTO customers(id,email_normalized) VALUES ('customer','student@example.com')").run();
     db.prepare(`INSERT INTO legal_releases(id,storefront,version,manifest_json,effective_at,active)
-      VALUES ('legal','COURSES','stage-b-v1','{}','2026-09-30T00:00:00Z',1)`).run();
+      VALUES ('legal','COURSES','stage-b-v1',?,'2026-09-30T00:00:00Z',1)`).run(stageBLegalManifestJson);
     db.prepare(`INSERT INTO products(id,product_ref,kind,access_model,course_ref)
       VALUES ('product','course:one','ONLINE_COURSE','PAID','course-one')`).run();
     db.prepare(`INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode)
@@ -328,7 +329,7 @@ describe("commerce v2 boundaries", () => {
     expect((await server.request("/v1/internal/control-room/catalogue")).status).toBe(401);
     db.prepare("INSERT INTO customers(id,email_normalized) VALUES ('customer','student@example.com')").run();
     db.prepare(`INSERT INTO legal_releases(id,storefront,version,manifest_json,effective_at,active)
-      VALUES ('legal','COURSES','stage-b-v1','{}','2026-09-30T00:00:00Z',1)`).run();
+      VALUES ('legal','COURSES','stage-b-v1',?,'2026-09-30T00:00:00Z',1)`).run(stageBLegalManifestJson);
     db.prepare(`INSERT INTO products(id,product_ref,kind,access_model,course_ref)
       VALUES ('product','course:one','ONLINE_COURSE','PAID','course-one')`).run();
     db.prepare(`INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode)

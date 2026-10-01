@@ -70,6 +70,18 @@ describe("v2 baseline invariants", () => {
     expect(db.prepare("SELECT document_sha256 FROM account_consents").get()).toEqual({ document_sha256: "a".repeat(64) });
   });
 
+  it("requires per-line evidence for canonical checkout orders", () => {
+    const db = database(); migrateV2(db);
+    db.prepare("INSERT INTO customers(id,email_normalized) VALUES ('customer','student@example.com')").run();
+    db.prepare("INSERT INTO legal_releases(id,storefront,version,manifest_json,effective_at,active) VALUES ('legal','COURSES','v1','{}','now',1)").run();
+    db.prepare("INSERT INTO products(id,product_ref,kind,access_model,course_ref) VALUES ('product','course:one','ONLINE_COURSE','PAID','one')").run();
+    db.prepare(`INSERT INTO orders(id,public_id,customer_id,state,total_kopecks,checkout_snapshot_json,snapshot_hash,legal_release_id)
+      VALUES ('order','public','customer','PAYMENT_PENDING',100,'{"schema":"refref.shared-checkout-snapshot/1"}',?,'legal')`).run("a".repeat(64));
+    expect(() => db.prepare(`INSERT INTO order_lines
+      (id,order_id,product_id,offer_ref_snapshot,title_snapshot,unit_amount_kopecks,legal_terms_ref)
+      VALUES ('line','order','product','course:one','Course',100,'v1')`).run()).toThrow("ORDER_LINE_CANONICAL_SNAPSHOT_INCOMPLETE");
+  });
+
   it("requires withdrawal reason and terms evidence", () => {
     const db = database(); migrateV2(db);
     expect(() => db.prepare("INSERT INTO products(id,product_ref,kind,access_model,course_ref,withdrawn_at) VALUES ('p','course:x','ONLINE_COURSE','PAID','x','now')").run()).toThrow(/CHECK/);

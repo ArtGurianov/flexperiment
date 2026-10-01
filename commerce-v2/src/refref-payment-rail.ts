@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
 import { AmbiguousRailCreateError, type CheckoutCodeOutcome, type PaymentCreateInput, type PaymentRail, type PaymentResolveInput, type RailProjection, type RailResolution } from "./checkout";
+import { checkoutSnapshotHash, type SharedCheckoutSnapshotV1 } from "./checkout-snapshot";
 
 type Fetch = typeof fetch;
 type RefrefConfig = {
@@ -19,28 +19,23 @@ type Obligation = {
 
 type Attempt = { id: string; status: "OPEN" | "SETTLED" | "CANCELLED" | "EXPIRED"; obligations: Obligation[]; referralResolutionId?: string; snapshotHash?: string };
 
-const canonical = (value: unknown): string => {
-  if (value === null) return "null";
-  if (typeof value === "boolean") return value ? "true" : "false";
-  if (typeof value === "number") {
-    if (!Number.isSafeInteger(value)) throw new Error("REFREF_SNAPSHOT_INTEGER_REQUIRED");
-    return String(value);
-  }
-  if (typeof value === "string") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
-  if (typeof value === "object") {
-    const record = value as Record<string, unknown>;
-    return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonical(record[key])}`).join(",")}}`;
-  }
-  throw new Error("REFREF_SNAPSHOT_VALUE_INVALID");
-};
-
 export const refrefSnapshotDigest = (snapshot: Record<string, unknown>) =>
-  `refref-jcs-1:${createHash("sha256").update(canonical(snapshot)).digest("hex")}`;
+  checkoutSnapshotHash(snapshot as SharedCheckoutSnapshotV1);
 
 export class RefrefPaymentRail implements PaymentRail {
   private readonly request: Fetch;
-  constructor(private readonly config: RefrefConfig) { this.request = config.fetch ?? fetch; }
+  readonly checkoutSnapshotConfig;
+  constructor(private readonly config: RefrefConfig) {
+    this.request = config.fetch ?? fetch;
+    this.checkoutSnapshotConfig = {
+      merchantId: config.merchantId,
+      fiscalizationMode: "PROVIDER" as const,
+      taxSystem: "USN_INCOME" as const,
+      vatCode: "NONE" as const,
+      paymentMethod: config.paymentMethod,
+      paymentObject: "SERVICE" as const,
+    };
+  }
 
   private async call(method: string, path: string, body?: unknown, idempotencyKey?: string) {
     const target = new URL(this.config.apiBaseUrl);
@@ -75,7 +70,15 @@ export class RefrefPaymentRail implements PaymentRail {
 
   async resolve(input: PaymentResolveInput): Promise<RailResolution> {
     if (!input.handoffToken) throw new Error("REFREF_HANDOFF_TOKEN_REQUIRED");
-    const line = { lineRef: input.lineRef, offerRef: input.offerRef, quantity: 1, merchantOfferAmountKopecks: input.amountKopecks };
+    const line = {
+      lineRef: input.lineRef,
+      offerRef: input.offerRef,
+      ...(input.unitRef === undefined ? {} : { unitRef: input.unitRef }),
+      quantity: 1,
+      merchantOfferAmountKopecks: input.amountKopecks,
+      ...(input.serviceStartsAt === undefined ? {} : { serviceStartsAt: input.serviceStartsAt }),
+      ...(input.serviceEndsAt === undefined ? {} : { serviceEndsAt: input.serviceEndsAt }),
+    };
     let resolution: Record<string, unknown>;
     try {
       resolution = await this.call("POST", "/integrations/referral-resolutions", {
@@ -111,30 +114,15 @@ export class RefrefPaymentRail implements PaymentRail {
   }
 
   async create(input: PaymentCreateInput): Promise<RailProjection> {
-    const line = { lineRef: input.lineRef, offerRef: input.offerRef, quantity: 1, merchantOfferAmountKopecks: input.amountKopecks };
     const { quote } = input;
     if (quote.baseAmountKopecks !== input.amountKopecks
       || quote.finalAmountKopecks !== input.amountKopecks - quote.discountKopecks
       || quote.finalAmountKopecks <= 0) throw new Error("REFREF_QUOTE_INVALID");
-    const snapshot = {
-      schema: "refref.shared-checkout-snapshot/1", merchantId: this.config.merchantId,
-      merchantOrderRef: input.orderPublicId, currency: "RUB",
-      referralResolutionId: quote.resolutionId, termsVersionId: quote.termsVersionId,
-      lines: [{ ...line, referralDiscountAmountKopecks: quote.discountKopecks, finalAmountKopecks: quote.finalAmountKopecks }],
-      totalContractAmountKopecks: quote.finalAmountKopecks,
-      paymentObligations: [{
-        obligationRef: "full", kind: "FULL", executionMode: "ORCHESTRATED", amountKopecks: quote.finalAmountKopecks,
-        allocations: [{ lineRef: input.lineRef, amountKopecks: quote.finalAmountKopecks }], fiscalizationMode: "PROVIDER",
-        fiscal: { taxSystem: "USN_INCOME", items: [{ lineRef: input.lineRef, name: input.productRef, quantity: 1,
-          amountKopecks: quote.finalAmountKopecks, vatCode: "NONE", paymentMethod: this.config.paymentMethod, paymentObject: "SERVICE" }] },
-      }],
-      legalReleaseRef: input.legalReleaseRef, legalReleaseHash: input.legalReleaseHash,
-    };
-    const snapshotHash = refrefSnapshotDigest(snapshot);
+    if (checkoutSnapshotHash(input.snapshot) !== input.snapshotHash) throw new Error("REFREF_SNAPSHOT_HASH_INVALID");
     let created: Record<string, unknown>;
     try {
       created = await this.call("POST", `/integrations/orders/${encodeURIComponent(input.orderPublicId)}/checkout-attempts`, {
-        referralResolutionId: quote.resolutionId, snapshot, snapshotHash,
+        referralResolutionId: quote.resolutionId, snapshot: input.snapshot, snapshotHash: input.snapshotHash,
       }, input.idempotencyKey);
     } catch (error) {
       if (error instanceof TypeError || error instanceof DOMException) throw new AmbiguousRailCreateError();
@@ -142,10 +130,11 @@ export class RefrefPaymentRail implements PaymentRail {
     }
     const attemptId = String(created.checkoutAttemptId ?? "");
     if (!attemptId) throw new Error("REFREF_ATTEMPT_INVALID");
+    if (created.snapshotHash !== input.snapshotHash) throw new Error("REFREF_SNAPSHOT_HASH_MISMATCH");
     const session = await this.call("POST", `/integrations/orders/${encodeURIComponent(input.orderPublicId)}/checkout-attempts/${encodeURIComponent(attemptId)}/obligations/full/payment-session`, {
       successUrl: input.successUrl ?? this.config.successUrl, receiptContact: { email: input.customerEmail },
     });
-    const evidence = { resolutionId: quote.resolutionId, snapshotHash };
+    const evidence = { resolutionId: quote.resolutionId, snapshotHash: input.snapshotHash };
     if (session.status === "PAYMENT_READY" && typeof session.providerPaymentUrl === "string") return { attemptId, state: "CUSTOMER_ACTION_REQUIRED", checkoutUrl: session.providerPaymentUrl, ...evidence };
     if (session.status === "PAYMENT_PROCESSING") return { attemptId, state: "PENDING", ...evidence };
     if (session.status === "PAYMENT_FAILED") return { attemptId, state: "DECLINED", ...evidence };

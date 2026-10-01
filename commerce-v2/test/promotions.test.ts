@@ -1,12 +1,22 @@
 import Database from "better-sqlite3";
 import { beforeEach, describe, expect, it } from "vitest";
-import { confirmCheckout, prepareCheckout, type PaymentRail, type PaymentResolveInput, type RailProjection, type RailResolution } from "../src/checkout";
+import { confirmCheckout, prepareCheckout, type PaymentCreateInput, type PaymentRail, type PaymentResolveInput, type RailProjection, type RailResolution } from "../src/checkout";
 import { migrateV2 } from "../src/db";
 import { resolveCheckoutCode, saveMerchantPromotion } from "../src/promotions";
+import { stageBLegalManifestJson } from "./fixtures/legal";
 
 class CapturingRail implements PaymentRail {
+  readonly checkoutSnapshotConfig = {
+    merchantId: "00000000-0000-4000-8000-000000000001",
+    fiscalizationMode: "PROVIDER" as const,
+    taxSystem: "USN_INCOME" as const,
+    vatCode: "NONE" as const,
+    paymentMethod: "FULL_PREPAYMENT",
+    paymentObject: "SERVICE" as const,
+  };
   resolveInput: PaymentResolveInput | null = null;
   outcome: "NONE" | "APPLIED" | "NOT_RECOGNIZED" = "NONE";
+  snapshotHash: string | undefined;
 
   async resolve(input: PaymentResolveInput): Promise<RailResolution> {
     this.resolveInput = input;
@@ -20,11 +30,12 @@ class CapturingRail implements PaymentRail {
     } };
   }
 
-  async create(): Promise<RailProjection> {
-    return { attemptId: "attempt", state: "PAID" };
+  async create(input: PaymentCreateInput): Promise<RailProjection> {
+    this.snapshotHash = input.snapshotHash;
+    return { attemptId: "attempt", state: "PAID", snapshotHash: input.snapshotHash };
   }
 
-  async reconcile(): Promise<RailProjection> { return { attemptId: "attempt", state: "PAID" }; }
+  async reconcile(): Promise<RailProjection> { return { attemptId: "attempt", state: "PAID", snapshotHash: this.snapshotHash }; }
   async acknowledgeFulfillment(): Promise<void> {}
   async refund(): Promise<RailProjection> { return { attemptId: "attempt", state: "REFUNDED" }; }
 }
@@ -40,7 +51,7 @@ beforeEach(() => {
   rail = new CapturingRail();
   db.prepare("INSERT INTO customers(id,email_normalized) VALUES ('customer','student@example.com')").run();
   db.prepare(`INSERT INTO legal_releases(id,storefront,version,manifest_json,effective_at,active)
-    VALUES ('legal','COURSES','stage-b-v1','{}','2026-09-30T00:00:00Z',1)`).run();
+    VALUES ('legal','COURSES','stage-b-v1',?,'2026-09-30T00:00:00Z',1)`).run(stageBLegalManifestJson);
   db.prepare(`INSERT INTO products(id,product_ref,kind,access_model,course_ref)
     VALUES ('product','course:one','ONLINE_COURSE','PAID','course-one')`).run();
   db.prepare(`INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode)
@@ -85,9 +96,18 @@ describe("merchant promotion namespace", () => {
       idempotencyKey: "payment",
     }, "2026-09-30T10:01:00.000Z");
     const frozen = JSON.parse((db.prepare("SELECT checkout_snapshot_json FROM orders").get() as { checkout_snapshot_json: string }).checkout_snapshot_json);
-    expect(frozen).toMatchObject({ catalogAmountKopecks: 10_000, merchantDiscountKopecks: 1_500,
-      merchantOfferAmountKopecks: 8_500, referralDiscountKopecks: 0, finalAmountKopecks: 8_500,
-      merchantPromotion: { id: "promotion", code: "FX-LAUNCH" } });
+    expect(frozen).toMatchObject({
+      schema: "refref.shared-checkout-snapshot/1",
+      lines: [{ merchantOfferAmountKopecks: 8_500, referralDiscountAmountKopecks: 0, finalAmountKopecks: 8_500 }],
+      totalContractAmountKopecks: 8_500,
+    });
+    const line = db.prepare(`SELECT catalog_amount_kopecks,merchant_discount_kopecks,merchant_amount_kopecks,
+      merchant_promotion_snapshot_json FROM order_lines`).get() as {
+        catalog_amount_kopecks: number; merchant_discount_kopecks: number; merchant_amount_kopecks: number;
+        merchant_promotion_snapshot_json: string;
+      };
+    expect(line).toMatchObject({ catalog_amount_kopecks: 10_000, merchant_discount_kopecks: 1_500, merchant_amount_kopecks: 8_500 });
+    expect(JSON.parse(line.merchant_promotion_snapshot_json)).toMatchObject({ id: "promotion", code: "FX-LAUNCH" });
   });
 
   it("passes a code outside the merchant namespace to Refref and exposes its outcome", async () => {

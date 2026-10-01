@@ -57,8 +57,16 @@ does.
   the live offer, merchant promotion and active legal release, consumes the quote once, and only
   then creates `orders`, `order_lines` and `checkout_attempts`.
 - `orders` and `order_lines` freeze the confirmed live offer, legal release and
-  checkout snapshot used for a purchase. `checkout_attempts` projects the
-  Refref protocol without becoming payment authority.
+  checkout snapshot used for a purchase. The order JSON is the exact closed
+  `refref.shared-checkout-snapshot/1` structure produced by the merchant-side
+  builder; its `snapshot_hash` is the lowercase SHA-256 portion of the
+  `refref-jcs-1:<hex>` digest sent unchanged with that structure to Refref.
+  Each paid line separately preserves catalogue price, merchant discount,
+  post-promotion merchant amount, final amount, promotion evidence, fiscal
+  item, legal release ref/hash and (for LAB) the occurrence ref and service
+  times. Refref's accepted projection must return the same namespaced digest
+  before it may advance the local order. `checkout_attempts` projects that
+  protocol without becoming payment authority.
 - `course_entitlements` is append-only grant evidence per order line. Revoking
   one line never revokes a separate COURSE or ALL_COURSES grant.
 - `course_access_starts` records the first successful playback grant backed by

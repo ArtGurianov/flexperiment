@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
+import { buildCheckoutSnapshot, canonicalCheckoutSnapshotJson, type CheckoutSnapshotConfig, type SharedCheckoutSnapshotV1 } from "./checkout-snapshot";
 import { customerCanAccessCourse, grantEntitlement, revokeEntitlementForOrderLine } from "./entitlements";
+import { legalManifestHash, type LegalReleaseManifest } from "./legal-control";
 import { assertMerchantPromotionStillApplicable, resolveCheckoutCode, type MerchantPromotionSnapshot } from "./promotions";
 
 export type RailState = "PENDING" | "CUSTOMER_ACTION_REQUIRED" | "PAID" | "DECLINED" | "EXPIRED" | "REFUND_PENDING" | "REFUNDED" | "REVIEW_REQUIRED";
@@ -30,10 +32,14 @@ export type RailResolution =
 export type PaymentResolveInput = {
   idempotencyKey: string; orderPublicId: string; amountKopecks: number; scenario?: string;
   customerEmail: string; offerRef: string; productRef: string; lineRef: string;
+  unitRef?: string; serviceStartsAt?: string; serviceEndsAt?: string;
   legalReleaseRef: string; legalReleaseHash: string; handoffToken?: string; checkoutCode?: string;
 };
-export type PaymentCreateInput = PaymentResolveInput & { quote: RailQuote; successUrl?: string };
+export type PaymentCreateInput = PaymentResolveInput & {
+  quote: RailQuote; successUrl?: string; snapshot: SharedCheckoutSnapshotV1; snapshotHash: string;
+};
 export interface PaymentRail {
+  readonly checkoutSnapshotConfig: CheckoutSnapshotConfig;
   resolve(input: PaymentResolveInput): Promise<RailResolution>;
   create(input: PaymentCreateInput): Promise<RailProjection>;
   reconcile(input: { idempotencyKey: string; orderPublicId: string; attemptId: string }): Promise<RailProjection>;
@@ -49,6 +55,14 @@ type MockRecord = RailProjection & { scenario: string; reconciliations: number; 
 
 export class MockPaymentRail implements PaymentRail {
   private readonly records = new Map<string, MockRecord>();
+  readonly checkoutSnapshotConfig: CheckoutSnapshotConfig = {
+    merchantId: "00000000-0000-4000-8000-000000000001",
+    fiscalizationMode: "PROVIDER",
+    taxSystem: "USN_INCOME",
+    vatCode: "NONE",
+    paymentMethod: "FULL_PREPAYMENT",
+    paymentObject: "SERVICE",
+  };
 
   async resolve(input: PaymentResolveInput): Promise<RailResolution> {
     if (input.scenario === "resolution_action") {
@@ -82,6 +96,7 @@ export class MockPaymentRail implements PaymentRail {
     const record: MockRecord = {
       attemptId: `mock_${createHash("sha256").update(input.idempotencyKey).digest("hex").slice(0, 20)}`,
       state,
+      snapshotHash: input.snapshotHash,
       checkoutUrl: state === "CUSTOMER_ACTION_REQUIRED" ? `https://mock.invalid/action/${input.orderPublicId}` : undefined,
       scenario, reconciliations: 0, fulfillmentAcks: 0,
     };
@@ -117,12 +132,18 @@ type OfferRow = {
   kind: "ONLINE_COURSE" | "COURSE_BUNDLE" | "LAB"; access_model: "FREE" | "PAID";
   course_ref: string | null; price_kopecks: number; sale_mode: "CLOSED" | "ACCEPTANCE_ONLY" | "PUBLIC";
   acceptance_allowlist_json: string; withdrawn_at: string | null;
+  occurrence_ref: string | null; occurrence_title: string | null; occurrence_starts_at: string | null;
+  occurrence_ends_at: string | null; occurrence_timezone: string | null; occurrence_city_id: string | null;
 };
 
 const offerByRef = (db: Database.Database, offerRef: string) => db.prepare(`SELECT offer.id AS offer_id,offer.offer_ref,
-  product.id AS product_id,product.product_ref,product.kind,product.access_model,product.course_ref,product.withdrawn_at,
-  offer.price_kopecks,offer.sale_mode,offer.acceptance_allowlist_json
-  FROM offers offer JOIN products product ON product.id=offer.product_id WHERE offer.offer_ref=?`).get(offerRef) as OfferRow | undefined;
+  product.id AS product_id,product.product_ref,product.kind,product.access_model,product.course_ref,product.withdrawn_at,product.occurrence_ref,
+  offer.price_kopecks,offer.sale_mode,offer.acceptance_allowlist_json,occurrence.title AS occurrence_title,
+  occurrence.starts_at AS occurrence_starts_at,occurrence.ends_at AS occurrence_ends_at,
+  occurrence.timezone AS occurrence_timezone,occurrence.city_id AS occurrence_city_id
+  FROM offers offer JOIN products product ON product.id=offer.product_id
+  LEFT JOIN lab_occurrences occurrence ON occurrence.occurrence_ref=product.occurrence_ref
+  WHERE offer.offer_ref=?`).get(offerRef) as OfferRow | undefined;
 
 const attemptState = (state: RailState) => state;
 
@@ -131,6 +152,47 @@ type LegalRow = { id: string; version: string; manifest_json: string };
 const legalRelease = (db: Database.Database) => db.prepare(
   "SELECT id,version,manifest_json FROM legal_releases WHERE storefront='COURSES' AND active=1",
 ).get() as LegalRow | undefined;
+
+type FrozenLineSnapshot = {
+  readonly unitRef?: string;
+  readonly serviceStartsAt?: string;
+  readonly serviceEndsAt?: string;
+  readonly occurrence?: {
+    readonly occurrenceRef: string;
+    readonly title: string;
+    readonly startsAt: string;
+    readonly endsAt: string;
+    readonly timezone: string;
+    readonly cityId: string;
+  };
+};
+
+const refrefInstant = (value: string) => {
+  const parsed = new Date(value);
+  if (!Number.isFinite(parsed.getTime()) || parsed.getUTCMilliseconds() !== 0) throw new Error("OCCURRENCE_TIME_INVALID");
+  return parsed.toISOString().replace(".000Z", "Z");
+};
+
+const freezeLine = (offer: OfferRow): FrozenLineSnapshot => {
+  if (offer.kind !== "LAB") return {};
+  if (!offer.occurrence_ref || !offer.occurrence_title || !offer.occurrence_starts_at || !offer.occurrence_ends_at
+    || !offer.occurrence_timezone || !offer.occurrence_city_id) throw new Error("LAB_OCCURRENCE_NOT_FOUND");
+  const startsAt = refrefInstant(offer.occurrence_starts_at);
+  const endsAt = refrefInstant(offer.occurrence_ends_at);
+  return {
+    unitRef: offer.occurrence_ref,
+    serviceStartsAt: startsAt,
+    serviceEndsAt: endsAt,
+    occurrence: {
+      occurrenceRef: offer.occurrence_ref,
+      title: offer.occurrence_title,
+      startsAt,
+      endsAt,
+      timezone: offer.occurrence_timezone,
+      cityId: offer.occurrence_city_id,
+    },
+  };
+};
 
 function assertOfferCanBePurchased(db: Database.Database, offer: OfferRow | undefined, customerId: string, customerEmail: string) {
   if (!offer || offer.withdrawn_at) throw new Error("OFFER_NOT_AVAILABLE");
@@ -174,6 +236,7 @@ type StoredCheckoutQuote = {
   merchant_discount_kopecks: number;
   merchant_promotion_snapshot_json: string | null;
   checkout_code_input: string | null;
+  line_snapshot_json: string | null;
 };
 
 const storedPricing = (quote: StoredCheckoutQuote): CheckoutQuotePricing => ({
@@ -194,7 +257,7 @@ export async function prepareCheckout(
   if (!input.previewIdempotencyKey.trim()) throw new Error("IDEMPOTENCY_KEY_REQUIRED");
   const checkoutCodeInput = input.checkoutCode?.trim() || null;
   const existing = db.prepare(`SELECT id,customer_id,offer_id,expires_at,rail_quote_json,catalog_amount_kopecks,
-    merchant_discount_kopecks,merchant_promotion_snapshot_json,checkout_code_input FROM checkout_quotes WHERE preview_idempotency_key=?`)
+    merchant_discount_kopecks,merchant_promotion_snapshot_json,checkout_code_input,line_snapshot_json FROM checkout_quotes WHERE preview_idempotency_key=?`)
     .get(input.previewIdempotencyKey) as StoredCheckoutQuote | undefined;
   if (existing) {
     const requestedOffer = offerByRef(db, input.offerRef);
@@ -210,7 +273,7 @@ export async function prepareCheckout(
   const orderPublicId = input.orderPublicId ?? randomUUID();
   if (input.orderPublicId) {
     const resumed = db.prepare(`SELECT id,customer_id,offer_id,expires_at,rail_quote_json,state,catalog_amount_kopecks,
-      merchant_discount_kopecks,merchant_promotion_snapshot_json,checkout_code_input FROM checkout_quotes WHERE order_public_id=?`)
+      merchant_discount_kopecks,merchant_promotion_snapshot_json,checkout_code_input,line_snapshot_json FROM checkout_quotes WHERE order_public_id=?`)
       .get(orderPublicId) as (StoredCheckoutQuote & { state: string }) | undefined;
     if (resumed) {
       if (resumed.customer_id !== input.customerId || resumed.offer_id !== offer.offer_id
@@ -221,6 +284,7 @@ export async function prepareCheckout(
   }
   const quoteId = randomUUID();
   const lineRef = randomUUID();
+  const lineSnapshot = freezeLine(offer);
   const codeResolution = resolveCheckoutCode(db, input.checkoutCode, offer.offer_ref, offer.price_kopecks, merchantPromotionPrefix, now);
   const merchantDiscountKopecks = codeResolution.promotion?.merchantDiscountKopecks ?? 0;
   const merchantOfferAmountKopecks = offer.price_kopecks - merchantDiscountKopecks;
@@ -233,8 +297,11 @@ export async function prepareCheckout(
     offerRef: offer.offer_ref,
     productRef: offer.product_ref,
     lineRef,
+    unitRef: lineSnapshot.unitRef,
+    serviceStartsAt: lineSnapshot.serviceStartsAt,
+    serviceEndsAt: lineSnapshot.serviceEndsAt,
     legalReleaseRef: legal.version,
-    legalReleaseHash: createHash("sha256").update(legal.manifest_json).digest("hex"),
+    legalReleaseHash: legalManifestHash(JSON.parse(legal.manifest_json) as LegalReleaseManifest),
     handoffToken: input.handoffToken,
     checkoutCode: codeResolution.refrefCheckoutCode,
   });
@@ -246,13 +313,13 @@ export async function prepareCheckout(
   db.prepare(`INSERT INTO checkout_quotes
     (id,customer_id,offer_id,legal_release_id,order_public_id,line_ref,preview_idempotency_key,base_amount_kopecks,discount_kopecks,final_amount_kopecks,
       rail_quote_json,expires_at,created_at,updated_at,catalog_amount_kopecks,merchant_discount_kopecks,merchant_promotion_id,merchant_promotion_snapshot_json,
-      refref_checkout_code_outcome,checkout_code_input)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      refref_checkout_code_outcome,checkout_code_input,line_snapshot_json)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
     quoteId, input.customerId, offer.offer_id, legal.id, orderPublicId, lineRef, input.previewIdempotencyKey,
     resolved.quote.baseAmountKopecks, resolved.quote.discountKopecks, resolved.quote.finalAmountKopecks,
     JSON.stringify(resolved.quote), expiresAt, now, now, offer.price_kopecks, merchantDiscountKopecks,
     codeResolution.promotion?.id ?? null, codeResolution.promotion ? JSON.stringify(codeResolution.promotion) : null,
-    resolved.quote.checkoutCodeOutcome ?? "NONE", checkoutCodeInput,
+    resolved.quote.checkoutCodeOutcome ?? "NONE", checkoutCodeInput, JSON.stringify(lineSnapshot),
   );
   return quoteResponse(quoteId, resolved.quote, {
     catalogAmountKopecks: offer.price_kopecks,
@@ -286,6 +353,7 @@ export async function confirmCheckout(
   const pending = db.prepare(`SELECT quote.id,quote.customer_id,quote.offer_id,quote.legal_release_id,quote.order_public_id,quote.line_ref,
     quote.base_amount_kopecks,quote.discount_kopecks,quote.final_amount_kopecks,quote.rail_quote_json,quote.state,quote.expires_at,
     quote.catalog_amount_kopecks,quote.merchant_discount_kopecks,quote.merchant_promotion_snapshot_json,quote.refref_checkout_code_outcome,
+    quote.line_snapshot_json,
     offer.offer_ref,product.product_ref,legal.version AS legal_version,legal.manifest_json
     FROM checkout_quotes quote JOIN offers offer ON offer.id=quote.offer_id JOIN products product ON product.id=offer.product_id
     JOIN legal_releases legal ON legal.id=quote.legal_release_id WHERE quote.id=?`).get(input.quoteId) as {
@@ -293,6 +361,7 @@ export async function confirmCheckout(
       base_amount_kopecks: number; discount_kopecks: number; final_amount_kopecks: number; rail_quote_json: string;
       catalog_amount_kopecks: number; merchant_discount_kopecks: number; merchant_promotion_snapshot_json: string | null;
       refref_checkout_code_outcome: CheckoutCodeOutcome | null;
+      line_snapshot_json: string | null;
       state: "REVIEW" | "CONSUMED" | "EXPIRED"; expires_at: string; offer_ref: string; product_ref: string;
       legal_version: string; manifest_json: string;
     } | undefined;
@@ -303,10 +372,13 @@ export async function confirmCheckout(
     db.prepare("UPDATE checkout_quotes SET state='EXPIRED',updated_at=? WHERE id=? AND state='REVIEW'").run(now, pending.id);
     throw new Error("CHECKOUT_QUOTE_EXPIRED");
   }
+  if (!pending.line_snapshot_json) throw new Error("CHECKOUT_QUOTE_STALE");
   const offer = assertOfferCanBePurchased(db, offerByRef(db, pending.offer_ref), input.customerId, input.customerEmail);
   const activeLegal = legalRelease(db);
+  const frozenLine = JSON.parse(pending.line_snapshot_json) as FrozenLineSnapshot;
   if (offer.offer_id !== pending.offer_id || offer.price_kopecks !== pending.catalog_amount_kopecks
-    || activeLegal?.id !== pending.legal_release_id) throw new Error("CHECKOUT_QUOTE_STALE");
+    || activeLegal?.id !== pending.legal_release_id
+    || JSON.stringify(freezeLine(offer)) !== pending.line_snapshot_json) throw new Error("CHECKOUT_QUOTE_STALE");
   const quote = JSON.parse(pending.rail_quote_json) as RailQuote;
   const merchantPromotion = pending.merchant_promotion_snapshot_json
     ? JSON.parse(pending.merchant_promotion_snapshot_json) as MerchantPromotionSnapshot
@@ -316,33 +388,48 @@ export async function confirmCheckout(
   const orderId = randomUUID();
   const attemptId = randomUUID();
   const publicId = pending.order_public_id;
-  const snapshot = {
-    offerRef: offer.offer_ref, productRef: offer.product_ref,
-    catalogAmountKopecks: pending.catalog_amount_kopecks,
-    merchantDiscountKopecks: pending.merchant_discount_kopecks,
-    merchantPromotion,
-    merchantOfferAmountKopecks: pending.base_amount_kopecks,
-    referralDiscountKopecks: pending.discount_kopecks,
-    checkoutCodeOutcome: pending.refref_checkout_code_outcome ?? "NONE",
-    finalAmountKopecks: pending.final_amount_kopecks,
+  const legalReleaseHash = legalManifestHash(JSON.parse(pending.manifest_json) as LegalReleaseManifest);
+  const { snapshot, snapshotHash, fiscalItem } = buildCheckoutSnapshot({
+    config: rail.checkoutSnapshotConfig,
+    merchantOrderRef: publicId,
+    line: {
+      lineRef: pending.line_ref,
+      offerRef: offer.offer_ref,
+      unitRef: frozenLine.unitRef,
+      merchantOfferAmountKopecks: pending.base_amount_kopecks,
+      referralDiscountAmountKopecks: pending.discount_kopecks,
+      serviceStartsAt: frozenLine.serviceStartsAt,
+      serviceEndsAt: frozenLine.serviceEndsAt,
+      fiscalName: offer.product_ref,
+    },
     referralResolutionId: quote.resolutionId,
-    currency: "RUB", legalVersion: pending.legal_version,
-  };
-  const snapshotJson = JSON.stringify(snapshot);
-  const snapshotHash = createHash("sha256").update(snapshotJson).digest("hex");
+    termsVersionId: quote.termsVersionId,
+    legalReleaseRef: pending.legal_version,
+    legalReleaseHash,
+  });
+  const snapshotJson = canonicalCheckoutSnapshotJson(snapshot);
+  const snapshotHashHex = snapshotHash.replace(/^refref-jcs-1:/, "");
   const railInput: PaymentCreateInput = {
     idempotencyKey: input.idempotencyKey, orderPublicId: publicId, amountKopecks: pending.base_amount_kopecks,
     scenario: quote.scenario,
     customerEmail: input.customerEmail, offerRef: offer.offer_ref,
-    productRef: offer.product_ref, lineRef: pending.line_ref, legalReleaseRef: pending.legal_version,
-    legalReleaseHash: createHash("sha256").update(pending.manifest_json).digest("hex"), quote,
+    productRef: offer.product_ref, lineRef: pending.line_ref,
+    unitRef: frozenLine.unitRef, serviceStartsAt: frozenLine.serviceStartsAt, serviceEndsAt: frozenLine.serviceEndsAt,
+    legalReleaseRef: pending.legal_version, legalReleaseHash, quote, snapshot, snapshotHash,
     successUrl: input.successUrl,
   };
   const create = db.transaction(() => {
     db.prepare(`INSERT INTO orders(id,public_id,customer_id,state,total_kopecks,checkout_snapshot_json,snapshot_hash,legal_release_id,created_at,updated_at)
-      VALUES (?,?,?,'PAYMENT_PENDING',?,?,?,?,?,?)`).run(orderId, publicId, input.customerId, pending.final_amount_kopecks, snapshotJson, snapshotHash, pending.legal_release_id, now, now);
-    db.prepare(`INSERT INTO order_lines(id,order_id,product_id,offer_ref_snapshot,title_snapshot,unit_amount_kopecks,legal_terms_ref,created_at)
-      VALUES (?,?,?,?,?,?,?,?)`).run(pending.line_ref, orderId, offer.product_id, offer.offer_ref, offer.product_ref, pending.final_amount_kopecks, pending.legal_version, now);
+      VALUES (?,?,?,'PAYMENT_PENDING',?,?,?,?,?,?)`).run(orderId, publicId, input.customerId, pending.final_amount_kopecks, snapshotJson, snapshotHashHex, pending.legal_release_id, now, now);
+    db.prepare(`INSERT INTO order_lines(id,order_id,product_id,offer_ref_snapshot,title_snapshot,unit_amount_kopecks,legal_terms_ref,created_at,
+      catalog_amount_kopecks,merchant_discount_kopecks,merchant_amount_kopecks,merchant_promotion_snapshot_json,fiscal_item_json,
+      legal_release_ref,legal_release_hash,occurrence_snapshot_json)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      pending.line_ref, orderId, offer.product_id, offer.offer_ref, offer.product_ref, pending.final_amount_kopecks, pending.legal_version, now,
+      pending.catalog_amount_kopecks, pending.merchant_discount_kopecks, pending.base_amount_kopecks,
+      pending.merchant_promotion_snapshot_json, JSON.stringify(fiscalItem), pending.legal_version, legalReleaseHash,
+      frozenLine.occurrence ? JSON.stringify(frozenLine.occurrence) : null,
+    );
     db.prepare(`INSERT INTO checkout_attempts(id,order_id,idempotency_key,request_payload_json,state,created_at,updated_at)
       VALUES (?,?,?,?,'CREATING',?,?)`).run(attemptId, orderId, input.idempotencyKey, JSON.stringify(railInput), now, now);
     const consumed = db.prepare("UPDATE checkout_quotes SET state='CONSUMED',consumed_at=?,updated_at=? WHERE id=? AND state='REVIEW'")
@@ -388,12 +475,16 @@ export async function checkout(
 
 async function applyRailProjection(db: Database.Database, rail: PaymentRail, orderPublicId: string, projection: RailProjection, now: string) {
   const context = db.prepare(`SELECT orders.id AS order_id,orders.customer_id,line.id AS line_id,product.kind,product.course_ref,
+    orders.snapshot_hash,json_extract(orders.checkout_snapshot_json,'$.schema') AS snapshot_schema,
     attempt.id AS attempt_id,attempt.idempotency_key FROM orders JOIN order_lines line ON line.order_id=orders.id JOIN products product ON product.id=line.product_id
     JOIN checkout_attempts attempt ON attempt.order_id=orders.id WHERE orders.public_id=?`).get(orderPublicId) as {
       order_id: string; customer_id: string; line_id: string; kind: "ONLINE_COURSE" | "COURSE_BUNDLE" | "LAB";
-      course_ref: string | null; attempt_id: string; idempotency_key: string;
+      course_ref: string | null; snapshot_hash: string; snapshot_schema: string | null;
+      attempt_id: string; idempotency_key: string;
     } | undefined;
   if (!context) throw new Error("ORDER_NOT_FOUND");
+  if (context.snapshot_schema === "refref.shared-checkout-snapshot/1"
+    && projection.snapshotHash !== `refref-jcs-1:${context.snapshot_hash}`) throw new Error("PAYMENT_SNAPSHOT_HASH_MISMATCH");
   const apply = db.transaction(() => {
     db.prepare(`UPDATE checkout_attempts SET state=?,refref_attempt_id=?,refref_resolution_id=COALESCE(?,refref_resolution_id),
       refref_snapshot_hash=COALESCE(?,refref_snapshot_hash),checkout_url=?,observed_payment_projection_json=?,last_reconciled_at=?,updated_at=? WHERE id=?`)

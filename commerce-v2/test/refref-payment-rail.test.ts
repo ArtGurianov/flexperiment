@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { buildCheckoutSnapshot } from "../src/checkout-snapshot";
 import { RefrefPaymentRail, refrefSnapshotDigest } from "../src/refref-payment-rail";
 import type { PaymentResolveInput } from "../src/checkout";
 
@@ -11,22 +12,68 @@ const input: PaymentResolveInput = {
 const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
 describe("RefrefPaymentRail", () => {
+  it("reproduces the independently pinned Refref RC.2 digest", () => {
+    expect(refrefSnapshotDigest({
+      schema: "refref.shared-checkout-snapshot/1",
+      merchantId: "3f1c2a5e-8b4d-4c7e-9a10-2b6d8e4f1a90",
+      merchantOrderRef: "mk-2026-0142",
+      currency: "RUB",
+      referralResolutionId: "7a0e1c3b-5d2f-4e8a-b6c1-9f3d2e4a5b60",
+      termsVersionId: "c2b7d9e1-4a3f-4b6c-8d2e-1f0a9b8c7d65",
+      lines: [{
+        lineRef: "line_01", offerRef: "altai-tour", unitRef: "altai-2026-10-10", quantity: 2,
+        merchantOfferAmountKopecks: 6_800_000, referralDiscountAmountKopecks: 400_000,
+        finalAmountKopecks: 6_400_000, serviceStartsAt: "2026-10-09T17:30:00Z", serviceEndsAt: "2026-10-13T14:00:00Z",
+      }],
+      totalContractAmountKopecks: 6_400_000,
+      paymentObligations: [{
+        obligationRef: "full", kind: "FULL", executionMode: "ORCHESTRATED", fiscalizationMode: "MERCHANT",
+        amountKopecks: 6_400_000, allocations: [{ lineRef: "line_01", amountKopecks: 6_400_000 }],
+        fiscal: { taxSystem: "USN_INCOME", items: [{
+          lineRef: "line_01", name: "Тур «Алтай», 10–13.10.2026", quantity: 2, amountKopecks: 6_400_000,
+          vatCode: "NONE", paymentMethod: "FULL_PREPAYMENT", paymentObject: "SERVICE",
+        }] },
+      }],
+      inventoryReservationRef: "res-altai-2026-10-10-0142",
+      legalReleaseRef: "mikluha-offer-2026-09",
+      legalReleaseHash: "sha256:9f2c61b0e4d7a3c85e1f0b2a6d9c4e7f",
+    })).toBe("refref-jcs-1:95c2d583ed74a929dd18eb725ce926fc4c6ae0d497c8a849580d79a90079b6bd");
+  });
+
   it("uses the documented resolution, attempt and obligation-session protocol", async () => {
     const request = vi.fn<typeof fetch>()
       .mockResolvedValueOnce(response({ status: "RESOLVED", referralResolutionId: "10000000-0000-4000-8000-000000000001", termsVersionId: null,
         checkoutCodeOutcome: "NONE",
-        lines: [{ lineRef: "line", referralDiscountAmountKopecks: 500 }] }, 201))
-      .mockResolvedValueOnce(response({ checkoutAttemptId: "20000000-0000-4000-8000-000000000002", snapshotHash: "ignored", obligations: [] }, 201))
-      .mockResolvedValueOnce(response({ status: "PAYMENT_READY", providerPaymentUrl: "https://pay.refref.ru/session", supportReference: "support" }));
+        lines: [{ lineRef: "line", referralDiscountAmountKopecks: 500 }] }, 201));
     const rail = new RefrefPaymentRail({ apiBaseUrl: "https://api.refref.ru/v1-rc/", apiKey: "key",
       merchantId: "00000000-0000-4000-8000-000000000001", successUrl: "https://flexperiment.ru/checkout/return",
       paymentMethod: "full_prepayment", fetch: request });
     const resolution = await rail.resolve(input);
     expect(resolution).toMatchObject({ state: "PRICE_REVIEW_REQUIRED", quote: { discountKopecks: 500, finalAmountKopecks: 9500, checkoutCodeOutcome: "NONE" } });
     if (resolution.state !== "PRICE_REVIEW_REQUIRED") throw new Error("expected quote");
+    const frozen = buildCheckoutSnapshot({
+      config: rail.checkoutSnapshotConfig,
+      merchantOrderRef: input.orderPublicId,
+      line: {
+        lineRef: input.lineRef,
+        offerRef: input.offerRef,
+        merchantOfferAmountKopecks: input.amountKopecks,
+        referralDiscountAmountKopecks: resolution.quote.discountKopecks,
+        fiscalName: input.productRef,
+      },
+      referralResolutionId: resolution.quote.resolutionId,
+      termsVersionId: resolution.quote.termsVersionId,
+      legalReleaseRef: input.legalReleaseRef,
+      legalReleaseHash: input.legalReleaseHash,
+    });
+    request
+      .mockResolvedValueOnce(response({ checkoutAttemptId: "20000000-0000-4000-8000-000000000002", snapshotHash: frozen.snapshotHash, obligations: [] }, 201))
+      .mockResolvedValueOnce(response({ status: "PAYMENT_READY", providerPaymentUrl: "https://pay.refref.ru/session", supportReference: "support" }));
     await expect(rail.create({
       ...input,
       quote: resolution.quote,
+      snapshot: frozen.snapshot,
+      snapshotHash: frozen.snapshotHash,
       successUrl: "https://flexperiment.ru/checkout/return?state=signed",
     })).resolves.toMatchObject({ attemptId: "20000000-0000-4000-8000-000000000002", state: "CUSTOMER_ACTION_REQUIRED", checkoutUrl: "https://pay.refref.ru/session" });
     expect(new URL(String(request.mock.calls[0]?.[0])).pathname).toBe("/v1-rc/integrations/referral-resolutions");
