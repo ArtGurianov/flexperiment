@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { migrate, openDatabase } from "../src/db";
 import { CommerceDomain } from "../src/domain";
 import { MockProvider } from "../src/provider";
+import { legacyFixtureClock } from "./support/legacy-fixture-clock";
 
 /**
  * A message and its first attempt are created together or not at all.
@@ -40,7 +41,7 @@ const fixture = () => {
   db.prepare(`INSERT INTO occurrences(id, city_id, title, starts_at, ends_at, timezone, price_kopecks, capacity, visibility, venue_status, venue_name, venue_address)
     VALUES (?, ?, 'FLEXPERIMENT', '2026-10-01T10:00:00.000Z', '2026-10-01T13:00:00.000Z', 'Asia/Novosibirsk', 100000, 5, 'PUBLISHED', 'CONFIRMED', 'Studio', 'Lenina 1')`)
     .run(randomUUID(), cityId);
-  return { db, domain: new CommerceDomain(db, new MockProvider()) };
+  return { db, domain: new CommerceDomain(db, new MockProvider(), undefined, legacyFixtureClock) };
 };
 
 /** Reaches the private enqueue through a real caller. */

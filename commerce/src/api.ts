@@ -35,9 +35,9 @@ const jsonBody = async (request: Request) => {
   try { return await request.json(); } catch { throw new DomainError("INVALID_JSON", 400); }
 };
 
-export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvider: EmailProvider = new UnconfiguredEmailProvider(), smartCaptcha: SmartCaptchaVerifier = new UnconfiguredSmartCaptchaVerifier(), otpSender: OtpSender = new UnconfiguredOtpSender()) {
+export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvider: EmailProvider = new UnconfiguredEmailProvider(), smartCaptcha: SmartCaptchaVerifier = new UnconfiguredSmartCaptchaVerifier(), otpSender: OtpSender = new UnconfiguredOtpSender(), clock: () => number = Date.now) {
   const app = new Hono<AppBindings>();
-  const domain = new CommerceDomain(sqlite, provider, emailProvider, Date.now, otpSender.deliveryCapability());
+  const domain = new CommerceDomain(sqlite, provider, emailProvider, clock, otpSender.deliveryCapability());
   const tochkaVerifier = provider instanceof TochkaProvider ? new TochkaWebhookVerifier() : undefined;
   const unisenderConfig = emailProvider instanceof UnisenderGoProvider ? emailProvider.config : undefined;
 
