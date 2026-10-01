@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
-import { assertOfferSaleModeAllowed, type CommerceRuntimeConfig, type SaleMode } from "./payment-mode";
+import { assertOfferSaleModeAllowed, type CommerceRuntimeConfig, type SaleMode, type SaleModePolicyConfig } from "./payment-mode";
 
 export type ProductCommand = {
   productRef: string;
@@ -20,6 +20,19 @@ const activeSalesActivation = (db: Database.Database, kind: ProductCommand["kind
   db.prepare("SELECT 1 FROM sales_activation WHERE product_kind=? AND revoked_at IS NULL").get(kind),
 );
 
+/**
+ * The one sale-mode gate. Control Room writes and every checkout step evaluate it against the live
+ * payment mode and the current activation row, so a PUBLIC offer stops selling the moment its
+ * activation is revoked even though the stored sale mode still says PUBLIC.
+ */
+export function assertLiveOfferSaleMode(
+  db: Database.Database,
+  config: SaleModePolicyConfig,
+  offer: Pick<ProductCommand, "kind" | "accessModel" | "saleMode">,
+) {
+  assertOfferSaleModeAllowed(config, offer, activeSalesActivation(db, offer.kind));
+}
+
 export function configureProduct(db: Database.Database, config: CommerceRuntimeConfig, command: ProductCommand, now = new Date().toISOString()) {
   if (!command.productRef || !command.offerRef || !command.actor || !Number.isInteger(command.expectedVersion) || command.expectedVersion < 0) throw new Error("PRODUCT_COMMAND_INVALID");
   if (!Number.isInteger(command.priceKopecks) || command.priceKopecks < 0) throw new Error("PRICE_INVALID");
@@ -31,7 +44,7 @@ export function configureProduct(db: Database.Database, config: CommerceRuntimeC
   if (command.occurrenceRef && !db.prepare("SELECT 1 FROM lab_occurrences WHERE occurrence_ref=?").get(command.occurrenceRef)) {
     throw new Error("LAB_OCCURRENCE_NOT_FOUND");
   }
-  assertOfferSaleModeAllowed(config, command, activeSalesActivation(db, command.kind));
+  assertLiveOfferSaleMode(db, config, command);
   const apply = db.transaction(() => {
     const existing = db.prepare("SELECT id,withdrawn_at,version FROM products WHERE product_ref=?").get(command.productRef) as { id: string; withdrawn_at: string | null; version: number } | undefined;
     if (existing?.withdrawn_at) throw new Error("WITHDRAWN_PRODUCT_IMMUTABLE");

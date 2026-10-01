@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { checkout, confirmCheckout, MockPaymentRail, prepareCheckout, reconcileCheckout, reconcilePendingCheckouts } from "../src/checkout";
 import { migrateV2 } from "../src/db";
 import { stageALegalManifestJson } from "./fixtures/legal";
+import { activatePublicSales, testCheckoutConfig } from "./fixtures/sales";
 
 let db: Database.Database;
 let rail: MockPaymentRail;
@@ -19,18 +20,62 @@ beforeEach(() => {
     VALUES ('product','course:one','ONLINE_COURSE','PAID','course-one')`).run();
   db.prepare(`INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode)
     VALUES ('offer','course:one','product',10000,'PUBLIC')`).run();
+  activatePublicSales(db);
 });
 
 const input = { customerId: "customer", customerEmail: "student@example.com", offerRef: "course:one", idempotencyKey: "checkout-one" };
 
+describe("live sale-mode gate", () => {
+  const preview = (key: string, config = testCheckoutConfig) =>
+    prepareCheckout(db, rail, config, { ...input, previewIdempotencyKey: key }, "2026-09-30T10:00:00Z");
+  const confirm = (quoteId: string, config = testCheckoutConfig) => confirmCheckout(db, rail, config, {
+    customerId: input.customerId, customerEmail: input.customerEmail, quoteId, idempotencyKey: input.idempotencyKey,
+  }, "2026-09-30T10:01:00Z");
+  const revokeActivation = () => db.prepare(`UPDATE sales_activation SET revoked_at='2026-09-30T10:00:30Z',
+    revocation_reason='paused' WHERE revoked_at IS NULL`).run();
+
+  it("refuses a PUBLIC offer with no current activation row at preview", async () => {
+    revokeActivation();
+    await expect(preview("no-activation")).rejects.toThrow("SALES_ACTIVATION_REQUIRED");
+    expect(db.prepare("SELECT COUNT(*) AS count FROM checkout_quotes").get()).toEqual({ count: 0 });
+  });
+
+  it("re-checks activation at confirm and on a replayed preview, so a reviewed quote cannot outlive it", async () => {
+    const prepared = await preview("before-revocation");
+    if (prepared.state !== "PRICE_REVIEW_REQUIRED") throw new Error("expected quote");
+    revokeActivation();
+    await expect(preview("before-revocation")).rejects.toThrow("SALES_ACTIVATION_REQUIRED");
+    await expect(confirm(prepared.quoteId)).rejects.toThrow("SALES_ACTIVATION_REQUIRED");
+    expect(db.prepare("SELECT COUNT(*) AS count FROM orders").get()).toEqual({ count: 0 });
+    expect(db.prepare("SELECT state FROM checkout_quotes").get()).toEqual({ state: "REVIEW" });
+  });
+
+  it("applies the live payment mode at confirm, not the mode the quote was priced under", async () => {
+    const prepared = await preview("before-disable");
+    if (prepared.state !== "PRICE_REVIEW_REQUIRED") throw new Error("expected quote");
+    await expect(confirm(prepared.quoteId, { ...testCheckoutConfig, paymentMode: "disabled" })).rejects.toThrow("PAYMENTS_DISABLED");
+    expect(db.prepare("SELECT COUNT(*) AS count FROM orders").get()).toEqual({ count: 0 });
+  });
+
+  it("sells an ACCEPTANCE_ONLY offer only to its allowlist and without a public activation", async () => {
+    revokeActivation();
+    db.prepare(`UPDATE offers SET sale_mode='ACCEPTANCE_ONLY',acceptance_allowlist_json='["student@example.com"]'`).run();
+    const prepared = await preview("acceptance");
+    expect(prepared.state).toBe("PRICE_REVIEW_REQUIRED");
+    await expect(prepareCheckout(db, rail, testCheckoutConfig, {
+      ...input, customerEmail: "stranger@example.com", previewIdempotencyKey: "acceptance-stranger",
+    }, "2026-09-30T10:00:00Z")).rejects.toThrow("ACCEPTANCE_ONLY");
+  });
+});
+
 describe("scripted mock checkout orchestration", () => {
   it("shows the final price before freezing the order snapshot", async () => {
-    const prepared = await prepareCheckout(db, rail, { ...input, previewIdempotencyKey: "preview-one" }, "2026-09-30T10:00:00Z");
+    const prepared = await prepareCheckout(db, rail, testCheckoutConfig, { ...input, previewIdempotencyKey: "preview-one" }, "2026-09-30T10:00:00Z");
     expect(prepared).toMatchObject({ state: "PRICE_REVIEW_REQUIRED", baseAmountKopecks: 10000, discountKopecks: 0, finalAmountKopecks: 10000 });
     expect(db.prepare("SELECT COUNT(*) AS count FROM checkout_quotes WHERE state='REVIEW'").get()).toEqual({ count: 1 });
     expect(db.prepare("SELECT COUNT(*) AS count FROM orders").get()).toEqual({ count: 0 });
     if (prepared.state !== "PRICE_REVIEW_REQUIRED") throw new Error("expected quote");
-    const confirmed = await confirmCheckout(db, rail, {
+    const confirmed = await confirmCheckout(db, rail, testCheckoutConfig, {
       customerId: input.customerId, customerEmail: input.customerEmail, quoteId: prepared.quoteId, idempotencyKey: input.idempotencyKey,
     }, "2026-09-30T10:01:00Z");
     expect(confirmed.state).toBe("PAID");
@@ -39,7 +84,7 @@ describe("scripted mock checkout orchestration", () => {
   });
 
   it("refuses a handoff storefront that does not own the offer", async () => {
-    await expect(prepareCheckout(db, rail, {
+    await expect(prepareCheckout(db, rail, testCheckoutConfig, {
       ...input,
       previewIdempotencyKey: "wrong-storefront",
       storefront: "LAB",
@@ -47,12 +92,12 @@ describe("scripted mock checkout orchestration", () => {
   });
 
   it("binds confirmation and the persisted provider return URL to the signed order", async () => {
-    const prepared = await prepareCheckout(db, rail, {
+    const prepared = await prepareCheckout(db, rail, testCheckoutConfig, {
       ...input, previewIdempotencyKey: "preview-return", orderPublicId: "signed-order",
     }, "2026-09-30T10:00:00Z");
     if (prepared.state !== "PRICE_REVIEW_REQUIRED") throw new Error("expected quote");
 
-    await expect(confirmCheckout(db, rail, {
+    await expect(confirmCheckout(db, rail, testCheckoutConfig, {
       customerId: input.customerId,
       customerEmail: input.customerEmail,
       quoteId: prepared.quoteId,
@@ -61,7 +106,7 @@ describe("scripted mock checkout orchestration", () => {
       successUrl: "https://flexperiment.ru/checkout/return?state=signed",
     }, "2026-09-30T10:01:00Z")).rejects.toThrow("CHECKOUT_STATE_INVALID");
 
-    await confirmCheckout(db, rail, {
+    await confirmCheckout(db, rail, testCheckoutConfig, {
       customerId: input.customerId,
       customerEmail: input.customerEmail,
       quoteId: prepared.quoteId,
@@ -70,7 +115,7 @@ describe("scripted mock checkout orchestration", () => {
       successUrl: "https://flexperiment.ru/checkout/return?state=signed",
     }, "2026-09-30T10:01:00Z");
 
-    await expect(confirmCheckout(db, rail, {
+    await expect(confirmCheckout(db, rail, testCheckoutConfig, {
       customerId: input.customerId,
       customerEmail: input.customerEmail,
       quoteId: prepared.quoteId,
@@ -86,8 +131,8 @@ describe("scripted mock checkout orchestration", () => {
   });
 
   it("snapshots the live offer and grants exactly once across a duplicate request", async () => {
-    const first = await checkout(db, rail, input, "2026-09-30T10:00:00Z");
-    const duplicate = await checkout(db, rail, input, "2026-09-30T10:00:01Z");
+    const first = await checkout(db, rail, testCheckoutConfig, input, "2026-09-30T10:00:00Z");
+    const duplicate = await checkout(db, rail, testCheckoutConfig, input, "2026-09-30T10:00:01Z");
     expect(first).toMatchObject({ state: "PAID" });
     expect(duplicate).toMatchObject({ orderPublicId: first.orderPublicId, state: "PAID" });
     expect(db.prepare("SELECT COUNT(*) AS count FROM orders").get()).toEqual({ count: 1 });
@@ -115,7 +160,7 @@ describe("scripted mock checkout orchestration", () => {
   });
 
   it("persists an ambiguous create and reconciles before any retry", async () => {
-    const created = await checkout(db, rail, { ...input, scenario: "ambiguous_create" });
+    const created = await checkout(db, rail, testCheckoutConfig, { ...input, scenario: "ambiguous_create" });
     expect(created.state).toBe("CREATE_UNKNOWN");
     const resolved = await reconcileCheckout(db, rail, created.orderPublicId);
     expect(resolved.state).toBe("PAID");
@@ -132,8 +177,9 @@ describe("scripted mock checkout orchestration", () => {
       VALUES ('lab-product','lab:november','LAB','PAID','lab:november')`).run();
     db.prepare(`INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode)
       VALUES ('lab-offer','lab:november','lab-product',250000,'PUBLIC')`).run();
+    activatePublicSales(db, "LAB");
 
-    await checkout(db, rail, {
+    await checkout(db, rail, testCheckoutConfig, {
       customerId: "customer",
       customerEmail: "student@example.com",
       offerRef: "lab:november",
@@ -161,11 +207,11 @@ describe("scripted mock checkout orchestration", () => {
   it.each([
     ["decline", "DECLINED"], ["customer_action", "CUSTOMER_ACTION_REQUIRED"], ["expiry", "EXPIRED"],
   ] as const)("reproduces the %s scenario", async (scenario, state) => {
-    expect((await checkout(db, rail, { ...input, idempotencyKey: `checkout-${scenario}`, scenario })).state).toBe(state);
+    expect((await checkout(db, rail, testCheckoutConfig, { ...input, idempotencyKey: `checkout-${scenario}`, scenario })).state).toBe(state);
   });
 
   it("returns a Refref attribution decision before any quote or order is frozen", async () => {
-    const resolved = await prepareCheckout(db, rail, {
+    const resolved = await prepareCheckout(db, rail, testCheckoutConfig, {
       ...input,
       previewIdempotencyKey: "resolution-action",
       scenario: "resolution_action",
@@ -176,14 +222,14 @@ describe("scripted mock checkout orchestration", () => {
   });
 
   it("turns a late payment into one grant on reconciliation", async () => {
-    const created = await checkout(db, rail, { ...input, scenario: "late_payment" });
+    const created = await checkout(db, rail, testCheckoutConfig, { ...input, scenario: "late_payment" });
     expect(created.state).toBe("PENDING");
     expect((await reconcileCheckout(db, rail, created.orderPublicId)).state).toBe("PAID");
     expect(db.prepare("SELECT COUNT(*) AS count FROM course_entitlements").get()).toEqual({ count: 1 });
   });
 
   it("lets the background sweep recover unfinished payment state", async () => {
-    await checkout(db, rail, { ...input, idempotencyKey: "background", scenario: "late_payment" });
+    await checkout(db, rail, testCheckoutConfig, { ...input, idempotencyKey: "background", scenario: "late_payment" });
     expect(await reconcilePendingCheckouts(db, rail)).toEqual({ selected: 1, reconciled: 1, failed: 0 });
     expect(db.prepare("SELECT state FROM orders").get()).toEqual({ state: "FULFILLED" });
   });

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { checkout, MockPaymentRail, type PaymentRail, type PaymentRefundInput, type RailProjection } from "../src/checkout";
 import { migrateV2 } from "../src/db";
 import { stageBLegalManifestJson } from "./fixtures/legal";
+import { activatePublicSales, testCheckoutConfig } from "./fixtures/sales";
 import { decideRefund, executeApprovedRefund, listRefundCases, reconcilePendingRefunds, recordCourseAccessStart, requestRefund } from "../src/refunds";
 
 let db: Database.Database;
@@ -20,10 +21,11 @@ beforeEach(() => {
     VALUES ('product','course:one','ONLINE_COURSE','PAID','course-one')`).run();
   db.prepare(`INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode)
     VALUES ('offer','course:one','product',10000,'PUBLIC')`).run();
+  activatePublicSales(db);
 });
 
 async function paidOrder(scenario?: string) {
-  return checkout(db, rail, {
+  return checkout(db, rail, testCheckoutConfig, {
     customerId: "customer", customerEmail: "student@example.com", offerRef: "course:one",
     idempotencyKey: `checkout-${scenario ?? "success"}`, scenario,
   }, "2026-09-30T10:00:00Z");
@@ -128,7 +130,7 @@ describe("refund authority", () => {
       }
     }
     const partialRail = new PendingPartialRail();
-    const order = await checkout(db, partialRail, {
+    const order = await checkout(db, partialRail, testCheckoutConfig, {
       customerId: "customer", customerEmail: "student@example.com", offerRef: "course:one",
       idempotencyKey: "checkout-partial-projection",
     }, "2026-09-30T10:00:00Z");

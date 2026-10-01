@@ -5,6 +5,11 @@ import { customerCanAccessCourse, grantEntitlement, revokeEntitlementForOrderLin
 import { legalManifestHash, type LegalReleaseManifest } from "./legal-control";
 import type { Storefront } from "./origins";
 import { assertMerchantPromotionStillApplicable, resolveCheckoutCode, type MerchantPromotionSnapshot } from "./promotions";
+import { assertLiveOfferSaleMode } from "./catalog-control";
+import type { CommerceRuntimeConfig } from "./payment-mode";
+
+/** The runtime facts checkout re-evaluates on every preview and confirm. */
+export type CheckoutPolicyConfig = Pick<CommerceRuntimeConfig, "deployEnvironment" | "paymentMode" | "merchantPromotionPrefix">;
 
 export type RailState = "PENDING" | "CUSTOMER_ACTION_REQUIRED" | "PAID" | "DECLINED" | "EXPIRED" | "REFUND_PENDING" | "REFUNDED" | "REVIEW_REQUIRED";
 export type RailProjection = {
@@ -222,14 +227,27 @@ const freezeLine = (offer: OfferRow): FrozenLineSnapshot => {
   };
 };
 
-function assertOfferCanBePurchased(db: Database.Database, offer: OfferRow | undefined, customerId: string, customerEmail: string) {
+/** Live sellability of the offer itself, re-read on every checkout step; a stored quote never stands in for it. */
+function assertOfferOpenToCustomer(db: Database.Database, config: CheckoutPolicyConfig, offer: OfferRow | undefined, customerEmail: string) {
   if (!offer || offer.withdrawn_at) throw new Error("OFFER_NOT_AVAILABLE");
   if (offer.access_model === "FREE") throw new Error("FREE_PRODUCT_CHECKOUT_FORBIDDEN");
   if (offer.sale_mode === "CLOSED") throw new Error("OFFER_CLOSED");
+  assertLiveOfferSaleMode(db, config, { kind: offer.kind, accessModel: offer.access_model, saleMode: offer.sale_mode });
   if (offer.sale_mode === "ACCEPTANCE_ONLY") {
     const allowlist = JSON.parse(offer.acceptance_allowlist_json) as string[];
     if (!allowlist.map((email) => email.trim().toLowerCase()).includes(customerEmail.trim().toLowerCase())) throw new Error("ACCEPTANCE_ONLY");
   }
+  return offer;
+}
+
+function assertOfferCanBePurchased(
+  db: Database.Database,
+  config: CheckoutPolicyConfig,
+  candidate: OfferRow | undefined,
+  customerId: string,
+  customerEmail: string,
+) {
+  const offer = assertOfferOpenToCustomer(db, config, candidate, customerEmail);
   if (offer.kind === "ONLINE_COURSE" && offer.course_ref && customerCanAccessCourse(db, customerId, offer.course_ref)) throw new Error("ALREADY_OWNED");
   if (offer.kind === "COURSE_BUNDLE" && customerCanAccessCourse(db, customerId, "__any_future_course__")) throw new Error("ALREADY_OWNED");
   return offer;
@@ -278,9 +296,9 @@ const storedPricing = (quote: StoredCheckoutQuote): CheckoutQuotePricing => ({
 export async function prepareCheckout(
   db: Database.Database,
   rail: PaymentRail,
+  config: CheckoutPolicyConfig,
   input: { customerId: string; customerEmail: string; offerRef: string; previewIdempotencyKey: string; scenario?: string; handoffToken?: string; checkoutCode?: string; orderPublicId?: string; storefront?: Storefront },
   now = new Date().toISOString(),
-  merchantPromotionPrefix = "FX-",
 ) {
   if (!input.previewIdempotencyKey.trim()) throw new Error("IDEMPOTENCY_KEY_REQUIRED");
   const checkoutCodeInput = input.checkoutCode?.trim() || null;
@@ -292,10 +310,11 @@ export async function prepareCheckout(
     if (existing.customer_id !== input.customerId || existing.offer_id !== requestedOffer?.offer_id
       || existing.checkout_code_input !== checkoutCodeInput) throw new Error("IDEMPOTENCY_KEY_REUSED");
     if (existing.expires_at <= now) throw new Error("CHECKOUT_QUOTE_EXPIRED");
+    assertOfferOpenToCustomer(db, config, requestedOffer, input.customerEmail);
     return quoteResponse(existing.id, JSON.parse(existing.rail_quote_json) as RailQuote, storedPricing(existing), existing.expires_at);
   }
 
-  const offer = assertOfferCanBePurchased(db, offerByRef(db, input.offerRef), input.customerId, input.customerEmail);
+  const offer = assertOfferCanBePurchased(db, config, offerByRef(db, input.offerRef), input.customerId, input.customerEmail);
   const storefront = storefrontForOffer(offer);
   if (input.storefront && input.storefront !== storefront) throw new Error("CHECKOUT_STOREFRONT_MISMATCH");
   const legal = legalRelease(db, storefront);
@@ -315,7 +334,7 @@ export async function prepareCheckout(
   const quoteId = randomUUID();
   const lineRef = randomUUID();
   const lineSnapshot = freezeLine(offer);
-  const codeResolution = resolveCheckoutCode(db, input.checkoutCode, offer.offer_ref, offer.price_kopecks, merchantPromotionPrefix, now);
+  const codeResolution = resolveCheckoutCode(db, input.checkoutCode, offer.offer_ref, offer.price_kopecks, config.merchantPromotionPrefix, now);
   const merchantDiscountKopecks = codeResolution.promotion?.merchantDiscountKopecks ?? 0;
   const merchantOfferAmountKopecks = offer.price_kopecks - merchantDiscountKopecks;
   const resolved = await rail.resolve({
@@ -361,6 +380,7 @@ export async function prepareCheckout(
 export async function confirmCheckout(
   db: Database.Database,
   rail: PaymentRail,
+  config: CheckoutPolicyConfig,
   input: {
     customerId: string;
     customerEmail: string;
@@ -404,7 +424,7 @@ export async function confirmCheckout(
     throw new Error("CHECKOUT_QUOTE_EXPIRED");
   }
   if (!pending.line_snapshot_json) throw new Error("CHECKOUT_QUOTE_STALE");
-  const offer = assertOfferCanBePurchased(db, offerByRef(db, pending.offer_ref), input.customerId, input.customerEmail);
+  const offer = assertOfferCanBePurchased(db, config, offerByRef(db, pending.offer_ref), input.customerId, input.customerEmail);
   const storefront = storefrontForOffer(offer);
   if (input.storefront && input.storefront !== storefront) throw new Error("CHECKOUT_STOREFRONT_MISMATCH");
   const activeLegal = legalRelease(db, storefront);
@@ -493,10 +513,11 @@ export async function confirmCheckout(
 export async function checkout(
   db: Database.Database,
   rail: PaymentRail,
+  config: CheckoutPolicyConfig,
   input: { customerId: string; customerEmail: string; offerRef: string; idempotencyKey: string; scenario?: string; handoffToken?: string; checkoutCode?: string; orderPublicId?: string },
   now = new Date().toISOString(),
 ) {
-  const prepared = await prepareCheckout(db, rail, {
+  const prepared = await prepareCheckout(db, rail, config, {
     customerId: input.customerId,
     customerEmail: input.customerEmail,
     offerRef: input.offerRef,
@@ -507,7 +528,7 @@ export async function checkout(
     orderPublicId: input.orderPublicId,
   }, now);
   if (prepared.state === "CUSTOMER_ACTION_REQUIRED") return prepared;
-  return confirmCheckout(db, rail, {
+  return confirmCheckout(db, rail, config, {
     customerId: input.customerId,
     customerEmail: input.customerEmail,
     quoteId: prepared.quoteId,

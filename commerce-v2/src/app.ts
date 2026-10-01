@@ -537,7 +537,7 @@ export function createCommerceV2App(deps: Dependencies) {
       const handoff = deps.config.paymentMode === "refref"
         ? verifyCheckoutHandoffState(deps.config.refref!.handoffStateSecret, body.state ?? "", customerId, now().getTime())
         : undefined;
-      const result = await prepareCheckout(deps.db, deps.paymentRail, {
+      const result = await prepareCheckout(deps.db, deps.paymentRail, deps.config, {
         customerId, customerEmail: customer.email_normalized, offerRef: body.offerRef,
         previewIdempotencyKey: context.req.header("idempotency-key") ?? "",
         scenario: deps.config.paymentMode === "mock" ? body.mockScenario : undefined,
@@ -545,7 +545,7 @@ export function createCommerceV2App(deps: Dependencies) {
         checkoutCode: body.checkoutCode,
         orderPublicId: handoff?.orderPublicId,
         storefront: handoff?.storefront,
-      }, now().toISOString(), deps.config.merchantPromotionPrefix);
+      }, now().toISOString());
       return context.json(result, 200, noStore);
     } catch (error) {
       return context.json({ code: error instanceof Error ? error.message : "CHECKOUT_PREVIEW_UNAVAILABLE" }, 503, noStore);
@@ -570,7 +570,7 @@ export function createCommerceV2App(deps: Dependencies) {
         : undefined;
       const successUrl = paymentReturn ? new URL("/checkout/return", storefrontOrigin(origins, paymentReturn.state.storefront)) : undefined;
       successUrl?.searchParams.set("state", paymentReturn!.token);
-      const result = await confirmCheckout(deps.db, deps.paymentRail, {
+      const result = await confirmCheckout(deps.db, deps.paymentRail, deps.config, {
         customerId,
         customerEmail: customer.email_normalized,
         quoteId: body.quoteId,

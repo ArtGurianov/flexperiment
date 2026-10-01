@@ -4,6 +4,7 @@ import { confirmCheckout, prepareCheckout, type PaymentCreateInput, type Payment
 import { migrateV2 } from "../src/db";
 import { resolveCheckoutCode, saveMerchantPromotion } from "../src/promotions";
 import { stageBLegalManifestJson } from "./fixtures/legal";
+import { activatePublicSales, testCheckoutConfig } from "./fixtures/sales";
 
 class CapturingRail implements PaymentRail {
   readonly checkoutSnapshotConfig = {
@@ -57,15 +58,16 @@ beforeEach(() => {
     VALUES ('product','course:one','ONLINE_COURSE','PAID','course-one')`).run();
   db.prepare(`INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode)
     VALUES ('offer','course:one','product',10000,'PUBLIC')`).run();
+  activatePublicSales(db);
 });
 
-const preview = (checkoutCode: string, key = checkoutCode) => prepareCheckout(db, rail, {
+const preview = (checkoutCode: string, key = checkoutCode) => prepareCheckout(db, rail, testCheckoutConfig, {
   customerId: "customer",
   customerEmail: "student@example.com",
   offerRef: "course:one",
   previewIdempotencyKey: key,
   checkoutCode,
-}, now, "FX-");
+}, now);
 
 describe("merchant promotion namespace", () => {
   it("applies a reserved-prefix promotion before Refref and freezes the breakdown", async () => {
@@ -90,7 +92,7 @@ describe("merchant promotion namespace", () => {
       merchantPromotionCode: "FX-LAUNCH",
     });
     if (quote.state !== "PRICE_REVIEW_REQUIRED") throw new Error("expected quote");
-    await confirmCheckout(db, rail, {
+    await confirmCheckout(db, rail, testCheckoutConfig, {
       customerId: "customer",
       customerEmail: "student@example.com",
       quoteId: quote.quoteId,
@@ -149,7 +151,7 @@ describe("merchant promotion namespace", () => {
     const quote = await preview("FX-LAUNCH");
     db.prepare("UPDATE merchant_promotion SET active=0 WHERE id='promotion'").run();
     if (quote.state !== "PRICE_REVIEW_REQUIRED") throw new Error("expected quote");
-    await expect(confirmCheckout(db, rail, { customerId: "customer", customerEmail: "student@example.com",
+    await expect(confirmCheckout(db, rail, testCheckoutConfig, { customerId: "customer", customerEmail: "student@example.com",
       quoteId: quote.quoteId, idempotencyKey: "payment" }, "2026-09-30T10:01:00.000Z")).rejects.toThrow("CHECKOUT_QUOTE_STALE");
     expect(db.prepare("SELECT COUNT(*) AS count FROM orders").get()).toEqual({ count: 0 });
   });

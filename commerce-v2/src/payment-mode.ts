@@ -75,8 +75,10 @@ export function loadCommerceRuntimeConfig(env: Environment = process.env): Comme
   };
 }
 
+export type SaleModePolicyConfig = Pick<CommerceRuntimeConfig, "deployEnvironment" | "paymentMode">;
+
 export function assertOfferSaleModeAllowed(
-  config: CommerceRuntimeConfig,
+  config: SaleModePolicyConfig,
   offer: { readonly kind: "ONLINE_COURSE" | "COURSE_BUNDLE" | "LAB"; readonly accessModel: "FREE" | "PAID"; readonly saleMode: SaleMode },
   activationExists: boolean,
 ) {

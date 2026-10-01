@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createCommerceV2App } from "../src/app";
 import { migrateV2 } from "../src/db";
 import { stageBLegalManifestJson } from "./fixtures/legal";
+import { activatePublicSales } from "./fixtures/sales";
 import { loadCommerceRuntimeConfig } from "../src/payment-mode";
 import { withManifestHash } from "../src/manifest";
 import { MockPaymentRail } from "../src/checkout";
@@ -226,6 +227,12 @@ describe("commerce v2 boundaries", () => {
       VALUES ('offer','course:one','product',10000,'PUBLIC')`).run();
     const server = app("mock");
     const headers = { authorization: "Session customer", "content-type": "application/json", "idempotency-key": "preview" };
+    const unactivated = await server.request("/v1/checkout/preview", {
+      method: "POST", headers: { ...headers, "idempotency-key": "unactivated" }, body: JSON.stringify({ offerRef: "course:one" }),
+    });
+    expect(unactivated.status).toBe(503);
+    expect(await unactivated.json()).toEqual({ code: "SALES_ACTIVATION_REQUIRED" });
+    activatePublicSales(db);
     const preview = await server.request("/v1/checkout/preview", {
       method: "POST", headers, body: JSON.stringify({ offerRef: "course:one" }),
     });
@@ -249,6 +256,7 @@ describe("commerce v2 boundaries", () => {
       VALUES ('product','course:one','ONLINE_COURSE','PAID','course-one')`).run();
     db.prepare(`INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode)
       VALUES ('offer','course:one','product',10000,'PUBLIC')`).run();
+    activatePublicSales(db);
     const config = loadCommerceRuntimeConfig({
       DEPLOY_ENV: "test",
       PAYMENT_MODE: "refref",
@@ -312,6 +320,7 @@ describe("commerce v2 boundaries", () => {
       VALUES ('product','course:one','ONLINE_COURSE','PAID','course-one')`).run();
     db.prepare(`INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode)
       VALUES ('offer','course:one','product',10000,'PUBLIC')`).run();
+    activatePublicSales(db);
     const server = app("mock");
     const customerHeaders = { authorization: "Session customer", "content-type": "application/json", "idempotency-key": "preview-refund" };
     const preview = await server.request("/v1/checkout/preview", {
@@ -355,6 +364,7 @@ describe("commerce v2 boundaries", () => {
       VALUES ('product','course:one','ONLINE_COURSE','PAID','course-one')`).run();
     db.prepare(`INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode)
       VALUES ('offer','course:one','product',10000,'PUBLIC')`).run();
+    activatePublicSales(db);
     await server.request("/v1/internal/course-manifests", internal(withManifestHash({
       courseRef: "course-one", version: 1, visibility: "LISTED", sections: [], lessons: [], operations: [],
     })));
