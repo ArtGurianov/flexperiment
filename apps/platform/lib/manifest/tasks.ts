@@ -34,7 +34,7 @@ export const syncCourseManifestTask: TaskConfig<SyncInputOutput> = {
     if (!course) throw new Error("PUBLISHED_COURSE_NOT_FOUND");
     const manifest = await buildCourseManifest(req.payload, course, req);
     const ack = await pushCourseManifest(manifest);
-    await markAcknowledged(req, [...ack.finalized, ...ack.superseded]);
+    await markAcknowledged(req, [...ack.finalized, ...ack.superseded, ...ack.lateCommitted]);
     await invalidatePlatformCache(manifest.operations.length > 0 ? "immediate" : "swr");
     const slug = typeof course.slug === "string" ? course.slug : "";
     await notifyIndexNow(["/courses", "/search-index.json", "/sitemap.xml", ...(slug ? [`/courses/${slug}`] : [])]);

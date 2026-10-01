@@ -34,9 +34,14 @@ export type CourseManifest = {
   readonly operations: ReadonlyArray<{ readonly operationId: string; readonly committedVersion: number }>;
 };
 
+/**
+ * Every operation the pushed manifest carried, by its commerce state, whether resolved by this push
+ * or an earlier one, so re-pushing the same committed manifest recovers a lost acknowledgement.
+ */
 export type ManifestAck = {
   readonly kind: "APPLIED" | "NO_OP";
   readonly finalized: readonly string[];
   readonly superseded: readonly string[];
+  readonly lateCommitted: readonly string[];
   readonly stillOpen: readonly string[];
 };

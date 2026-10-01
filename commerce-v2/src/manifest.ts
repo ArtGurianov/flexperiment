@@ -35,6 +35,14 @@ export function manifestContentHash(manifest: Omit<CourseManifest, "contentHash"
   return createHash("sha256").update(JSON.stringify(stable(manifest))).digest("hex");
 }
 
+/** Identity of the committed course state alone, without the operations awaiting acknowledgement. */
+export function manifestStateHash(manifest: Omit<CourseManifest, "contentHash">): string {
+  return manifestContentHash({
+    courseRef: manifest.courseRef, version: manifest.version, visibility: manifest.visibility,
+    sections: manifest.sections, lessons: manifest.lessons, operations: [],
+  });
+}
+
 export function withManifestHash(manifest: Omit<CourseManifest, "contentHash">): CourseManifest {
   return { ...manifest, contentHash: manifestContentHash(manifest) };
 }
@@ -113,18 +121,49 @@ const expectedRestrictionPresent = (manifest: CourseManifest, override: Override
   return manifest.lessons.some(({ lessonRef }) => lessonRef === override.scope_ref && lessonEffectiveVisibility(manifest, lessonRef) === "UNLISTED");
 };
 
+/**
+ * The resolution lists name every operation the manifest carries in that state, whether it was
+ * resolved by this push or an earlier one: the platform acknowledges from them, and an ack lost
+ * after commerce committed must be recoverable by simply pushing the manifest again.
+ */
 export type ManifestApplyResult = {
   readonly kind: "APPLIED" | "NO_OP";
   readonly finalized: readonly string[];
   readonly superseded: readonly string[];
+  /** Released as rolled back, then seen committed: recorded for attention, nothing left for the platform to resolve. */
+  readonly lateCommitted: readonly string[];
   readonly stillOpen: readonly string[];
 };
 
+function operationOutcomes(db: Database.Database, manifest: CourseManifest): Omit<ManifestApplyResult, "kind"> {
+  const finalized: string[] = [];
+  const superseded: string[] = [];
+  const lateCommitted: string[] = [];
+  const read = db.prepare("SELECT state, committed_version FROM access_overrides WHERE operation_id = ? AND course_ref = ?");
+  for (const { operationId } of manifest.operations) {
+    const row = read.get(operationId, manifest.courseRef) as { state: OverrideRow["state"]; committed_version: number | null } | undefined;
+    if (row?.state === "FINALIZED") finalized.push(operationId);
+    else if (row?.state === "SUPERSEDED") superseded.push(operationId);
+    else if (row?.state === "RELEASED_ROLLED_BACK" && row.committed_version !== null) lateCommitted.push(operationId);
+  }
+  const stillOpen = (db.prepare("SELECT operation_id FROM access_overrides WHERE course_ref = ? AND state = 'PENDING'")
+    .all(manifest.courseRef) as Array<{ operation_id: string }>).map(({ operation_id }) => operation_id);
+  return { finalized, superseded, lateCommitted, stillOpen };
+}
+
 export function applyCourseManifest(db: Database.Database, manifest: CourseManifest, now = new Date().toISOString()): ManifestApplyResult {
   validateManifest(manifest);
-  const current = db.prepare("SELECT version, content_hash FROM catalog_course_projection WHERE course_ref = ?").get(manifest.courseRef) as { version: number; content_hash: string } | undefined;
-  if (current?.version === manifest.version && current.content_hash === manifest.contentHash) {
-    return { kind: "NO_OP", finalized: [], superseded: [], stillOpen: [] };
+  const stateHash = manifestStateHash(manifest);
+  const current = db.prepare("SELECT version, content_hash, state_hash FROM catalog_course_projection WHERE course_ref = ?")
+    .get(manifest.courseRef) as { version: number; content_hash: string; state_hash: string | null } | undefined;
+  if (current?.version === manifest.version
+    && (current.content_hash === manifest.contentHash || current.state_hash === stateHash)) {
+    // An unchanged course is still a reconciled one: the push proves the platform holds this
+    // committed state, so the lease renews even though nothing else moves. The operation list may
+    // be shorter than when this version was applied, because the platform acknowledged some.
+    db.prepare("UPDATE catalog_course_projection SET last_reconciled_at = ? WHERE course_ref = ? AND version = ?")
+      .run(now, manifest.courseRef, manifest.version);
+    return { kind: "NO_OP", ...operationOutcomes(db, manifest) };
   }
   if (current && manifest.version <= current.version) throw new ManifestError("MANIFEST_VERSION_REJECTED");
 
@@ -139,7 +178,10 @@ export function applyCourseManifest(db: Database.Database, manifest: CourseManif
     }
     const present = expectedRestrictionPresent(manifest, override);
     if (override.state === "RELEASED_ROLLED_BACK") {
-      if (!present) {
+      // Already recorded as a late commit: it stays in the attention queue, and a later edit that
+      // relists the scope must not wedge every following manifest on it.
+      if (override.committed_version !== null) continue;
+      if (!present && manifest.version <= operation.committedVersion) {
         db.prepare("UPDATE access_overrides SET attention_reason = ? WHERE operation_id = ?").run("COMMITTED_RESTRICTION_ABSENT", operation.operationId);
         throw new ManifestError("COMMITTED_RESTRICTION_ABSENT");
       }
@@ -156,10 +198,10 @@ export function applyCourseManifest(db: Database.Database, manifest: CourseManif
   }
 
   const apply = db.transaction(() => {
-    db.prepare(`INSERT INTO catalog_course_projection(course_ref,version,content_hash,visibility,last_reconciled_at,applied_at)
-      VALUES (?,?,?,?,?,?) ON CONFLICT(course_ref) DO UPDATE SET version=excluded.version,content_hash=excluded.content_hash,
-      visibility=excluded.visibility,last_reconciled_at=excluded.last_reconciled_at,applied_at=excluded.applied_at`)
-      .run(manifest.courseRef, manifest.version, manifest.contentHash, manifest.visibility, now, now);
+    db.prepare(`INSERT INTO catalog_course_projection(course_ref,version,content_hash,state_hash,visibility,last_reconciled_at,applied_at)
+      VALUES (?,?,?,?,?,?,?) ON CONFLICT(course_ref) DO UPDATE SET version=excluded.version,content_hash=excluded.content_hash,
+      state_hash=excluded.state_hash,visibility=excluded.visibility,last_reconciled_at=excluded.last_reconciled_at,applied_at=excluded.applied_at`)
+      .run(manifest.courseRef, manifest.version, manifest.contentHash, stateHash, manifest.visibility, now, now);
     const lessonRefs = manifest.lessons.map(({ lessonRef }) => lessonRef);
     const sectionRefs = manifest.sections.map(({ sectionRef }) => sectionRef);
     db.prepare(`DELETE FROM catalog_lesson_projection WHERE course_ref=?${lessonRefs.length > 0
@@ -206,11 +248,5 @@ export function applyCourseManifest(db: Database.Database, manifest: CourseManif
     }
   });
   apply.immediate();
-  const stillOpen = (db.prepare("SELECT operation_id FROM access_overrides WHERE course_ref = ? AND state = 'PENDING'").all(manifest.courseRef) as Array<{ operation_id: string }>).map(({ operation_id }) => operation_id);
-  return {
-    kind: "APPLIED",
-    finalized: decisions.filter(({ outcome }) => outcome === "FINALIZED").map(({ operationId }) => operationId),
-    superseded: decisions.filter(({ outcome }) => outcome === "SUPERSEDED").map(({ operationId }) => operationId),
-    stillOpen,
-  };
+  return { kind: "APPLIED", ...operationOutcomes(db, manifest) };
 }

@@ -200,6 +200,7 @@ describe("Payload manifest transaction", () => {
           kind: "APPLIED",
           finalized: manifest.operations.map(({ operationId }) => operationId),
           superseded: [],
+          lateCommitted: [],
           stillOpen: [],
         }), { status: 200, headers: { "content-type": "application/json" } });
       }

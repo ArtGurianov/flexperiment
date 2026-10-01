@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { createRestrictiveOverride, releaseRolledBackOverride, OverrideProofError } from "../src/access-overrides";
 import { migrateV2 } from "../src/db";
 import { applyCourseManifest, ManifestError, withManifestHash, type CourseManifest } from "../src/manifest";
+import { resolvePlaybackAccess } from "../src/playback-access";
 
 let db: Database.Database;
 beforeEach(() => { db = new Database(":memory:"); db.pragma("foreign_keys = ON"); migrateV2(db); });
@@ -76,6 +77,85 @@ describe("manifest ordering and convergence", () => {
     }))).toThrow(new ManifestError("MANIFEST_VERSION_REJECTED"));
     expect(db.prepare("SELECT state,attention_reason FROM access_overrides WHERE operation_id='op'").get())
       .toEqual({ state: "PENDING", attention_reason: null });
+  });
+});
+
+describe("reconciliation lease and acknowledgement recovery", () => {
+  const day = 24 * 60 * 60 * 1000;
+
+  it("renews the lease on an unchanged reconcile so a free course does not go stale", () => {
+    db.prepare("INSERT INTO customers(id,email_normalized) VALUES ('customer','student@example.com')").run();
+    db.prepare("INSERT INTO products(id,product_ref,kind,access_model,course_ref) VALUES ('p','course:course','ONLINE_COURSE','FREE','course')").run();
+    const committed = manifest(1);
+    applyCourseManifest(db, committed, "2026-09-28T00:00:00.000Z");
+    expect(applyCourseManifest(db, committed, "2026-09-29T00:00:00.000Z").kind).toBe("NO_OP");
+    expect(applyCourseManifest(db, committed, "2026-09-30T00:00:00.000Z").kind).toBe("NO_OP");
+    expect(db.prepare("SELECT last_reconciled_at,applied_at FROM catalog_course_projection").get())
+      .toEqual({ last_reconciled_at: "2026-09-30T00:00:00.000Z", applied_at: "2026-09-28T00:00:00.000Z" });
+    expect(resolvePlaybackAccess(db, {
+      customerId: "customer", lessonRef: "paid", now: new Date("2026-09-30T12:00:00.000Z"), leaseMs: day,
+    }).decision).toBe("ALLOW");
+  });
+
+  it("re-reports operations resolved by an earlier push so a lost acknowledgement is recoverable", () => {
+    createOverride("relisted", "LESSON", "paid");
+    applyCourseManifest(db, manifest(1));
+    // A later committed edit relisted the lesson; the platform never received this acknowledgement.
+    expect(applyCourseManifest(db, manifest(2, { operations: [{ operationId: "relisted", committedVersion: 1 }] })))
+      .toEqual({ kind: "APPLIED", finalized: [], superseded: ["relisted"], lateCommitted: [], stillOpen: [] });
+
+    createOverride("unlisted");
+    const restricted = manifest(3, {
+      sections: [{ sectionRef: "section", visibility: "UNLISTED" }],
+      operations: [{ operationId: "relisted", committedVersion: 1 }, { operationId: "unlisted", committedVersion: 3 }],
+    });
+    const expected = { finalized: ["unlisted"], superseded: ["relisted"], lateCommitted: [], stillOpen: [] };
+    expect(applyCourseManifest(db, restricted)).toEqual({ kind: "APPLIED", ...expected });
+    // The acknowledgement was lost again: the reconciler pushes the same committed manifest.
+    expect(applyCourseManifest(db, restricted)).toEqual({ kind: "NO_OP", ...expected });
+    // Or a later edit commits first and still carries every unacknowledged operation.
+    expect(applyCourseManifest(db, manifest(4, {
+      sections: [{ sectionRef: "section", visibility: "UNLISTED" }],
+      operations: restricted.operations,
+    }))).toEqual({ kind: "APPLIED", ...expected });
+    expect(db.prepare("SELECT operation_id,state FROM access_overrides ORDER BY operation_id").all()).toEqual([
+      { operation_id: "relisted", state: "SUPERSEDED" }, { operation_id: "unlisted", state: "FINALIZED" },
+    ]);
+  });
+
+  it("treats a re-push without the acknowledged operations as the same committed version", () => {
+    createOverride();
+    const restricted = manifest(1, {
+      sections: [{ sectionRef: "section", visibility: "UNLISTED" }],
+      operations: [{ operationId: "op", committedVersion: 1 }],
+    });
+    applyCourseManifest(db, restricted, "2026-09-29T00:00:00.000Z");
+    // The platform acknowledged "op", so its next reconcile no longer lists it at this version.
+    const acknowledged = manifest(1, { sections: [{ sectionRef: "section", visibility: "UNLISTED" }] });
+    expect(acknowledged.contentHash).not.toBe(restricted.contentHash);
+    expect(applyCourseManifest(db, acknowledged, "2026-09-30T00:00:00.000Z"))
+      .toEqual({ kind: "NO_OP", finalized: [], superseded: [], lateCommitted: [], stillOpen: [] });
+    expect(db.prepare("SELECT content_hash,last_reconciled_at FROM catalog_course_projection").get())
+      .toEqual({ content_hash: restricted.contentHash, last_reconciled_at: "2026-09-30T00:00:00.000Z" });
+    // Same-version drift in the committed state itself is still rejected.
+    expect(() => applyCourseManifest(db, manifest(1))).toThrow(new ManifestError("MANIFEST_VERSION_REJECTED"));
+  });
+
+  it("reports a recorded late commit for acknowledgement and does not wedge later relisting manifests on it", () => {
+    createOverride();
+    releaseRolledBackOverride(db, "op", {
+      checkedAt: "2026-09-30T02:00:00.000Z", currentPlatformEpoch: "epoch-2",
+      committedRecordExists: false, operationInFlight: false, transactionEnded: true,
+    });
+    expect(applyCourseManifest(db, manifest(1, {
+      sections: [{ sectionRef: "section", visibility: "UNLISTED" }],
+      operations: [{ operationId: "op", committedVersion: 1 }],
+    })).lateCommitted).toEqual(["op"]);
+    const relisted = applyCourseManifest(db, manifest(2, { operations: [{ operationId: "op", committedVersion: 1 }] }));
+    expect(relisted).toEqual({ kind: "APPLIED", finalized: [], superseded: [], lateCommitted: ["op"], stillOpen: [] });
+    expect(db.prepare("SELECT state,attention_reason FROM access_overrides WHERE operation_id='op'").get())
+      .toEqual({ state: "RELEASED_ROLLED_BACK", attention_reason: "COMMIT_AFTER_ROLLBACK_RELEASE" });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE action='ACCESS_OVERRIDE_LATE_COMMIT'").get()).toEqual({ n: 1 });
   });
 });
 
