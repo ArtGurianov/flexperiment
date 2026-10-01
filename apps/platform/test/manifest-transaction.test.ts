@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { listPublicCourses } from "../lib/content/editorial";
 import { operationIsInFlight, snapshotInFlight } from "../lib/manifest/in-flight";
+import { syncCourseManifestTask } from "../lib/manifest/tasks";
 
 const databasePath = join(tmpdir(), `flexperiment-platform-test-${process.pid}.sqlite`);
 const mediaPath = join(tmpdir(), `flexperiment-platform-media-${process.pid}`);
@@ -268,7 +269,7 @@ describe("Payload manifest transaction", () => {
         }],
       });
       expect(requests.find(({ url }) => url === "https://platform.test/internal/revalidate")?.body)
-        .toEqual({ mode: "immediate" });
+        .toEqual({ mode: "immediate", slug: "transaction-test" });
       const operations = await payload.find({
         collection: "access-operations",
         limit: 10,
@@ -433,5 +434,69 @@ describe("publication safety", () => {
       draft: false, overrideAccess: true,
     });
     expect(await manifestVersion("course:hard-lifetime")).toBe(versionBefore + 1);
+  });
+
+  it("recovers a lost acknowledgement and keeps unchanged reconciles free of cache and IndexNow side effects", async () => {
+    vi.stubEnv("PLATFORM_ORIGIN", "https://platform.test");
+    vi.stubEnv("PLATFORM_REVALIDATE_TOKEN", "revalidation-token");
+    vi.stubEnv("INDEXNOW_KEY", "indexnow-key");
+    const course = await publishedCourse("ack-recovery");
+    const manifestResponses: Array<(manifest: { operations: Array<{ operationId: string }> }) => Response> = [];
+    const calls = { manifests: 0, revalidations: [] as unknown[], indexNow: 0 };
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.endsWith("/v1/internal/access-overrides")) return overrideAccepted();
+      if (url.endsWith("/v1/internal/course-manifests")) {
+        calls.manifests += 1;
+        return manifestResponses.shift()!(requestBody(init) as never);
+      }
+      if (url === "https://platform.test/internal/revalidate") {
+        calls.revalidations.push(requestBody(init));
+        return json({ revalidated: true });
+      }
+      if (url === "https://api.indexnow.org/indexnow") {
+        calls.indexNow += 1;
+        return new Response(null, { status: 200 });
+      }
+      throw new Error(`UNEXPECTED_FETCH:${url}`);
+    });
+    const handler = syncCourseManifestTask.handler as (args: never) => Promise<unknown>;
+    const sync = async () => handler({ input: { courseId: String(course.id) }, req: await createLocalReq({}, payload) } as never);
+
+    try {
+      await payload.update({
+        collection: "courses", id: course.id, data: { visibility: "unlisted", _status: "published" },
+        draft: false, overrideAccess: true,
+      });
+      const [operation] = await operationsFor("course:ack-recovery");
+
+      // Commerce applied the manifest, but its acknowledgement never reached the platform.
+      manifestResponses.push(() => json({ code: "UPSTREAM_RESET" }, 502));
+      await expect(sync()).rejects.toThrow("UPSTREAM_RESET");
+      expect((await operationsFor("course:ack-recovery"))[0]).toMatchObject({ state: "COMMITTED_UNACKED" });
+
+      // The re-push is a no-op for commerce, which still reports the operation it resolved earlier.
+      manifestResponses.push((manifest) => json({
+        kind: "NO_OP", finalized: manifest.operations.map(({ operationId }) => operationId),
+        superseded: [], lateCommitted: [], stillOpen: [],
+      }));
+      await sync();
+      expect((await operationsFor("course:ack-recovery"))[0]).toMatchObject({ operationId: operation!.operationId, state: "ACKED" });
+      // The committed version is invalidated once, immediately, because it carried a restriction.
+      expect(calls.revalidations).toEqual([{ mode: "immediate", slug: "ack-recovery" }]);
+      expect(calls.indexNow).toBe(1);
+
+      // Unchanged reconciles touch neither the cache nor IndexNow.
+      manifestResponses.push(() => json({ kind: "NO_OP", finalized: [], superseded: [], lateCommitted: [], stillOpen: [] }));
+      manifestResponses.push(() => json({ kind: "NO_OP", finalized: [], superseded: [], lateCommitted: [], stillOpen: [] }));
+      await sync();
+      await sync();
+      expect(calls.manifests).toBe(4);
+      expect(calls.revalidations).toHaveLength(1);
+      expect(calls.indexNow).toBe(1);
+    } finally {
+      fetchMock.mockRestore();
+      vi.unstubAllEnvs();
+    }
   });
 });

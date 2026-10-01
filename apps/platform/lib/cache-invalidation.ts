@@ -1,6 +1,6 @@
 import { platformOrigin } from "./origins";
 
-export async function invalidatePlatformCache(mode: "swr" | "immediate") {
+export async function invalidatePlatformCache(mode: "swr" | "immediate", slug?: string) {
   const origin = platformOrigin();
   const token = process.env.PLATFORM_REVALIDATE_TOKEN ?? process.env.PLATFORM_COMMERCE_SERVICE_TOKEN;
   if (!token) {
@@ -10,7 +10,7 @@ export async function invalidatePlatformCache(mode: "swr" | "immediate") {
   const response = await fetch(new URL("/internal/revalidate", origin), {
     method: "POST",
     headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-    body: JSON.stringify({ mode }),
+    body: JSON.stringify(slug ? { mode, slug } : { mode }),
     cache: "no-store",
     signal: AbortSignal.timeout(3_000),
   });

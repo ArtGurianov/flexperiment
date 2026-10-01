@@ -1,7 +1,7 @@
 import type { PayloadRequest, TaskConfig } from "payload";
 import { buildCourseManifest } from "./build";
 import { listPendingCommerceOverrides, pushCourseManifest, releaseRolledBackOverride } from "./commerce-client";
-import { getPublishedDocument, hasCommittedAccessOperation, listPublishedCourses } from "@/lib/content/editorial";
+import { getCourseManifestState, getPublishedDocument, hasCommittedAccessOperation, listPublishedCourses } from "@/lib/content/editorial";
 import { getPlatformEpoch, operationIsInFlight } from "./in-flight";
 import { invalidatePlatformCache, notifyIndexNow } from "@/lib/cache-invalidation";
 
@@ -34,10 +34,25 @@ export const syncCourseManifestTask: TaskConfig<SyncInputOutput> = {
     if (!course) throw new Error("PUBLISHED_COURSE_NOT_FOUND");
     const manifest = await buildCourseManifest(req.payload, course, req);
     const ack = await pushCourseManifest(manifest);
+    // Side effects belong to a committed version, not to a push: the reconciler re-pushes every
+    // course every few minutes, and an unchanged course must not churn the cache or IndexNow. A
+    // version whose invalidation failed is retried with its operations still unacknowledged, so
+    // the retry keeps the immediate expiry a restriction needs.
+    const state = await getCourseManifestState(req.payload, manifest.courseRef, req);
+    if (state && Number(state.invalidatedVersion ?? 0) < manifest.version) {
+      const slug = typeof course.slug === "string" ? course.slug : undefined;
+      await invalidatePlatformCache(manifest.operations.length > 0 ? "immediate" : "swr", slug);
+      await notifyIndexNow(["/courses", "/search-index.json", "/sitemap.xml", ...(slug ? [`/courses/${slug}`] : [])]);
+      await req.payload.update({
+        collection: "course-manifest-states",
+        id: state.id,
+        data: { invalidatedVersion: manifest.version },
+        depth: 0,
+        overrideAccess: true,
+        req,
+      });
+    }
     await markAcknowledged(req, [...ack.finalized, ...ack.superseded, ...ack.lateCommitted]);
-    await invalidatePlatformCache(manifest.operations.length > 0 ? "immediate" : "swr");
-    const slug = typeof course.slug === "string" ? course.slug : "";
-    await notifyIndexNow(["/courses", "/search-index.json", "/sitemap.xml", ...(slug ? [`/courses/${slug}`] : [])]);
     return { output: { courseRef: manifest.courseRef, version: manifest.version } };
   },
 };
