@@ -1,0 +1,205 @@
+#!/usr/bin/env bash
+# Flexperiment encrypted runtime recovery backup, installed as /usr/local/sbin/flexperiment-recovery-backup
+# and run daily by flexperiment-recovery-backup.timer. The running Commerce container's recovery
+# variables leave it only as an age-encrypted bundle: locally (7 newest) and in cloud.ru S3 (100 newest),
+# every upload verified by reading the object back.
+#
+# Tests (deploy/test-recovery-backup.sh) override the paths and set FLEXPERIMENT_S3_LOCAL_DIR, which
+# replaces cloud.ru with a directory through the same rclone code.
+set -euo pipefail
+umask 077
+
+RECOVERY_DIR="${RECOVERY_DIR:-/var/backups/flexperiment-recovery}"
+CONF_DIR="${CONF_DIR:-/etc/flexperiment/recovery}"
+RECIPIENT_FILE="$CONF_DIR/age-recipient.txt"
+S3_ACCESS_FILE="$CONF_DIR/s3-access-key"
+S3_SECRET_FILE="$CONF_DIR/s3-secret-key"
+
+S3_ENDPOINT="https://s3.cloud.ru"
+S3_REGION="ru-central-1"
+S3_BUCKET="art-backups"
+S3_PREFIX="flexperiment/recovery/runtime"
+
+# rclone, pinned by digest, the same client and configuration as refref's backups
+# (refref ops/host/refref-backup-lib). Not minio/mc: it is no longer pullable from Docker Hub, so a
+# host that lost its cached copy could not back up at all.
+S3_IMAGE="${S3_IMAGE:-rclone/rclone@sha256:74c51b8817e5431bd6d7ed27cb2a50d8ee78d77f6807b72a41ef6f898845942b}"
+
+# s3 <shell script>: rclone with the remote `cloud:` configured, the backup directory at /backup
+# (read-only). Credentials are read inside the container from the read-only secrets mount.
+s3() {
+  if [ -n "${FLEXPERIMENT_S3_LOCAL_DIR:-}" ]; then
+    docker run --rm -v "$FLEXPERIMENT_S3_LOCAL_DIR:/remote" -v "$RECOVERY_DIR:/backup:ro" \
+      --entrypoint /bin/sh "$S3_IMAGE" -c '
+        set -eu
+        export RCLONE_LOG_LEVEL=ERROR RCLONE_CONFIG_CLOUD_TYPE=alias RCLONE_CONFIG_CLOUD_REMOTE=/remote
+        '"$1"
+    return
+  fi
+  docker run --rm -v "$CONF_DIR:/secrets:ro" -v "$RECOVERY_DIR:/backup:ro" \
+    --entrypoint /bin/sh "$S3_IMAGE" -c '
+      set -eu
+      export RCLONE_LOG_LEVEL=ERROR RCLONE_CONFIG_CLOUD_TYPE=s3 RCLONE_CONFIG_CLOUD_PROVIDER=Other \
+             RCLONE_CONFIG_CLOUD_ENDPOINT="'"$S3_ENDPOINT"'" RCLONE_CONFIG_CLOUD_REGION="'"$S3_REGION"'" \
+             RCLONE_CONFIG_CLOUD_FORCE_PATH_STYLE=true RCLONE_CONFIG_CLOUD_NO_CHECK_BUCKET=true \
+             RCLONE_CONFIG_CLOUD_ACCESS_KEY_ID="$(cat /secrets/s3-access-key)" \
+             RCLONE_CONFIG_CLOUD_SECRET_ACCESS_KEY="$(cat /secrets/s3-secret-key)"
+      '"$1"
+}
+
+REMOTE_DIR="cloud:$S3_BUCKET/$S3_PREFIX"
+
+for f in \
+  "$RECIPIENT_FILE" \
+  "$S3_ACCESS_FILE" \
+  "$S3_SECRET_FILE"
+do
+  if [ ! -s "$f" ]; then
+    echo "ERROR: required file missing or empty: $f" >&2
+    exit 1
+  fi
+done
+
+CONTAINER="$(
+  docker ps --format '{{.Names}}' \
+  | grep -E '^commerce-[a-z0-9]+-[0-9]+$' \
+  | head -1
+)"
+
+if [ -z "${CONTAINER:-}" ]; then
+  echo "ERROR: running Commerce container not found" >&2
+  exit 1
+fi
+
+install -d -m 0700 "$RECOVERY_DIR"
+
+STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+RECIPIENT="$(cat "$RECIPIENT_FILE")"
+NAME="flexperiment-runtime-${STAMP}.json.age"
+OUT="${RECOVERY_DIR}/${NAME}"
+TMP="${OUT}.tmp"
+
+cleanup() {
+  rm -f "$TMP"
+}
+trap cleanup EXIT
+
+# Plaintext exists only in the pipe: container stdout -> age stdin.
+docker exec "$CONTAINER" node -e '
+const wanted = Object.keys(process.env)
+  .filter((name) =>
+    name.startsWith("COMMERCE_") ||
+    name.startsWith("TOCHKA_") ||
+    name.startsWith("UNISENDER_") ||
+    name.startsWith("YANDEX_") ||
+    name === "SOURCE_COMMIT"
+  )
+  .sort();
+
+const required = [
+  "COMMERCE_TICKET_KEY_BASE64",
+  "COMMERCE_EMAIL_HMAC_KEY",
+  "COMMERCE_SESSION_SECRET",
+  "COMMERCE_ADMIN_PASSWORD_SCRYPT"
+];
+
+const missing = required.filter((name) => !process.env[name]);
+
+if (missing.length) {
+  console.error(
+    "Missing required recovery variables: " + missing.join(", ")
+  );
+  process.exit(2);
+}
+
+const env = {};
+for (const name of wanted) {
+  env[name] = process.env[name];
+}
+
+process.stdout.write(JSON.stringify({
+  schema_version: 1,
+  created_at: new Date().toISOString(),
+  source_commit: process.env.SOURCE_COMMIT || null,
+  env
+}, null, 2));
+' | age -r "$RECIPIENT" -o "$TMP"
+
+chmod 0600 "$TMP"
+mv "$TMP" "$OUT"
+
+LOCAL_SHA="$(
+  sha256sum "$OUT" | awk '{print $1}'
+)"
+
+# Upload and verify byte-for-byte by reading the encrypted object back.
+REMOTE_SHA="$(
+  s3 'rclone copyto "/backup/'"$NAME"'" "'"$REMOTE_DIR/$NAME"'"
+      rclone cat "'"$REMOTE_DIR/$NAME"'"' \
+  | sha256sum \
+  | awk '{print $1}'
+)"
+
+if [ "$LOCAL_SHA" != "$REMOTE_SHA" ]; then
+  echo "ERROR: remote SHA-256 mismatch" >&2
+  echo "local=$LOCAL_SHA" >&2
+  echo "remote=$REMOTE_SHA" >&2
+  exit 1
+fi
+
+# Keep the 7 newest encrypted local bundles.
+mapfile -t OLD_LOCAL < <(
+  find "$RECOVERY_DIR" \
+    -maxdepth 1 \
+    -type f \
+    -name 'flexperiment-runtime-*.json.age' \
+    -printf '%T@ %p\n' \
+  | sort -nr \
+  | tail -n +8 \
+  | cut -d' ' -f2-
+)
+
+if [ "${#OLD_LOCAL[@]}" -gt 0 ]; then
+  rm -f -- "${OLD_LOCAL[@]}"
+fi
+
+# Keep only the 100 newest encrypted recovery bundles in S3.
+# One object name per line, files only, at the prefix itself.
+REMOTE_LIST="$(s3 'rclone lsf --files-only "'"$REMOTE_DIR"'"')"
+
+mapfile -t OLD_REMOTE < <(
+  printf '%s\n' "$REMOTE_LIST" \
+  | python3 -c '
+import sys
+import re
+
+pattern = re.compile(
+    r"^flexperiment-runtime-\d{8}T\d{6}Z\.json\.age$"
+)
+
+keys = []
+
+for line in sys.stdin:
+    key = line.strip()
+    if key and pattern.fullmatch(key):
+        keys.append(key)
+
+# Timestamp is embedded in a lexicographically sortable UTC filename.
+keys.sort(reverse=True)
+
+for key in keys[100:]:
+    print(key)
+'
+)
+
+if [ "${#OLD_REMOTE[@]}" -gt 0 ]; then
+  for key in "${OLD_REMOTE[@]}"; do
+    s3 'rclone deletefile "'"$REMOTE_DIR/$key"'"'
+  done
+fi
+
+echo "RECOVERY_BACKUP=SUCCESS"
+echo "file=$NAME"
+echo "sha256=$LOCAL_SHA"
+echo "container=$CONTAINER"
+echo "remote=s3://${S3_BUCKET}/${S3_PREFIX}/${NAME}"
