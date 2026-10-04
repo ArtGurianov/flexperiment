@@ -62,14 +62,19 @@ out="$(run '/host/flexperiment-recovery-backup' 2>&1)" || { echo "$out"; echo " 
 name="$(printf '%s\n' "$out" | sed -n 's/^file=//p')"
 check 'the run reports success' '[[ "$out" == *RECOVERY_BACKUP=SUCCESS* ]]'
 check 'the bundle was uploaded' '[ -n "$name" ] && [ -s "$REMOTE/$name" ]'
+# The backup writes root-owned 0600 files. Read their contents inside the test
+# container, where the script itself runs as root, instead of the CI host user.
+local_sha="$(run "sha256sum < '$WORK/local/$name'")"
+remote_sha="$(run "sha256sum < '$REMOTE/$name'")"
 check 'the uploaded object is byte-identical to the local bundle' \
-  '[ "$(sha256sum < "$REMOTE/$name")" = "$(sha256sum < "$WORK/local/$name")" ]'
+  '[ "$remote_sha" = "$local_sha" ]'
 plain="$(run "age -d -i '$WORK/identity.txt' '$WORK/local/$name'")"
 check 'it decrypts with the recipient key to the recovery variables' \
   '[[ "$plain" == *COMMERCE_SESSION_SECRET* && "$plain" == *TOCHKA_TERMINAL* && "$plain" == *0123456789abcdef* ]]'
 check 'variables outside the recovery set never leave the container' '[[ "$plain" != *UNRELATED_SECRET* ]]'
-check 'nothing readable is left on disk: only age files locally' \
-  '! grep -rl COMMERCE_SESSION_SECRET "$WORK/local" "$WORK/remote" >/dev/null'
+no_plaintext_status=0
+run "grep -rl COMMERCE_SESSION_SECRET '$WORK/local' '$WORK/remote'" >/dev/null || no_plaintext_status=$?
+check 'nothing readable is left on disk: only age files locally' '[ "$no_plaintext_status" = 1 ]'
 check 'S3 keeps the 100 newest bundles' \
   '[ "$(ls "$REMOTE" | grep -c "^flexperiment-runtime-")" = 100 ] && [ -e "$REMOTE/$name" ]'
 check 'the oldest S3 bundles were the ones removed' '[ ! -e "$REMOTE/flexperiment-runtime-20250101T000001Z.json.age" ]'
