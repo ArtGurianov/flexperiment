@@ -47,6 +47,8 @@ jobs:
       - run: pnpm platform:typecheck
       - run: pnpm test
       - run: pnpm platform:test
+      - name: Recovery backup contract
+        run: bash deploy/test-recovery-backup.sh
       # The committed SEO snapshot is validated on its own terms, without
       # contacting Commerce. Production-versus-snapshot drift is a real thing
       # to watch, but it is an operational check on its own schedule: gating

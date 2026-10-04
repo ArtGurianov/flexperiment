@@ -23,7 +23,7 @@ Install or update, as root on the host, keeping the previous version for rollbac
 
 ```bash
 cp -p /usr/local/sbin/flexperiment-recovery-backup /usr/local/sbin/flexperiment-recovery-backup.prev
-install -m 0750 -o root -g root flexperiment-recovery-backup /usr/local/sbin/flexperiment-recovery-backup
+install -m 0750 -o root -g root deploy/host/flexperiment-recovery-backup /usr/local/sbin/flexperiment-recovery-backup
 systemctl start flexperiment-recovery-backup.service && journalctl -u flexperiment-recovery-backup.service -n 6 --no-pager
 ```
 
