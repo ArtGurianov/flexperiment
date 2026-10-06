@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { checkout, MockPaymentRail, type PaymentRail, type PaymentRefundInput, type RailProjection } from "../src/checkout";
 import { migrateV2 } from "../src/db";
 import { stageBLegalManifestJson } from "./fixtures/legal";
-import { activatePublicSales, testCheckoutConfig } from "./fixtures/sales";
+import { activatePublicSales, qualifyTestFiscalPolicies, testCheckoutConfig } from "./fixtures/sales";
 import { decideRefund, executeApprovedRefund, listRefundCases, reconcilePendingRefunds, recordCourseAccessStart, requestRefund } from "../src/refunds";
 
 let db: Database.Database;
@@ -21,6 +21,7 @@ beforeEach(() => {
     VALUES ('product','course:one','ONLINE_COURSE','PAID','course-one')`).run();
   db.prepare(`INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode)
     VALUES ('offer','course:one','product',10000,'PUBLIC')`).run();
+  qualifyTestFiscalPolicies(db);
   activatePublicSales(db);
 });
 

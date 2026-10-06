@@ -20,13 +20,17 @@ describe("PAYMENT_MODE", () => {
       .toThrow(new CommerceConfigurationError("REFREF_REQUIRES_PROTECTED_KINESCOPE"));
     expect(() => loadCommerceRuntimeConfig({ DEPLOY_ENV: "production", PAYMENT_MODE: "refref", KINESCOPE_DELIVERY_MODE: "protected", MERCHANT_PROMOTION_PREFIX: "FX-" }))
       .toThrow(/REFREF_CONFIG_MISSING/);
-    expect(loadCommerceRuntimeConfig({
+    const complete = {
       DEPLOY_ENV: "production", PAYMENT_MODE: "refref", KINESCOPE_DELIVERY_MODE: "protected",
       MERCHANT_PROMOTION_PREFIX: "FX-",
       REFREF_API_KEY: "key", REFREF_MERCHANT_SLUG: "flexperiment", REFREF_MERCHANT_ID: "00000000-0000-4000-8000-000000000001",
       REFREF_API_BASE_URL: "https://api.refref.ru/v1-rc",
-      REFREF_CHECKOUT_ORIGIN: "https://checkout.refref.ru", REFREF_RECEIPT_PAYMENT_METHOD: "full_prepayment", REFREF_HANDOFF_STATE_SECRET: "secret",
-    }).refref?.merchantSlug).toBe("flexperiment");
+      REFREF_CHECKOUT_ORIGIN: "https://checkout.refref.ru", REFREF_HANDOFF_STATE_SECRET: "secret",
+    };
+    expect(loadCommerceRuntimeConfig(complete).refref?.merchantSlug).toBe("flexperiment");
+    // Receipt content is each offer's qualified fiscal policy (ART-233): the old global setting is refused, not ignored.
+    expect(() => loadCommerceRuntimeConfig({ ...complete, REFREF_RECEIPT_PAYMENT_METHOD: "FULL_PREPAYMENT" }))
+      .toThrow(new CommerceConfigurationError("REFREF_RECEIPT_PAYMENT_METHOD_RETIRED"));
   });
 
   it("requires audited activation only for public sale", () => {

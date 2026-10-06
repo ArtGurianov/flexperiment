@@ -74,7 +74,6 @@ const paymentRail = config.paymentMode === "mock" ? new MockPaymentRail()
     apiBaseUrl: config.refref.apiBaseUrl,
     apiKey: config.refref.apiKey,
     merchantId: config.refref.merchantId,
-    paymentMethod: config.refref.receiptPaymentMethod,
   }) : undefined;
 
 const sendCampaignEmail = emailDeliveryEndpoint ? async (message: CampaignEmail) => {

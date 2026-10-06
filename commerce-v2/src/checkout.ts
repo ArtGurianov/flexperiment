@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import { buildCheckoutSnapshot, canonicalCheckoutSnapshotJson, type CheckoutSnapshotConfig, type SharedCheckoutSnapshotV1 } from "./checkout-snapshot";
+import { qualifiedFiscalPolicy, type FrozenFiscalPolicy } from "./fiscal-policy";
 import { customerCanAccessCourse, grantEntitlement, revokeEntitlementForOrderLine } from "./entitlements";
 import { legalManifestHash, type LegalReleaseManifest } from "./legal-control";
 import type { Storefront } from "./origins";
@@ -56,8 +57,14 @@ export type PaymentRefundInput = {
   lineRef: string;
   fiscalItem: SharedCheckoutSnapshotV1["paymentObligations"][number]["fiscal"]["items"][number];
 };
+/**
+ * What the rail contributes to a snapshot: who the merchant is to Refref and who issues receipts on
+ * this rail. The receipt's content — tax system, VAT, payment method and object, item name — is the
+ * offer's qualified fiscal policy (fiscal-policy.ts), never the rail's.
+ */
+export type RailSnapshotConfig = Pick<CheckoutSnapshotConfig, "merchantId" | "fiscalizationMode">;
 export interface PaymentRail {
-  readonly checkoutSnapshotConfig: CheckoutSnapshotConfig;
+  readonly checkoutSnapshotConfig: RailSnapshotConfig;
   resolve(input: PaymentResolveInput): Promise<RailResolution>;
   create(input: PaymentCreateInput): Promise<RailProjection>;
   recoverCreate(input: PaymentCreateInput, knownAttemptId?: string): Promise<RailProjection>;
@@ -76,13 +83,9 @@ type MockRecord = RailProjection & { scenario: string; reconciliations: number; 
 
 export class MockPaymentRail implements PaymentRail {
   private readonly records = new Map<string, MockRecord>();
-  readonly checkoutSnapshotConfig: CheckoutSnapshotConfig = {
+  readonly checkoutSnapshotConfig: RailSnapshotConfig = {
     merchantId: "00000000-0000-4000-8000-000000000001",
     fiscalizationMode: "PROVIDER",
-    taxSystem: "USN_INCOME",
-    vatCode: "NONE",
-    paymentMethod: "FULL_PREPAYMENT",
-    paymentObject: "SERVICE",
   };
 
   async resolve(input: PaymentResolveInput): Promise<RailResolution> {
@@ -187,6 +190,8 @@ const legalRelease = (db: Database.Database, storefront: Storefront) => db.prepa
 const storefrontForOffer = (offer: OfferRow): Storefront => offer.kind === "LAB" ? "LAB" : "COURSES";
 
 type FrozenLineSnapshot = {
+  /** The offer's qualified fiscal policy when the quote was made; a different one makes the quote stale. */
+  readonly fiscal: FrozenFiscalPolicy;
   readonly unitRef?: string;
   readonly serviceStartsAt?: string;
   readonly serviceEndsAt?: string;
@@ -206,13 +211,15 @@ const refrefInstant = (value: string) => {
   return parsed.toISOString().replace(".000Z", "Z");
 };
 
-const freezeLine = (offer: OfferRow): FrozenLineSnapshot => {
-  if (offer.kind !== "LAB") return {};
+const freezeLine = (db: Database.Database, offer: OfferRow): FrozenLineSnapshot => {
+  const fiscal = qualifiedFiscalPolicy(db, offer.offer_ref, offer.kind);
+  if (offer.kind !== "LAB") return { fiscal };
   if (!offer.occurrence_ref || !offer.occurrence_title || !offer.occurrence_starts_at || !offer.occurrence_ends_at
     || !offer.occurrence_timezone || !offer.occurrence_city_id) throw new Error("LAB_OCCURRENCE_NOT_FOUND");
   const startsAt = refrefInstant(offer.occurrence_starts_at);
   const endsAt = refrefInstant(offer.occurrence_ends_at);
   return {
+    fiscal,
     unitRef: offer.occurrence_ref,
     serviceStartsAt: startsAt,
     serviceEndsAt: endsAt,
@@ -333,7 +340,7 @@ export async function prepareCheckout(
   }
   const quoteId = randomUUID();
   const lineRef = randomUUID();
-  const lineSnapshot = freezeLine(offer);
+  const lineSnapshot = freezeLine(db, offer);
   const codeResolution = resolveCheckoutCode(db, input.checkoutCode, offer.offer_ref, offer.price_kopecks, config.merchantPromotionPrefix, now);
   const merchantDiscountKopecks = codeResolution.promotion?.merchantDiscountKopecks ?? 0;
   const merchantOfferAmountKopecks = offer.price_kopecks - merchantDiscountKopecks;
@@ -431,7 +438,7 @@ export async function confirmCheckout(
   const frozenLine = JSON.parse(pending.line_snapshot_json) as FrozenLineSnapshot;
   if (offer.offer_id !== pending.offer_id || offer.price_kopecks !== pending.catalog_amount_kopecks
     || activeLegal?.id !== pending.legal_release_id
-    || JSON.stringify(freezeLine(offer)) !== pending.line_snapshot_json) throw new Error("CHECKOUT_QUOTE_STALE");
+    || JSON.stringify(freezeLine(db, offer)) !== pending.line_snapshot_json) throw new Error("CHECKOUT_QUOTE_STALE");
   const quote = JSON.parse(pending.rail_quote_json) as RailQuote;
   const merchantPromotion = pending.merchant_promotion_snapshot_json
     ? JSON.parse(pending.merchant_promotion_snapshot_json) as MerchantPromotionSnapshot
@@ -443,7 +450,11 @@ export async function confirmCheckout(
   const publicId = pending.order_public_id;
   const legalReleaseHash = legalManifestHash(JSON.parse(pending.manifest_json) as LegalReleaseManifest);
   const { snapshot, snapshotHash, fiscalItem } = buildCheckoutSnapshot({
-    config: rail.checkoutSnapshotConfig,
+    config: {
+      ...rail.checkoutSnapshotConfig,
+      taxSystem: frozenLine.fiscal.taxSystem, vatCode: frozenLine.fiscal.vatCode,
+      paymentMethod: frozenLine.fiscal.paymentMethod, paymentObject: frozenLine.fiscal.paymentObject,
+    },
     merchantOrderRef: publicId,
     line: {
       lineRef: pending.line_ref,
@@ -453,7 +464,7 @@ export async function confirmCheckout(
       referralDiscountAmountKopecks: pending.discount_kopecks,
       serviceStartsAt: frozenLine.serviceStartsAt,
       serviceEndsAt: frozenLine.serviceEndsAt,
-      fiscalName: offer.product_ref,
+      fiscalName: frozenLine.fiscal.itemName,
     },
     referralResolutionId: quote.resolutionId,
     termsVersionId: quote.termsVersionId,
@@ -476,12 +487,12 @@ export async function confirmCheckout(
       VALUES (?,?,?,'PAYMENT_PENDING',?,?,?,?,?,?)`).run(orderId, publicId, input.customerId, pending.final_amount_kopecks, snapshotJson, snapshotHashHex, pending.legal_release_id, now, now);
     db.prepare(`INSERT INTO order_lines(id,order_id,product_id,offer_ref_snapshot,title_snapshot,unit_amount_kopecks,legal_terms_ref,created_at,
       catalog_amount_kopecks,merchant_discount_kopecks,merchant_amount_kopecks,merchant_promotion_snapshot_json,fiscal_item_json,
-      legal_release_ref,legal_release_hash,occurrence_snapshot_json)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      legal_release_ref,legal_release_hash,occurrence_snapshot_json,fiscal_policy_id)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
       pending.line_ref, orderId, offer.product_id, offer.offer_ref, offer.product_ref, pending.final_amount_kopecks, pending.legal_version, now,
       pending.catalog_amount_kopecks, pending.merchant_discount_kopecks, pending.base_amount_kopecks,
       pending.merchant_promotion_snapshot_json, JSON.stringify(fiscalItem), pending.legal_version, legalReleaseHash,
-      frozenLine.occurrence ? JSON.stringify(frozenLine.occurrence) : null,
+      frozenLine.occurrence ? JSON.stringify(frozenLine.occurrence) : null, frozenLine.fiscal.policyId,
     );
     db.prepare(`INSERT INTO checkout_attempts(id,order_id,idempotency_key,request_payload_json,state,created_at,updated_at)
       VALUES (?,?,?,?,'CREATING',?,?)`).run(attemptId, orderId, input.idempotencyKey, JSON.stringify(railInput), now, now);

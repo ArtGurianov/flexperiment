@@ -17,7 +17,6 @@ export type CommerceRuntimeConfig = {
     readonly merchantId: string;
     readonly apiBaseUrl: string;
     readonly checkoutOrigin: string;
-    readonly receiptPaymentMethod: string;
     readonly handoffStateSecret: string;
   };
 };
@@ -58,6 +57,9 @@ export function loadCommerceRuntimeConfig(env: Environment = process.env): Comme
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(merchantId)) {
     throw new CommerceConfigurationError("REFREF_MERCHANT_ID_INVALID");
   }
+  // Retired (ART-233): a receipt's payment method is its offer's qualified fiscal policy. A value still
+  // set here would be believed and ignored, so the runtime refuses to start instead.
+  if (env.REFREF_RECEIPT_PAYMENT_METHOD !== undefined) throw new CommerceConfigurationError("REFREF_RECEIPT_PAYMENT_METHOD_RETIRED");
   return {
     deployEnvironment,
     paymentMode,
@@ -69,7 +71,6 @@ export function loadCommerceRuntimeConfig(env: Environment = process.env): Comme
       merchantId,
       apiBaseUrl,
       checkoutOrigin,
-      receiptPaymentMethod: required(env, "REFREF_RECEIPT_PAYMENT_METHOD"),
       handoffStateSecret: required(env, "REFREF_HANDOFF_STATE_SECRET"),
     },
   };

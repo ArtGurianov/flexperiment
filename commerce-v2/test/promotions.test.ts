@@ -4,16 +4,12 @@ import { confirmCheckout, prepareCheckout, type PaymentCreateInput, type Payment
 import { migrateV2 } from "../src/db";
 import { resolveCheckoutCode, saveMerchantPromotion } from "../src/promotions";
 import { stageBLegalManifestJson } from "./fixtures/legal";
-import { activatePublicSales, testCheckoutConfig } from "./fixtures/sales";
+import { activatePublicSales, qualifyTestFiscalPolicies, testCheckoutConfig } from "./fixtures/sales";
 
 class CapturingRail implements PaymentRail {
   readonly checkoutSnapshotConfig = {
     merchantId: "00000000-0000-4000-8000-000000000001",
     fiscalizationMode: "PROVIDER" as const,
-    taxSystem: "USN_INCOME" as const,
-    vatCode: "NONE" as const,
-    paymentMethod: "FULL_PREPAYMENT",
-    paymentObject: "SERVICE" as const,
   };
   resolveInput: PaymentResolveInput | null = null;
   outcome: "NONE" | "APPLIED" | "NOT_RECOGNIZED" = "NONE";
@@ -58,6 +54,7 @@ beforeEach(() => {
     VALUES ('product','course:one','ONLINE_COURSE','PAID','course-one')`).run();
   db.prepare(`INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode)
     VALUES ('offer','course:one','product',10000,'PUBLIC')`).run();
+  qualifyTestFiscalPolicies(db);
   activatePublicSales(db);
 });
 
