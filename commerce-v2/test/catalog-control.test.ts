@@ -1,6 +1,9 @@
+import { copyFileSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import Database from "better-sqlite3";
 import { beforeEach, describe, expect, it } from "vitest";
-import { activateSales, configureProduct, withdrawProduct } from "../src/catalog-control";
+import { activateSales, assertLiveOfferSaleMode, configureProduct, withdrawProduct } from "../src/catalog-control";
 import { migrateV2 } from "../src/db";
 import { loadCommerceRuntimeConfig } from "../src/payment-mode";
 
@@ -45,7 +48,7 @@ describe("catalog control room commands", () => {
   it("accepts public sales activation only with the acceptance evidence named for its kind", () => {
     const evidence = { evidenceSha256: "b".repeat(64), actor: "owner" };
     for (const [kind, evidenceIssue] of [
-      ["ONLINE_COURSE", "ART-243"], ["COURSE_BUNDLE", "ART-243"], ["LAB", "ART-240"],
+      ["ONLINE_COURSE", "ART-243"], ["LAB", "ART-240"],
       ["ONLINE_COURSE", "ART-999"], ["LAB", "ART-2430"],
     ] as const) {
       expect(() => activateSales(db, { kind, evidenceIssue, ...evidence })).toThrow("SALES_ACTIVATION_EVIDENCE_INVALID");
@@ -55,10 +58,8 @@ describe("catalog control room commands", () => {
     expect(db.prepare("SELECT COUNT(*) AS count FROM sales_activation").get()).toEqual({ count: 0 });
 
     activateSales(db, { kind: "ONLINE_COURSE", evidenceIssue: "ART-240", ...evidence });
-    activateSales(db, { kind: "COURSE_BUNDLE", evidenceIssue: "ART-240", ...evidence });
     activateSales(db, { kind: "LAB", evidenceIssue: "ART-243", ...evidence });
     expect(db.prepare("SELECT product_kind,evidence_issue FROM sales_activation ORDER BY product_kind").all()).toEqual([
-      { product_kind: "COURSE_BUNDLE", evidence_issue: "ART-240" },
       { product_kind: "LAB", evidence_issue: "ART-243" },
       { product_kind: "ONLINE_COURSE", evidence_issue: "ART-240" },
     ]);
@@ -135,5 +136,85 @@ describe("catalog control room commands", () => {
       productRef: "lab:duplicate", offerRef: "lab:duplicate", kind: "LAB", occurrenceRef: "lab:2026-11-01",
       accessModel: "PAID", priceKopecks: 200, saleMode: "CLOSED", actor: "author", expectedVersion: 0,
     })).toThrow(/UNIQUE/);
+  });
+});
+
+describe("ONLINE_COURSE activation fence (migration 0016)", () => {
+  const evidence = { evidenceSha256: "d".repeat(64), actor: "owner" };
+  const mock = loadCommerceRuntimeConfig({ DEPLOY_ENV: "test", PAYMENT_MODE: "mock" });
+  const bundle = { kind: "COURSE_BUNDLE", accessModel: "PAID", saleMode: "PUBLIC" } as const;
+  const course = { kind: "ONLINE_COURSE", accessModel: "PAID", saleMode: "PUBLIC" } as const;
+  const directBundle = (id: string) => db.prepare(`INSERT INTO sales_activation(id,product_kind,evidence_issue,evidence_sha256,activated_by,activated_at)
+    VALUES (?,'COURSE_BUNDLE','ART-240',?,'owner','2026-10-01T00:00:00Z')`).run(id, "e".repeat(64));
+
+  /** A database as it was before 0016: every migration up to it, from a copy of the directory. */
+  const before0016 = () => {
+    const source = join(__dirname, "..", "migrations");
+    const dir = mkdtempSync(join(tmpdir(), "fx-0016-"));
+    for (const name of readdirSync(source)) if (name.endsWith(".sql") && name < "0016") copyFileSync(join(source, name), join(dir, name));
+    const old = new Database(":memory:");
+    old.pragma("foreign_keys = ON");
+    migrateV2(old, dir);
+    rmSync(dir, { recursive: true });
+    return old;
+  };
+
+  it("ART-240 evidence opens ONLINE_COURSE sales and never COURSE_BUNDLE, through the command or direct SQL", () => {
+    expect(() => activateSales(db, { kind: "COURSE_BUNDLE", evidenceIssue: "ART-240", ...evidence })).toThrow("SALES_ACTIVATION_NOT_QUALIFIED");
+    expect(() => directBundle("direct")).toThrow("SALES_ACTIVATION_EVIDENCE_INVALID");
+    activateSales(db, { kind: "ONLINE_COURSE", evidenceIssue: "ART-240", ...evidence });
+    expect(() => assertLiveOfferSaleMode(db, mock, course)).not.toThrow();
+    expect(() => assertLiveOfferSaleMode(db, mock, bundle)).toThrow("SALES_ACTIVATION_REQUIRED");
+    // Acceptance-only selling of a bundle needs no activation, as before; it never becomes PUBLIC.
+    expect(() => assertLiveOfferSaleMode(db, mock, { ...bundle, saleMode: "ACCEPTANCE_ONLY" })).not.toThrow();
+  });
+
+  it("LAB activation is independent of the course fence", () => {
+    activateSales(db, { kind: "LAB", evidenceIssue: "ART-243", ...evidence });
+    expect(() => assertLiveOfferSaleMode(db, mock, { kind: "LAB", accessModel: "PAID", saleMode: "PUBLIC" })).not.toThrow();
+    expect(() => assertLiveOfferSaleMode(db, mock, course)).toThrow("SALES_ACTIVATION_REQUIRED");
+  });
+
+  it("a revoked activation stays revoked, whatever its kind", () => {
+    activateSales(db, { kind: "ONLINE_COURSE", evidenceIssue: "ART-240", ...evidence });
+    db.prepare("UPDATE sales_activation SET revoked_at='2026-10-02T00:00:00Z',revocation_reason='evidence withdrawn'").run();
+    expect(() => db.prepare("UPDATE sales_activation SET revoked_at=NULL,revocation_reason=NULL").run()).toThrow("SALES_ACTIVATION_REVOCATION_FINAL");
+    expect(() => db.prepare("UPDATE sales_activation SET revocation_reason='rewritten'").run()).toThrow("SALES_ACTIVATION_REVOCATION_FINAL");
+    expect(() => assertLiveOfferSaleMode(db, mock, course)).toThrow("SALES_ACTIVATION_REQUIRED");
+    // Re-opening is a new activation, under the evidence rule.
+    activateSales(db, { kind: "ONLINE_COURSE", evidenceIssue: "ART-240", ...evidence });
+    expect(() => assertLiveOfferSaleMode(db, mock, course)).not.toThrow();
+  });
+
+  it("a bundle activation from before 0016 authorizes nothing, is revoked with its reason, and entitlements are untouched", () => {
+    const old = before0016();
+    try {
+      db = old;
+      directBundle("historical");
+      activateSales(db, { kind: "ONLINE_COURSE", evidenceIssue: "ART-240", ...evidence });
+      // Already granted access, seeded without its order (foreign keys off only for the seed): 0016 must not touch it.
+      db.pragma("foreign_keys = OFF");
+      db.prepare(`INSERT INTO course_entitlements(id,customer_id,scope,course_ref,source_order_line_id,granted_at)
+        VALUES ('grant','customer','ALL_COURSES',NULL,'line','2026-10-01T00:00:00Z')`).run();
+      db.pragma("foreign_keys = ON");
+      const grants = db.prepare("SELECT * FROM course_entitlements").all();
+
+      // The application ignores the row even before the migration runs: its evidence no longer qualifies.
+      expect(() => assertLiveOfferSaleMode(db, mock, bundle)).toThrow("SALES_ACTIVATION_REQUIRED");
+
+      migrateV2(db);
+      expect(db.prepare("SELECT id,product_kind,revoked_at IS NOT NULL AS revoked,revocation_reason FROM sales_activation ORDER BY product_kind").all()).toEqual([
+        { id: "historical", product_kind: "COURSE_BUNDLE", revoked: 1,
+          revocation_reason: "ONLINE_COURSE_FENCE: ART-240 evidence does not qualify COURSE_BUNDLE (migration 0016)" },
+        expect.objectContaining({ product_kind: "ONLINE_COURSE", revoked: 0, revocation_reason: null }),
+      ]);
+      expect(db.prepare("SELECT * FROM course_entitlements").all()).toEqual(grants);
+      expect(() => db.prepare("UPDATE sales_activation SET revoked_at=NULL,revocation_reason=NULL WHERE id='historical'").run())
+        .toThrow("SALES_ACTIVATION_REVOCATION_FINAL");
+      expect(() => assertLiveOfferSaleMode(db, mock, bundle)).toThrow("SALES_ACTIVATION_REQUIRED");
+      expect(() => assertLiveOfferSaleMode(db, mock, course)).not.toThrow();
+    } finally {
+      old.close();
+    }
   });
 });
