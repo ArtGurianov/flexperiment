@@ -3,6 +3,9 @@ import { buildCheckoutSnapshot } from "../src/checkout-snapshot";
 import { RefrefPaymentRail, refrefSnapshotDigest } from "../src/refref-payment-rail";
 import { AmbiguousRailCreateError, type PaymentCreateInput, type PaymentResolveInput } from "../src/checkout";
 
+/** What an offer's qualified fiscal policy contributes to the snapshot (fiscal-policy.ts); the rail no longer does. */
+const POLICY_FISCAL = { taxSystem: "USN_INCOME", vatCode: "NONE", paymentMethod: "FULL_PREPAYMENT", paymentObject: "SERVICE" } as const;
+
 const input: PaymentResolveInput = {
   idempotencyKey: "idem", orderPublicId: "order", amountKopecks: 10_000,
   customerEmail: "student@example.com", offerRef: "course:one", productRef: "course:one", lineRef: "line",
@@ -21,7 +24,7 @@ const createInput = (rail: RefrefPaymentRail): PaymentCreateInput => {
     checkoutCodeOutcome: "NONE" as const,
   };
   const frozen = buildCheckoutSnapshot({
-    config: rail.checkoutSnapshotConfig,
+    config: { ...rail.checkoutSnapshotConfig, ...POLICY_FISCAL },
     merchantOrderRef: input.orderPublicId,
     line: {
       lineRef: input.lineRef,
@@ -73,13 +76,12 @@ describe("RefrefPaymentRail", () => {
         checkoutCodeOutcome: "NONE",
         lines: [{ lineRef: "line", referralDiscountAmountKopecks: 500 }] }, 201));
     const rail = new RefrefPaymentRail({ apiBaseUrl: "https://api.refref.ru/v1-rc/", apiKey: "key",
-      merchantId: "00000000-0000-4000-8000-000000000001",
-      paymentMethod: "full_prepayment", fetch: request });
+      merchantId: "00000000-0000-4000-8000-000000000001", fetch: request });
     const resolution = await rail.resolve(input);
     expect(resolution).toMatchObject({ state: "PRICE_REVIEW_REQUIRED", quote: { discountKopecks: 500, finalAmountKopecks: 9500, checkoutCodeOutcome: "NONE" } });
     if (resolution.state !== "PRICE_REVIEW_REQUIRED") throw new Error("expected quote");
     const frozen = buildCheckoutSnapshot({
-      config: rail.checkoutSnapshotConfig,
+      config: { ...rail.checkoutSnapshotConfig, ...POLICY_FISCAL },
       merchantOrderRef: input.orderPublicId,
       line: {
         lineRef: input.lineRef,
@@ -119,8 +121,7 @@ describe("RefrefPaymentRail", () => {
     const request = vi.fn<typeof fetch>().mockResolvedValue(response({ status: "CUSTOMER_ACTION_REQUIRED",
       referralResolutionId: "10000000-0000-4000-8000-000000000001", customerActionUrl: "https://checkout.refref.ru/conflict" }));
     const rail = new RefrefPaymentRail({ apiBaseUrl: "https://api.refref.ru/v1-rc/", apiKey: "key",
-      merchantId: "00000000-0000-4000-8000-000000000001",
-      paymentMethod: "full_prepayment", fetch: request });
+      merchantId: "00000000-0000-4000-8000-000000000001", fetch: request });
     expect(await rail.resolve(input)).toMatchObject({ state: "CUSTOMER_ACTION_REQUIRED", checkoutUrl: "https://checkout.refref.ru/conflict" });
     expect(request).toHaveBeenCalledOnce();
   });
@@ -128,7 +129,7 @@ describe("RefrefPaymentRail", () => {
   it("reads the merchant order before recovering an ambiguous attempt", async () => {
     const request = vi.fn<typeof fetch>();
     const rail = new RefrefPaymentRail({ apiBaseUrl: "https://api.refref.ru/v1-rc/", apiKey: "key",
-      merchantId: "00000000-0000-4000-8000-000000000001", paymentMethod: "full_prepayment", fetch: request });
+      merchantId: "00000000-0000-4000-8000-000000000001", fetch: request });
     const recoveredInput = createInput(rail);
     request
       .mockResolvedValueOnce(response({
@@ -158,7 +159,7 @@ describe("RefrefPaymentRail", () => {
   it("carries the created attempt identity across an ambiguous payment-session response", async () => {
     const request = vi.fn<typeof fetch>();
     const rail = new RefrefPaymentRail({ apiBaseUrl: "https://api.refref.ru/v1-rc/", apiKey: "key",
-      merchantId: "00000000-0000-4000-8000-000000000001", paymentMethod: "full_prepayment", fetch: request });
+      merchantId: "00000000-0000-4000-8000-000000000001", fetch: request });
     const command = createInput(rail);
     request
       .mockResolvedValueOnce(response({
@@ -182,7 +183,7 @@ describe("RefrefPaymentRail", () => {
       error: { code: "HANDOFF_TOKEN_INVALID", message: "invalid", requestId: "request" },
     }, 422));
     const rail = new RefrefPaymentRail({ apiBaseUrl: "https://api.refref.ru/v1-rc/", apiKey: "key",
-      merchantId: "00000000-0000-4000-8000-000000000001", paymentMethod: "full_prepayment", fetch: request });
+      merchantId: "00000000-0000-4000-8000-000000000001", fetch: request });
     await expect(rail.resolve(input)).rejects.toThrow("REFREF_HANDOFF_TOKEN_INVALID");
   });
 
@@ -199,8 +200,7 @@ describe("RefrefPaymentRail", () => {
         status: "REFUND_PROCESSING", refundExecutionId: "refund-execution", supportReference: "support-refund",
       }, 202));
     const rail = new RefrefPaymentRail({ apiBaseUrl: "https://api.refref.ru/v1-rc/", apiKey: "key",
-      merchantId: "00000000-0000-4000-8000-000000000001",
-      paymentMethod: "full_prepayment", fetch: request });
+      merchantId: "00000000-0000-4000-8000-000000000001", fetch: request });
     await expect(rail.refund({
       idempotencyKey: "refund:request", orderPublicId: "order", attemptId: "attempt", amountKopecks: 10_000,
       customerEmail: "student@example.com", lineRef: "line",
@@ -229,7 +229,7 @@ describe("RefrefPaymentRail", () => {
         status: "REFUND_SUBMITTED", refundExecutionId: "refund-execution", supportReference: "support-refund",
       }, 202));
     const rail = new RefrefPaymentRail({ apiBaseUrl: "https://api.refref.ru/v1-rc/", apiKey: "key",
-      merchantId: "00000000-0000-4000-8000-000000000001", paymentMethod: "full_prepayment", fetch: request });
+      merchantId: "00000000-0000-4000-8000-000000000001", fetch: request });
     await expect(rail.refund({
       idempotencyKey: "refund:partial", orderPublicId: "order", attemptId: "attempt", amountKopecks: 4_000,
       customerEmail: "student@example.com", lineRef: "line",

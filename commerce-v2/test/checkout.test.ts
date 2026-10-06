@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { checkout, confirmCheckout, MockPaymentRail, prepareCheckout, reconcileCheckout, reconcilePendingCheckouts } from "../src/checkout";
 import { migrateV2 } from "../src/db";
 import { stageALegalManifestJson } from "./fixtures/legal";
-import { activatePublicSales, testCheckoutConfig } from "./fixtures/sales";
+import { activatePublicSales, qualifyTestFiscalPolicies, testCheckoutConfig } from "./fixtures/sales";
 
 let db: Database.Database;
 let rail: MockPaymentRail;
@@ -20,6 +20,7 @@ beforeEach(() => {
     VALUES ('product','course:one','ONLINE_COURSE','PAID','course-one')`).run();
   db.prepare(`INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode)
     VALUES ('offer','course:one','product',10000,'PUBLIC')`).run();
+  qualifyTestFiscalPolicies(db);
   activatePublicSales(db);
 });
 
@@ -177,6 +178,7 @@ describe("scripted mock checkout orchestration", () => {
       VALUES ('lab-product','lab:november','LAB','PAID','lab:november')`).run();
     db.prepare(`INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode)
       VALUES ('lab-offer','lab:november','lab-product',250000,'PUBLIC')`).run();
+    qualifyTestFiscalPolicies(db);
     activatePublicSales(db, "LAB");
 
     await checkout(db, rail, testCheckoutConfig, {

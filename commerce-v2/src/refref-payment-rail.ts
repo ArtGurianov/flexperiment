@@ -7,7 +7,6 @@ type RefrefConfig = {
   apiBaseUrl: string;
   apiKey: string;
   merchantId: string;
-  paymentMethod: string;
   fetch?: Fetch;
 };
 
@@ -101,10 +100,6 @@ export class RefrefPaymentRail implements PaymentRail {
     this.checkoutSnapshotConfig = {
       merchantId: config.merchantId,
       fiscalizationMode: "PROVIDER" as const,
-      taxSystem: "USN_INCOME" as const,
-      vatCode: "NONE" as const,
-      paymentMethod: config.paymentMethod,
-      paymentObject: "SERVICE" as const,
     };
   }
 
