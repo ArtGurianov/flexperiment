@@ -16,9 +16,15 @@ export type ProductCommand = {
   expectedVersion: number;
 };
 
-const activeSalesActivation = (db: Database.Database, kind: ProductCommand["kind"]) => Boolean(
-  db.prepare("SELECT 1 FROM sales_activation WHERE product_kind=? AND revoked_at IS NULL").get(kind),
-);
+/**
+ * An activation counts only while its evidence still qualifies its kind. A row that predates a
+ * narrowing (a COURSE_BUNDLE activation on ART-240) authorizes nothing, revoked or not.
+ */
+const activeSalesActivation = (db: Database.Database, kind: ProductCommand["kind"]) => {
+  const evidenceIssue = salesActivationEvidenceIssue[kind];
+  return evidenceIssue !== undefined && Boolean(db.prepare(
+    "SELECT 1 FROM sales_activation WHERE product_kind=? AND evidence_issue=? AND revoked_at IS NULL").get(kind, evidenceIssue));
+};
 
 /**
  * The one sale-mode gate. Control Room writes and every checkout step evaluate it against the live
@@ -112,10 +118,13 @@ export function withdrawProduct(
   return { productRef: command.productRef, withdrawnAt: now, version };
 }
 
-/** The acceptance run whose evidence may reopen public sales for each product kind. */
-export const salesActivationEvidenceIssue: Readonly<Record<ProductCommand["kind"], string>> = {
+/**
+ * The acceptance run whose evidence may open public sales for each product kind. ART-240 qualifies
+ * one ONLINE_COURSE, never COURSE_BUNDLE: a bundle has no acceptance yet, so nothing opens it
+ * (migration 0016 holds the same rule).
+ */
+export const salesActivationEvidenceIssue: Readonly<Partial<Record<ProductCommand["kind"], string>>> = {
   ONLINE_COURSE: "ART-240",
-  COURSE_BUNDLE: "ART-240",
   LAB: "ART-243",
 };
 
@@ -124,7 +133,8 @@ export function activateSales(
   command: { kind: ProductCommand["kind"]; evidenceIssue: string; evidenceSha256: string; actor: string },
   now = new Date().toISOString(),
 ) {
-  if (!Object.hasOwn(salesActivationEvidenceIssue, command.kind)) throw new Error("SALES_ACTIVATION_KIND_INVALID");
+  if (!["ONLINE_COURSE", "COURSE_BUNDLE", "LAB"].includes(command.kind)) throw new Error("SALES_ACTIVATION_KIND_INVALID");
+  if (!Object.hasOwn(salesActivationEvidenceIssue, command.kind)) throw new Error("SALES_ACTIVATION_NOT_QUALIFIED");
   if (command.evidenceIssue !== salesActivationEvidenceIssue[command.kind] || !/^[a-f0-9]{64}$/.test(command.evidenceSha256)
     || !command.actor?.trim()) throw new Error("SALES_ACTIVATION_EVIDENCE_INVALID");
   db.prepare(`INSERT INTO sales_activation(id,product_kind,evidence_issue,evidence_sha256,activated_by,activated_at)

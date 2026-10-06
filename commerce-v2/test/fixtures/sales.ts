@@ -8,6 +8,7 @@ export const testCheckoutConfig = loadCommerceRuntimeConfig({ NODE_ENV: "test" }
 /** A PUBLIC offer sells only with a current audited activation row for its kind. */
 export function activatePublicSales(db: Database.Database, kind: ProductCommand["kind"] = "ONLINE_COURSE") {
   return activateSales(db, {
-    kind, evidenceIssue: salesActivationEvidenceIssue[kind], evidenceSha256: "a".repeat(64), actor: "owner",
+    // A kind no acceptance qualifies (COURSE_BUNDLE) is refused by activateSales itself.
+    kind, evidenceIssue: salesActivationEvidenceIssue[kind] ?? "", evidenceSha256: "a".repeat(64), actor: "owner",
   }, "2026-09-29T00:00:00Z");
 }
