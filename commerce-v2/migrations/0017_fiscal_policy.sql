@@ -11,7 +11,7 @@
 --   RETIRED    no longer used for new checkouts. Orders already made keep the snapshot they froze.
 --
 -- A policy's content never changes: a different receipt is a new version. Qualification names the
--- legal basis and is final. A policy belongs to one offer of one product kind and is qualified only
+-- legal basis — held here, not only by the Control Room command — and is final. A policy belongs to one offer of one product kind and is qualified only
 -- against an offer of that kind that exists: an ONLINE_COURSE qualification says nothing about a LAB
 -- or the bundle, and a policy cannot be qualified for an offer no release has published.
 -- The provenance (policy id and version) is kept on the order line, beside the snapshot, and is not
@@ -66,6 +66,25 @@ WHEN NOT (
       OR NEW.qualified_by IS NOT OLD.qualified_by OR NEW.legal_basis_json IS NOT OLD.legal_basis_json))
 BEGIN
   SELECT RAISE(ABORT, 'FISCAL_POLICY_TRANSITION_INVALID');
+END;
+
+-- Qualification is the legal basis, whoever writes it: the offer and refund terms (ART-231) and the
+-- counsel's framing (ART-234), each named, the sha256 of the evidence reviewed, and who decided.
+CREATE TRIGGER fiscal_policy_qualification_basis
+BEFORE UPDATE OF status ON fiscal_policy_versions
+-- Every term is strictly true or false (IS, coalesce): a NULL from a missing key must refuse, not pass.
+WHEN NEW.status = 'QUALIFIED' AND NOT (
+      coalesce(length(trim(NEW.qualified_by)), 0) > 0
+  AND coalesce(json_valid(NEW.legal_basis_json), 0) = 1
+  AND json_type(NEW.legal_basis_json, '$.offerTermsRef') IS 'text'
+  AND coalesce(length(trim(json_extract(NEW.legal_basis_json, '$.offerTermsRef'))), 0) > 0
+  AND json_type(NEW.legal_basis_json, '$.counselRef') IS 'text'
+  AND coalesce(length(trim(json_extract(NEW.legal_basis_json, '$.counselRef'))), 0) > 0
+  AND json_type(NEW.legal_basis_json, '$.evidenceSha256') IS 'text'
+  AND coalesce(length(json_extract(NEW.legal_basis_json, '$.evidenceSha256')), 0) = 64
+  AND coalesce(json_extract(NEW.legal_basis_json, '$.evidenceSha256') NOT GLOB '*[^0-9a-f]*', 0) = 1)
+BEGIN
+  SELECT RAISE(ABORT, 'FISCAL_POLICY_LEGAL_BASIS_REQUIRED');
 END;
 
 -- Qualified only against a published offer of the policy's own kind.

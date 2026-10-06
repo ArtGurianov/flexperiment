@@ -118,9 +118,30 @@ describe("product-specific fiscal authority (ART-233)", () => {
       .toThrow("FISCAL_POLICY_TRANSITION_INVALID");
     expect(() => db.prepare("UPDATE fiscal_policy_versions SET legal_basis_json='{}' WHERE id=?").run(policyId)).toThrow("FISCAL_POLICY_TRANSITION_INVALID");
     expect(() => db.prepare("DELETE FROM fiscal_policy_versions WHERE id=?").run(policyId)).toThrow("FISCAL_POLICY_APPEND_ONLY");
-    // Two qualified for one offer cannot exist, even written directly.
+    // Two qualified for one offer cannot exist, even written directly with a complete basis.
     const second = draft("course:one", "ONLINE_COURSE", "Курс 2");
-    expect(() => db.prepare(`UPDATE fiscal_policy_versions SET status='QUALIFIED',legal_basis_json='{}',qualified_by='x',qualified_at=? WHERE id=?`).run(T0, second))
-      .toThrow(/UNIQUE constraint failed/);
+    expect(() => db.prepare(`UPDATE fiscal_policy_versions SET status='QUALIFIED',legal_basis_json=?,qualified_by='owner',qualified_at=? WHERE id=?`)
+      .run(JSON.stringify(basis), T0, second)).toThrow(/UNIQUE constraint failed/);
+  });
+
+  it("direct SQL cannot qualify without the legal basis either", () => {
+    const policyId = draft("course:one", "ONLINE_COURSE", "Курс");
+    const qualifyDirect = (legalBasisJson: string, qualifiedBy = "owner") => db.prepare(`UPDATE fiscal_policy_versions
+      SET status='QUALIFIED',legal_basis_json=?,qualified_by=?,qualified_at=? WHERE id=?`).run(legalBasisJson, qualifiedBy, T0, policyId);
+    for (const [legalBasis, by] of [
+      ["{}", "x"],
+      [JSON.stringify({ ...basis, offerTermsRef: "  " }), "owner"],
+      [JSON.stringify({ ...basis, counselRef: undefined }), "owner"],
+      [JSON.stringify({ ...basis, counselRef: 42 }), "owner"],
+      [JSON.stringify({ ...basis, evidenceSha256: "E".repeat(64) }), "owner"],
+      [JSON.stringify({ ...basis, evidenceSha256: "e".repeat(63) }), "owner"],
+      [JSON.stringify({ ...basis, evidenceSha256: `${"e".repeat(63)}g` }), "owner"],
+      [JSON.stringify(basis), " "],
+    ] as const) {
+      expect(() => qualifyDirect(legalBasis, by), `${legalBasis} by ${JSON.stringify(by)}`).toThrow("FISCAL_POLICY_LEGAL_BASIS_REQUIRED");
+    }
+    expect(db.prepare("SELECT status FROM fiscal_policy_versions WHERE id=?").get(policyId)).toEqual({ status: "DRAFT" });
+    qualifyDirect(JSON.stringify(basis));
+    expect(qualifiedFiscalPolicy(db, "course:one", "ONLINE_COURSE").policyId).toBe(policyId);
   });
 });
