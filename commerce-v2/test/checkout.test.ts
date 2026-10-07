@@ -230,6 +230,34 @@ describe("scripted mock checkout orchestration", () => {
     expect(db.prepare("SELECT COUNT(*) AS count FROM course_entitlements").get()).toEqual({ count: 1 });
   });
 
+  it("grants only for an accepted payment of the frozen total: another amount grants nothing and goes to review", async () => {
+    const created = await checkout(db, rail, testCheckoutConfig, { ...input, idempotencyKey: "wrong-amount", scenario: "wrong_amount" });
+    expect(created.state).toBe("REVIEW_REQUIRED");
+    expect(db.prepare("SELECT state FROM orders").get()).toEqual({ state: "REVIEW_REQUIRED" });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM course_entitlements").get()).toEqual({ count: 0 });
+    expect(db.prepare("SELECT fulfillment_acknowledged_at FROM checkout_attempts").get()).toEqual({ fulfillment_acknowledged_at: null });
+  });
+
+  it("a lost ACK does not fail the customer's return: the grant stands and the sweep sends the ACK once more", async () => {
+    const created = await checkout(db, rail, testCheckoutConfig, { ...input, idempotencyKey: "ack-lost", scenario: "ack_fails_once" });
+    expect(created.state).toBe("PAID");
+    expect(db.prepare("SELECT COUNT(*) AS count FROM course_entitlements").get()).toEqual({ count: 1 });
+    expect(db.prepare("SELECT fulfillment_acknowledged_at FROM checkout_attempts").get()).toEqual({ fulfillment_acknowledged_at: null });
+    expect(await reconcilePendingCheckouts(db, rail, "2026-09-30T10:05:00Z")).toEqual({ selected: 1, reconciled: 1, failed: 0 });
+    expect(db.prepare("SELECT fulfillment_acknowledged_at AS at FROM checkout_attempts").get()).toEqual({ at: "2026-09-30T10:05:00Z" });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM course_entitlements").get()).toEqual({ count: 1 });
+    // Acknowledged: the sweep has nothing more to send.
+    expect(await reconcilePendingCheckouts(db, rail, "2026-09-30T10:06:00Z")).toEqual({ selected: 0, reconciled: 0, failed: 0 });
+  });
+
+  it("the customer's return and the background sweep racing over one payment make one grant", async () => {
+    const created = await checkout(db, rail, testCheckoutConfig, { ...input, idempotencyKey: "race", scenario: "late_payment" });
+    await Promise.all([reconcileCheckout(db, rail, created.orderPublicId), reconcilePendingCheckouts(db, rail), reconcileCheckout(db, rail, created.orderPublicId)]);
+    expect(db.prepare("SELECT COUNT(*) AS count FROM course_entitlements").get()).toEqual({ count: 1 });
+    expect(db.prepare("SELECT state FROM orders").get()).toEqual({ state: "FULFILLED" });
+    expect((db.prepare("SELECT fulfillment_acknowledged_at AS at FROM checkout_attempts").get() as { at: string | null }).at).not.toBeNull();
+  });
+
   it("lets the background sweep recover unfinished payment state", async () => {
     await checkout(db, rail, testCheckoutConfig, { ...input, idempotencyKey: "background", scenario: "late_payment" });
     expect(await reconcilePendingCheckouts(db, rail)).toEqual({ selected: 1, reconciled: 1, failed: 0 });

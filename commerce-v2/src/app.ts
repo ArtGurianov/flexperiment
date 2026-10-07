@@ -19,7 +19,7 @@ import { controlRoomAttention, controlRoomAudit, controlRoomCatalogue, controlRo
 import { auditControlRoom, consumeControlRoomLoginLimit, CONTROL_ROOM_SESSION_TTL_MS, controlRoomSessionCookie, issueControlRoomSession, parseControlRoomSession, verifyControlRoomPassword, type ControlRoomAuthConfig } from "./control-room-auth";
 import type { MerchantPromotionCommand, ProductConfigurationCommand, ProductWithdrawalCommand } from "@flexperiment/control-room-contracts";
 import { resolvePlaybackAccess } from "./playback-access";
-import { issuePlaybackToken, verifyPlaybackToken } from "./playback-auth";
+import { issuePlaybackToken, verifyPlaybackToken, type PlaybackKeyring } from "./playback-auth";
 import { recordPlaybackAccessEvent } from "./playback-telemetry";
 import { loadCommerceOrigins, storefrontOrigin, type CommerceOrigins, type Storefront } from "./origins";
 
@@ -36,7 +36,7 @@ type Dependencies = {
     marketingConsent?: boolean; marketingDocumentVersion: string; marketingDocumentSha256: string;
   }) => void;
   readonly verifyCaptcha?: (token: string, ip: string | undefined) => Promise<boolean>;
-  readonly kinescopeDrmAuth?: { tokenSecret: string; username: string; password: string };
+  readonly kinescopeDrmAuth?: { keyring: PlaybackKeyring; username: string; password: string };
   readonly now?: () => Date;
   readonly kinescopeClient?: KinescopeClient;
   readonly kinescopeLessonsFolderId?: string;
@@ -711,7 +711,7 @@ export function createCommerceV2App(deps: Dependencies) {
     }
     let claims: ReturnType<typeof verifyPlaybackToken>;
     try {
-      claims = verifyPlaybackToken(expected.tokenSecret, body.token, body.id, now());
+      claims = verifyPlaybackToken(expected.keyring, body.token, body.id, now());
     } catch (error) {
       recordPlaybackAccessEvent(deps.db, {
         videoId: body.id, eventType: "DRM_TOKEN_INVALID",
@@ -836,7 +836,7 @@ export function createCommerceV2App(deps: Dependencies) {
       return context.json({ code: "KINESCOPE_GRANT_UNAVAILABLE" }, 503, noStore);
     }
     try {
-      const protectedGrant = issuePlaybackToken(deps.kinescopeDrmAuth.tokenSecret, {
+      const protectedGrant = issuePlaybackToken(deps.kinescopeDrmAuth.keyring, {
         videoId: resolution.binding.videoId, customerId,
       }, now());
       recordPaidAccessStart();

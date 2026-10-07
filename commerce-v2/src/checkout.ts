@@ -79,7 +79,7 @@ export class AmbiguousRailCreateError extends Error {
   }
 }
 
-type MockRecord = RailProjection & { scenario: string; reconciliations: number; fulfillmentAcks: number };
+type MockRecord = RailProjection & { scenario: string; reconciliations: number; fulfillmentAcks: number; failedAcks?: number };
 
 export class MockPaymentRail implements PaymentRail {
   private readonly records = new Map<string, MockRecord>();
@@ -122,6 +122,8 @@ export class MockPaymentRail implements PaymentRail {
       state,
       snapshotHash: input.snapshotHash,
       checkoutUrl: state === "CUSTOMER_ACTION_REQUIRED" ? `https://mock.invalid/action/${input.orderPublicId}` : undefined,
+      // What Refref's read-back carries with an accepted payment; "wrong_amount" models a payment of another amount.
+      paymentAmountKopecks: input.quote.finalAmountKopecks - (scenario === "wrong_amount" ? 1 : 0),
       scenario, reconciliations: 0, fulfillmentAcks: 0,
     };
     this.records.set(input.idempotencyKey, record);
@@ -144,7 +146,12 @@ export class MockPaymentRail implements PaymentRail {
   }
 
   async acknowledgeFulfillment(input: { idempotencyKey: string; orderPublicId: string; attemptId: string }) {
-    for (const record of this.records.values()) if (record.attemptId === input.attemptId) record.fulfillmentAcks += 1;
+    for (const record of this.records.values()) {
+      if (record.attemptId !== input.attemptId) continue;
+      // "ack_fails_once": the first ACK is lost on the way to Refref.
+      if (record.scenario === "ack_fails_once" && !record.failedAcks) { record.failedAcks = 1; throw new TypeError("fetch failed"); }
+      record.fulfillmentAcks += 1;
+    }
   }
 
   async refund(input: PaymentRefundInput): Promise<RailProjection> {
@@ -547,18 +554,24 @@ export async function checkout(
   }, now);
 }
 
-async function applyRailProjection(db: Database.Database, rail: PaymentRail, orderPublicId: string, projection: RailProjection, now: string) {
+async function applyRailProjection(db: Database.Database, rail: PaymentRail, orderPublicId: string, observed: RailProjection, now: string) {
+  let projection = observed;
   const context = db.prepare(`SELECT orders.id AS order_id,orders.customer_id,line.id AS line_id,product.kind,product.course_ref,
-    orders.snapshot_hash,json_extract(orders.checkout_snapshot_json,'$.schema') AS snapshot_schema,
+    orders.snapshot_hash,orders.total_kopecks,json_extract(orders.checkout_snapshot_json,'$.schema') AS snapshot_schema,
     attempt.id AS attempt_id,attempt.idempotency_key,attempt.fulfillment_acknowledged_at FROM orders JOIN order_lines line ON line.order_id=orders.id JOIN products product ON product.id=line.product_id
     JOIN checkout_attempts attempt ON attempt.order_id=orders.id WHERE orders.public_id=?`).get(orderPublicId) as {
       order_id: string; customer_id: string; line_id: string; kind: "ONLINE_COURSE" | "COURSE_BUNDLE" | "LAB";
-      course_ref: string | null; snapshot_hash: string; snapshot_schema: string | null;
+      course_ref: string | null; snapshot_hash: string; total_kopecks: number; snapshot_schema: string | null;
       attempt_id: string; idempotency_key: string; fulfillment_acknowledged_at: string | null;
     } | undefined;
   if (!context) throw new Error("ORDER_NOT_FOUND");
   if (context.snapshot_schema === "refref.shared-checkout-snapshot/1"
     && projection.snapshotHash !== `refref-jcs-1:${context.snapshot_hash}`) throw new Error("PAYMENT_SNAPSHOT_HASH_MISMATCH");
+  // A grant follows an accepted payment of exactly the order's frozen total. Refref's read-back carries the
+  // payment's amount with it; one that differs, or is missing, is a person's to look at, never access.
+  if (projection.state === "PAID" && projection.paymentAmountKopecks !== context.total_kopecks) {
+    projection = { ...projection, state: "REVIEW_REQUIRED" };
+  }
   const apply = db.transaction(() => {
     db.prepare(`UPDATE checkout_attempts SET state=?,refref_attempt_id=?,refref_resolution_id=COALESCE(?,refref_resolution_id),
       refref_snapshot_hash=COALESCE(?,refref_snapshot_hash),checkout_url=?,observed_payment_projection_json=?,last_reconciled_at=?,updated_at=? WHERE id=?`)
@@ -579,10 +592,17 @@ async function applyRailProjection(db: Database.Database, rail: PaymentRail, ord
     else if (projection.state === "REVIEW_REQUIRED") db.prepare("UPDATE orders SET state='REVIEW_REQUIRED',updated_at=? WHERE id=?").run(now, context.order_id);
   });
   apply.immediate();
+  // The operational ACK goes after the grant is committed, under the attempt's own key, so a replay is the
+  // same ACK at Refref. A lost one does not fail the customer's request: the grant stands, and the
+  // background sweep sends it again (reconcilePendingCheckouts) until Refref has it.
   if (projection.state === "PAID" && !context.fulfillment_acknowledged_at) {
-    await rail.acknowledgeFulfillment({ attemptId: projection.attemptId, orderPublicId, idempotencyKey: context.idempotency_key });
-    db.prepare("UPDATE checkout_attempts SET fulfillment_acknowledged_at=?,updated_at=? WHERE id=? AND fulfillment_acknowledged_at IS NULL")
-      .run(now, now, context.attempt_id);
+    try {
+      await rail.acknowledgeFulfillment({ attemptId: projection.attemptId, orderPublicId, idempotencyKey: context.idempotency_key });
+      db.prepare("UPDATE checkout_attempts SET fulfillment_acknowledged_at=?,updated_at=? WHERE id=? AND fulfillment_acknowledged_at IS NULL")
+        .run(now, now, context.attempt_id);
+    } catch {
+      // Left unacknowledged; retried.
+    }
   }
   return { orderPublicId, state: projection.state, checkoutUrl: projection.checkoutUrl };
 }
@@ -599,7 +619,9 @@ export async function reconcileCheckout(db: Database.Database, rail: PaymentRail
 
 export async function reconcilePendingCheckouts(db: Database.Database, rail: PaymentRail, now = new Date().toISOString()) {
   const rows = db.prepare(`SELECT orders.public_id FROM orders JOIN checkout_attempts attempt ON attempt.order_id=orders.id
-    WHERE attempt.state IN ('CREATE_UNKNOWN','PENDING','CUSTOMER_ACTION_REQUIRED')
+    WHERE (attempt.state IN ('CREATE_UNKNOWN','PENDING','CUSTOMER_ACTION_REQUIRED')
+           -- Paid and granted, but Refref has not had the ACK: sent again until it has.
+           OR (attempt.state = 'PAID' AND attempt.fulfillment_acknowledged_at IS NULL))
       AND (attempt.refref_attempt_id IS NULL OR attempt.refref_attempt_id NOT LIKE 'resolution:%')
     ORDER BY attempt.updated_at LIMIT 100`).all() as Array<{ public_id: string }>;
   let reconciled = 0;
