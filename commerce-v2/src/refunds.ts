@@ -145,6 +145,18 @@ type ExecutionRow = {
 const executionOf = (db: Database.Database, requestId: string) => db.prepare(`SELECT id,state,provider_execution_id,support_reference,
   request_envelope,envelope_key_id,refref_payment_id,amount_kopecks FROM refund_executions WHERE refund_request_id=?`).get(requestId) as ExecutionRow | undefined;
 
+/** Refref's REFUND_FAILED codes: a refusal it proved terminal — the request is done with, and so is its envelope. */
+const PROVEN_REFUSALS = new Set(["REFUND_DECLINED", "REFUND_REJECTED", "REFUND_UNAVAILABLE"]);
+
+/**
+ * The sealed envelope holds the customer's receipt e-mail: deleted once the resolution is confirmed
+ * terminal (0019), never while anything is uncertain — it is then the only way to replay.
+ */
+function purgeEnvelope(db: Database.Database, requestId: string, now: string) {
+  db.prepare(`UPDATE refund_executions SET request_envelope=NULL,envelope_purged_at=?,updated_at=?
+    WHERE refund_request_id=? AND request_envelope IS NOT NULL`).run(now, now, requestId);
+}
+
 /** The end of a refund: Refref's accepted Refund, matched to this execution's payment and amount. Only here is access revoked. */
 function finishRefund(db: Database.Database, context: RequestContext, refund: AcceptedRefund, submission: RefundSubmission, now: string) {
   const finish = db.transaction(() => {
@@ -152,6 +164,7 @@ function finishRefund(db: Database.Database, context: RequestContext, refund: Ac
       support_reference=COALESCE(?,support_reference),observed_projection_json=?,last_error_code=NULL,updated_at=? WHERE refund_request_id=?`)
       .run(refund.id, submission.refundExecutionId ?? null, submission.supportReference ?? null, JSON.stringify({ submission, refund }), now, context.request_id);
     db.prepare("UPDATE refund_requests SET state='REFUNDED',updated_at=? WHERE id=?").run(now, context.request_id);
+    purgeEnvelope(db, context.request_id, now);
     const refunded = successfulRefundedAmount(db, context.order_line_id);
     if (refunded >= context.unit_amount_kopecks) revokeEntitlementForOrderLine(db, context.order_line_id, "REFUNDED", now);
     const outstanding = (db.prepare(`SELECT COUNT(*) AS count FROM order_lines line WHERE line.order_id=? AND
@@ -190,6 +203,8 @@ async function applySubmission(db: Database.Database, rail: PaymentRail, context
   submission: RefundSubmission, now: string): Promise<ExecutionOutcome> {
   if (submission.status === "FAILED") {
     requireReview(db, context, submission, submission.failureCode ?? "REFUND_EXECUTION_FAILED", now);
+    // A refusal Refref proved terminal: replaying it would only answer the same. Anything else stays sealed.
+    if (submission.failureCode !== undefined && PROVEN_REFUSALS.has(submission.failureCode)) purgeEnvelope(db, context.request_id, now);
     return "REVIEW_REQUIRED";
   }
   if (submission.status === "UNKNOWN") {
