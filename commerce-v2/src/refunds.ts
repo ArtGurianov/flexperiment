@@ -180,11 +180,16 @@ function finishRefund(db: Database.Database, context: RequestContext, refund: Ac
 }
 
 function requireReview(db: Database.Database, context: RequestContext, submission: RefundSubmission | null, code: string, now: string) {
+  // The refusal and purge must be one UPDATE: 0020 refuses even an intermediate sealed terminal row.
+  // A review caused by uncertainty, mismatch or a thrown submission error is not proven terminal.
+  const provenRefusal = submission?.status === "FAILED" && PROVEN_REFUSALS.has(code);
   const apply = db.transaction(() => {
     db.prepare(`UPDATE refund_executions SET state='REVIEW_REQUIRED',provider_execution_id=COALESCE(?,provider_execution_id),
-      support_reference=COALESCE(?,support_reference),observed_projection_json=COALESCE(?,observed_projection_json),last_error_code=?,updated_at=?
+      support_reference=COALESCE(?,support_reference),observed_projection_json=COALESCE(?,observed_projection_json),last_error_code=?,updated_at=?,
+      request_envelope=CASE WHEN ? THEN NULL ELSE request_envelope END,
+      envelope_purged_at=CASE WHEN ? AND request_envelope IS NOT NULL THEN ? ELSE envelope_purged_at END
       WHERE refund_request_id=?`).run(submission?.refundExecutionId ?? null, submission?.supportReference ?? null,
-        submission ? JSON.stringify(submission) : null, code, now, context.request_id);
+        submission ? JSON.stringify(submission) : null, code, now, provenRefusal ? 1 : 0, provenRefusal ? 1 : 0, now, context.request_id);
     db.prepare("UPDATE refund_requests SET state='REVIEW_REQUIRED',updated_at=? WHERE id=?").run(now, context.request_id);
     db.prepare("UPDATE orders SET state='REVIEW_REQUIRED',updated_at=? WHERE id=?").run(now, context.order_id);
     db.prepare("UPDATE checkout_attempts SET state='REVIEW_REQUIRED',updated_at=? WHERE order_id=?").run(now, context.order_id);
@@ -203,8 +208,6 @@ async function applySubmission(db: Database.Database, rail: PaymentRail, context
   submission: RefundSubmission, now: string): Promise<ExecutionOutcome> {
   if (submission.status === "FAILED") {
     requireReview(db, context, submission, submission.failureCode ?? "REFUND_EXECUTION_FAILED", now);
-    // A refusal Refref proved terminal: replaying it would only answer the same. Anything else stays sealed.
-    if (submission.failureCode !== undefined && PROVEN_REFUSALS.has(submission.failureCode)) purgeEnvelope(db, context.request_id, now);
     return "REVIEW_REQUIRED";
   }
   if (submission.status === "UNKNOWN") {
