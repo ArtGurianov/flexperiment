@@ -2,9 +2,10 @@ import { createHash, randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import { buildCheckoutSnapshot, canonicalCheckoutSnapshotJson, type CheckoutSnapshotConfig, type SharedCheckoutSnapshotV1 } from "./checkout-snapshot";
 import { qualifiedFiscalPolicy, type FrozenFiscalPolicy } from "./fiscal-policy";
-import { customerCanAccessCourse, grantEntitlement, revokeEntitlementForOrderLine } from "./entitlements";
+import { customerCanAccessCourse, grantEntitlement } from "./entitlements";
 import { legalManifestHash, type LegalReleaseManifest } from "./legal-control";
 import type { Storefront } from "./origins";
+import type { RefundEnvelope } from "./refund-envelope";
 import { assertMerchantPromotionStillApplicable, resolveCheckoutCode, type MerchantPromotionSnapshot } from "./promotions";
 import { assertLiveOfferSaleMode } from "./catalog-control";
 import type { CommerceRuntimeConfig } from "./payment-mode";
@@ -57,6 +58,17 @@ export type PaymentRefundInput = {
   lineRef: string;
   fiscalItem: SharedCheckoutSnapshotV1["paymentObligations"][number]["fiscal"]["items"][number];
 };
+/** What Refref answered for a refund execution (createRefund, getRefundExecution). UNKNOWN: the answer was lost. */
+export type RefundSubmission = {
+  status: "SUBMITTED" | "PROCESSING" | "FAILED" | "UNKNOWN";
+  refundExecutionId?: string;
+  supportReference?: string;
+  failureCode?: string;
+  /** The accepted Refund that finished the execution; its presence, never a status, is the success signal. */
+  canonicalRefundId?: string | null;
+};
+/** An accepted canonical Refund, read back (getRefund): the only thing that ends a customer's access. */
+export type AcceptedRefund = { id: string; paymentId: string; amountKopecks: number; status: "SUCCEEDED" };
 /**
  * What the rail contributes to a snapshot: who the merchant is to Refref and who issues receipts on
  * this rail. The receipt's content — tax system, VAT, payment method and object, item name — is the
@@ -70,7 +82,17 @@ export interface PaymentRail {
   recoverCreate(input: PaymentCreateInput, knownAttemptId?: string): Promise<RailProjection>;
   reconcile(input: { idempotencyKey: string; orderPublicId: string; attemptId: string }): Promise<RailProjection>;
   acknowledgeFulfillment(input: { idempotencyKey: string; orderPublicId: string; attemptId: string }): Promise<void>;
-  refund(input: PaymentRefundInput): Promise<RailProjection>;
+  /**
+   * Builds the one refund request this execution will ever send (ART-174): full refunds only, the paid
+   * receipt's item, the receipt contact exactly when the rail's payments are PROVIDER-fiscalized. Reads,
+   * never submits.
+   */
+  prepareRefund(input: PaymentRefundInput): Promise<RefundEnvelope>;
+  /** Sends exactly the frozen envelope under its key; a lost answer is UNKNOWN, never a failure. */
+  submitRefund(envelope: RefundEnvelope): Promise<RefundSubmission>;
+  readRefundExecution(refundExecutionId: string): Promise<RefundSubmission>;
+  /** null when Refref holds no accepted Refund under that id. */
+  readRefund(refundId: string): Promise<AcceptedRefund | null>;
 }
 
 export class AmbiguousRailCreateError extends Error {
@@ -154,13 +176,49 @@ export class MockPaymentRail implements PaymentRail {
     }
   }
 
-  async refund(input: PaymentRefundInput): Promise<RailProjection> {
+  // Refunds, as Refref answers them: an execution per key, finished by an accepted Refund at once, except
+  // for "refund_failure" (a proven refusal). submittedRefunds counts what reached Refref.
+  private readonly refundExecutions = new Map<string, { id: string; envelope: RefundEnvelope; refundId: string | null; failed: boolean }>();
+  submittedRefunds = 0;
+
+  async prepareRefund(input: PaymentRefundInput): Promise<RefundEnvelope> {
     for (const record of this.records.values()) {
       if (record.attemptId !== input.attemptId) continue;
-      record.state = record.scenario === "refund_failure" ? "REVIEW_REQUIRED" : "REFUNDED";
-      return record;
+      return { idempotencyKey: `${input.idempotencyKey}:refund`, paymentId: `mock-payment-${record.attemptId}`, amountKopecks: input.amountKopecks,
+        body: { paymentId: `mock-payment-${record.attemptId}`, amountKopecks: input.amountKopecks,
+          fiscal: { items: [{ ...input.fiscalItem, amountKopecks: input.amountKopecks }] } } };
     }
     throw new Error("PAYMENT_ATTEMPT_NOT_FOUND");
+  }
+
+  async submitRefund(envelope: RefundEnvelope): Promise<RefundSubmission> {
+    this.submittedRefunds += 1;
+    let execution = this.refundExecutions.get(envelope.idempotencyKey);
+    if (!execution) {
+      const record = [...this.records.values()].find((r) => `mock-payment-${r.attemptId}` === envelope.paymentId);
+      const failed = record?.scenario === "refund_failure";
+      execution = { id: `mock-refund-execution-${this.refundExecutions.size + 1}`, envelope, failed,
+        refundId: failed ? null : `mock-refund-${this.refundExecutions.size + 1}` };
+      this.refundExecutions.set(envelope.idempotencyKey, execution);
+    }
+    return this.refundSubmission(execution);
+  }
+
+  async readRefundExecution(refundExecutionId: string): Promise<RefundSubmission> {
+    const execution = [...this.refundExecutions.values()].find((e) => e.id === refundExecutionId);
+    if (!execution) throw new Error("REFUND_EXECUTION_NOT_FOUND");
+    return this.refundSubmission(execution);
+  }
+
+  async readRefund(refundId: string): Promise<AcceptedRefund | null> {
+    const execution = [...this.refundExecutions.values()].find((e) => e.refundId === refundId);
+    return execution ? { id: refundId, paymentId: execution.envelope.paymentId, amountKopecks: execution.envelope.amountKopecks, status: "SUCCEEDED" } : null;
+  }
+
+  private refundSubmission(execution: { id: string; refundId: string | null; failed: boolean }): RefundSubmission {
+    return execution.failed
+      ? { status: "FAILED", refundExecutionId: execution.id, supportReference: "mock-support", failureCode: "REFUND_DECLINED", canonicalRefundId: null }
+      : { status: "PROCESSING", refundExecutionId: execution.id, supportReference: "mock-support", canonicalRefundId: execution.refundId };
   }
 
   fulfillmentAcknowledgementCount(idempotencyKey: string) {
@@ -586,8 +644,11 @@ async function applyRailProjection(db: Database.Database, rail: PaymentRail, ord
     else if (projection.state === "REFUND_PENDING") {
       db.prepare("UPDATE orders SET state='REFUND_PENDING',updated_at=? WHERE id=?").run(now, context.order_id);
     } else if (projection.state === "REFUNDED") {
-      db.prepare("UPDATE orders SET state='REFUNDED',updated_at=? WHERE id=?").run(now, context.order_id);
-      revokeEntitlementForOrderLine(db, context.line_id, "REFUNDED", now);
+      // Access ends only on a refund Flexperiment executed and Refref accepted (refunds.ts, ART-174): a
+      // payment Refref reports refunded without one is a person's to look at, and access stays meanwhile.
+      const ours = db.prepare(`SELECT 1 FROM refund_requests request JOIN refund_executions execution ON execution.refund_request_id=request.id
+        WHERE request.order_line_id=? AND execution.state='SUCCEEDED' AND execution.canonical_refund_id IS NOT NULL`).get(context.line_id);
+      db.prepare("UPDATE orders SET state=?,updated_at=? WHERE id=?").run(ours ? "REFUNDED" : "REVIEW_REQUIRED", now, context.order_id);
     }
     else if (projection.state === "REVIEW_REQUIRED") db.prepare("UPDATE orders SET state='REVIEW_REQUIRED',updated_at=? WHERE id=?").run(now, context.order_id);
   });

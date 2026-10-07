@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { AmbiguousRailCreateError, type CheckoutCodeOutcome, type PaymentCreateInput, type PaymentRail, type PaymentRefundInput, type PaymentResolveInput, type RailProjection, type RailResolution } from "./checkout";
+import { AmbiguousRailCreateError, type AcceptedRefund, type CheckoutCodeOutcome, type PaymentCreateInput, type PaymentRail, type PaymentRefundInput, type PaymentResolveInput, type RailProjection, type RailResolution, type RefundSubmission } from "./checkout";
+import type { RefundEnvelope } from "./refund-envelope";
 import { checkoutSnapshotHash, type SharedCheckoutSnapshotV1 } from "./checkout-snapshot";
 
 type Fetch = typeof fetch;
@@ -70,9 +71,23 @@ const merchantOrderSchema = z.object({ checkoutAttempts: z.array(attemptSchema) 
 const refundExecutionSchema = z.object({
   status: z.enum(["REFUND_SUBMITTED", "REFUND_PROCESSING", "REFUND_FAILED"]),
   refundExecutionId: z.string(),
+  canonicalRefundId: z.string().nullable().optional(),
   supportReference: z.string(),
   failureCode: z.enum(["REFUND_DECLINED", "REFUND_REJECTED", "REFUND_UNAVAILABLE"]).optional(),
 }).passthrough();
+const refundSchema = z.object({
+  id: z.string(),
+  paymentId: z.string(),
+  amountKopecks: z.number().int().positive(),
+  status: z.literal("SUCCEEDED"),
+}).passthrough();
+const submissionOf = (execution: z.infer<typeof refundExecutionSchema>): RefundSubmission => ({
+  status: execution.status === "REFUND_FAILED" ? "FAILED" : execution.status === "REFUND_SUBMITTED" ? "SUBMITTED" : "PROCESSING",
+  refundExecutionId: execution.refundExecutionId,
+  supportReference: execution.supportReference,
+  ...(execution.failureCode ? { failureCode: execution.failureCode } : {}),
+  canonicalRefundId: execution.canonicalRefundId ?? null,
+});
 const fulfillmentSchema = z.object({
   checkoutAttemptId: z.string(),
   status: z.enum(["NOT_READY", "READY", "DELIVERED", "FAILED", "ACTION_REQUIRED"]),
@@ -255,40 +270,53 @@ export class RefrefPaymentRail implements PaymentRail {
     }, `${input.idempotencyKey}:fulfillment`);
   }
 
-  async refund(input: PaymentRefundInput): Promise<RailProjection> {
+  async prepareRefund(input: PaymentRefundInput): Promise<RefundEnvelope> {
     const attempt = await this.call("GET", `/integrations/orders/${encodeURIComponent(input.orderPublicId)}/checkout-attempts/${encodeURIComponent(input.attemptId)}`, attemptSchema);
-    const payment = attempt.obligations.flatMap(({ payment }) => payment ? [payment] : []).filter(({ status }) => ["SUCCEEDED", "PARTIALLY_REFUNDED"].includes(status))[0];
+    const payment = attempt.obligations.flatMap(({ payment }) => payment ? [payment] : []).filter(({ status }) => status === "SUCCEEDED")[0];
     const line = attempt.lineItems.find(({ lineRef }) => lineRef === input.lineRef);
     if (!payment || !line) throw new Error("REFREF_REFUND_PAYMENT_NOT_FOUND");
-    if (!Number.isSafeInteger(input.amountKopecks) || input.amountKopecks <= 0
-      || input.amountKopecks > payment.remainingRefundableAmountKopecks
-      || input.amountKopecks > line.refundableAmountKopecks) throw new Error("REFREF_REFUND_AMOUNT_INVALID");
     if (input.fiscalItem.lineRef !== input.lineRef) throw new Error("REFREF_REFUND_FISCAL_LINE_MISMATCH");
-    const expectedRemainingRefundableAmountKopecks = payment.remainingRefundableAmountKopecks - input.amountKopecks;
-    let execution: z.infer<typeof refundExecutionSchema>;
-    try {
-      execution = await this.call("POST", "/integrations/refunds", refundExecutionSchema, {
-        paymentId: payment.id,
-        amountKopecks: input.amountKopecks,
-        ...(input.amountKopecks < payment.remainingRefundableAmountKopecks
-          ? { lineAllocations: [{ lineRef: input.lineRef, amountKopecks: input.amountKopecks }] }
-          : {}),
-        fiscal: { items: [{ ...input.fiscalItem, amountKopecks: input.amountKopecks }] },
-        receiptContact: { email: input.customerEmail },
-      }, `${input.idempotencyKey}:refund`);
-    } catch (error) {
-      if (isAmbiguousSideEffect(error)) {
-        return { attemptId: input.attemptId, state: "REFUND_PENDING", expectedRemainingRefundableAmountKopecks };
-      }
-      throw error;
+    // Full refunds only (ART-174): the whole payment, nothing refunded before, the whole line. A partial
+    // is not something this rail's provider connections execute.
+    if (!Number.isSafeInteger(input.amountKopecks) || input.amountKopecks !== payment.amountKopecks
+      || input.amountKopecks !== payment.remainingRefundableAmountKopecks || input.amountKopecks !== line.refundableAmountKopecks) {
+      throw new Error("REFREF_REFUND_FULL_ONLY");
     }
     return {
-      attemptId: input.attemptId,
-      state: execution.status === "REFUND_FAILED" ? "REVIEW_REQUIRED" : "REFUND_PENDING",
-      refundExecutionId: execution.refundExecutionId,
-      supportReference: execution.supportReference,
-      failureCode: execution.failureCode,
-      expectedRemainingRefundableAmountKopecks,
+      idempotencyKey: `${input.idempotencyKey}:refund`,
+      paymentId: payment.id,
+      amountKopecks: input.amountKopecks,
+      body: {
+        paymentId: payment.id,
+        amountKopecks: input.amountKopecks,
+        fiscal: { items: [{ ...input.fiscalItem, amountKopecks: input.amountKopecks }] },
+        // The paid obligation was PROVIDER-fiscalized on this rail, so the provider issues the refund receipt.
+        ...(this.checkoutSnapshotConfig.fiscalizationMode === "PROVIDER" ? { receiptContact: { email: input.customerEmail } } : {}),
+      },
     };
+  }
+
+  async submitRefund(envelope: RefundEnvelope): Promise<RefundSubmission> {
+    try {
+      return submissionOf(await this.call("POST", "/integrations/refunds", refundExecutionSchema, envelope.body, envelope.idempotencyKey));
+    } catch (error) {
+      // Refref may have acted: the execution stays in flight, and the same envelope is sent again.
+      if (isAmbiguousSideEffect(error)) return { status: "UNKNOWN" };
+      throw error;
+    }
+  }
+
+  async readRefundExecution(refundExecutionId: string): Promise<RefundSubmission> {
+    return submissionOf(await this.call("GET", `/integrations/refund-executions/${encodeURIComponent(refundExecutionId)}`, refundExecutionSchema));
+  }
+
+  async readRefund(refundId: string): Promise<AcceptedRefund | null> {
+    try {
+      const refund = await this.call("GET", `/integrations/refunds/${encodeURIComponent(refundId)}`, refundSchema);
+      return { id: refund.id, paymentId: refund.paymentId, amountKopecks: refund.amountKopecks, status: refund.status };
+    } catch (error) {
+      if (error instanceof RefrefHttpError && error.status === 404) return null;
+      throw error;
+    }
   }
 }

@@ -28,6 +28,7 @@ const app = (paymentMode: "disabled" | "mock" = "disabled", overrides: Partial<A
   sourceCommit: "a".repeat(40),
   serviceToken: token,
   paymentRail: paymentMode === "mock" ? new MockPaymentRail() : undefined,
+  refundEnvelopeKeys: { currentKeyId: "test", keys: { test: Buffer.alloc(32, 5) } },
   authenticateCustomer: async (headers) => headers.get("authorization") === "Session customer" ? "customer" : null,
   now: () => new Date("2026-09-30T12:00:00.000Z"),
   controlRoomAuth: { origin: "https://admin.flexperiment.ru", sessionSecret: "test-control-room-secret", passwordScrypt: adminPasswordScrypt },

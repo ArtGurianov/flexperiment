@@ -35,7 +35,11 @@ class CapturingRail implements PaymentRail {
 
   async reconcile(): Promise<RailProjection> { return { attemptId: "attempt", state: "PAID", snapshotHash: this.snapshotHash }; }
   async acknowledgeFulfillment(): Promise<void> {}
-  async refund(): Promise<RailProjection> { return { attemptId: "attempt", state: "REFUNDED" }; }
+  // Refunds are not this suite's subject.
+  async prepareRefund(): Promise<never> { throw new Error("NOT_USED"); }
+  async submitRefund(): Promise<never> { throw new Error("NOT_USED"); }
+  async readRefundExecution(): Promise<never> { throw new Error("NOT_USED"); }
+  async readRefund(): Promise<never> { throw new Error("NOT_USED"); }
 }
 
 let db: Database.Database;

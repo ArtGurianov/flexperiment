@@ -9,6 +9,7 @@ import { HttpKinescopeClient } from "./kinescope";
 import { MockPaymentRail, reconcilePendingCheckouts } from "./checkout";
 import { RefrefPaymentRail } from "./refref-payment-rail";
 import { readBuildIdentity } from "./build-identity";
+import { refundEnvelopeKeyringFromEnvironment } from "./refund-envelope";
 import { reconcilePendingRefunds } from "./refunds";
 import { loadCommerceOrigins } from "./origins";
 import { dispatchPendingCampaigns, type CampaignEmail } from "./campaigns";
@@ -71,6 +72,9 @@ const kinescopeDrmAuth = kinescopeDrmKeyring && kinescopeDrmUsername && kinescop
   username: kinescopeDrmUsername,
   password: kinescopeDrmPassword,
 } : undefined;
+// The refund envelope keyring (ART-174): Refref's rail does not start without one, and an invalid one never starts.
+const refundEnvelopeKeys = refundEnvelopeKeyringFromEnvironment(process.env);
+if (config.paymentMode === "refref" && !refundEnvelopeKeys) throw new Error("REFUND_ENVELOPE_KEYS_REQUIRED");
 const paymentRail = config.paymentMode === "mock" ? new MockPaymentRail()
   : config.paymentMode === "refref" && config.refref ? new RefrefPaymentRail({
     apiBaseUrl: config.refref.apiBaseUrl,
@@ -114,6 +118,7 @@ const app = createCommerceV2App({
     kinescopeApiConfigured: Boolean(kinescopeClient),
   },
   paymentRail,
+  refundEnvelopeKeys,
   invalidatePlatformCache: async (mode, courseRef, reason) => {
     const origin = origins.platform;
     const token = process.env.PLATFORM_REVALIDATE_TOKEN ?? serviceToken;
@@ -164,7 +169,7 @@ if (paymentRail) {
     checkoutPollRunning = true;
     try {
       await reconcilePendingCheckouts(db, paymentRail);
-      await reconcilePendingRefunds(db, paymentRail);
+      if (refundEnvelopeKeys) await reconcilePendingRefunds(db, paymentRail, refundEnvelopeKeys);
     }
     catch (error) { console.error("checkout reconciliation sweep failed", error); }
     finally { checkoutPollRunning = false; }

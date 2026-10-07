@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { ControlRoomRefundCase, RefundCasesResponse, RefundDecisionCommand } from "@flexperiment/control-room-contracts";
-import type { PaymentRail, RailProjection } from "./checkout";
+import type { AcceptedRefund, PaymentRail, RefundSubmission } from "./checkout";
 import { revokeEntitlementForOrderLine } from "./entitlements";
+import { openRefundEnvelope, sealRefundEnvelope, type RefundEnvelope, type RefundEnvelopeKeyring } from "./refund-envelope";
 
 export type RefundReason = "CUSTOMER_REQUEST" | "PRODUCT_WITHDRAWN" | "OCCURRENCE_CHANGED" | "OTHER";
 export type RefundDecisionInput = RefundDecisionCommand;
@@ -115,6 +116,9 @@ export function decideRefund(
   if (input.outcome === "APPROVE") {
     const remaining = row.unit_amount_kopecks - successfulRefundedAmount(db, row.order_line_id);
     if (!Number.isSafeInteger(amount) || amount! <= 0 || amount! > remaining) throw new Error("REFUND_AMOUNT_INVALID");
+    // Full refunds only (ART-174): the whole line, nothing refunded before. A partial is not executable on
+    // Flexperiment's rail, so it is not approvable either.
+    if (amount !== row.unit_amount_kopecks || remaining !== row.unit_amount_kopecks) throw new Error("REFUND_FULL_ONLY");
   } else if (input.outcome !== "REJECT") throw new Error("REFUND_DECISION_INVALID");
   else if (input.amountKopecks !== undefined) throw new Error("REFUND_AMOUNT_INVALID");
   const apply = db.transaction(() => {
@@ -134,11 +138,19 @@ const requestContext = (db: Database.Database, publicId: string) => db.prepare(`
   JOIN customers customer ON customer.id=orders.customer_id JOIN checkout_attempts attempt ON attempt.order_id=orders.id
   WHERE request.public_id=?`).get(publicId) as RequestContext | undefined;
 
-function finishRefund(db: Database.Database, context: RequestContext, projection: RailProjection, now: string) {
+type ExecutionRow = {
+  id: string; state: string; provider_execution_id: string | null; support_reference: string | null;
+  request_envelope: string | null; envelope_key_id: string | null; refref_payment_id: string | null; amount_kopecks: number | null;
+};
+const executionOf = (db: Database.Database, requestId: string) => db.prepare(`SELECT id,state,provider_execution_id,support_reference,
+  request_envelope,envelope_key_id,refref_payment_id,amount_kopecks FROM refund_executions WHERE refund_request_id=?`).get(requestId) as ExecutionRow | undefined;
+
+/** The end of a refund: Refref's accepted Refund, matched to this execution's payment and amount. Only here is access revoked. */
+function finishRefund(db: Database.Database, context: RequestContext, refund: AcceptedRefund, submission: RefundSubmission, now: string) {
   const finish = db.transaction(() => {
-    db.prepare(`UPDATE refund_executions SET state='SUCCEEDED',provider_execution_id=COALESCE(?,provider_execution_id),
+    db.prepare(`UPDATE refund_executions SET state='SUCCEEDED',canonical_refund_id=?,provider_execution_id=COALESCE(?,provider_execution_id),
       support_reference=COALESCE(?,support_reference),observed_projection_json=?,last_error_code=NULL,updated_at=? WHERE refund_request_id=?`)
-      .run(projection.refundExecutionId ?? null, projection.supportReference ?? null, JSON.stringify(projection), now, context.request_id);
+      .run(refund.id, submission.refundExecutionId ?? null, submission.supportReference ?? null, JSON.stringify({ submission, refund }), now, context.request_id);
     db.prepare("UPDATE refund_requests SET state='REFUNDED',updated_at=? WHERE id=?").run(now, context.request_id);
     const refunded = successfulRefundedAmount(db, context.order_line_id);
     if (refunded >= context.unit_amount_kopecks) revokeEntitlementForOrderLine(db, context.order_line_id, "REFUNDED", now);
@@ -148,18 +160,18 @@ function finishRefund(db: Database.Database, context: RequestContext, projection
         JOIN refund_executions execution ON execution.refund_request_id=request.id AND execution.state='SUCCEEDED'
         WHERE request.order_line_id=line.id),0) < line.unit_amount_kopecks`).get(context.order_id) as { count: number }).count;
     db.prepare("UPDATE orders SET state=?,updated_at=? WHERE id=?").run(outstanding === 0 ? "REFUNDED" : "FULFILLED", now, context.order_id);
-    db.prepare("UPDATE checkout_attempts SET state=?,observed_payment_projection_json=?,updated_at=? WHERE order_id=?")
-      .run(outstanding === 0 ? "REFUNDED" : "PARTIALLY_REFUNDED", JSON.stringify(projection), now, context.order_id);
+    db.prepare("UPDATE checkout_attempts SET state=?,updated_at=? WHERE order_id=?")
+      .run(outstanding === 0 ? "REFUNDED" : "PARTIALLY_REFUNDED", now, context.order_id);
   });
   finish.immediate();
 }
 
-function requireReview(db: Database.Database, context: RequestContext, projection: RailProjection | null, code: string, now: string) {
+function requireReview(db: Database.Database, context: RequestContext, submission: RefundSubmission | null, code: string, now: string) {
   const apply = db.transaction(() => {
     db.prepare(`UPDATE refund_executions SET state='REVIEW_REQUIRED',provider_execution_id=COALESCE(?,provider_execution_id),
       support_reference=COALESCE(?,support_reference),observed_projection_json=COALESCE(?,observed_projection_json),last_error_code=?,updated_at=?
-      WHERE refund_request_id=?`).run(projection?.refundExecutionId ?? null, projection?.supportReference ?? null,
-        projection ? JSON.stringify(projection) : null, code, now, context.request_id);
+      WHERE refund_request_id=?`).run(submission?.refundExecutionId ?? null, submission?.supportReference ?? null,
+        submission ? JSON.stringify(submission) : null, code, now, context.request_id);
     db.prepare("UPDATE refund_requests SET state='REVIEW_REQUIRED',updated_at=? WHERE id=?").run(now, context.request_id);
     db.prepare("UPDATE orders SET state='REVIEW_REQUIRED',updated_at=? WHERE id=?").run(now, context.order_id);
     db.prepare("UPDATE checkout_attempts SET state='REVIEW_REQUIRED',updated_at=? WHERE order_id=?").run(now, context.order_id);
@@ -167,87 +179,118 @@ function requireReview(db: Database.Database, context: RequestContext, projectio
   apply.immediate();
 }
 
+type ExecutionOutcome = "PROCESSING" | "SUCCEEDED" | "REVIEW_REQUIRED";
+
+/**
+ * What Refref answered, applied. FAILED is a proven refusal: a person decides, access stays. A named
+ * canonical Refund is read back and must be this payment's, this amount, accepted — then, and only then,
+ * the refund is finished and access revoked. Anything else stays in flight.
+ */
+async function applySubmission(db: Database.Database, rail: PaymentRail, context: RequestContext, envelope: RefundEnvelope,
+  submission: RefundSubmission, now: string): Promise<ExecutionOutcome> {
+  if (submission.status === "FAILED") {
+    requireReview(db, context, submission, submission.failureCode ?? "REFUND_EXECUTION_FAILED", now);
+    return "REVIEW_REQUIRED";
+  }
+  if (submission.status === "UNKNOWN") {
+    db.prepare("UPDATE refund_executions SET last_error_code='REFUND_SUBMISSION_UNKNOWN',updated_at=? WHERE refund_request_id=?").run(now, context.request_id);
+    return "PROCESSING";
+  }
+  db.prepare(`UPDATE refund_executions SET provider_execution_id=COALESCE(provider_execution_id,?),support_reference=COALESCE(?,support_reference),
+    observed_projection_json=?,last_error_code=NULL,updated_at=? WHERE refund_request_id=?`)
+    .run(submission.refundExecutionId ?? null, submission.supportReference ?? null, JSON.stringify(submission), now, context.request_id);
+  if (!submission.canonicalRefundId) return "PROCESSING";
+  const refund = await rail.readRefund(submission.canonicalRefundId);
+  if (!refund) return "PROCESSING";
+  if (refund.status !== "SUCCEEDED" || refund.paymentId !== envelope.paymentId || refund.amountKopecks !== envelope.amountKopecks) {
+    requireReview(db, context, submission, "REFUND_FACT_MISMATCH", now);
+    return "REVIEW_REQUIRED";
+  }
+  finishRefund(db, context, refund, submission, now);
+  return "SUCCEEDED";
+}
+
+const outcomeOf = (state: string): ExecutionOutcome => (state === "SUCCEEDED" ? "SUCCEEDED" : state === "REVIEW_REQUIRED" ? "REVIEW_REQUIRED" : "PROCESSING");
+
 export async function executeApprovedRefund(
   db: Database.Database,
   rail: PaymentRail,
+  keyring: RefundEnvelopeKeyring,
   requestPublicId: string,
   now = new Date().toISOString(),
 ) {
   const context = requestContext(db, requestPublicId);
   if (!context?.refref_attempt_id) throw new Error("REFUND_EXECUTION_NOT_AVAILABLE");
-  const existing = db.prepare("SELECT state,provider_execution_id,support_reference FROM refund_executions WHERE refund_request_id=?")
-    .get(context.request_id) as { state: string; provider_execution_id: string | null; support_reference: string | null } | undefined;
-  if (existing) return { requestPublicId, state: existing.state, providerExecutionId: existing.provider_execution_id, supportReference: existing.support_reference };
+  // Begun once: what follows a begun execution is the reconciliation sweep's, from its frozen envelope.
+  const existing = executionOf(db, context.request_id);
+  if (existing) return { requestPublicId, state: outcomeOf(existing.state), providerExecutionId: existing.provider_execution_id, supportReference: existing.support_reference };
   const decision = db.prepare("SELECT amount_kopecks FROM refund_decisions WHERE refund_request_id=? AND outcome='APPROVE'")
     .get(context.request_id) as { amount_kopecks: number } | undefined;
   if (!decision || !["APPROVED", "EXECUTING"].includes(context.request_state)) throw new Error("REFUND_APPROVAL_REQUIRED");
+  if (decision.amount_kopecks !== context.unit_amount_kopecks || successfulRefundedAmount(db, context.order_line_id) !== 0) throw new Error("REFUND_FULL_ONLY");
+  // The one request this execution will ever send, built and checked before anything is written.
+  const envelope = await rail.prepareRefund({
+    attemptId: context.refref_attempt_id,
+    amountKopecks: decision.amount_kopecks,
+    orderPublicId: context.order_public_id,
+    idempotencyKey: `refund:${requestPublicId}`,
+    customerEmail: context.email_normalized,
+    lineRef: context.line_ref,
+    fiscalItem: JSON.parse(context.fiscal_item_json),
+  });
   const executionId = randomUUID();
-  const idempotencyKey = `refund:${requestPublicId}`;
+  const sealed = sealRefundEnvelope(keyring, executionId, envelope);
   const begin = db.transaction(() => {
-    db.prepare(`INSERT INTO refund_executions(id,refund_request_id,idempotency_key,state,created_at,updated_at)
-      VALUES (?,?,?,'PROCESSING',?,?)`).run(executionId, context.request_id, idempotencyKey, now, now);
+    db.prepare(`INSERT INTO refund_executions(id,refund_request_id,idempotency_key,state,refref_payment_id,amount_kopecks,request_envelope,
+      envelope_key_id,created_at,updated_at) VALUES (?,?,?,'PROCESSING',?,?,?,?,?,?)`)
+      .run(executionId, context.request_id, envelope.idempotencyKey, envelope.paymentId, envelope.amountKopecks, sealed.sealed, sealed.keyId, now, now);
     db.prepare("UPDATE refund_requests SET state='EXECUTING',updated_at=? WHERE id=? AND state='APPROVED'").run(now, context.request_id);
     db.prepare("UPDATE orders SET state='REFUND_PENDING',updated_at=? WHERE id=?").run(now, context.order_id);
     db.prepare("UPDATE checkout_attempts SET state='REFUND_PENDING',updated_at=? WHERE order_id=?").run(now, context.order_id);
   });
   begin.immediate();
-  let projection: RailProjection;
+  let submission: RefundSubmission;
   try {
-    projection = await rail.refund({
-      attemptId: context.refref_attempt_id,
-      amountKopecks: decision.amount_kopecks,
-      orderPublicId: context.order_public_id,
-      idempotencyKey,
-      customerEmail: context.email_normalized,
-      lineRef: context.line_ref,
-      fiscalItem: JSON.parse(context.fiscal_item_json),
-    });
+    submission = await rail.submitRefund(envelope);
   } catch (error) {
-    db.prepare("UPDATE refund_executions SET last_error_code=?,updated_at=? WHERE id=?")
-      .run(error instanceof Error ? error.message : "REFUND_SUBMISSION_UNKNOWN", now, executionId);
-    return { requestPublicId, state: "PROCESSING" as const, outcomeUnknown: true };
+    // Refref answered and refused the request itself (a conflict, a validation): a person decides.
+    requireReview(db, context, null, error instanceof Error ? error.message : "REFUND_SUBMISSION_REFUSED", now);
+    return { requestPublicId, state: "REVIEW_REQUIRED" as const, providerExecutionId: null, supportReference: null };
   }
-  if (projection.state === "REFUNDED") finishRefund(db, context, projection, now);
-  else if (projection.state === "REVIEW_REQUIRED") requireReview(db, context, projection, projection.failureCode ?? "REFUND_EXECUTION_FAILED", now);
-  else db.prepare(`UPDATE refund_executions SET provider_execution_id=?,support_reference=?,observed_projection_json=?,updated_at=? WHERE id=?`)
-    .run(projection.refundExecutionId ?? null, projection.supportReference ?? null, JSON.stringify(projection), now, executionId);
+  const state = await applySubmission(db, rail, context, envelope, submission, now);
   return {
-    requestPublicId,
-    state: projection.state === "REFUNDED" ? "SUCCEEDED" as const : projection.state === "REVIEW_REQUIRED" ? "REVIEW_REQUIRED" as const : "PROCESSING" as const,
-    providerExecutionId: projection.refundExecutionId ?? null,
-    supportReference: projection.supportReference ?? null,
+    requestPublicId, state, providerExecutionId: submission.refundExecutionId ?? null, supportReference: submission.supportReference ?? null,
+    ...(submission.status === "UNKNOWN" ? { outcomeUnknown: true } : {}),
   };
 }
 
-export async function reconcilePendingRefunds(db: Database.Database, rail: PaymentRail, now = new Date().toISOString()) {
-  const rows = db.prepare(`SELECT request.public_id,execution.observed_projection_json FROM refund_requests request
+/**
+ * The sweep: every execution in flight, from its frozen envelope. Without Refref's execution id the same
+ * envelope is sent again (Refref replays it under its key); with it, the execution is read. Never a body
+ * rebuilt, never a balance read as a refund. An execution without an envelope (from before ART-174)
+ * goes to a person.
+ */
+export async function reconcilePendingRefunds(db: Database.Database, rail: PaymentRail, keyring: RefundEnvelopeKeyring, now = new Date().toISOString()) {
+  const rows = db.prepare(`SELECT request.public_id FROM refund_requests request
     JOIN refund_executions execution ON execution.refund_request_id=request.id
-    WHERE execution.state='PROCESSING' ORDER BY execution.updated_at LIMIT 100`).all() as Array<{
-      public_id: string;
-      observed_projection_json: string | null;
-    }>;
+    WHERE execution.state IN ('READY','PROCESSING') ORDER BY execution.updated_at LIMIT 100`).all() as Array<{ public_id: string }>;
   let reconciled = 0;
   let failed = 0;
   for (const row of rows) {
     const context = requestContext(db, row.public_id);
-    if (!context?.refref_attempt_id) { failed += 1; continue; }
+    const execution = context ? executionOf(db, context.request_id) : undefined;
+    if (!context || !execution) { failed += 1; continue; }
     try {
-      const projection = await rail.reconcile({ idempotencyKey: `refund:${row.public_id}`, orderPublicId: context.order_public_id, attemptId: context.refref_attempt_id });
-      const submitted = row.observed_projection_json
-        ? JSON.parse(row.observed_projection_json) as RailProjection
-        : null;
-      const expectedRemaining = submitted?.expectedRemainingRefundableAmountKopecks;
-      const refundObserved = projection.state === "REFUNDED"
-        || (expectedRemaining !== undefined
-          && projection.remainingRefundableAmountKopecks !== undefined
-          && projection.remainingRefundableAmountKopecks <= expectedRemaining);
-      if (refundObserved) finishRefund(db, context, { ...projection,
-        refundExecutionId: submitted?.refundExecutionId,
-        supportReference: submitted?.supportReference,
-      }, now);
-      else if (projection.state === "REVIEW_REQUIRED") requireReview(db, context, projection, "REFUND_RECONCILIATION_REVIEW", now);
-      else db.prepare("UPDATE refund_executions SET observed_projection_json=?,updated_at=? WHERE refund_request_id=?")
-        .run(JSON.stringify(projection), now, context.request_id);
+      if (!execution.request_envelope || !execution.envelope_key_id) {
+        requireReview(db, context, null, "REFUND_ENVELOPE_MISSING", now);
+        reconciled += 1;
+        continue;
+      }
+      const envelope = openRefundEnvelope(keyring, execution.envelope_key_id, execution.id, execution.request_envelope);
+      const submission = execution.provider_execution_id
+        ? await rail.readRefundExecution(execution.provider_execution_id)
+        : await rail.submitRefund(envelope);
+      await applySubmission(db, rail, context, envelope, submission, now);
       reconciled += 1;
     } catch (error) {
       db.prepare("UPDATE refund_executions SET last_error_code=?,updated_at=? WHERE refund_request_id=?")
