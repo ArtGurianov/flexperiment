@@ -151,6 +151,123 @@ describe("refund authority", () => {
     expect(revoked()).toBe(0);
   });
 
+  it("deletes the sealed envelope once the resolution is terminal, keeps it while anything is uncertain, never seals again", async () => {
+    const envelopeOf = () => db.prepare(`SELECT request_envelope IS NOT NULL AS sealed, envelope_purged_at IS NOT NULL AS purged,
+      idempotency_key AS k, refref_payment_id AS p, amount_kopecks AS a FROM refund_executions`).get() as { sealed: number; purged: number; k: string; p: string; a: number };
+    const { request } = await approvedRefund();
+    rail.submitAnswers.push(async () => ({ status: "UNKNOWN" }));
+    await executeApprovedRefund(db, rail, keys, request.requestPublicId);
+    expect(envelopeOf()).toMatchObject({ sealed: 1, purged: 0 });
+    // Uncertain: the database will not let it go either.
+    expect(() => db.prepare("UPDATE refund_executions SET request_envelope=NULL,envelope_purged_at='t'").run()).toThrow("REFUND_ENVELOPE_FROZEN");
+    await reconcilePendingRefunds(db, rail, keys);
+    expect(execution()).toMatchObject({ state: "SUCCEEDED" });
+    // Terminal: deleted; the non-personal frozen facts remain, and nothing is sealed again.
+    expect(envelopeOf()).toMatchObject({ sealed: 0, purged: 1, k: `refund:${request.requestPublicId}:refund`, a: 10_000 });
+    expect(() => db.prepare("UPDATE refund_executions SET request_envelope='x'").run()).toThrow("REFUND_ENVELOPE_PURGED");
+    expect(() => db.prepare("UPDATE refund_executions SET envelope_purged_at='later'").run()).toThrow("REFUND_ENVELOPE_PURGED");
+  });
+
+  it.each(["REFUND_DECLINED", "REFUND_REJECTED", "REFUND_UNAVAILABLE"])("atomically purges after the proven terminal refusal %s", async (failureCode) => {
+    const { request } = await approvedRefund();
+    rail.submitAnswers.push(async () => ({ status: "FAILED", failureCode, refundExecutionId: "exec-failed", supportReference: "s", canonicalRefundId: null }));
+    await executeApprovedRefund(db, rail, keys, request.requestPublicId);
+    expect(db.prepare("SELECT request_envelope IS NULL AS gone, envelope_purged_at IS NOT NULL AS purged, last_error_code AS c FROM refund_executions").get())
+      .toEqual({ gone: 1, purged: 1, c: failureCode });
+    expect(execution()).toMatchObject({ state: "REVIEW_REQUIRED", provider_execution_id: "exec-failed" });
+    expect(revoked()).toBe(0);
+  });
+
+  it.each(["envelope purge", "review projection"])("rolls back the entire refusal if the %s statement is interrupted", async (interrupted) => {
+    const { request } = await approvedRefund();
+    db.exec(interrupted === "envelope purge" ? `
+      CREATE TRIGGER simulate_refusal_failure BEFORE UPDATE ON refund_executions
+      WHEN OLD.request_envelope IS NOT NULL AND NEW.request_envelope IS NULL
+      BEGIN SELECT RAISE(ABORT, 'SIMULATED_REFUSAL_INTERRUPTION'); END;
+    ` : `
+      CREATE TRIGGER simulate_refusal_failure BEFORE UPDATE ON refund_requests
+      WHEN NEW.state='REVIEW_REQUIRED'
+      BEGIN SELECT RAISE(ABORT, 'SIMULATED_REFUSAL_INTERRUPTION'); END;
+    `);
+    rail.submitAnswers.push(async () => ({ status: "FAILED", failureCode: "REFUND_DECLINED", refundExecutionId: "exec-failed", supportReference: "s", canonicalRefundId: null }));
+    await expect(executeApprovedRefund(db, rail, keys, request.requestPublicId)).rejects.toThrow("SIMULATED_REFUSAL_INTERRUPTION");
+    expect(db.prepare(`SELECT state,request_envelope IS NOT NULL AS sealed,envelope_purged_at,provider_execution_id,
+      support_reference,observed_projection_json,last_error_code FROM refund_executions`).get()).toEqual({
+      state: "PROCESSING", sealed: 1, envelope_purged_at: null, provider_execution_id: null,
+      support_reference: null, observed_projection_json: null, last_error_code: null,
+    });
+    expect(db.prepare("SELECT state FROM refund_requests").get()).toEqual({ state: "EXECUTING" });
+    expect(db.prepare("SELECT state FROM orders").get()).toEqual({ state: "REFUND_PENDING" });
+    expect(db.prepare("SELECT state FROM checkout_attempts").get()).toEqual({ state: "REFUND_PENDING" });
+    expect(revoked()).toBe(0);
+    db.exec("DROP TRIGGER simulate_refusal_failure");
+    // Recovery replays the unchanged request; the terminal response now commits with its purge.
+    rail.submitAnswers.push(async () => ({ status: "FAILED", failureCode: "REFUND_DECLINED", refundExecutionId: "exec-failed", supportReference: "s", canonicalRefundId: null }));
+    expect(await reconcilePendingRefunds(db, rail, keys)).toEqual({ selected: 1, reconciled: 1, failed: 0 });
+    expect(rail.sent[1]).toEqual(rail.sent[0]);
+    expect(db.prepare("SELECT state,request_envelope,envelope_purged_at IS NOT NULL AS purged FROM refund_executions").get())
+      .toEqual({ state: "REVIEW_REQUIRED", request_envelope: null, purged: 1 });
+  });
+
+  it.each(["REFUND_DECLINED", "REFUND_REJECTED", "REFUND_UNAVAILABLE"])("the database refuses a sealed terminal refusal %s on insert and update", async (failureCode) => {
+    const { request } = await approvedRefund();
+    rail.submitAnswers.push(async () => ({ status: "UNKNOWN" }));
+    await executeApprovedRefund(db, rail, keys, request.requestPublicId);
+    expect(() => db.prepare("UPDATE refund_executions SET state='REVIEW_REQUIRED',last_error_code=?").run(failureCode))
+      .toThrow("REFUND_TERMINAL_REFUSAL_REQUIRES_PURGE");
+    // A separate request avoids an unrelated UNIQUE constraint masking a missing INSERT guard.
+    db.prepare(`INSERT INTO refund_requests(id,public_id,idempotency_key,customer_id,order_line_id,reason_code,
+      policy_facts_json,state,requested_at,updated_at)
+      SELECT 'guard-insert-request','guard-insert-public','guard-insert-key',customer_id,order_line_id,reason_code,
+        policy_facts_json,'REJECTED',requested_at,updated_at FROM refund_requests WHERE public_id=?`).run(request.requestPublicId);
+    expect(() => db.prepare(`INSERT INTO refund_executions(id,refund_request_id,idempotency_key,state,last_error_code,
+      refref_payment_id,amount_kopecks,request_envelope,envelope_key_id,created_at,updated_at)
+      SELECT 'invalid-terminal','guard-insert-request','invalid-key','REVIEW_REQUIRED',?,refref_payment_id,
+        amount_kopecks,request_envelope,envelope_key_id,created_at,updated_at FROM refund_executions`).run(failureCode))
+      .toThrow("REFUND_TERMINAL_REFUSAL_REQUIRES_PURGE");
+    expect(execution()).toMatchObject({ state: "PROCESSING", last_error_code: "REFUND_SUBMISSION_UNKNOWN" });
+  });
+
+  it.each(["REFUND_DECLINED", "REFUND_REJECTED", "REFUND_UNAVAILABLE", "REFUND_FACT_MISMATCH"])("0020 repairs only legacy proven-refusal envelopes: %s", async (code) => {
+    const { request } = await approvedRefund();
+    rail.submitAnswers.push(async () => ({ status: "UNKNOWN" }));
+    await executeApprovedRefund(db, rail, keys, request.requestPublicId);
+    // Model the exact pre-0020 schema and the committed crash-gap row from 0019.
+    db.exec(`DROP TRIGGER refund_execution_terminal_refusal_purged_insert;
+      DROP TRIGGER refund_execution_terminal_refusal_purged_update;
+      DELETE FROM schema_migrations WHERE version='0020_refund_terminal_refusal_purge.sql';`);
+    db.prepare("UPDATE refund_executions SET state='REVIEW_REQUIRED',last_error_code=?").run(code);
+    const before = db.prepare("SELECT request_envelope,envelope_key_id,idempotency_key,refref_payment_id,amount_kopecks FROM refund_executions").get() as Record<string, unknown>;
+    migrateV2(db);
+    const terminal = code !== "REFUND_FACT_MISMATCH";
+    expect(db.prepare("SELECT state,last_error_code,request_envelope,envelope_purged_at IS NOT NULL AS purged FROM refund_executions").get())
+      .toEqual({ state: "REVIEW_REQUIRED", last_error_code: code, request_envelope: terminal ? null : before.request_envelope, purged: terminal ? 1 : 0 });
+    expect(db.prepare("SELECT envelope_key_id,idempotency_key,refref_payment_id,amount_kopecks FROM refund_executions").get())
+      .toEqual({ envelope_key_id: before.envelope_key_id, idempotency_key: before.idempotency_key,
+        refref_payment_id: before.refref_payment_id, amount_kopecks: before.amount_kopecks });
+    // A second migration pass is a no-op; no terminal envelope can be sealed again.
+    const after = db.prepare("SELECT * FROM refund_executions").get();
+    migrateV2(db);
+    expect(db.prepare("SELECT * FROM refund_executions").get()).toEqual(after);
+  });
+
+  it("keeps it after a FAILED answer that is not a proven refusal", async () => {
+    const { request } = await approvedRefund();
+    rail.submitAnswers.push(async () => ({ status: "FAILED", refundExecutionId: "exec-x", supportReference: "s", canonicalRefundId: null }));
+    await executeApprovedRefund(db, rail, keys, request.requestPublicId);
+    expect(db.prepare("SELECT request_envelope IS NOT NULL AS sealed, last_error_code AS c FROM refund_executions").get())
+      .toEqual({ sealed: 1, c: "REFUND_EXECUTION_FAILED" });
+  });
+
+  it("keeps it when the accepted Refund does not match: a person decides, and may still need it", async () => {
+    const { request } = await approvedRefund();
+    rail.refundAnswer = async (id) => ({ id, paymentId: "another-payment", amountKopecks: 10_000, status: "SUCCEEDED" });
+    await executeApprovedRefund(db, rail, keys, request.requestPublicId);
+    expect(db.prepare("SELECT request_envelope IS NOT NULL AS sealed, state, last_error_code AS c FROM refund_executions").get())
+      .toEqual({ sealed: 1, state: "REVIEW_REQUIRED", c: "REFUND_FACT_MISMATCH" });
+    expect(() => db.prepare("UPDATE refund_executions SET request_envelope=NULL,envelope_purged_at='t'").run()).toThrow("REFUND_ENVELOPE_FROZEN");
+  });
+
   it("projects a proven refund failure to review without revoking access", async () => {
     const { request } = await approvedRefund("refund_failure");
     expect(await executeApprovedRefund(db, rail, keys, request.requestPublicId)).toMatchObject({ state: "REVIEW_REQUIRED" });

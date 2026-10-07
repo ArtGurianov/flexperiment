@@ -145,6 +145,18 @@ type ExecutionRow = {
 const executionOf = (db: Database.Database, requestId: string) => db.prepare(`SELECT id,state,provider_execution_id,support_reference,
   request_envelope,envelope_key_id,refref_payment_id,amount_kopecks FROM refund_executions WHERE refund_request_id=?`).get(requestId) as ExecutionRow | undefined;
 
+/** Refref's REFUND_FAILED codes: a refusal it proved terminal — the request is done with, and so is its envelope. */
+const PROVEN_REFUSALS = new Set(["REFUND_DECLINED", "REFUND_REJECTED", "REFUND_UNAVAILABLE"]);
+
+/**
+ * The sealed envelope holds the customer's receipt e-mail: deleted once the resolution is confirmed
+ * terminal (0019), never while anything is uncertain — it is then the only way to replay.
+ */
+function purgeEnvelope(db: Database.Database, requestId: string, now: string) {
+  db.prepare(`UPDATE refund_executions SET request_envelope=NULL,envelope_purged_at=?,updated_at=?
+    WHERE refund_request_id=? AND request_envelope IS NOT NULL`).run(now, now, requestId);
+}
+
 /** The end of a refund: Refref's accepted Refund, matched to this execution's payment and amount. Only here is access revoked. */
 function finishRefund(db: Database.Database, context: RequestContext, refund: AcceptedRefund, submission: RefundSubmission, now: string) {
   const finish = db.transaction(() => {
@@ -152,6 +164,7 @@ function finishRefund(db: Database.Database, context: RequestContext, refund: Ac
       support_reference=COALESCE(?,support_reference),observed_projection_json=?,last_error_code=NULL,updated_at=? WHERE refund_request_id=?`)
       .run(refund.id, submission.refundExecutionId ?? null, submission.supportReference ?? null, JSON.stringify({ submission, refund }), now, context.request_id);
     db.prepare("UPDATE refund_requests SET state='REFUNDED',updated_at=? WHERE id=?").run(now, context.request_id);
+    purgeEnvelope(db, context.request_id, now);
     const refunded = successfulRefundedAmount(db, context.order_line_id);
     if (refunded >= context.unit_amount_kopecks) revokeEntitlementForOrderLine(db, context.order_line_id, "REFUNDED", now);
     const outstanding = (db.prepare(`SELECT COUNT(*) AS count FROM order_lines line WHERE line.order_id=? AND
@@ -167,11 +180,16 @@ function finishRefund(db: Database.Database, context: RequestContext, refund: Ac
 }
 
 function requireReview(db: Database.Database, context: RequestContext, submission: RefundSubmission | null, code: string, now: string) {
+  // The refusal and purge must be one UPDATE: 0020 refuses even an intermediate sealed terminal row.
+  // A review caused by uncertainty, mismatch or a thrown submission error is not proven terminal.
+  const provenRefusal = submission?.status === "FAILED" && PROVEN_REFUSALS.has(code);
   const apply = db.transaction(() => {
     db.prepare(`UPDATE refund_executions SET state='REVIEW_REQUIRED',provider_execution_id=COALESCE(?,provider_execution_id),
-      support_reference=COALESCE(?,support_reference),observed_projection_json=COALESCE(?,observed_projection_json),last_error_code=?,updated_at=?
+      support_reference=COALESCE(?,support_reference),observed_projection_json=COALESCE(?,observed_projection_json),last_error_code=?,updated_at=?,
+      request_envelope=CASE WHEN ? THEN NULL ELSE request_envelope END,
+      envelope_purged_at=CASE WHEN ? AND request_envelope IS NOT NULL THEN ? ELSE envelope_purged_at END
       WHERE refund_request_id=?`).run(submission?.refundExecutionId ?? null, submission?.supportReference ?? null,
-        submission ? JSON.stringify(submission) : null, code, now, context.request_id);
+        submission ? JSON.stringify(submission) : null, code, now, provenRefusal ? 1 : 0, provenRefusal ? 1 : 0, now, context.request_id);
     db.prepare("UPDATE refund_requests SET state='REVIEW_REQUIRED',updated_at=? WHERE id=?").run(now, context.request_id);
     db.prepare("UPDATE orders SET state='REVIEW_REQUIRED',updated_at=? WHERE id=?").run(now, context.order_id);
     db.prepare("UPDATE checkout_attempts SET state='REVIEW_REQUIRED',updated_at=? WHERE order_id=?").run(now, context.order_id);
