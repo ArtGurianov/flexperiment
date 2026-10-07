@@ -12,6 +12,7 @@ import { assertVideoUploadInput, observeKinescopeStatus, pollKinescopeUpload, st
 import { activateLegalRelease, currentLegalRelease, type LegalReleaseManifest } from "./legal-control";
 import { issueCheckoutHandoffState, issueCheckoutPaymentReturnState, verifyCheckoutHandoffState, verifyCheckoutNavigationState } from "./checkout-handoff";
 import { listMerchantPromotions, saveMerchantPromotion, type MerchantPromotionInput } from "./promotions";
+import type { RefundEnvelopeKeyring } from "./refund-envelope";
 import { decideRefund, executeApprovedRefund, listCustomerRefunds, listRefundCases, recordCourseAccessStart, requestRefund, type RefundDecisionInput, type RefundReason } from "./refunds";
 import { grantManualEntitlement, revokeManualEntitlement } from "./entitlements";
 import { listCustomerLibrary, listCustomerOrderHistory } from "./library";
@@ -47,6 +48,8 @@ type Dependencies = {
     readonly kinescopeApiConfigured: boolean;
   };
   readonly paymentRail?: PaymentRail;
+  /** Seals each refund's frozen submission (ART-174). Without it no refund is executed. */
+  readonly refundEnvelopeKeys?: RefundEnvelopeKeyring;
   /** `WITHDRAWN` marks the one commercial change that removes public pages; the platform notifies IndexNow for it. */
   readonly invalidatePlatformCache?: (mode: "swr" | "immediate", courseRef?: string, reason?: "WITHDRAWN") => Promise<void>;
   readonly campaignUnsubscribeSecret?: string;
@@ -270,8 +273,9 @@ export function createCommerceV2App(deps: Dependencies) {
   });
   app.post("/v1/admin/v2/refunds/:requestPublicId/execute", async (context) => {
     if (!deps.paymentRail) return context.json({ error: { code: "PAYMENT_RAIL_UNAVAILABLE" } }, 503, noStore);
+    if (!deps.refundEnvelopeKeys) return context.json({ error: { code: "REFUND_ENVELOPE_KEYS_UNAVAILABLE" } }, 503, noStore);
     try {
-      const result = await executeApprovedRefund(deps.db, deps.paymentRail, context.req.param("requestPublicId"), now().toISOString());
+      const result = await executeApprovedRefund(deps.db, deps.paymentRail, deps.refundEnvelopeKeys, context.req.param("requestPublicId"), now().toISOString());
       auditControlRoom(deps.db, { adminId: context.get("controlRoomAdminId")!, action: "REFUND_EXECUTION_REQUESTED",
         entityType: "refund_request", entityId: context.req.param("requestPublicId"), details: { state: result.state } }, now().toISOString());
       return context.json(result, 200, noStore);
@@ -663,8 +667,9 @@ export function createCommerceV2App(deps: Dependencies) {
 
   app.post("/v1/internal/refunds/:requestPublicId/execute", async (context) => {
     if (!deps.paymentRail) return context.json({ code: "PAYMENT_RAIL_UNAVAILABLE" }, 503, noStore);
+    if (!deps.refundEnvelopeKeys) return context.json({ code: "REFUND_ENVELOPE_KEYS_UNAVAILABLE" }, 503, noStore);
     try {
-      return context.json(await executeApprovedRefund(deps.db, deps.paymentRail, context.req.param("requestPublicId"), now().toISOString()), 200, noStore);
+      return context.json(await executeApprovedRefund(deps.db, deps.paymentRail, deps.refundEnvelopeKeys, context.req.param("requestPublicId"), now().toISOString()), 200, noStore);
     } catch (error) {
       return context.json({ code: error instanceof Error ? error.message : "REFUND_EXECUTION_FAILED" }, 409, noStore);
     }
