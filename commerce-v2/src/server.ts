@@ -4,6 +4,7 @@ import { migrateV2, openV2Database } from "./db";
 import { loadCommerceRuntimeConfig } from "./payment-mode";
 import { createAuthRuntime } from "./auth";
 import { verifySmartCaptcha } from "./smartcaptcha";
+import { playbackKeyringFromEnvironment } from "./playback-auth";
 import { HttpKinescopeClient } from "./kinescope";
 import { MockPaymentRail, reconcilePendingCheckouts } from "./checkout";
 import { RefrefPaymentRail } from "./refref-payment-rail";
@@ -58,14 +59,15 @@ if (!smartCaptchaSecret && config.deployEnvironment === "production") throw new 
 
 const kinescopeToken = process.env.KINESCOPE_API_TOKEN;
 const kinescopeClient = kinescopeToken ? new HttpKinescopeClient(kinescopeToken) : undefined;
-const kinescopeDrmTokenSecret = process.env.KINESCOPE_DRM_TOKEN_SECRET;
+// The signing keyring (ART-221): an invalid or ambiguous one refuses to start whatever the mode.
+const kinescopeDrmKeyring = playbackKeyringFromEnvironment(process.env);
 const kinescopeDrmUsername = process.env.KINESCOPE_DRM_USERNAME;
 const kinescopeDrmPassword = process.env.KINESCOPE_DRM_PASSWORD;
-if (config.kinescopeDeliveryMode === "protected" && (
-  !kinescopeDrmTokenSecret || Buffer.byteLength(kinescopeDrmTokenSecret) < 32 || !kinescopeDrmUsername || !kinescopeDrmPassword
-)) throw new Error("KINESCOPE_DRM_CONFIGURATION_REQUIRED");
-const kinescopeDrmAuth = kinescopeDrmTokenSecret && kinescopeDrmUsername && kinescopeDrmPassword ? {
-  tokenSecret: kinescopeDrmTokenSecret,
+if (config.kinescopeDeliveryMode === "protected" && (!kinescopeDrmKeyring || !kinescopeDrmUsername || !kinescopeDrmPassword)) {
+  throw new Error("KINESCOPE_DRM_CONFIGURATION_REQUIRED");
+}
+const kinescopeDrmAuth = kinescopeDrmKeyring && kinescopeDrmUsername && kinescopeDrmPassword ? {
+  keyring: kinescopeDrmKeyring,
   username: kinescopeDrmUsername,
   password: kinescopeDrmPassword,
 } : undefined;

@@ -455,7 +455,7 @@ describe("commerce v2 boundaries", () => {
   });
 
   it("returns a short-lived protected playback grant without making it cacheable", async () => {
-    const drm = { tokenSecret: "s".repeat(32), username: "drm", password: "secret" };
+    const drm = { keyring: { currentKeyId: "k1", keys: { k1: "s".repeat(32) } }, username: "drm", password: "secret" };
     const server = app("disabled", {
       config: loadCommerceRuntimeConfig({
         DEPLOY_ENV: "production", PAYMENT_MODE: "disabled", KINESCOPE_DELIVERY_MODE: "protected", MERCHANT_PROMOTION_PREFIX: "FX-",
