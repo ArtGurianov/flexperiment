@@ -149,7 +149,7 @@ does.
   Consent and suppression are still re-checked immediately before each send.
   Production confirmation and dispatch remain disabled unless
   `MARKETING_BROADCASTS_ENABLED=true`; that switch is gated by ART-232 and the
-  Unisender account review.
+  Notisend account review.
 - Legal releases are activated by an audited internal command. Stage A refuses
   a manifest without privacy, personal-data, account-terms and marketing
   documents; Stage B additionally requires the course offer, receipt-contact,
