@@ -101,7 +101,8 @@ describe("merchant promotion namespace", () => {
     }, "2026-09-30T10:01:00.000Z");
     const frozen = JSON.parse((db.prepare("SELECT checkout_snapshot_json FROM orders").get() as { checkout_snapshot_json: string }).checkout_snapshot_json);
     expect(frozen).toMatchObject({
-      schema: "refref.shared-checkout-snapshot/1",
+      schema: "refref.shared-checkout-snapshot/2",
+      paymentPurpose: "Synthetic merchant offer purpose",
       lines: [{ merchantOfferAmountKopecks: 8_500, referralDiscountAmountKopecks: 0, finalAmountKopecks: 8_500 }],
       totalContractAmountKopecks: 8_500,
     });

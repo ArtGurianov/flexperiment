@@ -1,6 +1,8 @@
 import type { Endpoint } from "payload";
 import { getCampaignCourseSnapshot } from "@/lib/content/editorial";
 import { adminOrigin } from "@/lib/origins";
+import { freshPurposeSummary } from "@/lib/offer-payment-purpose";
+import { validPaymentPurpose } from "../../../commerce-v2/src/payment-purpose";
 
 const authorRequired = (user: unknown) => Boolean(user && typeof user === "object" && "collection" in user && user.collection === "users");
 
@@ -11,6 +13,49 @@ const controlRoomCourseUrl = (courseRef: string) => {
 };
 
 export const courseCommercialEndpoints: Endpoint[] = [{
+  method: "get",
+  path: "/payment-purpose/:courseRef",
+  handler: async req => {
+    if (!authorRequired(req.user)) return Response.json({ code: "AUTHOR_REQUIRED" }, { status: 401 });
+    try {
+      const summary = await freshPurposeSummary(String(req.routeParams?.courseRef ?? ""));
+      if (!summary?.offerRef) return Response.json({ code: "OFFER_NOT_CONFIGURED" }, { status: 409 });
+      return Response.json({ paymentPurpose: summary.paymentPurpose, version: summary.version, offerRef: summary.offerRef },
+        { headers: { "cache-control": "no-store" } });
+    } catch { return Response.json({ code: "COMMERCE_UNAVAILABLE" }, { status: 503 }); }
+  },
+}, {
+  method: "post",
+  path: "/payment-purpose/:courseRef",
+  handler: async req => {
+    if (!authorRequired(req.user)) return Response.json({ code: "AUTHOR_REQUIRED" }, { status: 401 });
+    // Cookie-authenticated mutation must originate on this CMS, including requests outside its UI.
+    const requestOrigin = req.headers.get("origin");
+    if (!req.url || !requestOrigin || requestOrigin !== new URL(req.url).origin) return Response.json({ code: "ORIGIN_NOT_ALLOWED" }, { status: 403 });
+    const origin = process.env.COMMERCE_INTERNAL_ORIGIN;
+    const token = process.env.PLATFORM_COMMERCE_SERVICE_TOKEN;
+    if (!origin || !token) return Response.json({ code: "COMMERCE_NOT_CONFIGURED" }, { status: 503 });
+    try {
+      const input = await req.json?.() as { paymentPurpose?: unknown; expectedVersion?: unknown } | undefined;
+      if (!validPaymentPurpose(input?.paymentPurpose) || !Number.isInteger(input?.expectedVersion)) {
+        return Response.json({ code: "PAYMENT_PURPOSE_REQUIRED" }, { status: 422 });
+      }
+      const courseRef = String(req.routeParams?.courseRef ?? "");
+      const user = req.user as { id: string | number };
+      const response = await fetch(new URL(`/v1/internal/catalog/payment-purpose/${encodeURIComponent(courseRef)}`, origin), {
+        method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        cache: "no-store", signal: AbortSignal.timeout(3_000),
+        body: JSON.stringify({ paymentPurpose: input!.paymentPurpose, expectedVersion: input!.expectedVersion, actor: `payload:${user.id}` }),
+      });
+      // Do not echo a raw internal response or provider/transport exception to the browser.
+      const body = await response.json() as { paymentPurpose?: string; version?: number; error?: { code?: string } };
+      if (!response.ok) return Response.json({ code: body.error?.code === "CATALOG_VERSION_CONFLICT" ? "CATALOG_VERSION_CONFLICT" : "PAYMENT_PURPOSE_UPDATE_FAILED" }, { status: 409 });
+      if (body.paymentPurpose !== input!.paymentPurpose || !Number.isInteger(body.version)
+        || body.version !== Number(input!.expectedVersion) + 1) throw new Error("COMMERCE_RESULT_INVALID");
+      return Response.json({ paymentPurpose: body.paymentPurpose, version: body.version }, { headers: { "cache-control": "no-store" } });
+    } catch { return Response.json({ code: "COMMERCE_UNAVAILABLE" }, { status: 503 }); }
+  },
+}, {
   method: "get",
   path: "/commercial-summary/:courseRef",
   handler: async (req) => {

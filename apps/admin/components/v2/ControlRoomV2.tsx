@@ -99,6 +99,7 @@ function CourseEditor({ course }: { course: CatalogueResponse["courses"][number]
   const [price, setPrice] = useState(String(course?.offer?.priceKopecks ?? 0));
   const [saleMode, setSaleMode] = useState<"CLOSED" | "ACCEPTANCE_ONLY" | "PUBLIC">(course?.offer?.saleMode ?? "CLOSED");
   const [allowlist, setAllowlist] = useState(course?.offer?.acceptanceAllowlist.join("\n") ?? "");
+  const [paymentPurpose, setPaymentPurpose] = useState(course?.offer?.paymentPurpose ?? "");
   const save = useMutation({
     mutationFn: (command: ProductConfigurationCommand) => api("/v2/catalogue/products", {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(command),
@@ -117,7 +118,7 @@ function CourseEditor({ course }: { course: CatalogueResponse["courses"][number]
     <form className="refund-decision" onSubmit={(event) => {
       event.preventDefault();
       save.mutate({ productRef, courseRef, offerRef, kind: "ONLINE_COURSE", accessModel,
-        priceKopecks: Number(price), saleMode,
+        priceKopecks: Number(price), saleMode, paymentPurpose: paymentPurpose || null,
         acceptanceAllowlist: allowlist.split(/[\n,]/).map((value) => value.trim()).filter(Boolean),
         expectedVersion: course?.version ?? 0 });
     }}>
@@ -127,6 +128,9 @@ function CourseEditor({ course }: { course: CatalogueResponse["courses"][number]
       <label>Модель доступа<select value={accessModel} onChange={(event) => setAccessModel(event.target.value as "FREE" | "PAID")}><option value="FREE">FREE</option><option value="PAID">PAID</option></select></label>
       <label>Цена, коп.<input required inputMode="numeric" value={price} onChange={(event) => setPrice(event.target.value)} /></label>
       <label>Режим продажи<select value={saleMode} onChange={(event) => setSaleMode(event.target.value as typeof saleMode)}><option value="CLOSED">CLOSED</option><option value="ACCEPTANCE_ONLY">ACCEPTANCE_ONLY</option><option value="PUBLIC">PUBLIC</option></select></label>
+      <label>Назначение платежа<textarea value={paymentPurpose} maxLength={512}
+        required={accessModel === "PAID" && saleMode !== "CLOSED"} onChange={(event) => setPaymentPurpose(event.target.value)} />
+        <small>Назначение заказа, не название позиции чека. Без сокращения; лимит Точки 140 UTF-16 units.</small></label>
       {saleMode === "ACCEPTANCE_ONLY" ? <label>Allowlist<textarea value={allowlist} onChange={(event) => setAllowlist(event.target.value)} placeholder="buyer@example.ru" /></label> : null}
       {save.error ? <Notice error={(save.error as AdminApiError).code} /> : null}
       <button className="primary" disabled={save.isPending || course?.withdrawn}>{save.isPending ? "Сохраняем…" : `Сохранить v${(course?.version ?? 0) + 1}`}</button>

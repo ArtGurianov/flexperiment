@@ -6,7 +6,7 @@ import { applyCourseManifest, type CourseManifest } from "./manifest";
 import { assertPaymentCreationEnabled, type CommerceRuntimeConfig } from "./payment-mode";
 import { saveResumePosition } from "./resume";
 import { confirmCheckout, prepareCheckout, reconcileCheckout, type PaymentRail } from "./checkout";
-import { activateSales, configureProduct, withdrawProduct } from "./catalog-control";
+import { activateSales, configureProduct, setCoursePaymentPurpose, withdrawProduct } from "./catalog-control";
 import { campaignStatus, confirmCampaign, createCampaign, dispatchCampaign, retryCampaign, unsubscribeCustomer, type CampaignEmail } from "./campaigns";
 import { assertVideoUploadInput, observeKinescopeStatus, pollKinescopeUpload, startVideoUpload, type KinescopeClient, type KinescopeStatus } from "./kinescope";
 import { activateLegalRelease, currentLegalRelease, type LegalReleaseManifest } from "./legal-control";
@@ -323,7 +323,8 @@ export function createCommerceV2App(deps: Dependencies) {
   app.get("/v1/internal/catalog-summary", (context) => {
     const courses = deps.db.prepare(`SELECT product.course_ref AS courseRef,product.access_model AS accessModel,
       (product.withdrawn_at IS NOT NULL) AS withdrawn,offer.offer_ref AS offerRef,
-      offer.sale_mode AS saleMode,offer.price_kopecks AS priceKopecks
+      offer.sale_mode AS saleMode,offer.price_kopecks AS priceKopecks,
+      offer.payment_purpose AS paymentPurpose,product.version AS version
       FROM products product LEFT JOIN offers offer ON offer.product_id=product.id
       WHERE product.kind='ONLINE_COURSE'`).all();
     return context.json({ courses }, 200, noStore);
@@ -331,6 +332,15 @@ export function createCommerceV2App(deps: Dependencies) {
 
   app.get("/v1/internal/control-room/catalogue", (context) =>
     context.json(controlRoomCatalogue(deps.db, now().toISOString()), 200, noStore));
+  app.post("/v1/internal/catalog/payment-purpose/:courseRef", async (context) => {
+    try {
+      const input = await context.req.json<{ paymentPurpose: string; expectedVersion: number; actor: string }>();
+      return context.json(setCoursePaymentPurpose(deps.db, { paymentPurpose: input.paymentPurpose,
+        expectedVersion: input.expectedVersion, actor: input.actor, courseRef: context.req.param("courseRef") }, now().toISOString()), 200, noStore);
+    } catch (error) {
+      return context.json({ error: { code: error instanceof Error ? error.message : "PAYMENT_PURPOSE_UPDATE_FAILED" } }, 409, noStore);
+    }
+  });
   app.get("/v1/internal/control-room/orders", (context) =>
     context.json(controlRoomOrders(deps.db, now().toISOString()), 200, noStore));
   app.get("/v1/internal/control-room/customers", (context) =>

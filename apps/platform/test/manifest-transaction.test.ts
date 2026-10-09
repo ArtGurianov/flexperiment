@@ -7,6 +7,11 @@ import { listPublicCourses } from "../lib/content/editorial";
 import { operationIsInFlight, snapshotInFlight } from "../lib/manifest/in-flight";
 import { syncCourseManifestTask } from "../lib/manifest/tasks";
 
+// These editorial transaction fixtures have no commercial offers. The fresh commercial facts
+// seam is qualified with real fetch responses in payment-purpose.test.ts; do not let a live
+// commerce service or unrelated purpose admission hide manifest rollback/acknowledgment failures.
+vi.mock("../lib/merchant-offer-facts", () => ({ freshPurposeSummary: vi.fn(async () => null) }));
+
 const databasePath = join(tmpdir(), `flexperiment-platform-test-${process.pid}.sqlite`);
 const mediaPath = join(tmpdir(), `flexperiment-platform-media-${process.pid}`);
 let payload: Payload;
