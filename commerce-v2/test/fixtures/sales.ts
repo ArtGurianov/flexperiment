@@ -19,6 +19,9 @@ export function activatePublicSales(db: Database.Database, kind: ProductCommand[
  * under one (ART-233). Production qualifies each offer on its own legal basis in the Control Room.
  */
 export function qualifyTestFiscalPolicies(db: Database.Database) {
+  // Independent synthetic merchant text, never derived from title or the fiscal policy below.
+  // This helper is test-only; migration/seed/production never fills a missing purpose.
+  db.prepare("UPDATE offers SET payment_purpose='Synthetic merchant offer purpose' WHERE payment_purpose IS NULL").run();
   const offers = db.prepare(`SELECT offer.offer_ref,product.kind,product.product_ref FROM offers offer
     JOIN products product ON product.id=offer.product_id
     WHERE NOT EXISTS (SELECT 1 FROM fiscal_policy_versions p WHERE p.offer_ref=offer.offer_ref AND p.status='QUALIFIED')`)

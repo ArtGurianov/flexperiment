@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
-import { buildCheckoutSnapshot, canonicalCheckoutSnapshotJson, type CheckoutSnapshotConfig, type SharedCheckoutSnapshotV1 } from "./checkout-snapshot";
+import { buildCheckoutSnapshot, canonicalCheckoutSnapshotJson, type CheckoutSnapshotConfig, type SharedCheckoutSnapshot } from "./checkout-snapshot";
+import { validPaymentPurpose } from "./payment-purpose";
 import { qualifiedFiscalPolicy, type FrozenFiscalPolicy } from "./fiscal-policy";
 import { customerCanAccessCourse, grantEntitlement } from "./entitlements";
 import { legalManifestHash, type LegalReleaseManifest } from "./legal-control";
@@ -47,7 +48,7 @@ export type PaymentResolveInput = {
   legalReleaseRef: string; legalReleaseHash: string; handoffToken?: string; checkoutCode?: string;
 };
 export type PaymentCreateInput = PaymentResolveInput & {
-  quote: RailQuote; successUrl?: string; snapshot: SharedCheckoutSnapshotV1; snapshotHash: string;
+  quote: RailQuote; successUrl?: string; snapshot: SharedCheckoutSnapshot; snapshotHash: string;
 };
 export type PaymentRefundInput = {
   idempotencyKey: string;
@@ -56,7 +57,7 @@ export type PaymentRefundInput = {
   amountKopecks: number;
   customerEmail: string;
   lineRef: string;
-  fiscalItem: SharedCheckoutSnapshotV1["paymentObligations"][number]["fiscal"]["items"][number];
+  fiscalItem: SharedCheckoutSnapshot["paymentObligations"][number]["fiscal"]["items"][number];
 };
 /** What Refref answered for a refund execution (createRefund, getRefundExecution). UNKNOWN: the answer was lost. */
 export type RefundSubmission = {
@@ -231,13 +232,14 @@ type OfferRow = {
   kind: "ONLINE_COURSE" | "COURSE_BUNDLE" | "LAB"; access_model: "FREE" | "PAID";
   course_ref: string | null; price_kopecks: number; sale_mode: "CLOSED" | "ACCEPTANCE_ONLY" | "PUBLIC";
   acceptance_allowlist_json: string; withdrawn_at: string | null;
+  payment_purpose: string | null;
   occurrence_ref: string | null; occurrence_title: string | null; occurrence_starts_at: string | null;
   occurrence_ends_at: string | null; occurrence_timezone: string | null; occurrence_city_id: string | null;
 };
 
 const offerByRef = (db: Database.Database, offerRef: string) => db.prepare(`SELECT offer.id AS offer_id,offer.offer_ref,
   product.id AS product_id,product.product_ref,product.kind,product.access_model,product.course_ref,product.withdrawn_at,product.occurrence_ref,
-  offer.price_kopecks,offer.sale_mode,offer.acceptance_allowlist_json,occurrence.title AS occurrence_title,
+  offer.price_kopecks,offer.sale_mode,offer.payment_purpose,offer.acceptance_allowlist_json,occurrence.title AS occurrence_title,
   occurrence.starts_at AS occurrence_starts_at,occurrence.ends_at AS occurrence_ends_at,
   occurrence.timezone AS occurrence_timezone,occurrence.city_id AS occurrence_city_id
   FROM offers offer JOIN products product ON product.id=offer.product_id
@@ -255,6 +257,7 @@ const legalRelease = (db: Database.Database, storefront: Storefront) => db.prepa
 const storefrontForOffer = (offer: OfferRow): Storefront => offer.kind === "LAB" ? "LAB" : "COURSES";
 
 type FrozenLineSnapshot = {
+  readonly paymentPurpose: string;
   /** The offer's qualified fiscal policy when the quote was made; a different one makes the quote stale. */
   readonly fiscal: FrozenFiscalPolicy;
   readonly unitRef?: string;
@@ -277,14 +280,16 @@ const refrefInstant = (value: string) => {
 };
 
 const freezeLine = (db: Database.Database, offer: OfferRow): FrozenLineSnapshot => {
+  if (!validPaymentPurpose(offer.payment_purpose)) throw new Error("PAYMENT_PURPOSE_REQUIRED");
   const fiscal = qualifiedFiscalPolicy(db, offer.offer_ref, offer.kind);
-  if (offer.kind !== "LAB") return { fiscal };
+  if (offer.kind !== "LAB") return { fiscal, paymentPurpose: offer.payment_purpose };
   if (!offer.occurrence_ref || !offer.occurrence_title || !offer.occurrence_starts_at || !offer.occurrence_ends_at
     || !offer.occurrence_timezone || !offer.occurrence_city_id) throw new Error("LAB_OCCURRENCE_NOT_FOUND");
   const startsAt = refrefInstant(offer.occurrence_starts_at);
   const endsAt = refrefInstant(offer.occurrence_ends_at);
   return {
     fiscal,
+    paymentPurpose: offer.payment_purpose,
     unitRef: offer.occurrence_ref,
     serviceStartsAt: startsAt,
     serviceEndsAt: endsAt,
@@ -521,6 +526,7 @@ export async function confirmCheckout(
       paymentMethod: frozenLine.fiscal.paymentMethod, paymentObject: frozenLine.fiscal.paymentObject,
     },
     merchantOrderRef: publicId,
+    paymentPurpose: frozenLine.paymentPurpose,
     line: {
       lineRef: pending.line_ref,
       offerRef: offer.offer_ref,
@@ -623,7 +629,7 @@ async function applyRailProjection(db: Database.Database, rail: PaymentRail, ord
       attempt_id: string; idempotency_key: string; fulfillment_acknowledged_at: string | null;
     } | undefined;
   if (!context) throw new Error("ORDER_NOT_FOUND");
-  if (context.snapshot_schema === "refref.shared-checkout-snapshot/1"
+  if ((context.snapshot_schema === "refref.shared-checkout-snapshot/1" || context.snapshot_schema === "refref.shared-checkout-snapshot/2")
     && projection.snapshotHash !== `refref-jcs-1:${context.snapshot_hash}`) throw new Error("PAYMENT_SNAPSHOT_HASH_MISMATCH");
   // A grant follows an accepted payment of exactly the order's frozen total. Refref's read-back carries the
   // payment's amount with it; one that differs, or is missing, is a person's to look at, never access.

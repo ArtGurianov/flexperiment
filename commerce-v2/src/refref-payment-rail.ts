@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { AmbiguousRailCreateError, type AcceptedRefund, type CheckoutCodeOutcome, type PaymentCreateInput, type PaymentRail, type PaymentRefundInput, type PaymentResolveInput, type RailProjection, type RailResolution, type RefundSubmission } from "./checkout";
 import type { RefundEnvelope } from "./refund-envelope";
-import { checkoutSnapshotHash, type SharedCheckoutSnapshotV1 } from "./checkout-snapshot";
+import { checkoutSnapshotHash, type SharedCheckoutSnapshot } from "./checkout-snapshot";
 
 type Fetch = typeof fetch;
 type RefrefConfig = {
@@ -105,7 +105,7 @@ const isAmbiguousSideEffect = (error: unknown) => error instanceof TypeError
   || (error instanceof Error && error.message.startsWith("REFREF_RESPONSE_INVALID:"));
 
 export const refrefSnapshotDigest = (snapshot: Record<string, unknown>) =>
-  checkoutSnapshotHash(snapshot as SharedCheckoutSnapshotV1);
+  checkoutSnapshotHash(snapshot as SharedCheckoutSnapshot);
 
 export class RefrefPaymentRail implements PaymentRail {
   private readonly request: Fetch;

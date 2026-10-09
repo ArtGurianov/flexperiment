@@ -37,6 +37,7 @@ describe("catalog control room commands", () => {
     })).toThrow("SALES_ACTIVATION_REQUIRED");
     activateSales(db, { kind: "ONLINE_COURSE", evidenceIssue: "ART-240", evidenceSha256: "a".repeat(64), actor: "owner" });
     configureProduct(db, config, {
+      paymentPurpose: "Synthetic merchant course purpose",
       productRef: "course:paid", offerRef: "course:paid", kind: "ONLINE_COURSE", courseRef: "paid",
       accessModel: "PAID", priceKopecks: 100, saleMode: "PUBLIC", actor: "author", expectedVersion: 0,
     });

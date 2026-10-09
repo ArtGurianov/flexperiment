@@ -15,6 +15,7 @@ export type ControlRoomCatalogueCourse = {
     priceKopecks: number;
     saleMode: SaleMode;
     acceptanceAllowlist: string[];
+    paymentPurpose: string | null;
   };
   projection: null | {
     version: number;
@@ -33,6 +34,7 @@ export type ProductConfigurationCommand = {
   priceKopecks: number;
   saleMode: SaleMode;
   acceptanceAllowlist?: string[];
+  paymentPurpose?: string | null;
   expectedVersion: number;
 };
 

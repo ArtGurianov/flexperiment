@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { validPaymentPurpose } from "./payment-purpose";
 
 export type CheckoutSnapshotConfig = {
   readonly merchantId: string;
@@ -52,6 +53,12 @@ export type SharedCheckoutSnapshotV1 = {
   readonly legalReleaseHash: string;
 };
 
+export type SharedCheckoutSnapshotV2 = Omit<SharedCheckoutSnapshotV1, "schema"> & {
+  readonly schema: "refref.shared-checkout-snapshot/2";
+  readonly paymentPurpose: string;
+};
+export type SharedCheckoutSnapshot = SharedCheckoutSnapshotV1 | SharedCheckoutSnapshotV2;
+
 const canonical = (value: unknown, path = "$"): string => {
   if (value === null) return "null";
   if (typeof value === "boolean") return value ? "true" : "false";
@@ -74,7 +81,7 @@ const canonical = (value: unknown, path = "$"): string => {
 const byRef = <T extends Record<string, unknown>>(values: readonly T[], key: string) => [...values]
   .sort((left, right) => String(left[key]) < String(right[key]) ? -1 : String(left[key]) > String(right[key]) ? 1 : 0);
 
-const normalizedSnapshot = (snapshot: SharedCheckoutSnapshotV1): SharedCheckoutSnapshotV1 => ({
+const normalizedSnapshot = <T extends SharedCheckoutSnapshot>(snapshot: T): T => ({
   ...snapshot,
   lines: byRef(snapshot.lines, "lineRef") as SharedCheckoutSnapshotV1["lines"],
   paymentObligations: byRef(snapshot.paymentObligations, "obligationRef").map((obligation) => ({
@@ -83,14 +90,16 @@ const normalizedSnapshot = (snapshot: SharedCheckoutSnapshotV1): SharedCheckoutS
   })) as SharedCheckoutSnapshotV1["paymentObligations"],
 });
 
-export const canonicalCheckoutSnapshotJson = (snapshot: SharedCheckoutSnapshotV1) => canonical(normalizedSnapshot(snapshot), "$");
+export const canonicalCheckoutSnapshotJson = (snapshot: SharedCheckoutSnapshot) => canonical(normalizedSnapshot(snapshot), "$");
 
-export const checkoutSnapshotHash = (snapshot: SharedCheckoutSnapshotV1) =>
+export const checkoutSnapshotHash = (snapshot: SharedCheckoutSnapshot) =>
   `refref-jcs-1:${createHash("sha256").update(canonicalCheckoutSnapshotJson(snapshot), "utf8").digest("hex")}`;
 
 export function buildCheckoutSnapshot(input: {
   readonly config: CheckoutSnapshotConfig;
   readonly merchantOrderRef: string;
+  /** One explicit purpose for the order; never concatenate offers or infer from fiscal names. */
+  readonly paymentPurpose: string;
   readonly line: {
     readonly lineRef: string;
     readonly offerRef: string;
@@ -106,6 +115,7 @@ export function buildCheckoutSnapshot(input: {
   readonly legalReleaseRef: string;
   readonly legalReleaseHash: string;
 }) {
+  if (!validPaymentPurpose(input.paymentPurpose)) throw new Error("PAYMENT_PURPOSE_REQUIRED");
   const finalAmountKopecks = input.line.merchantOfferAmountKopecks - input.line.referralDiscountAmountKopecks;
   if (!Number.isSafeInteger(input.line.merchantOfferAmountKopecks) || input.line.merchantOfferAmountKopecks <= 0
     || !Number.isSafeInteger(input.line.referralDiscountAmountKopecks) || input.line.referralDiscountAmountKopecks < 0
@@ -133,8 +143,9 @@ export function buildCheckoutSnapshot(input: {
     paymentMethod: input.config.paymentMethod,
     paymentObject: input.config.paymentObject,
   };
-  const snapshot: SharedCheckoutSnapshotV1 = {
-    schema: "refref.shared-checkout-snapshot/1",
+  const snapshot: SharedCheckoutSnapshotV2 = {
+    schema: "refref.shared-checkout-snapshot/2",
+    paymentPurpose: input.paymentPurpose,
     merchantId: input.config.merchantId,
     merchantOrderRef: input.merchantOrderRef,
     currency: "RUB",

@@ -24,6 +24,7 @@ const createInput = (rail: RefrefPaymentRail): PaymentCreateInput => {
     checkoutCodeOutcome: "NONE" as const,
   };
   const frozen = buildCheckoutSnapshot({
+    paymentPurpose: "Synthetic order purpose",
     config: { ...rail.checkoutSnapshotConfig, ...POLICY_FISCAL },
     merchantOrderRef: input.orderPublicId,
     line: {
@@ -81,6 +82,7 @@ describe("RefrefPaymentRail", () => {
     expect(resolution).toMatchObject({ state: "PRICE_REVIEW_REQUIRED", quote: { discountKopecks: 500, finalAmountKopecks: 9500, checkoutCodeOutcome: "NONE" } });
     if (resolution.state !== "PRICE_REVIEW_REQUIRED") throw new Error("expected quote");
     const frozen = buildCheckoutSnapshot({
+      paymentPurpose: "Synthetic order purpose",
       config: { ...rail.checkoutSnapshotConfig, ...POLICY_FISCAL },
       merchantOrderRef: input.orderPublicId,
       line: {
