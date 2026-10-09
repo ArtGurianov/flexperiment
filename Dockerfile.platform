@@ -47,6 +47,9 @@ COPY --from=dependencies /app/node_modules ./node_modules
 COPY --from=dependencies /app/apps/platform/node_modules ./apps/platform/node_modules
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY --from=build /app/apps/platform ./apps/platform
+# Payload loads its config directly for owner migrations before starting Next. Its shared pure
+# validator is not in the Next bundle at that boundary; ship the exact commerce source as well.
+COPY --from=build /app/commerce-v2/src/payment-purpose.ts ./commerce-v2/src/payment-purpose.ts
 COPY --from=identity --chmod=0444 /identity/identity.json /app/.identity/identity.json
 RUN corepack enable \
   && mkdir -p /var/lib/flexperiment-v2 \
