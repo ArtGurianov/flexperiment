@@ -65,6 +65,10 @@ def app_safe(value):
     result = {key: value.get(key) for key in ("uuid", "name", "git_repository", "git_branch", "git_commit_sha",
                                             "build_pack", "dockerfile_location", "ports_exposes", "fqdn")}
     result["settings"] = {"is_auto_deploy_enabled": value.get("settings", {}).get("is_auto_deploy_enabled")}
+    result["portsMapped"] = bool(value.get("ports_mappings"))
+    result["customRouting"] = bool(value.get("custom_labels"))
+    result["hasUnsafeOverrides"] = any(bool(value.get(key)) for key in
+                                        ("custom_docker_run_options", "pre_deployment_command", "post_deployment_command", "dockerfile", "start_command"))
     return result
 
 
@@ -112,7 +116,8 @@ def handle(message, config):
     uuid = apps[target]
     if operation in ("deploy", "restart"):
         current = app_safe(api("GET", "/applications/" + uuid))
-        if current["fqdn"] or current["dockerfile_location"] != "/Dockerfile.commerce-v2" \
+        if current["fqdn"] or current["portsMapped"] or current["customRouting"] or current["hasUnsafeOverrides"] \
+                or current["dockerfile_location"] != "/Dockerfile.commerce-v2" \
                 or current["name"] != ("flexperiment-commerce-v2" if target == "production" else "flexperiment-commerce-v2-canary"):
             raise ValueError("V2_APP_NOT_ISOLATED")
         if operation == "restart":

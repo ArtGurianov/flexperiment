@@ -20,7 +20,8 @@ export function validateApp(app, env, storages, target, uuid) {
   if (app.uuid !== uuid || app.name !== (target === "canary" ? "flexperiment-commerce-v2-canary" : "flexperiment-commerce-v2")) refuse("V2_APP_IDENTITY_MISMATCH");
   if (app.git_repository !== "ArtGurianov/flexperiment" || app.git_branch !== "main"
     || app.build_pack !== "dockerfile" || app.dockerfile_location !== "/Dockerfile.commerce-v2"
-    || app.ports_exposes !== "3002" || app.fqdn || app.settings?.is_auto_deploy_enabled !== false) refuse("V2_APP_NOT_ISOLATED");
+    || app.ports_exposes !== "3002" || app.fqdn || app.settings?.is_auto_deploy_enabled !== false
+    || app.portsMapped !== false || app.customRouting !== false || app.hasUnsafeOverrides !== false) refuse("V2_APP_NOT_ISOLATED");
   const rows = env.filter((entry) => !entry.is_preview);
   const required = {
     NODE_ENV: "production", DEPLOY_ENV: target === "canary" ? "staging" : "production",

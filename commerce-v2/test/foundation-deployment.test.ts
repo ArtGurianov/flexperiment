@@ -11,6 +11,7 @@ function fixture() {
     git_repository: "ArtGurianov/flexperiment", git_branch: "main", git_commit_sha: "b".repeat(40),
     build_pack: "dockerfile", dockerfile_location: "/Dockerfile.commerce-v2", ports_exposes: "3002", fqdn: null,
     settings: { is_auto_deploy_enabled: false },
+    portsMapped: false, customRouting: false, hasUnsafeOverrides: false,
   }]));
   const env = Object.fromEntries(Object.keys(ids).map((target) => [target, Object.entries({
     NODE_ENV: "production", DEPLOY_ENV: target === "canary" ? "staging" : "production", COMMERCE_V2_FOUNDATION_MODE: "true", COMMERCE_V2_ENVIRONMENT: target,
@@ -109,6 +110,10 @@ describe("exact-source admission and independent promotion", () => {
 });
 
 describe("target, configuration and runtime controls", () => {
+  it.each(["portsMapped", "customRouting", "hasUnsafeOverrides"])("refuses public exposure or arbitrary override: %s", (flag) => {
+    const { apps, env, storage } = fixture(); Object.assign(apps.canary, { [flag]: true });
+    expect(() => validateApp(apps.canary, env.canary, storage.canary, "canary", ids.canary)).toThrow("V2_APP_NOT_ISOLATED");
+  });
   it.each(["PAYMENT_MODE", "MARKETING_BROADCASTS_ENABLED", "REFREF_READINESS_URL", "COMMERCE_V2_FOUNDATION_MODE", "COMMERCE_V2_ENVIRONMENT"])("refuses drift in %s", (key) => {
     const { apps, env, storage } = fixture(); env.canary.find((row) => row.key === key)!.value = "unexpected";
     expect(() => validateApp(apps.canary, env.canary, storage.canary, "canary", ids.canary)).toThrow("V2_ENVIRONMENT_DIFFERS");

@@ -71,6 +71,15 @@ class OwnerControl(unittest.TestCase):
         value = {"uuid": CANARY, "environment_variables": "secret", "token": "secret", "settings": {"is_auto_deploy_enabled": False, "secret": "secret"}}
         self.assertNotIn("secret", json.dumps(rpc.app_safe(value)))
 
+    def test_override_flags_do_not_return_command_or_embedded_secrets(self):
+        value = {"ports_mappings": "3002:3002", "custom_labels": "traefik-secret",
+                 "custom_docker_run_options": "--env SECRET=secret", "start_command": "echo secret"}
+        result = rpc.app_safe(value)
+        self.assertTrue(result["portsMapped"])
+        self.assertTrue(result["customRouting"])
+        self.assertTrue(result["hasUnsafeOverrides"])
+        self.assertNotIn("secret", json.dumps(result))
+
     def test_backup_filename_cannot_escape_owner_directory(self):
         with patch.object(rpc, "container", return_value="synthetic"), patch.object(rpc, "run") as run:
             for filename in ["../../escape", "production-" + SHA + "-" + "a" * 36 + ".sqlite.age", "plain.sqlite"]:
