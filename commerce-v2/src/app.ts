@@ -23,12 +23,15 @@ import { resolvePlaybackAccess } from "./playback-access";
 import { issuePlaybackToken, verifyPlaybackToken, type PlaybackKeyring } from "./playback-auth";
 import { recordPlaybackAccessEvent } from "./playback-telemetry";
 import { loadCommerceOrigins, storefrontOrigin, type CommerceOrigins, type Storefront } from "./origins";
+import { databaseReady, type RefrefReadiness } from "./readiness";
 
 type Dependencies = {
   readonly db: Database.Database;
   readonly config: CommerceRuntimeConfig;
   readonly sourceCommit: string;
   readonly serviceToken: string;
+  readonly foundationMode?: boolean;
+  readonly probeRefref?: () => Promise<RefrefReadiness>;
   readonly authenticateCustomer?: (headers: Headers) => Promise<string | null>;
   readonly authHandler?: (request: Request) => Promise<Response>;
   readonly prepareMagicLinkInitiation?: (input: {
@@ -83,32 +86,43 @@ export function createCommerceV2App(deps: Dependencies) {
     context.header("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
   });
 
+  app.use("*", async (context, next) => {
+    if (deps.foundationMode && !(context.req.method === "GET" && ["/identity", "/readyz"].includes(context.req.path))) {
+      return context.json({ error: { code: "FOUNDATION_ISOLATED" } }, 503, noStore);
+    }
+    await next();
+  });
+
   app.get("/identity", (context) => context.json({
     schema: "flexperiment.build-identity/1",
     service: "commerce-v2",
     sourceCommit: deps.sourceCommit,
   }, 200, noStore));
-  app.get("/readyz", (context) => {
+  app.get("/readyz", async (context) => {
+    const databaseOk = databaseReady(deps.db);
+    const refref = deps.probeRefref ? await deps.probeRefref().catch(() => "unavailable" as const) : deps.foundationMode ? "unavailable" : undefined;
     const protectedKinescopeMissing = deps.config.kinescopeDeliveryMode === "protected"
       && (deps.runtimeCapabilities?.kinescopeApiConfigured === false || !deps.kinescopeDrmAuth);
+    const ready = databaseOk && !protectedKinescopeMissing && refref !== "unavailable";
     return context.json({
-      ok: !protectedKinescopeMissing,
+      ok: ready,
       service: "commerce-v2",
       sourceCommit: deps.sourceCommit,
-      core: { database: "ok", configuration: protectedKinescopeMissing ? "incomplete" : "ok", paymentMode: deps.config.paymentMode },
+      foundationMode: deps.foundationMode ?? false,
+      core: { database: databaseOk ? "ok" : "unavailable", configuration: protectedKinescopeMissing ? "incomplete" : "ok", paymentMode: deps.config.paymentMode },
       capabilities: {
-        refref: deps.config.paymentMode === "refref" ? "configured_not_probed" : "not_required",
-        authEmail: deps.runtimeCapabilities?.authEmailConfigured === false ? "missing" : "configured",
-        captcha: deps.runtimeCapabilities?.captchaConfigured === false ? "missing" : "configured",
-        kinescope: deps.runtimeCapabilities?.kinescopeApiConfigured === false ? "missing" : "configured_not_probed",
+        refref: refref ?? (deps.config.paymentMode === "refref" ? "configured_not_probed" : "not_required"),
+        authEmail: deps.foundationMode ? "disabled" : deps.runtimeCapabilities?.authEmailConfigured === false ? "missing" : "configured",
+        captcha: deps.foundationMode ? "disabled" : deps.runtimeCapabilities?.captchaConfigured === false ? "missing" : "configured",
+        kinescope: deps.foundationMode ? "disabled" : deps.runtimeCapabilities?.kinescopeApiConfigured === false ? "missing" : "configured_not_probed",
         kinescopeDrm: deps.config.kinescopeDeliveryMode === "protected" ? (deps.kinescopeDrmAuth ? "configured" : "missing") : "not_required",
         catalog: {
-          projectedCourses: (deps.db.prepare("SELECT COUNT(*) AS count FROM catalog_course_projection").get() as { count: number }).count,
-          pendingOverrides: (deps.db.prepare("SELECT COUNT(*) AS count FROM access_overrides WHERE state='PENDING'").get() as { count: number }).count,
-          attentionOverrides: (deps.db.prepare("SELECT COUNT(*) AS count FROM access_overrides WHERE attention_reason IS NOT NULL").get() as { count: number }).count,
+          projectedCourses: databaseOk ? (deps.db.prepare("SELECT COUNT(*) AS count FROM catalog_course_projection").get() as { count: number }).count : null,
+          pendingOverrides: databaseOk ? (deps.db.prepare("SELECT COUNT(*) AS count FROM access_overrides WHERE state='PENDING'").get() as { count: number }).count : null,
+          attentionOverrides: databaseOk ? (deps.db.prepare("SELECT COUNT(*) AS count FROM access_overrides WHERE attention_reason IS NOT NULL").get() as { count: number }).count : null,
         },
       },
-    }, protectedKinescopeMissing ? 503 : 200, noStore);
+    }, ready ? 200 : 503, noStore);
   });
 
   app.post("/v1/admin/login", async (context) => {
