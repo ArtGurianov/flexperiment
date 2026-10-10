@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { admitRelease, deployFoundation, validateApp, verifyRuntime } from "../../scripts/v2/deployment.mjs";
+import { admitRelease, deployFoundation, validateApp, validateCheckout, verifyRuntime } from "../../scripts/v2/deployment.mjs";
 import { readFileSync } from "node:fs";
 import { parse } from "yaml";
 
@@ -53,6 +53,14 @@ function fixture() {
 }
 
 describe("exact-source admission and independent promotion", () => {
+  it("requires an exact clean controller checkout and the approved Git remote", () => {
+    expect(() => validateCheckout(sha, sha, "", "git@github.com:ArtGurianov/flexperiment.git")).not.toThrow();
+    expect(() => validateCheckout(sha, "b".repeat(40), "", "git@github.com:ArtGurianov/flexperiment.git")).toThrow("V2_CONTROLLER_CHECKOUT_DIFFERS");
+    expect(() => validateCheckout(sha, sha, " M scripts/v2/deployment.mjs", "git@github.com:ArtGurianov/flexperiment.git")).toThrow("V2_CONTROLLER_CHECKOUT_DIFFERS");
+    expect(() => validateCheckout(sha, sha, "", "https://evil.invalid/repo")).toThrow("V2_CONTROLLER_REMOTE_DIFFERS");
+    const cli = readFileSync("scripts/v2/deploy-cli.mjs", "utf8");
+    expect(cli.indexOf("validateCheckout(sha,")).toBeLessThan(cli.indexOf('await rpc({ operation: "config" })'));
+  });
   it("qualifies canary before production and proves both restart and redeploy", async () => {
     const { io } = fixture(); const proof = await deployFoundation(sha, io) as Record<string, { persistence: string; paymentMode: string }>;
     expect(proof.canary.persistence).toBe("PASS"); expect(proof.production.paymentMode).toBe("disabled");

@@ -3,6 +3,12 @@ const refuse = (code) => { throw new Error(code); };
 const shaPattern = /^[0-9a-f]{40}$/;
 export const targets = ["canary", "production"];
 
+export function validateCheckout(source, head, dirty, origin) {
+  if (!shaPattern.test(source) || head !== source || dirty) refuse("V2_CONTROLLER_CHECKOUT_DIFFERS");
+  if (!["git@github.com:ArtGurianov/flexperiment.git", "https://github.com/ArtGurianov/flexperiment.git",
+    "https://github.com/ArtGurianov/flexperiment"].includes(origin)) refuse("V2_CONTROLLER_REMOTE_DIFFERS");
+}
+
 export async function admitRelease(sha, github) {
   if (!shaPattern.test(sha)) refuse("V2_SOURCE_SHA_INVALID");
   const main = await github("/commits/main");

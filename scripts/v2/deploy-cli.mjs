@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { appendFileSync } from "node:fs";
-import { deployFoundation, verifyRuntime } from "./deployment.mjs";
+import { deployFoundation, validateCheckout, verifyRuntime } from "./deployment.mjs";
 
 const sha = process.env.V2_SOURCE_SHA;
 const host = process.env.V2_OWNER_HOST;
@@ -13,6 +13,10 @@ const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 async function run() {
   if (!shaPattern.test(sha ?? "") || !/^[a-zA-Z0-9@._-]+$/.test(host ?? "")
     || (process.env.GITHUB_ACTIONS === "true" && !key) || !/^[0-9a-f]{64}$/.test(rpcHash ?? "") || repository !== "ArtGurianov/flexperiment") throw new Error("V2_WORKFLOW_CONFIG_REQUIRED");
+  validateCheckout(sha,
+    execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
+    execFileSync("git", ["status", "--porcelain"], { encoding: "utf8" }).trim(),
+    execFileSync("git", ["remote", "get-url", "origin"], { encoding: "utf8" }).trim());
   const script = `/root/flexperiment-v2-owner/controllers/${sha}/owner-rpc.py`;
   const rpc = async (message) => {
     // Payload is stdin, not remote-shell text. Verify the transferred helper on every call.
