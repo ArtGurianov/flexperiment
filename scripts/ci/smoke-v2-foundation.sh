@@ -71,7 +71,12 @@ storage() { docker exec "$task_id" node --import tsx commerce-v2/src/foundation-
 start
 check
 marker=$(storage mark | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>process.stdout.write(JSON.parse(s).marker))')
-storage backup > "$task_dir/proof.json"
+# The recovery command must remain usable after foundation mode is disabled.
+# These are command-local env overrides, not changes to the running application.
+for mode in true false; do
+  docker exec --env "COMMERCE_V2_FOUNDATION_MODE=$mode" "$task_id" \
+    node --import tsx commerce-v2/src/backup-cli.ts > "$task_dir/proof.json"
+done
 filename=$(node -e 'process.stdout.write(require(process.argv[1]).filename)' "$task_dir/proof.json")
 docker cp "$task_id:/var/lib/flexperiment-v2-backups/$filename" "$task_dir/backup.age" >/dev/null
 age -d -i "$task_dir/synthetic.age.key" -o "$task_dir/restored.sqlite" "$task_dir/backup.age"
@@ -91,4 +96,4 @@ docker rm -f "$task_id" >/dev/null
 start
 check
 storage verify "$marker"
-echo 'FOUNDATION_IMAGE=PASS persistence=PASS encrypted_restore=PASS refref_unavailable_fail_closed=PASS curl_healthcheck=PASS'
+echo 'FOUNDATION_IMAGE=PASS persistence=PASS encrypted_restore=PASS refref_unavailable_fail_closed=PASS curl_healthcheck=PASS runtime_backup_cli=PASS'

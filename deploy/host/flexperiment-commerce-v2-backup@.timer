@@ -1,0 +1,12 @@
+[Unit]
+Description=Six-hourly Commerce V2 encrypted backup (%i)
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=6h
+RandomizedDelaySec=5min
+Persistent=true
+Unit=flexperiment-commerce-v2-backup@%i.service
+
+[Install]
+WantedBy=timers.target
