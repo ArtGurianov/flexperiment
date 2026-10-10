@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """No owner secrets or live cloud/database access. Optional real pinned rclone."""
 import importlib.util
+import hashlib
 import json
 import os
 import pathlib
@@ -45,6 +46,28 @@ class BackupContract(unittest.TestCase):
             item = patch.object(backup, name, value)
             item.start()
             self.addCleanup(item.stop)
+
+    def test_digest_without_python311_file_digest(self):
+        # Ubuntu 22.04 owner host runs Python 3.10, which has no file_digest.
+        previous = getattr(hashlib, "file_digest", None)
+        if previous is not None:
+            delattr(hashlib, "file_digest")
+            self.addCleanup(setattr, hashlib, "file_digest", previous)
+        for data in (b"", b"age-ciphertext", b"x" * (2 * 1024 * 1024 + 17)):
+            with self.subTest(size=len(data)):
+                archive = self.root / "hash-fixture.age"
+                archive.write_bytes(data)
+                self.assertEqual(backup.digest(archive), hashlib.sha256(data).hexdigest())
+
+    def test_digest_python311_regression_is_caught(self):
+        def mutation(path):
+            with path.open("rb") as source:
+                return hashlib.file_digest(source, "sha256").hexdigest()
+        result = unittest.TestResult()
+        with patch.object(backup, "digest", side_effect=mutation):
+            BackupContract("test_digest_without_python311_file_digest").run(result)
+        self.assertTrue(result.errors)
+        self.assertFalse(result.wasSuccessful())
 
     def fake_runtime(self, args):
         if args[1] == "ps":
