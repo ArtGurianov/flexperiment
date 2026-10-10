@@ -19,7 +19,14 @@ Test, with no cloud.ru (S3 is replaced by a local directory through the same rcl
 bash deploy/test-recovery-backup.sh
 ```
 
-Install or update, as root on the host, keeping the previous version for rollback:
+On the production host, the retired `minio/mc` script is preserved as
+`/usr/local/sbin/flexperiment-recovery-backup.prev-minio` for historical
+evidence. Its cached image was removed after the rclone backup passed a real
+cloud.ru read-back, so the old script is not a runnable rollback: restoring it
+would also require restoring that exact legacy image. The installed rclone
+script is the recovery baseline.
+
+For future updates, as root on the host, keep the current version as `.prev`:
 
 ```bash
 cp -p /usr/local/sbin/flexperiment-recovery-backup /usr/local/sbin/flexperiment-recovery-backup.prev
