@@ -1,0 +1,65 @@
+name: Deploy isolated Commerce V2 foundation
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact current main SHA with its own successful test and docker-build
+        required: true
+        type: string
+
+permissions:
+  contents: write # CAS only dedicated commerce-v2-{canary,production}-deploy refs
+  checks: read
+
+concurrency:
+  group: flexperiment-commerce-v2-foundation
+  cancel-in-progress: false
+
+jobs:
+  qualify:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production # Owner SSH transport; Coolify token stays on the VPS
+    timeout-minutes: 90
+    env:
+      V2_SOURCE_SHA: ${{ inputs.source_sha }}
+      V2_OWNER_HOST: ${{ secrets.RELEASE_RUNNER_HOST }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Validate source identity before checkout
+        run: |
+          set -euo pipefail
+          [[ "$V2_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          actual="$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)"
+          [[ "$actual" == "$V2_SOURCE_SHA" ]] || exit 1
+          for name in test docker-build; do
+            conclusion="$(gh api "repos/$GITHUB_REPOSITORY/commits/$V2_SOURCE_SHA/check-runs?per_page=100" --jq ".check_runs | map(select(.name == \"$name\" and .app.slug == \"github-actions\" and .head_sha == \"$V2_SOURCE_SHA\")) | sort_by(.id) | last | .conclusion")"
+            [[ "$conclusion" == success ]] || exit 1
+          done
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Prepare pinned owner transport
+        env:
+          SSH_KEY: ${{ secrets.RELEASE_RUNNER_SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.RELEASE_RUNNER_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          [[ -n "$SSH_KEY" && -n "$SSH_KNOWN_HOSTS" && "$V2_OWNER_HOST" =~ ^[A-Za-z0-9@._-]+$ ]] || exit 1
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_v2_owner
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/id_v2_owner ~/.ssh/known_hosts
+          directory="/root/flexperiment-v2-owner/controllers/$V2_SOURCE_SHA"
+          ssh -i ~/.ssh/id_v2_owner -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=1 "$V2_OWNER_HOST" "install -d -m 0700 $directory"
+          scp -i ~/.ssh/id_v2_owner -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=1 scripts/v2/owner-rpc.py "$V2_OWNER_HOST:$directory/owner-rpc.py"
+          echo "V2_OWNER_SSH_KEY_FILE=$HOME/.ssh/id_v2_owner" >> "$GITHUB_ENV"
+          echo "V2_RPC_SHA256=$(sha256sum scripts/v2/owner-rpc.py | cut -d ' ' -f 1)" >> "$GITHUB_ENV"
+      - name: Canary then isolated production — readiness, backup, restart and redeploy durability
+        run: node scripts/v2/deploy-cli.mjs

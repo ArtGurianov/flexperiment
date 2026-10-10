@@ -14,7 +14,7 @@
     "commerce-v2:migrate": "tsx commerce-v2/src/migrate.ts",
     "commerce-v2:seed": "tsx commerce-v2/src/seed-cli.ts",
     "commerce-v2:dev": "tsx watch commerce-v2/src/server.ts",
-    "commerce-v2:start": "tsx commerce-v2/src/server.ts",
+    "commerce-v2:start": "tsx commerce-v2/src/start.ts",
     "commerce:provider:probe": "tsx commerce/src/provider-probe.ts",
     "commerce:sandbox:create-probe": "tsx commerce/src/sandbox-create-probe.ts",
     "commerce:legal-release:publish": "tsx commerce/src/publish-legal-release.ts",
