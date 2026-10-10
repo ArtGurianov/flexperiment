@@ -11,6 +11,10 @@ encrypted evidence before calling the transport. A queued/sent/delivered
 response with a valid message ID marks the existing
 outbox SENT (accepted for sending, not proof of inbox delivery).
 
+Owner-selected sender: `noreply@flexperiment.ru`, name `Flexperiment`, Reply-To
+`art@flexperiment.ru`. The API key is entered by the owner directly in Coolify,
+not copied from V1, committed or placed into build arguments.
+
 The fixed official NotiSend HTTPS endpoint (`POST /v1/email/messages`) receives
 one transactional email, using Bearer authentication and `smtp_headers` for
 Reply-To and an opaque correlation hash. That hash is NOT provider deduplication.
