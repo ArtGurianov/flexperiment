@@ -18,7 +18,7 @@ import { playbackAccessSummary } from "./playback-telemetry";
 export function controlRoomCatalogue(db: Database.Database, now = new Date().toISOString()): CatalogueResponse {
   const rows = db.prepare(`SELECT product.product_ref,product.course_ref,product.access_model,product.withdrawn_at,product.version AS product_version,
       product.withdrawn_reason,product.withdrawn_terms_ref,offer.offer_ref,offer.price_kopecks,offer.sale_mode,
-      offer.acceptance_allowlist_json,projection.version AS projection_version,projection.visibility,projection.last_reconciled_at
+      offer.acceptance_allowlist_json,offer.payment_purpose,projection.version AS projection_version,projection.visibility,projection.last_reconciled_at
     FROM products product
     LEFT JOIN offers offer ON offer.product_id=product.id
     LEFT JOIN catalog_course_projection projection ON projection.course_ref=product.course_ref
@@ -26,6 +26,7 @@ export function controlRoomCatalogue(db: Database.Database, now = new Date().toI
       product_ref: string; course_ref: string; access_model: "FREE" | "PAID"; withdrawn_at: string | null; product_version: number;
       withdrawn_reason: string | null; withdrawn_terms_ref: string | null; offer_ref: string | null;
       price_kopecks: number | null; sale_mode: "CLOSED" | "ACCEPTANCE_ONLY" | "PUBLIC" | null;
+      payment_purpose: string | null;
       acceptance_allowlist_json: string | null; projection_version: number | null; visibility: "LISTED" | "UNLISTED" | null;
       last_reconciled_at: string | null;
     }>;
@@ -41,6 +42,7 @@ export function controlRoomCatalogue(db: Database.Database, now = new Date().toI
       offerRef: row.offer_ref,
       priceKopecks: row.price_kopecks,
       saleMode: row.sale_mode,
+      paymentPurpose: row.payment_purpose,
       acceptanceAllowlist: JSON.parse(row.acceptance_allowlist_json ?? "[]") as string[],
     } : null,
     projection: row.projection_version !== null && row.visibility && row.last_reconciled_at ? {

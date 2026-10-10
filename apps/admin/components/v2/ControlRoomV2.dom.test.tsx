@@ -27,7 +27,7 @@ describe("Control Room v2", () => {
         withdrawnReason: null,
         withdrawnTermsRef: null,
         version: 3,
-        offer: { offerRef: "offer/base", priceKopecks: 1_000_000, saleMode: "PUBLIC", acceptanceAllowlist: [] },
+        offer: { offerRef: "offer/base", priceKopecks: 1_000_000, saleMode: "PUBLIC", acceptanceAllowlist: [], paymentPurpose: "Synthetic merchant purpose" },
         projection: { version: 7, visibility: "LISTED", lastReconciledAt: generatedAt },
       }],
     }));
@@ -50,7 +50,8 @@ describe("Control Room v2", () => {
     await user.click(screen.getByRole("button", { name: "Сохранить v4" }));
     await waitFor(() => expect(fetchMock.mock.calls.some(([, init]) => init?.method === "POST")).toBe(true));
     const commandCall = fetchMock.mock.calls.find(([, init]) => init?.method === "POST");
-    expect(JSON.parse(String(commandCall?.[1]?.body))).toMatchObject({ expectedVersion: 3, priceKopecks: 1_200_000 });
+    expect(JSON.parse(String(commandCall?.[1]?.body))).toMatchObject({ expectedVersion: 3, priceKopecks: 1_200_000,
+      paymentPurpose: "Synthetic merchant purpose" });
     expect(JSON.parse(String(commandCall?.[1]?.body))).not.toHaveProperty("actor");
   });
 

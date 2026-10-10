@@ -28,6 +28,7 @@ beforeEach(() => {
   db.prepare(`INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode) VALUES ('offer','course:one','product',10000,'PUBLIC')`).run();
   db.prepare(`INSERT INTO products(id,product_ref,kind,access_model) VALUES ('bundle','bundle:all-courses','COURSE_BUNDLE','PAID')`).run();
   db.prepare(`INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode) VALUES ('bundle-offer','bundle:all-courses','bundle',50000,'CLOSED')`).run();
+  db.prepare("UPDATE offers SET payment_purpose='Synthetic merchant offer purpose'").run();
   activatePublicSales(db);
 });
 

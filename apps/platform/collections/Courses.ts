@@ -3,6 +3,7 @@ import { authorOnly, publicPublishedAndListed } from "@/lib/access";
 import { blockPublishedDelete, clearDraftOperation, enforcePublishedLifecycle, immutableRef, immutableSlugAfterPublish, markDraftOperation } from "@/lib/content-lifecycle";
 import { commitManifestChange, prepareManifestChange } from "@/lib/manifest/hooks";
 import { courseCommercialEndpoints } from "@/lib/course-commercial-endpoints";
+import { requirePublishedOfferPurpose } from "@/lib/offer-payment-purpose";
 
 export const Courses: CollectionConfig = {
   slug: "courses",
@@ -12,13 +13,14 @@ export const Courses: CollectionConfig = {
   access: { read: publicPublishedAndListed, create: authorOnly, update: authorOnly, delete: authorOnly },
   hooks: {
     beforeOperation: [markDraftOperation],
-    beforeChange: [enforcePublishedLifecycle, prepareManifestChange("course")],
+    beforeChange: [enforcePublishedLifecycle, requirePublishedOfferPurpose, prepareManifestChange("course")],
     afterChange: [commitManifestChange("course")],
     afterOperation: [clearDraftOperation],
     beforeDelete: [blockPublishedDelete],
   },
   fields: [
     { name: "commercialSummary", type: "ui", admin: { position: "sidebar", components: { Field: "@/components/admin/CourseCommercialSummaryField#CourseCommercialSummaryField" } } },
+    { name: "offerPaymentPurpose", type: "ui", admin: { position: "sidebar", components: { Field: "@/components/admin/OfferPaymentPurposeField#OfferPaymentPurposeField" } } },
     { name: "campaignComposer", type: "ui", admin: { components: { Field: "@/components/admin/CourseCampaignField#CourseCampaignField" } } },
     {
       name: "sections",

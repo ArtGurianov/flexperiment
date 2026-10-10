@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import { assertOfferSaleModeAllowed, type CommerceRuntimeConfig, type SaleMode, type SaleModePolicyConfig } from "./payment-mode";
+import { validPaymentPurpose } from "./payment-purpose";
 
 export type ProductCommand = {
   productRef: string;
@@ -12,6 +13,7 @@ export type ProductCommand = {
   priceKopecks: number;
   saleMode: SaleMode;
   acceptanceAllowlist?: string[];
+  paymentPurpose?: string | null;
   actor: string;
   expectedVersion: number;
 };
@@ -65,6 +67,13 @@ export function configureProduct(db: Database.Database, config: CommerceRuntimeC
       || existing.occurrence_ref !== (command.occurrenceRef ?? null)
       || (existing.offer_ref !== null && existing.offer_ref !== command.offerRef))) throw new Error("PRODUCT_IDENTITY_IMMUTABLE");
     const productId = existing?.id ?? randomUUID();
+    const priorOffer = db.prepare("SELECT id,payment_purpose FROM offers WHERE product_id=?").get(productId) as
+      { id: string; payment_purpose: string | null } | undefined;
+    const paymentPurpose = command.paymentPurpose === undefined ? priorOffer?.payment_purpose ?? null : command.paymentPurpose;
+    if ((paymentPurpose !== null && !validPaymentPurpose(paymentPurpose))
+      || (command.accessModel === "PAID" && command.saleMode !== "CLOSED" && !validPaymentPurpose(paymentPurpose))) {
+      throw new Error("PAYMENT_PURPOSE_REQUIRED");
+    }
     if (existing) {
       const update = db.prepare(`UPDATE products SET access_model=?,updated_at=?,version=version+1
         WHERE id=? AND version=?`).run(command.accessModel, now, productId, command.expectedVersion);
@@ -74,23 +83,45 @@ export function configureProduct(db: Database.Database, config: CommerceRuntimeC
         VALUES (?,?,?,?,?,?,?,?,1)`).run(productId, command.productRef, command.kind, command.accessModel,
           command.courseRef ?? null, command.occurrenceRef ?? null, now, now);
     }
-    const offer = db.prepare("SELECT id FROM offers WHERE product_id=?").get(productId) as { id: string } | undefined;
+    const offer = priorOffer;
     if (offer) {
-      db.prepare(`UPDATE offers SET price_kopecks=?,sale_mode=?,acceptance_allowlist_json=?,updated_at=? WHERE id=?`)
+      db.prepare(`UPDATE offers SET price_kopecks=?,sale_mode=?,acceptance_allowlist_json=?,updated_at=?,payment_purpose=? WHERE id=?`)
         .run(command.priceKopecks, command.saleMode,
-          JSON.stringify((command.acceptanceAllowlist ?? []).map((email) => email.trim().toLowerCase())), now, offer.id);
+          JSON.stringify((command.acceptanceAllowlist ?? []).map((email) => email.trim().toLowerCase())), now, paymentPurpose, offer.id);
     } else {
-      db.prepare(`INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode,acceptance_allowlist_json,created_at,updated_at)
-        VALUES (?,?,?,?,?,?,?,?)`).run(randomUUID(), command.offerRef, productId, command.priceKopecks, command.saleMode,
-          JSON.stringify((command.acceptanceAllowlist ?? []).map((email) => email.trim().toLowerCase())), now, now);
+      db.prepare(`INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode,acceptance_allowlist_json,created_at,updated_at,payment_purpose)
+        VALUES (?,?,?,?,?,?,?,?,?)`).run(randomUUID(), command.offerRef, productId, command.priceKopecks, command.saleMode,
+          JSON.stringify((command.acceptanceAllowlist ?? []).map((email) => email.trim().toLowerCase())), now, now, paymentPurpose);
     }
     db.prepare(`INSERT INTO audit_log(id,actor,action,subject_type,subject_ref,evidence_json,created_at)
       VALUES (?,?,?,?,?,?,?)`).run(randomUUID(), command.actor, "PRODUCT_CONFIGURED", "PRODUCT", command.productRef,
-        JSON.stringify({ accessModel: command.accessModel, priceKopecks: command.priceKopecks, saleMode: command.saleMode }), now);
+        JSON.stringify({ accessModel: command.accessModel, priceKopecks: command.priceKopecks, saleMode: command.saleMode, paymentPurpose }), now);
   });
   apply.immediate();
   const version = (db.prepare("SELECT version FROM products WHERE product_ref=?").get(command.productRef) as { version: number }).version;
   return { productRef: command.productRef, offerRef: command.offerRef, version };
+}
+
+/** Payload edits only this commerce-owned field, never price/sales/identity through this command. */
+export function setCoursePaymentPurpose(db: Database.Database, command: {
+  courseRef: string; paymentPurpose: string; expectedVersion: number; actor: string;
+}, now = new Date().toISOString()) {
+  if (!command.courseRef || !command.actor || !Number.isInteger(command.expectedVersion)
+    || !validPaymentPurpose(command.paymentPurpose)) throw new Error("PAYMENT_PURPOSE_REQUIRED");
+  return db.transaction(() => {
+    const product = db.prepare(`SELECT p.id,p.product_ref,p.version,p.withdrawn_at,o.id AS offer_id
+      FROM products p JOIN offers o ON o.product_id=p.id WHERE p.kind='ONLINE_COURSE' AND p.course_ref=?`)
+      .get(command.courseRef) as { id: string; product_ref: string; version: number; withdrawn_at: string | null; offer_id: string } | undefined;
+    if (!product) throw new Error("OFFER_NOT_AVAILABLE");
+    if (product.withdrawn_at) throw new Error("WITHDRAWN_PRODUCT_IMMUTABLE");
+    if (product.version !== command.expectedVersion) throw new Error("CATALOG_VERSION_CONFLICT");
+    db.prepare("UPDATE products SET version=version+1,updated_at=? WHERE id=? AND version=?").run(now,product.id,command.expectedVersion);
+    db.prepare("UPDATE offers SET payment_purpose=?,updated_at=? WHERE id=?").run(command.paymentPurpose,now,product.offer_id);
+    db.prepare(`INSERT INTO audit_log(id,actor,action,subject_type,subject_ref,evidence_json,created_at) VALUES (?,?,?,?,?,?,?)`)
+      .run(randomUUID(),command.actor,"OFFER_PAYMENT_PURPOSE_CHANGED","PRODUCT",product.product_ref,
+        JSON.stringify({ paymentPurpose: command.paymentPurpose, version: product.version+1 }),now);
+    return { paymentPurpose: command.paymentPurpose, version: product.version+1 };
+  }).immediate();
 }
 
 export function withdrawProduct(
