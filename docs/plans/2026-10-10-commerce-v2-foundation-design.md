@@ -37,6 +37,13 @@ malformed/oversized responses or a negative dependency check produce HTTP 503.
 A runtime-only service token is mandatory, even though internal routes remain
 closed in this phase; no development secret fallback in deployed foundation.
 
+Coolify's HTTP healthcheck is GET `/readyz`, port 3002, expected HTTP 200.
+The runtime image includes `curl`, which Coolify invokes inside the container.
+The existing actual-image CI gate verifies curl against `/identity` and verifies
+that curl fails with HTTP error exit 22 when Refref is unavailable (HTTP 503).
+Readiness is not replaced with an always-successful probe. Do not disable the
+healthcheck to recover a deployment rejected because curl was absent.
+
 ## Persistence and recovery
 
 Each app has unique data and backup volumes. A technical marker is committed
