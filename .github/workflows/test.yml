@@ -29,6 +29,10 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends age
       - name: Independent V2 owner control contract
         run: python3 scripts/v2/test_owner_rpc.py
+      - name: Isolated V2 canary same-origin proxy contract (real nginx)
+        run: python3 scripts/v2/test_frontend_proxy.py -v
+        env:
+          SOURCE_COMMIT: ${{ github.sha }}
       - name: Scheduled V2 backup transport, isolation, retention and freshness contract
         run: V2_BACKUP_REAL_S3_CLIENT=1 python3 scripts/v2/test_scheduled_backup.py
       - run: pnpm lint
@@ -188,6 +192,41 @@ jobs:
           build-args: SOURCE_COMMIT=${{ github.sha }}
           cache-from: type=gha,scope=commerce-v2
           cache-to: type=gha,mode=max,scope=commerce-v2
+
+      - name: Isolated LAB V2 canary image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.frontends-v2
+          push: false
+          load: true
+          tags: flexperiment-lab-v2:test
+          build-args: |
+            SOURCE_COMMIT=${{ github.sha }}
+            V2_FRONTEND_SERVICE=lab-v2
+          cache-from: type=gha,scope=frontends-v2
+          cache-to: type=gha,mode=max,scope=frontends-v2
+
+      - name: Isolated admin V2 canary image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.frontends-v2
+          push: false
+          load: true
+          tags: flexperiment-admin-v2:test
+          build-args: |
+            SOURCE_COMMIT=${{ github.sha }}
+            V2_FRONTEND_SERVICE=admin-v2
+          cache-from: type=gha,scope=frontends-v2
+          cache-to: type=gha,mode=max,scope=frontends-v2
+
+      - name: V2 canary proxies — actual built images, cookies and host isolation
+        run: python3 scripts/v2/test_frontend_proxy.py -v
+        env:
+          SOURCE_COMMIT: ${{ github.sha }}
+          V2_FRONTEND_LAB_IMAGE: flexperiment-lab-v2:test
+          V2_FRONTEND_ADMIN_IMAGE: flexperiment-admin-v2:test
 
       - name: Boot and verify the Payload platform v2 image
         run: >-

@@ -1,0 +1,31 @@
+# Canary-only static artifacts. Never reuse/modify the V1 nginx controller.
+FROM node:22-bookworm-slim AS dependencies
+WORKDIR /app
+RUN corepack enable
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY apps/admin/package.json ./apps/admin/package.json
+COPY apps/lab/package.json ./apps/lab/package.json
+COPY packages/control-room-contracts/package.json ./packages/control-room-contracts/package.json
+RUN pnpm install --frozen-lockfile
+
+FROM dependencies AS build
+COPY . .
+ARG SOURCE_COMMIT
+ARG V2_FRONTEND_SERVICE
+ENV SOURCE_COMMIT=${SOURCE_COMMIT}
+ENV LAB_ORIGIN=https://canary-lab.flexperiment.ru
+RUN case "$V2_FRONTEND_SERVICE" in \
+      lab-v2) pnpm build && cp -a apps/lab/out /app/v2-export ;; \
+      admin-v2) pnpm --filter @flexperiment/admin build && cp -a apps/admin/out /app/v2-export ;; \
+      *) echo V2_FRONTEND_SERVICE_INVALID >&2; exit 1 ;; \
+    esac \
+    && node scripts/write-build-identity.mjs /app/.identity/identity.json "$V2_FRONTEND_SERVICE" \
+    && printf '%s\n' "$V2_FRONTEND_SERVICE" > /app/.identity/service \
+    && chmod 0444 /app/.identity/service
+
+FROM nginx:1.29-alpine
+COPY --from=build /app/v2-export /usr/share/nginx/html
+COPY --from=build /app/.identity /app/.identity
+COPY deploy/v2/frontends /etc/nginx/v2
+ENTRYPOINT ["/bin/sh", "/etc/nginx/v2/start.sh"]
+EXPOSE 80
