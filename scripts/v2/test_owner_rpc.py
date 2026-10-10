@@ -3,9 +3,11 @@
 import importlib.util
 import json
 import pathlib
+import stat
 import sys
+import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_file_location("owner_rpc", pathlib.Path(__file__).with_name("owner-rpc.py"))
@@ -59,13 +61,45 @@ class OwnerControl(unittest.TestCase):
                     rpc.handle({"operation": "api", "method": "PATCH", "path": f"/applications/{CANARY}{suffix}", "body": body}, CONFIG)
             api.assert_not_called()
 
-    def test_restart_refuses_public_or_wrong_app(self):
+    def test_deploy_and_restart_refuse_public_or_wrong_app(self):
         for current in [{"fqdn": "https://commerce.flexperiment.ru", "name": "flexperiment-commerce-v2-canary", "dockerfile_location": "/Dockerfile.commerce-v2"},
                         {"fqdn": None, "name": "commerce", "dockerfile_location": "/Dockerfile.commerce"}]:
-            with patch.object(rpc, "api", return_value=current) as api, self.assertRaises(ValueError):
-                rpc.handle({"operation": "restart", "target": "canary"}, CONFIG)
-            self.assertEqual(api.call_count, 1)
-            self.assertEqual(api.call_args.args[0], "GET")
+            for operation in ("deploy", "restart"):
+                with self.subTest(operation=operation), patch.object(rpc, "api", return_value=current) as api, self.assertRaises(ValueError):
+                    rpc.handle({"operation": operation, "target": "canary", "sha": SHA}, CONFIG)
+                self.assertEqual(api.call_count, 1)
+                self.assertEqual(api.call_args.args[0], "GET")
+
+    def test_deploy_uses_post_after_isolation_check_and_records_queue(self):
+        for target, uuid in CONFIG["apps"].items():
+            current = {"fqdn": None, "name": "flexperiment-commerce-v2" + ("-canary" if target == "canary" else ""),
+                       "dockerfile_location": "/Dockerfile.commerce-v2"}
+            deployment = "synthetic-" + target
+            with self.subTest(target=target), tempfile.TemporaryDirectory() as directory, \
+                    patch.object(rpc, "ROOT", directory), \
+                    patch.object(rpc, "api", side_effect=[current, {"deployments": [{"deployment_uuid": deployment}]}]) as api:
+                result = rpc.handle({"operation": "deploy", "target": target, "sha": SHA}, CONFIG)
+                self.assertEqual(api.call_args_list, [call("GET", "/applications/" + uuid),
+                                                     call("POST", "/deploy?uuid=" + uuid + "&force=false")])
+                self.assertEqual(result, {"deployment": deployment})
+                journal = pathlib.Path(directory, "deployments", deployment + ".json")
+                self.assertEqual(json.loads(journal.read_text()), {"target": target, "sha": SHA})
+                self.assertEqual(stat.S_IMODE(journal.stat().st_mode), 0o600)
+
+    def test_deploy_invalid_uuid_scope_never_calls_api(self):
+        with patch.object(rpc, "api") as api:
+            for target, config in [("foreign", CONFIG), ("canary", {"apps": {"canary": "../escape", "production": PRODUCTION}})]:
+                with self.subTest(target=target), self.assertRaisesRegex(ValueError, "V2_TARGET_INVALID"):
+                    rpc.handle({"operation": "deploy", "target": target, "sha": SHA}, config)
+            api.assert_not_called()
+
+    def test_deploy_malformed_response_id_never_records_journal(self):
+        current = {"fqdn": None, "name": "flexperiment-commerce-v2-canary", "dockerfile_location": "/Dockerfile.commerce-v2"}
+        with tempfile.TemporaryDirectory() as directory, patch.object(rpc, "ROOT", directory), \
+                patch.object(rpc, "api", side_effect=[current, {"deployments": [{"deployment_uuid": "../../escape"}]}]):
+            with self.assertRaisesRegex(ValueError, "DEPLOYMENT_ID_INVALID"):
+                rpc.handle({"operation": "deploy", "target": "canary", "sha": SHA}, CONFIG)
+            self.assertFalse(pathlib.Path(directory, "deployments").exists())
 
     def test_safe_app_metadata_contains_no_environment_or_secret(self):
         value = {"uuid": CANARY, "environment_variables": "secret", "token": "secret", "settings": {"is_auto_deploy_enabled": False, "secret": "secret"}}

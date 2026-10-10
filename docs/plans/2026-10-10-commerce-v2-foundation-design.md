@@ -12,6 +12,13 @@ ref/controller, domain, service, DB or secret changes. Coolify owns lifecycle.
 The control API token remains in owner storage on the VPS, never in the runtime.
 Missing owner token/app configuration stops deployment, not engineering work.
 
+Coolify queue creation uses POST `/deploy?uuid=<known-app>&force=false`, only
+after the existing isolation check. GET is not a fallback and failures do not
+trigger a second request. The owner boundary regression checks both targets,
+the exact method/scope and private queue journal. After a refused attempt,
+reconcile the saved pin/env and queue before resuming with the new admitted
+main SHA; a saved source pin alone is not deployment evidence.
+
 ## Restricted foundation boot
 
 `COMMERCE_V2_FOUNDATION_MODE=true` boots the real Commerce V2 app and schema,
