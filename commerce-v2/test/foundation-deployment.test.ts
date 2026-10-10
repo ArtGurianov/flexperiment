@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { admitRelease, deployFoundation, validateApp, validateCheckout, verifyRuntime } from "../../scripts/v2/deployment.mjs";
+import { admitRelease, deployFoundation, deployNormalCanary, normalCanaryOrigins, validateApp, validateCheckout, verifyRuntime } from "../../scripts/v2/deployment.mjs";
 import { readFileSync } from "node:fs";
 import { parse } from "yaml";
 
@@ -51,6 +51,85 @@ function fixture() {
   };
   return { io, apps, env, storage, checks };
 }
+
+function normalFixture() {
+  const f = fixture();
+  f.env.canary.find(row => row.key === "COMMERCE_V2_FOUNDATION_MODE")!.value = "false";
+  const publicInputs = { ...normalCanaryOrigins, AUTH_EMAIL_PROVIDER: "notisend",
+    NOTISEND_FROM_EMAIL: "noreply@flexperiment.ru", NOTISEND_REPLY_TO: "art@flexperiment.ru", NOTISEND_FROM_NAME: "Flexperiment" };
+  for (const [key, value] of Object.entries(publicInputs)) f.env.canary.push({ key, value, is_runtime: true,
+    is_buildtime: false, is_preview: false, present: true, length: value.length });
+  for (const key of ["BETTER_AUTH_SECRET", "AUTH_EMAIL_OUTBOX_KEY", "CAMPAIGN_UNSUBSCRIBE_SECRET", "COMMERCE_SESSION_SECRET",
+    "COMMERCE_ADMIN_PASSWORD_SCRYPT", "SMARTCAPTCHA_SERVER_KEY", "NOTISEND_API_KEY"]) f.env.canary.push({ key,
+      value: "redacted", is_runtime: true, is_buildtime: false, is_preview: false, present: true, length: 44 });
+  const original = f.io.waitRuntime.getMockImplementation()!;
+  f.io.waitRuntime.mockImplementation(async (target) => {
+    const result = await original(target);
+    result.ready.foundationMode = false;
+    Object.assign(result.ready.capabilities, { authEmail: "configured", captcha: "configured" });
+    return result;
+  });
+  return { ...f, io: { ...f.io, snapshot: vi.fn(async () => ({ sha256: "f".repeat(64) })),
+    backupRuntime: vi.fn(async () => ({ filename: "encrypted.age", sha256: "c".repeat(64), size: 100 })) } };
+}
+
+describe("ART-179 closed normal canary transition", () => {
+  it("deploys canary once, preserves production and reports only API readiness", async () => {
+    const { io } = normalFixture();
+    const proof = await deployNormalCanary(sha, io);
+    expect(io.deploy.mock.calls).toEqual([["canary", sha]]);
+    expect(io.casRef.mock.calls).toEqual([["canary", sha]]);
+    expect(io.api.mock.calls.filter(call => call[0] === "PATCH").every(call => call[1].includes(ids.canary))).toBe(true);
+    expect(io.restart).not.toHaveBeenCalled(); expect(io.storage).not.toHaveBeenCalled();
+    expect(proof.canary).toMatchObject({ qualification: "API_ONLY", proxy: "NOT_QUALIFIED", magicLinkDelivery: "NOT_QUALIFIED" });
+    expect(io.record).toHaveBeenCalledOnce();
+  });
+  it("refuses a normal production target or unreviewed mode", () => {
+    const { apps, env, storage } = normalFixture();
+    for (const mode of ["normal-canary", "arbitrary"]) expect(() => validateApp(apps.production, env.production,
+      storage.production, "production", ids.production, mode)).toThrow("V2_MODE_TARGET_REFUSED");
+  });
+  it.each(["API_ORIGIN", "PLATFORM_ORIGIN", "AUTH_EMAIL_PROVIDER", "BETTER_AUTH_SECRET", "AUTH_EMAIL_OUTBOX_KEY", "NOTISEND_API_KEY"])("refuses missing %s before writes", async key => {
+    const { io, env } = normalFixture(); env.canary.splice(env.canary.findIndex(row => row.key === key), 1);
+    await expect(deployNormalCanary(sha, io)).rejects.toThrow();
+    expect(io.casRef).not.toHaveBeenCalled(); expect(io.deploy).not.toHaveBeenCalled();
+  });
+  it("does not accept a production origin or build-time secret", async () => {
+    const { io, env } = normalFixture(); const origin = env.canary.find(row => row.key === "API_ORIGIN")!;
+    origin.value = "https://api.flexperiment.ru";
+    await expect(deployNormalCanary(sha, io)).rejects.toThrow("V2_NORMAL_ORIGIN_OR_MAIL_DIFFERS");
+    origin.value = normalCanaryOrigins.API_ORIGIN; env.canary.find(row => row.key === "NOTISEND_API_KEY")!.is_buildtime = true;
+    await expect(deployNormalCanary(sha, io)).rejects.toThrow("V2_NORMAL_RUNTIME_INPUT_REQUIRED");
+    expect(io.deploy).not.toHaveBeenCalled();
+  });
+  it("refuses changed production secrets before mutation and after deployment", async () => {
+    for (const changeAt of [2, 4]) {
+      const { io } = normalFixture(); let n = 0;
+      io.snapshot.mockImplementation(async () => ({ sha256: (++n >= changeAt ? "e" : "f").repeat(64) }));
+      await expect(deployNormalCanary(sha, io)).rejects.toThrow("V2_PRODUCTION_CHANGED");
+      expect(io.record).not.toHaveBeenCalled();
+      expect(io.deploy).toHaveBeenCalledTimes(changeAt === 2 ? 0 : 1);
+    }
+  });
+  it("stops on backup failure without advancing refs or deploying", async () => {
+    const { io } = normalFixture(); io.backupRuntime.mockRejectedValue(new Error("BACKUP_FAILED"));
+    await expect(deployNormalCanary(sha, io)).rejects.toThrow("BACKUP_FAILED");
+    expect(io.casRef).not.toHaveBeenCalled(); expect(io.deploy).not.toHaveBeenCalled();
+  });
+  it("does not retry an ambiguous deploy", async () => {
+    const { io } = normalFixture(); io.deploy.mockRejectedValue(new Error("AMBIGUOUS"));
+    await expect(deployNormalCanary(sha, io)).rejects.toThrow("AMBIGUOUS");
+    expect(io.deploy).toHaveBeenCalledOnce(); expect(io.record).not.toHaveBeenCalled();
+  });
+  it("requires actual normal readiness and configured auth/captcha, not foundation readiness", async () => {
+    const { io } = normalFixture(); const result = await io.waitRuntime("canary");
+    const mounts = result.mounts.map(m => ({ name: m.name, destination: m.destination }));
+    result.ready.foundationMode = true;
+    expect(() => verifyRuntime(result, sha, mounts, "normal-canary")).toThrow("V2_RUNTIME_NOT_READY");
+    result.ready.foundationMode = false; Object.assign(result.ready.capabilities, { captcha: "missing" });
+    expect(() => verifyRuntime(result, sha, mounts, "normal-canary")).toThrow("V2_NORMAL_CAPABILITY_MISSING");
+  });
+});
 
 describe("exact-source admission and independent promotion", () => {
   it("requires an exact clean controller checkout and the approved Git remote", () => {

@@ -156,6 +156,34 @@ does.
   fiscal-item and refund-terms documents. The stored manifest digest is the
   immutable evidence bound into checkout snapshots.
 
+## Closed normal-canary deployment (ART-179 / ART-166 / ART-165)
+
+The independent `deploy-commerce-v2.yml` workflow defaults to the existing
+foundation qualification. Its explicit `normal-canary` mode deploys only the
+isolated commerce canary, never production. Candidate configuration is staged
+without restarting the running foundation instance; secrets are runtime-only
+and `COMMERCE_V2_FOUNDATION_MODE=false` must be explicitly staged before that
+mode is consumed. Exact-main CI, separate preserved volumes, disabled payments,
+disabled marketing, read-only Refref readiness and no provider credentials remain
+mandatory. A read-only online encrypted backup precedes replacement. The
+production configuration (including secret continuity), identity, container
+start and mounted volumes are compared by an owner-side aggregate fingerprint.
+This transition does not repeat the already accepted restart/redeploy proof.
+
+Canary origins are `https://canary-platform.flexperiment.ru`,
+`https://canary-lab.flexperiment.ru`, `https://canary-admin.flexperiment.ru` and
+`https://canary-api.flexperiment.ru`. No production frontend substitutes for a
+missing canary service. The controller retains the no-domain/no-public-routing
+guard: DNS/TLS and a protected proxy need independent qualification before any
+route is made usable. Staged origins do not publish a route.
+
+`API_ONLY` deployment evidence is **not** `V2_NORMAL_CANARY_PASS`: actual email
+delivery, frontend magic-link proxying, host-only secure cookies, logout and
+revocation must be verified later. Do not activate synthetic legal releases or
+invent course records to unblock it. ART-232 owns approved Stage A texts;
+ART-169 owns catalogue seed/data. Production stays foundation-only and external
+failure alert delivery remains an ART-41/F9 blocker.
+
 ## Seed boundary
 
 `commerce-v2/launch/catalog.json` is deterministic input for a fresh database.

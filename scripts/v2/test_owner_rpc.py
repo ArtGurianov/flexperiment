@@ -19,6 +19,59 @@ SHA = "a" * 40
 
 
 class OwnerControl(unittest.TestCase):
+    def test_literal_secret_uses_saved_value_not_shell_quotes_and_remains_redacted(self):
+        secret = "synthetic-owner-secret-32-characters"
+        row = {"key": "BETTER_AUTH_SECRET", "value": secret, "real_value": "'" + secret + "'",
+               "is_literal": True, "is_buildtime": False, "is_runtime": True}
+        with patch.object(rpc, "api", return_value=[row]):
+            result = rpc.handle({"operation": "api", "method": "GET", "path": f"/applications/{CANARY}/envs"}, CONFIG)
+        self.assertEqual(result[0]["length"], len(secret))
+        self.assertIsNone(result[0]["value"])
+        self.assertNotIn(secret, json.dumps(result))
+
+    def test_snapshot_binds_secret_continuity_without_export_and_ignores_mount_order(self):
+        app = {"uuid": PRODUCTION, "name": "flexperiment-commerce-v2", "git_commit_sha": SHA, "settings": {}}
+        env = [{"key": "NOTISEND_API_KEY", "value": "synthetic-secret-A", "is_runtime": True, "is_buildtime": False}]
+        live = {"containerId": "synthetic-id", "startedAt": "fixed", "identity": {"sourceCommit": SHA},
+                "baked": {"sourceCommit": SHA}, "identityMode": "444", "ready": {"foundationMode": True}, "mounts": [
+                    {"destination": "/data", "name": "data"}, {"destination": "/backup", "name": "backup"}]}
+        original_handle = rpc.handle
+        def fake_handle(message, config):
+            return live if message["operation"] == "runtime" else original_handle(message, config)
+        with patch.object(rpc, "handle", side_effect=fake_handle), patch.object(rpc, "api", side_effect=lambda method, path: env if path.endswith("/envs") else app):
+            first = original_handle({"operation": "snapshot", "target": "production"}, CONFIG)
+            live["mounts"].reverse()
+            self.assertEqual(first, original_handle({"operation": "snapshot", "target": "production"}, CONFIG))
+            env[0]["value"] = "synthetic-secret-B"
+            self.assertNotEqual(first, original_handle({"operation": "snapshot", "target": "production"}, CONFIG))
+            live["ready"]["foundationMode"] = False
+            with self.assertRaisesRegex(ValueError, "PRODUCTION_BASELINE_DIFFERS"):
+                original_handle({"operation": "snapshot", "target": "production"}, CONFIG)
+        self.assertEqual(set(first), {"sha256"})
+        self.assertNotIn("synthetic-secret", json.dumps(first))
+
+    def test_normal_mode_refuses_production_and_live_payment_drift_before_queue(self):
+        with patch.object(rpc, "api") as api:
+            with self.assertRaisesRegex(ValueError, "NORMAL_CANARY_SCOPE_REFUSED"):
+                rpc.handle({"operation": "deploy", "target": "production", "mode": "normal-canary", "sha": SHA}, CONFIG)
+            api.assert_not_called()
+        env = [{"key": key, "value": value, "is_runtime": True} for key, value in {
+            "COMMERCE_V2_FOUNDATION_MODE": "false", "PAYMENT_MODE": "refref",
+            "MARKETING_BROADCASTS_ENABLED": "false", "SOURCE_COMMIT": SHA}.items()]
+        with patch.object(rpc, "api", return_value=env) as api:
+            with self.assertRaisesRegex(ValueError, "NORMAL_CANARY_ENVIRONMENT_DIFFERS"):
+                rpc.handle({"operation": "deploy", "target": "canary", "mode": "normal-canary", "sha": SHA}, CONFIG)
+            self.assertTrue(all(call.args[0] == "GET" for call in api.call_args_list))
+
+    def test_normal_backup_is_read_only_cli_and_canary_only(self):
+        with patch.object(rpc, "container", return_value="synthetic-cid"), patch.object(rpc, "run", return_value='{"sha256":"synthetic"}') as run:
+            rpc.handle({"operation": "backup-runtime", "target": "canary"}, CONFIG)
+            self.assertEqual(run.call_args.args[0][-1], "commerce-v2/src/backup-cli.ts")
+            run.reset_mock()
+            with self.assertRaisesRegex(ValueError, "NORMAL_CANARY_SCOPE_REFUSED"):
+                rpc.handle({"operation": "backup-runtime", "target": "production"}, CONFIG)
+            run.assert_not_called()
+
     def test_secret_environment_never_returns_values(self):
         secret = "never-return-this-owner-secret"
         rows = [{"key": key, "value": secret, "is_runtime": True, "is_buildtime": False}

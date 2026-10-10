@@ -1,4 +1,4 @@
-name: Deploy isolated Commerce V2 foundation
+name: Deploy isolated Commerce V2
 
 on:
   workflow_dispatch:
@@ -7,6 +7,13 @@ on:
         description: Exact current main SHA with its own successful test and docker-build
         required: true
         type: string
+      mode:
+        description: Foundation for both targets, or closed normal canary only (no production promotion)
+        type: choice
+        default: foundation
+        options:
+          - foundation
+          - normal-canary
 
 permissions:
   contents: write # CAS only dedicated commerce-v2-{canary,production}-deploy refs
@@ -24,6 +31,7 @@ jobs:
     timeout-minutes: 90
     env:
       V2_SOURCE_SHA: ${{ inputs.source_sha }}
+      V2_DEPLOYMENT_MODE: ${{ inputs.mode || 'foundation' }}
       V2_OWNER_HOST: ${{ secrets.RELEASE_RUNNER_HOST }}
       GH_TOKEN: ${{ github.token }}
     steps:

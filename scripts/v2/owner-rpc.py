@@ -13,7 +13,14 @@ ROOT = "/root/flexperiment-v2-owner"
 PUBLIC_ENV = {"NODE_ENV", "DEPLOY_ENV", "COMMERCE_V2_FOUNDATION_MODE", "COMMERCE_V2_ENVIRONMENT",
               "PAYMENT_MODE", "MARKETING_BROADCASTS_ENABLED", "KINESCOPE_DELIVERY_MODE", "SOURCE_COMMIT",
               "COMMERCE_V2_DATABASE_PATH", "COMMERCE_V2_BACKUP_PATH", "PORT", "MERCHANT_PROMOTION_PREFIX",
-              "REFREF_READINESS_URL", "COMMERCE_V2_BACKUP_AGE_RECIPIENT"}
+              "REFREF_READINESS_URL", "COMMERCE_V2_BACKUP_AGE_RECIPIENT",
+              "PLATFORM_ORIGIN", "LAB_ORIGIN", "ADMIN_ORIGIN", "API_ORIGIN", "AUTH_EMAIL_PROVIDER",
+              "NOTISEND_FROM_EMAIL", "NOTISEND_FROM_NAME", "NOTISEND_REPLY_TO"}
+
+
+def env_value(row):
+    # Literal real_value is shell-rendered, including quotes, not the saved value.
+    return row.get("value") if row.get("is_literal") else row.get("real_value", row.get("value"))
 
 
 def private_json(path):
@@ -103,9 +110,9 @@ def handle(message, config):
             return {"saved": True}
         if match[2] == "/envs":
             return [{"key": row["key"], "is_preview": row.get("is_preview"), "is_runtime": row.get("is_runtime"),
-                     "is_buildtime": row.get("is_buildtime"), "present": bool(row.get("real_value", row.get("value"))),
-                     "length": len(row.get("real_value", row.get("value")) or ""),
-                     "value": row.get("real_value", row.get("value")) if row["key"] in PUBLIC_ENV else None} for row in value]
+                     "is_buildtime": row.get("is_buildtime"), "present": bool(env_value(row)),
+                     "length": len(env_value(row) or ""),
+                     "value": env_value(row) if row["key"] in PUBLIC_ENV else None} for row in value]
         if match[2] == "/storages":
             return {"persistent_storages": [{key: row.get(key) for key in ("name", "mount_path", "host_path")}
                                             for row in value["persistent_storages"]],
@@ -114,6 +121,37 @@ def handle(message, config):
     if target not in apps or not re.fullmatch(r"[a-z0-9]{20,32}", apps[target]):
         raise ValueError("V2_TARGET_INVALID")
     uuid = apps[target]
+    if operation == "deploy" and message.get("mode", "foundation") not in ("foundation", "normal-canary"):
+        raise ValueError("DEPLOYMENT_MODE_REFUSED")
+    if operation == "deploy" and message.get("mode") == "normal-canary":
+        if target != "canary":
+            raise ValueError("NORMAL_CANARY_SCOPE_REFUSED")
+        if not re.fullmatch(r"[0-9a-f]{40}", message.get("sha", "")):
+            raise ValueError("SOURCE_INVALID")
+        env = [row for row in api("GET", "/applications/" + uuid + "/envs") if not row.get("is_preview")]
+        for key, expected in {"COMMERCE_V2_FOUNDATION_MODE": "false", "PAYMENT_MODE": "disabled",
+                              "MARKETING_BROADCASTS_ENABLED": "false", "SOURCE_COMMIT": message["sha"]}.items():
+            found = [row for row in env if row["key"] == key]
+            if len(found) != 1 or env_value(found[0]) != expected or found[0].get("is_runtime") is not True:
+                raise ValueError("NORMAL_CANARY_ENVIRONMENT_DIFFERS")
+        if any(re.match(r"^(TOCHKA_|ALFA_|REFREF_API_KEY|REFUND_ENVELOPE_)", row["key"]) and env_value(row) for row in env):
+            raise ValueError("PROVIDER_CREDENTIAL_FORBIDDEN")
+    if operation == "snapshot":
+        current = app_safe(api("GET", "/applications/" + uuid))
+        environment = sorted([(row["key"], bool(row.get("is_preview")), env_value(row),
+                               row.get("is_runtime"), row.get("is_buildtime"), row.get("is_literal"))
+                              for row in api("GET", "/applications/" + uuid + "/envs")], key=lambda row: (row[0], row[1]))
+        live = handle({"operation": "runtime", "target": target}, config)
+        if target == "production" and (live["ready"].get("foundationMode") is not True
+                or live["identity"].get("sourceCommit") != current.get("git_commit_sha")
+                or live["baked"].get("sourceCommit") != current.get("git_commit_sha")):
+            raise ValueError("PRODUCTION_BASELINE_DIFFERS")
+        snapshot = {"app": current, "environment": environment,
+                    "containerId": live["containerId"], "startedAt": live["startedAt"],
+                    "identity": live["identity"], "baked": live["baked"], "identityMode": live["identityMode"],
+                    "mounts": sorted(live["mounts"], key=lambda mount: mount["destination"])}
+        # Aggregate only: exact secret continuity without exporting credentials.
+        return {"sha256": hashlib.sha256(json.dumps(snapshot, sort_keys=True, separators=(",", ":")).encode()).hexdigest()}
     if operation in ("deploy", "restart"):
         current = app_safe(api("GET", "/applications/" + uuid))
         if current["fqdn"] or current["portsMapped"] or current["customRouting"] or current["hasUnsafeOverrides"] \
@@ -146,6 +184,10 @@ def handle(message, config):
     cid = container(uuid, message.get("optional", False))
     if cid is None:
         return None
+    if operation == "backup-runtime":
+        if target != "canary":
+            raise ValueError("NORMAL_CANARY_SCOPE_REFUSED")
+        return json.loads(run(["docker", "exec", cid, "node", "--import", "tsx", "commerce-v2/src/backup-cli.ts"]))
     if operation == "runtime":
         metadata = json.loads(run(["docker", "inspect", "--format", '{"Id":{{json .Id}},"startedAt":{{json .State.StartedAt}},"Mounts":{{json .Mounts}}}', cid]))
         code = 'Promise.all(["identity","readyz"].map(async p=>{const r=await fetch("http://127.0.0.1:3002/"+p,{signal:AbortSignal.timeout(5000)});if(!r.ok)throw Error("NOT_READY");return r.json()})).then(([identity,ready])=>console.log(JSON.stringify({identity,ready}))).catch(()=>process.exit(1))'

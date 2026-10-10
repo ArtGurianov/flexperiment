@@ -2,6 +2,12 @@
 const refuse = (code) => { throw new Error(code); };
 const shaPattern = /^[0-9a-f]{40}$/;
 export const targets = ["canary", "production"];
+export const normalCanaryOrigins = {
+  PLATFORM_ORIGIN: "https://canary-platform.flexperiment.ru",
+  LAB_ORIGIN: "https://canary-lab.flexperiment.ru",
+  ADMIN_ORIGIN: "https://canary-admin.flexperiment.ru",
+  API_ORIGIN: "https://canary-api.flexperiment.ru",
+};
 
 export function validateCheckout(source, head, dirty, origin) {
   if (!shaPattern.test(source) || head !== source || dirty) refuse("V2_CONTROLLER_CHECKOUT_DIFFERS");
@@ -21,7 +27,8 @@ export async function admitRelease(sha, github) {
   }
 }
 
-export function validateApp(app, env, storages, target, uuid) {
+export function validateApp(app, env, storages, target, uuid, mode = "foundation") {
+  if (!["foundation", "normal-canary"].includes(mode) || (mode === "normal-canary" && target !== "canary")) refuse("V2_MODE_TARGET_REFUSED");
   if (!targets.includes(target) || !/^[a-z0-9]{20,32}$/.test(uuid)) refuse("V2_TARGET_INVALID");
   if (app.uuid !== uuid || app.name !== (target === "canary" ? "flexperiment-commerce-v2-canary" : "flexperiment-commerce-v2")) refuse("V2_APP_IDENTITY_MISMATCH");
   if (app.git_repository !== "ArtGurianov/flexperiment" || app.git_branch !== "main"
@@ -31,7 +38,7 @@ export function validateApp(app, env, storages, target, uuid) {
   const rows = env.filter((entry) => !entry.is_preview);
   const required = {
     NODE_ENV: "production", DEPLOY_ENV: target === "canary" ? "staging" : "production",
-    COMMERCE_V2_FOUNDATION_MODE: "true", COMMERCE_V2_ENVIRONMENT: target,
+    COMMERCE_V2_FOUNDATION_MODE: mode === "foundation" ? "true" : "false", COMMERCE_V2_ENVIRONMENT: target,
     PAYMENT_MODE: "disabled", MARKETING_BROADCASTS_ENABLED: "false", KINESCOPE_DELIVERY_MODE: "open",
     COMMERCE_V2_DATABASE_PATH: "/var/lib/flexperiment-v2/commerce.sqlite",
     COMMERCE_V2_BACKUP_PATH: "/var/lib/flexperiment-v2-backups", PORT: "3002", MERCHANT_PROMOTION_PREFIX: "FX-",
@@ -47,6 +54,21 @@ export function validateApp(app, env, storages, target, uuid) {
   const recipient = rows.filter((entry) => entry.key === "COMMERCE_V2_BACKUP_AGE_RECIPIENT");
   if (recipient.length !== 1 || !/^age1[0-9a-z]{58}$/.test(recipient[0].value ?? "")) refuse("V2_BACKUP_RECIPIENT_REQUIRED");
   if (rows.some((entry) => /^(TOCHKA_|ALFA_|REFREF_API_KEY|REFUND_ENVELOPE_)/.test(entry.key) && entry.present)) refuse("V2_PROVIDER_CREDENTIAL_FORBIDDEN");
+  if (mode === "normal-canary") {
+    for (const [key, value] of Object.entries({ ...normalCanaryOrigins, AUTH_EMAIL_PROVIDER: "notisend",
+      NOTISEND_FROM_EMAIL: "noreply@flexperiment.ru", NOTISEND_REPLY_TO: "art@flexperiment.ru" })) {
+      const found = rows.filter((entry) => entry.key === key);
+      if (found.length !== 1 || found[0].value !== value || found[0].is_runtime !== true
+        || found[0].is_buildtime !== false) refuse("V2_NORMAL_ORIGIN_OR_MAIL_DIFFERS");
+    }
+    for (const key of ["BETTER_AUTH_SECRET", "AUTH_EMAIL_OUTBOX_KEY", "CAMPAIGN_UNSUBSCRIBE_SECRET",
+      "COMMERCE_SESSION_SECRET", "COMMERCE_ADMIN_PASSWORD_SCRYPT", "SMARTCAPTCHA_SERVER_KEY", "NOTISEND_API_KEY", "NOTISEND_FROM_NAME"]) {
+      const found = rows.filter((entry) => entry.key === key);
+      if (found.length !== 1 || found[0].present !== true || found[0].length < (key === "NOTISEND_FROM_NAME" ? 1 : 32)
+        || found[0].is_buildtime !== false || found[0].is_runtime !== true) refuse("V2_NORMAL_RUNTIME_INPUT_REQUIRED");
+    }
+    if (rows.some((entry) => /^AUTH_EMAIL_DELIVERY_(ENDPOINT|TOKEN)$/.test(entry.key) && entry.present)) refuse("V2_NORMAL_MAIL_RELAY_FORBIDDEN");
+  }
   if (storages.file_storages?.length || storages.persistent_storages?.length !== 2) refuse("V2_STORAGE_CONFIGURATION_DIFFERS");
   const volumes = storages.persistent_storages;
   for (const path of [required.COMMERCE_V2_BACKUP_PATH, "/var/lib/flexperiment-v2"]) {
@@ -57,14 +79,60 @@ export function validateApp(app, env, storages, target, uuid) {
   return volumes.map((volume) => ({ name: volume.name, destination: volume.mount_path }));
 }
 
-export function verifyRuntime(result, sha, expectedMounts) {
+export function verifyRuntime(result, sha, expectedMounts, mode = "foundation") {
+  if (!["foundation", "normal-canary"].includes(mode)) refuse("V2_MODE_TARGET_REFUSED");
   if (result.identity?.schema !== "flexperiment.build-identity/1" || result.identity?.service !== "commerce-v2"
     || result.identity?.sourceCommit !== sha || result.baked?.sourceCommit !== sha || result.identityMode !== "444") refuse("V2_RUNTIME_IDENTITY_DIFFERS");
   if (result.ready?.sourceCommit !== sha || result.ready?.service !== "commerce-v2" || result.ready?.ok !== true
-    || result.ready.foundationMode !== true || result.ready.core?.paymentMode !== "disabled"
+    || result.ready.foundationMode !== (mode === "foundation") || result.ready.core?.paymentMode !== "disabled"
     || result.ready.core?.database !== "ok" || result.ready.capabilities?.refref !== "ready") refuse("V2_RUNTIME_NOT_READY");
   if (!result.containerId || !result.startedAt || !expectedMounts.every((expected) => result.mounts?.some((mount) =>
     mount.type === "volume" && mount.name === expected.name && mount.destination === expected.destination && mount.rw === true))) refuse("V2_RUNTIME_VOLUME_DIFFERS");
+  if (mode === "normal-canary" && (result.ready.capabilities?.authEmail !== "configured"
+    || result.ready.capabilities?.captcha !== "configured")) refuse("V2_NORMAL_CAPABILITY_MISSING");
+}
+
+/** Closed API preparation only. No public routing, customer creation, email or promotion. */
+export async function deployNormalCanary(sha, io) {
+  await admitRelease(sha, io.github);
+  if (io.apps.canary === io.apps.production) refuse("V2_ENVIRONMENTS_NOT_SEPARATE");
+  const production = await io.snapshot("production");
+  if (!/^[0-9a-f]{64}$/.test(production?.sha256 ?? "")) refuse("V2_PRODUCTION_SNAPSHOT_REQUIRED");
+  const uuid = io.apps.canary;
+  const app = await io.api("GET", `/applications/${uuid}`);
+  const mounts = validateApp(app, await io.api("GET", `/applications/${uuid}/envs`),
+    await io.api("GET", `/applications/${uuid}/storages`), "canary", uuid, "normal-canary");
+  const prodUuid = io.apps.production;
+  validateApp(await io.api("GET", `/applications/${prodUuid}`), await io.api("GET", `/applications/${prodUuid}/envs`),
+    await io.api("GET", `/applications/${prodUuid}/storages`), "production", prodUuid);
+  const backup = await io.backupRuntime("canary");
+  if (!/^[0-9a-f]{64}$/.test(backup?.sha256 ?? "") || !(backup.size > 0)) refuse("V2_BACKUP_PROOF_INVALID");
+  const archived = await io.archiveBackup("canary", backup);
+  if (archived.sha256 !== backup.sha256) refuse("V2_BACKUP_TRANSFER_DIFFERS");
+  await admitRelease(sha, io.github);
+  const current = await io.api("GET", `/applications/${uuid}`);
+  validateApp(current, await io.api("GET", `/applications/${uuid}/envs`),
+    await io.api("GET", `/applications/${uuid}/storages`), "canary", uuid, "normal-canary");
+  if (current.git_commit_sha !== app.git_commit_sha) refuse("V2_APP_PIN_DRIFT");
+  if ((await io.snapshot("production")).sha256 !== production.sha256) refuse("V2_PRODUCTION_CHANGED");
+  await io.casRef("canary", sha);
+  await io.api("PATCH", `/applications/${uuid}`, { git_commit_sha: sha });
+  await io.api("PATCH", `/applications/${uuid}/envs`, { key: "SOURCE_COMMIT", value: sha,
+    is_buildtime: true, is_runtime: true, is_preview: false });
+  if ((await io.api("GET", `/applications/${uuid}`)).git_commit_sha !== sha) refuse("V2_SOURCE_PIN_NOT_SAVED");
+  const source = (await io.api("GET", `/applications/${uuid}/envs`)).filter(row => row.key === "SOURCE_COMMIT" && !row.is_preview);
+  if (source.length !== 1 || source[0].value !== sha || source[0].is_buildtime !== true) refuse("V2_BUILD_SHA_NOT_SAVED");
+  validateApp(await io.api("GET", `/applications/${uuid}`), await io.api("GET", `/applications/${uuid}/envs`),
+    await io.api("GET", `/applications/${uuid}/storages`), "canary", uuid, "normal-canary");
+  if ((await io.snapshot("production")).sha256 !== production.sha256) refuse("V2_PRODUCTION_CHANGED");
+  await io.deploy("canary", sha);
+  verifyRuntime(await io.waitRuntime("canary", sha, mounts), sha, mounts, "normal-canary");
+  if ((await io.snapshot("production")).sha256 !== production.sha256) refuse("V2_PRODUCTION_CHANGED");
+  const proof = { sourceCommit: sha, mode: "normal-canary", apiReadiness: "PASS", backup: archived,
+    productionUnchanged: true, paymentMode: "disabled", qualification: "API_ONLY",
+    proxy: "NOT_QUALIFIED", magicLinkDelivery: "NOT_QUALIFIED", catalogueAndLegal: "OWNER_PENDING" };
+  await io.record("canary", proof);
+  return { canary: proof };
 }
 
 /** Both targets are inspected before writes; production depends on actual canary proof. */
