@@ -241,10 +241,17 @@ class BackupContract(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix=".v2-backup-contract-", dir=repo) as temporary:
             directory = pathlib.Path(temporary)
             remote = directory / "remote"
-            remote.mkdir()
-            (directory / "ciphertext.age").write_bytes(b"fixture-encrypted-by-TS-test")
+            remote.mkdir(mode=0o700)
+            fixture = directory / "ciphertext.age"
+            fixture.write_bytes(b"fixture-encrypted-by-TS-test")
+            fixture.chmod(0o600)
             def client(command):
+                # On Linux CI the 0700 fixture is owned by runner, not root.
+                # With ALL capabilities dropped UID0 cannot bypass that owner.
+                # Match the fixture owner, just as production root owns its
+                # 0700 archive directory and 0600 mounted credentials.
                 return backup.run(["docker", "run", "--rm", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges",
+                                   "--user", f"{os.getuid()}:{os.getgid()}",
                                    "-v", f"{directory}:/backup:ro", "-v", f"{remote}:/remote",
                                    "--entrypoint", "/bin/sh", backup.S3_IMAGE, "-c",
                                    "set -eu; set -o pipefail; export RCLONE_CONFIG_CLOUD_TYPE=alias RCLONE_CONFIG_CLOUD_REMOTE=/remote; " + command])
