@@ -12,6 +12,12 @@ Installing a timer before the CLI is deployed will fail, not create a database.
 
 Owner prerequisites:
 
+- The owner host's existing Python 3.10 is supported. Local SHA256 is computed
+  incrementally in 1 MiB chunks using `hashlib.sha256`, not Python 3.11-only
+  `hashlib.file_digest`. No host Python upgrade or checksum bypass is required.
+  The CI-wired regression removes that newer API and checks empty, small and
+  multi-chunk files; restoring the old implementation makes it fail.
+
 - `/root/flexperiment-v2-owner/deploy-config.json`: existing separate app UUIDs,
   root-owned `0600` (canary and production, never V1).
 - `/etc/flexperiment/recovery/age-recipient.txt`: existing public recipient

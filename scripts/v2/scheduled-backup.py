@@ -40,8 +40,11 @@ def run(args):
 
 
 def digest(path):
+    sha256 = hashlib.sha256()
     with path.open("rb") as source:
-        return hashlib.file_digest(source, "sha256").hexdigest()
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            sha256.update(chunk)
+    return sha256.hexdigest()
 
 
 def names(target, values, keep, current=None):
