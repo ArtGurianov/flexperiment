@@ -13,6 +13,7 @@ import { refundEnvelopeKeyringFromEnvironment } from "./refund-envelope";
 import { reconcilePendingRefunds } from "./refunds";
 import { loadCommerceOrigins } from "./origins";
 import { dispatchPendingCampaigns, type CampaignEmail } from "./campaigns";
+import { createMagicLinkEmailDelivery } from "./auth-email-delivery";
 
 const config = loadCommerceRuntimeConfig();
 const origins = loadCommerceOrigins();
@@ -24,7 +25,7 @@ if (buildIdentity.sourceCommit === "development" && config.deployEnvironment ===
 const serviceToken = process.env.PLATFORM_SERVICE_TOKEN;
 if (!serviceToken && config.deployEnvironment === "production") throw new Error("PLATFORM_SERVICE_TOKEN_REQUIRED");
 const emailDeliveryEndpoint = process.env.AUTH_EMAIL_DELIVERY_ENDPOINT;
-if (!emailDeliveryEndpoint && config.deployEnvironment === "production") throw new Error("AUTH_EMAIL_DELIVERY_ENDPOINT_REQUIRED");
+const magicLinkDelivery = createMagicLinkEmailDelivery();
 const campaignUnsubscribeSecret = process.env.CAMPAIGN_UNSUBSCRIBE_SECRET;
 if (!campaignUnsubscribeSecret && config.deployEnvironment === "production") throw new Error("CAMPAIGN_UNSUBSCRIBE_SECRET_REQUIRED");
 const marketingBroadcastsEnabled = process.env.MARKETING_BROADCASTS_ENABLED === "true";
@@ -40,20 +41,7 @@ if (config.deployEnvironment === "production" && (!controlRoomSessionSecret || !
 
 const auth = createAuthRuntime({
   db,
-  sendMagicLinkEmail: async ({ email, url }) => {
-    const endpoint = emailDeliveryEndpoint;
-    if (!endpoint) throw new Error("AUTH_EMAIL_DELIVERY_NOT_CONFIGURED");
-    const response = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        ...(process.env.AUTH_EMAIL_DELIVERY_TOKEN ? { authorization: `Bearer ${process.env.AUTH_EMAIL_DELIVERY_TOKEN}` } : {}),
-      },
-      body: JSON.stringify({ type: "MAGIC_LINK", recipientEmail: email, url }),
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!response.ok) throw new Error(`AUTH_EMAIL_DELIVERY_HTTP_${response.status}`);
-  },
+  sendMagicLinkEmail: magicLinkDelivery.send,
 });
 const smartCaptchaSecret = process.env.SMARTCAPTCHA_SERVER_KEY;
 if (!smartCaptchaSecret && config.deployEnvironment === "production") throw new Error("SMARTCAPTCHA_SERVER_KEY_REQUIRED");
@@ -113,7 +101,7 @@ const app = createCommerceV2App({
   } : undefined,
   kinescopeDrmAuth,
   runtimeCapabilities: {
-    authEmailConfigured: Boolean(emailDeliveryEndpoint),
+    authEmailConfigured: magicLinkDelivery.configured,
     captchaConfigured: Boolean(smartCaptchaSecret),
     kinescopeApiConfigured: Boolean(kinescopeClient),
   },
