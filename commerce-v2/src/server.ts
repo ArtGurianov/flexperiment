@@ -9,12 +9,17 @@ import { HttpKinescopeClient } from "./kinescope";
 import { MockPaymentRail, reconcilePendingCheckouts } from "./checkout";
 import { RefrefPaymentRail } from "./refref-payment-rail";
 import { readBuildIdentity } from "./build-identity";
+import { createRefrefReadinessProbe } from "./readiness";
 import { refundEnvelopeKeyringFromEnvironment } from "./refund-envelope";
 import { reconcilePendingRefunds } from "./refunds";
 import { loadCommerceOrigins } from "./origins";
 import { dispatchPendingCampaigns, type CampaignEmail } from "./campaigns";
 
 const config = loadCommerceRuntimeConfig();
+// Preserve the configured foundation dependency when switching to normal mode.
+// Production and a live Refref rail may never report readiness without probing it.
+const probeRefref = process.env.REFREF_READINESS_URL || config.deployEnvironment === "production" || config.paymentMode === "refref"
+  ? createRefrefReadinessProbe(process.env) : undefined;
 const origins = loadCommerceOrigins();
 const db = openV2Database();
 migrateV2(db);
@@ -101,6 +106,7 @@ const app = createCommerceV2App({
   config,
   sourceCommit: buildIdentity.sourceCommit,
   serviceToken: serviceToken ?? "development-platform-token",
+  probeRefref,
   authHandler: auth.auth.handler,
   prepareMagicLinkInitiation: auth.prepareMagicLinkInitiation,
   authenticateCustomer: auth.authenticateCustomer,
