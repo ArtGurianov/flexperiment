@@ -39,6 +39,18 @@ start() {
   exit 1
 }
 check() {
+  # Coolify's HTTP healthcheck runs curl inside the runtime image, not Node fetch.
+  # A missing executable must fail this actual-image gate before deployment.
+  docker exec "$task_id" curl --fail --silent --show-error --max-time 5 \
+    http://127.0.0.1:3002/identity > "$task_dir/curl-identity.json"
+  node -e 'const r=require(process.argv[1]);if(r.service!=="commerce-v2"||r.sourceCommit!==process.argv[2])process.exit(1)' \
+    "$task_dir/curl-identity.json" "$expected"
+  # Dependency-unavailable readiness remains non-200; installing curl must not
+  # turn a failed Refref probe into successful platform health.
+  probe_status=0
+  docker exec "$task_id" curl --fail --silent --show-error --max-time 5 \
+    http://127.0.0.1:3002/readyz > /dev/null 2>&1 || probe_status=$?
+  [[ "$probe_status" == 22 ]]
   docker exec "$task_id" node -e '
     const expected=process.argv[1];
     (async()=>{
@@ -79,4 +91,4 @@ docker rm -f "$task_id" >/dev/null
 start
 check
 storage verify "$marker"
-echo 'FOUNDATION_IMAGE=PASS persistence=PASS encrypted_restore=PASS refref_unavailable_fail_closed=PASS'
+echo 'FOUNDATION_IMAGE=PASS persistence=PASS encrypted_restore=PASS refref_unavailable_fail_closed=PASS curl_healthcheck=PASS'
