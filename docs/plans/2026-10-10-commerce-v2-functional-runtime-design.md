@@ -102,8 +102,8 @@ production apps or removing the current HTTPS 403 guard:
 | Target | Existing artifact / required preparation |
 | --- | --- |
 | `canary-platform.flexperiment.ru` | `Dockerfile.platform`, port 3001; independent editorial SQLite volume, private runtime `PAYLOAD_SECRET`, exact source identity, staging origins and `PAYLOAD_JOBS_ENABLED=false` initially. Configure canary-only `COMMERCE_INTERNAL_ORIGIN` and the existing canary service credential as `PLATFORM_COMMERCE_SERVICE_TOKEN`; never point at production. Editorial backup/restore is separate from Commerce SQLite proof. |
-| `canary-lab.flexperiment.ru` | `Dockerfile.frontend`, port 80, build-time approved `LAB_ORIGIN`. Existing static nginx does not supply the V2 same-origin `/v1/*` Commerce proxy; qualify a V2-specific proxy before auth tests. |
-| `canary-admin.flexperiment.ru` | Do not deploy legacy `Dockerfile.admin` unchanged: its nginx host/partner realm and `commerce:3001` upstream are V1-specific. Prepare a separate V2 canary host configuration, port-3002 upstream and rejection of partner/foreign-host paths; do not alter the working V1 config. |
+| `canary-lab.flexperiment.ru` | Separate `Dockerfile.frontends-v2`, build arg `V2_FRONTEND_SERVICE=lab-v2`, port 80; approved canary LAB origin baked in. The V2-only proxy does not translate the existing LAB's legacy `/v1/public/*` calls: those refuse, and full LAB functional qualification remains pending. |
+| `canary-admin.flexperiment.ru` | Separate `Dockerfile.frontends-v2`, build arg `V2_FRONTEND_SERVICE=admin-v2`, port 80. Only the canary admin host, login/session/logout and `/v1/admin/v2/*` reach Commerce V2; partner, legacy admin and foreign hosts refuse. Working V1 config remains unchanged. |
 | `canary-api.flexperiment.ru` | Existing normal canary, port 3002. Keep access guard; readiness alone is not permission to expose registration. |
 
 `AccountClient` calls relative `/v1/auth/*`, `/v1/me` and `/v1/legal/*` with
@@ -127,3 +127,46 @@ course purposes or modify the immutable seed to overwrite existing data.
 Registration, offers, payments and broadcasts stay closed. Actual inbox,
 CAPTCHA and browser cookie E2E remain unqualified until these dependencies are
 met; configured transport is not delivery evidence.
+
+### Canary-only static frontend preparation (ART-165 / ART-166 / ART-179)
+
+`deploy/v2/frontends/` is a separate nginx boundary, not a change to either V1
+Dockerfile or nginx config. Both artifacts bake `/identity` from exact
+`SOURCE_COMMIT` (0444); a runtime env override cannot change that descriptor.
+They require explicit `V2_COMMERCE_UPSTREAM` with the existing canary application
+UUID `xzuy7pk5y6ywjr9kh6nsk5ap`, optionally its Coolify timestamp suffix, and
+port 3002. Missing, arbitrary, production and legacy port-3001 targets refuse
+before nginx starts. No API/provider credential is installed in static images.
+
+The 2026-10-10 read-only Docker inventory exposed only the current container
+name as a network alias (`xzuy7pk5y6ywjr9kh6nsk5ap-20261010T152433`), not a stable
+application alias. Before any future frontend deployment, independently verify
+its private DNS target and current app identity; do not assume the bare UUID
+resolves. Use the verified current canary name or establish a reviewed stable
+canary alias at an authorized rollout. Recheck after Commerce replacement.
+This preparation does not restart Commerce merely to add an alias.
+
+Proxy requests preserve URI/query, method, body, Origin, cookies, status,
+Set-Cookie and Location, set the qualified storefront host and HTTPS scheme,
+and overwrite spoofable forwarded identity headers. There is no cookie-domain
+rewrite, CORS wildcard or cache. `/readyz` actually propagates the read-only
+Commerce readiness response, including 503; it is not a full frontend/auth
+readiness claim. Access/error logs are disabled to prevent logging magic-link
+query tokens, including malformed/oversized requests. Fixed diagnostic counters
+may be added later without logging URLs or bodies.
+
+Required CI runs real nginx on an internal synthetic Docker network and reruns
+the same contract against both actual built images: exact immutable identity,
+host/API isolation, request/response/cookie preservation, no permissive CORS,
+upstream 503, oversized/error paths, token-free logs and invalid upstream refusal.
+This proves the seam, not NotiSend delivery, real Better Auth cookie attributes,
+CAPTCHA, legal admission, catalogue content or a live browser session.
+
+No frontend is deployed or made public by these build/tests. The existing four
+403 guards remain authoritative until matching admitted apps, editorial storage
+and backup, legal admission and live access controls pass. Platform reuses its
+existing dynamic Next/Payload artifact and proxy. Do not claim the static LAB
+export is V2-complete: migrating its remaining V1 public API consumers is a
+concrete application prerequisite, not something nginx can fix or silently
+route into V1. Historical `STOP_AFTER_FINISHED` remains UNKNOWN; #188 improves
+future observation only and does not require repeating the healthy API deploy.

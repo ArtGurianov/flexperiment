@@ -1,0 +1,23 @@
+server {
+    listen 80 default_server;
+    server_name _;
+    access_log off;
+    error_log /dev/null crit;
+    location = /healthz { return 200 'frontend alive'; }
+    location / { return 404; }
+}
+server {
+    listen 80;
+    server_name canary-admin.flexperiment.ru;
+    root /usr/share/nginx/html;
+    set $commerce_upstream ${V2_COMMERCE_UPSTREAM};
+    include /etc/nginx/v2/common.conf;
+    location ~ ^/v1/admin/(login|session|logout)$ {
+        include /etc/nginx/v2/proxy.conf;
+        proxy_pass http://$commerce_upstream;
+    }
+    location ^~ /v1/admin/v2/ {
+        include /etc/nginx/v2/proxy.conf;
+        proxy_pass http://$commerce_upstream;
+    }
+}
