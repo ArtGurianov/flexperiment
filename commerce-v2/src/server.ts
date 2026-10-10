@@ -9,11 +9,11 @@ import { HttpKinescopeClient } from "./kinescope";
 import { MockPaymentRail, reconcilePendingCheckouts } from "./checkout";
 import { RefrefPaymentRail } from "./refref-payment-rail";
 import { readBuildIdentity } from "./build-identity";
+import { createRefrefReadinessProbe } from "./readiness";
 import { refundEnvelopeKeyringFromEnvironment } from "./refund-envelope";
 import { reconcilePendingRefunds } from "./refunds";
 import { loadCommerceOrigins } from "./origins";
 import { dispatchPendingCampaigns, type CampaignEmail } from "./campaigns";
-import { createRefrefReadinessProbe } from "./readiness";
 
 const config = loadCommerceRuntimeConfig();
 // Preserve the configured foundation dependency when switching to normal mode.
