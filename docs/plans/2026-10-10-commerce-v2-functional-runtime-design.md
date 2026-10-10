@@ -151,7 +151,9 @@ Set-Cookie and Location, set the qualified storefront host and HTTPS scheme,
 and overwrite spoofable forwarded identity headers. There is no cookie-domain
 rewrite, CORS wildcard or cache. `/readyz` actually propagates the read-only
 Commerce readiness response, including 503; it is not a full frontend/auth
-readiness claim. Access/error logs are disabled to prevent logging magic-link
+readiness claim. It is also available to private Coolify probes without the
+storefront Host; foreign-host application/API routes still refuse. Access/error
+logs are disabled to prevent logging magic-link
 query tokens, including malformed/oversized requests. Fixed diagnostic counters
 may be added later without logging URLs or bodies.
 

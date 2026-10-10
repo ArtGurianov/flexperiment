@@ -189,6 +189,11 @@ class FrontendProxy(unittest.TestCase):
     def test_readiness_propagates_upstream_unavailable(self):
         for service in self.services:
             self.assertEqual(self.request(service, "/readyz?unavailable=1")[0], 503)
+            # Private Coolify healthchecks have no storefront Host. This is a
+            # read-only readiness exception, not an application-route fallback.
+            self.assertEqual(self.request(service, "/readyz", host="127.0.0.1")[0], 200)
+            self.assertEqual(self.request(service, "/readyz?unavailable=1", host="127.0.0.1")[0], 503)
+            self.assertEqual(self.request(service, "/", host="127.0.0.1")[0], 404)
 
     def test_errors_and_oversize_do_not_log_tokens(self):
         for service, path in (("lab-v2", "/v1/auth/error"), ("admin-v2", "/v1/admin/v2/error")):
