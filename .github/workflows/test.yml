@@ -25,6 +25,10 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Foundation encrypted SQLite restore prerequisites
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends age
+      - name: Independent V2 owner control contract
+        run: python3 scripts/v2/test_owner_rpc.py
       - run: pnpm lint
       # Workflow defects used to surface only at dispatch time, which for a
       # deploy path means surfacing in production. actionlint catches the
@@ -207,5 +211,12 @@ jobs:
           --env LAB_ORIGIN=http://127.0.0.1:3100
           --env ADMIN_ORIGIN=http://127.0.0.1:3103
           --env API_ORIGIN=http://127.0.0.1:3102
+        env:
+          SOURCE_COMMIT: ${{ github.sha }}
+      - name: Commerce V2 foundation — actual image, restart, replacement and encrypted restore
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends age
+          bash scripts/ci/smoke-v2-foundation.sh flexperiment-commerce-v2:test
         env:
           SOURCE_COMMIT: ${{ github.sha }}
