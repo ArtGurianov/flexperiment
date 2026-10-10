@@ -123,7 +123,7 @@ def handle(message, config):
         if operation == "restart":
             api("POST", "/applications/" + uuid + "/restart")
             return {"requested": True}
-        result = api("GET", "/deploy?uuid=" + uuid + "&force=false")
+        result = api("POST", "/deploy?uuid=" + uuid + "&force=false")
         deployment = result["deployments"][0]["deployment_uuid"]
         if not re.fullmatch(r"[a-zA-Z0-9-]+", deployment):
             raise ValueError("DEPLOYMENT_ID_INVALID")
