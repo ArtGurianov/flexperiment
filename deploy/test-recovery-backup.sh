@@ -12,9 +12,13 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="$(mktemp -d "$ROOT/.recovery-backup-test.XXXXXX")"
-FAKE="commerce-rcltest$$-1"
+# Current Coolify container suffix includes T; the old numeric-only selector
+# failed before emitting its diagnostic on the real 20261008T043419 container.
+FAKE="commerce-rcltest$$-20260101T010203"
+SECOND="commerce-rcltest$$-2"
 cleanup() {
   docker rm -f "$FAKE" >/dev/null 2>&1 || true
+  docker rm -f "$SECOND" >/dev/null 2>&1 || true
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -32,7 +36,7 @@ DOCKERFILE
 
 run() {
   docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$WORK:$WORK" -v "$ROOT/deploy/host:/host:ro" \
-    -e RECOVERY_DIR="$WORK/local" -e CONF_DIR="$WORK/conf" -e FLEXPERIMENT_S3_LOCAL_DIR="$WORK/remote" \
+    -e RECOVERY_DIR="$WORK/local" -e CONF_DIR="${2:-$WORK/conf}" -e FLEXPERIMENT_S3_LOCAL_DIR="$WORK/remote" \
     "$RUNNER_IMAGE" bash -c "$1"
 }
 
@@ -82,9 +86,22 @@ check 'S3 objects the pattern does not name are left alone' '[ -e "$REMOTE/READM
 check 'the host keeps the 7 newest local bundles' \
   '[ "$(ls "$WORK/local" | grep -c "^flexperiment-runtime-")" = 7 ] && [ -e "$WORK/local/$name" ]'
 
+# Two runtime candidates are ambiguous: never choose `head -1`.
+docker run -d --name "$SECOND" node:22-alpine sleep 600 >/dev/null
+check 'multiple legacy Commerce candidates stop the real script' '! run "/host/flexperiment-recovery-backup" >/dev/null 2>&1'
+docker rm -f "$SECOND" >/dev/null
+
 # Without the S3 credentials, it refuses before touching anything.
-rm "$WORK/conf/s3-secret-key"
-check 'a missing credential file stops the run' '! run "/host/flexperiment-recovery-backup" >/dev/null 2>&1'
+# A fresh incomplete directory avoids Docker Desktop bind-mount cache effects
+# from deleting a previously mounted credential immediately before the check.
+mkdir -p "$WORK/missing-conf"
+cp "$WORK/conf/age-recipient.txt" "$WORK/conf/s3-access-key" "$WORK/missing-conf/"
+check 'a missing credential file stops the run' '! run "/host/flexperiment-recovery-backup" "$WORK/missing-conf" >/dev/null 2>&1'
+
+# Selection must not silently pick one runtime when two candidates exist.
+# A worker and the isolated V2 UUID-based names are deliberately not candidates.
+check 'legacy selector accepts old numeric and current timestamp suffix only' \
+  '[[ "$(printf "%s\n" commerce-a-123 commerce-b-20260101T010203 commerce-worker-a-20260101T010203 xzuy7pk5y6ywjr9kh6nsk5ap-20260101T010203 | grep -Ec "^commerce-[a-z0-9]+-([0-9]+|[0-9]{8}T[0-9]{6})$")" = 2 ]]'
 
 echo
 if [ "$failures" -gt 0 ]; then echo "$failures failed"; exit 1; fi

@@ -1,0 +1,11 @@
+[Unit]
+Description=Encrypted Commerce V2 SQLite backup (%i)
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+UMask=0077
+ExecStart=/usr/bin/python3 /usr/local/lib/flexperiment-v2/scheduled-backup.py %i backup
+TimeoutStartSec=15min
