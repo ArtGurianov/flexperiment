@@ -172,3 +172,27 @@ export is V2-complete: migrating its remaining V1 public API consumers is a
 concrete application prerequisite, not something nginx can fix or silently
 route into V1. Historical `STOP_AFTER_FINISHED` remains UNKNOWN; #188 improves
 future observation only and does not require repeating the healthy API deploy.
+
+### Build-time browser isolation follow-through
+
+PR #189 merged as `8302487a412ed043eeb51bffedd5f67b44d64fc9`; frontend
+deployment remains pending. Inspection exposed a concrete client-side gap:
+the shared LAB URL helper defaults to the production API when
+`NEXT_PUBLIC_COMMERCE_API_URL` is unset. The V2-only Dockerfile now explicitly
+sets an empty build-time value, producing relative same-origin URLs. Runtime
+environment changes cannot repair an already inlined Next.js browser bundle.
+V1 Dockerfiles and the shared helper's historical behavior are unchanged.
+
+The existing actual-image CI proxy suite also extracts the compiled helper
+from exported browser chunks and invokes it for auth, checkout and legacy paths.
+It requires relative results and refuses missing/ambiguous helper extraction.
+Production/foreign-base negative controls prove the probe rejects the defect.
+This is browser-bundle origin proof, not full LAB functionality: remaining
+legacy public tour/occurrence/checkout/ticket/refund/notification consumers still
+need explicit V2 contracts. Their requests remain refused by the V2 proxy;
+do not open routing, infer a working catalogue, or route them into V1.
+
+The first private Coolify frontend-app create request returned HTTP 400.
+Independent application inventory confirmed no LAB/admin V2 app was created
+and no frontend deployment was queued. Preserve this operational HOLD until
+the creation failure is resolved; it is separate from the build-time fix.

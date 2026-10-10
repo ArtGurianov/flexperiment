@@ -52,6 +52,43 @@ req.on('error', () => process.exit(2));
 if (input.body !== null) req.end(Buffer.from(input.body, 'base64')); else req.end();
 """
 
+# Evaluate only the API URL helper from the actual exported webpack chunk.
+# No React/browser boot, source transpilation, network or production fallback.
+CLIENT_BUNDLE_PROBE = r"""
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const files = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
+const marker = "Commerce API paths must begin with '/'.";
+let checked = 0;
+for (const code of files) {
+ if (!code.includes(marker)) continue;
+ const self = {webpackChunk_N_E: []};
+ vm.runInNewContext(code, {self}, {timeout: 1000});
+ for (const [, factories] of self.webpackChunk_N_E) {
+  for (const factory of Object.values(factories)) {
+   if (!factory.toString().includes(marker)) continue;
+   const module = {exports: {}};
+   const runtime = () => {throw new Error('UNEXPECTED_HELPER_DEPENDENCY')};
+   runtime.d = (exports, getters) => {
+    for (const [name, get] of Object.entries(getters))
+     Object.defineProperty(exports, name, {enumerable: true, get});
+   };
+   runtime.r = exports => Object.defineProperty(exports, '__esModule', {value: true});
+   factory(module, module.exports, runtime);
+   const helpers = Object.values(module.exports).filter(value => typeof value === 'function');
+   assert.equal(helpers.length, 1, 'AMBIGUOUS_COMMERCE_URL_HELPER');
+   const helper = helpers[0];
+   for (const path of ['/v1/auth/get-session', '/v1/checkout/preview', '/v1/public/tour'])
+    assert.equal(helper(path), path, 'V2_BROWSER_API_MUST_BE_SAME_ORIGIN');
+   assert.throws(() => helper('foreign.invalid'), error => error.message === marker);
+   checked++;
+  }
+ }
+}
+assert.ok(checked > 0, 'ACTUAL_COMMERCE_URL_HELPER_NOT_FOUND');
+console.log('ACTUAL_LAB_CLIENT_SAME_ORIGIN_PASS helpers=' + checked);
+"""
+
 
 def docker(*args, check=True, input=None):
     return subprocess.run(["docker", *args], check=check, capture_output=True, text=True, timeout=45, input=input)
@@ -141,6 +178,41 @@ class FrontendProxy(unittest.TestCase):
             self.assertEqual(headers["Cache-Control"], "no-store")
             self.assertEqual(docker("exec", self.prefix + "-" + service, "stat", "-c", "%a",
                                     "/app/.identity/identity.json").stdout.strip(), "444")
+
+    def test_actual_lab_browser_bundle_uses_same_origin(self):
+        if not os.environ.get("V2_FRONTEND_LAB_IMAGE"):
+            self.skipTest("requires actual built LAB image; mandatory in docker-build CI")
+        name = self.services["lab-v2"]
+        paths = docker("exec", name, "find", "/usr/share/nginx/html/_next/static",
+                       "-type", "f", "-name", "*.js").stdout.splitlines()
+        self.assertTrue(paths, "actual image contains no browser chunks")
+        files = []
+        for path in paths:
+            code = docker("exec", name, "cat", path).stdout
+            if "Commerce API paths must begin with '/'." in code:
+                files.append(code)
+        result = docker("exec", "-i", self.prefix + "-upstream", "node", "-e",
+                        CLIENT_BUNDLE_PROBE, input=json.dumps(files))
+        self.assertIn("ACTUAL_LAB_CLIENT_SAME_ORIGIN_PASS", result.stdout)
+
+    def test_browser_bundle_probe_refuses_production_base_and_missing_helper(self):
+        # Causes the same concrete defect as omitting the V2 build-time ENV.
+        # The actual-image test above is independent of this minimal fixture.
+        for base in ("", "https://api.flexperiment.ru", "https://untrusted.invalid"):
+            factory = "(module, exports, runtime) => { runtime.d(exports, {url: () => url}); " \
+                "const base=" + json.dumps(base) + "; const url = path => { " \
+                "if (!path.startsWith('/')) throw new Error(\"Commerce API paths must begin with '/'.\"); " \
+                "return base.replace(/\\/+$/, '') + path; }; }"
+            chunk = "self.webpackChunk_N_E.push([[1], {1: " + factory + "}]);"
+            result = docker("exec", "-i", self.prefix + "-upstream", "node", "-e",
+                            CLIENT_BUNDLE_PROBE, input=json.dumps([chunk]), check=False)
+            self.assertEqual(result.returncode == 0, base == "")
+            if base:
+                self.assertIn("V2_BROWSER_API_MUST_BE_SAME_ORIGIN", result.stderr)
+        missing = docker("exec", "-i", self.prefix + "-upstream", "node", "-e",
+                         CLIENT_BUNDLE_PROBE, input="[]", check=False)
+        self.assertNotEqual(missing.returncode, 0)
+        self.assertIn("ACTUAL_COMMERCE_URL_HELPER_NOT_FOUND", missing.stderr)
 
     def test_foreign_host_and_partner_realm_refuse(self):
         for service in self.services:
