@@ -14,6 +14,9 @@ ARG SOURCE_COMMIT
 ARG V2_FRONTEND_SERVICE
 ENV SOURCE_COMMIT=${SOURCE_COMMIT}
 ENV LAB_ORIGIN=https://canary-lab.flexperiment.ru
+# Next.js freezes NEXT_PUBLIC_* in the browser bundle at build time. Empty is
+# deliberately same-origin; never inherit the shared V1 production API default.
+ENV NEXT_PUBLIC_COMMERCE_API_URL=""
 RUN case "$V2_FRONTEND_SERVICE" in \
       lab-v2) pnpm build && cp -a apps/lab/out /app/v2-export ;; \
       admin-v2) pnpm --filter @flexperiment/admin build && cp -a apps/admin/out /app/v2-export ;; \
