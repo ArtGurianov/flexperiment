@@ -87,3 +87,43 @@ performed for this inventory. Foundation evidence remains accepted.
 
 No new issues, no F9 cutover or real financial operations in this PR. Keep code
 completion and production qualification separate in Linear evidence.
+
+## Normal-canary follow-through, 2026-10-10 (ART-165 / 166 / 179)
+
+Observed normal Commerce canary is `47eecb65a2a60e4c710b5c6b0b8e55130727fbc0`.
+Its independent API-only read-back is accepted, not a complete controller or
+magic-link qualification. Production remains the separate foundation runtime;
+regular Commerce backups are qualified and must not be rebuilt. External
+failure notification delivery remains pending for F9.
+
+Prepare frontends against the same admitted application source, without reusing
+production apps or removing the current HTTPS 403 guard:
+
+| Target | Existing artifact / required preparation |
+| --- | --- |
+| `canary-platform.flexperiment.ru` | `Dockerfile.platform`, port 3001; independent editorial SQLite volume, private runtime `PAYLOAD_SECRET`, exact source identity, staging origins and `PAYLOAD_JOBS_ENABLED=false` initially. Configure canary-only `COMMERCE_INTERNAL_ORIGIN` and the existing canary service credential as `PLATFORM_COMMERCE_SERVICE_TOKEN`; never point at production. Editorial backup/restore is separate from Commerce SQLite proof. |
+| `canary-lab.flexperiment.ru` | `Dockerfile.frontend`, port 80, build-time approved `LAB_ORIGIN`. Existing static nginx does not supply the V2 same-origin `/v1/*` Commerce proxy; qualify a V2-specific proxy before auth tests. |
+| `canary-admin.flexperiment.ru` | Do not deploy legacy `Dockerfile.admin` unchanged: its nginx host/partner realm and `commerce:3001` upstream are V1-specific. Prepare a separate V2 canary host configuration, port-3002 upstream and rejection of partner/foreign-host paths; do not alter the working V1 config. |
+| `canary-api.flexperiment.ru` | Existing normal canary, port 3002. Keep access guard; readiness alone is not permission to expose registration. |
+
+`AccountClient` calls relative `/v1/auth/*`, `/v1/me` and `/v1/legal/*` with
+same-origin credentials. Platform therefore also needs a qualified same-origin
+Commerce proxy, not merely an API-origin environment variable. Reuse its existing
+`app/v1/[...path]/route.ts` allowlisted proxy; `auth.ts` already rewrites the
+magic-link URL onto the selected storefront host. These are code-level facts,
+not live proxy/cookie proof, and do not justify writing a replacement auth flow.
+Verify the actual magic-link verification URL lands on the same host that owns
+the secure host-only cookie; do not solve this by setting `.flexperiment.ru` as
+a cookie domain. Test exact trusted origins, no-store, logout/revocation and access gates
+before per-host removal of any closed router rule. No matching canary frontend
+apps currently exist in Coolify; existing production frontend/admin apps are
+not staging substitutes.
+
+Stage A owner inputs remain absent (ART-232 / ART-169): four approved document
+texts/versions/URLs, and actual stable course/section/lesson refs, editorial
+content and merchant access/offer facts. Compute hashes from approved bytes;
+do not invent versions, activate synthetic legal releases, concatenate inferred
+course purposes or modify the immutable seed to overwrite existing data.
+Registration, offers, payments and broadcasts stay closed. Actual inbox,
+CAPTCHA and browser cookie E2E remain unqualified until these dependencies are
+met; configured transport is not delivery evidence.
