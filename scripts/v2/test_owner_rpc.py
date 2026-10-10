@@ -7,6 +7,10 @@ import stat
 import sys
 import tempfile
 import unittest
+import io
+import contextlib
+import subprocess
+import urllib.error
 from unittest.mock import call, patch
 
 sys.dont_write_bytecode = True
@@ -19,6 +23,52 @@ SHA = "a" * 40
 
 
 class OwnerControl(unittest.TestCase):
+    def main_result(self, raw, failure=None):
+        stdout = io.StringIO()
+        stdin = type("Input", (), {"buffer": io.BytesIO(raw)})()
+        with patch.object(rpc.sys, "stdin", stdin), patch.object(rpc, "private_json", return_value=CONFIG), \
+                patch.object(rpc, "handle", side_effect=failure), contextlib.redirect_stdout(stdout):
+            with self.assertRaises(SystemExit) as stopped:
+                rpc.main()
+        self.assertEqual(stopped.exception.code, 1)
+        return json.loads(stdout.getvalue())
+
+    def test_exception_diagnostics_are_bounded_and_preserve_failure(self):
+        secret = "synthetic-secret-url-jwt-token"
+        failures = [
+            (ValueError(secret), "VALIDATION_REFUSED"),
+            (urllib.error.HTTPError(secret, 503, secret, {}, io.BytesIO(secret.encode())), "HTTP_FAILURE"),
+            (urllib.error.URLError(secret), "CONTROL_TRANSPORT_FAILED"),
+            (subprocess.CalledProcessError(1, secret, output=secret, stderr=secret), "SUBPROCESS_FAILED"),
+            (subprocess.TimeoutExpired(secret, 60, output=secret, stderr=secret), "SUBPROCESS_TIMEOUT"),
+            (RuntimeError(secret), "OWNER_INTERNAL_ERROR"),
+        ]
+        for failure, reason in failures:
+            with self.subTest(reason=reason):
+                result = self.main_result(b'{"operation":"runtime","target":"canary"}', failure)
+                self.assertEqual(result["reason"], reason)
+                self.assertEqual(result["error"], "V2_OWNER_OPERATION_REFUSED")
+                self.assertNotIn(secret, json.dumps(result))
+                if reason == "HTTP_FAILURE":
+                    self.assertEqual(result["status"], 503)
+                else:
+                    self.assertEqual(set(result), {"error", "reason"})
+
+    def test_malformed_input_refuses_without_secondary_traceback(self):
+        for raw in [b'not-json-secret', b'null', b'[]', b'"string-secret"', b'x' * 65537]:
+            with self.subTest(raw=raw[:10]):
+                self.assertEqual(self.main_result(raw), {"error": "V2_OWNER_OPERATION_REFUSED", "reason": "VALIDATION_REFUSED"})
+
+    def test_only_nonconverged_runtime_retains_pending_semantics(self):
+        stdout = io.StringIO()
+        stdin = type("Input", (), {"buffer": io.BytesIO(b'{"operation":"runtime","target":"canary"}')})()
+        with patch.object(rpc.sys, "stdin", stdin), patch.object(rpc, "private_json", return_value=CONFIG), \
+                patch.object(rpc, "handle", side_effect=ValueError("V2_CONTAINER_NOT_CONVERGED")), contextlib.redirect_stdout(stdout):
+            rpc.main()
+        self.assertEqual(json.loads(stdout.getvalue()), {"pending": True})
+        result = self.main_result(b'{"operation":"snapshot","target":"production"}', ValueError("V2_CONTAINER_NOT_CONVERGED"))
+        self.assertEqual(result["reason"], "VALIDATION_REFUSED")
+
     def test_literal_secret_uses_saved_value_not_shell_quotes_and_remains_redacted(self):
         secret = "synthetic-owner-secret-32-characters"
         row = {"key": "BETTER_AUTH_SECRET", "value": secret, "real_value": "'" + secret + "'",

@@ -118,3 +118,23 @@ Archived ciphertext and safe per-environment proof are saved under the owner
 root's `backups/` and `evidence/` directories. This PR does not install backup
 timers or claim an off-site disaster-recovery proof; preserve/export ciphertext
 to independent owner recovery storage before relying on it for recovery.
+
+### Owner STOP diagnostics (ART-179 / ART-166)
+
+The transport reports the fixed RPC operation/target and a bounded failure
+category: SSH failure/timeout, owner validation refusal, numeric control HTTP
+failure, control transport failure, subprocess failure/timeout, invalid response,
+or unknown/internal failure. It never reports exception text, stderr, commands,
+stdin, environment values, URLs or provider bodies. The original nonzero exit,
+STOP and no-automatic-retry/rollback behavior are unchanged. Runtime `pending`
+still means only container nonconvergence; this change does not retry readiness
+failures or broaden admission. Python boundary tests and the required V2 Vitest
+suite exercise the real transport seam, redaction and CLI wiring.
+
+For the historical normal-canary deployment `ayualinbsl7wbkuvcrhni4yx` at
+`47eecb65a2a60e4c710b5c6b0b8e55130727fbc0`, Coolify finished and independent
+API-only read-back passed, but the CLI discarded the failed RPC's diagnostics.
+Its exact failed subcall and cause cannot be reconstructed from the queue-only
+journal. Do not retrospectively claim SSH timeout, readiness race or controller
+success. No redeploy is required to add this diagnostic fix; the historical STOP
+and independent API evidence remain separate.

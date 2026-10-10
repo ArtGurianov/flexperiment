@@ -8,6 +8,7 @@ import stat
 import subprocess
 import sys
 import urllib.request
+import urllib.error
 
 ROOT = "/root/flexperiment-v2-owner"
 PUBLIC_ENV = {"NODE_ENV", "DEPLOY_ENV", "COMMERCE_V2_FOUNDATION_MODE", "COMMERCE_V2_ENVIRONMENT",
@@ -236,20 +237,42 @@ def handle(message, config):
     raise ValueError("OPERATION_REFUSED")
 
 
-if __name__ == "__main__":
+def main():
+    raw = b""
+    message = {}
     try:
         os.umask(0o077)
         raw = sys.stdin.buffer.read(65537)
         if len(raw) > 65536:
             raise ValueError("INPUT_LIMIT")
-        print(json.dumps(handle(json.loads(raw), private_json(ROOT + "/deploy-config.json"))))
+        message = json.loads(raw)
+        if not isinstance(message, dict):
+            raise ValueError("INPUT_INVALID")
+        print(json.dumps(handle(message, private_json(ROOT + "/deploy-config.json"))))
     except ValueError as error:
-        if str(error) == "V2_CONTAINER_NOT_CONVERGED" and json.loads(raw).get("operation") == "runtime":
+        if str(error) == "V2_CONTAINER_NOT_CONVERGED" and isinstance(message, dict) and message.get("operation") == "runtime":
             print(json.dumps({"pending": True}))
         else:
-            print(json.dumps({"error": "V2_OWNER_OPERATION_REFUSED"}))
+            print(json.dumps({"error": "V2_OWNER_OPERATION_REFUSED", "reason": "VALIDATION_REFUSED"}))
             sys.exit(1)
+    except urllib.error.HTTPError as error:
+        print(json.dumps({"error": "V2_OWNER_OPERATION_REFUSED", "reason": "HTTP_FAILURE",
+                          "status": error.code if isinstance(error.code, int) and 100 <= error.code <= 599 else None}))
+        sys.exit(1)
+    except urllib.error.URLError:
+        print(json.dumps({"error": "V2_OWNER_OPERATION_REFUSED", "reason": "CONTROL_TRANSPORT_FAILED"}))
+        sys.exit(1)
+    except subprocess.TimeoutExpired:
+        print(json.dumps({"error": "V2_OWNER_OPERATION_REFUSED", "reason": "SUBPROCESS_TIMEOUT"}))
+        sys.exit(1)
+    except subprocess.CalledProcessError:
+        print(json.dumps({"error": "V2_OWNER_OPERATION_REFUSED", "reason": "SUBPROCESS_FAILED"}))
+        sys.exit(1)
     except Exception:
         # No arbitrary API bodies, token, environment, URL or subprocess stderr.
-        print(json.dumps({"error": "V2_OWNER_OPERATION_REFUSED"}))
+        print(json.dumps({"error": "V2_OWNER_OPERATION_REFUSED", "reason": "OWNER_INTERNAL_ERROR"}))
         sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

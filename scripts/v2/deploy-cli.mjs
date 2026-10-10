@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { appendFileSync } from "node:fs";
 import { deployFoundation, deployNormalCanary, validateCheckout, verifyRuntime } from "./deployment.mjs";
+import { ownerRpc } from "./owner-transport.mjs";
 
 const sha = process.env.V2_SOURCE_SHA;
 const host = process.env.V2_OWNER_HOST;
@@ -23,12 +24,10 @@ async function run() {
   const rpc = async (message) => {
     // Payload is stdin, not remote-shell text. Verify the transferred helper on every call.
     const command = `test "$(sha256sum ${script} | cut -d ' ' -f 1)" = ${rpcHash} && python3 ${script}`;
-    try {
-      return JSON.parse(execFileSync("ssh", [...(key ? ["-i", key] : []), "-o", "StrictHostKeyChecking=yes", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+    return ownerRpc(message, [...(key ? ["-i", key] : []), "-o", "StrictHostKeyChecking=yes", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
         "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=1", host, command], {
-        input: JSON.stringify(message), encoding: "utf8", timeout: 90_000, maxBuffer: 2_000_000, stdio: ["pipe", "pipe", "ignore"],
-      }));
-    } catch { throw new Error("V2_OWNER_TRANSPORT_OR_OPERATION_FAILED"); }
+        timeout: 90_000, maxBuffer: 2_000_000,
+      });
   };
   const { apps } = await rpc({ operation: "config" });
   const github = async (path) => {
