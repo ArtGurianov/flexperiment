@@ -145,3 +145,47 @@ reviewer и конечной даты; истёкший hold требует disp
 Полный VPS/Cloud.ru/Mac inventory, реальная policy approval, независимый suppression
 ledger, processor coordination и runtime installation остаются отдельными gates.
 secure_delete не доказывает очистку WAL, дисков или старых ciphertext.
+
+## ART-232: verified request и remote custody — отдельный неактивный slice
+
+Сохраняем original plan: подписанный независимый ledger, retained key generations,
+full-schema isolated restore gate, явный retention и CLOSED operational boundaries.
+Из предложенного продолжения принимаем два отдельных PR (material improvement:
+reviewable failure boundaries), verified identity + remote ACK (critical fix:
+local append не переживает потерю VPS) и runtime/send fencing (critical fix:
+remote ACK сам по себе не завершает in-flight auth/email). Не принимаем активацию
+первого slice без второго: нельзя объявлять live deletion admitted при работающих
+отправителях. Owner decisions для кода не нужны; установка остаётся отдельным gate.
+
+Request capability выдаётся только сервером из действительной Better Auth session
+и текущей verified user/customer/session binding. Exact Origin обязателен; client
+передаёт только requestId, не email/customerId. Перед append binding перепроверяется;
+capability expires60s и не создаётся структурной подделкой. Content-consent gate
+не блокирует запрос удаления. Email в art@ — PENDING_IDENTITY_VERIFICATION, не
+доказательство владения аккаунтом и не команда на удаление.
+
+Owner-side custodian: local signed append → age public-recipient encrypted complete
+bundle → immutable remote conditional create → signed head CAS → independent GET
+exact ciphertext/head → fresh nonce-bound checkpoint. Store/keys не устанавливаются
+в Commerce; private recovery identity нужна только independent restore. Состояние
+REMOTE_DURABLE_CONFIRMED означает custody, не физическое удаление/processor ACK.
+Потерянный ответ submit сверяется GET-only с тем же requestId. Pending публикация
+возобновляется только явной owner operation publishPending, с GET-first и CAS, без
+нового erasure event. Missing head не создаёт genesis автоматически; initialization
+отдельная операция только с пустым local ledger. Remote-ahead/fork/tamper → CLOSED.
+
+Risk delta: direct SDK dependency закреплена за уже имеющейся в lockfile версией
+3.1143.0 без upgrade Payload/S3 dependencies. Новый adapter требует отдельно доказать
+Cloud.ru conditional-write contract, off-VPS storage independence, no-delete IAM,
+anti-rollback authority и recovery/signing/subject escrow. AWS S3 If-Match/If-None-Match
+contract не является доказательством поведения конкретного Cloud.ru аккаунта.
+Adapter допускает только scoped GET/conditional PUT, maxAttempts1, bounded streams,
+HTTPS, explicit owner credentials; никаких list/delete/unconditional/retry fallback.
+
+Tests используют реальные SQLite, Better Auth, age encryption/decryption и SDK
+SigV4 serialization; remote SQLite fixture НЕ доказывает off-VPS/Cloud admission.
+Failure injection: before-upload, uploaded ciphertext/lost ACK, committed head/lost
+ACK, stale authority, CAS conflict, reflected secrets, bounded malformed reads.
+Следующий PR должен закрывать admission/send/auth/restore гонки до любой live установки.
+Deployment, live migrations, legal activation, registration, marketing, payments/F9
+по-прежнему CLOSED. Existing foundation/recovery evidence не повторяется.
