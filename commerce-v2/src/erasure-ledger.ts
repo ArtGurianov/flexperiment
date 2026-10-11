@@ -150,7 +150,7 @@ export class VerifiedErasureLedger {
     const body = checkpoint.body;
     const checkedAt = now().getTime();
     const age = checkedAt - Date.parse(body.issuedAt);
-    if (body.scope !== input.scope || body.nonce !== nonce || age < 0 || age > 60_000
+    if (!Number.isFinite(checkedAt) || !Number.isFinite(age) || body.scope !== input.scope || body.nonce !== nonce || age < 0 || age > 60_000
       || !validSignature(body, checkpoint.signature, signingKey(input.keys, body.signingKeyId))) refuse("ERASURE_CHECKPOINT_INVALID");
     const bundle = validateBundle(input.bundle, input.scope, input.keys);
     if (bundle.entries.at(-1) && Date.parse(bundle.entries.at(-1)!.body.recordedAt) > Date.parse(body.issuedAt)) refuse("ERASURE_CHECKPOINT_INVALID");
@@ -165,7 +165,7 @@ export class VerifiedErasureLedger {
   assertFresh(now = new Date()) {
     if (!verifiedCapabilities.has(this)) refuse("ERASURE_ADMISSION_INVALID");
     const age = now.getTime() - this.verifiedAt;
-    if (age < 0 || age > 60_000) refuse("ERASURE_ADMISSION_EXPIRED");
+    if (!Number.isFinite(age) || age < 0 || age > 60_000) refuse("ERASURE_ADMISSION_EXPIRED");
   }
 }
 

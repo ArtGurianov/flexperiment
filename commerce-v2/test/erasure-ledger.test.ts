@@ -111,6 +111,14 @@ describe("independent signed erasure journal core, no merchant/live wiring", () 
     await read(bundle, bundle, { readCurrentCheckpoint });
     await expect(read(bundle, bundle, { readCurrentCheckpoint })).rejects.toThrow("ERASURE_CHECKPOINT_INVALID");
   });
+  it("refuses an invalid verification clock instead of issuing an indefinitely fresh capability", async () => {
+    const bundle = open().export();
+    await expect(read(bundle, bundle, { now: () => new Date(NaN) })).rejects.toThrow("ERASURE_CHECKPOINT_INVALID");
+  });
+  it("refuses an invalid admission clock even for a genuine capability", async () => {
+    const verified = await read(open().export());
+    expect(() => verified.assertFresh(new Date(NaN))).toThrow("ERASURE_ADMISSION_EXPIRED");
+  });
   it("refuses merchant roots, symlinks, loose permissions and foreign SQLite tables", () => {
     expect(() => new ErasureLedgerStore({ ...options(), directory: join(directory, "merchant") })).toThrow("ERASURE_STORAGE_NOT_INDEPENDENT");
     chmodSync(join(directory, "ledger"), 0o755);
