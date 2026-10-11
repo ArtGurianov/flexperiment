@@ -8,6 +8,7 @@ import { assertPaymentCreationEnabled, type CommerceRuntimeConfig } from "./paym
 import { saveResumePosition } from "./resume";
 import { confirmCheckout, prepareCheckout, reconcileCheckout, type PaymentRail } from "./checkout";
 import { activateSales, configureProduct, setCoursePaymentPurpose, withdrawProduct } from "./catalog-control";
+import { configureCourseCommercial, type CourseCommercialCommand } from "./course-commercial-control";
 import { campaignStatus, confirmCampaign, createCampaign, dispatchCampaign, retryCampaign, unsubscribeCustomer, type CampaignEmail } from "./campaigns";
 import { assertVideoUploadInput, observeKinescopeStatus, pollKinescopeUpload, startVideoUpload, type KinescopeClient, type KinescopeStatus } from "./kinescope";
 import { activateLegalRelease, currentLegalRelease, type LegalReleaseManifest } from "./legal-control";
@@ -386,6 +387,30 @@ export function createCommerceV2App(deps: Dependencies) {
       return context.json(result, 200, noStore);
     } catch (error) {
       return context.json({ code: error instanceof Error ? error.message : "PRODUCT_COMMAND_FAILED" }, 409, noStore);
+    }
+  });
+
+  app.post("/v1/internal/catalog/courses/:courseRef/commercial", async (context) => {
+    try {
+      const input = await context.req.json<CourseCommercialCommand>();
+      const result = configureCourseCommercial(deps.db, deps.config, {
+        courseRef: context.req.param("courseRef"), actor: input.actor, commandKey: input.commandKey,
+        accessModel: input.accessModel, priceKopecks: input.priceKopecks, expectedVersion: input.expectedVersion,
+      }, now().toISOString());
+      let cacheRefresh: "CONFIRMED" | "PENDING" = "PENDING";
+      try {
+        if (deps.invalidatePlatformCache) {
+          await deps.invalidatePlatformCache("swr", context.req.param("courseRef"));
+          cacheRefresh = "CONFIRMED";
+        }
+      }
+      catch { cacheRefresh = "PENDING"; }
+      return context.json({ ...result, cacheRefresh }, 200, noStore);
+    } catch (error) {
+      const allowed = ["COURSE_COMMERCIAL_COMMAND_INVALID", "COURSE_PRICE_INVALID", "COURSE_COMMAND_KEY_CONFLICT",
+        "COURSE_PRODUCT_AMBIGUOUS", "CATALOG_VERSION_CONFLICT", "WITHDRAWN_PRODUCT_IMMUTABLE", "FREE_ACCESS_HISTORY_REQUIRES_RECONCILIATION"];
+      const code = error instanceof Error && allowed.includes(error.message) ? error.message : "COURSE_COMMERCIAL_UPDATE_FAILED";
+      return context.json({ code }, 409, noStore);
     }
   });
 
@@ -839,7 +864,7 @@ export function createCommerceV2App(deps: Dependencies) {
     const lessonRef = context.req.param("lessonRef");
     const observedAt = now().toISOString();
     const resolution = resolvePlaybackAccess(deps.db, {
-      customerId, lessonRef, now: now(), leaseMs: Number(process.env.CATALOG_LEASE_MS ?? 24 * 60 * 60 * 1000),
+      customerId, lessonRef, now: now(), leaseMs: Number(process.env.CATALOG_LEASE_MS ?? 24 * 60 * 60 * 1000), recordFreeEnrollment: true,
     });
     if (resolution.decision !== "ALLOW") {
       recordPlaybackAccessEvent(deps.db, {

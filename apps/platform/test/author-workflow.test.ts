@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { courseCommercialEndpoints } from "../lib/course-commercial-endpoints";
 
 const endpoint = (path: string) => {
-  const found = courseCommercialEndpoints.find((candidate) => candidate.path === path);
+  const found = courseCommercialEndpoints.find((candidate) => candidate.path === path && candidate.method === (path.startsWith("/commercial-summary/") ? "get" : "post"));
   if (!found) throw new Error(`ENDPOINT_NOT_FOUND:${path}`);
   return found;
 };
@@ -20,7 +20,7 @@ describe("Payload author workflow", () => {
     vi.stubEnv("PLATFORM_COMMERCE_SERVICE_TOKEN", "token");
     vi.stubEnv("ADMIN_ORIGIN", "https://admin.flexperiment.test");
     vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({
-      courses: [{ courseRef: "course:one", accessModel: "PAID" }],
+      courses: [{ courseRef: "course:one", accessModel: "PAID", version: 1, offerRef: "course:one", priceKopecks: 100, saleMode: "CLOSED", withdrawn: false }],
     }));
 
     const response = await endpoint("/commercial-summary/:courseRef").handler({

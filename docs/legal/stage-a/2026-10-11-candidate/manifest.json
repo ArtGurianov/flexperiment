@@ -1,0 +1,54 @@
+{
+  "schema": "flexperiment.legal-candidate-review/1",
+  "version": "2026-10-11.candidate.1",
+  "ownerApproval": "OWNER_APPROVAL_RECEIVED",
+  "candidateDelta": "REVIEW_PENDING",
+  "activation": "PROHIBITED_UNTIL_ADMISSION",
+  "rkn": "OWNER_CONFIRMED_SUBMITTED",
+  "documents": [
+    {
+      "kind": "privacy",
+      "approvedSource": {
+        "sha256": "c900a358350e4103676c1f0b25874151d9caef024dfb69ad156327400927e49a",
+        "path": "docs/legal/stage-a/2026-10-11-draft/privacy.md"
+      },
+      "candidate": {
+        "sha256": "15665fdfea53c99f2c36e98697e817e83ece9a09b7ceed6882fc668609859408",
+        "path": "docs/legal/stage-a/2026-10-11-candidate/privacy.md"
+      }
+    },
+    {
+      "kind": "personal_data",
+      "approvedSource": {
+        "sha256": "650e65fb2d1bae5e3e2487b9eddb88a29f2825c421027d4e6c174fa55a2cb744",
+        "path": "docs/legal/stage-a/2026-10-11-draft/personal_data.md"
+      },
+      "candidate": {
+        "sha256": "1b34aa22849b8a328709bdcc1c368937594bbce9a615989e6f17f85bce40e4b8",
+        "path": "docs/legal/stage-a/2026-10-11-candidate/personal_data.md"
+      }
+    },
+    {
+      "kind": "account_terms",
+      "approvedSource": {
+        "sha256": "928c70924019c618c3bd52ea0e0f47ba7576d00ac6c9176d65967669998b192e",
+        "path": "docs/legal/stage-a/2026-10-11-draft/account_terms.md"
+      },
+      "candidate": {
+        "sha256": "a75588355cedbf91a3ca96fb61c1d8d062a76ff242f7233661866949f6ad5740",
+        "path": "docs/legal/stage-a/2026-10-11-candidate/account_terms.md"
+      }
+    },
+    {
+      "kind": "marketing_consent",
+      "approvedSource": {
+        "sha256": "2e51350e5778da1f0ba6c9b258e992e38459308fd8ab4f2a183e59982934e607",
+        "path": "docs/legal/stage-a/2026-10-11-draft/marketing_consent.md"
+      },
+      "candidate": {
+        "sha256": "f8305d62fb4dbaf8884b7281e0d2a3e75568789cabd09b1fae799739a1d79088",
+        "path": "docs/legal/stage-a/2026-10-11-candidate/marketing_consent.md"
+      }
+    }
+  ]
+}

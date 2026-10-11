@@ -15,6 +15,8 @@ type ProjectionRow = {
   access_model: "FREE" | "PAID" | null;
   product_withdrawn_at: string | null;
   sale_mode: "CLOSED" | "ACCEPTANCE_ONLY" | "PUBLIC";
+  product_id: string | null;
+  product_version: number | null;
 };
 
 type Grant = { scope: "COURSE" | "ALL_COURSES"; course_ref: string | null; revoked_at: string | null };
@@ -32,13 +34,22 @@ export function resolvePlaybackAccess(db: Database.Database, input: {
   lessonRef: string;
   now: Date;
   leaseMs: number;
+  recordFreeEnrollment?: boolean;
+}): PlaybackAccessResolution {
+  // Serialize eligibility/enrollment with FREE→PAID changes, including other SQLite connections.
+  if (input.recordFreeEnrollment) return db.transaction(() => resolvePlaybackAccessLocked(db, input)).immediate();
+  return resolvePlaybackAccessLocked(db, input);
+}
+
+function resolvePlaybackAccessLocked(db: Database.Database, input: {
+  customerId: string; lessonRef: string; now: Date; leaseMs: number; recordFreeEnrollment?: boolean;
 }): PlaybackAccessResolution {
   const row = db.prepare(`SELECT
     lesson.lesson_ref, lesson.course_ref, lesson.ever_published, lesson.visibility AS lesson_visibility,
     lesson.free_preview, lesson.withdrawn_at AS lesson_withdrawn_at,
     section.visibility AS section_visibility, course.visibility AS course_visibility,
     course.last_reconciled_at, product.access_model, product.withdrawn_at AS product_withdrawn_at,
-    COALESCE(offer.sale_mode, 'CLOSED') AS sale_mode
+    COALESCE(offer.sale_mode, 'CLOSED') AS sale_mode, product.id AS product_id, product.version AS product_version
     FROM catalog_lesson_projection lesson
     JOIN catalog_section_projection section ON section.section_ref = lesson.section_ref
     JOIN catalog_course_projection course ON course.course_ref = lesson.course_ref
@@ -64,7 +75,9 @@ export function resolvePlaybackAccess(db: Database.Database, input: {
     } : undefined,
     grants: grants.map((grant) => ({ scope: grant.scope, courseRef: grant.course_ref ?? undefined, revoked: Boolean(grant.revoked_at) })),
     activeDenyNonEntitledOverride: activeOverride,
-    projectionStale: row ? input.now.getTime() - Date.parse(row.last_reconciled_at) > input.leaseMs : false,
+    retainedFreeEnrollment: Boolean(row?.product_id && db.prepare(`SELECT 1 FROM free_course_enrollments
+      WHERE customer_id=? AND product_id=?`).get(input.customerId, row.product_id)),
+    projectionStale: row ? !Number.isFinite(Date.parse(row.last_reconciled_at)) || input.now.getTime() - Date.parse(row.last_reconciled_at) > input.leaseMs : false,
   });
   const paidEntitled = Boolean(row?.access_model === "PAID" && grants.some((grant) =>
     grant.scope === "ALL_COURSES" || (grant.scope === "COURSE" && grant.course_ref === row.course_ref)));
@@ -72,6 +85,12 @@ export function resolvePlaybackAccess(db: Database.Database, input: {
   const binding = db.prepare("SELECT active_video_id,duration_seconds FROM lesson_video_bindings WHERE lesson_ref=?")
     .get(input.lessonRef) as { active_video_id: string; duration_seconds: number | null } | undefined;
   if (!binding) return { decision, courseRef: row?.course_ref, paidEntitled, resumeAt: 0 };
+  if (input.recordFreeEnrollment && row?.access_model === "FREE" && db.prepare(`SELECT 1 FROM customers c
+    JOIN "user" u ON u.id=c.auth_user_id WHERE c.id=? AND u.email_verified=1 AND lower(trim(u.email))=c.email_normalized`)
+    .get(input.customerId)) {
+    db.prepare(`INSERT OR IGNORE INTO free_course_enrollments(customer_id,product_id,product_version,enrolled_at)
+      VALUES (?,?,?,?)`).run(input.customerId, row.product_id, row.product_version, input.now.toISOString());
+  }
   const resume = db.prepare("SELECT seconds FROM lesson_resume_positions WHERE customer_id=? AND lesson_ref=?")
     .get(input.customerId, input.lessonRef) as { seconds: number } | undefined;
   return {

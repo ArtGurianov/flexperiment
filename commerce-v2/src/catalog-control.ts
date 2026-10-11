@@ -55,10 +55,10 @@ export function configureProduct(db: Database.Database, config: CommerceRuntimeC
   assertLiveOfferSaleMode(db, config, command);
   const apply = db.transaction(() => {
     const existing = db.prepare(`SELECT product.id,product.withdrawn_at,product.version,product.kind,product.course_ref,
-      product.occurrence_ref,offer.offer_ref FROM products product LEFT JOIN offers offer ON offer.product_id=product.id
+      product.occurrence_ref,product.access_model,offer.offer_ref FROM products product LEFT JOIN offers offer ON offer.product_id=product.id
       WHERE product.product_ref=?`).get(command.productRef) as {
         id: string; withdrawn_at: string | null; version: number;
-        kind: ProductCommand["kind"]; course_ref: string | null; occurrence_ref: string | null; offer_ref: string | null;
+        kind: ProductCommand["kind"]; access_model: "FREE" | "PAID"; course_ref: string | null; occurrence_ref: string | null; offer_ref: string | null;
       } | undefined;
     if (existing?.withdrawn_at) throw new Error("WITHDRAWN_PRODUCT_IMMUTABLE");
     if ((!existing && command.expectedVersion !== 0) || (existing && existing.version !== command.expectedVersion)) throw new Error("CATALOG_VERSION_CONFLICT");
@@ -67,6 +67,12 @@ export function configureProduct(db: Database.Database, config: CommerceRuntimeC
       || existing.occurrence_ref !== (command.occurrenceRef ?? null)
       || (existing.offer_ref !== null && existing.offer_ref !== command.offerRef))) throw new Error("PRODUCT_IDENTITY_IMMUTABLE");
     const productId = existing?.id ?? randomUUID();
+    // Apply to every writer (including Control Room), not just the CMS command.
+    if (existing?.access_model === "FREE" && command.accessModel === "PAID" && existing.kind === "ONLINE_COURSE"
+      && db.prepare(`SELECT 1 FROM playback_access_events e JOIN catalog_lesson_projection l ON l.lesson_ref=e.lesson_ref
+        WHERE l.course_ref=? AND e.event_type='GRANT_ALLOWED' AND NOT EXISTS (
+          SELECT 1 FROM free_course_enrollments f WHERE f.customer_id=e.customer_id AND f.product_id=?) LIMIT 1`)
+        .get(existing.course_ref, productId)) throw new Error("FREE_ACCESS_HISTORY_REQUIRES_RECONCILIATION");
     const priorOffer = db.prepare("SELECT id,payment_purpose FROM offers WHERE product_id=?").get(productId) as
       { id: string; payment_purpose: string | null } | undefined;
     const paymentPurpose = command.paymentPurpose === undefined ? priorOffer?.payment_purpose ?? null : command.paymentPurpose;

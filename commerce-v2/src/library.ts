@@ -47,6 +47,8 @@ export function listCustomerLibrary(
     WHERE customer_id=? AND revoked_at IS NULL`).all(customerId) as ActiveGrant[];
   const overrides = db.prepare(`SELECT course_ref,scope_level,scope_ref FROM access_overrides
     WHERE state='PENDING'`).all() as Array<{ course_ref: string; scope_level: "COURSE" | "SECTION" | "LESSON"; scope_ref: string }>;
+  const freeCourses = new Set((db.prepare(`SELECT p.course_ref FROM free_course_enrollments f
+    JOIN products p ON p.id=f.product_id WHERE f.customer_id=?`).all(customerId) as Array<{ course_ref: string }>).map(row => row.course_ref));
   const entitledCourse = (courseRef: string) => grants.some((grant) =>
     grant.scope === "ALL_COURSES" || (grant.scope === "COURSE" && grant.course_ref === courseRef));
   const result = new Map<string, CustomerLibrary["courses"][number]>();
@@ -80,9 +82,10 @@ export function listCustomerLibrary(
       grants: grants.map((grant) => ({ scope: grant.scope, courseRef: grant.course_ref ?? undefined, revoked: false })),
       activeDenyNonEntitledOverride: activeOverride,
       projectionStale,
+      retainedFreeEnrollment: freeCourses.has(row.course_ref),
     });
     if (decision !== "ALLOW") continue;
-    const access = entitled ? "ENTITLED" : row.access_model === "FREE" ? "FREE" : "PREVIEW";
+    const access = entitled ? "ENTITLED" : row.access_model === "FREE" || freeCourses.has(row.course_ref) ? "FREE" : "PREVIEW";
     const course = result.get(row.course_ref) ?? { courseRef: row.course_ref, access, lessons: [] };
     course.lessons.push({ lessonRef: row.lesson_ref, sectionRef: row.section_ref, access });
     if (access === "ENTITLED") course.access = "ENTITLED";
