@@ -72,6 +72,56 @@ UI/domain/API tests покрывают отказ, ambiguous COMMIT/absence, о�
 смену редакции, оба порядка late-commit race и независимый session read-back.
 Erasure/retention и independent restore-suppression остаются отдельным delta ART-232.
 
+## ART-232: независимый erasure ledger — первый инженерный slice
+
+База: merge #201 `180eb165f34c1c94de5566ee5c364c69ffc24450`. Выбран отдельный
+owner-side SQLite journal, HMAC-псевдонимы, Ed25519 signatures и hash chain.
+Отвергнуты tombstones в merchant SQLite (возвращаются из старого backup) и отдельный
+журнал с raw email/claims (ненужная копия ПД). Генерации subject/signing keys сохраняются
+в отдельной custody; приватные signing keys не нужны restore consumer. Псевдонимы —
+ПД, не анонимизация. Подписанный fingerprint поколения subject key предотвращает
+тихую потерю совпадений при подстановке неправильного ключа той же длины.
+
+Первый slice — библиотека, не активный HTTP deletion endpoint или host installation.
+Ledger находится вне merchant/editorial/snapshot roots, owner-only 0700/0600,
+EXTRA synchronous SQLite append + DELETE journal с независимым read-back PRAGMA;
+отдельные writer connections сериализуются. EXTRA синхронизирует directory journal
+unlink; FULL не гарантирует последний commit при близком power loss на всех FS
+([SQLite contract](https://www.sqlite.org/pragma.html#pragma_synchronous)). Это не
+power-fault proof VPS и не замена независимому remote acknowledgement.
+Append-only sequence/request identity, scopes canary/production, previous hash,
+fixed kind, signing key ID и подпись проверяются полностью. requestId idempotent
+только для тех же kind/subject. Capacity/clock regression/unknown generation → STOP.
+
+Restore consumer запрашивает новый nonce-bound checkpoint у независимой актуальной
+authority; signature + scope + head/count + issuance freshness обязательны.
+Saved checkpoint или watermark из восстанавливаемой DB не подходят. Capability
+immutable, expires за 60 секунд; старый complete signed bundle не проходит сравнение
+с newest head. Callback adapter обязан обращаться к independently current authenticated
+authority без cache/fallback. В этом slice используется настоящая независимая local
+SQLite в isolated tests; remote durable acknowledgement, authentication/fencing,
+encrypted export и off-VPS key escrow **ещё не установлены/не квалифицированы**.
+Подмена latest authority её старой резервной копией вне модели допустимого adapter.
+
+Isolated restore применяет ERASURE к точным customer/user identities, восстанавливает
+email suppression и отменяет pending campaign recipients. Новая same-email identity
+не удаляется по email, но старый marketing opt-in не снимает suppression. FK-order
+purge удаляет Stage A consent events, FREE receipts, progress/telemetry и auth outbox;
+ALL restored sessions/magic links invalidated before subsequent runtime admission.
+Unknown FK, financial history, subject binding drift или неклассифицированный audit →
+transaction rollback/HOLD. Никаких отключённых FKs, переписанных consent events или
+выдуманных legal holds. `secure_delete` — только снижение остаточных cell bytes в
+isolated copy, не доказательство уничтожения WAL/offline archives/SSD.
+Полный DDL fingerprint схемы0001–0025 закреплён отдельно от restore input; новая
+таблица без FK, колонка или trigger требуют явной requalification, не silent purge.
+
+После проверки не возвращается runtime PASS: serving/jobs/mail остаются PENDING.
+Следующие отдельные slices: authenticated/manual request admission + durable remote
+append ordering and immediate suppression/session revocation; retention/processor
+tasks and offline archive policy; boot/send-boundary/fencing integration. После них
+подготовить private-canary admission migrations0023–0025/subsequent schema/E2E.
+Не допускать restore к трафику только по успешному isolated purge.
+
 ## Следующий независимый delta: category retention
 
 Выбран отдельный offline SQLite engine с явной проверяемой policy и bounded holds;
