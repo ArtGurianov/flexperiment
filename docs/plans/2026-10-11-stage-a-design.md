@@ -108,6 +108,8 @@ Unknown FK, financial history, subject binding drift или неклассифи
 transaction rollback/HOLD. Никаких отключённых FKs, переписанных consent events или
 выдуманных legal holds. `secure_delete` — только снижение остаточных cell bytes в
 isolated copy, не доказательство уничтожения WAL/offline archives/SSD.
+Полный DDL fingerprint схемы0001–0025 закреплён отдельно от restore input; новая
+таблица без FK, колонка или trigger требуют явной requalification, не silent purge.
 
 После проверки не возвращается runtime PASS: serving/jobs/mail остаются PENDING.
 Следующие отдельные slices: authenticated/manual request admission + durable remote

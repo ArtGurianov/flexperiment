@@ -1,6 +1,18 @@
 import type Database from "better-sqlite3";
+import { createHash } from "node:crypto";
 import { classifyV2Database } from "./db";
 import { assertErasureSubjectKey, erasurePseudonym, ErasureLedgerError, VerifiedErasureLedger, type ErasureKeys } from "./erasure-ledger";
+
+// Reviewed schema 0001–0025, including triggers, views, columns, indexes and FKs.
+// A new migration/DDL must explicitly requalify erasure coverage. Deriving this
+// expected value from the restored DB would silently admit its unclassified data.
+const REVIEWED_SCHEMA_SHA256 = "158654c61bd97be4dbcab4348651722fe105587f6ff202ad4db821512774e030";
+function assertReviewedSchema(db: Database.Database) {
+  const schema = db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").all();
+  if (createHash("sha256").update(JSON.stringify(schema)).digest("hex") !== REVIEWED_SCHEMA_SHA256) {
+    throw new ErasureLedgerError("ERASURE_RESTORE_UNCLASSIFIED_SCHEMA");
+  }
+}
 
 /** Isolated restore ONLY. No HTTP endpoint, runtime activation or mail/provider call.
  * Must run before any traffic/jobs/email, with a genuinely independent fresh ledger.
@@ -19,6 +31,7 @@ export function applyIsolatedRestoreErasure(db: Database.Database, ledger: Verif
   try {
     return db.transaction(() => {
       ledger.assertFresh(now);
+      assertReviewedSchema(db);
       // Restore admission is NOT based on a watermark stored in the restored DB.
       // Unknown columns/tables/FKs fail the entire transaction, never disable FKs.
       let erasedAccounts = 0; let suppressedEmails = 0;

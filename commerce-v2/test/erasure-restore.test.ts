@@ -102,7 +102,7 @@ describe("real isolated old SQLite backup + independent latest erasure journal",
       expect(calls).toBe(0);
     } finally { restored.close(); }
   });
-  it.each(["financial", "audit", "binding", "fk", "keys", "scope", "expired"])("keeps the entire restore CLOSED/unchanged on %s uncertainty", async reason => {
+  it.each(["financial", "audit", "binding", "fk", "unclassified", "column", "trigger", "keys", "scope", "expired"])("keeps the entire restore CLOSED/unchanged on %s uncertainty", async reason => {
     tombstone(); const proof = await verified();
     if (reason === "financial") db.prepare(`INSERT INTO orders(id,public_id,customer_id,state,total_kopecks,checkout_snapshot_json,snapshot_hash,legal_release_id)
       VALUES ('order','public','deleted-customer','FULFILLED',100,'{}',?,(SELECT id FROM legal_releases WHERE active=1 LIMIT 1))`).run("a".repeat(64));
@@ -110,6 +110,10 @@ describe("real isolated old SQLite backup + independent latest erasure journal",
       VALUES ('audit','operator','SYNTHETIC','CUSTOMER','deleted-customer','{}')`);
     if (reason === "binding") db.exec("UPDATE customers SET email_normalized='changed@example.test' WHERE id='deleted-customer'");
     if (reason === "fk") db.exec(`CREATE TABLE unexpected_data(customer_id TEXT REFERENCES customers(id)); INSERT INTO unexpected_data VALUES ('deleted-customer')`);
+    if (reason === "unclassified") db.exec(`CREATE TABLE shadow_profiles(email TEXT); INSERT INTO shadow_profiles VALUES ('deleted-customer@example.test')`);
+    if (reason === "column") db.exec("ALTER TABLE cities ADD COLUMN customer_profile TEXT");
+    if (reason === "trigger") db.exec(`CREATE TRIGGER shadow_copy BEFORE DELETE ON customers BEGIN
+      INSERT INTO audit_log(id,actor,action,subject_type,subject_ref,evidence_json) VALUES ('copy','shadow','COPY','CUSTOMER',OLD.id,'{}'); END`);
     const before = db.serialize();
     expect(() => applyIsolatedRestoreErasure(db, proof, reason === "keys" ? { ...keys, subject: { "subject-1": randomBytes(32) } } : keys,
       reason === "scope" ? "production" : "canary", reason === "expired" ? new Date(now.getTime() + 60_001) : now)).toThrow(/ERASURE_/);

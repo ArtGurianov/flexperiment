@@ -102,6 +102,8 @@ describe("independent signed erasure journal core, no merchant/live wiring", () 
     expect(() => { verified.bundle.entries[0].body.kind = "MARKETING_SUPPRESSION"; }).toThrow();
     const fake = Object.create(VerifiedErasureLedger.prototype) as VerifiedErasureLedger;
     expect(() => fake.assertFresh(now)).toThrow("ERASURE_ADMISSION_INVALID");
+    // TypeScript private is erased at runtime; direct JS construction is refused.
+    expect(() => Reflect.construct(VerifiedErasureLedger, [verified.bundle, now.getTime(), {}])).toThrow("ERASURE_ADMISSION_INVALID");
   });
   it("rejects a cached signed checkpoint replay because each read uses a new nonce", async () => {
     const bundle = open().export(); let cached: unknown;

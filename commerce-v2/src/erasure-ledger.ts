@@ -128,8 +128,10 @@ export function issueErasureCheckpoint(bundle: ErasureBundle, nonce: string, sig
 // Only this module can create a verified capability. Callers cannot skip verification
 // by structurally constructing a bundle, or reuse a stale capability indefinitely.
 const verifiedCapabilities = new WeakSet<VerifiedErasureLedger>();
+const verificationAuthority = Object.freeze({});
 export class VerifiedErasureLedger {
-  private constructor(readonly bundle: ErasureBundle, readonly verifiedAt: number) {
+  private constructor(readonly bundle: ErasureBundle, readonly verifiedAt: number, authority: object) {
+    if (authority !== verificationAuthority) refuse("ERASURE_ADMISSION_INVALID");
     verifiedCapabilities.add(this); Object.freeze(this);
   }
   static async read(input: {
@@ -158,7 +160,7 @@ export class VerifiedErasureLedger {
     // The verified object must not alias mutable input supplied by an operator/API.
     for (const entry of bundle.entries) { Object.freeze(entry.body.subject); Object.freeze(entry.body); Object.freeze(entry); }
     Object.freeze(bundle.entries); Object.freeze(bundle);
-    return new VerifiedErasureLedger(bundle, checkedAt);
+    return new VerifiedErasureLedger(bundle, checkedAt, verificationAuthority);
   }
   assertFresh(now = new Date()) {
     if (!verifiedCapabilities.has(this)) refuse("ERASURE_ADMISSION_INVALID");
