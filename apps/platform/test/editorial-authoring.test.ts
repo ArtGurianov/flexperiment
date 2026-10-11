@@ -3,21 +3,20 @@ import { createLocalReq, getPayload, type Payload } from "payload";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { flexing101Proposal, prepareFlexing101Draft } from "../lib/launch/flexing101";
 import { listPublicCourses } from "../lib/content/editorial";
 import { closedEditorial, closedEmail } from "../lib/canary-editorial";
-import type { User } from "../payload-types";
+import type { Lesson, User } from "../payload-types";
 import { buildCourseManifest } from "../lib/manifest/build";
 import type { EditorialDocument } from "../lib/content/editorial";
 
 let payload: Payload;
 let directory: string;
 let author: User;
-let result: Awaited<ReturnType<typeof prepareFlexing101Draft>>;
+let savedLesson: Lesson;
 const environment = { ...process.env };
 
 beforeAll(async () => {
-  directory = await mkdtemp(join(tmpdir(), "flexing101-preparation-"));
+  directory = await mkdtemp(join(tmpdir(), "editorial-authoring-"));
   process.env.PAYLOAD_SECRET = "isolated-stage-a-preparation-not-a-runtime-key";
   process.env.PAYLOAD_DATABASE_URL = `file:${join(directory, "editorial.sqlite")}`;
   process.env.PAYLOAD_MEDIA_DIR = join(directory, "media");
@@ -46,23 +45,39 @@ afterAll(async () => {
 });
 
 const request = () => createLocalReq({ user: author }, payload);
+// Disposable test data through the ordinary author APIs, never a launch/import helper.
+const createDraftTree = async (slug: string, lessonCount: number) => {
+  const req = await request();
+  const transactionID = await payload.db.beginTransaction();
+  if (transactionID == null) throw new Error("ISOLATED_TRANSACTION_REQUIRED");
+  req.transactionID = transactionID;
+  try {
+    const course = await payload.create({ collection: "courses", draft: true, depth: 0, overrideAccess: false, req,
+      data: { title: `Synthetic ${slug}`, slug, summary: "Isolated test content", visibility: "unlisted", _status: "draft" } });
+    const section = await payload.create({ collection: "sections", draft: true, depth: 0, overrideAccess: false, req,
+      data: { course: course.id, title: `Section ${slug}`, position: 0, visibility: "unlisted", _status: "draft" } });
+    const lessons = [];
+    for (let position = 0; position < lessonCount; position += 1) {
+      lessons.push(await payload.create({ collection: "lessons", draft: true, depth: 0, overrideAccess: false, req,
+        data: { course: course.id, section: section.id, title: `Lesson ${position}`, slug: `${slug}-${position}`,
+          position, freePreview: false, visibility: "unlisted", _status: "draft" } }));
+    }
+    await payload.db.commitTransaction(transactionID);
+    return { course, section, lessons };
+  } catch (error) {
+    await payload.db.rollbackTransaction(transactionID);
+    throw error;
+  } finally { delete req.transactionID; }
+};
 const counts = async () => Promise.all(["courses", "sections", "lessons", "payload-jobs", "course-manifest-states", "access-operations"].map(
   (collection) => payload.count({ collection: collection as "courses", overrideAccess: true }).then((value) => value.totalDocs),
 ));
 
-describe("Flexing 101 draft preparation on actual Payload SQLite", () => {
-  it("refuses unauthenticated preparation before any write", async () => {
+describe("ordinary editorial authoring on actual isolated Payload SQLite", () => {
+  it("refuses unauthenticated course authoring before any write", async () => {
     const before = await counts();
-    await expect(prepareFlexing101Draft(await createLocalReq({}, payload))).rejects.toThrow("EDITORIAL_AUTHOR_REQUIRED");
-    expect(await counts()).toEqual(before);
-  });
-
-  it("refuses production even with an authenticated author", async () => {
-    const before = await counts();
-    process.env.DEPLOY_ENV = "production";
-    try {
-      await expect(prepareFlexing101Draft(await request())).rejects.toThrow("DRAFT_PREPARATION_PRODUCTION_FORBIDDEN");
-    } finally { process.env.DEPLOY_ENV = "staging"; }
+    await expect(payload.create({ collection: "courses", draft: true, overrideAccess: false, req: await createLocalReq({}, payload),
+      data: { title: "Guest content", slug: "guest-content", summary: "Synthetic", _status: "draft" } })).rejects.toThrow();
     expect(await counts()).toEqual(before);
   });
 
@@ -73,7 +88,7 @@ describe("Flexing 101 draft preparation on actual Payload SQLite", () => {
     const closed = closedEditorial(collection);
     collection.hooks = { ...originalHooks, beforeChange: closed.hooks!.beforeChange! };
     try {
-      await expect(prepareFlexing101Draft(await request())).rejects.toThrow("PLATFORM_CANARY_EDITORIAL_CLOSED");
+      await expect(createDraftTree("closed-content", 2)).rejects.toThrow("PLATFORM_CANARY_EDITORIAL_CLOSED");
     } finally { collection.hooks = originalHooks; }
     expect(await counts()).toEqual(before);
   });
@@ -83,32 +98,33 @@ describe("Flexing 101 draft preparation on actual Payload SQLite", () => {
     const hooks = payload.collections.lessons.config.hooks!;
     const original = hooks.beforeChange;
     hooks.beforeChange = [...(original ?? []), ({ data }) => {
-      if (data.slug === "practice-combination") throw new Error("ISOLATED_LATE_LESSON_FAILURE");
+      if (data.slug === "rollback-content-1") throw new Error("ISOLATED_LATE_LESSON_FAILURE");
       return data;
     }];
     try {
-      await expect(prepareFlexing101Draft(await request())).rejects.toThrow("ISOLATED_LATE_LESSON_FAILURE");
+      await expect(createDraftTree("rollback-content", 3)).rejects.toThrow("ISOLATED_LATE_LESSON_FAILURE");
     } finally { hooks.beforeChange = original; }
     expect(await counts()).toEqual(before);
   });
 
-  it("creates genuine draft refs/relations without videos, offers, manifest or external I/O", async () => {
+  it.each([["arbitrary-alpha", 2], ["arbitrary-beta", 3]] as const)("authors %s with %s lessons and dynamic refs, without external I/O", async (slug, lessonCount) => {
+    const before = await counts();
     const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("EXTERNAL_IO_FORBIDDEN"));
     try {
-      result = await prepareFlexing101Draft(await request());
+      const result = await createDraftTree(slug, lessonCount);
       const { course, section, lessons } = result;
-      expect(course.title).toBe("Flexing 101");
+      expect(course.title).toBe(`Synthetic ${slug}`);
       expect(course.hero).toBeFalsy();
       expect(section.course).toBe(course.id);
-      expect(lessons).toHaveLength(4);
+      expect(lessons).toHaveLength(lessonCount);
       const refs = [course.courseRef, section.sectionRef, ...lessons.map((lesson) => lesson.lessonRef)];
-      expect(new Set(refs).size).toBe(6);
+      expect(new Set(refs).size).toBe(lessonCount + 2);
       for (const ref of refs) expect(ref).toMatch(/^[a-f0-9-]{36}$/);
       for (const [index, lesson] of lessons.entries()) {
         expect(lesson.course).toBe(course.id);
         expect(lesson.section).toBe(section.id);
         expect(lesson.position).toBe(index);
-        expect(lesson.title).toBe(flexing101Proposal.lessons[index].title);
+        expect(lesson.title).toBe(`Lesson ${index}`);
         expect(lesson.durationSeconds).toBeFalsy();
         expect(lesson).not.toHaveProperty("videoRef");
         expect(lesson.freePreview).toBe(false);
@@ -118,40 +134,22 @@ describe("Flexing 101 draft preparation on actual Payload SQLite", () => {
         expect(record.visibility).toBe("unlisted");
         expect(record.everPublished).toBe(false);
       }
-      expect(await counts()).toEqual([1, 1, 4, 0, 0, 0]);
+      expect(await counts()).toEqual([before[0] + 1, before[1] + 1, before[2] + lessonCount, ...before.slice(3)]);
+      savedLesson = lessons[0];
+      await expect(buildCourseManifest(payload, course as unknown as EditorialDocument)).rejects.toThrow("COURSE_NOT_PUBLISHED");
       expect(fetch).not.toHaveBeenCalled();
     } finally { fetch.mockRestore(); }
-  });
-
-  it("keeps the proposal separate from factual video metadata and paid catalogue", () => {
-    expect(flexing101Proposal.lessons.reduce((minutes, lesson) => minutes + lesson.proposedMinutes, 0)).toBe(20);
-    expect(flexing101Proposal.priceMinor).toBe(0);
-    expect(flexing101Proposal.accessModel).toBe("FREE");
-    expect(flexing101Proposal.status).toBe("DRAFT_OWNER_REVIEW");
-    expect(flexing101Proposal).not.toHaveProperty("courseRef");
-    expect(flexing101Proposal).not.toHaveProperty("videoRef");
   });
 
   it("keeps drafts invisible through the actual public editorial query", async () => {
     expect(await listPublicCourses(payload)).toEqual([]);
   });
 
-  it("refuses duplicate import without modifying existing draft identities", async () => {
-    const before = await counts();
-    await expect(prepareFlexing101Draft(await request())).rejects.toThrow("FLEXING101_ALREADY_EXISTS");
-    expect(await counts()).toEqual(before);
-    const saved = await payload.findByID({ collection: "courses", id: result.course.id, overrideAccess: true });
-    expect(saved.courseRef).toBe(result.course.courseRef);
-  });
-
   it("preserves immutable refs through a real collection hook", async () => {
-    await expect(payload.update({ collection: "lessons", id: result.lessons[0].id, draft: true,
+    await expect(payload.update({ collection: "lessons", id: savedLesson.id, draft: true,
       overrideAccess: false, req: await request(), data: { lessonRef: "not-the-created-ref" },
     })).rejects.toThrow("LESSONREF_IMMUTABLE");
-  });
-
-  it("cannot enter the existing publication pipeline as a draft", async () => {
-    await expect(buildCourseManifest(payload, result.course as unknown as EditorialDocument)).rejects.toThrow("COURSE_NOT_PUBLISHED");
-    expect((await counts()).slice(3)).toEqual([0, 0, 0]);
+    const saved = await payload.findByID({ collection: "lessons", id: savedLesson.id, overrideAccess: true });
+    expect(saved.lessonRef).toBe(savedLesson.lessonRef);
   });
 });

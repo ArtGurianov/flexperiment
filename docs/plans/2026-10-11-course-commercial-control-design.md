@@ -20,7 +20,7 @@ Delta-review: состояние редактора сбрасывается к�
 
 Regression: service authority, author/Origin, отсутствующий курс, строгие цены, CAS/idempotency, отказ после withdrawal, FREE → PAID с сохранением доступа и отказом новому посетителю, ограничения visibility/override, historical ambiguity, отсутствие orders/checkout_attempts, независимый read-back и смена курса в UI.
 
-## Ручная подготовка Flexing 101
+## Ручная подготовка любого курса
 
 Автор создаёт и сохраняет курс, разделы и уроки в Payload, затем загружает реальные материалы в Kinescope и указывает действительные video refs. В поле «Доступ и цена — Commerce» выбирает FREE и нажимает отдельную кнопку «Сохранить в Commerce». Сервер проверяет сохранённый courseRef и создаёт canonical product/offer с нулевой ценой и закрытыми продажами; UI подтверждает результат свежим read-back. Обычное сохранение редакционного документа не отправляет скрытую коммерческую команду.
 
@@ -29,3 +29,5 @@ Regression: service authority, author/Origin, отсутствующий кур�
 PAYMENT_MODE=disabled, marketing=false. Canary preparation продолжает блокировать CMS mutations. Никаких production changes, публикации курса, legal release activation, удаления HTTPS 403 guards или F9. Этот PR — engineering admission, не browser/video E2E.
 
 Реальное создание и редактирование курса через работающую CMS ещё **PENDING**: closedEditorial(Courses) по-прежнему отклоняет mutations. Для private authoring qualification нужен отдельно ограниченный авторизованный доступ в изолированный canary, без публичной регистрации, publishing/email/jobs side effects и без удаления публичных 403 guards. Этот delta не меняет закрывающую политику и не объявляет mock UI tests live E2E.
+
+Общие критерии Stage A находятся в [V2 merchant contract](../v2-merchant-schema.md#stage-a-admission-and-course-authoring). Название, slug, количество уроков и длительность — произвольные данные CMS, а не контракт запуска. Первый реальный курс остаётся ручным milestone ART-169; код не требует конкретного курса или полного каталога.
