@@ -121,3 +121,14 @@ if [[ $service == platform ]]; then
   grep -q 'Каталог курсов' "$response_file"
   grep -q 'Первый курс готовится к публикации.' "$response_file"
 fi
+
+if [[ $service == commerce-v2 ]]; then
+  # Exercise the shared DTO from the actual runtime image, not host TS sources.
+  curl --fail --silent --show-error \
+    "http://127.0.0.1:${host_port}/v1/lab/catalogue" >"$response_file"
+  node -e '
+    const result = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+    if (result.schema !== "flexperiment.lab-catalogue/1" || result.paymentMode !== "disabled"
+        || !Array.isArray(result.cities) || !Array.isArray(result.occurrences)) process.exit(1);
+  ' "$response_file"
+fi

@@ -7,6 +7,9 @@ on:
       - main
   workflow_dispatch: {}
 
+env:
+  CI_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
 concurrency:
   group: flexperiment-test-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
@@ -17,6 +20,10 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CI_SOURCE_SHA }}
+      - name: Assert exact CI source checkout
+        run: test "$(git rev-parse HEAD)" = "$CI_SOURCE_SHA"
       - uses: pnpm/action-setup@v4
         with:
           version: 10.29.3
@@ -25,16 +32,20 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Exact checkout and baked CI identity regression
+        run: python3 scripts/v2/test_ci_source_identity.py -v
       - name: Foundation encrypted SQLite restore prerequisites
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends age
       - name: Isolated editorial online backup and encrypted independent restore contract
         run: python3 scripts/v2/test_platform_backup.py -v
+      - name: Isolated Platform canary scheduled transport and recovery admission
+        run: python3 scripts/v2/test_platform_scheduled_backup.py -v
       - name: Independent V2 owner control contract
         run: python3 scripts/v2/test_owner_rpc.py
       - name: Isolated V2 canary same-origin proxy contract (real nginx)
         run: python3 scripts/v2/test_frontend_proxy.py -v
         env:
-          SOURCE_COMMIT: ${{ github.sha }}
+          SOURCE_COMMIT: ${{ env.CI_SOURCE_SHA }}
       - name: Scheduled V2 backup transport, isolation, retention and freshness contract
         run: V2_BACKUP_REAL_S3_CLIENT=1 python3 scripts/v2/test_scheduled_backup.py
       - run: pnpm lint
@@ -51,6 +62,8 @@ jobs:
       - run: pnpm --filter @flexperiment/lab exec next typegen
       - run: pnpm exec tsc --noEmit
       - run: pnpm lab:typecheck
+      - name: Independent LAB V2 types (V1 remains frozen)
+        run: pnpm --filter @flexperiment/lab-v2 exec next typegen && pnpm --filter @flexperiment/lab-v2 typecheck
       # The root tsconfig EXCLUDES apps/admin, so the line above never saw a
       # single admin/partner component. The admin app carries its own
       # tsconfig (its own jsx/lib/bundler settings) and needs its own
@@ -75,16 +88,16 @@ jobs:
       #
       # Must come after the LAB `next typegen` above, or PageProps<"/events/
       # [slug]"> does not resolve. `pnpm build` refuses a SOURCE_COMMIT that is
-      # not exactly 40 lowercase hex characters; github.sha already is one.
+      # not exactly 40 lowercase hex characters; CI_SOURCE_SHA already is one.
       - name: Build the static export
         run: pnpm build
         env:
-          SOURCE_COMMIT: ${{ github.sha }}
+          SOURCE_COMMIT: ${{ env.CI_SOURCE_SHA }}
           LAB_ORIGIN: https://lab.flexperiment.ru
       - name: Build the Payload platform
         run: pnpm platform:build
         env:
-          SOURCE_COMMIT: ${{ github.sha }}
+          SOURCE_COMMIT: ${{ env.CI_SOURCE_SHA }}
           PAYLOAD_SECRET: ci-build-only-not-a-runtime-secret
           PAYLOAD_DATABASE_URL: file:/tmp/flexperiment-platform-ci.sqlite
           PLATFORM_ORIGIN: https://build.invalid
@@ -118,6 +131,10 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CI_SOURCE_SHA }}
+      - name: Assert exact CI source checkout
+        run: test "$(git rev-parse HEAD)" = "$CI_SOURCE_SHA"
       - uses: docker/setup-buildx-action@v3
 
       # The three Dockerfiles Coolify builds, with Coolify's own context and
@@ -136,7 +153,7 @@ jobs:
           file: Dockerfile.frontend
           push: false
           build-args: |
-            SOURCE_COMMIT=${{ github.sha }}
+            SOURCE_COMMIT=${{ env.CI_SOURCE_SHA }}
             LAB_ORIGIN=https://lab.flexperiment.ru
           cache-from: type=gha,scope=frontend
           cache-to: type=gha,mode=max,scope=frontend
@@ -147,7 +164,7 @@ jobs:
           context: .
           file: Dockerfile.admin
           push: false
-          build-args: SOURCE_COMMIT=${{ github.sha }}
+          build-args: SOURCE_COMMIT=${{ env.CI_SOURCE_SHA }}
           cache-from: type=gha,scope=admin
           cache-to: type=gha,mode=max,scope=admin
 
@@ -177,7 +194,7 @@ jobs:
           load: true
           tags: flexperiment-platform-v2:test
           build-args: |
-            SOURCE_COMMIT=${{ github.sha }}
+            SOURCE_COMMIT=${{ env.CI_SOURCE_SHA }}
             PLATFORM_ORIGIN=https://ci.platform.invalid
             YANDEX_WEBMASTER_VERIFICATION=ci-yandex-verification
           cache-from: type=gha,scope=platform-v2
@@ -191,7 +208,7 @@ jobs:
           push: false
           load: true
           tags: flexperiment-commerce-v2:test
-          build-args: SOURCE_COMMIT=${{ github.sha }}
+          build-args: SOURCE_COMMIT=${{ env.CI_SOURCE_SHA }}
           cache-from: type=gha,scope=commerce-v2
           cache-to: type=gha,mode=max,scope=commerce-v2
 
@@ -204,7 +221,7 @@ jobs:
           load: true
           tags: flexperiment-lab-v2:test
           build-args: |
-            SOURCE_COMMIT=${{ github.sha }}
+            SOURCE_COMMIT=${{ env.CI_SOURCE_SHA }}
             V2_FRONTEND_SERVICE=lab-v2
           cache-from: type=gha,scope=frontends-v2
           cache-to: type=gha,mode=max,scope=frontends-v2
@@ -218,7 +235,7 @@ jobs:
           load: true
           tags: flexperiment-admin-v2:test
           build-args: |
-            SOURCE_COMMIT=${{ github.sha }}
+            SOURCE_COMMIT=${{ env.CI_SOURCE_SHA }}
             V2_FRONTEND_SERVICE=admin-v2
           cache-from: type=gha,scope=frontends-v2
           cache-to: type=gha,mode=max,scope=frontends-v2
@@ -226,7 +243,7 @@ jobs:
       - name: V2 canary proxies — actual built images, cookies and host isolation
         run: python3 scripts/v2/test_frontend_proxy.py -v
         env:
-          SOURCE_COMMIT: ${{ github.sha }}
+          SOURCE_COMMIT: ${{ env.CI_SOURCE_SHA }}
           V2_FRONTEND_LAB_IMAGE: flexperiment-lab-v2:test
           V2_FRONTEND_ADMIN_IMAGE: flexperiment-admin-v2:test
 
@@ -238,7 +255,7 @@ jobs:
           --env PAYLOAD_JOBS_ENABLED=false
           --env "PLATFORM_REVALIDATE_TOKEN=${PLATFORM_REVALIDATE_TOKEN}"
         env:
-          SOURCE_COMMIT: ${{ github.sha }}
+          SOURCE_COMMIT: ${{ env.CI_SOURCE_SHA }}
           PLATFORM_CANONICAL_ORIGIN: https://ci.platform.invalid
           PLATFORM_REVALIDATE_TOKEN: ci-rendered-server-revalidation-token
 
@@ -256,16 +273,16 @@ jobs:
           --env ADMIN_ORIGIN=http://127.0.0.1:3103
           --env API_ORIGIN=http://127.0.0.1:3102
         env:
-          SOURCE_COMMIT: ${{ github.sha }}
+          SOURCE_COMMIT: ${{ env.CI_SOURCE_SHA }}
       - name: Commerce V2 foundation — actual image, restart, replacement and encrypted restore
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends age
           bash scripts/ci/smoke-v2-foundation.sh flexperiment-commerce-v2:test
         env:
-          SOURCE_COMMIT: ${{ github.sha }}
+          SOURCE_COMMIT: ${{ env.CI_SOURCE_SHA }}
       - name: Platform canary — actual Next/Payload proxy, closed editorial and encrypted restore
         run: python3 scripts/ci/smoke-platform-canary.py
         env:
-          SOURCE_COMMIT: ${{ github.sha }}
+          SOURCE_COMMIT: ${{ env.CI_SOURCE_SHA }}
           PLATFORM_CANARY_TEST_IMAGE: flexperiment-platform-v2:test

@@ -23,5 +23,5 @@
     "**/*.tsx",
     "**/*.mts"
   ],
-  "exclude": ["node_modules", "apps/admin", "apps/lab", "apps/platform", "temp-repos", ".codex-worktrees"]
+  "exclude": ["node_modules", "apps/admin", "apps/lab", "apps/lab-v2", "apps/platform", "temp-repos", ".codex-worktrees"]
 }

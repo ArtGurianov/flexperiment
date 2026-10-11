@@ -5,6 +5,7 @@ RUN corepack enable
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/admin/package.json ./apps/admin/package.json
 COPY apps/lab/package.json ./apps/lab/package.json
+COPY apps/lab-v2/package.json ./apps/lab-v2/package.json
 COPY packages/control-room-contracts/package.json ./packages/control-room-contracts/package.json
 RUN pnpm install --frozen-lockfile
 
@@ -18,7 +19,7 @@ ENV LAB_ORIGIN=https://canary-lab.flexperiment.ru
 # deliberately same-origin; never inherit the shared V1 production API default.
 ENV NEXT_PUBLIC_COMMERCE_API_URL=""
 RUN case "$V2_FRONTEND_SERVICE" in \
-      lab-v2) pnpm build && cp -a apps/lab/out /app/v2-export ;; \
+      lab-v2) pnpm --filter @flexperiment/lab-v2 build && cp -a apps/lab-v2/out /app/v2-export ;; \
       admin-v2) pnpm --filter @flexperiment/admin build && cp -a apps/admin/out /app/v2-export ;; \
       *) echo V2_FRONTEND_SERVICE_INVALID >&2; exit 1 ;; \
     esac \

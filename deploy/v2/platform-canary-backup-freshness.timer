@@ -1,0 +1,11 @@
+[Unit]
+Description=Hourly Platform canary backup freshness check
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=5min
+Persistent=true
+Unit=platform-canary-backup-freshness.service
+
+[Install]
+WantedBy=timers.target

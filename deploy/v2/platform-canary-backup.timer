@@ -1,0 +1,11 @@
+[Unit]
+Description=Six-hourly private Platform V2 canary editorial backup
+
+[Timer]
+OnCalendar=*-*-* 00,06,12,18:23:00 UTC
+RandomizedDelaySec=5min
+Persistent=true
+Unit=platform-canary-backup.service
+
+[Install]
+WantedBy=timers.target

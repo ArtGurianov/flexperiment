@@ -186,6 +186,34 @@ importers:
         specifier: ^5
         version: 5.9.3
 
+  apps/lab-v2:
+    dependencies:
+      next:
+        specifier: 16.3.0
+        version: 16.3.0(@babel/core@7.29.7)(@types/node@20.19.43)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(sass@1.77.4)
+      react:
+        specifier: 19.2.8
+        version: 19.2.8
+      react-dom:
+        specifier: 19.2.8
+        version: 19.2.8(react@19.2.8)
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
+    devDependencies:
+      '@types/node':
+        specifier: ^20
+        version: 20.19.43
+      '@types/react':
+        specifier: ^19
+        version: 19.2.18
+      '@types/react-dom':
+        specifier: ^19
+        version: 19.2.4(@types/react@19.2.18)
+      typescript:
+        specifier: ^5
+        version: 5.9.3
+
   apps/platform:
     dependencies:
       '@payloadcms/db-sqlite':
