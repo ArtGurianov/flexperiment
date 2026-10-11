@@ -36,7 +36,7 @@ Helper создаёт course → section → четыре lessons в одной 
 
 | Шаг | Проверяемый результат / negative control |
 | --- | --- |
-| Before admission | Нет release → отказ регистрации; stale version/hash → отказ без customer/email; marketing false допустим |
+| Before admission | Отдельные unchecked PD/account terms действия обязательны; отсутствующее/false/строка вместо true → отказ до CAPTCHA/DB/email. Нет release → отказ регистрации; stale version/hash → отказ без customer/email; marketing false допустим |
 | Реальная почта | NotiSend принятие ≠ получение; владелец получает magic link на контрольный email; URL/token/recipient не пишутся в evidence |
 | CAPTCHA | Настоящая серверная проверка; invalid/expired token отказывает; configured не означает PASS |
 | Browser frontend | Intended canary Platform, same-origin `/v1/auth`; непривилегированный браузер, TLS/Host/origin из approved configuration; без production fallback |

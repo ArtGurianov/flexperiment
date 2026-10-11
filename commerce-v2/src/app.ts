@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { assertRegistrationChoices } from "./registration-choices";
 import { Hono } from "hono";
 import { timingSafeEqual } from "node:crypto";
 import { createRestrictiveOverride, flagOrphanedOverrides, listPendingOverrides, releaseRolledBackOverride, type RestrictiveOverride, type RollbackReleaseProof } from "./access-overrides";
@@ -37,7 +38,7 @@ type Dependencies = {
   readonly authHandler?: (request: Request) => Promise<Response>;
   readonly prepareMagicLinkInitiation?: (input: {
     email: string; storefront: "COURSES" | "LAB"; personalDataConsent: boolean; personalDataVersion: string; personalDataSha256: string;
-    accountTermsVersion: string; accountTermsSha256: string;
+    accountTermsAccepted: boolean; accountTermsVersion: string; accountTermsSha256: string;
     marketingConsent?: boolean; marketingDocumentVersion: string; marketingDocumentSha256: string;
   }) => void;
   readonly verifyCaptcha?: (token: string, ip: string | undefined) => Promise<boolean>;
@@ -309,6 +310,7 @@ export function createCommerceV2App(deps: Dependencies) {
     app.post("/v1/auth/sign-in/magic-link", async (context) => {
       try {
         const input = await context.req.raw.clone().json() as { captchaToken?: string } & Parameters<NonNullable<Dependencies["prepareMagicLinkInitiation"]>>[0];
+        assertRegistrationChoices(input);
         if (deps.verifyCaptcha && !await deps.verifyCaptcha(input.captchaToken ?? "", context.req.header("x-forwarded-for")?.split(",")[0]?.trim())) {
           return context.json({ code: "SMARTCAPTCHA_REJECTED" }, 422, noStore);
         }

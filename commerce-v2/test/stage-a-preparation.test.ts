@@ -21,6 +21,7 @@ const origins = {
 };
 const consent = {
   email: "stage-a-student@example.test", storefront: "COURSES" as const, personalDataConsent: true,
+  accountTermsAccepted: true,
   personalDataVersion: "personal_data-v1", personalDataSha256: "a".repeat(64),
   accountTermsVersion: "account_terms-v1", accountTermsSha256: "a".repeat(64),
   // No marketing opt-in: default false must not block free access.
@@ -28,6 +29,17 @@ const consent = {
 };
 
 describe("Stage A auth → FREE access isolated preparation", () => {
+  it.each([undefined, false, "true", 1])("requires a separate explicit account-terms action (%s)", async (choice) => {
+    const send = vi.fn();
+    const runtime = createAuthRuntime({ db, environment: origins, sendMagicLinkEmail: send });
+    await runtime.auth.$context;
+    expect(() => runtime.prepareMagicLinkInitiation({ ...consent, accountTermsAccepted: choice as boolean }))
+      .toThrow("ACCOUNT_TERMS_ACCEPTANCE_REQUIRED");
+    for (const table of ["customers", "account_consents", "marketing_consents", "auth_email_outbox"]) {
+      expect(db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get()).toEqual({ n: 0 });
+    }
+    expect(send).not.toHaveBeenCalled();
+  });
   it("blocks absent legal admission before customer/outbox creation", async () => {
     const send = vi.fn();
     const runtime = createAuthRuntime({ db, environment: origins, sendMagicLinkEmail: send });

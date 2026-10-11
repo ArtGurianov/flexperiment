@@ -147,7 +147,7 @@ describe("ART-162 / ART-179 normal production server, payment disabled", () => {
     } });
     const input = { email: "student@synthetic.invalid", storefront: "COURSES", callbackURL: `${platform}/account`,
       metadata: { storefront: "COURSES" }, personalDataConsent: true, personalDataVersion: "personal_data-v1",
-      personalDataSha256: hash, accountTermsVersion: "account_terms-v1", accountTermsSha256: hash,
+      personalDataSha256: hash, accountTermsAccepted: true, accountTermsVersion: "account_terms-v1", accountTermsSha256: hash,
       marketingConsent: false, marketingDocumentVersion: "marketing_consent-v1", marketingDocumentSha256: hash,
     };
     expect((await request("/v1/auth/sign-in/magic-link", post(input))).status).toBe(422);

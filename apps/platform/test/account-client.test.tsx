@@ -75,8 +75,20 @@ describe("AccountClient", () => {
     render(<AccountClient nextPath="/courses" />);
     const submit = await screen.findByRole("button", { name: "Получить ссылку →" });
     expect(screen.getByRole("link", { name: "обработкой персональных данных" })).toHaveAttribute("href", "https://flexperiment.ru/legal/personal_data");
+    const personalData = screen.getByRole("checkbox", { name: /Согласен/ });
+    const accountTerms = screen.getByRole("checkbox", { name: /Принимаю/ });
+    const marketing = screen.getByRole("checkbox", { name: /Хочу получать/ });
+    expect(personalData).toBeRequired();
+    expect(accountTerms).toBeRequired();
+    expect(marketing).not.toBeRequired();
+    for (const choice of [personalData, accountTerms, marketing]) expect(choice).not.toBeChecked();
+    expect(personalData.closest("label")!.querySelectorAll("a")).toHaveLength(1);
+    expect(accountTerms.closest("label")!.querySelectorAll("a")).toHaveLength(1);
+    expect(personalData.closest("label")).not.toHaveTextContent(/условия аккаунта|политик/);
+    expect(accountTerms.closest("label")).not.toHaveTextContent(/персональных данных/);
     fireEvent.change(screen.getByRole("textbox", { name: "Электронная почта" }), { target: { value: "student@example.com" } });
     fireEvent.click(screen.getByRole("checkbox", { name: /Согласен/ }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /Принимаю/ }));
     fireEvent.click(submit);
 
     await waitFor(() => expect(vi.mocked(global.fetch)).toHaveBeenCalledWith("/v1/auth/sign-in/magic-link", expect.objectContaining({
@@ -88,6 +100,7 @@ describe("AccountClient", () => {
         callbackURL: "http://localhost:3000/courses",
         captchaToken: "",
         personalDataConsent: true,
+        accountTermsAccepted: true,
         personalDataVersion: "personal_data-v1",
         personalDataSha256: hash,
         accountTermsVersion: "account_terms-v1",

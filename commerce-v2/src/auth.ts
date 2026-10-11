@@ -5,6 +5,7 @@ import { magicLink } from "better-auth/plugins";
 import { bindVerifiedAuthUser, customerIdForAuthUser, getOrCreateCustomer, recordAccountConsents, type ConsentInput } from "./customers";
 import { currentLegalRelease } from "./legal-control";
 import { loadCommerceOrigins, storefrontOrigin, type Storefront } from "./origins";
+import { assertRegistrationChoices } from "./registration-choices";
 
 type AuthEnvironment = Readonly<Record<string, string | undefined>>;
 
@@ -123,6 +124,7 @@ export function createAuthRuntime(dependencies: AuthRuntimeDependencies) {
       email: string;
       storefront: Storefront;
       personalDataConsent: boolean;
+      accountTermsAccepted: boolean;
       personalDataVersion: string;
       personalDataSha256: string;
       accountTermsVersion: string;
@@ -131,7 +133,7 @@ export function createAuthRuntime(dependencies: AuthRuntimeDependencies) {
       marketingDocumentVersion: string;
       marketingDocumentSha256: string;
     }) {
-      if (input.personalDataConsent !== true) throw new Error("PERSONAL_DATA_CONSENT_REQUIRED");
+      assertRegistrationChoices(input);
       const release = currentLegalRelease(dependencies.db, input.storefront);
       if (!release) throw new Error("LEGAL_RELEASE_NOT_FOUND");
       const document = (kind: string) => release.manifest.documents.find((candidate) => candidate.kind === kind);

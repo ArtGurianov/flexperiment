@@ -55,6 +55,23 @@ const seedPlayableLesson = async (server: ReturnType<typeof createCommerceV2App>
 };
 
 describe("commerce v2 boundaries", () => {
+  it.each([undefined, false, "true", 1])("refuses non-explicit account terms before CAPTCHA or auth (%s)", async (choice) => {
+    const verifyCaptcha = vi.fn(async () => true);
+    const authHandler = vi.fn(async () => Response.json({ ok: true }));
+    const prepareMagicLinkInitiation = vi.fn();
+    const server = app("disabled", { verifyCaptcha, authHandler, prepareMagicLinkInitiation });
+    const response = await server.request("/v1/auth/sign-in/magic-link", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ personalDataConsent: true, accountTermsAccepted: choice, captchaToken: "isolated-token" }),
+    });
+    expect(response.status).toBe(422);
+    expect(await response.json()).toEqual({ code: "ACCOUNT_TERMS_ACCEPTANCE_REQUIRED" });
+    expect(verifyCaptcha).not.toHaveBeenCalled();
+    expect(prepareMagicLinkInitiation).not.toHaveBeenCalled();
+    expect(authHandler).not.toHaveBeenCalled();
+    expect(db.prepare("SELECT COUNT(*) AS n FROM customers").get()).toEqual({ n: 0 });
+  });
+
   it("keeps marketing broadcast confirmation disabled until the legal gate is enabled", async () => {
     const disabled = await app().request("/v1/internal/campaigns/campaign/confirm", internal({ actor: "author" }));
     expect(disabled.status).toBe(503);

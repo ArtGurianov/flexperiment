@@ -123,6 +123,7 @@ export default function AccountClient({ nextPath, captchaSiteKey }: { nextPath: 
         callbackURL: new URL(nextPath, window.location.origin).toString(),
         captchaToken,
         personalDataConsent: data.get("personalDataConsent") === "on",
+        accountTermsAccepted: data.get("accountTermsAccepted") === "on",
         personalDataVersion: personalData.version,
         personalDataSha256: personalData.sha256,
         accountTermsVersion: accountTerms.version,
@@ -144,5 +145,14 @@ export default function AccountClient({ nextPath, captchaSiteKey }: { nextPath: 
   const accountTerms = legalByKind.get("account_terms");
   const marketing = legalByKind.get("marketing_consent");
   const legalReady = Boolean(privacy && personalData && accountTerms && marketing);
-  return <section className="accountPanel"><p className="eyebrow">Вход без пароля</p><h1>Мои курсы</h1><form className="authForm" onSubmit={submit}><label>Электронная почта<input required name="email" type="email" autoComplete="email" /></label><label className="check"><input required name="personalDataConsent" type="checkbox" />Согласен с <a href={personalData?.url} target="_blank" rel="noreferrer">обработкой персональных данных</a>, <a href={accountTerms?.url} target="_blank" rel="noreferrer">условиями аккаунта</a> и ознакомлен с <a href={privacy?.url} target="_blank" rel="noreferrer">политикой конфиденциальности</a></label><label className="check"><input name="marketingConsent" type="checkbox" />Хочу получать новости о курсах по <a href={marketing?.url} target="_blank" rel="noreferrer">условиям рассылки</a></label>{captchaSiteKey && <div id="smartcaptcha-account" className="smartCaptcha" />}<button className="primary" disabled={submitting || !legalReady || Boolean(captchaSiteKey && !captchaToken)} type="submit">{submitting ? "Отправляем…" : legalReady ? "Получить ссылку →" : "Документы не опубликованы"}</button>{message && <p role="status">{message}</p>}</form></section>;
+  return <section className="accountPanel"><p className="eyebrow">Вход без пароля</p><h1>Мои курсы</h1><form className="authForm" onSubmit={submit}>
+    <label>Электронная почта<input required name="email" type="email" autoComplete="email" /></label>
+    <p>Как используются данные: <a href={privacy?.url} target="_blank" rel="noreferrer">политика конфиденциальности</a>.</p>
+    <label className="check"><input required name="personalDataConsent" type="checkbox" />Согласен с <a href={personalData?.url} target="_blank" rel="noreferrer">обработкой персональных данных</a></label>
+    <label className="check"><input required name="accountTermsAccepted" type="checkbox" />Принимаю <a href={accountTerms?.url} target="_blank" rel="noreferrer">условия аккаунта</a></label>
+    <label className="check"><input name="marketingConsent" type="checkbox" />Хочу получать новости о курсах по <a href={marketing?.url} target="_blank" rel="noreferrer">условиям рассылки</a></label>
+    {captchaSiteKey && <div id="smartcaptcha-account" className="smartCaptcha" />}
+    <button className="primary" disabled={submitting || !legalReady || Boolean(captchaSiteKey && !captchaToken)} type="submit">{submitting ? "Отправляем…" : legalReady ? "Получить ссылку →" : "Документы не опубликованы"}</button>
+    {message && <p role="status">{message}</p>}
+  </form></section>;
 }
