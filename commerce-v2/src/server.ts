@@ -97,7 +97,7 @@ const campaignTransport = emailDeliveryEndpoint ? async (message: CampaignEmail)
   if (!response.ok) throw new Error(`CAMPAIGN_EMAIL_HTTP_${response.status}`);
 } : undefined;
 const sendCampaignEmail=campaignTransport ? async(message:CampaignEmail)=>{
-  if(erasureFence) await erasureFence.send(message.recipient,()=>campaignTransport(message));
+  if(erasureFence) await erasureFence.send(message.recipient,()=>campaignTransport(message),"MARKETING");
   else await campaignTransport(message);
 }:undefined;
 

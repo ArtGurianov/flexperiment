@@ -87,7 +87,7 @@ export function createAuthRuntime(dependencies: AuthRuntimeDependencies) {
       rateLimit: { window: 60, max: 5 },
       storeToken: "hashed",
       sendMagicLink: async ({ email, url, metadata }) => {
-        dependencies.erasureFence?.assertIdentity({email},"MAIL");
+        dependencies.erasureFence?.assertIdentity({email},"AUTH_MAIL");
         const storefront = (metadata as { storefront?: unknown } | undefined)?.storefront;
         if (storefront !== "COURSES" && storefront !== "LAB") throw new Error("AUTH_STOREFRONT_REQUIRED");
         const target = new URL(url);
@@ -103,7 +103,7 @@ export function createAuthRuntime(dependencies: AuthRuntimeDependencies) {
           VALUES (?,?, 'MAGIC_LINK', ?, ?, 'PENDING')`)
           .run(id, normalized, encrypt(payload, key), createHash("sha256").update(serialized).digest("hex"));
         try {
-          if(dependencies.erasureFence) await dependencies.erasureFence.send(normalized,()=>dependencies.sendMagicLinkEmail(payload));
+          if(dependencies.erasureFence) await dependencies.erasureFence.send(normalized,()=>dependencies.sendMagicLinkEmail(payload),"AUTH_MAIL");
           else await dependencies.sendMagicLinkEmail(payload);
           dependencies.db.prepare(`UPDATE auth_email_outbox SET state='SENT',attempt_count=1,updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(id);
         } catch (error) {

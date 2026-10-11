@@ -225,7 +225,8 @@ HTTP middleware покрывает весь request; /readyz отдельно п
 и gate, /identity остаётся доступным. Better Auth create-user/create-session hooks,
 verified customer lookup и magic-link transport проверяют signed suppression.
 Async child после завершения родительского request не имеет действительного lease.
-MARKETING_SUPPRESSION не лишает аккаунт контента, но блокирует применимый mail;
+MARKETING_SUPPRESSION не лишает аккаунт контента или сервисных magic links:
+AUTH_MAIL и MARKETING имеют отдельные purpose. Отказ блокирует только MARKETING;
 ERASURE блокирует прежнюю identity и implicit same-email resurrection. Повторная
 регистрация после erasure потребует отдельной явной модели, а не старого opt-in.
 Logout вне content consent gate; during CLOSED любые customer paths временно fenced.

@@ -159,13 +159,14 @@ export class ErasureRuntimeFence {
     try {return await this.#context.run(context,operation);}
     finally {context.active=false; this.#db.prepare("DELETE FROM fence_leases WHERE id=?").run(context.id);}
   }
-  assertIdentity(identity: {email?: string; userId?: string; customerId?: string}, purpose: "ACCOUNT" | "MAIL") {
+  assertIdentity(identity: {email?: string; userId?: string; customerId?: string}, purpose: "ACCOUNT" | "AUTH_MAIL" | "MARKETING") {
+    if(!["ACCOUNT","AUTH_MAIL","MARKETING"].includes(purpose))refuse("ERASURE_RUNTIME_PURPOSE_INVALID");
     const context=this.#context.getStore();
     if(!context?.active) refuse("ERASURE_RUNTIME_OPERATION_UNFENCED");
     this.#proof(context.proof);
     if(!Object.values(identity).some(value=>typeof value==="string" && value.length)) refuse("ERASURE_RUNTIME_IDENTITY_REQUIRED");
     for(const entry of context.proof.bundle.entries) {
-      if(purpose==="ACCOUNT" && entry.body.kind!=="ERASURE") continue;
+      if(purpose!=="MARKETING" && entry.body.kind!=="ERASURE") continue;
       const subject=entry.body.subject;
       const match=(category:"email"|"user"|"customer",value:string|undefined)=>value!==undefined && erasurePseudonym(this.#keys,subject.keyId,this.#scope,category,value)===subject[category];
       if(match("email",identity.email)||match("user",identity.userId)||match("customer",identity.customerId)) refuse("ERASURE_SUBJECT_SUPPRESSED");
@@ -173,11 +174,11 @@ export class ErasureRuntimeFence {
   }
   /** Separate durable SEND lease survives swallowed auth/worker errors. UNKNOWN means
    * remote delivery may have happened; no timed release, no retry/send-after-admission. */
-  async send<T>(email: string, operation: () => Promise<T>): Promise<T> {
-    this.assertIdentity({email},"MAIL");
+  async send<T>(email: string, operation: () => Promise<T>, purpose:"AUTH_MAIL"|"MARKETING"="MARKETING"): Promise<T> {
+    this.assertIdentity({email},purpose);
     const context=await this.#acquire("SEND");
     // Definite pre-send refusal is not an ambiguous provider attempt.
-    try {this.assertIdentity({email},"MAIL");}
+    try {this.assertIdentity({email},purpose);}
     catch(error) {this.#db.prepare("DELETE FROM fence_leases WHERE id=?").run(context.id);throw error;}
     try {
       const result=await operation();

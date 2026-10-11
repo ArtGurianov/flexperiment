@@ -171,6 +171,13 @@ describe("durable runtime/send fencing, not operational installation",()=>{
     await gate.run("REQUEST",async()=>gate.assertIdentity({email:"owner@example.test",userId:"user"},"ACCOUNT"));
     await expect(gate.run("WORKER",()=>gate.send("owner@example.test",async()=>undefined))).rejects.toThrow("SUBJECT_SUPPRESSED");
     expect(db.prepare('SELECT id FROM "user"').all()).toEqual([{id:"user"}]);
+    const transactional=vi.fn(async()=>undefined);
+    await gate.run("REQUEST",()=>gate.send("owner@example.test",transactional,"AUTH_MAIL"));
+    expect(transactional).toHaveBeenCalledOnce();
+    let link="";
+    const auth=createAuthRuntime({db,erasureFence:gate,sendMagicLinkEmail:async message=>{link=message.url;},environment:{NODE_ENV:"test",BETTER_AUTH_SECRET:"a-test-secret-that-is-long-enough-for-auth"}});
+    const initiation=await gate.run("REQUEST",()=>auth.auth.handler(new Request("http://localhost:3002/v1/auth/sign-in/magic-link",{method:"POST",headers:{"content-type":"application/json",origin:"http://localhost:3002"},body:JSON.stringify({email:"owner@example.test",metadata:{storefront:"COURSES"}})})));
+    expect(initiation.status).toBe(200);expect(link).toContain("magic-link");
   });
   it.each(["schema","financial","audit","verification"])("retains CLOSED on %s uncertainty after durable remote ACK",async reason=>{
     await bootstrap();account();const verified=await request();
