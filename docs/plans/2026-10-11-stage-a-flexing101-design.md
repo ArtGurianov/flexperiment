@@ -49,3 +49,11 @@ Authenticated reaffirmation UI/event model и erasure/restore ledger — отд�
 инженерные gaps до активации, не притворный PASS и не новое юридическое согласование.
 Фокусные реальные SQLite/auth/campaign regressions + exact-head CI обязательны;
 live schema22/runtime сохраняются без deployment и применения migration23.
+
+## Legal research follow-up: минимальный docs delta
+
+Review #196 принят на approved head; squash merge `ca92097e0e4d1910075b62abadb4248683665376` имеет то же дерево. Merge не означает live migration23 или утверждение документов. Результат CI фиксируется отдельно по actual merge SHA.
+
+Дополнительное сравнение российских платформ встроено в существующий [комплект Stage A](../legal/stage-a/2026-10-11-draft/README.md): сохраняем четыре документа, принимаем узкие уточнения видеолицензии/личного доступа, конкретной модели resume, ролей обработчиков и authenticated выбора. Retention конкурентов, широкие сведения учащихся, платные подписки и подразумеваемый акцепт не переносятся. Документы `draft.2` описывают неработающие пока consent/erasure/restore механизмы только как target с явными пометками.
+
+Product proposals #196 остаются PROPOSED; реальные медиа/права, договоры обработчиков, адрес, РКН и финальные основания/сроки не выдумываются. Новая event-модель и independent restore ledger нужны для последующего engineering, но не добавляются в docs-only PR и не обходятся старым UNIQUE/UPDATE. F7/runtime/production и public guards не меняются.
