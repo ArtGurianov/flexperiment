@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import AccountClient from "../components/auth/AccountClient";
 
@@ -8,7 +8,7 @@ const response = (body: unknown) => ({ ok: true, json: async () => body }) as Re
 
 describe("AccountClient", () => {
   const originalFetch = global.fetch;
-  afterEach(() => { global.fetch = originalFetch; vi.restoreAllMocks(); });
+  afterEach(() => { cleanup(); global.fetch = originalFetch; vi.restoreAllMocks(); });
 
   it("renders the authoritative open-lesson library and purchase history", async () => {
     global.fetch = vi.fn(async (input: RequestInfo | URL) => {
@@ -57,6 +57,23 @@ describe("AccountClient", () => {
 
     expect(await screen.findByText(/Доступных уроков пока нет/)).toBeInTheDocument();
     expect(screen.getByText("Покупок пока нет.")).toBeInTheDocument();
+  });
+
+  it("preserves authenticated purchase history when required course consents are absent", async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      if (input.toString() === "/v1/me") return response({ customer: { id: "customer", email_normalized: "student@example.test" } });
+      if (input.toString() === "/v1/me/consents?storefront=COURSES") return response({ storefront: "COURSES", verifiedAccount: true,
+        requiredChoicesConfirmed: false, releaseVersion: null, manifestSha256: null, documents: [] });
+      if (input.toString() === "/v1/me/orders") return response({ orders: [{ orderPublicId: "synthetic-order", title: "Historical course",
+        state: "FULFILLED", amountKopecks: 100, currency: "RUB", createdAt: "2026-10-01T10:00:00Z" }] });
+      throw new Error("Protected library must not be requested");
+    });
+    global.fetch = fetcher;
+    render(<AccountClient nextPath="/account" />);
+    expect(await screen.findByText("synthetic-order")).toBeInTheDocument();
+    expect(await screen.findByRole("alert")).toHaveTextContent("Доступ остаётся закрытым");
+    expect(screen.queryByRole("heading", { name: "Можно открыть сейчас" })).not.toBeInTheDocument();
+    expect(fetcher.mock.calls.some(([path]) => path.toString() === "/account-courses.json")).toBe(false);
   });
 
   it("submits the active legal document versions and hashes for registration", async () => {

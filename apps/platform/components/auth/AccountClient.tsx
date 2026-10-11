@@ -125,7 +125,8 @@ export default function AccountClient({ nextPath, captchaSiteKey }: { nextPath: 
   };
 
   if (me?.customer) return <section className="accountPanel"><p className="eyebrow">Аккаунт · {me.customer.email_normalized}</p><h1>Мои курсы</h1>
-    <AuthenticatedConsentGate key={me.customer.id}><AccountLibrary /></AuthenticatedConsentGate></section>;
+    <AuthenticatedConsentGate key={me.customer.id}><AccountLibrary /></AuthenticatedConsentGate>
+    <AccountHistory key={me.customer.id} /></section>;
 
   const legalByKind = new Map(legalRelease?.manifest.documents.map((item) => [item.kind, item]));
   const privacy = legalByKind.get("privacy");
@@ -147,7 +148,6 @@ export default function AccountClient({ nextPath, captchaSiteKey }: { nextPath: 
 
 function AccountLibrary() {
   const [courses, setCourses] = useState<AccountCourse[]>([]);
-  const [orders, setOrders] = useState<AccountOrder[]>([]);
   useEffect(() => {
     const controller = new AbortController();
     const read = async (path: string) => {
@@ -155,17 +155,30 @@ function AccountLibrary() {
       if (!response.ok) throw new Error("ACCOUNT_CONTENT_UNAVAILABLE");
       return response.json();
     };
-    void Promise.all([read("/account-courses.json"), read("/v1/me/orders")]).then(([catalogue, history]) => {
-      if (!controller.signal.aborted) { setCourses(catalogue.courses ?? []); setOrders(history.orders ?? []); }
-    }).catch(() => { if (!controller.signal.aborted) { setCourses([]); setOrders([]); } });
+    void read("/account-courses.json").then(catalogue => {
+      if (!controller.signal.aborted) setCourses(catalogue.courses ?? []);
+    }).catch(() => { if (!controller.signal.aborted) setCourses([]); });
     return () => controller.abort();
   }, []);
-  return <><section className="accountSection" aria-labelledby="available-lessons"><header><span>01</span><h2 id="available-lessons">Можно открыть сейчас</h2></header>
+  return <section className="accountSection" aria-labelledby="available-lessons"><header><span>01</span><h2 id="available-lessons">Можно открыть сейчас</h2></header>
     {courses.length > 0 ? <div className="accountCourses">{courses.map(course => <article key={course.courseRef}><div><p>{accessLabel(course.access)}</p><h3><a href={course.url}>{course.title}</a></h3></div>
       <ol>{course.lessons.map(lesson => <li key={lesson.lessonRef}><span>{lesson.sectionTitle}</span><a href={lesson.url}>{lesson.title}</a><small>{accessLabel(lesson.access)}</small></li>)}</ol></article>)}</div>
       : <p className="emptyState">Доступных уроков пока нет. Бесплатные и preview-уроки появятся здесь после публикации.</p>}
-    </section><section className="accountSection" aria-labelledby="purchase-history"><header><span>02</span><h2 id="purchase-history">История покупок</h2></header>
+    </section>;
+}
+
+function AccountHistory() {
+  const [orders, setOrders] = useState<AccountOrder[]>([]);
+  useEffect(() => {
+    const controller = new AbortController();
+    void fetch("/v1/me/orders", { cache: "no-store", credentials: "same-origin", signal: controller.signal })
+      .then(response => { if (!response.ok) throw new Error("ACCOUNT_HISTORY_UNAVAILABLE"); return response.json(); })
+      .then(history => { if (!controller.signal.aborted) setOrders(history.orders ?? []); })
+      .catch(() => { if (!controller.signal.aborted) setOrders([]); });
+    return () => controller.abort();
+  }, []);
+  return <section className="accountSection" aria-labelledby="purchase-history"><header><span>02</span><h2 id="purchase-history">История покупок</h2></header>
       {orders.length > 0 ? <ol className="purchaseHistory">{orders.map(order => <li key={order.orderPublicId}><div><strong>{order.title}</strong><span>{order.orderPublicId}</span></div><div><strong>{money(order.amountKopecks)}</strong><span>{date(order.createdAt)} · {order.state}</span></div></li>)}</ol>
         : <p className="emptyState">Покупок пока нет.</p>}
-    </section></>;
+    </section>;
 }
