@@ -283,3 +283,33 @@ negative choice and one-click suppression deny globally; neither revives histori
 grants. Source account/release/hash still must be current. No SMS/messenger consent
 is inferred, and broadcasts remain disabled. Real browser/email/video admission,
 live migration/deployment and legal activation are separate from this engineering delta.
+
+### Category retention engine: offline engineering, not active policy
+
+`commerce-v2/src/pd-retention.ts` is deliberately not wired into startup, jobs or a
+CLI. `STOPPED_OFFLINE` is a caller prerequisite, not a database proof that external
+writers/provider sends have stopped. Exact reviewed policy bytes and their source
+reference are hashed separately; there are no invented/default legal TTLs.
+
+| Category | Bounded cleanup and preservation |
+| --- | --- |
+| Expired credentials | Only expired sessions/recognized magic-link verifications beyond explicit grace; current credentials and independently justified subject holds survive. Numeric SQLite epoch milliseconds, `.0` text and validated UTC/offset timestamps are supported; unknown shape/date refuses atomically. |
+| Auth outbox | Only sufficiently old last-update and expired-link age, while all senders are stopped. Does not retry an ambiguous send. Recipient/user/customer holds apply, including unbound auth users. |
+| Playback telemetry | Explicit category age with subject holds, not account lifetime. Course progress is not classified as anonymous telemetry. |
+| Unverified intent | Old customer and old UNVERIFIED_INTENT facts, no matching auth user, link, outbox, order, grant, quote, authenticated action, recipient, progress or audit reference. Legacy/qualified consent history is not guessed away. |
+| Backup archives | Pure exact-object planning by scope, timestamp and SHA-256; retained current independently verified object, foreign scopes and per-object holds are not selected. No local/remote/offline deletion is installed. |
+
+Immediate SQLite cleanup checks the full canonical 0001–0025 DDL and foreign keys,
+with bounded batches. Unknown table/column/trigger semantics, expired/unbounded
+holds, malformed policy or unclassified data fail closed without partial deletes.
+Holds carry explicit category/subject, allowlisted justification, evidence hash,
+reviewer reference and finite reviewed expiry. Those fields alone are not proof of
+legal approval or authenticated reviewer authority; installation admission remains
+pending. Active accounts, verified consent history, email suppressions and financial
+facts are preserved. `secure_delete` does not purge historical WAL/archive contents.
+
+Current evidence is isolated regressions only. Exact owner-approved category policy,
+complete copy inventory, erasure request admission, independent latest ledger,
+restore/send fencing and processor deletion coordination still need their own
+qualification. Existing backup infrastructure, schedules, runtime policy, legal
+bytes and production are not changed by adding this library.
