@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import { assertRegistrationChoices } from "./registration-choices";
 import { Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import { timingSafeEqual } from "node:crypto";
 import { createRestrictiveOverride, flagOrphanedOverrides, listPendingOverrides, releaseRolledBackOverride, type RestrictiveOverride, type RollbackReleaseProof } from "./access-overrides";
 import { applyCourseManifest, type CourseManifest } from "./manifest";
@@ -27,6 +28,7 @@ import { recordPlaybackAccessEvent } from "./playback-telemetry";
 import { loadCommerceOrigins, storefrontOrigin, type CommerceOrigins, type Storefront } from "./origins";
 import { databaseReady, type RefrefReadiness } from "./readiness";
 import { publicLabCatalogue } from "./lab-catalogue";
+import { authenticatedConsentStatus, recordAuthenticatedConsents, type AuthenticatedConsentInput } from "./authenticated-consents";
 
 type Dependencies = {
   readonly db: Database.Database;
@@ -802,6 +804,36 @@ export function createCommerceV2App(deps: Dependencies) {
       eventType: "DRM_ALLOWED", reason: "ALLOW", occurredAt: observedAt,
     });
     return context.json({ allowed: true }, 200, noStore);
+  });
+
+  app.get("/v1/me/consents", async (context) => {
+    const customerId = await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;
+    if (!customerId) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
+    const storefront = context.req.query("storefront") ?? "COURSES";
+    if (storefront !== "COURSES" && storefront !== "LAB") return context.json({ code: "STOREFRONT_INVALID" }, 422, noStore);
+    try { return context.json(authenticatedConsentStatus(deps.db, customerId, storefront), 200, noStore); }
+    catch { return context.json({ code: "LEGAL_STATUS_UNAVAILABLE" }, 503, noStore); }
+  });
+  app.post("/v1/me/consents", bodyLimit({ maxSize: 8192,
+    onError: context => context.json({ code: "CONSENT_INPUT_TOO_LARGE" }, 413, noStore) }), async (context) => {
+    const customerId = await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;
+    if (!customerId) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
+    try {
+      const body = await context.req.json<AuthenticatedConsentInput>();
+      if (!body || typeof body !== "object" || Array.isArray(body)) return context.json({ code: "AUTHENTICATED_CONSENT_INPUT_INVALID" }, 422, noStore);
+      if (body.storefront !== "COURSES" && body.storefront !== "LAB") return context.json({ code: "STOREFRONT_INVALID" }, 422, noStore);
+      if (context.req.header("origin") !== storefrontOrigin(origins, body.storefront)) return context.json({ code: "ORIGIN_FORBIDDEN" }, 403, noStore);
+      return context.json(recordAuthenticatedConsents(deps.db, customerId, {
+        storefront: body.storefront, releaseVersion: body.releaseVersion, manifestSha256: body.manifestSha256,
+        actionKey: body.actionKey, personalDataConsent: body.personalDataConsent, accountTermsAccepted: body.accountTermsAccepted,
+        marketingConsent: body.marketingConsent,
+      }, now().toISOString()), 200, noStore);
+    } catch (error) {
+      const allowed = ["VERIFIED_ACCOUNT_REQUIRED", "LEGAL_RELEASE_NOT_FOUND", "LEGAL_RELEASE_INCOMPLETE", "LEGAL_RELEASE_STALE",
+        "AUTHENTICATED_CONSENT_INPUT_INVALID", "CONSENT_ACTION_KEY_CONFLICT"];
+      const code = error instanceof Error && allowed.includes(error.message) ? error.message : "CONSENT_WRITE_UNCONFIRMED";
+      return context.json({ code }, 409, noStore);
+    }
   });
 
   app.get("/v1/me", async (context) => {

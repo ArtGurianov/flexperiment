@@ -1,5 +1,6 @@
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import type Database from "better-sqlite3";
+import { authenticatedMarketingChoice } from "./authenticated-consents";
 
 export type CampaignEmail = {
   recipient: string;
@@ -178,7 +179,7 @@ const marketingAllowed = (db: Database.Database, customerId: string, email: stri
     ORDER BY m.confirmed_at DESC,m.recorded_at DESC,m.id DESC LIMIT 1`)
     .get(customerId) as { granted: number } | undefined;
   const suppressed = db.prepare("SELECT 1 FROM email_suppressions WHERE email_normalized=? AND removed_at IS NULL").get(email);
-  return consent?.granted === 1 && !suppressed;
+  return (authenticatedMarketingChoice(db, customerId) ?? (consent?.granted === 1)) && !suppressed;
 };
 
 export function campaignStatus(db: Database.Database, campaignId: string) {

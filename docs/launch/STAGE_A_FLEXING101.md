@@ -13,7 +13,7 @@ ART-169 / ART-179 / ART-232. 11.10.2026. **PREPARATION ONLY.** F9 CLOSED, PAYMEN
 | 3 | Первые движения и соединение элементов | 7 мин |
 | 4 | Короткая практическая комбинация | 5 мин |
 
-Один раздел «Введение в флексинг». Названия/slug/summary/структура в `apps/platform/lib/launch/flexing101.ts` — DRAFT_OWNER_REVIEW, не опубликованный каталог. Нет выдуманной обложки, videoId, durationSeconds или canonical courseRef. Авторство/права на музыку и записи, фактические длительности и порядок видео подтверждаются до публикации.
+Один раздел «Введение в флексинг». Названия/slug/summary/структура в `apps/platform/lib/launch/flexing101.ts` — DRAFT_OWNER_REVIEW, не опубликованный каталог. Нет выдуманной обложки, videoId, durationSeconds или canonical courseRef. Владелец подтвердил, что контент принадлежит ему; сопоставление фактических файлов, длительностей и порядка видео всё равно проверяется до публикации.
 
 ## Реальные Payload records без side effects
 
@@ -25,7 +25,7 @@ Helper создаёт course → section → четыре lessons в одной 
 
 ## Путь публикации после содержательного одобрения
 
-1. Владелец утверждает четыре legal текста и курс; unresolved legal facts устранены. Активный release создаётся существующим `legal-control` только из одобренных финальных текстов.
+1. Содержательное одобрение четырёх legal текстов получено; сверяются точные изменённые candidate bytes и применимость условий поставщиков. Активный release создаётся существующим `legal-control` только из одобренного финального пакета после отдельного activation admission, не автоматически из approval.
 2. В подготовительном editorial контуре создаются реальные drafts; из независимого read-back фиксируются фактические courseRef/sectionRef/lessonRefs. При несовпадении фактического состава изменить draft, не выдавать план за запись.
 3. Через существующий Kinescope upload/activation pipeline загрузить настоящие материалы каждого урока. Использовать фактический processed videoId, binding, metadata duration и защиту. Проверить обложку/права. Не вставлять произвольный videoId в seed и не объявлять отсутствие upload успешным.
 4. Пользоваться существующим Payload publish → immutable manifest → Commerce acknowledgement pipeline. Сначала section, затем соответствующие lessons; проверить фактический version/hash и read-back. Draft manifest builder сейчас отказывает `COURSE_NOT_PUBLISHED`; запуск helper не queue-ит sync jobs.
@@ -41,7 +41,7 @@ Helper создаёт course → section → четыре lessons в одной 
 | CAPTCHA | Настоящая серверная проверка; invalid/expired token отказывает; configured не означает PASS |
 | Browser frontend | Intended canary Platform, same-origin `/v1/auth`; непривилегированный браузер, TLS/Host/origin из approved configuration; без production fallback |
 | Verify | Одна ссылка подтверждает email и binds customer; replay/expired link/foreign callback отказывают |
-| Authenticated consent | Новые отдельные unchecked действия в verified session, точный active release/version/hash; ПД и правила отдельно, marketing optional. Старые intents не повышаются и не переписываются. Guest/foreign Origin/stale release/чужой actor/replay не создают новое доказательство; новая event-модель ещё не реализована |
+| Authenticated consent | Новые отдельные unchecked действия в verified session, точный active release/version/hash; ПД и правила отдельно, marketing optional. Старые intents не повышаются и не переписываются. Guest/foreign Origin/stale release/чужой actor не создают доказательство, идемпотентный replay не создаёт дубль. API/event delta подготовлен отдельно; UI/access gate и live E2E ещё pending |
 | Session | Set-Cookie Secure+HttpOnly+host-only, без Domain=.flexperiment.ru; SameSite соответствует сценарию; браузер действительно хранит и использует cookie после navigation/reload |
 | Бесплатный доступ | Guest/unverified session не допускается; approved FREE product+fresh published manifest разрешает чтение; stale/unlisted/withdrawn/unknown lesson/video — отказ |
 | Видео и прогресс | Реальное protected Kinescope playback, token правильного subject/video; сохранение позиции переживает navigation; чужой lesson/token и expiration отказывают |
@@ -52,9 +52,18 @@ Helper создаёт course → section → четыре lessons в одной 
 
 Локальные tests используют исключительно отдельные SQLite/fixtures, не реальные согласия/видео или подтверждённую доставку. Existing tests: `customer-access`, `auth-email-delivery`, `access-policy`, `playback-auth`, `manifest`, `legal-control`. Новая подготовка не должна переписывать F7 или развертывать неизменённый canary только ради отчёта.
 
-## Два оставшихся owner decision bundles
+## Актуальные решения владельца и оставшиеся admission gates
 
-1. Юридический: [четыре черновика и вопросы](../legal/stage-a/2026-10-11-draft/README.md).
-2. Редакционный: план/срок доступа/права/обложка и четыре настоящих видео, сопоставленные реальным lesson records.
+Владелец сообщил реквизиты ИП, подтвердил отправку уведомления РКН и авторство своего контента, выбрал ручное создание/загрузку Flexing 101 через Payload и дал финальное содержательное одобрение четырём legal-текстам. Это полученное approval, а не отсутствующее решение владельца. Изменённые вслед за этими фактами точные bytes legal candidate остаются предметом delta review; release не активирован. Проверка применимости публичных условий поставщиков и фактических регионов обработки не подменяется owner approval.
 
-До этого ART-169 и ART-179 не Done, ART-232 не Approved, ART-41/F9 HOLD. Production alerting остаётся отдельной ранее зафиксированной F9 предпосылкой; успешные canary alerts не доказывают production delivery.
+FREE/PAID и цена редактируются в Payload через коммерческий control field, но canonical product/offer хранит Commerce. Команда не открывает продажи. Бесплатное enrollment сохраняется отдельно от финансовых заказов; FREE→PAID не переписывает уже предоставленный доступ. Фактические courseRef/lessonRef/videoRef появятся из вручную созданных записей и настоящих загрузок, не из этого плана. Live закрытый canary по-прежнему запрещает CMS mutations; его authoring E2E ещё требует отдельной технической квалификации.
+
+### Следующий инженерный delta: authenticated consent events
+
+Migration `0025` вводит append-only actions/events, отдельно от `LEGACY_UNQUALIFIED`/`UNVERIFIED_INTENT`. Session-authenticated `/v1/me/consents` GET/POST требует текущий verified account, точный storefront Origin и active release version/hash. Новое действие того же document version допустимо с новым action key; повтор одного ключа идемпотентен, изменение выбора с прежним ключом отказывает. SQL проверяет account/document authority и запрещает UPDATE доказательства. DELETE не запрещён, чтобы будущий erasure workflow мог удалить ПД.
+
+Маркетинговое решение проверяется при формировании получателей и непосредственно перед отправкой. Последнее новое отрицательное действие перекрывает прежний grant; stale/unbound новое доказательство не возвращает legacy grant. One-click suppression всегда сильнее и не снимается новым согласием. Исторические intents не изменяются. Эта реализация — отдельный API/domain delta: authenticated checkbox UI, обязательный access gate, настоящее email/browser E2E и live migration ещё не выполнены. Legal activation и marketing dispatch этим изменением не разрешены.
+
+Erasure/retention и независимый restore-suppression ledger остаются незавершёнными техническими требованиями. Их нельзя считать реализованными только по тексту политики или возможности удалить строки. До квалификации восстановления deleted accounts/sessions/marketing service admission остаётся закрытым.
+
+ART-169 и ART-179 не Done, legal release не ACTIVE, ART-41/F9 HOLD. Production alerting остаётся отдельной ранее зафиксированной F9 предпосылкой; успешные canary alerts не доказывают production delivery.
