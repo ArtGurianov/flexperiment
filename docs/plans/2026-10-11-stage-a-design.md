@@ -121,3 +121,27 @@ append ordering and immediate suppression/session revocation; retention/processo
 tasks and offline archive policy; boot/send-boundary/fencing integration. После них
 подготовить private-canary admission migrations0023–0025/subsequent schema/E2E.
 Не допускать restore к трафику только по успешному isolated purge.
+
+## Следующий независимый delta: category retention
+
+Выбран отдельный offline SQLite engine с явной проверяемой policy и bounded holds;
+ни server, ни jobs, ни CLI его автоматически не вызывают. Это не новые действующие
+юридические сроки: defaults отсутствуют, synthetic test policy не является approval.
+Отвергнуты универсальный TTL аккаунта (удаляет историю без классификации), cleanup
+в работающем runtime (SQL не останавливает уже отправляемое письмо) и count-only
+retention архивов (не ограничивает возраст и не покрывает offline копии).
+
+Engine обслуживает expired sessions/verification, encrypted auth outbox, playback
+telemetry и доказанно старые UNVERIFIED_INTENT без аккаунта, истории или новых фактов.
+Полный canonical DDL 0001–0025 проверяется внутри immediate transaction; неизвестные
+schema/timestamps/verification shape требуют review и откатывают все удаления.
+LEGAL_CLAIM/SECURITY_INVESTIGATION/PROCESSOR_CONFIRMATION требуют явных reference,
+reviewer и конечной даты; истёкший hold требует disposition, не исчезает автоматически.
+Формат evidence/reference не доказывает полномочия reviewer: admission caller ещё
+не установлен. Account/qualified consents/suppression/financial facts сохраняются.
+
+Архивная функция только планирует exact scoped objects по возрасту и SHA-256,
+сохраняя текущий проверенный архив и удерживаемые копии. Она ничего не удаляет.
+Полный VPS/Cloud.ru/Mac inventory, реальная policy approval, независимый suppression
+ledger, processor coordination и runtime installation остаются отдельными gates.
+secure_delete не доказывает очистку WAL, дисков или старых ciphertext.
