@@ -1,0 +1,10 @@
+[Unit]
+Description=Hourly Commerce V2 canary backup freshness
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=1h
+Unit=commerce-canary-backup-freshness.service
+
+[Install]
+WantedBy=timers.target
