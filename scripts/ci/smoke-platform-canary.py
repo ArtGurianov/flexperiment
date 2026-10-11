@@ -65,11 +65,13 @@ def main():
         if not ready:
             # Inspect only the task-created synthetic runtime. Never echo its raw log.
             state = json.loads(run("docker", "inspect", "--format", "{{json .State}}", app))
-            logs = run("docker", "logs", "--tail", "100", app)
+            logs = subprocess.check_output(["docker", "logs", "--tail", "100", app], stderr=subprocess.STDOUT, timeout=10).decode()
             category = "PACKAGE_MANAGER_BOOT" if "Corepack" in logs or "corepack" in logs else "APPLICATION_BOOT"
             print(json.dumps({"startupFailure": category, "running": state["Running"], "exitCode": state["ExitCode"]}))
         check(ready)
         check(run("docker", "exec", "-e", "COREPACK_ENABLE_NETWORK=0", app, "pnpm", "--version") == "10.29.3")
+        check(run("docker", "exec", app, "stat", "-c", "%a", "/var/lib/flexperiment-platform-canary") == "700")
+        check(run("docker", "exec", app, "stat", "-c", "%a", "/var/lib/flexperiment-platform-canary/platform.sqlite") == "600")
         identity = json.loads(request("/identity")["body"])
         check(identity["service"] == "platform" and identity["sourceCommit"] == sha)
         response = request("/v1/me?test=synthetic", headers={"Cookie": "session=synthetic", "X-Forwarded-Proto": "http", "X-Forwarded-For": "spoof"})

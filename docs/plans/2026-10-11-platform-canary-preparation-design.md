@@ -45,6 +45,8 @@ Runtime only:
   payments via credential-free GET; transport/identity mismatch yields 503.
 - PAYLOAD_DATABASE_URL=file:/var/lib/flexperiment-platform-canary/platform.sqlite.
   Dedicated new canary editorial volume mounted there; never Commerce or prod.
+  Image mount points are node-owned 0700; startup umask 077 makes SQLite/WAL
+  private. Any host bind mount must preserve that ownership and mode explicitly.
 - PAYLOAD_SECRET: independent owner-held >=32-byte entropy secret, runtime-only.
 - PLATFORM_COMMERCE_SERVICE_TOKEN: existing approved canary service credential,
   runtime-only, never NotiSend/provider credentials. No S3_BUCKET initially.
