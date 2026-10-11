@@ -30,3 +30,22 @@ ART-232 / ART-169 / ART-179. Решение владельца от 11.10.2026.
 4. Existing auth/FREE/playback tests + сценарий будущего browser E2E. Тестовые fixtures не считаются legal/video admission.
 5. Focused PR, exact-head CI и обновление существующих ART issues. Без бесполезного redeploy неизменённых live runtime.
 6. После утверждения текстов/курса и реальных видео — обычный существующий upload → manifest → FREE product admission → закрытый canary E2E. Public registration и F9 отдельно не разрешены.
+
+## Review follow-up: attribution до подтверждения адреса
+
+Review #195 исключил legal approval. Подтверждённый дефект: новая неподтверждённая
+заявка создаёт marketing row для уже verified customer; прежняя audience проверка
+считала текущее владение email достаточным доказательством того старого checkbox.
+
+Выбран минимальный fail-closed correction: additive migration23 явно помечает
+historical evidence LEGACY_UNQUALIFIED, новые запросы UNVERIFIED_INTENT; отдельный
+AUTHENTICATED_ACTION требует verified binding и source/time. Campaign queue и
+dispatch игнорируют intents полностью (ни opt-in, ни чужой opt-out). История
+не повышается при magic-link verification и не переписывается через UPDATE.
+
+Альтернативы отвергнуты: автоматическая promotion при email verification не
+доказывает автора checkbox; новый registration service/ledger в этом fix избыточен.
+Authenticated reaffirmation UI/event model и erasure/restore ledger — отдельные
+инженерные gaps до активации, не притворный PASS и не новое юридическое согласование.
+Фокусные реальные SQLite/auth/campaign regressions + exact-head CI обязательны;
+live schema22/runtime сохраняются без deployment и применения migration23.

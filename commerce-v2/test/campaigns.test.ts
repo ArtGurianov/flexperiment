@@ -11,6 +11,7 @@ import {
   type CampaignEmail,
 } from "../src/campaigns";
 import { migrateV2 } from "../src/db";
+import { recordUnverifiedAccountIntent } from "../src/customers";
 
 let db: Database.Database;
 
@@ -28,8 +29,11 @@ const create = (idempotencyKey: string, lessonRef = "lesson-one") => createCampa
 });
 
 const consent = (customerId = "customer") => db.prepare(`INSERT INTO marketing_consents
-  (id,customer_id,granted,document_version,document_sha256,recorded_at,source)
-  VALUES (?,?,1,'v1',?,'2026-09-30T10:00:00Z','ACCOUNT')`).run(`consent-${customerId}`, customerId, "a".repeat(64));
+  (id,customer_id,granted,document_version,document_sha256,recorded_at,source,
+    evidence_status,confirmed_auth_user_id,confirmed_at)
+  SELECT ?,?,1,'v1',?,'2026-09-30T10:00:00Z','AUTHENTICATED_ACCOUNT_ACTION',
+    'AUTHENTICATED_ACTION',auth_user_id,'2026-09-30T10:00:00Z' FROM customers WHERE id=?`)
+  .run(`consent-${customerId}`, customerId, "a".repeat(64), customerId);
 
 beforeEach(() => {
   db = new Database(":memory:"); db.pragma("foreign_keys = ON"); migrateV2(db);
@@ -46,6 +50,35 @@ beforeEach(() => {
 });
 
 describe("campaign consent boundary", () => {
+  const unverified = (granted: boolean) => recordUnverifiedAccountIntent(db, "customer", {
+    personalDataVersion: "pd-v1", personalDataSha256: "a".repeat(64),
+    accountTermsVersion: "terms-v1", accountTermsSha256: "a".repeat(64),
+    marketingConsent: granted, marketingDocumentVersion: "v1", marketingDocumentSha256: "a".repeat(64),
+  }, "2026-10-11T10:00:00Z");
+
+  it("does not let an unverified request opt an already verified address into marketing", () => {
+    unverified(true);
+    expect(confirmCampaign(db, create("campaign:unverified-intent").id, "author")).toMatchObject({ recipients: 0 });
+    expect(db.prepare("SELECT evidence_status,confirmed_auth_user_id FROM marketing_consents").get())
+      .toEqual({ evidence_status: "UNVERIFIED_INTENT", confirmed_auth_user_id: null });
+  });
+
+  it("does not let an unverified negative choice revoke an authenticated choice", () => {
+    consent(); unverified(false);
+    expect(confirmCampaign(db, create("campaign:unverified-revoke").id, "author")).toMatchObject({ recipients: 1 });
+  });
+
+  it("rechecks authenticated consent ownership at dispatch", async () => {
+    consent();
+    const campaign = create("campaign:ownership-loss");
+    expect(confirmCampaign(db, campaign.id, "author")).toMatchObject({ recipients: 1 });
+    db.prepare('UPDATE "user" SET email_verified=0 WHERE id=?').run("user");
+    const send = vi.fn<(message: CampaignEmail) => Promise<void>>(async () => undefined);
+    await dispatchCampaign(db, campaign.id, { secret: "secret", publicOrigin: "https://flexperiment.ru", send });
+    expect(send).not.toHaveBeenCalled();
+    expect(db.prepare("SELECT state FROM notification_campaign_recipients").get()).toEqual({ state: "SKIPPED_NO_CONSENT" });
+  });
+
   it("queues on author confirmation and rechecks unsubscribe before asynchronous dispatch", async () => {
     consent();
     const campaign = create("campaign:unsubscribe");

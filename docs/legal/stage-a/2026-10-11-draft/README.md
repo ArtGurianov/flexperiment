@@ -4,6 +4,9 @@ ART-232. **DRAFT, не legal release, регистрация закрыта.** �
 
 ## Четыре текста
 
+Следующий owner review: [одна матрица решений и retention/restore контракт](OWNER_APPROVAL.md).
+Review PR #195 разрешил технический merge, **не** юридическую активацию.
+
 - [Политика обработки данных](privacy.md)
 - [Отдельное согласие на ПД](personal_data.md)
 - [Правила аккаунта и бесплатного доступа](account_terms.md)
@@ -18,7 +21,7 @@ ART-232. **DRAFT, не legal release, регистрация закрыта.** �
 | ИП Гурьянов Арт Артурович; ИНН 420539506224; ОГРНИП 324420500074591; art@flexperiment.ru | Существующие `apps/lab/public/legal/privacy-policy.md`, `personal-data-consent.md`, оферта V1; владелец подтверждал имя/канал. Не свежая выписка ЕГРИП и не одобрение Stage A |
 | Служебный отправитель noreply@flexperiment.ru, Reply-To art@flexperiment.ru | Решение владельца в текущей задаче; реальная доставка magic links ещё не квалифицирована |
 | Self-hosted Better Auth: email/name/verification, IP/user-agent/сроки сессии; одноразовый token hashed, ссылка 600 s; outbox encrypted | `commerce-v2/src/auth.ts`, migrations; нет доказательства автоматической очистки всех старых outbox rows |
-| Consent: customer/kind/version/hash/time/source; marketing true/false отдельно | `customers.ts`, `auth.ts`; записывается на MAGIC_LINK_INITIATION, не только после подтверждения email; нет доказательства УКЭП или IP именно в consent row. PR разделяет ранее общий checkbox: ПД и правила — разные явные действия; HTTP boundary и auth runtime требуют boolean true для каждого до side effects. Изменение не развёрнуто и не переписывает историю |
+| Intent: customer/kind/version/hash/time/source; marketing true/false отдельно | `customers.ts`, `auth.ts`; MAGIC_LINK_INITIATION — UNVERIFIED_INTENT, не согласие подтверждённого владельца. Attribution migration оставляет исторические записи LEGACY_UNQUALIFIED; email verification их не повышает. Marketing требует отдельного AUTHENTICATED_ACTION; public API такого подтверждения пока нет. Изменение не развёрнуто, history не переписывается |
 | Позиция просмотра и доступ, токен видео с внутренним subject/videoId | `resume.ts`, `playback-access.ts`, `playback-auth.ts`; email в playback JWT не добавляется |
 | Маркетинговый suppression/unsubscribe есть в коде | `campaigns.ts`; реальный браузерный E2E и отмена ранее queued dispatch ещё требуют квалификации |
 | Шифрованные backups: 7 local / 100 remote, таймер 6 h | `scripts/v2/scheduled-backup.py`, `platform-scheduled-backup.py`; это количество снимков, не утверждённые сроки хранения ПД в днях. Восстановление не должно возвращать отозванные согласия |

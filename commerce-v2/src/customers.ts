@@ -40,23 +40,24 @@ export type ConsentInput = {
   readonly marketingConsent: boolean;
   readonly marketingDocumentVersion: string;
   readonly marketingDocumentSha256: string;
-  readonly source: string;
 };
 
-export function recordAccountConsents(db: Database.Database, customerId: string, input: ConsentInput, now = new Date().toISOString()) {
+// This request has NOT proved who checked the boxes, even for an existing verified
+// customer. A later magic-link click must not automatically promote these rows.
+export function recordUnverifiedAccountIntent(db: Database.Database, customerId: string, input: ConsentInput, now = new Date().toISOString()) {
   if (!input.personalDataVersion || !input.accountTermsVersion) throw new Error("REQUIRED_CONSENT_VERSION_MISSING");
   if (!input.marketingDocumentVersion) throw new Error("MARKETING_CONSENT_VERSION_MISSING");
   if (![input.personalDataSha256, input.accountTermsSha256, input.marketingDocumentSha256]
     .every((hash) => /^[a-f0-9]{64}$/.test(hash))) throw new Error("CONSENT_DOCUMENT_HASH_INVALID");
-  const insertAccount = db.prepare(`INSERT INTO account_consents(id,customer_id,kind,document_version,document_sha256,recorded_at,source)
-    VALUES (?,?,?,?,?,?,?) ON CONFLICT(customer_id,kind,document_version) DO NOTHING`);
+  const insertAccount = db.prepare(`INSERT INTO account_consents(id,customer_id,kind,document_version,document_sha256,recorded_at,source,evidence_status)
+    VALUES (?,?,?,?,?,?,'MAGIC_LINK_INITIATION','UNVERIFIED_INTENT') ON CONFLICT(customer_id,kind,document_version) DO NOTHING`);
   const run = db.transaction(() => {
-    insertAccount.run(randomUUID(), customerId, "PERSONAL_DATA", input.personalDataVersion, input.personalDataSha256, now, input.source);
-    insertAccount.run(randomUUID(), customerId, "ACCOUNT_TERMS", input.accountTermsVersion, input.accountTermsSha256, now, input.source);
-    db.prepare(`INSERT INTO marketing_consents(id,customer_id,granted,document_version,document_sha256,recorded_at,source)
-      VALUES (?,?,?,?,?,?,?)`).run(
+    insertAccount.run(randomUUID(), customerId, "PERSONAL_DATA", input.personalDataVersion, input.personalDataSha256, now);
+    insertAccount.run(randomUUID(), customerId, "ACCOUNT_TERMS", input.accountTermsVersion, input.accountTermsSha256, now);
+    db.prepare(`INSERT INTO marketing_consents(id,customer_id,granted,document_version,document_sha256,recorded_at,source,evidence_status)
+      VALUES (?,?,?,?,?,?,'MAGIC_LINK_INITIATION','UNVERIFIED_INTENT')`).run(
       randomUUID(), customerId, Number(input.marketingConsent),
-      input.marketingDocumentVersion, input.marketingDocumentSha256, now, input.source,
+      input.marketingDocumentVersion, input.marketingDocumentSha256, now,
     );
   });
   run.immediate();

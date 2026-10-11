@@ -80,6 +80,11 @@ describe("Stage A auth → FREE access isolated preparation", () => {
     const customerId = await runtime.authenticateCustomer(headers);
     expect(customerId).toBeTruthy();
     expect(db.prepare('SELECT email_verified FROM "user"').get()).toEqual({ email_verified: 1 });
+    // Owning the link proves email ownership, NOT who checked the initiation form.
+    for (const table of ["account_consents", "marketing_consents"]) {
+      expect(db.prepare(`SELECT DISTINCT evidence_status,confirmed_auth_user_id,confirmed_at FROM ${table}`).all())
+        .toEqual([{ evidence_status: "UNVERIFIED_INTENT", confirmed_auth_user_id: null, confirmed_at: null }]);
+    }
     expect(await runtime.authenticateCustomer(headers)).toBe(customerId);
 
     const now = new Date();

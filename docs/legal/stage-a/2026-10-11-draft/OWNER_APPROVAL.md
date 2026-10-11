@@ -1,0 +1,46 @@
+# Stage A: одна матрица решений владельца
+
+ART-232 / ART-179 / ART-169 / ART-41 · 11.10.2026 · **DRAFT, не разрешение на запуск**.
+Review PR #195 разрешил технический merge, но прямо исключил юридическое утверждение.
+Ранее «документы подтверждаю» не активирует незаполненный legal release.
+
+## Только недоступные агенту факты и содержательные решения
+
+| Нужен ответ | Подтверждено / предел проверки | Рекомендация или минимальное evidence |
+| --- | --- | --- |
+| Адрес, актуальные реквизиты и ответственное лицо | V1: ИП Гурьянов Арт Артурович, ИНН 420539506224, ОГРНИП 324420500074591, art@flexperiment.ru. Не свежая выписка | Дать актуальные реквизиты/адрес для документов; подтвердить ответственного за обращения. Не публиковать домашний адрес сверх необходимого объёма |
+| Договоры/акцепты, поручения и места обработки | Публичные документы NotiSend, Kinescope, Яндекса, Cloud.ru доступны; договор нашего аккаунта ими не доказан. Backup transport: s3.cloud.ru / ru-central-1. Mac в РФ — ранее подтверждён владельцем | Передать в private storage договоры VPS/Cloud.ru/NotiSend/Kinescope/SmartCaptcha. Для Kinescope: обслуживающее юрлицо, регион/CDN/субобработчики; для CAPTCHA: обучение/получатели. Не объявлять весь контур РФ по одному endpoint |
+| Уведомление РКН | В проверенных repo/owner directory доказательств нет; официальный реестр недоступен, bounded HTTPS завершился TLS timeout. **UNKNOWN**, не «не зарегистрирован» | Дать номер/копию и актуальную запись с целями, категориями и адресами БД; подтвердить необходимость актуализации и трансграничного уведомления |
+| Основания по целям | Фактически: аккаунт/session, курс/resume, служебная почта, CAPTCHA, минимальная video identity, отдельный marketing. Stage B сюда не входит | Юристу утвердить account/access/служебную почту как исполнение запрошенных правил в необходимом объёме; отдельно определить consent/security основания. Marketing — только отдельное предварительное согласие. Это предложение, не юридическое заключение |
+| Возраст | Проверенного сценария несовершеннолетних/представителей нет | Рекомендую первый выпуск **18+**; не допускать несовершеннолетних до отдельного сценария, не собирать паспорт «на всякий случай» |
+| Курс и срок доступа | Бесплатность, название и автор определены; уроки 3/5/7/5 минут и срок — предложения; реальных видео нет | Подтвердить план/права и «доступ пока курс доступен». Предлагаю обычное снятие с предупреждением за 30 дней; срочное ограничение по безопасности/правам — с уведомлением при первой возможности. Не обещать вечный доступ |
+| Retention и минимальная доказательная история | Общего purge/erasure/restore ledger нет. 7/100 backups — число снимков, не срок ПД | Утвердить пакет ниже; юристу определить срок/основание минимальной истории согласий/отзывов. Реализацию и квалификацию выполнит агент, approval таблицы не означает работающую очистку |
+
+## Предлагаемый пакет retention — не действующие настройки
+
+| Категория | Предложение владельцу | Инженерная готовность |
+| --- | --- | --- |
+| Незавершённая регистрация / intents | 24 часа от последней заявки; только без verified binding, заказов, grants или обоснованного hold | Purge отсутствует; чужая заявка не должна удалить существующий аккаунт |
+| Auth outbox / expired tokens / revoked sessions | Payload/recipient и истёкшие credentials: purge в течение 24 часов; минимальный неперсональный delivery status до 30 дней | Ссылка имеет TTL 600 секунд, payload encrypted; TTL не удаляет все строки. Общий purge отсутствует; ambiguous mail не повторять |
+| Аккаунт / resume | Пока предоставляется запрошенный доступ; подтверждённое удаление по применимому сроку/основанию закона | Logout/binding/resume есть; общей erasure процедуры нет. Не обещать «30 дней для всего» |
+| Security/access telemetry | 30 дней, затем удаление/реальная агрегация без subject identifiers | Age cleanup не квалифицирован |
+| Consent / suppression / обращения | Минимум для конкретного основания; срок доказательной истории требует юриста | Version/hash/time и one-click suppression есть; initiation не verified consent. Нет независимого erasure/suppression ledger |
+| Все backups, включая offline copies | Дополнительный **30-дневный age cap**, кроме индивидуально обоснованного hold | 7 local / 100 remote age cap не обеспечивают; нужно проверить полный inventory и age purge |
+
+## Исполнимый deletion/restore контракт — ещё НЕ РЕАЛИЗОВАН
+
+1. Проверить принадлежность запроса и основание; сразу остановить соответствующий marketing/доступ, revoke sessions и исключить queued recipients. Не удалять аккаунт по неподтверждённому email.
+2. Перед удалением durably записать минимальную erasure/suppression запись в отдельный protected ledger, не только внутрь того же SQLite backup; сохранить необходимые key generations. Сбой записи → STOP, не заявлять erasure PASS. HMAC email — псевдоним, не анонимные данные.
+3. Удалить допустимые категории в проверяемой транзакции по FK-порядку; обоснованный минимальный hold хранить отдельно с основанием/сроком. Не отключать foreign_keys и не менять историю consent ради очистки.
+4. Дать поручения обработчикам и получить подтверждение; age purge охватывает VPS/Cloud.ru/owner offline copies. Удаление online строки не уничтожает старый ciphertext автоматически.
+5. Restore только в изоляции: до jobs/email/serving применить **новейший** ledger, проверить completeness/watermark, purge resurrected identities и invalidate sessions/links. Отсутствующий/старый ledger → restored service CLOSED.
+6. Причинные regression: snapshot до удаления не возвращает аккаунт/рассылку; snapshot до отписки не возвращает opt-in. Не заявлять PASS по наличию backup timer.
+
+## Что установлено технически, не требует решения владельца
+
+- Новый schema23 attribution: historical rows LEGACY_UNQUALIFIED; новые magic-link действия UNVERIFIED_INTENT. Email verification не повышает их и не доказывает, кто поставил checkbox. Marketing учитывает только отдельный AUTHENTICATED_ACTION с совпадающим verified auth binding; проверка повторяется при dispatch.
+- Нового authenticated consent UI/endpoint пока нет; его нужно квалифицировать до запуска. Повторное подтверждение account terms требует отдельной event-модели: прежний UNIQUE(customer,kind,version) нельзя обходить перезаписью intent. Это инженерный gap, не новый owner GO.
+- Read-only VPS: Commerce canary PAYMENT_MODE=disabled, MARKETING_BROADCASTS_ENABLED=false; Platform canary staging, PLATFORM_V2_CANARY=true, PAYLOAD_JOBS_ENABLED=false, без NotiSend/CAPTCHA/Kinescope credentials. Проверенные owner filenames не содержат legal/contract/RKN artifacts; это не доказательство отсутствия файлов у владельца вообще.
+- [Официальный реестр РКН](https://pd.rkn.gov.ru/operators-registry/operators-list/) недоступен при проверке. [Ст. 9](https://www.consultant.ru/document/cons_doc_LAW_61801/6c94959bc017ac80140621762d2ac59f6006b08c/), [18.1](https://www.consultant.ru/document/cons_doc_LAW_61801/eeeebe22bf738fd65bb66b95cc278911ae2525ee/), [21](https://www.consultant.ru/document/cons_doc_LAW_61801/d3fe43a7c415353b17faab255bc0de92bea127da/) — основания, цели и разные сроки прекращения. Публичные processor sources перечислены в [README](README.md); они не заменяют документы нашего аккаунта.
+
+Четыре текста DRAFT. F9, legal release, public ingress, регистрация, marketing и платежи CLOSED.

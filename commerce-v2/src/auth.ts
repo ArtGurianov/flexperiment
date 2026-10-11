@@ -2,7 +2,7 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID }
 import type Database from "better-sqlite3";
 import { betterAuth } from "better-auth";
 import { magicLink } from "better-auth/plugins";
-import { bindVerifiedAuthUser, customerIdForAuthUser, getOrCreateCustomer, recordAccountConsents, type ConsentInput } from "./customers";
+import { bindVerifiedAuthUser, customerIdForAuthUser, getOrCreateCustomer, recordUnverifiedAccountIntent, type ConsentInput } from "./customers";
 import { currentLegalRelease } from "./legal-control";
 import { loadCommerceOrigins, storefrontOrigin, type Storefront } from "./origins";
 import { assertRegistrationChoices } from "./registration-choices";
@@ -155,9 +155,8 @@ export function createAuthRuntime(dependencies: AuthRuntimeDependencies) {
         marketingConsent: input.marketingConsent === true,
         marketingDocumentVersion: input.marketingDocumentVersion,
         marketingDocumentSha256: input.marketingDocumentSha256,
-        source: "MAGIC_LINK_INITIATION",
       };
-      recordAccountConsents(dependencies.db, customer.id, consent);
+      recordUnverifiedAccountIntent(dependencies.db, customer.id, consent);
     },
     async authenticateCustomer(headers: Headers) {
       const session = await auth.api.getSession({ headers });
