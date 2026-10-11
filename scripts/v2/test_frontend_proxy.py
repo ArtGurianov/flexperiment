@@ -62,6 +62,20 @@ const marker = "Commerce API paths must begin with '/'.";
 let checked = 0;
 for (const code of files) {
  if (!code.includes(marker)) continue;
+ // Webpack may concatenate the helper into the React module. Extract the
+ // complete compiled arrow body, not a source stand-in. Unknown shapes or
+ // external dependencies fail closed; never execute React/Zod to locate it.
+ const concatenated = [...code.matchAll(/(?:let|const|var)\s+[$\w]+=((?:[$\w]+|\([$\w]+\))=>\{[^]*?\});/g)]
+   .map(match => match[1]).filter(body => body.includes(marker));
+ if (concatenated.length) {
+   assert.equal(concatenated.length, 1, 'AMBIGUOUS_COMMERCE_URL_HELPER');
+   const helper = vm.runInNewContext('(' + concatenated[0] + ')', {}, {timeout: 1000});
+   for (const path of ['/v1/auth/get-session', '/v1/lab/catalogue', '/v1/me/orders'])
+     assert.equal(helper(path), path, 'V2_BROWSER_API_MUST_BE_SAME_ORIGIN');
+   assert.throws(() => helper('foreign.invalid'), error => error.message === marker);
+   checked++;
+   continue;
+ }
  const self = {webpackChunk_N_E: []};
  vm.runInNewContext(code, {self}, {timeout: 1000});
  for (const [, factories] of self.webpackChunk_N_E) {
@@ -215,6 +229,17 @@ class FrontendProxy(unittest.TestCase):
                          CLIENT_BUNDLE_PROBE, input="[]", check=False)
         self.assertNotEqual(missing.returncode, 0)
         self.assertIn("ACTUAL_COMMERCE_URL_HELPER_NOT_FOUND", missing.stderr)
+
+    def test_concatenated_helper_probe_preserves_negative_controls(self):
+        for base in ("", "https://api.flexperiment.ru", "https://untrusted.invalid"):
+            arrow = "let a=e=>{if(!e.startsWith('/'))throw Error(\"Commerce API paths must begin with '/'.\");return " \
+                + json.dumps(base) + ".replace(/\\/+$/,'')+e};"
+            chunk = "self.webpackChunk_N_E.push([[1],{1:(e,t,s)=>{s(999);" + arrow + "}}]);"
+            result = docker("exec", "-i", self.prefix + "-upstream", "node", "-e",
+                            CLIENT_BUNDLE_PROBE, input=json.dumps([chunk]), check=False)
+            self.assertEqual(result.returncode == 0, base == "")
+            if base:
+                self.assertIn("V2_BROWSER_API_MUST_BE_SAME_ORIGIN", result.stderr)
 
     def test_foreign_host_and_partner_realm_refuse(self):
         for service in self.services:
