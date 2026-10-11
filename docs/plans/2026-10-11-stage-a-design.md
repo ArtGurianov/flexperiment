@@ -219,7 +219,9 @@ verification-key file и уже initialized shared fence directory. Отсутс
 или age recovery identity. До auth/HTTP/timers boot читает fresh nonce-bound remote
 ledger, применяет BOOT_RESTORE за drain и сверяет head ещё раз. Missing/stale/forked
 authority, orphan owner/leases и unknown schema держат startup CLOSED. Existing CLOSED
-deployments без flag сохраняют прежнее поведение; opt-in не установлен этим PR.
+deployments без flag сохраняют прежнее поведение только с явным owner admission
+NEVER_INSTALLED; отсутствие host evidence не считается этим состоянием.
+Opt-in не установлен этим PR.
 Повторный boot не понижает independent applied watermark: даже свежеподписанный
 nonce-bound ответ должен включать уже применённый prefix с тем же hash.
 Rollback или fork → CLOSED; freshness сама по себе не доказывает полноту ledger.
@@ -255,3 +257,59 @@ skip application receipt) пойманы targeted tests; исходная реа
 Full exact-head CI обоих PR обязателен перед возможным merge; инженерный PASS
 не разрешает deployment, live migrations, legal release, registration/marketing,
 payments или F9.
+
+## Delta review #204/#205: installation downgrade — 12.10.2026
+
+### Keep from original plan
+
+Retained keys, independent signed remote custody, fresh nonce/checkpoint, applied
+prefix anti-rollback, durable drained REQUEST/WORKER/SEND и operational HOLD сохраняются.
+#204 merge выполняется первым; #205 обновляется к main и получает новую exact-head CI.
+
+### Adopt from alternative plan
+
+Critical fix: installation admission должен читаться независимо от env и merchant
+backup. После REQUIRED отсутствие/false fencing не запускает DB/auth/HTTP/timers.
+Material improvement: foundation startup тоже проверяется — иначе переключение
+COMMERCE_V2_FOUNDATION_MODE могло бы обойти prepareErasureRuntime.
+
+### Reject from alternative plan
+
+Не используем отсутствие файла как NEVER_INSTALLED: оно неотличимо от потери mount
+после установки. Не принимаем env-selected path, marker внутри merchant SQLite,
+бaked legacy marker в image или автоматическую генерацию пустого installation state.
+Никакие merchant migrations не нужны; runtime не получает writer installation policy.
+
+### Conflicts / decisions needed
+
+Для совместимости закрытых never-enabled окружений выбран явный owner-managed
+NEVER_INSTALLED record. REQUIRED — последующее защищённое owner admission. Переключение
+этого host record не выполняется env/API приложения. Полномочия установки ещё HOLD;
+routine engineering не требует нового GO.
+
+### Risk delta
+
+Новая обязательная deployment dependency: отдельный root-owned read-only host mount
+/etc/flexperiment-erasure (0555), installation.json (0444, UID 0, без symlink/hardlink).
+Kernel mountinfo подтверждает точный ro mount. Host namespace находится вне merchant,
+editorial, backups и image. Record v1 связывает scope и installationId; REQUIRED
+закрепляет canonical fenceDirectory, который нельзя перенаправить env на пустой fence.
+После установки owner registry не восстанавливается из старого merchant backup;
+его rollback/removal требует отдельной защищённой operator procedure, не runtime repair.
+Неверный scope, отсутствующий/corrupt/RW/unmounted record → CLOSED даже без flag.
+Проверенный ранее runtime image НЕ заменяется этим инженерным merge.
+
+### Revised merged plan
+
+1. Merge #204 при утверждённом head и сохранить merge-SHA CI.
+2. Обновить #205 к main; добавить private installation capability и unconditional
+   startup admission. NEVER_INSTALLED сохраняет closed legacy behavior; REQUIRED
+   требует включённого fencing, pinned scope/path и qualified remote boot.
+3. Квалифицировать отказ при missing/false, старом merchant backup, missing/corrupt
+   evidence, foreign scope/path, RW mount, недоступной custody и foundation fallback.
+4. Actual-image CI использует только task-owned synthetic host volumes. Root metadata,
+   ro mount и невозможность записи из app проверяются реально; host unit tests явно
+   используют synthetic mount adapter. Synthetic record не является live installation.
+5. Fresh exact-head test/docker-build PASS перед merge #205, затем post-merge CI.
+   Remote authority, transport, IAM/CAS, key escrow, all-writer fencing installation
+   остаются отдельными live gates. Deployment/live migrations/F9 не выполняются.

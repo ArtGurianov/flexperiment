@@ -3,11 +3,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { activateLegalRelease } from "../src/legal-control";
 import { decryptAuthEmailPayload } from "../src/auth";
 import { applyV2Seed, readV2Catalogue } from "../src/seed";
+import { installationFixture } from "./fixtures/erasure-installation";
 
 // Import the real server composition, replacing only its socket and external IO.
 // No mock auth/session, payment rail, database, migration or application handler.
-const runtime = vi.hoisted(() => ({ db: undefined as Database.Database | undefined, serve: vi.fn() }));
+const runtime = vi.hoisted(() => ({ db: undefined as Database.Database | undefined, serve: vi.fn(),
+  installationState: "NEVER_INSTALLED" as "NEVER_INSTALLED" | "REQUIRED" }));
 vi.mock("@hono/node-server", () => ({ serve: runtime.serve }));
+vi.mock("../src/erasure-installation", async (load) => {
+  const actual = await load<typeof import("../src/erasure-installation")>();
+  return { ...actual, readErasureInstallation: (environment: Record<string, string | undefined>) => {
+    const fixture = installationFixture(runtime.installationState, undefined, environment.DEPLOY_ENV === "production" ? "production" : "canary");
+    return actual.ErasureInstallationEvidence.read(environment, fixture.options);
+  } };
+});
 vi.mock("../src/db", async (load) => {
   const actual = await load<typeof import("../src/db")>();
   return { ...actual, openV2Database: vi.fn(() => {
@@ -42,10 +51,12 @@ const boot = async () => {
 let previousExitCode: typeof process.exitCode;
 beforeEach(() => {
   previousExitCode = process.exitCode;
+  runtime.installationState = "NEVER_INSTALLED";
   vi.resetModules(); vi.clearAllMocks();
   const environment: Record<string, string | undefined> = {
     NODE_ENV: "production", DEPLOY_ENV: "production", PAYMENT_MODE: "disabled", SOURCE_COMMIT: sha,
     COMMERCE_V2_FOUNDATION_MODE: "false", BUILD_IDENTITY_FILE: undefined,
+    ERASURE_FENCING_ENABLED: undefined,
     PLATFORM_ORIGIN: platform, LAB_ORIGIN: "https://lab.synthetic.invalid",
     ADMIN_ORIGIN: "https://admin.synthetic.invalid", API_ORIGIN: api,
     MERCHANT_PROMOTION_PREFIX: "FX-", REFREF_READINESS_URL: ops, PLATFORM_SERVICE_TOKEN: serviceToken,
@@ -78,6 +89,13 @@ afterEach(() => {
 });
 
 describe("ART-162 / ART-179 normal production server, payment disabled", () => {
+  it.each([undefined, "false"])("rejects previously installed fencing=%s before database/migrations/auth/server", async enabled => {
+    runtime.installationState = "REQUIRED"; vi.stubEnv("ERASURE_FENCING_ENABLED", enabled);
+    const { serverStartup } = await import("../src/server");
+    await expect(serverStartup).rejects.toThrow("DOWNGRADE_REFUSED");
+    expect(openV2Database).not.toHaveBeenCalled(); expect(runtime.serve).not.toHaveBeenCalled();
+    expect(fetcher).not.toHaveBeenCalled(); expect(process.exitCode).toBe(1);
+  });
   it.each([["production", ops], ["staging", canaryOps]])("boots the actual %s application and preserves the unauthenticated read-only ops probe", async (environment, url) => {
     vi.stubEnv("DEPLOY_ENV", environment);
     vi.stubEnv("REFREF_READINESS_URL", url);

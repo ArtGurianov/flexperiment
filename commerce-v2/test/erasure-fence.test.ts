@@ -18,6 +18,7 @@ import { VerifiedErasureRequest } from "../src/erasure-request";
 import { loadCommerceRuntimeConfig } from "../src/payment-mode";
 import { activateLegalRelease } from "../src/legal-control";
 import { stageALegalManifest } from "./fixtures/legal";
+import { installationFixture } from "./fixtures/erasure-installation";
 
 let root:string;let db:Database.Database;let ledger:ErasureLedgerStore;let keys:ErasureKeys;let signer:ErasureSigner;
 let clock:Date;let gates:ErasureRuntimeFence[];let gate:ErasureRuntimeFence;let owner:ErasureCustodian;
@@ -215,11 +216,13 @@ describe("durable runtime/send fencing, not operational installation",()=>{
     expect(()=>gate.openQualified()).toThrow("BOOT_UNQUALIFIED");
   });
   it("fails closed for missing enabled custody/config and never installs private signer/S3 credentials",async()=>{
-    expect(await prepareErasureRuntime({db,environment:{ERASURE_FENCING_ENABLED:"false"},forbiddenRoots:[join(root,"merchant")]})).toBeUndefined();
-    await expect(prepareErasureRuntime({db,environment:{ERASURE_FENCING_ENABLED:"true",ERASURE_SCOPE:"canary",DEPLOY_ENV:"staging"},forbiddenRoots:[join(root,"merchant")]})).rejects.toThrow("CONFIGURATION_INVALID");
+    const installation=installationFixture("REQUIRED",join(root,"fence")).read();
+    const environment={ERASURE_FENCING_ENABLED:"true",ERASURE_SCOPE:"canary",DEPLOY_ENV:"staging",ERASURE_FENCE_DIRECTORY:join(root,"fence")};
+    expect(await prepareErasureRuntime({db,environment:{ERASURE_FENCING_ENABLED:"false",DEPLOY_ENV:"staging"},installation:installationFixture("NEVER_INSTALLED").read(),forbiddenRoots:[join(root,"merchant")]})).toBeUndefined();
+    await expect(prepareErasureRuntime({db,environment,installation,forbiddenRoots:[join(root,"merchant")]})).rejects.toThrow("CONFIGURATION_INVALID");
     const file=join(root,"keys.json");writeFileSync(file,JSON.stringify({version:1,scope:"canary",signing:{"signing-1":signer.privateKey.export({type:"pkcs8",format:"pem"})},subject:{"subject-1":keys.subject["subject-1"].toString("base64")}}),{mode:0o600});
-    await expect(prepareErasureRuntime({db,environment:{ERASURE_FENCING_ENABLED:"true",ERASURE_SCOPE:"canary",DEPLOY_ENV:"staging",ERASURE_VERIFICATION_KEYS_FILE:file},forbiddenRoots:[join(root,"merchant")]})).rejects.toThrow("CONFIGURATION_INVALID");
-    chmodSync(file,0o644);await expect(prepareErasureRuntime({db,environment:{ERASURE_FENCING_ENABLED:"true",ERASURE_SCOPE:"canary",DEPLOY_ENV:"staging",ERASURE_VERIFICATION_KEYS_FILE:file},forbiddenRoots:[join(root,"merchant")]})).rejects.toThrow("CONFIGURATION_INVALID");
+    await expect(prepareErasureRuntime({db,environment:{...environment,ERASURE_VERIFICATION_KEYS_FILE:file},installation,forbiddenRoots:[join(root,"merchant")]})).rejects.toThrow("CONFIGURATION_INVALID");
+    chmodSync(file,0o644);await expect(prepareErasureRuntime({db,environment:{...environment,ERASURE_VERIFICATION_KEYS_FILE:file},installation,forbiddenRoots:[join(root,"merchant")]})).rejects.toThrow("CONFIGURATION_INVALID");
   });
   it("uses uncached nonce-authenticated GET only and refuses redirect/body/status failures without secrets",async()=>{
     const fetcher=vi.fn(async()=>new Response("{}"));const read=erasureRemoteReadAdapter("https://authority.example.test/v1/erasure/read","t".repeat(32),fetcher);
@@ -253,9 +256,13 @@ describe("durable runtime/send fencing, not operational installation",()=>{
     const env={ERASURE_FENCING_ENABLED:"true",ERASURE_SCOPE:"canary",DEPLOY_ENV:"staging",ERASURE_VERIFICATION_KEYS_FILE:file,
       ERASURE_REMOTE_READ_URL:"https://authority.example.test/v1/erasure/read",ERASURE_READ_TOKEN:"r".repeat(32),ERASURE_FENCE_DIRECTORY:join(root,"fence")};
     const fetcher:typeof fetch=async(_url,options)=>new Response(JSON.stringify(await owner.reconcile(null,new Headers(options?.headers).get("x-erasure-nonce")!,clock)));
-    const ready=await prepareErasureRuntime({db,environment:env,forbiddenRoots:[join(root,"merchant"),join(root,"ledger")],fetcher,now:()=>clock});
+    const installation=installationFixture("REQUIRED",join(root,"fence")).read();
+    const ready=await prepareErasureRuntime({db,environment:env,installation,forbiddenRoots:[join(root,"merchant"),join(root,"ledger")],fetcher,now:()=>clock});
     gates.push(ready!);expect(await ready!.ready()).toBe(true);expect(db.prepare('SELECT id FROM "session"').all()).toEqual([]);
-    await expect(prepareErasureRuntime({db,environment:env,forbiddenRoots:[join(root,"merchant"),join(root,"ledger")],fetcher:async()=>{throw new Error("SECRET_AUTH_URL");},now:()=>clock})).rejects.toThrow("BOOT_HOLD");
+    for(const enabled of [undefined,"false"]) {
+      await expect(prepareErasureRuntime({db,environment:{...env,ERASURE_FENCING_ENABLED:enabled},installation,forbiddenRoots:[join(root,"merchant")],now:()=>clock})).rejects.toThrow("DOWNGRADE_REFUSED");
+    }
+    await expect(prepareErasureRuntime({db,environment:env,installation,forbiddenRoots:[join(root,"merchant"),join(root,"ledger")],fetcher:async()=>{throw new Error("SECRET_AUTH_URL");},now:()=>clock})).rejects.toThrow("BOOT_HOLD");
     expect(ready!.status().state).toBe("CLOSED");
   });
   it("guards real Better Auth callbacks, mail transport, sign-in, sessions and logout within the HTTP lease",async()=>{

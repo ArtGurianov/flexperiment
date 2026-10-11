@@ -17,8 +17,11 @@ import { dispatchPendingCampaigns, type CampaignEmail } from "./campaigns";
 import { createMagicLinkEmailDelivery } from "./auth-email-delivery";
 import { dirname } from "node:path";
 import { prepareErasureRuntime } from "./erasure-runtime";
+import { ErasureInstallationEvidence, readErasureInstallation } from "./erasure-installation";
 
 async function startServer() {
+const installation=readErasureInstallation(process.env);
+ErasureInstallationEvidence.assertRuntime(installation,process.env);
 const config = loadCommerceRuntimeConfig();
 // Preserve the configured foundation dependency when switching to normal mode.
 // Production and a live Refref rail may never report readiness without probing it.
@@ -30,7 +33,7 @@ migrateV2(db);
 // Before traffic, auth construction or timers. Installation is separately admitted;
 // an enabled but unqualified authority/control DB fails closed, without fallback.
 const erasureFence=await prepareErasureRuntime({db,environment:process.env,
-  forbiddenRoots:[dirname(db.name)]});
+  forbiddenRoots:[dirname(db.name)],installation});
 const buildIdentity = readBuildIdentity("commerce-v2");
 if (buildIdentity.sourceCommit === "development" && config.deployEnvironment === "production") throw new Error("SOURCE_COMMIT_REQUIRED");
 

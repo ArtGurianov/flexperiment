@@ -7,6 +7,7 @@ import { applyDrainedRuntimeErasure } from "./erasure-restore";
 import { CUSTODY_MAX_BYTES, confirmRemoteErasureRequest, readRemoteErasureLedger, type ErasureCustodian, type RemoteErasureAck } from "./erasure-custody";
 import { ErasureLedgerError, type ErasureKeys } from "./erasure-ledger";
 import { VerifiedErasureRequest } from "./erasure-request";
+import { ErasureInstallationEvidence, readErasureInstallation } from "./erasure-installation";
 
 function refuse(code: string): never {throw new ErasureLedgerError(code);}
 /** Protected read authority only; never S3 privileges/private signer/recovery identity.
@@ -51,12 +52,14 @@ function verificationKeys(file:string,scope:"canary"|"production"):ErasureKeys {
   } catch {return refuse("ERASURE_RUNTIME_CONFIGURATION_INVALID");}
 }
 
-/** Optional, separately admitted installation. Missing/invalid enabled configuration
- * stops BEFORE traffic/timers. Closed deployments with no flag retain existing behavior. */
+/** Separately admitted installation. Only explicit protected NEVER_INSTALLED
+ * evidence permits legacy behavior; missing evidence or installed downgrade stops
+ * BEFORE traffic/timers. No env switch or merchant restore establishes admission. */
 export async function prepareErasureRuntime(input:{db:Database.Database; environment:Readonly<Record<string,string|undefined>>;
-  forbiddenRoots:readonly string[]; fetcher?:typeof fetch; now?:()=>Date}) {
+  forbiddenRoots:readonly string[]; fetcher?:typeof fetch; now?:()=>Date; installation?:ErasureInstallationEvidence}) {
   const env=input.environment;
-  if(env.ERASURE_FENCING_ENABLED===undefined || env.ERASURE_FENCING_ENABLED==="false")return undefined;
+  const installation=input.installation??readErasureInstallation(env);
+  if(!ErasureInstallationEvidence.assertRuntime(installation,env))return undefined;
   if(env.ERASURE_FENCING_ENABLED!=="true" || !["canary","production"].includes(env.ERASURE_SCOPE??"")) refuse("ERASURE_RUNTIME_CONFIGURATION_INVALID");
   const scope=env.ERASURE_SCOPE as "canary"|"production";
   if(scope==="production" && env.DEPLOY_ENV!=="production" || scope==="canary" && env.DEPLOY_ENV!=="staging") refuse("ERASURE_RUNTIME_CONFIGURATION_INVALID");

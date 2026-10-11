@@ -8,9 +8,10 @@ task_dir=$(mktemp -d "${TMPDIR:-/tmp}/flex-v2-foundation.XXXXXX")
 task_id="v2-foundation-smoke-$$"
 data_volume="${task_id}-data"
 backup_volume="${task_id}-backup"
+installation_volume="${task_id}-host-admission"
 cleanup() {
   docker rm -f "$task_id" >/dev/null 2>&1 || true
-  docker volume rm "$data_volume" "$backup_volume" >/dev/null 2>&1 || true
+  docker volume rm "$data_volume" "$backup_volume" "$installation_volume" "${task_id}-legacy" "${task_id}-installed" >/dev/null 2>&1 || true
   rm -rf "$task_dir"
 }
 trap cleanup EXIT
@@ -18,12 +19,15 @@ age-keygen -o "$task_dir/synthetic.age.key" >/dev/null 2>&1
 recipient=$(age-keygen -y "$task_dir/synthetic.age.key")
 docker volume create "$data_volume" >/dev/null
 docker volume create "$backup_volume" >/dev/null
+source scripts/ci/erasure-installation-fixture.sh
+erasure_fixture_create "$image" "$installation_volume"
 
 start() {
   # No network: proves unavailable Refref fails closed without external CI calls.
   docker run -d --name "$task_id" --network none \
     --mount "type=volume,source=$data_volume,target=/var/lib/flexperiment-v2" \
     --mount "type=volume,source=$backup_volume,target=/var/lib/flexperiment-v2-backups" \
+    --mount "type=volume,source=$installation_volume,target=/etc/flexperiment-erasure,readonly" \
     --env COMMERCE_V2_FOUNDATION_MODE=true --env COMMERCE_V2_ENVIRONMENT=canary \
     --env DEPLOY_ENV=staging --env PAYMENT_MODE=disabled --env MARKETING_BROADCASTS_ENABLED=false \
     --env KINESCOPE_DELIVERY_MODE=open --env MERCHANT_PROMOTION_PREFIX=FX- \
@@ -96,4 +100,5 @@ docker rm -f "$task_id" >/dev/null
 start
 check
 storage verify "$marker"
+erasure_fixture_image_checks "$image" "$task_id"
 echo 'FOUNDATION_IMAGE=PASS persistence=PASS encrypted_restore=PASS refref_unavailable_fail_closed=PASS curl_healthcheck=PASS runtime_backup_cli=PASS'
