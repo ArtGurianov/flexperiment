@@ -37,6 +37,8 @@ ARG PLATFORM_ORIGIN=https://flexperiment.ru
 ARG S3_PUBLIC_URL=https://flexperiment.s3.cloud.ru
 ARG YANDEX_WEBMASTER_VERIFICATION
 ENV NODE_ENV=production \
+    COREPACK_HOME=/opt/corepack \
+    COREPACK_ENABLE_NETWORK=0 \
     HOSTNAME=0.0.0.0 \
     PORT=3001 \
     SOURCE_COMMIT=${SOURCE_COMMIT} \
@@ -55,6 +57,8 @@ COPY --from=build /app/commerce-v2/src/payment-purpose.ts ./commerce-v2/src/paym
 COPY --from=identity --chmod=0444 /identity/identity.json /app/.identity/identity.json
 COPY scripts/v2/platform-backup.py /app/scripts/v2/platform-backup.py
 RUN corepack enable \
+  && COREPACK_ENABLE_NETWORK=1 corepack install \
+  && chmod -R a+rX /opt/corepack \
   && mkdir -p /var/lib/flexperiment-v2 /var/lib/flexperiment-platform-canary /var/lib/flexperiment-platform-canary-backups \
   && chown -R node:node /var/lib/flexperiment-v2 /var/lib/flexperiment-platform-canary /var/lib/flexperiment-platform-canary-backups /app \
   && chmod 0555 /app/.identity \

@@ -24,6 +24,9 @@ remains supported; the canary flag must be explicitly installed and verified.
 
 Build only: SOURCE_COMMIT (exact green admitted main SHA), PLATFORM_ORIGIN =
 https://canary-platform.flexperiment.ru. Never build with runtime secrets.
+The pinned pnpm manager is hydrated during build under /opt/corepack, readable
+by the node user; Corepack network access is disabled at runtime. Boot cannot
+depend on downloading a package manager. Actual-image CI probes this offline.
 
 Runtime only:
 
