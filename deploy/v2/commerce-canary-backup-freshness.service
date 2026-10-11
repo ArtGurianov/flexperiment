@@ -1,0 +1,10 @@
+[Unit]
+Description=Commerce V2 canary backup freshness check
+OnFailure=flexperiment-v2-canary-alert@commerce-freshness.service
+
+[Service]
+Type=oneshot
+User=root
+UMask=0077
+ExecStart=/usr/bin/python3 /usr/local/lib/flexperiment-v2/scheduled-backup.py canary check
+TimeoutStartSec=30

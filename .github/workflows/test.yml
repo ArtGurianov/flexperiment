@@ -40,6 +40,8 @@ jobs:
         run: python3 scripts/v2/test_platform_backup.py -v
       - name: Isolated Platform canary scheduled transport and recovery admission
         run: python3 scripts/v2/test_platform_scheduled_backup.py -v
+      - name: Canary-only backup alert channel isolation and secret safety
+        run: python3 scripts/v2/test_canary_backup_alert.py -v
       - name: Independent V2 owner control contract
         run: python3 scripts/v2/test_owner_rpc.py
       - name: Isolated V2 canary same-origin proxy contract (real nginx)

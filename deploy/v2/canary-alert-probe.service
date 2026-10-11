@@ -1,0 +1,8 @@
+[Unit]
+Description=Controlled canary alert delivery probe (no database effects)
+OnFailure=flexperiment-v2-canary-alert@probe.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/false
+# Intentionally failed ONLY by an explicit owner qualification run. No timer.
