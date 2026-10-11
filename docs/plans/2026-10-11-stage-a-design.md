@@ -40,3 +40,34 @@ SQLite regressions как универсального authoring-теста. А�
 ART-179 владеет реальным email/browser/session/video E2E; ART-232 — legal admission;
 ART-41 — F9 и production backup alerting. F7, V1, Refref, production, backup timers
 и четыре HTTPS 403 guards не меняются. Registration, marketing, payments и F9 CLOSED.
+
+## Следующий независимый delta: required consent gate
+
+Выбран серверный gate в Commerce для library/playback/DRM/progress плюс проверка
+consent status перед private Payload reads. Отвергнуты React-only защита и неявное
+повышение registration intent после magic-link verification. Entitlements и FREE
+enrollment сохраняются исторически, но не обходят required admission.
+UI использует unchecked actions, один idempotent POST и независимый GET; неизвестный
+результат сверяется GET-only без повторной записи. Scope email marketing переносим
+между витринами только для идентичных version/hash, latest decline/suppression
+имеют глобальный запрет. Это инженерный механизм, не активация release/рассылок.
+
+## Delta #201: безопасная новая попытка после отказа
+
+Замечание владельца к SHA 9b5ce616: общий `uncertain` блокировал форму даже после
+доказанного отказа. Выбран scoped GET конкретного actionKey плюс CAS существующего
+event sequence: idle → saving → uncertain/retryable. При ABSENT пользователь явно
+начинает новую попытку с новым ключом и пустыми checkbox; COMMITTED, неуспешная или
+неполная сверка не разрешают новый POST. Смена release/version/hash пересоздаёт форму.
+Сервер различает pre-write/rollback enum errors и неизвестный outcome; HTTP-код сам
+по себе не доказывает отсутствие записи. GET не создаёт событий и не отменяет POST.
+CAS в immediate transaction исключает двойной COMMIT позднего исходного и нового
+действия. Не нужны новые таблицы, миграции или изменение append-only истории.
+
+Отвергнуты возврат idle только по requiredChoicesConfirmed=false (не доказывает
+отсутствие action), слепой повтор старого payload (может изменить выбор) и отдельный
+ledger попыток (лишняя схема для существующих последовательных events).
+Logout, история покупок и контакт удаления ПД остаются доступны вне content gate.
+UI/domain/API tests покрывают отказ, ambiguous COMMIT/absence, отказ GET, чужой key,
+смену редакции, оба порядка late-commit race и независимый session read-back.
+Erasure/retention и independent restore-suppression остаются отдельным delta ART-232.

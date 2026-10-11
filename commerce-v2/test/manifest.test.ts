@@ -4,6 +4,7 @@ import { createRestrictiveOverride, releaseRolledBackOverride, OverrideProofErro
 import { migrateV2 } from "../src/db";
 import { applyCourseManifest, ManifestError, withManifestHash, type CourseManifest } from "../src/manifest";
 import { resolvePlaybackAccess } from "../src/playback-access";
+import { confirmSyntheticAccount } from "./fixtures/confirmed-account";
 
 let db: Database.Database;
 beforeEach(() => { db = new Database(":memory:"); db.pragma("foreign_keys = ON"); migrateV2(db); });
@@ -85,6 +86,7 @@ describe("reconciliation lease and acknowledgement recovery", () => {
 
   it("renews the lease on an unchanged reconcile so a free course does not go stale", () => {
     db.prepare("INSERT INTO customers(id,email_normalized) VALUES ('customer','student@example.com')").run();
+    confirmSyntheticAccount(db, "customer");
     db.prepare("INSERT INTO products(id,product_ref,kind,access_model,course_ref) VALUES ('p','course:course','ONLINE_COURSE','FREE','course')").run();
     const committed = manifest(1);
     applyCourseManifest(db, committed, "2026-09-28T00:00:00.000Z");

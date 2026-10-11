@@ -240,3 +240,46 @@ browser E2E. ART-169/179 remain open until their respective real-content and
 functional checks pass. The course-specific preparation helper and permanent
 first-course launch checklist are removed; historical legal drafts remain history,
 not catalogue authority.
+
+### Authenticated content admission (ART-179)
+
+Engineering gate: Commerce checks current verified binding and required authenticated
+PD/account-term events against the exact active COURSES release/hash before library,
+playback/DRM and progress operations. Missing/malformed legal state fails closed.
+Historical entitlement or retained FREE enrollment does not override this gate.
+Account identity, legal confirmation, order history and logout remain accessible
+for reconciliation and account rights; public catalogue metadata is unchanged.
+Payload's entitled-content readers independently check Commerce consent status before
+querying private editorial data. Client components are not access authority.
+
+The account UI starts all choices unchecked, performs one explicit idempotent POST
+and confirms admission with independent no-store GET. Lost response/failed read-back
+keeps content closed and offers GET-only reconciliation, not an automatic POST retry.
+GET may include a bounded `actionKey`: its session/customer/storefront-scoped
+`action.outcome` distinguishes ABSENT from COMMITTED, including historical/stale
+actions that do not currently satisfy admission. A missing/foreign/malformed proof
+never enables retry. Only an ABSENT result permits an explicit fresh attempt with a
+fresh key and newly unchecked choices. A rotated release remounts its documents and
+choices; an old payload is never submitted for the new release.
+The API requires `expectedActionSequence` from the consistent GET snapshot. In the
+same immediate transaction as insertion, a new action must match the existing event
+sequence; otherwise `CONSENT_STATE_STALE` refuses it without writing. This prevents a
+late original POST and a fresh retry from both committing after an ABSENT snapshot.
+Existing same-key/same-choice replay is still idempotent. No table or migration is
+added. Definitive allowlisted pre-write/rollback refusals are distinguished from
+ambiguous transport, unknown errors and unconfirmed writes; HTTP status alone is not
+proof of absence. Even a definitive rejection refreshes the current action/release
+before offering retry. No-write GET reconciliation never fabricates consent evidence.
+Late results from an unmounted account/release form are discarded. Marketing is not
+required to open a properly admitted FREE course.
+Logout uses the existing Better Auth endpoint with independent session read-back;
+purchase history and the owner-approved data-removal contact remain outside the gate.
+The contact route is not a claim that automated erasure/restore suppression is complete.
+
+Marketing scope is a single voluntary **email** purpose only when source and target
+storefront have identical admitted marketing document version and SHA-256. A positive
+LAB action cannot grant a different COURSES purpose (or vice versa). A latest explicit
+negative choice and one-click suppression deny globally; neither revives historical
+grants. Source account/release/hash still must be current. No SMS/messenger consent
+is inferred, and broadcasts remain disabled. Real browser/email/video admission,
+live migration/deployment and legal activation are separate from this engineering delta.

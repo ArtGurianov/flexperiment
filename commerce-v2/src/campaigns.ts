@@ -1,6 +1,6 @@
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import type Database from "better-sqlite3";
-import { authenticatedMarketingChoice } from "./authenticated-consents";
+import { authenticatedMarketingChoice, matchesMarketingDocument } from "./authenticated-consents";
 
 export type CampaignEmail = {
   recipient: string;
@@ -170,16 +170,17 @@ export function unsubscribeCustomer(db: Database.Database, token: string, secret
 const marketingAllowed = (db: Database.Database, customerId: string, email: string) => {
   // Ignore unverified requests completely: they can neither opt another account
   // in nor revoke a genuine choice. Recheck ownership at dispatch, not just queueing.
-  const consent = db.prepare(`SELECT m.granted FROM marketing_consents m
+  const consent = db.prepare(`SELECT m.granted,m.document_version,m.document_sha256 FROM marketing_consents m
     JOIN customers c ON c.id=m.customer_id
     JOIN "user" u ON u.id=c.auth_user_id AND u.id=m.confirmed_auth_user_id
     WHERE m.customer_id=? AND m.evidence_status='AUTHENTICATED_ACTION'
       AND m.source='AUTHENTICATED_ACCOUNT_ACTION' AND m.confirmed_at IS NOT NULL
       AND u.email_verified=1 AND lower(trim(u.email))=c.email_normalized
     ORDER BY m.confirmed_at DESC,m.recorded_at DESC,m.id DESC LIMIT 1`)
-    .get(customerId) as { granted: number } | undefined;
+    .get(customerId) as { granted: number; document_version: string; document_sha256: string } | undefined;
   const suppressed = db.prepare("SELECT 1 FROM email_suppressions WHERE email_normalized=? AND removed_at IS NULL").get(email);
-  return (authenticatedMarketingChoice(db, customerId) ?? (consent?.granted === 1)) && !suppressed;
+  const legacyAllowed = consent?.granted === 1 && matchesMarketingDocument(db, "COURSES", consent.document_version, consent.document_sha256);
+  return (authenticatedMarketingChoice(db, customerId, "COURSES") ?? legacyAllowed) && !suppressed;
 };
 
 export function campaignStatus(db: Database.Database, campaignId: string) {

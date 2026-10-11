@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import { decideLessonAccess } from "./access-policy";
+import { hasRequiredAccountConsents } from "./authenticated-consents";
 
 type LibraryRow = {
   course_ref: string;
@@ -33,6 +34,7 @@ export function listCustomerLibrary(
   now = new Date(),
   leaseMs = 24 * 60 * 60 * 1000,
 ): CustomerLibrary {
+  if (!hasRequiredAccountConsents(db, customerId, "COURSES")) return { courses: [] };
   const rows = db.prepare(`SELECT lesson.course_ref,lesson.lesson_ref,lesson.section_ref,
       course.visibility AS course_visibility,section.visibility AS section_visibility,lesson.visibility AS lesson_visibility,
       lesson.ever_published,lesson.free_preview,lesson.withdrawn_at AS lesson_withdrawn_at,course.last_reconciled_at,

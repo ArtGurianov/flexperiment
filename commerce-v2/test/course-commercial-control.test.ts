@@ -7,6 +7,7 @@ import { loadCommerceRuntimeConfig } from "../src/payment-mode";
 import { resolvePlaybackAccess } from "../src/playback-access";
 import { listCustomerLibrary } from "../src/library";
 import { createCommerceV2App } from "../src/app";
+import { confirmSyntheticAccount } from "./fixtures/confirmed-account";
 
 let db: Database.Database;
 const config = loadCommerceRuntimeConfig({ DEPLOY_ENV: "staging", PAYMENT_MODE: "disabled" });
@@ -27,6 +28,7 @@ const playable = () => {
     INSERT INTO catalog_lesson_projection(lesson_ref,course_ref,section_ref,ever_published,visibility,free_preview,position)
       VALUES ('lesson','one','section',1,'LISTED',0,0);
     INSERT INTO lesson_video_bindings(lesson_ref,active_video_id,bound_at,updated_at) VALUES ('lesson','synthetic-video','now','now');`);
+  confirmSyntheticAccount(db, "c");
 };
 const access = (overrides = {}) => resolvePlaybackAccess(db, { customerId: "c", lessonRef: "lesson", now, leaseMs: 60_000, ...overrides });
 describe("CMS canonical course commercial commands", () => {
@@ -60,6 +62,8 @@ describe("CMS canonical course commercial commands", () => {
     expect(db.prepare("SELECT count(*) n FROM free_course_enrollments").get()).toEqual({ n: 1 });
     configure({ accessModel: "PAID", priceKopecks: 100, expectedVersion: 1, commandKey: "different-command-01" });
     expect(access().decision).toBe("ALLOW"); expect(access().paidEntitled).toBe(false);
+    expect(access({ customerId: "new" }).decision).toBe("CONSENT_REQUIRED");
+    confirmSyntheticAccount(db, "new");
     expect(access({ customerId: "new" }).decision).toBe("NOT_FOR_SALE");
     expect(listCustomerLibrary(db, "c", now).courses[0].access).toBe("FREE");
     expect(db.prepare("SELECT count(*) n FROM orders").get()).toEqual({ n: 0 });

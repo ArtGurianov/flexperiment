@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import AccountClient from "../components/auth/AccountClient";
 
@@ -8,12 +8,13 @@ const response = (body: unknown) => ({ ok: true, json: async () => body }) as Re
 
 describe("AccountClient", () => {
   const originalFetch = global.fetch;
-  afterEach(() => { global.fetch = originalFetch; vi.restoreAllMocks(); });
+  afterEach(() => { cleanup(); global.fetch = originalFetch; vi.restoreAllMocks(); });
 
   it("renders the authoritative open-lesson library and purchase history", async () => {
     global.fetch = vi.fn(async (input: RequestInfo | URL) => {
       const path = input.toString();
       if (path === "/v1/me") return response({ customer: { id: "customer", email_normalized: "student@example.com" }, entitlements: [] });
+      if (path === "/v1/me/consents?storefront=COURSES") return response({ storefront: "COURSES", verifiedAccount: true, requiredChoicesConfirmed: true, actionSequence: 0, documents: [] });
       if (path === "/account-courses.json") return response({ courses: [{
         courseRef: "course-1",
         title: "Практический курс",
@@ -46,6 +47,7 @@ describe("AccountClient", () => {
     global.fetch = vi.fn(async (input: RequestInfo | URL) => {
       const path = input.toString();
       if (path === "/v1/me") return response({ customer: { id: "customer", email_normalized: "new@example.com" }, entitlements: [] });
+      if (path === "/v1/me/consents?storefront=COURSES") return response({ storefront: "COURSES", verifiedAccount: true, requiredChoicesConfirmed: true, actionSequence: 0, documents: [] });
       if (path === "/account-courses.json") return response({ courses: [] });
       if (path === "/v1/me/orders") return response({ orders: [] });
       throw new Error(`unhandled fetch: ${path}`);
@@ -55,6 +57,47 @@ describe("AccountClient", () => {
 
     expect(await screen.findByText(/Доступных уроков пока нет/)).toBeInTheDocument();
     expect(screen.getByText("Покупок пока нет.")).toBeInTheDocument();
+  });
+
+  it("preserves authenticated purchase history when required course consents are absent", async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      if (input.toString() === "/v1/me") return response({ customer: { id: "customer", email_normalized: "student@example.test" } });
+      if (input.toString() === "/v1/me/consents?storefront=COURSES") return response({ storefront: "COURSES", verifiedAccount: true,
+        requiredChoicesConfirmed: false, actionSequence: 0, releaseVersion: null, manifestSha256: null, documents: [] });
+      if (input.toString() === "/v1/me/orders") return response({ orders: [{ orderPublicId: "synthetic-order", title: "Historical course",
+        state: "FULFILLED", amountKopecks: 100, currency: "RUB", createdAt: "2026-10-01T10:00:00Z" }] });
+      throw new Error("Protected library must not be requested");
+    });
+    global.fetch = fetcher;
+    render(<AccountClient nextPath="/account" />);
+    expect(await screen.findByText("synthetic-order")).toBeInTheDocument();
+    expect(await screen.findByRole("alert")).toHaveTextContent("Доступ остаётся закрытым");
+    expect(screen.queryByRole("heading", { name: "Можно открыть сейчас" })).not.toBeInTheDocument();
+    expect(fetcher.mock.calls.some(([path]) => path.toString() === "/account-courses.json")).toBe(false);
+    expect(screen.getByRole("button", { name: "Выйти из аккаунта" })).toBeEnabled();
+    expect(screen.getByRole("link", { name: "art@flexperiment.ru" })).toHaveAttribute("href", "mailto:art@flexperiment.ru");
+  });
+  it.each([true, false])("logout remains usable outside the gate; session revoked=%s is independently checked", async revoked => {
+    let signOut = false;
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = input.toString();
+      if (path === "/v1/auth/sign-out" && init?.method === "POST") { signOut = true; return response({ success: true }); }
+      if (path === "/v1/me") return response({ customer: signOut && revoked ? null : { id: "customer", email_normalized: "student@example.test" } });
+      if (path === "/v1/me/consents?storefront=COURSES") return response({ storefront: "COURSES", verifiedAccount: true,
+        requiredChoicesConfirmed: false, actionSequence: 0, releaseVersion: null, manifestSha256: null, documents: [] });
+      if (path === "/v1/me/orders") return response({ orders: [] });
+      if (path === "/v1/legal/current?storefront=COURSES") return Response.json({}, { status: 404 });
+      throw new Error("Unexpected request");
+    });
+    global.fetch = fetcher; render(<AccountClient nextPath="/account" />);
+    fireEvent.click(await screen.findByRole("button", { name: "Выйти из аккаунта" }));
+    if (revoked) expect(await screen.findByRole("textbox", { name: "Электронная почта" })).toBeInTheDocument();
+    else {
+      expect(await screen.findByText("Не удалось подтвердить выход. Проверьте соединение и попробуйте снова.")).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: "art@flexperiment.ru" })).toBeInTheDocument();
+    }
+    expect(fetcher.mock.calls.some(([path]) => path.toString() === "/account-courses.json")).toBe(false);
+    expect(fetcher.mock.calls.filter(([path]) => path.toString() === "/v1/me")).toHaveLength(2);
   });
 
   it("submits the active legal document versions and hashes for registration", async () => {

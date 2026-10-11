@@ -1,4 +1,5 @@
 import Database from "better-sqlite3";
+import { confirmSyntheticAccount } from "./fixtures/confirmed-account";
 import { scryptSync } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createCommerceV2App } from "../src/app";
@@ -49,6 +50,7 @@ const seedPlayableLesson = async (server: ReturnType<typeof createCommerceV2App>
   });
   await server.request("/v1/internal/course-manifests", internal(manifest));
   db.prepare("INSERT INTO customers(id,email_normalized) VALUES ('customer','student@example.com')").run();
+  confirmSyntheticAccount(db, "customer");
   db.prepare("INSERT INTO products(id,product_ref,kind,access_model,course_ref) VALUES ('p','course:course','ONLINE_COURSE','PAID','course')").run();
   db.prepare("INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode) VALUES ('o','course:course','p',100,'CLOSED')").run();
   db.prepare("INSERT INTO lesson_video_bindings(lesson_ref,active_video_id,bound_at,updated_at) VALUES ('lesson','private-video','now','now')").run();
@@ -245,6 +247,8 @@ describe("commerce v2 boundaries", () => {
   });
 
   it("keeps the customer library and purchase history authenticated and private", async () => {
+    db.prepare("INSERT INTO customers(id,email_normalized) VALUES ('customer','student@example.com')").run();
+    confirmSyntheticAccount(db, "customer");
     const server = app();
     expect((await server.request("/v1/library")).status).toBe(401);
     expect((await server.request("/v1/me/orders")).status).toBe(401);
@@ -460,6 +464,7 @@ describe("commerce v2 boundaries", () => {
     });
     await app().request("/v1/internal/course-manifests", internal(manifest));
     db.prepare("INSERT INTO customers(id,email_normalized) VALUES ('customer','student@example.com')").run();
+    confirmSyntheticAccount(db, "customer");
     db.prepare("INSERT INTO products(id,product_ref,kind,access_model,course_ref) VALUES ('p','course:course','ONLINE_COURSE','PAID','course')").run();
     db.prepare("INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode) VALUES ('o','course:course','p',100,'CLOSED')").run();
     db.prepare("INSERT INTO lesson_video_bindings(lesson_ref,active_video_id,bound_at,updated_at) VALUES ('lesson','private-video','now','now')").run();
@@ -518,6 +523,23 @@ describe("commerce v2 boundaries", () => {
     ]);
   });
 
+  it("rechecks required consent at the real DRM boundary for an already minted token", async () => {
+    const server = app("disabled", {
+      config: loadCommerceRuntimeConfig({ DEPLOY_ENV: "production", PAYMENT_MODE: "disabled", KINESCOPE_DELIVERY_MODE: "protected", MERCHANT_PROMOTION_PREFIX: "FX-" }),
+      kinescopeDrmAuth: { keyring: { currentKeyId: "k1", keys: { k1: "s".repeat(32) } }, username: "drm", password: "synthetic" },
+    });
+    await seedPlayableLesson(server);
+    const grant = await (await server.request("/v1/lessons/lesson/playback", { method: "POST", headers: { authorization: "Session customer" } })).json() as { token: string };
+    const authorize = () => server.request("/v1/kinescope/drm/authorize", { method: "POST",
+      headers: { authorization: `Basic ${Buffer.from("drm:synthetic").toString("base64")}`, "content-type": "application/json" },
+      body: JSON.stringify({ id: "private-video", token: grant.token, type: "video" }) });
+    expect((await authorize()).status).toBe(200);
+    db.exec('UPDATE "user" SET email_verified=0;');
+    expect((await authorize()).status).toBe(403);
+    expect(db.prepare("SELECT event_type,reason FROM playback_access_events ORDER BY id DESC LIMIT 1").get())
+      .toEqual({ event_type: "DRM_DENIED", reason: "CONSENT_REQUIRED" });
+  });
+
   it("keeps upload init internal and accepts only authenticated Kinescope status webhooks", async () => {
     const kinescopeClient = {
       initUpload: vi.fn(async () => ({ endpoint: "https://tus.example/upload", videoId: "new-video" })),
@@ -565,6 +587,7 @@ describe("commerce v2 boundaries", () => {
     });
     await app().request("/v1/internal/course-manifests", internal(manifest));
     db.prepare("INSERT INTO customers(id,email_normalized) VALUES ('customer','student@example.com')").run();
+    confirmSyntheticAccount(db, "customer");
     db.prepare("INSERT INTO products(id,product_ref,kind,access_model,course_ref) VALUES ('p','course:course','ONLINE_COURSE','PAID','course')").run();
     db.prepare("INSERT INTO lesson_video_bindings(lesson_ref,active_video_id,duration_seconds,bound_at,updated_at) VALUES ('lesson','private-video',100,'now','now')").run();
     const headers = { authorization: "Session customer", "content-type": "application/json" };
@@ -584,6 +607,7 @@ describe("commerce v2 boundaries", () => {
     });
     await app().request("/v1/internal/course-manifests", internal(manifest));
     db.prepare("INSERT INTO customers(id,email_normalized) VALUES ('customer','student@example.com')").run();
+    confirmSyntheticAccount(db, "customer");
     db.prepare("INSERT INTO products(id,product_ref,kind,access_model,course_ref) VALUES ('p','course:course','ONLINE_COURSE','PAID','course')").run();
     db.prepare("INSERT INTO lesson_video_bindings(lesson_ref,active_video_id,bound_at,updated_at) VALUES ('lesson','private-video','now','now')").run();
     const headers = { authorization: "Session customer" };
