@@ -980,3 +980,13 @@ copied into anything this system keeps.
 
 `certify` must be run from an interactive session. It opens `/dev/tty`, and a
 process with no controlling terminal cannot - which is the attendance check.
+
+## Exact CI source identity
+
+PR checks must explicitly check out `github.event.pull_request.head.sha`, not
+GitHub's synthetic PR merge ref. Push/manual checks use `github.sha`. Both test
+jobs assert the actual checkout equals this selected SHA before building; every
+baked `SOURCE_COMMIT` and actual-image assertion uses the same selected value.
+Successful PR checks do not attest a later main merge SHA: its own checks remain
+required for main-source deployment admission. No deployment ref or controller
+permission is changed by this CI-source correction.

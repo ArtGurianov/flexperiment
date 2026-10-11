@@ -314,3 +314,11 @@ absence of V1/production consumers, real nginx proxy and scheduler source/storag
 transport isolation. Exact-source CI is mandatory before merging/deploying the
 new artifacts. Content and real auth workstreams remain blocked only by genuine
 owner-approved legal/course prerequisites; do not manufacture those facts.
+
+The first actual-image CI revealed a packaging defect: the Commerce image copied
+`commerce-v2` but not the shared LAB DTO imported from `lib`. Include exactly that
+pure contract and exercise the real catalogue route in the image smoke test.
+The same log exposed synthetic PR merge identity instead of PR head identity;
+both CI jobs now explicitly check out/assert the selected exact source, and use
+it consistently for build identity. Preserve cancelled runs and negative controls;
+do not transfer their results to a corrected head or to main.

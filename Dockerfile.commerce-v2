@@ -22,6 +22,7 @@ ENV NODE_ENV=production \
 COPY --from=dependencies /app/node_modules ./node_modules
 COPY package.json pnpm-lock.yaml ./
 COPY commerce-v2 ./commerce-v2
+COPY lib/lab-v2-contract.ts ./lib/lab-v2-contract.ts
 COPY --from=identity --chmod=0444 /identity/identity.json /app/.identity/identity.json
 RUN mkdir -p /var/lib/flexperiment-v2 /var/lib/flexperiment-v2-backups \
   && chown -R node:node /var/lib/flexperiment-v2 /var/lib/flexperiment-v2-backups \
