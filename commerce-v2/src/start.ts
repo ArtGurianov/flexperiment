@@ -8,7 +8,7 @@ async function start() {
   } else if (process.env.COMMERCE_V2_FOUNDATION_MODE && process.env.COMMERCE_V2_FOUNDATION_MODE !== "false") {
     throw new Error("FOUNDATION_MODE_INVALID");
   } else {
-    await import("./server");
+    await (await import("./server")).serverStartup;
   }
 }
 start().catch(() => { console.error("COMMERCE_V2_START_REFUSED"); process.exitCode = 1; });

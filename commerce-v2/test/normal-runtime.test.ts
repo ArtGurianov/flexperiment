@@ -34,12 +34,14 @@ const post = (body: unknown, extra: Record<string, string> = {}): RequestInit =>
 });
 const db = () => runtime.db!;
 const boot = async () => {
-  await import("../src/server");
+  await (await import("../src/server")).serverStartup;
   // Better Auth initializes asynchronously; finish it before closing each DB.
   expect((await request("/v1/auth/get-session")).status).toBe(200);
 };
 
+let previousExitCode: typeof process.exitCode;
 beforeEach(() => {
+  previousExitCode = process.exitCode;
   vi.resetModules(); vi.clearAllMocks();
   const environment: Record<string, string | undefined> = {
     NODE_ENV: "production", DEPLOY_ENV: "production", PAYMENT_MODE: "disabled", SOURCE_COMMIT: sha,
@@ -72,6 +74,7 @@ beforeEach(() => {
 afterEach(() => {
   runtime.db?.close(); runtime.db = undefined;
   vi.unstubAllEnvs(); vi.unstubAllGlobals();
+  process.exitCode = previousExitCode;
 });
 
 describe("ART-162 / ART-179 normal production server, payment disabled", () => {
@@ -104,14 +107,18 @@ describe("ART-162 / ART-179 normal production server, payment disabled", () => {
 
   it.each([undefined, "https://foreign.invalid/readyz"])("refuses invalid production ops configuration before database or server side effects (%s)", async (url) => {
     vi.stubEnv("REFREF_READINESS_URL", url);
-    await expect(import("../src/server")).rejects.toThrow(url ? "REFREF_READINESS_URL_NOT_ALLOWED" : "REFREF_READINESS_URL_REQUIRED");
+    const { serverStartup } = await import("../src/server");
+    await expect(serverStartup).rejects.toThrow(url ? "REFREF_READINESS_URL_NOT_ALLOWED" : "REFREF_READINESS_URL_REQUIRED");
+    expect(process.exitCode).toBe(1);
     expect(openV2Database).not.toHaveBeenCalled();
     expect(runtime.serve).not.toHaveBeenCalled(); expect(fetcher).not.toHaveBeenCalled();
   });
 
   it.each(["BETTER_AUTH_SECRET", "AUTH_EMAIL_OUTBOX_KEY", "COMMERCE_SESSION_SECRET"])("does not start a normal production server without %s", async (name) => {
     vi.stubEnv(name, undefined);
-    await expect(import("../src/server")).rejects.toThrow(name === "COMMERCE_SESSION_SECRET" ? "CONTROL_ROOM_AUTH_CONFIGURATION_REQUIRED" : `${name}_REQUIRED`);
+    const { serverStartup } = await import("../src/server");
+    await expect(serverStartup).rejects.toThrow(name === "COMMERCE_SESSION_SECRET" ? "CONTROL_ROOM_AUTH_CONFIGURATION_REQUIRED" : `${name}_REQUIRED`);
+    expect(process.exitCode).toBe(1);
     expect(runtime.serve).not.toHaveBeenCalled(); expect(fetcher).not.toHaveBeenCalled();
   });
 

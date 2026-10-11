@@ -192,4 +192,7 @@ if (paymentRail) {
 
 serve({ fetch: app.fetch, port: Number(process.env.PORT ?? 3002) });
 }
-void startServer().catch(()=>{console.error("COMMERCE_V2_START_REFUSED");process.exitCode=1;});
+// Expose completion, not a detached task: composition tests and supervisors must
+// observe async boot admission before treating a module import as a running server.
+export const serverStartup = startServer();
+void serverStartup.catch(()=>{console.error("COMMERCE_V2_START_REFUSED");process.exitCode=1;});
