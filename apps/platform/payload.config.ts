@@ -18,6 +18,8 @@ import { platformSearchPlugin } from "@/lib/search-plugin";
 import { assertPayloadTransactions } from "@/lib/payload-transaction-assertion";
 import { publicMediaFileURL } from "@/lib/public-media";
 import { serializeDatabaseTransactions } from "@/lib/serialized-transactions";
+import { validatePlatformCanary } from "@/lib/canary-config";
+import { closedEditorial, closedEmail } from "@/lib/canary-editorial";
 
 const filename = fileURLToPath(import.meta.url);
 const dirname = path.dirname(filename);
@@ -35,6 +37,7 @@ const requireConfiguredEnvironment = (name: string) => {
 };
 
 requireEnvironment("SOURCE_COMMIT");
+const canaryPreparation = validatePlatformCanary();
 
 const s3Bucket = process.env.S3_BUCKET;
 const s3Config = s3Bucket ? {
@@ -48,6 +51,7 @@ const s3Config = s3Bucket ? {
 } : {};
 
 export default buildConfig({
+  email: canaryPreparation ? closedEmail : undefined,
   onInit: assertPayloadTransactions,
   secret: requireEnvironment("PAYLOAD_SECRET") ?? "development-only-payload-secret-change-me",
   serverURL: platformOrigin(),
@@ -58,7 +62,8 @@ export default buildConfig({
   routes: { admin: "/admin", api: "/api" },
   graphQL: { disable: true },
   editor: lexicalEditor(),
-  collections: [Users, Media, Courses, Sections, Lessons, AccessOperations, CourseManifestStates],
+  collections: [Users, Media, Courses, Sections, Lessons, AccessOperations, CourseManifestStates].map((collection) =>
+    canaryPreparation ? closedEditorial(collection) : collection),
   db: serializeDatabaseTransactions(sqliteAdapter({
     client: { url: requireEnvironment("PAYLOAD_DATABASE_URL") ?? "file:./platform-data/payload.sqlite" },
     migrationDir: path.resolve(dirname, "migrations"),
