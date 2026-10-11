@@ -15,6 +15,7 @@ const bodySchema = z.object({
   subject: reference, recordedAt: instant, previousHash: digest, signingKeyId: keyId,
 }).strict();
 const entrySchema = z.object({ body: bodySchema, hash: digest, signature: z.string().regex(/^[A-Za-z0-9_-]{86}$/) }).strict();
+const appendInputSchema = z.object({ requestId: z.string().uuid(), kind: z.enum(["ERASURE", "MARKETING_SUPPRESSION"]), subject: reference }).strict();
 const bundleSchema = z.object({ version: z.literal(1), scope, entries: z.array(entrySchema).max(100_000) }).strict();
 const checkpointBodySchema = z.object({
   version: z.literal(1), scope, sequence: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
@@ -175,10 +176,13 @@ export class VerifiedErasureLedger {
  * this first core does not install a host adapter or expose a deletion endpoint. */
 export class ErasureLedgerStore {
   readonly #db!: Database.Database;
-  readonly #options: { directory: string; scope: Scope; forbiddenRoots: readonly string[]; keys: ErasureKeys; signer: ErasureSigner };
+  readonly #options!: { directory: string; scope: Scope; forbiddenRoots: readonly string[]; keys: ErasureKeys; signer: ErasureSigner };
   constructor(options: { directory: string; scope: Scope; forbiddenRoots: readonly string[]; keys: ErasureKeys; signer: ErasureSigner }) {
-    this.#options = options;
     try {
+    // Pin ownership/scope/key configuration; later caller mutation is not rotation.
+    this.#options = { ...options, forbiddenRoots: [...options.forbiddenRoots],
+      signer: { ...options.signer }, keys: { signing: { ...options.keys.signing },
+        subject: Object.fromEntries(Object.entries(options.keys.subject).map(([id, key]) => [id, Buffer.from(key)])) } };
     parse(scope, options.scope); assertSigner(options.signer, options.keys);
     const directory = options.directory;
     if (!isAbsolute(directory) || !existsSync(directory) || lstatSync(directory).isSymbolicLink()
@@ -235,18 +239,20 @@ export class ErasureLedgerStore {
     } catch { return refuse("ERASURE_LEDGER_INVALID"); }
   }
   append(input: { requestId: string; kind: "ERASURE" | "MARKETING_SUPPRESSION"; subject: ErasureSubject }, now = new Date()) {
-    try { return this.#db.transaction(() => {
+    try {
+    const admittedInput = parse(appendInputSchema, input);
+    return this.#db.transaction(() => {
       const bundle = this.export();
-      const existing = bundle.entries.find(entry => entry.body.requestId === input.requestId);
+      const existing = bundle.entries.find(entry => entry.body.requestId === admittedInput.requestId);
       if (existing) {
-        if (existing.body.kind !== input.kind || canonical(existing.body.subject) !== canonical(input.subject)) refuse("ERASURE_REQUEST_CONFLICT");
+        if (existing.body.kind !== admittedInput.kind || canonical(existing.body.subject) !== canonical(admittedInput.subject)) refuse("ERASURE_REQUEST_CONFLICT");
         return existing;
       }
       if (bundle.entries.length >= 100_000) refuse("ERASURE_LEDGER_CAPACITY_REVIEW_REQUIRED");
       const previous = bundle.entries.at(-1);
       if (previous && now.getTime() < Date.parse(previous.body.recordedAt)) refuse("ERASURE_CLOCK_REGRESSION");
       const body = parse(bodySchema, { version: 1, scope: this.#options.scope, sequence: bundle.entries.length + 1,
-        ...input, recordedAt: now.toISOString(), previousHash: previous?.hash ?? genesis(this.#options.scope), signingKeyId: this.#options.signer.keyId });
+        ...admittedInput, recordedAt: now.toISOString(), previousHash: previous?.hash ?? genesis(this.#options.scope), signingKeyId: this.#options.signer.keyId });
       assertErasureSubjectKey(this.#options.keys, body.subject);
       const entry = { body, hash: hash(body), signature: signature(body, this.#options.signer) };
       this.#db.prepare("INSERT INTO erasure_entries(sequence,request_id,entry_json) VALUES (?,?,?)")

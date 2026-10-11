@@ -119,6 +119,17 @@ describe("independent signed erasure journal core, no merchant/live wiring", () 
     const verified = await read(open().export());
     expect(() => verified.assertFresh(new Date(NaN))).toThrow("ERASURE_ADMISSION_EXPIRED");
   });
+  it.each(["scope", "sequence", "version"])("rejects an append input overriding owner-controlled %s without corrupting the ledger", field => {
+    const store = open(); const before = store.export();
+    expect(() => store.append({ requestId: randomUUID(), kind: "ERASURE", subject: subject(),
+      [field]: field === "scope" ? "production" : field === "sequence" ? 2 : 1 }, now)).toThrow("ERASURE_LEDGER_INVALID");
+    expect(store.export()).toEqual(before); expect(open().export()).toEqual(before);
+  });
+  it("pins owner scope/configuration rather than trusting a subsequently mutated caller object", async () => {
+    const configuration = options(); const store = new ErasureLedgerStore(configuration); stores.push(store);
+    Object.assign(configuration, { scope: "production" });
+    append(store); expect(store.export().scope).toBe("canary"); await expect(read(store.export())).resolves.toBeInstanceOf(VerifiedErasureLedger);
+  });
   it("refuses merchant roots, symlinks, loose permissions and foreign SQLite tables", () => {
     expect(() => new ErasureLedgerStore({ ...options(), directory: join(directory, "merchant") })).toThrow("ERASURE_STORAGE_NOT_INDEPENDENT");
     chmodSync(join(directory, "ledger"), 0o755);
