@@ -16,8 +16,13 @@ type Summary = {
 export function CourseCommercialSummaryField() {
   const courseRef = useFormFields(([fields]) => fields.courseRef?.value);
   const stableRef = typeof courseRef === "string" && courseRef ? courseRef : null;
-  const activeRef = useRef(stableRef);
-  useLayoutEffect(() => { activeRef.current = stableRef; }, [stableRef]);
+  // Reset editor state even for A→B→A; old A responses must not revive its previous state.
+  return <CourseCommercialEditor key={stableRef ?? "unsaved"} stableRef={stableRef} />;
+}
+
+function CourseCommercialEditor({ stableRef }: { stableRef: string | null }) {
+  const active = useRef(true);
+  useLayoutEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
   const [current, setCurrent] = useState<{ ref: string; summary: Summary } | null>(null);
   const [model, setModel] = useState<"FREE" | "PAID">("FREE");
   const [price, setPrice] = useState("0");
@@ -31,10 +36,11 @@ export function CourseCommercialSummaryField() {
     if (!stableRef) return;
     const controller = new AbortController();
     void read(stableRef, controller.signal).then(value => {
-      if (controller.signal.aborted || activeRef.current !== stableRef) return;
+      if (controller.signal.aborted || !active.current) return;
       setCurrent({ ref: stableRef, summary: value });
       setModel(value.accessModel ?? "FREE"); setPrice(String((value.priceKopecks ?? 0) / 100));
-    }).catch(() => { if (!controller.signal.aborted && activeRef.current === stableRef) setCurrent(null); });
+      if (reload > 0) setNotice({ ref: stableRef, text: "Свежие данные Commerce загружены. Повторная запись не выполнялась." });
+    }).catch(() => { if (!controller.signal.aborted && active.current) setCurrent(null); });
     return () => controller.abort();
   }, [stableRef, reload]);
   const save = async () => {
@@ -48,21 +54,21 @@ export function CourseCommercialSummaryField() {
       const response = await fetch(endpoint(ref), { method: "POST", cache: "no-store", headers: { "content-type": "application/json" },
         body: JSON.stringify({ accessModel: model, priceKopecks, expectedVersion: summary.version, commandKey: crypto.randomUUID() }) });
       const result = await response.json() as { version?: number; code?: string; cacheRefresh?: string };
-      if (activeRef.current !== ref) return;
+      if (!active.current) return;
       if (!response.ok) {
         if (result.code === "CATALOG_VERSION_CONFLICT") throw new Error("Версия изменилась. Обновите данные перед сохранением.");
         if (result.code === "FREE_ACCESS_HISTORY_REQUIRES_RECONCILIATION") throw new Error("Смена модели заблокирована: требуется сверка прежнего бесплатного доступа.");
         throw new Error("Сохранение не подтверждено. Обновите данные; не повторяйте запись вслепую.");
       }
-      const confirmed = await read(ref);
-      if (activeRef.current !== ref) return;
+      const confirmed = await read(ref).catch(() => { throw new Error("Запись могла быть сохранена. Обновите данные для сверки; новый POST не требуется."); });
+      if (!active.current) return;
       if (confirmed.version !== result.version || confirmed.accessModel !== model || confirmed.priceKopecks !== priceKopecks
         || confirmed.saleMode !== "CLOSED") throw new Error("Независимая проверка не подтвердила запись. Обновите данные.");
       setCurrent({ ref, summary: confirmed });
       setMessage(result.cacheRefresh === "PENDING" ? "Commerce подтвердил запись; обновление витрины ожидается. Продажи закрыты." : "Commerce подтвердил запись. Продажи закрыты.");
     } catch (error) {
-      if (activeRef.current === ref) { setCurrent(null); setMessage(error instanceof Error ? error.message : "Сохранение не подтверждено."); }
-    } finally { setBusy(false); }
+      if (active.current) { setCurrent(null); setMessage(error instanceof Error ? error.message : "Сохранение не подтверждено."); }
+    } finally { if (active.current) setBusy(false); }
   };
   return <div style={{ border: "1px solid var(--theme-elevation-200)", borderRadius: 4, padding: 16, marginBottom: 20 }}>
     <strong>Доступ и цена — Commerce</strong>

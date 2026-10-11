@@ -8,6 +8,8 @@ UI-only поле читает свежий Commerce status и отправляе
 
 SQLite immediate transaction связывает CAS, audit и idempotency result. Повтор того же запроса возвращает прежний результат, другой payload с тем же ключом отклоняется. Ошибка cache invalidation после COMMIT не превращает успешную запись в отказ: показывается PENDING. UI подтверждает запись независимым GET; потеря ответа не вызывает слепого нового POST.
 
+Delta-review: состояние редактора сбрасывается ключом courseRef, поэтому A → B → A не восстанавливает старую версию, а поздний ответ прежнего экземпляра игнорируется. После COMMIT с неудачным GET сохранение блокируется до явного GET-only «Обновить данные». Успешная сверка обновляет версию/модель/цену и статус, но сама не отправляет коммерческий POST. Три regression-теста воспроизводили прежний дефект до исправления и проходят после него.
+
 ## Доступ и смена модели
 
 У FREE нет фиктивного заказа или платёжной попытки. После авторизованного запроса доступного опубликованного урока с реальным video binding Commerce сохраняет отдельное nonfinancial enrollment для verified аккаунта. Проверка eligibility и запись идут под одним SQLite write lock с изменением коммерческой модели. После FREE → PAID этот доступ сохраняется, но не обходит withdrawn, stale projection, unlisted или restrictive override. Paid entitlements и immutable order snapshots не изменяются.
@@ -25,3 +27,5 @@ Regression: service authority, author/Origin, отсутствующий кур�
 Если впоследствии выбран PAID, цена передаётся в целых копейках. Обновление не открывает продажи: paymentPurpose и admission/активация остаются отдельными merchant-controlled настройками. При checkout Commerce читает собственные product/offer, фиксирует immutable snapshot и только затем передаёт его Refref; цена и тип доступа из браузера или дублирующих полей CMS не являются authority. Editorial publishing остаётся существующим projection pipeline и требует настоящих уроков/видео. До квалификации consent/access flow бесплатный курс также не публикуется для регистрации.
 
 PAYMENT_MODE=disabled, marketing=false. Canary preparation продолжает блокировать CMS mutations. Никаких production changes, публикации курса, legal release activation, удаления HTTPS 403 guards или F9. Этот PR — engineering admission, не browser/video E2E.
+
+Реальное создание и редактирование курса через работающую CMS ещё **PENDING**: closedEditorial(Courses) по-прежнему отклоняет mutations. Для private authoring qualification нужен отдельно ограниченный авторизованный доступ в изолированный canary, без публичной регистрации, publishing/email/jobs side effects и без удаления публичных 403 guards. Этот delta не меняет закрывающую политику и не объявляет mock UI tests live E2E.
