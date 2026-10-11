@@ -7,6 +7,7 @@ vi.mock("../src/build-identity", () => ({ readBuildIdentity: vi.fn(() => ({ sche
 vi.mock("@hono/node-server", () => ({ serve: vi.fn(() => { throw new Error("SERVER_MUST_NOT_START"); }) }));
 import { openV2Database } from "../src/db";
 import { serve } from "@hono/node-server";
+import { installationFixture } from "./fixtures/erasure-installation";
 
 const approved = {
   COMMERCE_V2_FOUNDATION_MODE: "true", COMMERCE_V2_ENVIRONMENT: "production", DEPLOY_ENV: "production",
@@ -16,6 +17,11 @@ const approved = {
 };
 
 describe("foundation startup fail-closed configuration", () => {
+  it.each([undefined, "false", "true"])("rejects installed foundation fallback with fencing=%s before migrations/socket", enabled => {
+    const installation = installationFixture("REQUIRED", undefined, "production").read();
+    expect(() => startFoundation({ ...approved, ERASURE_FENCING_ENABLED: enabled }, installation)).toThrow("FOUNDATION_START_FORBIDDEN");
+    expect(openV2Database).not.toHaveBeenCalled(); expect(serve).not.toHaveBeenCalled();
+  });
   it.each([
     ["COMMERCE_V2_FOUNDATION_MODE", undefined, "FOUNDATION_MODE_REQUIRED"],
     ["DEPLOY_ENV", "local", "FOUNDATION_DEPLOY_ENV_REQUIRED"],

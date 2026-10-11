@@ -4,9 +4,10 @@ import { readBuildIdentity } from "./build-identity";
 import { openV2Database, migrateV2 } from "./db";
 import { loadCommerceRuntimeConfig } from "./payment-mode";
 import { createRefrefReadinessProbe } from "./readiness";
+import { assertFoundationErasureAdmission, type ErasureInstallationEvidence } from "./erasure-installation";
 
 /** Restricted start of the actual app: no customer/auth/payment routes or external workers. */
-export function startFoundation(environment = process.env) {
+export function startFoundation(environment = process.env, installation?: ErasureInstallationEvidence) {
   if (environment.COMMERCE_V2_FOUNDATION_MODE !== "true") throw new Error("FOUNDATION_MODE_REQUIRED");
   if (!["staging", "production"].includes(environment.DEPLOY_ENV ?? "")) throw new Error("FOUNDATION_DEPLOY_ENV_REQUIRED");
   if (environment.PAYMENT_MODE !== "disabled") throw new Error("FOUNDATION_PAYMENTS_MUST_BE_DISABLED");
@@ -21,6 +22,7 @@ export function startFoundation(environment = process.env) {
   if (environment.BUILD_IDENTITY_FILE !== "/app/.identity/identity.json") throw new Error("FOUNDATION_BAKED_IDENTITY_REQUIRED");
   if (!/^[0-9a-f]{40}$/.test(identity.sourceCommit)) throw new Error("SOURCE_COMMIT_REQUIRED");
   const config = loadCommerceRuntimeConfig(environment);
+  assertFoundationErasureAdmission(environment, installation);
   const db = openV2Database(environment.COMMERCE_V2_DATABASE_PATH);
   migrateV2(db);
   const app = createCommerceV2App({ db, config, sourceCommit: identity.sourceCommit, serviceToken,

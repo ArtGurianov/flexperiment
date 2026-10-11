@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import { createHash } from "node:crypto";
 import { classifyV2Database } from "./db";
 import { assertErasureSubjectKey, erasurePseudonym, ErasureLedgerError, VerifiedErasureLedger, type ErasureKeys } from "./erasure-ledger";
+import { DrainedErasureRuntime } from "./erasure-fence";
 
 // Reviewed schema 0001–0025, including triggers, views, columns, indexes and FKs.
 // A new migration/DDL must explicitly requalify erasure coverage. Deriving this
@@ -19,7 +20,30 @@ function assertReviewedSchema(db: Database.Database) {
  * Merchant schema stays unchanged; financial/audit uncertainty keeps restore CLOSED. */
 export function applyIsolatedRestoreErasure(db: Database.Database, ledger: VerifiedErasureLedger, keys: ErasureKeys,
   environment: "canary" | "production", now = new Date()) {
-  ledger.assertFresh(now);
+  return applyErasure(db,ledger,keys,environment,now,true);
+}
+
+// The application receipt is process-private proof of this exact transaction, not JSON
+// from a restored DB/operator. It never substitutes for newest remote custody proof.
+const applications = new WeakMap<object,{drain:DrainedErasureRuntime; db:Database.Database; ledger:VerifiedErasureLedger}>();
+export function assertErasureApplication(receipt: unknown, drain: DrainedErasureRuntime, db:Database.Database, ledger:VerifiedErasureLedger) {
+  const applied = receipt && typeof receipt==="object" ? applications.get(receipt) : undefined;
+  if (!applied || applied.drain!==drain || applied.db!==db || applied.ledger!==ledger) throw new ErasureLedgerError("ERASURE_APPLICATION_UNVERIFIED");
+  DrainedErasureRuntime.assert(drain,db,ledger.bundle.scope);
+}
+/** Live application is legal only behind the shared exclusive drained runtime fence.
+ * The operator preserves custody first. This code does not install/activate itself. */
+export function applyDrainedRuntimeErasure(db: Database.Database, ledger: VerifiedErasureLedger, keys: ErasureKeys,
+  environment: "canary" | "production", drain:DrainedErasureRuntime, now = new Date(), mode:"LIVE_ADMISSION"|"BOOT_RESTORE"="LIVE_ADMISSION") {
+  DrainedErasureRuntime.assert(drain,db,environment);
+  if(!["LIVE_ADMISSION","BOOT_RESTORE"].includes(mode))throw new ErasureLedgerError("ERASURE_DRAIN_INVALID");
+  const result=applyErasure(db,ledger,keys,environment,now,mode==="BOOT_RESTORE",()=>DrainedErasureRuntime.assert(drain,db,environment));
+  const receipt=Object.freeze({}); applications.set(receipt,{drain,db,ledger});
+  return {...result,application:receipt};
+}
+function applyErasure(db: Database.Database, ledger: VerifiedErasureLedger, keys: ErasureKeys,
+  environment: "canary" | "production", now:Date, resetAllCredentials:boolean, assertDrain?:()=>void) {
+  VerifiedErasureLedger.prototype.assertFresh.call(ledger,now);
   if (ledger.bundle.scope !== environment) throw new ErasureLedgerError("ERASURE_SCOPE_MISMATCH");
   if (classifyV2Database(db) !== "SUPPORTED" || db.pragma("foreign_keys", { simple: true }) !== 1) {
     throw new ErasureLedgerError("ERASURE_RESTORE_SCHEMA_REFUSED");
@@ -30,7 +54,8 @@ export function applyIsolatedRestoreErasure(db: Database.Database, ledger: Verif
   db.pragma("secure_delete=ON");
   try {
     return db.transaction(() => {
-      ledger.assertFresh(now);
+      assertDrain?.();
+      VerifiedErasureLedger.prototype.assertFresh.call(ledger,now);
       assertReviewedSchema(db);
       // Restore admission is NOT based on a watermark stored in the restored DB.
       // Unknown columns/tables/FKs fail the entire transaction, never disable FKs.
@@ -92,16 +117,27 @@ export function applyIsolatedRestoreErasure(db: Database.Database, ledger: Verif
           erasedAccounts++; deletedCustomers.add(customer.id);
         }
         for (const user of targetUsers) {
+          if(db.prepare(`SELECT 1 FROM audit_log WHERE actor=? OR subject_ref=? OR instr(evidence_json,?)>0 LIMIT 1`)
+            .get(user.id,user.id,user.id) || db.prepare(`SELECT 1 FROM control_room_audit_log WHERE admin_id=? OR instr(details_json,?)>0 LIMIT 1`)
+            .get(user.id,user.id)) throw new ErasureLedgerError("ERASURE_AUDIT_REVIEW_REQUIRED");
           // FK cascades remove session/account credentials; a foreign binding or
           // cross-subject consent proof causes rollback, not reassignment.
           db.prepare('DELETE FROM "user" WHERE id=?').run(user.id);
         }
         for (const email of emails) db.prepare("DELETE FROM auth_email_outbox WHERE recipient_normalized=?").run(email);
+        if(!resetAllCredentials) {
+          for(const row of db.prepare("SELECT id,value FROM verification").all() as Array<{id:string;value:string}>) {
+            let value:unknown; try {value=JSON.parse(row.value);} catch {throw new ErasureLedgerError("ERASURE_VERIFICATION_UNCLASSIFIED");}
+            if(!value || typeof value!=="object" || typeof (value as {email?:unknown}).email!=="string") throw new ErasureLedgerError("ERASURE_VERIFICATION_UNCLASSIFIED");
+            if(matches("email",(value as {email:string}).email)) db.prepare("DELETE FROM verification WHERE id=?").run(row.id);
+          }
+        }
       }
       // Every restore invalidates ALL previously issued links and sessions. This
       // also handles orphaned magic-link JSON and avoids guessing identifier format.
       // Better Auth 1.7.6 stores hashed token identifiers + JSON {email,name} value.
-      db.exec('DELETE FROM "session"; DELETE FROM verification;');
+      if(resetAllCredentials) db.exec('DELETE FROM "session"; DELETE FROM verification;');
+      assertDrain?.();
       if ((db.pragma("foreign_key_check") as unknown[]).length) throw new ErasureLedgerError("ERASURE_RESTORE_INTEGRITY_FAILED");
       return { erasedAccounts, suppressedEmails, sequence: ledger.bundle.entries.length,
         runtimeAdmission: "PENDING" as const, processorDeletion: "PENDING" as const };

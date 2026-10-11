@@ -6,6 +6,7 @@ import { bindVerifiedAuthUser, customerIdForAuthUser, getOrCreateCustomer, recor
 import { currentLegalRelease } from "./legal-control";
 import { loadCommerceOrigins, storefrontOrigin, type Storefront } from "./origins";
 import { assertRegistrationChoices } from "./registration-choices";
+import type { ErasureRuntimeFence } from "./erasure-fence";
 
 type AuthEnvironment = Readonly<Record<string, string | undefined>>;
 
@@ -14,6 +15,7 @@ export type AuthRuntimeDependencies = {
   readonly db: Database.Database;
   readonly sendMagicLinkEmail: (message: MagicLinkEmail) => Promise<void>;
   readonly environment?: AuthEnvironment;
+  readonly erasureFence?: ErasureRuntimeFence;
 };
 
 const required = (environment: AuthEnvironment, name: string) => {
@@ -85,6 +87,7 @@ export function createAuthRuntime(dependencies: AuthRuntimeDependencies) {
       rateLimit: { window: 60, max: 5 },
       storeToken: "hashed",
       sendMagicLink: async ({ email, url, metadata }) => {
+        dependencies.erasureFence?.assertIdentity({email},"AUTH_MAIL");
         const storefront = (metadata as { storefront?: unknown } | undefined)?.storefront;
         if (storefront !== "COURSES" && storefront !== "LAB") throw new Error("AUTH_STOREFRONT_REQUIRED");
         const target = new URL(url);
@@ -100,11 +103,12 @@ export function createAuthRuntime(dependencies: AuthRuntimeDependencies) {
           VALUES (?,?, 'MAGIC_LINK', ?, ?, 'PENDING')`)
           .run(id, normalized, encrypt(payload, key), createHash("sha256").update(serialized).digest("hex"));
         try {
-          await dependencies.sendMagicLinkEmail(payload);
+          if(dependencies.erasureFence) await dependencies.erasureFence.send(normalized,()=>dependencies.sendMagicLinkEmail(payload),"AUTH_MAIL");
+          else await dependencies.sendMagicLinkEmail(payload);
           dependencies.db.prepare(`UPDATE auth_email_outbox SET state='SENT',attempt_count=1,updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(id);
         } catch (error) {
           dependencies.db.prepare(`UPDATE auth_email_outbox SET state='FAILED',attempt_count=1,last_error=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`)
-            .run(error instanceof Error ? error.message.slice(0, 240) : "EMAIL_SEND_FAILED", id);
+            .run(dependencies.erasureFence ? "ERASURE_FENCED_EMAIL_FAILED" : error instanceof Error ? error.message.slice(0, 240) : "EMAIL_SEND_FAILED", id);
           throw error;
         }
       },
@@ -112,9 +116,13 @@ export function createAuthRuntime(dependencies: AuthRuntimeDependencies) {
     databaseHooks: {
       user: {
         create: {
+          before: async user=>{dependencies.erasureFence?.assertIdentity({email:user.email,userId:user.id},"ACCOUNT");},
           after: async (user) => { bindVerifiedAuthUser(dependencies.db, user); },
         },
       },
+      session: {create: {before: async session=>{
+        dependencies.erasureFence?.assertIdentity({userId:session.userId},"ACCOUNT");
+      }}},
     },
   });
 
@@ -133,6 +141,7 @@ export function createAuthRuntime(dependencies: AuthRuntimeDependencies) {
       marketingDocumentVersion: string;
       marketingDocumentSha256: string;
     }) {
+      dependencies.erasureFence?.assertIdentity({email:input.email},"ACCOUNT");
       assertRegistrationChoices(input);
       const release = currentLegalRelease(dependencies.db, input.storefront);
       if (!release) throw new Error("LEGAL_RELEASE_NOT_FOUND");
@@ -161,6 +170,7 @@ export function createAuthRuntime(dependencies: AuthRuntimeDependencies) {
     async authenticateCustomer(headers: Headers) {
       const session = await auth.api.getSession({ headers });
       if (!session?.user.id) return null;
+      dependencies.erasureFence?.assertIdentity({email:session.user.email,userId:session.user.id},"ACCOUNT");
       return customerIdForAuthUser(dependencies.db, session.user.id);
     },
     outboxKey: key,

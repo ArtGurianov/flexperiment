@@ -189,3 +189,163 @@ ACK, stale authority, CAS conflict, reflected secrets, bounded malformed reads.
 Следующий PR должен закрывать admission/send/auth/restore гонки до любой live установки.
 Deployment, live migrations, legal activation, registration, marketing, payments/F9
 по-прежнему CLOSED. Existing foundation/recovery evidence не повторяется.
+
+## ART-232 / ART-179: runtime/send fencing — второй отдельный slice
+
+Выбран один shared independent SQLite fence для всех Commerce HTTP requests,
+auth callbacks, campaign и reconciliation workers. Durable lease держится до конца
+async handler/transport и последующей записи результата. Отвергнуты per-process bool,
+проверка suppression только перед await(send), lease timeout как доказательство
+завершения и reopen по watermark восстанавливаемой merchant DB: они оставляют гонку.
+Неизвестная доставка сохраняет отдельный UNKNOWN SEND lease, даже если Better Auth
+или campaign catches error; падение процесса оставляет ACTIVE. Автоматического expiry,
+retry, удаления lease или подмены provider ACK нет. Эти состояния требуют evidence-bound
+operator reconciliation, которого этот slice намеренно не автоматизирует.
+
+Owner admission: fresh verified request → CLOSED → zero active/unknown leases →
+exclusive owner claim → remote custody ACK → canonical schema/binding/hold checks →
+atomic erasure/suppression/revocation → newest remote read-back → OPEN. Нет новых
+merchant migrations. Purge общий с isolated engine, но LIVE_ADMISSION сохраняет
+чужие сессии/links; BOOT_RESTORE отменяет ALL sessions/verification. Выдаваемая
+application receipt доступна только как process-private capability результата
+реального transaction; JSON receipt и signed ledger без application не открывают gate.
+Financial/audit/unknown schema/token shape → rollback/CLOSED, не выдуманный legal hold.
+Remote accepted erasure не становится processor/archive deletion PASS.
+
+Runtime opt-in ERASURE_FENCING_ENABLED=true требует approved independent HTTPS
+read authority (/v1/erasure/read), scoped read token, protected retained public/HMAC
+verification-key file и уже initialized shared fence directory. Отсутствующий fence
+не создаётся автоматически. Сервисы не получают S3 credential, Ed25519 private signer
+или age recovery identity. До auth/HTTP/timers boot читает fresh nonce-bound remote
+ledger, применяет BOOT_RESTORE за drain и сверяет head ещё раз. Missing/stale/forked
+authority, orphan owner/leases и unknown schema держат startup CLOSED. Existing CLOSED
+deployments без flag сохраняют прежнее поведение только с явным owner admission
+NEVER_INSTALLED; отсутствие host evidence не считается этим состоянием.
+Opt-in не установлен этим PR.
+Повторный boot не понижает independent applied watermark: даже свежеподписанный
+nonce-bound ответ должен включать уже применённый prefix с тем же hash.
+Rollback или fork → CLOSED; freshness сама по себе не доказывает полноту ledger.
+
+HTTP middleware покрывает весь request; /readyz отдельно проверяет fresh authority
+и gate, /identity остаётся доступным. Better Auth create-user/create-session hooks,
+verified customer lookup и magic-link transport проверяют signed suppression.
+Async child после завершения родительского request не имеет действительного lease.
+MARKETING_SUPPRESSION не лишает аккаунт контента или сервисных magic links:
+AUTH_MAIL и MARKETING имеют отдельные purpose. Отказ блокирует только MARKETING;
+ERASURE блокирует прежнюю identity и implicit same-email resurrection. Повторная
+регистрация после erasure потребует отдельной явной модели, а не старого opt-in.
+Logout вне content consent gate; during CLOSED любые customer paths временно fenced.
+
+Все production/closed-canary volumes, guards, backups и activation remain unchanged.
+Код предоставляет in-process owner admission, НЕ публичный deletion HTTP endpoint
+и НЕ установленный remote authority service. Перед live установкой требуется review
+канала authenticated requests, проверка единственного общего control volume/всех
+writers (включая Local API/custom jobs), отсутствия out-of-band DB writes, CAS/IAM и
+custody. Запрещено восстанавливать fence из merchant backup или создавать второй
+параллельный fence для существующих writers. Payload/processor cleanup и offline
+archive disposition квалифицируются отдельно; текущий canonical Stage A customer
+purge не является доказательством удаления у внешних providers или на SSD/WAL.
+
+Causal regressions второго slice: async request и настоящий auth callback до DB
+write, pending network send >60s, SIGKILL child-process persisted lease, swallowed
+unknown send, delayed async children, forged application receipt, freshest-head
+rotation, older real SQLite backup, unrelated LIVE sessions vs BOOT invalidation.
+Четыре намеренные мутации (ignore leases / release UNKNOWN / allow late async /
+skip application receipt) пойманы targeted tests; исходная реализация восстановлена.
+Дополнительная причинная мутация удаления prefix guard обнаруживает возможность
+понижения watermark после restart; guard восстановлен, состояние остаётся CLOSED.
+Full exact-head CI обоих PR обязателен перед возможным merge; инженерный PASS
+не разрешает deployment, live migrations, legal release, registration/marketing,
+payments или F9.
+
+## Delta review #204/#205: installation downgrade — 12.10.2026
+
+### Keep from original plan
+
+Retained keys, independent signed remote custody, fresh nonce/checkpoint, applied
+prefix anti-rollback, durable drained REQUEST/WORKER/SEND и operational HOLD сохраняются.
+#204 merge выполняется первым; #205 обновляется к main и получает новую exact-head CI.
+
+### Adopt from alternative plan
+
+Critical fix: installation admission должен читаться независимо от env и merchant
+backup. После REQUIRED отсутствие/false fencing не запускает DB/auth/HTTP/timers.
+Material improvement: foundation startup тоже проверяется — иначе переключение
+COMMERCE_V2_FOUNDATION_MODE могло бы обойти prepareErasureRuntime.
+
+### Reject from alternative plan
+
+Не используем отсутствие файла как NEVER_INSTALLED: оно неотличимо от потери mount
+после установки. Не принимаем env-selected path, marker внутри merchant SQLite,
+бaked legacy marker в image или автоматическую генерацию пустого installation state.
+Никакие merchant migrations не нужны; runtime не получает writer installation policy.
+
+### Conflicts / decisions needed
+
+Для совместимости закрытых never-enabled окружений выбран явный owner-managed
+NEVER_INSTALLED record. REQUIRED — последующее защищённое owner admission. Переключение
+этого host record не выполняется env/API приложения. Полномочия установки ещё HOLD;
+routine engineering не требует нового GO.
+
+### Risk delta
+
+Новая обязательная deployment dependency: отдельный root-owned read-only host mount
+/etc/flexperiment-erasure (0555), installation.json (0444, UID 0, без symlink/hardlink).
+Kernel mountinfo подтверждает точный ro mount. Host namespace находится вне merchant,
+editorial, backups и image. Record v1 связывает scope и installationId; REQUIRED
+закрепляет canonical fenceDirectory, который нельзя перенаправить env на пустой fence.
+После установки owner registry не восстанавливается из старого merchant backup;
+его rollback/removal требует отдельной защищённой operator procedure, не runtime repair.
+Неверный scope, отсутствующий/corrupt/RW/unmounted record → CLOSED даже без flag.
+Проверенный ранее runtime image НЕ заменяется этим инженерным merge.
+
+### Revised merged plan
+
+1. Merge #204 при утверждённом head и сохранить merge-SHA CI.
+2. Обновить #205 к main; добавить private installation capability и unconditional
+   startup admission. NEVER_INSTALLED сохраняет closed legacy behavior; REQUIRED
+   требует включённого fencing, pinned scope/path и qualified remote boot.
+3. Квалифицировать отказ при missing/false, старом merchant backup, missing/corrupt
+   evidence, foreign scope/path, RW mount, недоступной custody и foundation fallback.
+4. Actual-image CI использует только task-owned synthetic host volumes. Root metadata,
+   ro mount и невозможность записи из app проверяются реально; host unit tests явно
+   используют synthetic mount adapter. Synthetic record не является live installation.
+5. Fresh exact-head test/docker-build PASS перед merge #205, затем post-merge CI.
+   Remote authority, transport, IAM/CAS, key escrow, all-writer fencing installation
+   остаются отдельными live gates. Deployment/live migrations/F9 не выполняются.
+
+## CI prerequisite: Payload CLI migration completion — 12.10.2026
+
+#204 merged/verified at 684ae1f8a17faf02658aace759cb798b9ac80116, exact post-CI
+38158970092 test/docker-build SUCCESS. #205 downgrade correction 2bbcf331 remains
+unmerged: fresh CI38160305323 test SUCCESS (3047 root/205 Platform/77 export), but
+Platform actual-image catalogue failed with no courses table. Remaining Docker work
+was canceled immediately; no unchanged-SHA rerun and no weakened schema/health gate.
+
+Existing Payload CLI can exit 0 without executing migration. Isolated pinned Node
+22.23.3/Payload3.90.2 image reproduced this on fourth fresh CLI invocation under
+bounded CPU contention: exit0, no SQLite file. Native Node26 three probes and Node22
+five unconstrained probes succeeded; those did not disprove the intermittent defect.
+Upstream 3.x correction: https://github.com/payloadcms/payload/pull/18398.
+Do not infer the exact internal import predicate solely from the CI response.
+
+Keep: pinned Payload3.90.2, Lexical0.50.0, current tsx, actual CLI/migrations, existing
+editor/runtime/API behavior and strict image smoke. Adopt a CLI-only narrow backport:
+load the same environment loader, resolve Lexical's equivalent static dev/prod export,
+preserve explicit conditions/foreign packages, and fail nonzero on unfinished CLI
+beforeExit. New preload applies only to platform migrate, before Next start. No
+dependency upgrade, pnpm patch, schema push, migration rewrite, delay/retry or mock
+schema replacement. Existing package source COPY already ships the two preload files.
+
+Causal subprocess controls use the actual pinned CLI: an unsettled target exits0
+without protection and nonzero with it; explicit success/failure codes remain intact.
+Removing static-export selection restores the real Lexical.node.mjs path and fails
+both dev/prod assertions. Actual config applies all six migrations and repeats
+idempotently. Isolated old-image Node22 with read-only bound new preload passed three
+fresh migration/schema/integrity checks; this is not exact-new-image CI attestation.
+
+Focused prerequisite commit kept separate from fencing changes within existing
+#205; no extra workflow/controller/PR cycle. New exact-head CI and merge-SHA
+admission are required for the composed source. No live
+deployment, migrations, production/V1/Refref/routing/secrets/activation. LIVE_ERASURE
+and legal release remain HOLD; existing ART-232/179/41 only, no new issues.
