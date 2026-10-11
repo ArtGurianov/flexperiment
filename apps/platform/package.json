@@ -7,7 +7,7 @@
     "dev": "next dev",
     "build": "payload generate:importmap && next build --webpack",
     "start": "next start",
-    "migrate": "payload migrate",
+    "migrate": "node --import ./lib/payload-cli-preload.mjs ./node_modules/payload/bin.js migrate",
     "migrate:create": "payload migrate:create",
     "lint": "eslint .",
     "test": "vitest run --config vitest.config.ts",

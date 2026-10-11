@@ -189,3 +189,39 @@ ACK, stale authority, CAS conflict, reflected secrets, bounded malformed reads.
 Следующий PR должен закрывать admission/send/auth/restore гонки до любой live установки.
 Deployment, live migrations, legal activation, registration, marketing, payments/F9
 по-прежнему CLOSED. Existing foundation/recovery evidence не повторяется.
+
+## CI prerequisite: Payload CLI migration completion — 12.10.2026
+
+#204 merged/verified at 684ae1f8a17faf02658aace759cb798b9ac80116, exact post-CI
+38158970092 test/docker-build SUCCESS. #205 downgrade correction 2bbcf331 remains
+unmerged: fresh CI38160305323 test SUCCESS (3047 root/205 Platform/77 export), but
+Platform actual-image catalogue failed with no courses table. Remaining Docker work
+was canceled immediately; no unchanged-SHA rerun and no weakened schema/health gate.
+
+Existing Payload CLI can exit 0 without executing migration. Isolated pinned Node
+22.23.3/Payload3.90.2 image reproduced this on fourth fresh CLI invocation under
+bounded CPU contention: exit0, no SQLite file. Native Node26 three probes and Node22
+five unconstrained probes succeeded; those did not disprove the intermittent defect.
+Upstream 3.x correction: https://github.com/payloadcms/payload/pull/18398.
+Do not infer the exact internal import predicate solely from the CI response.
+
+Keep: pinned Payload3.90.2, Lexical0.50.0, current tsx, actual CLI/migrations, existing
+editor/runtime/API behavior and strict image smoke. Adopt a CLI-only narrow backport:
+load the same environment loader, resolve Lexical's equivalent static dev/prod export,
+preserve explicit conditions/foreign packages, and fail nonzero on unfinished CLI
+beforeExit. New preload applies only to platform migrate, before Next start. No
+dependency upgrade, pnpm patch, schema push, migration rewrite, delay/retry or mock
+schema replacement. Existing package source COPY already ships the two preload files.
+
+Causal subprocess controls use the actual pinned CLI: an unsettled target exits0
+without protection and nonzero with it; explicit success/failure codes remain intact.
+Removing static-export selection restores the real Lexical.node.mjs path and fails
+both dev/prod assertions. Actual config applies all six migrations and repeats
+idempotently. Isolated old-image Node22 with read-only bound new preload passed three
+fresh migration/schema/integrity checks; this is not exact-new-image CI attestation.
+
+Focused prerequisite commit kept separate from fencing changes within existing
+#205; no extra workflow/controller/PR cycle. New exact-head CI and merge-SHA
+admission are required for the composed source. No live
+deployment, migrations, production/V1/Refref/routing/secrets/activation. LIVE_ERASURE
+and legal release remain HOLD; existing ART-232/179/41 only, no new issues.
