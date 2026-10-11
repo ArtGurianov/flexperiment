@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@aws-sdk/client-s3':
+        specifier: 3.1143.0
+        version: 3.1143.0
       '@flexperiment/control-room-contracts':
         specifier: workspace:*
         version: link:packages/control-room-contracts

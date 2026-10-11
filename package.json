@@ -46,6 +46,7 @@
     "release:runner": "tsx scripts/release/cutover-runner.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "3.1143.0",
     "@flexperiment/control-room-contracts": "workspace:*",
     "@hono/node-server": "^2.1.1",
     "@radix-ui/react-accordion": "^1.2.20",
