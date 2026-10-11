@@ -3,6 +3,7 @@ import { getCampaignCourseSnapshot } from "@/lib/content/editorial";
 import { adminOrigin } from "@/lib/origins";
 import { freshPurposeSummary } from "@/lib/offer-payment-purpose";
 import { validPaymentPurpose } from "../../../commerce-v2/src/payment-purpose";
+import { courseCommercialWrite, freshCourseCommercial } from "./course-commercial-control";
 
 const authorRequired = (user: unknown) => Boolean(user && typeof user === "object" && "collection" in user && user.collection === "users");
 
@@ -12,7 +13,7 @@ const controlRoomCourseUrl = (courseRef: string) => {
   return url.toString();
 };
 
-export const courseCommercialEndpoints: Endpoint[] = [{
+export const courseCommercialEndpoints: Endpoint[] = [courseCommercialWrite, {
   method: "get",
   path: "/payment-purpose/:courseRef",
   handler: async req => {
@@ -60,19 +61,12 @@ export const courseCommercialEndpoints: Endpoint[] = [{
   path: "/commercial-summary/:courseRef",
   handler: async (req) => {
     if (!authorRequired(req.user)) return Response.json({ code: "AUTHOR_REQUIRED" }, { status: 401 });
-    const origin = process.env.COMMERCE_INTERNAL_ORIGIN;
-    const token = process.env.PLATFORM_COMMERCE_SERVICE_TOKEN;
-    if (!origin || !token) return Response.json({ code: "COMMERCE_NOT_CONFIGURED" }, { status: 503 });
-    const response = await fetch(new URL("/v1/internal/catalog-summary", origin), {
-      headers: { authorization: `Bearer ${token}` }, cache: "no-store", signal: AbortSignal.timeout(3_000),
-    });
-    if (!response.ok) return Response.json({ code: `COMMERCE_HTTP_${response.status}` }, { status: 503 });
-    const body = await response.json() as { courses: Array<{ courseRef: string }> };
-    const summary = body.courses.filter((course) => course.courseRef === req.routeParams?.courseRef)[0];
     const courseRef = String(req.routeParams?.courseRef ?? "");
-    return summary
-      ? Response.json({ ...summary, controlRoomUrl: controlRoomCourseUrl(courseRef) })
-      : Response.json({ state: "UNCONFIGURED", controlRoomUrl: controlRoomCourseUrl(courseRef) });
+    try {
+      const summary = await freshCourseCommercial(courseRef);
+      return Response.json({ ...(summary ?? { state: "UNCONFIGURED", version: 0 }), controlRoomUrl: controlRoomCourseUrl(courseRef) },
+        { headers: { "cache-control": "no-store" } });
+    } catch { return Response.json({ code: "COMMERCE_UNAVAILABLE" }, { status: 503, headers: { "cache-control": "no-store" } }); }
   },
 }, {
   method: "post",

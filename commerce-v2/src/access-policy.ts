@@ -26,6 +26,7 @@ export type LessonAccessInput = {
   }>;
   readonly activeDenyNonEntitledOverride: boolean;
   readonly projectionStale: boolean;
+  readonly retainedFreeEnrollment?: boolean;
 };
 
 export function decideLessonAccess(input: LessonAccessInput): AccessDecision {
@@ -39,6 +40,7 @@ export function decideLessonAccess(input: LessonAccessInput): AccessDecision {
   if (entitled) return "ALLOW";
   if (input.projectionStale) return "DENY";
   if (input.lesson.effectiveVisibility === "UNLISTED" || input.activeDenyNonEntitledOverride) return "DENY";
+  if (input.retainedFreeEnrollment) return "ALLOW";
   if (input.courseProduct.accessModel === "FREE") return "ALLOW";
   if (input.lesson.freePreview) return "ALLOW";
   return input.courseProduct.saleMode === "CLOSED" ? "NOT_FOR_SALE" : "PURCHASE_REQUIRED";

@@ -60,6 +60,13 @@ const relationId = (value: unknown): number | string => {
 
 export { relationId };
 
+/** Author-scoped existence check for a CMS command; never a public editorial projection. */
+export async function hasAuthorCourse(req: PayloadRequest, courseRef: string): Promise<boolean> {
+  const result = await req.payload.find({ collection: "courses", where: { courseRef: { equals: courseRef } },
+    limit: 2, depth: 0, overrideAccess: false, req });
+  return result.docs.length === 1;
+}
+
 export async function getDocumentForLifecycle(req: PayloadRequest, collection: CollectionSlug, id: number | string) {
   return req.payload.findByID({ collection, id, depth: 0, overrideAccess: true, req });
 }
