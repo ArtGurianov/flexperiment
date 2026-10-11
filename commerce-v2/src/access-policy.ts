@@ -1,6 +1,7 @@
 export type AccessDecision =
   | "ALLOW"
   | "SIGN_IN_REQUIRED"
+  | "CONSENT_REQUIRED"
   | "DENY"
   | "PURCHASE_REQUIRED"
   | "NOT_FOR_SALE";

@@ -43,7 +43,7 @@ export default function LessonPlayer({ lessonRef, title }: { lessonRef: string; 
   const sequenceRef = useRef(0);
   const lastSavedAtRef = useRef(0);
   const [grant, setGrant] = useState<PlaybackGrant | null>(null);
-  const [state, setState] = useState<"loading" | "signin" | "denied" | "ready" | "error">("loading");
+  const [state, setState] = useState<"loading" | "signin" | "consent" | "denied" | "ready" | "error">("loading");
 
   useEffect(() => {
     const controller = new AbortController();
@@ -54,6 +54,7 @@ export default function LessonPlayer({ lessonRef, title }: { lessonRef: string; 
       signal: controller.signal,
     }).then(async (response) => {
       if (response.status === 401) { setState("signin"); return; }
+      if (response.status === 403 && (await response.clone().json()).decision === "CONSENT_REQUIRED") { setState("consent"); return; }
       const next = await parseGrant(response);
       if (!next) { setState("denied"); return; }
       setGrant(next);
@@ -77,6 +78,7 @@ export default function LessonPlayer({ lessonRef, title }: { lessonRef: string; 
           method: "POST", cache: "no-store", credentials: "same-origin", signal: controller.signal,
         });
         if (response.status === 401) { setState("signin"); setGrant(null); return; }
+        if (response.status === 403 && (await response.clone().json()).decision === "CONSENT_REQUIRED") { setState("consent"); setGrant(null); return; }
         const next = await parseGrant(response);
         if (!next) { setState("denied"); setGrant(null); return; }
         setGrant(next);
@@ -155,6 +157,7 @@ export default function LessonPlayer({ lessonRef, title }: { lessonRef: string; 
   }, [grant, lessonRef]);
 
   if (state === "signin") return <div className="playerGate"><p>Войдите, чтобы открыть урок.</p><Link className="primary" href={`/account?next=${encodeURIComponent(window.location.pathname)}`}>Получить ссылку →</Link></div>;
+  if (state === "consent") return <div className="playerGate"><p>Подтвердите обработку ПД и правила в аккаунте, чтобы открыть урок. Реклама необязательна.</p><Link href={`/account?next=${encodeURIComponent(window.location.pathname)}`}>Подтвердить выбор</Link></div>;
   if (state === "denied") return <div className="playerGate"><p>Урок пока недоступен для вашего аккаунта.</p><Link href="/courses">Вернуться к курсам</Link></div>;
   if (state === "error") return <div className="playerGate"><p>Видео сейчас не загрузилось. Попробуйте обновить страницу.</p></div>;
   return <div className="lessonPlayer" aria-label={`Видео: ${title}`}><div ref={hostRef} className="lessonPlayerHost" />{state === "loading" && <p>Проверяем доступ…</p>}</div>;

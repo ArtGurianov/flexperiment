@@ -105,6 +105,28 @@ describe("new authenticated consent evidence, separate from historical intents",
 });
 
 describe("latest authenticated marketing action at campaign boundaries", () => {
+  it("shares positive email purpose only across identical admitted marketing documents", () => {
+    activateLegalRelease(db, { storefront: "LAB", version: "synthetic-lab-release", manifest, actor: "isolated-test" });
+    recordAuthenticatedConsents(db, "customer", { ...input, storefront: "LAB", releaseVersion: "synthetic-lab-release", marketingConsent: true });
+    expect(authenticatedMarketingChoice(db, "customer", "COURSES")).toBe(true);
+    const changed = { ...manifest, documents: manifest.documents.map(document => document.kind === "marketing_consent"
+      ? { ...document, sha256: "b".repeat(64) } : document) };
+    activateLegalRelease(db, { storefront: "COURSES", version: "synthetic-course-purpose-2", manifest: changed, actor: "isolated-test" });
+    expect(authenticatedMarketingChoice(db, "customer", "COURSES")).toBe(false);
+    expect(authenticatedMarketingChoice(db, "customer", "LAB")).toBe(true);
+  });
+  it("never expands a different LAB marketing purpose to COURSES and treats the latest decline as global", () => {
+    const changed = { ...manifest, documents: manifest.documents.map(document => document.kind === "marketing_consent"
+      ? { ...document, version: "synthetic-lab-purpose", sha256: "b".repeat(64) } : document) };
+    activateLegalRelease(db, { storefront: "LAB", version: "synthetic-lab-release", manifest: changed, actor: "isolated-test" });
+    record({ marketingConsent: true });
+    const labInput = { ...input, storefront: "LAB" as const, releaseVersion: "synthetic-lab-release", manifestSha256: legalManifestHash(changed) };
+    recordAuthenticatedConsents(db, "customer", { ...labInput, actionKey: "synthetic-lab-positive", marketingConsent: true });
+    expect(authenticatedMarketingChoice(db, "customer", "COURSES")).toBe(false);
+    recordAuthenticatedConsents(db, "customer", { ...labInput, actionKey: "synthetic-lab-negative", marketingConsent: false });
+    expect(authenticatedMarketingChoice(db, "customer", "COURSES")).toBe(false);
+    expect(authenticatedMarketingChoice(db, "customer", "LAB")).toBe(false);
+  });
   const campaign = () => createCampaign(db, { courseRef: "course-one", idempotencyKey: "synthetic-campaign",
     payload: { subject: "Synthetic", message: "Synthetic", course: { title: "Synthetic", slug: "synthetic", contentVersion: "v1" },
       lessons: [{ lessonRef: "lesson-one", title: "Synthetic", slug: "synthetic" }] } });

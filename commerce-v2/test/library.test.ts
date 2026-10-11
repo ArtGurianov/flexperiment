@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { migrateV2 } from "../src/db";
 import { grantEntitlement, grantManualEntitlement } from "../src/entitlements";
 import { listCustomerLibrary, listCustomerOrderHistory } from "../src/library";
+import { confirmSyntheticAccount } from "./fixtures/confirmed-account";
 
 let db: Database.Database;
 
@@ -13,6 +14,7 @@ beforeEach(() => {
   db.prepare("INSERT INTO customers(id,email_normalized) VALUES ('customer','student@example.com')").run();
   db.prepare(`INSERT INTO legal_releases(id,storefront,version,manifest_json,effective_at,active)
     VALUES ('legal','COURSES','stage-a-v1','{}','2026-09-30T00:00:00Z',1)`).run();
+  confirmSyntheticAccount(db, "customer");
 });
 
 const addCourse = (input: {

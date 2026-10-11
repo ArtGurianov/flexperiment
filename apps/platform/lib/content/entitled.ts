@@ -40,12 +40,16 @@ export type AccountLibraryCourse = {
 async function authorizeCourses(cookieHeader: string): Promise<CourseAuthorization | null> {
   const origin = process.env.COMMERCE_INTERNAL_ORIGIN;
   if (!origin || !cookieHeader) return null;
-  const response = await fetch(new URL("/v1/me", origin), {
+  const [response, consent] = await Promise.all([fetch(new URL("/v1/me", origin), {
     headers: { cookie: cookieHeader },
     cache: "no-store",
     signal: AbortSignal.timeout(3_000),
-  });
-  if (!response.ok) return null;
+  }), fetch(new URL("/v1/me/consents?storefront=COURSES", origin), {
+    headers: { cookie: cookieHeader }, cache: "no-store", signal: AbortSignal.timeout(3_000),
+  })]);
+  if (!response.ok || !consent.ok) return null;
+  const status = await consent.json() as { storefront?: string; verifiedAccount?: boolean; requiredChoicesConfirmed?: boolean };
+  if (status.storefront !== "COURSES" || status.verifiedAccount !== true || status.requiredChoicesConfirmed !== true) return null;
   const body = await response.json() as { customer?: unknown; entitlements?: ActiveEntitlement[] };
   if (!body.customer) return null;
   const entitlements = body.entitlements ?? [];

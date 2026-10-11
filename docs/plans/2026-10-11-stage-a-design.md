@@ -40,3 +40,14 @@ SQLite regressions как универсального authoring-теста. А�
 ART-179 владеет реальным email/browser/session/video E2E; ART-232 — legal admission;
 ART-41 — F9 и production backup alerting. F7, V1, Refref, production, backup timers
 и четыре HTTPS 403 guards не меняются. Registration, marketing, payments и F9 CLOSED.
+
+## Следующий независимый delta: required consent gate
+
+Выбран серверный gate в Commerce для library/playback/DRM/progress плюс проверка
+consent status перед private Payload reads. Отвергнуты React-only защита и неявное
+повышение registration intent после magic-link verification. Entitlements и FREE
+enrollment сохраняются исторически, но не обходят required admission.
+UI использует unchecked actions, один idempotent POST и независимый GET; неизвестный
+результат сверяется GET-only без повторной записи. Scope email marketing переносим
+между витринами только для идентичных version/hash, latest decline/suppression
+имеют глобальный запрет. Это инженерный механизм, не активация release/рассылок.

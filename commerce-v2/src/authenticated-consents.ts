@@ -24,7 +24,7 @@ const verifiedUser = (db: Database.Database, customerId: string) => db.prepare(`
   .get(customerId) as { id: string } | undefined;
 
 /** Latest explicit account choice wins; invalid/stale new evidence must not revive legacy grants. */
-export function authenticatedMarketingChoice(db: Database.Database, customerId: string): boolean | undefined {
+export function authenticatedMarketingChoice(db: Database.Database, customerId: string, storefront: Storefront = "COURSES"): boolean | undefined {
   const latest = db.prepare(`SELECT e.granted,e.document_version,e.document_sha256,a.auth_user_id,a.storefront,a.legal_release_id,a.release_version,a.manifest_sha256
     FROM authenticated_consent_events e JOIN authenticated_consent_actions a ON a.id=e.action_id
     WHERE a.customer_id=? AND e.kind='marketing_consent' ORDER BY e.sequence DESC LIMIT 1`)
@@ -36,7 +36,24 @@ export function authenticatedMarketingChoice(db: Database.Database, customerId: 
   const document = release?.manifest.documents.find(candidate => candidate.kind === "marketing_consent");
   return Boolean(user && user.id === latest.auth_user_id && release?.id === latest.legal_release_id
     && release.version === latest.release_version && release.manifestSha256 === latest.manifest_sha256
-    && document?.version === latest.document_version && document.sha256 === latest.document_sha256 && latest.granted === 1);
+    && document?.version === latest.document_version && document.sha256 === latest.document_sha256 && latest.granted === 1
+    && matchesMarketingDocument(db, storefront, latest.document_version, latest.document_sha256));
+}
+
+/** Cross-storefront email purpose is shared ONLY for identical admitted marketing text. */
+export function matchesMarketingDocument(db: Database.Database, storefront: Storefront, version: string, sha256: string) {
+  try {
+    const document = activeRelease(db, storefront)?.manifest.documents.find(candidate => candidate.kind === "marketing_consent");
+    return document?.version === version && document.sha256 === sha256;
+  } catch { return false; }
+}
+
+/** No release, malformed release, changed binding or unconfirmed intents all fail closed. */
+export function hasRequiredAccountConsents(db: Database.Database, customerId: string, storefront: Storefront = "COURSES") {
+  try {
+    const status = authenticatedConsentStatus(db, customerId, storefront);
+    return status.verifiedAccount && status.requiredChoicesConfirmed;
+  } catch { return false; }
 }
 
 /** Read-only status of NEW authenticated events; historical legacy/intent rows never qualify. */

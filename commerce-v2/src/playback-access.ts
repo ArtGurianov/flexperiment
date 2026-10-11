@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import { decideLessonAccess, type AccessDecision } from "./access-policy";
 import { playbackResumeAt } from "./resume";
+import { hasRequiredAccountConsents } from "./authenticated-consents";
 
 type ProjectionRow = {
   lesson_ref: string;
@@ -44,6 +45,9 @@ export function resolvePlaybackAccess(db: Database.Database, input: {
 function resolvePlaybackAccessLocked(db: Database.Database, input: {
   customerId: string; lessonRef: string; now: Date; leaseMs: number; recordFreeEnrollment?: boolean;
 }): PlaybackAccessResolution {
+  if (!hasRequiredAccountConsents(db, input.customerId, "COURSES")) {
+    return { decision: "CONSENT_REQUIRED", paidEntitled: false, resumeAt: 0 };
+  }
   const row = db.prepare(`SELECT
     lesson.lesson_ref, lesson.course_ref, lesson.ever_published, lesson.visibility AS lesson_visibility,
     lesson.free_preview, lesson.withdrawn_at AS lesson_withdrawn_at,

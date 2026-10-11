@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { act, cleanup, render, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import LessonPlayer, { playbackEmbedUrl } from "../components/kinescope/LessonPlayer";
 import { loadIframeApi } from "../components/kinescope/iframeApi";
@@ -10,6 +10,12 @@ vi.mock("../components/kinescope/iframeApi", () => ({ loadIframeApi: vi.fn() }))
 const response = (body: unknown) => Response.json(body);
 
 describe("LessonPlayer", () => {
+  it("directs an authenticated but unconfirmed account to consent without loading video", async () => {
+    global.fetch = vi.fn(async () => Response.json({ decision: "CONSENT_REQUIRED" }, { status: 403 }));
+    render(<LessonPlayer lessonRef="arbitrary-lesson" title="Arbitrary course" />);
+    expect(await screen.findByRole("link", { name: "Подтвердить выбор" })).toHaveAttribute("href", expect.stringContaining("/account?next="));
+    expect(loadIframeApi).not.toHaveBeenCalled();
+  });
   const handlers: Record<string, (event: { data?: { currentTime?: number } }) => void> = {};
   const player = {
     Events: { TimeUpdate: "time", Pause: "pause", Error: "error", Unsupported: "unsupported" },

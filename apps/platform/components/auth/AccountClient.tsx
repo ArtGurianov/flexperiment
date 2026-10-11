@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, type FormEvent } from "react";
+import AuthenticatedConsentGate from "./AuthenticatedConsentGate";
 
 type Me = {
   customer: { id: string; email_normalized: string; display_name?: string | null } | null;
@@ -47,8 +48,6 @@ declare global {
 
 export default function AccountClient({ nextPath, captchaSiteKey }: { nextPath: string; captchaSiteKey?: string }) {
   const [me, setMe] = useState<Me | null>(null);
-  const [courses, setCourses] = useState<AccountCourse[]>([]);
-  const [orders, setOrders] = useState<AccountOrder[]>([]);
   const [captchaToken, setCaptchaToken] = useState("");
   const [legalRelease, setLegalRelease] = useState<LegalRelease | null>(null);
   const [message, setMessage] = useState("");
@@ -58,19 +57,7 @@ export default function AccountClient({ nextPath, captchaSiteKey }: { nextPath: 
     void fetch("/v1/me", { cache: "no-store", credentials: "same-origin" })
       .then((response) => response.json()).then((body: Me) => {
         setMe(body);
-        if (body.customer) void Promise.all([
-          fetch("/account-courses.json", { cache: "no-store", credentials: "same-origin" })
-            .then((response) => response.json()) as Promise<{ courses?: AccountCourse[] }>,
-          fetch("/v1/me/orders", { cache: "no-store", credentials: "same-origin" })
-            .then((response) => response.json()) as Promise<{ orders?: AccountOrder[] }>,
-        ]).then(([catalogue, history]) => {
-          setCourses(catalogue.courses ?? []);
-          setOrders(history.orders ?? []);
-        }).catch(() => {
-          setCourses([]);
-          setOrders([]);
-        });
-        else void fetch("/v1/legal/current?storefront=COURSES", { cache: "no-store", credentials: "same-origin" })
+        if (!body.customer) void fetch("/v1/legal/current?storefront=COURSES", { cache: "no-store", credentials: "same-origin" })
           .then((response) => {
             if (!response.ok) throw new Error("LEGAL_RELEASE_NOT_FOUND");
             return response.json() as Promise<LegalRelease>;
@@ -137,7 +124,8 @@ export default function AccountClient({ nextPath, captchaSiteKey }: { nextPath: 
     setMessage(response.ok ? "Ссылка отправлена. Проверьте почту." : "Не получилось отправить ссылку. Проверьте данные и попробуйте снова.");
   };
 
-  if (me?.customer) return <section className="accountPanel"><p className="eyebrow">Аккаунт · {me.customer.email_normalized}</p><h1>Мои курсы</h1><section className="accountSection" aria-labelledby="available-lessons"><header><span>01</span><h2 id="available-lessons">Можно открыть сейчас</h2></header>{courses.length > 0 ? <div className="accountCourses">{courses.map((course) => <article key={course.courseRef}><div><p>{accessLabel(course.access)}</p><h3><a href={course.url}>{course.title}</a></h3></div><ol>{course.lessons.map((lesson) => <li key={lesson.lessonRef}><span>{lesson.sectionTitle}</span><a href={lesson.url}>{lesson.title}</a><small>{accessLabel(lesson.access)}</small></li>)}</ol></article>)}</div> : <p className="emptyState">Доступных уроков пока нет. Бесплатные и preview-уроки появятся здесь после публикации.</p>}</section><section className="accountSection" aria-labelledby="purchase-history"><header><span>02</span><h2 id="purchase-history">История покупок</h2></header>{orders.length > 0 ? <ol className="purchaseHistory">{orders.map((order) => <li key={order.orderPublicId}><div><strong>{order.title}</strong><span>{order.orderPublicId}</span></div><div><strong>{money(order.amountKopecks)}</strong><span>{date(order.createdAt)} · {order.state}</span></div></li>)}</ol> : <p className="emptyState">Покупок пока нет.</p>}</section></section>;
+  if (me?.customer) return <section className="accountPanel"><p className="eyebrow">Аккаунт · {me.customer.email_normalized}</p><h1>Мои курсы</h1>
+    <AuthenticatedConsentGate key={me.customer.id}><AccountLibrary /></AuthenticatedConsentGate></section>;
 
   const legalByKind = new Map(legalRelease?.manifest.documents.map((item) => [item.kind, item]));
   const privacy = legalByKind.get("privacy");
@@ -155,4 +143,29 @@ export default function AccountClient({ nextPath, captchaSiteKey }: { nextPath: 
     <button className="primary" disabled={submitting || !legalReady || Boolean(captchaSiteKey && !captchaToken)} type="submit">{submitting ? "Отправляем…" : legalReady ? "Получить ссылку →" : "Документы не опубликованы"}</button>
     {message && <p role="status">{message}</p>}
   </form></section>;
+}
+
+function AccountLibrary() {
+  const [courses, setCourses] = useState<AccountCourse[]>([]);
+  const [orders, setOrders] = useState<AccountOrder[]>([]);
+  useEffect(() => {
+    const controller = new AbortController();
+    const read = async (path: string) => {
+      const response = await fetch(path, { cache: "no-store", credentials: "same-origin", signal: controller.signal });
+      if (!response.ok) throw new Error("ACCOUNT_CONTENT_UNAVAILABLE");
+      return response.json();
+    };
+    void Promise.all([read("/account-courses.json"), read("/v1/me/orders")]).then(([catalogue, history]) => {
+      if (!controller.signal.aborted) { setCourses(catalogue.courses ?? []); setOrders(history.orders ?? []); }
+    }).catch(() => { if (!controller.signal.aborted) { setCourses([]); setOrders([]); } });
+    return () => controller.abort();
+  }, []);
+  return <><section className="accountSection" aria-labelledby="available-lessons"><header><span>01</span><h2 id="available-lessons">Можно открыть сейчас</h2></header>
+    {courses.length > 0 ? <div className="accountCourses">{courses.map(course => <article key={course.courseRef}><div><p>{accessLabel(course.access)}</p><h3><a href={course.url}>{course.title}</a></h3></div>
+      <ol>{course.lessons.map(lesson => <li key={lesson.lessonRef}><span>{lesson.sectionTitle}</span><a href={lesson.url}>{lesson.title}</a><small>{accessLabel(lesson.access)}</small></li>)}</ol></article>)}</div>
+      : <p className="emptyState">Доступных уроков пока нет. Бесплатные и preview-уроки появятся здесь после публикации.</p>}
+    </section><section className="accountSection" aria-labelledby="purchase-history"><header><span>02</span><h2 id="purchase-history">История покупок</h2></header>
+      {orders.length > 0 ? <ol className="purchaseHistory">{orders.map(order => <li key={order.orderPublicId}><div><strong>{order.title}</strong><span>{order.orderPublicId}</span></div><div><strong>{money(order.amountKopecks)}</strong><span>{date(order.createdAt)} · {order.state}</span></div></li>)}</ol>
+        : <p className="emptyState">Покупок пока нет.</p>}
+    </section></>;
 }

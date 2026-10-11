@@ -2,7 +2,10 @@ import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createAuthRuntime } from "../src/auth";
 import { migrateV2 } from "../src/db";
-import { activateLegalRelease } from "../src/legal-control";
+import { activateLegalRelease, legalManifestHash } from "../src/legal-control";
+import { createCommerceV2App } from "../src/app";
+import { loadCommerceRuntimeConfig } from "../src/payment-mode";
+import { loadCommerceOrigins } from "../src/origins";
 import { applyCourseManifest, withManifestHash } from "../src/manifest";
 import { resolvePlaybackAccess } from "../src/playback-access";
 import { stageALegalManifest } from "./fixtures/legal";
@@ -96,6 +99,18 @@ describe("Stage A auth → FREE access isolated preparation", () => {
       lessons: [{ lessonRef: "isolated-lesson", sectionRef: "isolated-section", everPublished: true, visibility: "LISTED", freePreview: false }],
     }), now.toISOString());
     const access = { customerId: customerId!, lessonRef: "isolated-lesson", now, leaseMs: 60_000 };
+    expect(resolvePlaybackAccess(db, access).decision).toBe("CONSENT_REQUIRED");
+    const app = createCommerceV2App({ db, sourceCommit: "a".repeat(40), serviceToken: "synthetic-service",
+      config: loadCommerceRuntimeConfig({ DEPLOY_ENV: "staging", PAYMENT_MODE: "disabled" }),
+      authenticateCustomer: runtime.authenticateCustomer, origins: loadCommerceOrigins(origins) });
+    const confirmation = await app.request("/v1/me/consents", { method: "POST", headers: {
+      cookie: headers.get("cookie")!, origin: origins.PLATFORM_ORIGIN, "content-type": "application/json" },
+      body: JSON.stringify({ storefront: "COURSES", releaseVersion: "isolated-fixture-only",
+        manifestSha256: legalManifestHash(stageALegalManifest), actionKey: "isolated-confirmed-account",
+        personalDataConsent: true, accountTermsAccepted: true, marketingConsent: false }) });
+    expect(confirmation.status).toBe(200);
+    expect(db.prepare("SELECT COUNT(*) n FROM authenticated_consent_events").get()).toEqual({ n: 3 });
+    expect(db.prepare("SELECT DISTINCT evidence_status FROM account_consents").all()).toEqual([{ evidence_status: "UNVERIFIED_INTENT" }]);
     expect(resolvePlaybackAccess(db, access).decision).toBe("ALLOW");
     expect(resolvePlaybackAccess(db, { ...access, lessonRef: "unknown" }).decision).toBe("DENY");
     expect(resolvePlaybackAccess(db, { ...access, now: new Date(now.getTime() + 60_001) }).decision).toBe("DENY");

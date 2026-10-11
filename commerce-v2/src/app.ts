@@ -28,7 +28,7 @@ import { recordPlaybackAccessEvent } from "./playback-telemetry";
 import { loadCommerceOrigins, storefrontOrigin, type CommerceOrigins, type Storefront } from "./origins";
 import { databaseReady, type RefrefReadiness } from "./readiness";
 import { publicLabCatalogue } from "./lab-catalogue";
-import { authenticatedConsentStatus, recordAuthenticatedConsents, type AuthenticatedConsentInput } from "./authenticated-consents";
+import { authenticatedConsentStatus, hasRequiredAccountConsents, recordAuthenticatedConsents, type AuthenticatedConsentInput } from "./authenticated-consents";
 
 type Dependencies = {
   readonly db: Database.Database;
@@ -853,6 +853,7 @@ export function createCommerceV2App(deps: Dependencies) {
   app.get("/v1/library", async (context) => {
     const customerId = await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;
     if (!customerId) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
+    if (!hasRequiredAccountConsents(deps.db, customerId)) return context.json({ code: "CONSENT_REQUIRED" }, 403, noStore);
     return context.json(listCustomerLibrary(
       deps.db,
       customerId,
@@ -870,9 +871,12 @@ export function createCommerceV2App(deps: Dependencies) {
   app.on(["PUT", "POST"], "/v1/lessons/:lessonRef/resume", async (context) => {
     const customerId = await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;
     if (!customerId) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
+    if (!hasRequiredAccountConsents(deps.db, customerId)) return context.json({ code: "CONSENT_REQUIRED" }, 403, noStore);
     try {
       const body = await context.req.json<{ seconds: number; clientSeq: number; clientTs: string }>();
-      const result = saveResumePosition(deps.db, { customerId, lessonRef: context.req.param("lessonRef"), ...body }, now().toISOString());
+      const result = deps.db.transaction(() => hasRequiredAccountConsents(deps.db, customerId)
+        ? saveResumePosition(deps.db, { customerId, lessonRef: context.req.param("lessonRef"), ...body }, now().toISOString()) : null).immediate();
+      if (!result) return context.json({ code: "CONSENT_REQUIRED" }, 403, noStore);
       return context.json(result, 200, noStore);
     } catch (error) {
       return context.json({ code: error instanceof Error ? error.message : "INVALID_RESUME" }, 422, noStore);
@@ -882,6 +886,7 @@ export function createCommerceV2App(deps: Dependencies) {
   app.post("/v1/lessons/:lessonRef/playback", async (context) => {
     const customerId = await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;
     if (!customerId) return context.json({ decision: "SIGN_IN_REQUIRED" }, 401, noStore);
+    if (!hasRequiredAccountConsents(deps.db, customerId)) return context.json({ decision: "CONSENT_REQUIRED" }, 403, noStore);
     const windowStart = new Date(Math.floor(now().getTime() / 60_000) * 60_000).toISOString();
     const rate = deps.db.prepare(`INSERT INTO playback_grant_rate_limits(customer_id,window_start,request_count)
       VALUES (?,?,1) ON CONFLICT(customer_id,window_start) DO UPDATE SET request_count=request_count+1

@@ -12,6 +12,7 @@ import {
 } from "../src/campaigns";
 import { migrateV2 } from "../src/db";
 import { recordUnverifiedAccountIntent } from "../src/customers";
+import { stageALegalManifestJson } from "./fixtures/legal";
 
 let db: Database.Database;
 
@@ -31,7 +32,7 @@ const create = (idempotencyKey: string, lessonRef = "lesson-one") => createCampa
 const consent = (customerId = "customer") => db.prepare(`INSERT INTO marketing_consents
   (id,customer_id,granted,document_version,document_sha256,recorded_at,source,
     evidence_status,confirmed_auth_user_id,confirmed_at)
-  SELECT ?,?,1,'v1',?,'2026-09-30T10:00:00Z','AUTHENTICATED_ACCOUNT_ACTION',
+  SELECT ?,?,1,'marketing_consent-v1',?,'2026-09-30T10:00:00Z','AUTHENTICATED_ACCOUNT_ACTION',
     'AUTHENTICATED_ACTION',auth_user_id,'2026-09-30T10:00:00Z' FROM customers WHERE id=?`)
   .run(`consent-${customerId}`, customerId, "a".repeat(64), customerId);
 
@@ -39,7 +40,7 @@ beforeEach(() => {
   db = new Database(":memory:"); db.pragma("foreign_keys = ON"); migrateV2(db);
   db.prepare(`INSERT INTO "user"(id,name,email,email_verified) VALUES ('user','Student','student@example.com',1)`).run();
   db.prepare("INSERT INTO customers(id,email_normalized,auth_user_id) VALUES ('customer','student@example.com','user')").run();
-  db.prepare(`INSERT INTO legal_releases(id,storefront,version,manifest_json,effective_at,active) VALUES ('legal','COURSES','v1','{}','now',1)`).run();
+  db.prepare(`INSERT INTO legal_releases(id,storefront,version,manifest_json,effective_at,active) VALUES ('legal','COURSES','v1',?,'now',1)`).run(stageALegalManifestJson);
   db.prepare(`INSERT INTO products(id,product_ref,kind,access_model,course_ref) VALUES ('product','course:one','ONLINE_COURSE','PAID','course-one')`).run();
   db.prepare(`INSERT INTO orders(id,public_id,customer_id,state,total_kopecks,checkout_snapshot_json,snapshot_hash,legal_release_id)
     VALUES ('order','public','customer','FULFILLED',0,'{}',?,'legal')`).run("a".repeat(64));

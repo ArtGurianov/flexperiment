@@ -14,6 +14,7 @@ describe("AccountClient", () => {
     global.fetch = vi.fn(async (input: RequestInfo | URL) => {
       const path = input.toString();
       if (path === "/v1/me") return response({ customer: { id: "customer", email_normalized: "student@example.com" }, entitlements: [] });
+      if (path === "/v1/me/consents?storefront=COURSES") return response({ storefront: "COURSES", verifiedAccount: true, requiredChoicesConfirmed: true, documents: [] });
       if (path === "/account-courses.json") return response({ courses: [{
         courseRef: "course-1",
         title: "Практический курс",
@@ -46,6 +47,7 @@ describe("AccountClient", () => {
     global.fetch = vi.fn(async (input: RequestInfo | URL) => {
       const path = input.toString();
       if (path === "/v1/me") return response({ customer: { id: "customer", email_normalized: "new@example.com" }, entitlements: [] });
+      if (path === "/v1/me/consents?storefront=COURSES") return response({ storefront: "COURSES", verifiedAccount: true, requiredChoicesConfirmed: true, documents: [] });
       if (path === "/account-courses.json") return response({ courses: [] });
       if (path === "/v1/me/orders") return response({ orders: [] });
       throw new Error(`unhandled fetch: ${path}`);
