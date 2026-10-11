@@ -94,6 +94,13 @@ export class ErasureRuntimeFence {
     VerifiedErasureLedger.prototype.assertFresh.call(proof,this.#now());
     if(proof.bundle.scope!==this.#scope) refuse("ERASURE_SCOPE_MISMATCH");
     for(const entry of proof.bundle.entries)assertErasureSubjectKey(this.#keys,entry.body.subject);
+    // A fresh authority signature is not permission to forget an already applied
+    // prefix. Preserve ordering across boots, including a faulty/stale read authority.
+    const state=this.#state();
+    if(state.sequence>=0 && (proof.bundle.entries.length<state.sequence
+      || (state.sequence===0 ? "EMPTY" : proof.bundle.entries[state.sequence-1]?.hash)!==state.head_hash)) {
+      refuse("ERASURE_RUNTIME_LEDGER_ROLLBACK_OR_FORK");
+    }
   }
   closeAdmission() {this.#bootQualified=false; this.#db.prepare("UPDATE fence_state SET state='CLOSED' WHERE id=1").run();}
   status() {return {state:this.#state().state, leases:(this.#db.prepare("SELECT COUNT(*) AS n FROM fence_leases").get() as {n:number}).n,

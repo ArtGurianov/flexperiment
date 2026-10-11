@@ -9,7 +9,7 @@ import { migrateV2 } from "../src/db";
 import { createCommerceV2App } from "../src/app";
 import { createAuthRuntime } from "../src/auth";
 import { bindVerifiedAuthUser } from "../src/customers";
-import { ErasureLedgerStore, VerifiedErasureLedger, erasureSubject, type ErasureKeys, type ErasureSigner } from "../src/erasure-ledger";
+import { ErasureLedgerStore, VerifiedErasureLedger, erasureSubject, issueErasureCheckpoint, type ErasureKeys, type ErasureSigner } from "../src/erasure-ledger";
 import { ErasureCustodian, readRemoteErasureLedger, type CustodyObject } from "../src/erasure-custody";
 import { ErasureRuntimeFence, DrainedErasureRuntime } from "../src/erasure-fence";
 import { applyDrainedRuntimeErasure } from "../src/erasure-restore";
@@ -145,6 +145,25 @@ describe("durable runtime/send fencing, not operational installation",()=>{
   it("stops before processing when current ledger advanced outside the applied watermark",async()=>{
     await bootstrap();account();await append();const action=vi.fn(async()=>undefined);
     await expect(gate.run("REQUEST",action)).rejects.toThrow("AUTHORITY_UNAVAILABLE");expect(action).not.toHaveBeenCalled();expect(gate.status().state).toBe("CLOSED");
+  });
+  it("never lowers a persisted applied prefix on reboot even with a freshly signed stale authority response",async()=>{
+    await bootstrap();account();
+    const older=await owner.reconcile(null,"a".repeat(64),clock);
+    await append("MARKETING_SUPPRESSION");await bootstrap();
+    const stale=()=>readRemoteErasureLedger({scope:"canary",keys,now:()=>clock,
+      read:async nonce=>({...older,checkpoint:issueErasureCheckpoint(older.bundle,nonce,signer,keys,clock)})});
+    const restarted=new ErasureRuntimeFence({...gateOptions(),readCurrent:stale});gates.push(restarted);
+    await expect(restarted.withDrained(db,async drain=>{
+      const current=await stale();
+      const applied=applyDrainedRuntimeErasure(db,current,keys,"canary",drain,clock,"BOOT_RESTORE");
+      await restarted.reopen(drain,current,applied.application);
+    })).rejects.toThrow("LEDGER_ROLLBACK_OR_FORK");
+    expect(restarted.status().state).toBe("CLOSED");
+    const control=new Database(join(root,"fence","erasure-fence.sqlite"),{readonly:true});
+    try {expect(control.prepare("SELECT sequence,head_hash FROM fence_state").get()).toEqual({sequence:1,head_hash:ledger.export().entries[0].hash});}
+    finally {control.close();}
+    await expect(bootstrap(restarted)).rejects.toThrow("LEDGER_ROLLBACK_OR_FORK");
+    expect(await restarted.ready()).toBe(false);
   });
   it("denies delayed async children after the request lease completed",async()=>{
     await bootstrap();const finish=deferred();let later:Promise<unknown>|undefined;

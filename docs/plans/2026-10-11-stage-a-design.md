@@ -220,6 +220,9 @@ verification-key file и уже initialized shared fence directory. Отсутс
 ledger, применяет BOOT_RESTORE за drain и сверяет head ещё раз. Missing/stale/forked
 authority, orphan owner/leases и unknown schema держат startup CLOSED. Existing CLOSED
 deployments без flag сохраняют прежнее поведение; opt-in не установлен этим PR.
+Повторный boot не понижает independent applied watermark: даже свежеподписанный
+nonce-bound ответ должен включать уже применённый prefix с тем же hash.
+Rollback или fork → CLOSED; freshness сама по себе не доказывает полноту ledger.
 
 HTTP middleware покрывает весь request; /readyz отдельно проверяет fresh authority
 и gate, /identity остаётся доступным. Better Auth create-user/create-session hooks,
@@ -247,6 +250,8 @@ unknown send, delayed async children, forged application receipt, freshest-head
 rotation, older real SQLite backup, unrelated LIVE sessions vs BOOT invalidation.
 Четыре намеренные мутации (ignore leases / release UNKNOWN / allow late async /
 skip application receipt) пойманы targeted tests; исходная реализация восстановлена.
+Дополнительная причинная мутация удаления prefix guard обнаруживает возможность
+понижения watermark после restart; guard восстановлен, состояние остаётся CLOSED.
 Full exact-head CI обоих PR обязателен перед возможным merge; инженерный PASS
 не разрешает deployment, live migrations, legal release, registration/marketing,
 payments или F9.
