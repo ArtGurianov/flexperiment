@@ -23,6 +23,28 @@ beforeEach(() => {
 });
 afterEach(() => db.close());
 describe("new authenticated consent evidence, separate from historical intents", () => {
+  it("reads a specific action in a scoped snapshot, not just the current required-choice boolean", () => {
+    expect(authenticatedConsentStatus(db, "customer", "COURSES", input.actionKey)).toMatchObject({
+      actionSequence: 0, action: { key: input.actionKey, outcome: "ABSENT" } });
+    record(); db.exec('UPDATE "user" SET email_verified=0');
+    expect(authenticatedConsentStatus(db, "customer", "COURSES", input.actionKey)).toMatchObject({
+      requiredChoicesConfirmed: false, actionSequence: 3, action: { key: input.actionKey, outcome: "COMMITTED" } });
+    expect(authenticatedConsentStatus(db, "foreign-customer", "COURSES", input.actionKey).action?.outcome).toBe("ABSENT");
+    expect(authenticatedConsentStatus(db, "customer", "LAB", input.actionKey).action?.outcome).toBe("ABSENT");
+    expect(() => authenticatedConsentStatus(db, "customer", "COURSES", "invalid")).toThrow("CONSENT_ACTION_KEY_INVALID");
+    expect(db.prepare("SELECT COUNT(*) n FROM authenticated_consent_actions").get()).toEqual({ n: 1 });
+  });
+  it.each(["original", "fresh"])("the %s action wins the late-commit race; the other cannot append events", winner => {
+    const snapshot = authenticatedConsentStatus(db, "customer", "COURSES", input.actionKey);
+    const original = { ...input, expectedActionSequence: snapshot.actionSequence, marketingConsent: true };
+    const fresh = { ...input, actionKey: "synthetic-fresh-action", expectedActionSequence: snapshot.actionSequence, marketingConsent: false };
+    const first = winner === "original" ? original : fresh; const late = winner === "original" ? fresh : original;
+    const result = recordAuthenticatedConsents(db, "customer", first);
+    expect(() => recordAuthenticatedConsents(db, "customer", late)).toThrow("CONSENT_STATE_STALE");
+    expect(recordAuthenticatedConsents(db, "customer", first)).toMatchObject({ actionId: result.actionId, replayed: true });
+    expect(db.prepare("SELECT COUNT(*) n FROM authenticated_consent_events").get()).toEqual({ n: 3 });
+    expect(authenticatedConsentStatus(db, "customer", "COURSES").choices.marketing_consent).toBe(first.marketingConsent);
+  });
   it("does not promote earlier intent, and appends explicit confirmed actions for the same version", () => {
     recordUnverifiedAccountIntent(db, "customer", { personalDataVersion: "synthetic-v1", personalDataSha256: "a".repeat(64),
       accountTermsVersion: "synthetic-v1", accountTermsSha256: "a".repeat(64), marketingConsent: true,
@@ -173,7 +195,8 @@ describe("session-authenticated consent API boundary", () => {
     sourceCommit: "a".repeat(40), serviceToken: "synthetic-service-secret", authenticateCustomer: async () => authenticated ? "customer" : null,
     origins: { platform: "https://platform.test", lab: "https://lab.test", api: "https://api.test", admin: "https://admin.test" } });
   const post = (body: unknown, origin?: string, authenticated = true) => server(authenticated).request("/v1/me/consents", { method: "POST",
-    headers: { "content-type": "application/json", ...(origin ? { origin } : {}) }, body: JSON.stringify(body) });
+    headers: { "content-type": "application/json", ...(origin ? { origin } : {}) },
+    body: JSON.stringify(body && typeof body === "object" ? { expectedActionSequence: 0, ...body } : body) });
   it("refuses guests, absent/foreign origin, stale release and unverified account", async () => {
     expect((await post(input, "https://platform.test", false)).status).toBe(401);
     expect((await post(input)).status).toBe(403);
@@ -190,6 +213,20 @@ describe("session-authenticated consent API boundary", () => {
     const read = await server().request("/v1/me/consents?storefront=COURSES");
     expect(await read.json()).toMatchObject({ requiredChoicesConfirmed: true, choices: { marketing_consent: false } });
     expect((await server().request("/v1/me/consents?storefront=PARTNER")).status).toBe(422);
+  });
+  it("offers bounded session-scoped GET reconciliation and requires a CAS snapshot before POST", async () => {
+    const path = `/v1/me/consents?storefront=COURSES&actionKey=${input.actionKey}`;
+    expect((await server(false).request(path)).status).toBe(401);
+    const absent = await server().request(path);
+    expect(absent.headers.get("cache-control")).toBe("no-store");
+    expect(await absent.json()).toMatchObject({ actionSequence: 0, action: { key: input.actionKey, outcome: "ABSENT" } });
+    for (const key of ["", "x", "x".repeat(101)]) expect((await server().request(`/v1/me/consents?actionKey=${key}`)).status).toBe(422);
+    expect(await (await post({ ...input, expectedActionSequence: undefined }, "https://platform.test")).json())
+      .toEqual({ code: "CONSENT_PRECONDITION_REQUIRED" });
+    expect((await post(input, "https://platform.test")).status).toBe(200);
+    expect(await (await server().request(path)).json()).toMatchObject({ actionSequence: 3, action: { key: input.actionKey, outcome: "COMMITTED" } });
+    expect(await (await post({ ...input, actionKey: "synthetic-late-fresh-action" }, "https://platform.test")).json()).toEqual({ code: "CONSENT_STATE_STALE" });
+    expect(db.prepare("SELECT COUNT(*) n FROM authenticated_consent_actions").get()).toEqual({ n: 1 });
   });
   it("does not open registration or admit writes when no legal release exists", async () => {
     db.exec("UPDATE legal_releases SET active=0");

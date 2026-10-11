@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import AuthenticatedConsentGate from "./AuthenticatedConsentGate";
 
 type Me = {
@@ -52,6 +52,26 @@ export default function AccountClient({ nextPath, captchaSiteKey }: { nextPath: 
   const [legalRelease, setLegalRelease] = useState<LegalRelease | null>(null);
   const [message, setMessage] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const logoutBusy = useRef(false);
+  const [loggingOut, setLoggingOut] = useState(false);
+
+  const logout = async () => {
+    if (logoutBusy.current) return;
+    logoutBusy.current = true; setLoggingOut(true); setMessage("");
+    try {
+      await fetch("/v1/auth/sign-out", { method: "POST", credentials: "same-origin", cache: "no-store",
+        headers: { "content-type": "application/json" }, body: "{}" }).catch(() => undefined);
+      // An ACK alone is not proof that the browser session has been revoked.
+      const readBack = await fetch("/v1/me", { credentials: "same-origin", cache: "no-store" });
+      if (!readBack.ok) throw new Error("SESSION_STATUS_UNAVAILABLE");
+      const current = await readBack.json() as Me;
+      if (current.customer !== null) throw new Error("SESSION_STILL_ACTIVE");
+      setMe(current);
+      const legal = await fetch("/v1/legal/current?storefront=COURSES", { credentials: "same-origin", cache: "no-store" });
+      setLegalRelease(legal.ok ? await legal.json() as LegalRelease : null);
+    } catch { setMessage("Не удалось подтвердить выход. Проверьте соединение и попробуйте снова."); }
+    finally { logoutBusy.current = false; setLoggingOut(false); }
+  };
 
   useEffect(() => {
     void fetch("/v1/me", { cache: "no-store", credentials: "same-origin" })
@@ -125,6 +145,11 @@ export default function AccountClient({ nextPath, captchaSiteKey }: { nextPath: 
   };
 
   if (me?.customer) return <section className="accountPanel"><p className="eyebrow">Аккаунт · {me.customer.email_normalized}</p><h1>Мои курсы</h1>
+    <section className="accountSection" aria-label="Управление аккаунтом">
+      <button type="button" disabled={loggingOut} onClick={() => { void logout(); }}>{loggingOut ? "Выходим…" : "Выйти из аккаунта"}</button>
+      <p>Запросить удаление данных или задать вопрос об аккаунте: <a href="mailto:art@flexperiment.ru">art@flexperiment.ru</a>.</p>
+      {message && <p role="status">{message}</p>}
+    </section>
     <AuthenticatedConsentGate key={me.customer.id}><AccountLibrary /></AuthenticatedConsentGate>
     <AccountHistory key={me.customer.id} /></section>;
 

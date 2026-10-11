@@ -106,7 +106,7 @@ describe("Stage A auth → FREE access isolated preparation", () => {
     const confirmation = await app.request("/v1/me/consents", { method: "POST", headers: {
       cookie: headers.get("cookie")!, origin: origins.PLATFORM_ORIGIN, "content-type": "application/json" },
       body: JSON.stringify({ storefront: "COURSES", releaseVersion: "isolated-fixture-only",
-        manifestSha256: legalManifestHash(stageALegalManifest), actionKey: "isolated-confirmed-account",
+        manifestSha256: legalManifestHash(stageALegalManifest), actionKey: "isolated-confirmed-account", expectedActionSequence: 0,
         personalDataConsent: true, accountTermsAccepted: true, marketingConsent: false }) });
     expect(confirmation.status).toBe(200);
     expect(db.prepare("SELECT COUNT(*) n FROM authenticated_consent_events").get()).toEqual({ n: 3 });

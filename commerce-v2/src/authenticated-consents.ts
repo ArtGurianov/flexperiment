@@ -7,7 +7,13 @@ const kinds = ["personal_data", "account_terms", "marketing_consent"] as const;
 export type AuthenticatedConsentInput = {
   storefront: Storefront; releaseVersion: string; manifestSha256: string; actionKey: string;
   personalDataConsent: boolean; accountTermsAccepted: boolean; marketingConsent: boolean;
+  expectedActionSequence?: number;
 };
+const validActionKey = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_-]{16,100}$/.test(value);
+const actionSequence = (db: Database.Database, customerId: string, storefront: Storefront) =>
+  (db.prepare(`SELECT COALESCE(MAX(e.sequence),0) AS sequence FROM authenticated_consent_events e
+    JOIN authenticated_consent_actions a ON a.id=e.action_id WHERE a.customer_id=? AND a.storefront=?`)
+    .get(customerId, storefront) as { sequence: number }).sequence;
 type Release = { id: string; version: string; manifest: LegalReleaseManifest; manifestSha256: string };
 const activeRelease = (db: Database.Database, storefront: Storefront): Release | null => {
   const row = db.prepare("SELECT id,version,manifest_json FROM legal_releases WHERE storefront=? AND active=1")
@@ -57,30 +63,37 @@ export function hasRequiredAccountConsents(db: Database.Database, customerId: st
 }
 
 /** Read-only status of NEW authenticated events; historical legacy/intent rows never qualify. */
-export function authenticatedConsentStatus(db: Database.Database, customerId: string, storefront: Storefront) {
-  const user = verifiedUser(db, customerId);
-  const release = activeRelease(db, storefront);
-  const choices: Record<typeof kinds[number], boolean> = { personal_data: false, account_terms: false, marketing_consent: false };
-  if (user && release) {
-    for (const kind of kinds) {
-      const document = release.manifest.documents.find(candidate => candidate.kind === kind)!;
-      const event = db.prepare(`SELECT e.granted FROM authenticated_consent_events e JOIN authenticated_consent_actions a ON a.id=e.action_id
-        WHERE a.customer_id=? AND a.auth_user_id=? AND a.storefront=? AND a.legal_release_id=?
-          AND a.release_version=? AND a.manifest_sha256=? AND e.kind=? AND e.document_version=? AND e.document_sha256=? ORDER BY e.sequence DESC LIMIT 1`)
-        .get(customerId, user.id, storefront, release.id, release.version, release.manifestSha256, kind, document.version, document.sha256) as { granted: number } | undefined;
-      choices[kind] = event?.granted === 1;
+export function authenticatedConsentStatus(db: Database.Database, customerId: string, storefront: Storefront, actionKey?: string) {
+  if (actionKey !== undefined && !validActionKey(actionKey)) throw new Error("CONSENT_ACTION_KEY_INVALID");
+  return db.transaction(() => {
+    const user = verifiedUser(db, customerId);
+    const release = activeRelease(db, storefront);
+    const choices: Record<typeof kinds[number], boolean> = { personal_data: false, account_terms: false, marketing_consent: false };
+    if (user && release) {
+      for (const kind of kinds) {
+        const document = release.manifest.documents.find(candidate => candidate.kind === kind)!;
+        const event = db.prepare(`SELECT e.granted FROM authenticated_consent_events e JOIN authenticated_consent_actions a ON a.id=e.action_id
+          WHERE a.customer_id=? AND a.auth_user_id=? AND a.storefront=? AND a.legal_release_id=?
+            AND a.release_version=? AND a.manifest_sha256=? AND e.kind=? AND e.document_version=? AND e.document_sha256=? ORDER BY e.sequence DESC LIMIT 1`)
+          .get(customerId, user.id, storefront, release.id, release.version, release.manifestSha256, kind, document.version, document.sha256) as { granted: number } | undefined;
+        choices[kind] = event?.granted === 1;
+      }
     }
-  }
-  return { storefront, verifiedAccount: Boolean(user), releaseVersion: release?.version ?? null,
-    manifestSha256: release?.manifestSha256 ?? null, requiredChoicesConfirmed: choices.personal_data && choices.account_terms,
-    choices, documents: release?.manifest.documents ?? [] };
+    return { storefront, verifiedAccount: Boolean(user), releaseVersion: release?.version ?? null,
+      manifestSha256: release?.manifestSha256 ?? null, requiredChoicesConfirmed: choices.personal_data && choices.account_terms,
+      actionSequence: actionSequence(db, customerId, storefront),
+      ...(actionKey === undefined ? {} : { action: { key: actionKey, outcome: db.prepare(`SELECT 1 FROM authenticated_consent_actions
+        WHERE customer_id=? AND storefront=? AND action_key=?`).get(customerId, storefront, actionKey) ? "COMMITTED" : "ABSENT" } }),
+      choices, documents: release?.manifest.documents ?? [] };
+  })();
 }
 
 /** Caller must derive customerId from an active session, never from the request body. */
 export function recordAuthenticatedConsents(db: Database.Database, customerId: string, input: AuthenticatedConsentInput,
   now = new Date().toISOString()) {
   if (!input || !["COURSES", "LAB"].includes(input.storefront) || input.personalDataConsent !== true || input.accountTermsAccepted !== true
-    || typeof input.marketingConsent !== "boolean" || typeof input.actionKey !== "string" || !/^[A-Za-z0-9_-]{16,100}$/.test(input.actionKey)
+    || typeof input.marketingConsent !== "boolean" || !validActionKey(input.actionKey)
+    || (input.expectedActionSequence !== undefined && (!Number.isSafeInteger(input.expectedActionSequence) || input.expectedActionSequence < 0))
     || typeof input.releaseVersion !== "string" || !input.releaseVersion || typeof input.manifestSha256 !== "string"
     || !/^[a-f0-9]{64}$/.test(input.manifestSha256)) {
     throw new Error("AUTHENTICATED_CONSENT_INPUT_INVALID");
@@ -96,6 +109,11 @@ export function recordAuthenticatedConsents(db: Database.Database, customerId: s
     const prior = db.prepare(`SELECT id,request_sha256,auth_user_id FROM authenticated_consent_actions WHERE customer_id=? AND storefront=? AND action_key=?`)
       .get(customerId, input.storefront, input.actionKey) as { id: string; request_sha256: string; auth_user_id: string } | undefined;
     if (prior && (prior.request_sha256 !== hash || prior.auth_user_id !== user.id)) throw new Error("CONSENT_ACTION_KEY_CONFLICT");
+    // An absent-action GET is a snapshot, not cancellation of an in-flight POST.
+    // Competing fresh/late actions from that snapshot cannot both commit.
+    if (!prior && input.expectedActionSequence !== undefined && input.expectedActionSequence !== actionSequence(db, customerId, input.storefront)) {
+      throw new Error("CONSENT_STATE_STALE");
+    }
     const actionId = prior?.id ?? randomUUID();
     if (!prior) {
       db.prepare(`INSERT INTO authenticated_consent_actions(id,customer_id,auth_user_id,storefront,legal_release_id,release_version,manifest_sha256,action_key,request_sha256,recorded_at)

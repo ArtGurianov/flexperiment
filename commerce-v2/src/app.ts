@@ -811,7 +811,9 @@ export function createCommerceV2App(deps: Dependencies) {
     if (!customerId) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
     const storefront = context.req.query("storefront") ?? "COURSES";
     if (storefront !== "COURSES" && storefront !== "LAB") return context.json({ code: "STOREFRONT_INVALID" }, 422, noStore);
-    try { return context.json(authenticatedConsentStatus(deps.db, customerId, storefront), 200, noStore); }
+    const actionKey = context.req.query("actionKey");
+    if (actionKey !== undefined && !/^[A-Za-z0-9_-]{16,100}$/.test(actionKey)) return context.json({ code: "CONSENT_ACTION_KEY_INVALID" }, 422, noStore);
+    try { return context.json(authenticatedConsentStatus(deps.db, customerId, storefront, actionKey), 200, noStore); }
     catch { return context.json({ code: "LEGAL_STATUS_UNAVAILABLE" }, 503, noStore); }
   });
   app.post("/v1/me/consents", bodyLimit({ maxSize: 8192,
@@ -823,14 +825,18 @@ export function createCommerceV2App(deps: Dependencies) {
       if (!body || typeof body !== "object" || Array.isArray(body)) return context.json({ code: "AUTHENTICATED_CONSENT_INPUT_INVALID" }, 422, noStore);
       if (body.storefront !== "COURSES" && body.storefront !== "LAB") return context.json({ code: "STOREFRONT_INVALID" }, 422, noStore);
       if (context.req.header("origin") !== storefrontOrigin(origins, body.storefront)) return context.json({ code: "ORIGIN_FORBIDDEN" }, 403, noStore);
+      if (!Number.isSafeInteger(body.expectedActionSequence) || body.expectedActionSequence! < 0) {
+        return context.json({ code: "CONSENT_PRECONDITION_REQUIRED" }, 422, noStore);
+      }
       return context.json(recordAuthenticatedConsents(deps.db, customerId, {
         storefront: body.storefront, releaseVersion: body.releaseVersion, manifestSha256: body.manifestSha256,
         actionKey: body.actionKey, personalDataConsent: body.personalDataConsent, accountTermsAccepted: body.accountTermsAccepted,
         marketingConsent: body.marketingConsent,
+        expectedActionSequence: body.expectedActionSequence,
       }, now().toISOString()), 200, noStore);
     } catch (error) {
       const allowed = ["VERIFIED_ACCOUNT_REQUIRED", "LEGAL_RELEASE_NOT_FOUND", "LEGAL_RELEASE_INCOMPLETE", "LEGAL_RELEASE_STALE",
-        "AUTHENTICATED_CONSENT_INPUT_INVALID", "CONSENT_ACTION_KEY_CONFLICT"];
+        "AUTHENTICATED_CONSENT_INPUT_INVALID", "CONSENT_ACTION_KEY_CONFLICT", "CONSENT_STATE_STALE"];
       const code = error instanceof Error && allowed.includes(error.message) ? error.message : "CONSENT_WRITE_UNCONFIRMED";
       return context.json({ code }, 409, noStore);
     }
