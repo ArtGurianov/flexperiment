@@ -3,6 +3,7 @@ import { canaryOrigins, validatePlatformCanary } from "../lib/canary-config";
 import { proxyCommerce } from "../lib/commerce-proxy";
 import { assertCanaryCommerceReady } from "../lib/canary-readiness";
 import { closedEditorial, closedEmail } from "../lib/canary-editorial";
+import * as transport from "../lib/canary-http";
 
 const env = {
   ...canaryOrigins, PLATFORM_V2_CANARY: "true", COMMERCE_INTERNAL_ORIGIN: "http://xzuy7pk5y6ywjr9kh6nsk5ap-20261010T152433:3002",
@@ -66,7 +67,7 @@ describe("Platform same-origin proxy", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
   it("preserves method/body/query/cookies and safe Location, overwrites forwarding and no-store", async () => {
-    const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("accepted", { status: 302, headers: {
+    const fetch = vi.spyOn(transport, "canaryCommerceRequest").mockResolvedValue(new Response("accepted", { status: 302, headers: {
       location: `${canaryOrigins.PLATFORM_ORIGIN}/account`, "set-cookie": "session=synthetic; Path=/; Secure; HttpOnly; SameSite=Lax",
       "cache-control": "public, max-age=999", "access-control-allow-origin": "*",
     } }));
@@ -89,15 +90,15 @@ describe("Platform same-origin proxy", () => {
     expect(response.headers.has("access-control-allow-origin")).toBe(false);
   });
   it.each(["https://flexperiment.ru/account", "//foreign.example/account"])("refuses foreign Location %s", async location => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 302, headers: { location } }));
+    vi.spyOn(transport, "canaryCommerceRequest").mockResolvedValue(new Response(null, { status: 302, headers: { location } }));
     expect((await proxyCommerce(request(), ["auth"])).status).toBe(502);
   });
   it("refuses shared-domain cookies without rewriting", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { headers: { "set-cookie": "session=x; Domain=.flexperiment.ru" } }));
+    vi.spyOn(transport, "canaryCommerceRequest").mockResolvedValue(new Response(null, { headers: { "set-cookie": "session=x; Domain=.flexperiment.ru" } }));
     expect((await proxyCommerce(request(), ["auth"])).status).toBe(502);
   });
   it("preserves upstream refusal and sanitizes transport exceptions", async () => {
-    const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ code: "SIGN_IN_REQUIRED" }, { status: 401 }));
+    const fetch = vi.spyOn(transport, "canaryCommerceRequest").mockResolvedValue(Response.json({ code: "SIGN_IN_REQUIRED" }, { status: 401 }));
     expect((await proxyCommerce(request(), ["me", "orders"])).status).toBe(401);
     fetch.mockRejectedValue(new Error("synthetic-secret-url-token"));
     const response = await proxyCommerce(request(), ["auth"]);

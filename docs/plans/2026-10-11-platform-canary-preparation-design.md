@@ -64,6 +64,10 @@ derived from approved origin, spoofed forwarding stripped. Preserve method,
 body, query, Cookie, Set-Cookie and same-origin Location; no redirect following,
 wildcard CORS or cache. Bounded transport errors return a fixed 503, not raw URLs.
 Engineering tests are not real magic-link/cookie E2E.
+The opt-in canary hop uses Node HTTP request rather than fetch: Node fetch
+derives Host from its target URL and cannot preserve the approved public Host.
+Transport tests use a genuine local HTTP server; actual-image probes also send
+Host through HTTP request, not a mocked or silently discarded fetch header.
 
 Do NOT restart Commerce to invent a stable alias. After EVERY Commerce replacement:
 verify Docker DNS from each frontend network, compare resolved container/app/source

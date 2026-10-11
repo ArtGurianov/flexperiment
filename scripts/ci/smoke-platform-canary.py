@@ -28,7 +28,7 @@ def main():
         checks += 1
 
     def request(path, host="canary-platform.flexperiment.ru", method="GET", headers=None):
-        script = "const [p,h,m,headers]=process.argv.slice(1);fetch('http://127.0.0.1:3001'+p,{method:m,headers:{host:h,'content-type':'application/json',...JSON.parse(headers)},body:m==='POST'?JSON.stringify({email:'synthetic@invalid.example',password:'synthetic-private-password'}):undefined,redirect:'manual',signal:AbortSignal.timeout(5000)}).then(async r=>console.log(JSON.stringify({status:r.status,headers:Object.fromEntries(r.headers),body:await r.text()}))).catch(()=>process.exit(1))"
+        script = "const [p,h,m,headers]=process.argv.slice(1);const q=require('http').request('http://127.0.0.1:3001'+p,{method:m,headers:{host:h,'content-type':'application/json',...JSON.parse(headers)},signal:AbortSignal.timeout(5000)},r=>{let b='';r.on('data',c=>b+=c);r.on('end',()=>{const hdr={...r.headers};if(Array.isArray(hdr['set-cookie']))hdr['set-cookie']=hdr['set-cookie'].join(',');console.log(JSON.stringify({status:r.statusCode,headers:hdr,body:b}))})});q.on('error',()=>process.exit(1));q.end(m==='POST'?JSON.stringify({email:'synthetic@invalid.example',password:'synthetic-private-password'}):undefined)"
         return json.loads(run("docker", "exec", app, "node", "-e", script, path, host, method, json.dumps(headers or {})))
 
     try:

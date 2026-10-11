@@ -1,4 +1,5 @@
 import { canaryOrigins, validatePlatformCanary } from "./canary-config";
+import { canaryCommerceRequest } from "./canary-http";
 
 const allowedRoots = new Set(["auth", "me", "lessons", "checkout", "email", "legal"]);
 const refuse = (code: string, status: number) => Response.json({ code }, {
@@ -24,7 +25,8 @@ export async function proxyCommerce(request: Request, path: string[]) {
   headers.set("x-forwarded-host", host);
   headers.set("x-forwarded-proto", canary ? "https" : source.protocol.replace(":", ""));
   try {
-    const response = await fetch(target, {
+    const send = canary ? canaryCommerceRequest : fetch;
+    const response = await send(target, {
       method: request.method, headers,
       body: request.method === "GET" || request.method === "HEAD" ? undefined : request.body,
       redirect: "manual", cache: "no-store", signal: AbortSignal.timeout(5000), duplex: "half",
