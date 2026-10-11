@@ -29,6 +29,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends age
       - name: Isolated editorial online backup and encrypted independent restore contract
         run: python3 scripts/v2/test_platform_backup.py -v
+      - name: Isolated Platform canary scheduled transport and recovery admission
+        run: python3 scripts/v2/test_platform_scheduled_backup.py -v
       - name: Independent V2 owner control contract
         run: python3 scripts/v2/test_owner_rpc.py
       - name: Isolated V2 canary same-origin proxy contract (real nginx)
@@ -51,6 +53,8 @@ jobs:
       - run: pnpm --filter @flexperiment/lab exec next typegen
       - run: pnpm exec tsc --noEmit
       - run: pnpm lab:typecheck
+      - name: Independent LAB V2 types (V1 remains frozen)
+        run: pnpm --filter @flexperiment/lab-v2 exec next typegen && pnpm --filter @flexperiment/lab-v2 typecheck
       # The root tsconfig EXCLUDES apps/admin, so the line above never saw a
       # single admin/partner component. The admin app carries its own
       # tsconfig (its own jsx/lib/bundler settings) and needs its own

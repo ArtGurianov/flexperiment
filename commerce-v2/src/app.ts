@@ -24,6 +24,7 @@ import { issuePlaybackToken, verifyPlaybackToken, type PlaybackKeyring } from ".
 import { recordPlaybackAccessEvent } from "./playback-telemetry";
 import { loadCommerceOrigins, storefrontOrigin, type CommerceOrigins, type Storefront } from "./origins";
 import { databaseReady, type RefrefReadiness } from "./readiness";
+import { publicLabCatalogue } from "./lab-catalogue";
 
 type Dependencies = {
   readonly db: Database.Database;
@@ -783,6 +784,11 @@ export function createCommerceV2App(deps: Dependencies) {
     const entitlements = deps.db.prepare(`SELECT scope,course_ref,granted_at FROM course_entitlements
       WHERE customer_id=? AND revoked_at IS NULL ORDER BY granted_at`).all(customerId);
     return context.json({ customer, entitlements }, 200, noStore);
+  });
+
+  app.get("/v1/lab/catalogue", (context) => {
+    try { return context.json(publicLabCatalogue(deps.db, deps.config.paymentMode, now()), 200, noStore); }
+    catch { return context.json({ code: "LAB_CATALOGUE_UNAVAILABLE" }, 503, noStore); }
   });
 
   app.get("/v1/library", async (context) => {

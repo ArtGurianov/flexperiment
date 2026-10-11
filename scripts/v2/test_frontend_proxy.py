@@ -189,6 +189,8 @@ class FrontendProxy(unittest.TestCase):
         files = []
         for path in paths:
             code = docker("exec", name, "cat", path).stdout
+            self.assertNotIn("/v1/public/", code, "V2_LAB_MUST_NOT_SHIP_LEGACY_CONSUMERS")
+            self.assertNotIn("https://api.flexperiment.ru", code, "V2_LAB_MUST_NOT_SHIP_PRODUCTION_FALLBACK")
             if "Commerce API paths must begin with '/'." in code:
                 files.append(code)
         result = docker("exec", "-i", self.prefix + "-upstream", "node", "-e",
@@ -229,9 +231,10 @@ class FrontendProxy(unittest.TestCase):
         self.assertEqual(self.request("lab-v2", "/v1/admin/v2/catalog")[0], 404)
         self.assertEqual(self.request("admin-v2", "/v1/auth/get-session")[0], 404)
         self.assertEqual(self.request("lab-v2", "/v1/auth-other")[0], 404)
+        self.assertEqual(self.request("lab-v2", "/v1/lab/internal")[0], 404)
 
     def test_v2_allowlists(self):
-        for root in ("auth/get-session", "me", "lessons/access", "checkout/preview", "email/unsubscribe", "legal/current"):
+        for root in ("auth/get-session", "me", "lessons/access", "checkout/preview", "email/unsubscribe", "legal/current", "lab/catalogue"):
             self.assertEqual(self.request("lab-v2", "/v1/" + root)[0], 200)
         for path in ("login", "session", "logout", "v2/catalog", "v2/orders"):
             self.assertEqual(self.request("admin-v2", "/v1/admin/" + path)[0], 200)

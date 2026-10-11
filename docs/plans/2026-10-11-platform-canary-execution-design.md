@@ -181,7 +181,7 @@ are not covered by a universal collection firewall. Authenticated GET video-uplo
 status can poll a provider and mutate Commerce; test unauthenticated refusal only.
 Keep editorial users empty. Privileged custom side effects require later admission.
 
-Do not restart Commerce to invent an alias. After every future Commerce replacement,
+Before separately authorized networking work, do not restart Commerce to invent an alias. After every future Commerce replacement,
 revalidate LAB/admin/Platform DNS, upstream identity and readiness before admission.
 
 ## 4. Actual editorial snapshot, independent recovery and persistence
@@ -239,3 +239,78 @@ Current milestone: `PLATFORM_CANARY_APP_CREATION_READY` — plan/request ready,
 not execution authority. Later distinguish app-created, private-runtime PASS and
 editorial-recovery PASS. None implies public registration, authoring, magic-link
 E2E, sales activation or F9 readiness.
+
+## Version 2 — risk-based canary execution, 2026-10-11
+
+The owner now authorizes autonomous canary diagnosis/fixes/green-CI merges,
+private deployments/restarts, non-destructive migrations, backups/restores and
+canary networking. Earlier future-GO statements above are historical checkpoints,
+not new prerequisites. Production, V1, Refref, public guards, real money, legal
+approval and business catalogue facts stay outside this authority.
+
+### Executed and independently verified
+
+- Metadata drift resolved by exactly reproducing the original app fingerprint
+  with only common `updated_at` changed; the old container fingerprint matched
+  once a transient backup client exited. Original baselines retained.
+- Platform app `ks8c2wmlle1kvdfuwbiwthe1`, deployment
+  `llb5uwiyc3b9ut4iakcdiya8`, FINISHED on approved `b0ba13a…`; actual image
+  `sha256:5a36aa667c0ffcdcb65756f520376fa34b05b9ab72ce919426d41c53b2928369`.
+  Identity/readiness PASS; 12/12 live private HTTP/security checks; 6 Payload
+  migrations, WAL, zero users/content/jobs. Full table hashes unchanged across
+  361 seconds including a cron boundary. This observes automatic inactivity;
+  it is not authorization to invoke manual Local API jobs.
+- Encrypted live editorial snapshot: 676200 bytes, ciphertext SHA256
+  `352ecb154d6a7e7deaa894b2626964976cad1df6f96d00ef93aefb07ba3de6ed`.
+  Cloud.ru isolated `art-backups/flexperiment/platform-v2/canary` read-back and
+  independent object download/restore on owner Mac in Russia PASS: all 22 tables,
+  all 6 migration records and schema SHA256
+  `939b014e3d7c5bf5cc74b5c55e4afc20b7043d747b845524593ec3e61ad10f4e`
+  match. Private recovery identity remains off-VPS.
+- One Platform restart: caller timeout was shorter than Docker's graceful stop;
+  independent `StartedAt=2026-10-11T04:37:05.492101103Z`, unchanged image/mounts,
+  readiness and full DB read-back established the completed action, without retry.
+- Canary-only native Coolify `custom_network_aliases`: bare Commerce UUID plus
+  `xzuy7pk5y6ywjr9kh6nsk5ap-20261010T152433` as persistent compatibility alias.
+  Coolify setter stores a JSON array but API getter returns comma-separated text;
+  the initial read-back parser failure was reconciled without repeating PATCH.
+  Deployment `mk1ito3hxqigjkgpghxwljpd` replaced the container with
+  `xzuy7pk5y6ywjr9kh6nsk5ap-20261011T043958`, same source `47eecb65…`, same image,
+  all 46 table hashes and volumes. Both aliases belong only to the replacement;
+  IPv4/IPv6 DNS resolves to its network addresses. LAB/Admin/Platform readiness
+  recovered through existing dynamic DNS. No client credentials/env changed.
+  New clients should use the bare UUID; existing clients no longer depend on the
+  survival of the old container. Revalidate after every replacement nonetheless.
+- Protected production/V1/Refref configurations, containers and guards unchanged.
+
+### Bounded implementation decision
+
+Adapting frozen V1 components would perpetuate retired tour/capability/notification
+APIs; translating `/v1/public/*` inside the proxy would obscure incompatible
+contracts. Instead build a separate `apps/lab-v2` entrypoint in the existing
+canary-only LAB image. Legacy `apps/lab`, Dockerfile.frontend and F7 checkout core
+remain unchanged. A typed `/v1/lab/catalogue` read model projects actual PUBLIC,
+non-withdrawn, non-ended LAB offers without allowlists, personal data, guessed
+capacity or availability. Authenticated history uses existing customer-owned
+`/v1/me/orders`; confirmed Better Auth sign-out clears local account state.
+No new checkout/payment/refund/ticket implementation or synthetic live data.
+Registration remains closed; actual legal/CAPTCHA/email/browser session admission
+is still required. Legacy notification/ticket/refund links fail closed rather than
+silently calling V1. This is not a claim of complete commercial LAB qualification.
+
+Use a separate Platform-only host scheduler/unit/namespace. Reuse the existing
+pinned, hardened S3 transport without changing Commerce/production units. Stage
+ciphertext into root-owned 0700/0600 storage because cap-drop=ALL intentionally
+cannot traverse the app's 1000-owned private volume. Verify uploaded ciphertext
+before retention, preserve the current proven object, retain 7 local/100 remote,
+and record IN_PROGRESS/FAILED rather than letting old SUCCESS attest a new failed
+attempt. Install only after exact-SHA CI and off-VPS recovery; six-hour timers and
+8-hour freshness are not external alert delivery. Alerting remains PENDING until
+an actual operator notification is delivered.
+
+Tests cover V2 DTO isolation, closed/acceptance/withdrawn/ended offers, no read
+writes, owned history/logout, malformed-contract refusal, actual browser bundle
+absence of V1/production consumers, real nginx proxy and scheduler source/storage/
+transport isolation. Exact-source CI is mandatory before merging/deploying the
+new artifacts. Content and real auth workstreams remain blocked only by genuine
+owner-approved legal/course prerequisites; do not manufacture those facts.

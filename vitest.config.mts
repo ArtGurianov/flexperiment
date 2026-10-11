@@ -67,6 +67,7 @@ export default defineConfig({
             "apps/admin/**/*.dom.test.tsx",
             "apps/lab/components/**/*.dom.test.tsx",
             "apps/lab/hooks/**/*.dom.test.tsx",
+            "apps/lab-v2/components/**/*.dom.test.tsx",
           ],
           setupFiles: ["./vitest.setup.test-temp-run-worker.ts", "./vitest.setup.test-db-snapshot-worker.ts", "./vitest.setup.dom.ts"],
         },

@@ -1,0 +1,14 @@
+[Unit]
+Description=Private Platform V2 canary encrypted editorial backup
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+UMask=0077
+ExecStart=/usr/bin/python3 /usr/local/lib/flexperiment-v2/platform-scheduled-backup.py backup
+TimeoutStartSec=15min
+NoNewPrivileges=true
+PrivateTmp=true
+# Docker access remains privileged; do not claim this is a container sandbox.

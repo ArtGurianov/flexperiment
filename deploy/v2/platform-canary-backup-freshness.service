@@ -1,0 +1,11 @@
+[Unit]
+Description=Private Platform canary backup freshness check (not delivered alert)
+
+[Service]
+Type=oneshot
+User=root
+UMask=0077
+ExecStart=/usr/bin/python3 /usr/local/lib/flexperiment-v2/platform-scheduled-backup.py check
+TimeoutStartSec=1min
+NoNewPrivileges=true
+PrivateTmp=true
