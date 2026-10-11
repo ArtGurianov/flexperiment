@@ -283,3 +283,50 @@ negative choice and one-click suppression deny globally; neither revives histori
 grants. Source account/release/hash still must be current. No SMS/messenger consent
 is inferred, and broadcasts remain disabled. Real browser/email/video admission,
 live migration/deployment and legal activation are separate from this engineering delta.
+
+### Personal-data inventory and erasure admission (ART-232 / ART-179 / ART-41)
+
+Source inventory at #201 merge `180eb165…`, not a claim of live data counts or purge:
+
+| Category / authority | Actual location / handling | Retention and deletion boundary |
+| --- | --- | --- |
+| Customer identity / Better Auth | Merchant `customers`, `user`, `session`, `account`; email/name, session token, IP/UA and possible provider credentials | Account/progress during requested platform use or verified deletion request. Tokens/sessions need separate expiry cleanup, not account-lifetime TTL. Authenticated admission must verify live binding; knowing email is insufficient. |
+| Magic-link initiation | `verification` (Better Auth 1.7.6 hashed identifier, JSON email/name), `auth_email_outbox` (plaintext recipient, encrypted URL/email, status/error) | Link expiry 600s is implemented, deletion after expiry is not. Unverified intents cannot delete an existing verified account. No ambiguous mail replay. Payload/recipient/error retention needs explicit category policy and cleanup. |
+| Consent and communication | `account_consents`, `marketing_consents`, authenticated actions/events, `email_suppressions`, campaign recipients | Immutable historical UPDATE is prohibited; deliberate FK-safe deletion is distinct. Minimal justified evidence/holds need basis and deadline, not a blanket invented duration. Independent suppression must outlive old snapshots. Latest refusal dominates. |
+| FREE access and progress | `free_course_enrollments`, resume positions, grant rate limits, access starts and `playback_access_events` | Delete subject-linked nonfinancial facts on admitted erasure; telemetry has a separately configured age bound, not account duration. Restore must invalidate sessions/links before any serving. |
+| Paid/immutable evidence | Orders/snapshots, quotes/attempts, refunds, paid entitlements | Do not rewrite canonical financial evidence or infer lawful holds. Stage A core refuses erasure admission when financial records exist; bounded classified retention is a separate Stage B requirement. |
+| Generic technical/audit logs | Merchant `audit_log`/Control Room JSON, `last_error`, Node/Payload/Traefik/Docker/journald logs | Arbitrary JSON/errors cannot be assumed nonpersonal; log rotation/access and classified security holds still need runtime inventory. Core refuses subjects referenced in unclassified audit. Historical log deletion/absence of exposure is not claimed. |
+| Editorial/admin identity | Separate Payload `users`, `users_sessions`, reset/login fields, job logs, locked documents; owner content/media/versions | CMS authors are not storefront customers. Do not delete operator/editorial credentials or owned video because a customer email matches. No customer profile is copied into the editorial course catalogue. Actual author/log retention needs separate qualification. |
+| Kinescope/player/CAPTCHA | Private video bindings/upload sessions, webhook status hashes; DRM JWT `sub=customerId` and external player/CAPTCHA telemetry | Course videos belong to the author, not a customer's erasure scope. External telemetry/processor deletion requires account-specific discovery and confirmation; never claim upstream deletion from local SQLite purge. |
+| Backups and offline copies | Independent Commerce/Platform SQLite online snapshots, age ciphertext on VPS + Cloud.ru; owner Mac restores/offline copies | Existing 7 local / 100 remote are counts, not age caps. Inventory all copies and qualified holds; configured age retention and owner/offline attestations remain pending. Deleting rows is not deletion of archived ciphertext, WAL or disk blocks. |
+| Independent erasure/suppression journal | Owner-only store outside merchant/editorial/snapshot roots, HMAC pseudonyms, retained key generations, signed ordered chain | Pseudonyms are PD. Remote encrypted custody, independent current checkpoint authority, key escrow and its own bounded retention require operational admission. Do not put signing private keys in consumer/runtime. |
+
+The historical `OWNER_APPROVAL.md` 24h/30d matrix is a target proposal, not an active
+universal/legal TTL. Current account/progress owner decision does not authorize
+indefinite outbox, telemetry or archive retention. This inventory does not change
+approved legal text bytes/hashes or assert processor-contract deletion success.
+
+First engineering slice: `erasure-ledger.ts` and `erasure-restore.ts` qualify a real
+independent local journal and old SQLite restore. Hash-chain/signature, complete head,
+scope, nonce-bound fresh checkpoint, key-generation fingerprint and short-lived
+immutable capability are verified before the atomic subject purge. Missing/stale/
+unverifiable state, unknown FKs, financial/audit uncertainty or binding drift → HOLD.
+Same-email new accounts are not erased by old identity tombstones; marketing remains
+suppressed until a separately qualified explicit reinstatement policy.
+
+This is NOT production/runtime erasure readiness. Before live use, separately qualify:
+
+1. Authenticated deletion admission outside the content-consent gate; email requests
+   to art@flexperiment.ru create a pending verification case, never erase by sender.
+2. Admission immediately denies access/marketing, revokes sessions/links and prevents
+   queued mail; independent remote append/verified acknowledgement precedes erasure.
+   Crash/timeout between either boundary stays CLOSED and reconciles without blind replay.
+3. Runtime boot and every side-effect boundary require current ledger/fencing. An
+   isolated purge result returns `runtimeAdmission: PENDING`, not permission to serve.
+4. Category cleanup/holds, processor tasks and offline copy retention have verifiable
+   outcomes. Contract uncertainty or HTTP acceptance is not provider-deletion PASS.
+5. Private-canary migration/admission plan covers0023–0025 and subsequent erasure
+   schema, preserving qualified volumes/backups; full CMS/email/browser/video E2E follows.
+
+No live schema, service, backup scheduler, provider request or public gate is changed
+by the first slice. Its regressions run in the existing CI node-project glob.
