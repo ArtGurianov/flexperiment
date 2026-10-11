@@ -4,7 +4,7 @@ ART-169 / ART-179 / ART-232. 11.10.2026. **PREPARATION ONLY.** F9 CLOSED, PAYMEN
 
 ## Редакционное предложение владельцу
 
-Онлайн-курс Flexing 101, автор Арт, бесплатно (0 ₽), без проверки заданий и сертификата, после регистрации с подтверждённым email. Предлагаемый срок доступа — бессрочно, пока курс доступен на платформе; требует утверждения. Kinescope videos ещё не загружены.
+Онлайн-курс Flexing 101, автор Арт, бесплатно (0 ₽), без проверки заданий и сертификата, после регистрации с подтверждённым email и надлежащего оформления согласий/правил. Review #196 предлагает 18+ и срок «пока курс доступен на платформе», обычное снятие с предупреждением минимум за 30 дней, экстренное — по безопасности/правам с уведомлением при первой возможности. Итоговый product status пока PROPOSED; это не окончательное юридическое одобрение. План четырёх уроков принят для подготовки, но не заменяет фактические видео/права. Kinescope videos ещё не загружены.
 
 | Порядок | Предложенный урок | План, не метаданные видео |
 | --- | --- | --- |
@@ -41,11 +41,13 @@ Helper создаёт course → section → четыре lessons в одной 
 | CAPTCHA | Настоящая серверная проверка; invalid/expired token отказывает; configured не означает PASS |
 | Browser frontend | Intended canary Platform, same-origin `/v1/auth`; непривилегированный браузер, TLS/Host/origin из approved configuration; без production fallback |
 | Verify | Одна ссылка подтверждает email и binds customer; replay/expired link/foreign callback отказывают |
+| Authenticated consent | Новые отдельные unchecked действия в verified session, точный active release/version/hash; ПД и правила отдельно, marketing optional. Старые intents не повышаются и не переписываются. Guest/foreign Origin/stale release/чужой actor/replay не создают новое доказательство; новая event-модель ещё не реализована |
 | Session | Set-Cookie Secure+HttpOnly+host-only, без Domain=.flexperiment.ru; SameSite соответствует сценарию; браузер действительно хранит и использует cookie после navigation/reload |
 | Бесплатный доступ | Guest/unverified session не допускается; approved FREE product+fresh published manifest разрешает чтение; stale/unlisted/withdrawn/unknown lesson/video — отказ |
 | Видео и прогресс | Реальное protected Kinescope playback, token правильного subject/video; сохранение позиции переживает navigation; чужой lesson/token и expiration отказывают |
 | Logout/revocation | Выход удаляет сессию; server-side revoke лишает прежнюю cookie доступа; токен видео остаётся ограничен своим коротким TTL, не обещать мгновенный отзыв уже выданного токена |
 | No financial effects | Checkout PAYMENTS_DISABLED; 0 orders/payment attempts/refunds/paid grants/provider calls; marketing broadcasts false |
+| Restore safety | Изолированный старый snapshot + актуальный независимый erasure/suppression ledger не возвращает удалённый аккаунт, прежнюю сессию или отписанный marketing; missing/stale ledger держит service CLOSED. Механизм ещё не квалифицирован |
 | После проверки | Capture secrets вне evidence; отдельный статус local integration vs real email/browser/video; backup timers/freshness сохранены |
 
 Локальные tests используют исключительно отдельные SQLite/fixtures, не реальные согласия/видео или подтверждённую доставку. Existing tests: `customer-access`, `auth-email-delivery`, `access-policy`, `playback-auth`, `manifest`, `legal-control`. Новая подготовка не должна переписывать F7 или развертывать неизменённый canary только ради отчёта.
