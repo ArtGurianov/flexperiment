@@ -84,7 +84,11 @@ owner-side SQLite journal, HMAC-псевдонимы, Ed25519 signatures и hash
 
 Первый slice — библиотека, не активный HTTP deletion endpoint или host installation.
 Ledger находится вне merchant/editorial/snapshot roots, owner-only 0700/0600,
-FULL synchronous SQLite append, отдельные writer connections сериализуются.
+EXTRA synchronous SQLite append + DELETE journal с независимым read-back PRAGMA;
+отдельные writer connections сериализуются. EXTRA синхронизирует directory journal
+unlink; FULL не гарантирует последний commit при близком power loss на всех FS
+([SQLite contract](https://www.sqlite.org/pragma.html#pragma_synchronous)). Это не
+power-fault proof VPS и не замена независимому remote acknowledgement.
 Append-only sequence/request identity, scopes canary/production, previous hash,
 fixed kind, signing key ID и подпись проверяются полностью. requestId idempotent
 только для тех же kind/subject. Capacity/clock regression/unknown generation → STOP.

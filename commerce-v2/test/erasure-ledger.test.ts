@@ -3,7 +3,7 @@ import { generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
 import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ErasureLedgerStore, VerifiedErasureLedger, erasureSubject, issueErasureCheckpoint, type ErasureKeys, type ErasureBundle } from "../src/erasure-ledger";
 
 const now = new Date("2026-10-11T12:00:00.000Z");
@@ -129,6 +129,15 @@ describe("independent signed erasure journal core, no merchant/live wiring", () 
     const configuration = options(); const store = new ErasureLedgerStore(configuration); stores.push(store);
     Object.assign(configuration, { scope: "production" });
     append(store); expect(store.export().scope).toBe("canary"); await expect(read(store.export())).resolves.toBeInstanceOf(VerifiedErasureLedger);
+  });
+  it("verifies actual DELETE/EXTRA connection settings and refuses a silently downgraded pragma", () => {
+    const pragma = Database.prototype.pragma;
+    const spy = vi.spyOn(Database.prototype, "pragma").mockImplementation(function (this: Database.Database, source, options) {
+      if (source === "synchronous" && options?.simple) return 2;
+      return pragma.call(this, source, options);
+    });
+    try { expect(() => open()).toThrow("ERASURE_STORAGE_INVALID"); } finally { spy.mockRestore(); }
+    expect(() => open()).not.toThrow();
   });
   it("refuses merchant roots, symlinks, loose permissions and foreign SQLite tables", () => {
     expect(() => new ErasureLedgerStore({ ...options(), directory: join(directory, "merchant") })).toThrow("ERASURE_STORAGE_NOT_INDEPENDENT");

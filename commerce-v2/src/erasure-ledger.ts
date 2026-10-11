@@ -171,7 +171,7 @@ export class VerifiedErasureLedger {
 }
 
 /** Owner-side store. Never embedded in merchant/editorial SQLite or their archives.
- * SQLite FULL synchronous + DELETE journal is the durable local append boundary.
+ * SQLite EXTRA synchronous + DELETE journal is the local append boundary.
  * Independent remote checkpoint/custody acknowledgement must precede live erasure;
  * this first core does not install a host adapter or expose a deletion endpoint. */
 export class ErasureLedgerStore {
@@ -203,7 +203,13 @@ export class ErasureLedgerStore {
       || statSync(filename).uid !== process.getuid?.() || (statSync(filename).mode & 0o777) !== 0o600) refuse("ERASURE_STORAGE_INVALID");
     this.#db = new Database(filename);
     try {
-      this.#db.pragma("journal_mode=DELETE"); this.#db.pragma("synchronous=FULL"); this.#db.pragma("busy_timeout=5000");
+      // EXTRA also syncs journal unlink's directory in DELETE mode. FULL alone
+      // may lose the last acknowledged commit on a power cut on some filesystems.
+      // https://www.sqlite.org/pragma.html#pragma_synchronous
+      this.#db.pragma("journal_mode=DELETE"); this.#db.pragma("synchronous=EXTRA"); this.#db.pragma("busy_timeout=5000");
+      if (this.#db.pragma("journal_mode", { simple: true }) !== "delete" || this.#db.pragma("synchronous", { simple: true }) !== 3) {
+        refuse("ERASURE_STORAGE_INVALID");
+      }
       const tables = this.#db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>;
       if (tables.some(table => !["erasure_identity", "erasure_entries"].includes(table.name))) refuse("ERASURE_STORAGE_NOT_INDEPENDENT");
       this.#db.exec(`CREATE TABLE IF NOT EXISTS erasure_identity(scope TEXT PRIMARY KEY);
