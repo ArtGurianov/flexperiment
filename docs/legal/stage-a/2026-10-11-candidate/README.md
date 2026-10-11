@@ -10,7 +10,7 @@ ART-232 / ART-169 / ART-179 / ART-41 · 11.10.2026.
 - Адрес: 650023, Россия, г. Кемерово, проспект Московский, д. 17, кв. 360. Контакт по ПД/удалению: art@flexperiment.ru. Адрес относится к legal documents, не к telemetry/API аккаунта.
 - РКН: `OWNER_CONFIRMED_SUBMITTED / DOCUMENTARY_EVIDENCE_UNAVAILABLE / REGISTRY_VERIFICATION_PENDING`. Владелец подтвердил отправку, подтверждение не выдаётся. Не требуем receipt, не заявляем проверенное включение в реестр, не придумываем дату/номер уведомления.
 - Собственный контент и права подтверждены владельцем. Сторонние преподаватели не планируются. Это не аттестация будущих внешних media assets и не подтверждение загрузки видео.
-- Flexing 101 создаётся вручную в Payload CMS, первоначально FREE. Реальные sectionRef/lessonRef/videoRef появляются с настоящим содержанием; launch seed не подменяет редакционный процесс.
+- Первый реальный курс создаётся вручную в Payload CMS; первоначальная цель Stage A — FREE. Реальные courseRef/sectionRef/lessonRef и video bindings появляются с настоящим содержанием, не из launch seed. Название и структура курса — данные CMS, не технический контракт. Общие criteria: [Stage A admission](../../../v2-merchant-schema.md#stage-a-admission-and-course-authoring).
 - Аккаунт/прогресс: во время пользования платформой либо удаление по подтверждённому запросу на art@flexperiment.ru, с конкретными законными исключениями. Это не бессрочный срок tokens, outbox, telemetry или backup. TTL/erasure/restore-suppression ещё не квалифицированы.
 
 ## Публичные условия поставщиков — проверено 11.10.2026

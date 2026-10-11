@@ -191,3 +191,52 @@ It creates reference cities and the closed all-courses offer. Course and LAB
 records can be added to that file only after their stable public references are
 known. The seed is write-once by digest: retrying the identical input succeeds,
 while trying a different catalogue against an already seeded database fails.
+
+## Stage A admission and course authoring
+
+Stage A is the free-course launch phase, not a special course implementation.
+Any real course manually authored in Payload can qualify the first user journey;
+neither its title/slug nor a prescribed lesson count/duration is a release gate.
+The first course is an ART-169 editorial milestone, not mandatory seed data.
+Payload's immutable-ref hooks assign actual course/section/lesson identities.
+Proposed durations are not processed video metadata; real Kinescope uploads,
+bindings and metadata are required. Test-generated refs/DBs never become launch data.
+
+An authenticated author creates ordinary drafts through the existing collection
+access and hooks. Draft/unlisted content must remain invisible publicly, refs
+immutable, relations valid and failed transactions atomic. Closed canary editorial
+hooks still reject mutation, including Local API calls. No automatic import,
+publication, jobs, email or provider effects may bypass that boundary.
+
+After separate content/media admission, use the existing processed video binding
+and Payload publish → immutable manifest → Commerce acknowledgement pipeline.
+Verify actual version/hash and independent read-back. Drafts cannot build a
+published manifest; unknown/unprocessed videos cannot be invented in seeds.
+The CMS commercial control reads/writes canonical Commerce products/offers with
+author authority, same-origin checks, CAS, idempotency and independent GET
+reconciliation. Saving editorial content is not a hidden commercial POST.
+FREE requires zero price and nonfinancial enrollment, never a fake zero-price
+order; retained FREE access survives FREE→PAID without overriding restrictive
+access checks. PAID freezes canonical Commerce checkout data and requires separate
+sales/payment admission. Keep PAYMENT_MODE=disabled and marketing broadcasts off.
+
+ART-179 acceptance must distinguish isolated tests from actual delivery/browser/video:
+
+| Gate | Required evidence and negative controls |
+| --- | --- |
+| Legal admission (ART-232) | Four exact approved documents, active release/version/hash; owner approval does not activate a release. Absent/stale release refuses registration before customer/email creation. Supplier applicability is not inferred from approval. |
+| Initiation and authenticated choice | Separate unchecked required PD/account terms, optional unchecked marketing. Missing/false/nonboolean required choices refuse before CAPTCHA/DB/email. Verified email alone does not upgrade UNVERIFIED_INTENT. New authenticated events bind account, storefront and exact release; guest/foreign Origin/stale hash/foreign actor fail, idempotent replay creates no duplicate. |
+| Protected access | Server-side required-consent gate must be qualified, independently of React. Unverified/unconfirmed accounts cannot bypass it through historical entitlements or FREE enrollment. Scope between COURSES/LAB must be explicit before marketing activation. |
+| Email and CAPTCHA | Actual NotiSend receipt, not API acceptance or configured status; valid server-side CAPTCHA and refusal of invalid/expired tokens. Evidence never contains link/token/recipient secrets. |
+| Browser/proxy/session | Intended isolated frontend, TLS/Host and same-origin auth, no production fallback. Secure/HttpOnly host-only cookies, no shared .flexperiment.ru Domain; appropriate SameSite, real reload/navigation persistence. Expired/replayed links and foreign callbacks refuse. |
+| FREE/video/progress | Verified and properly confirmed account, approved FREE product and fresh published manifest; unknown/stale/unlisted/withdrawn lesson denies. Real protected Kinescope playback binds video/subject and rejects foreign/expired grants. Resume persists through navigation. |
+| Logout/revocation | Logout and server revoke invalidate session access. Already issued video tokens remain bounded by short TTL; do not claim instantaneous player revocation. |
+| No financial effects | Zero new orders/payment attempts/refunds/paid grants/provider calls during FREE E2E; checkout returns PAYMENTS_DISABLED, marketing broadcasts remain false. |
+| Erasure and restore safety | Qualify deletion on request and an independent current suppression/erasure ledger. Restoring an older snapshot must not resurrect deleted accounts, old sessions or unsubscribed marketing; absent/stale ledger keeps admission closed. This mechanism is pending, not proved by legal prose or row deletion alone. |
+| Operational preservation (ART-41) | Preserve backup timers/freshness and sanitized evidence; production alert delivery needs its own evidence. Canary alerts do not prove production alerts. Public registration, four HTTPS 403 guards, production changes and F9 require their own admission. |
+
+Current engineering evidence is not live CMS authoring, legal activation or full
+browser E2E. ART-169/179 remain open until their respective real-content and
+functional checks pass. The course-specific preparation helper and permanent
+first-course launch checklist are removed; historical legal drafts remain history,
+not catalogue authority.
