@@ -9,6 +9,23 @@ Commerce UUID/port, separate SQLite path, runtime credentials, disabled jobs,
 payments and marketing. No production fallback. This PR prepares an artifact;
 it grants no app creation, deploy, ingress change or legal/content admission.
 
+### Canary scheduling correction
+
+Payload 3.90.2 calls `jobs.handleSchedules` before `jobs.shouldAutoRun`: setting
+`PAYLOAD_JOBS_ENABLED=false` prevents execution, not automatic scheduling writes.
+The closed canary therefore uses `jobs.autoRun=[]`, registering no cron. This is
+preferred to retaining a timer with `disableScheduling`, or removing task
+definitions: non-canary autoRun, tasks, schedules and execution guard stay unchanged.
+This is not a prohibition on manually invoking the Local API jobs methods.
+
+The mandatory `pnpm platform:test` suite imports the actual sanitized config and
+uses the installed Payload/Croner scheduler with in-memory side-effect counters.
+It verifies no canary cron/scheduling/execution and unchanged non-canary behavior.
+A causal negative control restores the historical autoRun to the canary config:
+triggering that cron must call scheduling even with `shouldAutoRun=false`. No
+live database, provider or deployment is involved; runtime admission remains
+pending until the corrected artifact is independently reviewed and admitted.
+
 During preparation Payload collection create/update/delete access is disabled
 (including initial author creation); media S3 writes are unconfigured. This is
 backed by beforeChange/beforeDelete hooks ahead of existing manifest hooks and

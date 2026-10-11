@@ -73,7 +73,9 @@ export default buildConfig({
     busyTimeout: 5000,
   })),
   jobs: {
-    autoRun: [{ cron: "*/5 * * * *", queue: "default", limit: 50 }],
+    // Payload schedules jobs before evaluating shouldAutoRun. Closed canary must
+    // not register a cron at all, otherwise scheduling still writes to SQLite.
+    autoRun: canaryPreparation ? [] : [{ cron: "*/5 * * * *", queue: "default", limit: 50 }],
     shouldAutoRun: async () => process.env.PAYLOAD_JOBS_ENABLED !== "false",
     tasks: [syncCourseManifestTask, reconcileCourseManifestsTask],
   },
