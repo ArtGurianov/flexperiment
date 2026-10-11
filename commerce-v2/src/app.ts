@@ -29,6 +29,8 @@ import { loadCommerceOrigins, storefrontOrigin, type CommerceOrigins, type Store
 import { databaseReady, type RefrefReadiness } from "./readiness";
 import { publicLabCatalogue } from "./lab-catalogue";
 import { authenticatedConsentStatus, hasRequiredAccountConsents, recordAuthenticatedConsents, type AuthenticatedConsentInput } from "./authenticated-consents";
+import { ErasureLedgerError } from "./erasure-ledger";
+import type { ErasureRuntimeFence } from "./erasure-fence";
 
 type Dependencies = {
   readonly db: Database.Database;
@@ -65,6 +67,7 @@ type Dependencies = {
   readonly origins?: CommerceOrigins;
   readonly sendCampaignEmail?: (message: CampaignEmail) => Promise<void>;
   readonly controlRoomAuth?: ControlRoomAuthConfig;
+  readonly erasureFence?: ErasureRuntimeFence;
 };
 
 type AppBindings = { Variables: { controlRoomAdminId?: string; controlRoomSessionId?: string } };
@@ -91,6 +94,17 @@ export function createCommerceV2App(deps: Dependencies) {
     context.header("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
   });
 
+  // Hold the complete asynchronous handler, not only the initial session lookup.
+  // Health/identity do not read customer data and remain available while CLOSED.
+  app.use("*", async (context,next)=>{
+    if(!deps.erasureFence || ["/identity","/readyz"].includes(context.req.path)) {await next();return;}
+    try {await deps.erasureFence.run("REQUEST",next);}
+    catch(error) {
+      if(error instanceof ErasureLedgerError) return context.json({code:"ERASURE_RUNTIME_CLOSED"},503,noStore);
+      throw error;
+    }
+  });
+
   app.use("*", async (context, next) => {
     if (deps.foundationMode && !(context.req.method === "GET" && ["/identity", "/readyz"].includes(context.req.path))) {
       return context.json({ error: { code: "FOUNDATION_ISOLATED" } }, 503, noStore);
@@ -108,7 +122,8 @@ export function createCommerceV2App(deps: Dependencies) {
     const refref = deps.probeRefref ? await deps.probeRefref().catch(() => "unavailable" as const) : deps.foundationMode ? "unavailable" : undefined;
     const protectedKinescopeMissing = deps.config.kinescopeDeliveryMode === "protected"
       && (deps.runtimeCapabilities?.kinescopeApiConfigured === false || !deps.kinescopeDrmAuth);
-    const ready = databaseOk && !protectedKinescopeMissing && refref !== "unavailable";
+    const erasureReady=deps.erasureFence ? await deps.erasureFence.ready() : true;
+    const ready = databaseOk && !protectedKinescopeMissing && refref !== "unavailable" && erasureReady;
     return context.json({
       ok: ready,
       service: "commerce-v2",
@@ -119,6 +134,7 @@ export function createCommerceV2App(deps: Dependencies) {
         refref: refref ?? (deps.config.paymentMode === "refref" ? "configured_not_probed" : "not_required"),
         authEmail: deps.foundationMode ? "disabled" : deps.runtimeCapabilities?.authEmailConfigured === false ? "missing" : "configured",
         captcha: deps.foundationMode ? "disabled" : deps.runtimeCapabilities?.captchaConfigured === false ? "missing" : "configured",
+        erasure: deps.erasureFence ? erasureReady ? "qualified" : "closed" : "not_installed",
         kinescope: deps.foundationMode ? "disabled" : deps.runtimeCapabilities?.kinescopeApiConfigured === false ? "missing" : "configured_not_probed",
         kinescopeDrm: deps.config.kinescopeDeliveryMode === "protected" ? (deps.kinescopeDrmAuth ? "configured" : "missing") : "not_required",
         catalog: {

@@ -15,7 +15,10 @@ import { reconcilePendingRefunds } from "./refunds";
 import { loadCommerceOrigins } from "./origins";
 import { dispatchPendingCampaigns, type CampaignEmail } from "./campaigns";
 import { createMagicLinkEmailDelivery } from "./auth-email-delivery";
+import { dirname } from "node:path";
+import { prepareErasureRuntime } from "./erasure-runtime";
 
+async function startServer() {
 const config = loadCommerceRuntimeConfig();
 // Preserve the configured foundation dependency when switching to normal mode.
 // Production and a live Refref rail may never report readiness without probing it.
@@ -24,6 +27,10 @@ const probeRefref = process.env.REFREF_READINESS_URL || config.deployEnvironment
 const origins = loadCommerceOrigins();
 const db = openV2Database();
 migrateV2(db);
+// Before traffic, auth construction or timers. Installation is separately admitted;
+// an enabled but unqualified authority/control DB fails closed, without fallback.
+const erasureFence=await prepareErasureRuntime({db,environment:process.env,
+  forbiddenRoots:[dirname(db.name)]});
 const buildIdentity = readBuildIdentity("commerce-v2");
 if (buildIdentity.sourceCommit === "development" && config.deployEnvironment === "production") throw new Error("SOURCE_COMMIT_REQUIRED");
 
@@ -47,6 +54,7 @@ if (config.deployEnvironment === "production" && (!controlRoomSessionSecret || !
 const auth = createAuthRuntime({
   db,
   sendMagicLinkEmail: magicLinkDelivery.send,
+  erasureFence,
 });
 const smartCaptchaSecret = process.env.SMARTCAPTCHA_SERVER_KEY;
 if (!smartCaptchaSecret && config.deployEnvironment === "production") throw new Error("SMARTCAPTCHA_SERVER_KEY_REQUIRED");
@@ -75,7 +83,7 @@ const paymentRail = config.paymentMode === "mock" ? new MockPaymentRail()
     merchantId: config.refref.merchantId,
   }) : undefined;
 
-const sendCampaignEmail = emailDeliveryEndpoint ? async (message: CampaignEmail) => {
+const campaignTransport = emailDeliveryEndpoint ? async (message: CampaignEmail) => {
   const response = await fetch(emailDeliveryEndpoint, {
     method: "POST",
     headers: {
@@ -88,6 +96,10 @@ const sendCampaignEmail = emailDeliveryEndpoint ? async (message: CampaignEmail)
   });
   if (!response.ok) throw new Error(`CAMPAIGN_EMAIL_HTTP_${response.status}`);
 } : undefined;
+const sendCampaignEmail=campaignTransport ? async(message:CampaignEmail)=>{
+  if(erasureFence) await erasureFence.send(message.recipient,()=>campaignTransport(message));
+  else await campaignTransport(message);
+}:undefined;
 
 const app = createCommerceV2App({
   db,
@@ -135,6 +147,7 @@ const app = createCommerceV2App({
     passwordScrypt: controlRoomPasswordScrypt,
     origin: controlRoomOrigin,
   } : undefined,
+  erasureFence,
 });
 
 if (marketingBroadcastsEnabled && campaignUnsubscribeSecret && sendCampaignEmail) {
@@ -143,11 +156,12 @@ if (marketingBroadcastsEnabled && campaignUnsubscribeSecret && sendCampaignEmail
     if (campaignDispatchRunning) return;
     campaignDispatchRunning = true;
     try {
-      await dispatchPendingCampaigns(db, {
+      const dispatch=()=>dispatchPendingCampaigns(db, {
         secret: campaignUnsubscribeSecret,
         publicOrigin: origins.platform,
         send: sendCampaignEmail,
       });
+      if(erasureFence) await erasureFence.run("WORKER",dispatch);else await dispatch();
     } catch (error) { console.error("campaign dispatch sweep failed", error); }
     finally { campaignDispatchRunning = false; }
   };
@@ -162,8 +176,11 @@ if (paymentRail) {
     if (checkoutPollRunning) return;
     checkoutPollRunning = true;
     try {
-      await reconcilePendingCheckouts(db, paymentRail);
-      if (refundEnvelopeKeys) await reconcilePendingRefunds(db, paymentRail, refundEnvelopeKeys);
+      const reconcile=async()=>{
+        await reconcilePendingCheckouts(db, paymentRail);
+        if (refundEnvelopeKeys) await reconcilePendingRefunds(db, paymentRail, refundEnvelopeKeys);
+      };
+      if(erasureFence) await erasureFence.run("WORKER",reconcile);else await reconcile();
     }
     catch (error) { console.error("checkout reconciliation sweep failed", error); }
     finally { checkoutPollRunning = false; }
@@ -174,3 +191,5 @@ if (paymentRail) {
 }
 
 serve({ fetch: app.fetch, port: Number(process.env.PORT ?? 3002) });
+}
+void startServer().catch(()=>{console.error("COMMERCE_V2_START_REFUSED");process.exitCode=1;});

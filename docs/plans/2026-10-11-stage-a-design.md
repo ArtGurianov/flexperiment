@@ -189,3 +189,63 @@ ACK, stale authority, CAS conflict, reflected secrets, bounded malformed reads.
 Следующий PR должен закрывать admission/send/auth/restore гонки до любой live установки.
 Deployment, live migrations, legal activation, registration, marketing, payments/F9
 по-прежнему CLOSED. Existing foundation/recovery evidence не повторяется.
+
+## ART-232 / ART-179: runtime/send fencing — второй отдельный slice
+
+Выбран один shared independent SQLite fence для всех Commerce HTTP requests,
+auth callbacks, campaign и reconciliation workers. Durable lease держится до конца
+async handler/transport и последующей записи результата. Отвергнуты per-process bool,
+проверка suppression только перед await(send), lease timeout как доказательство
+завершения и reopen по watermark восстанавливаемой merchant DB: они оставляют гонку.
+Неизвестная доставка сохраняет отдельный UNKNOWN SEND lease, даже если Better Auth
+или campaign catches error; падение процесса оставляет ACTIVE. Автоматического expiry,
+retry, удаления lease или подмены provider ACK нет. Эти состояния требуют evidence-bound
+operator reconciliation, которого этот slice намеренно не автоматизирует.
+
+Owner admission: fresh verified request → CLOSED → zero active/unknown leases →
+exclusive owner claim → remote custody ACK → canonical schema/binding/hold checks →
+atomic erasure/suppression/revocation → newest remote read-back → OPEN. Нет новых
+merchant migrations. Purge общий с isolated engine, но LIVE_ADMISSION сохраняет
+чужие сессии/links; BOOT_RESTORE отменяет ALL sessions/verification. Выдаваемая
+application receipt доступна только как process-private capability результата
+реального transaction; JSON receipt и signed ledger без application не открывают gate.
+Financial/audit/unknown schema/token shape → rollback/CLOSED, не выдуманный legal hold.
+Remote accepted erasure не становится processor/archive deletion PASS.
+
+Runtime opt-in ERASURE_FENCING_ENABLED=true требует approved independent HTTPS
+read authority (/v1/erasure/read), scoped read token, protected retained public/HMAC
+verification-key file и уже initialized shared fence directory. Отсутствующий fence
+не создаётся автоматически. Сервисы не получают S3 credential, Ed25519 private signer
+или age recovery identity. До auth/HTTP/timers boot читает fresh nonce-bound remote
+ledger, применяет BOOT_RESTORE за drain и сверяет head ещё раз. Missing/stale/forked
+authority, orphan owner/leases и unknown schema держат startup CLOSED. Existing CLOSED
+deployments без flag сохраняют прежнее поведение; opt-in не установлен этим PR.
+
+HTTP middleware покрывает весь request; /readyz отдельно проверяет fresh authority
+и gate, /identity остаётся доступным. Better Auth create-user/create-session hooks,
+verified customer lookup и magic-link transport проверяют signed suppression.
+Async child после завершения родительского request не имеет действительного lease.
+MARKETING_SUPPRESSION не лишает аккаунт контента, но блокирует применимый mail;
+ERASURE блокирует прежнюю identity и implicit same-email resurrection. Повторная
+регистрация после erasure потребует отдельной явной модели, а не старого opt-in.
+Logout вне content consent gate; during CLOSED любые customer paths временно fenced.
+
+Все production/closed-canary volumes, guards, backups и activation remain unchanged.
+Код предоставляет in-process owner admission, НЕ публичный deletion HTTP endpoint
+и НЕ установленный remote authority service. Перед live установкой требуется review
+канала authenticated requests, проверка единственного общего control volume/всех
+writers (включая Local API/custom jobs), отсутствия out-of-band DB writes, CAS/IAM и
+custody. Запрещено восстанавливать fence из merchant backup или создавать второй
+параллельный fence для существующих writers. Payload/processor cleanup и offline
+archive disposition квалифицируются отдельно; текущий canonical Stage A customer
+purge не является доказательством удаления у внешних providers или на SSD/WAL.
+
+Causal regressions второго slice: async request и настоящий auth callback до DB
+write, pending network send >60s, SIGKILL child-process persisted lease, swallowed
+unknown send, delayed async children, forged application receipt, freshest-head
+rotation, older real SQLite backup, unrelated LIVE sessions vs BOOT invalidation.
+Четыре намеренные мутации (ignore leases / release UNKNOWN / allow late async /
+skip application receipt) пойманы targeted tests; исходная реализация восстановлена.
+Full exact-head CI обоих PR обязателен перед возможным merge; инженерный PASS
+не разрешает deployment, live migrations, legal release, registration/marketing,
+payments или F9.
