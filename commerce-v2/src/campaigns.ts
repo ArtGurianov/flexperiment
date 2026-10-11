@@ -167,7 +167,15 @@ export function unsubscribeCustomer(db: Database.Database, token: string, secret
 }
 
 const marketingAllowed = (db: Database.Database, customerId: string, email: string) => {
-  const consent = db.prepare("SELECT granted FROM marketing_consents WHERE customer_id=? ORDER BY recorded_at DESC,id DESC LIMIT 1")
+  // Ignore unverified requests completely: they can neither opt another account
+  // in nor revoke a genuine choice. Recheck ownership at dispatch, not just queueing.
+  const consent = db.prepare(`SELECT m.granted FROM marketing_consents m
+    JOIN customers c ON c.id=m.customer_id
+    JOIN "user" u ON u.id=c.auth_user_id AND u.id=m.confirmed_auth_user_id
+    WHERE m.customer_id=? AND m.evidence_status='AUTHENTICATED_ACTION'
+      AND m.source='AUTHENTICATED_ACCOUNT_ACTION' AND m.confirmed_at IS NOT NULL
+      AND u.email_verified=1 AND lower(trim(u.email))=c.email_normalized
+    ORDER BY m.confirmed_at DESC,m.recorded_at DESC,m.id DESC LIMIT 1`)
     .get(customerId) as { granted: number } | undefined;
   const suppressed = db.prepare("SELECT 1 FROM email_suppressions WHERE email_normalized=? AND removed_at IS NULL").get(email);
   return consent?.granted === 1 && !suppressed;
