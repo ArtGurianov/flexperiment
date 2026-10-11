@@ -27,6 +27,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Foundation encrypted SQLite restore prerequisites
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends age
+      - name: Isolated editorial online backup and encrypted independent restore contract
+        run: python3 scripts/v2/test_platform_backup.py -v
       - name: Independent V2 owner control contract
         run: python3 scripts/v2/test_owner_rpc.py
       - name: Isolated V2 canary same-origin proxy contract (real nginx)
@@ -241,6 +243,7 @@ jobs:
           PLATFORM_REVALIDATE_TOKEN: ci-rendered-server-revalidation-token
 
       - name: Boot and verify the Commerce v2 image
+        # Platform canary is tested separately on an internal-only synthetic network.
         run: >-
           bash scripts/ci/smoke-v2-image.sh
           flexperiment-commerce-v2:test commerce-v2-smoke 3002 3102 commerce-v2
@@ -261,3 +264,8 @@ jobs:
           bash scripts/ci/smoke-v2-foundation.sh flexperiment-commerce-v2:test
         env:
           SOURCE_COMMIT: ${{ github.sha }}
+      - name: Platform canary — actual Next/Payload proxy, closed editorial and encrypted restore
+        run: python3 scripts/ci/smoke-platform-canary.py
+        env:
+          SOURCE_COMMIT: ${{ github.sha }}
+          PLATFORM_CANARY_TEST_IMAGE: flexperiment-platform-v2:test
