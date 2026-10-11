@@ -2,7 +2,7 @@ import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { migrateV2 } from "../src/db";
 import { activateLegalRelease, legalManifestHash, type LegalReleaseManifest } from "../src/legal-control";
-import { authenticatedConsentStatus, recordAuthenticatedConsents, type AuthenticatedConsentInput } from "../src/authenticated-consents";
+import { authenticatedConsentStatus, authenticatedMarketingChoice, recordAuthenticatedConsents, type AuthenticatedConsentInput } from "../src/authenticated-consents";
 import { recordUnverifiedAccountIntent } from "../src/customers";
 import { createCommerceV2App } from "../src/app";
 import { loadCommerceRuntimeConfig } from "../src/payment-mode";
@@ -58,6 +58,17 @@ describe("new authenticated consent evidence, separate from historical intents",
     expect(() => record()).toThrow("LEGAL_RELEASE_STALE");
     expect(authenticatedConsentStatus(db, "customer", "COURSES").requiredChoicesConfirmed).toBe(false);
   });
+  it("freezes the complete release hash and refuses key reuse after in-place legal drift", () => {
+    record({ marketingConsent: true });
+    expect(authenticatedMarketingChoice(db, "customer")).toBe(true);
+    const changed = { ...manifest, documents: manifest.documents.map(document => document.kind === "privacy"
+      ? { ...document, sha256: "b".repeat(64) } : document) };
+    db.prepare("UPDATE legal_releases SET manifest_json=? WHERE active=1").run(JSON.stringify(changed));
+    expect(authenticatedConsentStatus(db, "customer", "COURSES").requiredChoicesConfirmed).toBe(false);
+    expect(authenticatedMarketingChoice(db, "customer")).toBe(false);
+    expect(() => record({ manifestSha256: legalManifestHash(changed), marketingConsent: true })).toThrow("CONSENT_ACTION_KEY_CONFLICT");
+    expect(db.prepare("SELECT manifest_sha256 FROM authenticated_consent_actions").get()).toEqual({ manifest_sha256: input.manifestSha256 });
+  });
   it("keeps storefronts separate and creates no financial or marketing-suppression mutations", () => {
     record({ marketingConsent: true });
     expect(authenticatedConsentStatus(db, "customer", "LAB")).toMatchObject({ releaseVersion: null, requiredChoicesConfirmed: false });
@@ -81,6 +92,15 @@ describe("new authenticated consent evidence, separate from historical intents",
   it("does not inherit another user's events after binding or verification changes", () => {
     record(); db.exec('UPDATE "user" SET email_verified=0');
     expect(authenticatedConsentStatus(db, "customer", "COURSES").requiredChoicesConfirmed).toBe(false);
+  });
+  it.each(["auth_user_id", "release_version", "storefront"])("rejects direct SQL action authority forgery: %s", field => {
+    record();
+    const fields = ["customer_id", "auth_user_id", "storefront", "legal_release_id", "release_version", "manifest_sha256", "request_sha256", "recorded_at"];
+    const select = fields.map(name => name === field ? "'forged'" : name).join(",");
+    expect(() => db.exec(`INSERT INTO authenticated_consent_actions(id,action_key,${fields.join(",")})
+      SELECT 'forged','synthetic-forged-key',${select} FROM authenticated_consent_actions LIMIT 1`))
+      .toThrow("AUTHENTICATED_CONSENT_AUTHORITY_INVALID");
+    expect(db.prepare("SELECT COUNT(*) n FROM authenticated_consent_actions").get()).toEqual({ n: 1 });
   });
 });
 

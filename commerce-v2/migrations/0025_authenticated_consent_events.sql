@@ -5,6 +5,8 @@ CREATE TABLE authenticated_consent_actions (
   auth_user_id TEXT NOT NULL REFERENCES "user"(id),
   storefront TEXT NOT NULL CHECK (storefront IN ('COURSES','LAB')),
   legal_release_id TEXT NOT NULL REFERENCES legal_releases(id),
+  release_version TEXT NOT NULL,
+  manifest_sha256 TEXT NOT NULL CHECK (length(manifest_sha256)=64),
   action_key TEXT NOT NULL,
   request_sha256 TEXT NOT NULL CHECK (length(request_sha256)=64),
   recorded_at TEXT NOT NULL CHECK (datetime(recorded_at) IS NOT NULL),
@@ -24,7 +26,7 @@ WHEN NOT EXISTS (
   SELECT 1 FROM customers c JOIN "user" u ON u.id=c.auth_user_id
   JOIN legal_releases l ON l.id=NEW.legal_release_id
   WHERE c.id=NEW.customer_id AND u.id=NEW.auth_user_id AND u.email_verified=1
-    AND lower(trim(u.email))=c.email_normalized AND l.active=1 AND l.storefront=NEW.storefront
+    AND lower(trim(u.email))=c.email_normalized AND l.active=1 AND l.storefront=NEW.storefront AND l.version=NEW.release_version
 )
 BEGIN SELECT RAISE(ABORT,'AUTHENTICATED_CONSENT_AUTHORITY_INVALID'); END;
 CREATE TRIGGER authenticated_consent_event_document BEFORE INSERT ON authenticated_consent_events
