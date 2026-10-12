@@ -44,6 +44,23 @@ erasure_fixture_image_checks() {
   local legacy="${fixture_prefix}-legacy" installed="${fixture_prefix}-installed"
   erasure_fixture_create "$fixture_image" "$legacy" NEVER_INSTALLED
   erasure_fixture_create "$fixture_image" "$installed" REQUIRED
+  # Existing actual-image CI also proves the kernel RO mount for library read
+  # files. This fixture contains NO real credentials and makes NO cloud call.
+  docker run --rm --network none --user 0 --entrypoint node \
+    --mount "type=volume,source=$installed,target=/host-admission" "$fixture_image" -e '
+    const fs=require("node:fs");
+    fs.writeFileSync("/host-admission/reader.json",JSON.stringify({fixture:"READ_ONLY"}),{flag:"wx",mode:0o600});
+    fs.chownSync("/host-admission/reader.json",1000,1000);
+  '
+  for mount_mode in readonly writable; do
+    local reader_mount="type=volume,source=$installed,target=/etc/erasure-reader"
+    [[ "$mount_mode" != readonly ]] || reader_mount+=",readonly"
+    docker run --rm --network none --entrypoint node --mount "$reader_mount" "$fixture_image" --import tsx --input-type=module -e '
+    import {readErasureReaderFile} from "./commerce-v2/src/erasure-library-read.ts";
+    let ok=false;try{ok=readErasureReaderFile("/etc/erasure-reader/reader.json",["/app"]).fixture==="READ_ONLY";}catch{}
+    if(ok!==(process.argv[1]==="readonly"))throw Error("ERASURE_LIBRARY_RO_MOUNT_ASSERTION_FAILED");
+    ' "$mount_mode"
+  done
   for flag in false missing; do
     erasure_fixture_assert "$fixture_image" "$legacy" LEGACY_ALLOWED "$flag"
     erasure_fixture_assert "$fixture_image" "$installed" ERASURE_INSTALLATION_DOWNGRADE_REFUSED "$flag"

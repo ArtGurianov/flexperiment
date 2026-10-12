@@ -254,15 +254,14 @@ describe("durable runtime/send fencing, not operational installation",()=>{
     writeFileSync(file,JSON.stringify({version:1,scope:"canary",signing:{"signing-1":keys.signing["signing-1"].export({type:"spki",format:"pem"})},
       subject:{"subject-1":keys.subject["subject-1"].toString("base64")}}),{mode:0o600});
     const env={ERASURE_FENCING_ENABLED:"true",ERASURE_SCOPE:"canary",DEPLOY_ENV:"staging",ERASURE_VERIFICATION_KEYS_FILE:file,
-      ERASURE_REMOTE_READ_URL:"https://authority.example.test/v1/erasure/read",ERASURE_READ_TOKEN:"r".repeat(32),ERASURE_FENCE_DIRECTORY:join(root,"fence")};
-    const fetcher:typeof fetch=async(_url,options)=>new Response(JSON.stringify(await owner.reconcile(null,new Headers(options?.headers).get("x-erasure-nonce")!,clock)));
+      ERASURE_FENCE_DIRECTORY:join(root,"fence")};
     const installation=installationFixture("REQUIRED",join(root,"fence")).read();
-    const ready=await prepareErasureRuntime({db,environment:env,installation,forbiddenRoots:[join(root,"merchant"),join(root,"ledger")],fetcher,now:()=>clock});
+    const ready=await prepareErasureRuntime({db,environment:env,installation,forbiddenRoots:[join(root,"merchant"),join(root,"ledger")],libraryRead:proof,now:()=>clock});
     gates.push(ready!);expect(await ready!.ready()).toBe(true);expect(db.prepare('SELECT id FROM "session"').all()).toEqual([]);
     for(const enabled of [undefined,"false"]) {
       await expect(prepareErasureRuntime({db,environment:{...env,ERASURE_FENCING_ENABLED:enabled},installation,forbiddenRoots:[join(root,"merchant")],now:()=>clock})).rejects.toThrow("DOWNGRADE_REFUSED");
     }
-    await expect(prepareErasureRuntime({db,environment:env,installation,forbiddenRoots:[join(root,"merchant"),join(root,"ledger")],fetcher:async()=>{throw new Error("SECRET_AUTH_URL");},now:()=>clock})).rejects.toThrow("BOOT_HOLD");
+    await expect(prepareErasureRuntime({db,environment:env,installation,forbiddenRoots:[join(root,"merchant"),join(root,"ledger")],libraryRead:async()=>{throw new Error("SECRET_AUTH_URL");},now:()=>clock})).rejects.toThrow("BOOT_HOLD");
     expect(ready!.status().state).toBe("CLOSED");
   });
   it("guards real Better Auth callbacks, mail transport, sign-in, sessions and logout within the HTTP lease",async()=>{

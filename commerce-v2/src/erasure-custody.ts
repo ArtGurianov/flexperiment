@@ -9,7 +9,7 @@ import { VerifiedErasureRequest } from "./erasure-request";
 export const CUSTODY_MAX_BYTES = 8 * 1024 * 1024;
 export type CustodyObject = { readonly bytes: Buffer; readonly etag: string };
 /** Independent uncached store. Conditional writes MUST be atomic; no retry/delete/list fallback.
- * Installation separately qualifies off-VPS authority, no-delete IAM, CAS semantics and key escrow. */
+ * Installation separately qualifies off-host custody, version retention, IAM, CAS and key escrow. */
 export interface ErasureCustodyObjects {
   read(key: string): Promise<CustodyObject | null>;
   create(key: string, bytes: Buffer): Promise<void>;
@@ -54,6 +54,19 @@ export function validateCustodyHead(value: unknown, scope: "canary" | "productio
   const head = parse(headSchema, value);
   if (head.body.scope !== scope || head.body.objectRef !== `bundles/${head.body.sequence}-${head.body.headHash}.json`) refuse("ERASURE_CUSTODY_INVALID");
   checkSignature(head.body, head.signature, head.body.signingKeyId, keys); return head;
+}
+
+/** Existing packet format, verified without decrypting or mounting age identities
+ * in Commerce. The signed plaintext hash must match the complete local mirror. */
+export function verifyCustodyPacket(bytes: Buffer, head: SignedCustodyHead, bundle: ErasureBundle, keys: ErasureKeys) {
+  if (sha(bytes) !== head.body.packetSha256) refuse("ERASURE_REMOTE_READBACK_FAILED");
+  const packet = parse(packetSchema, json(bytes));
+  checkSignature(packet.header, packet.signature, packet.header.signingKeyId, keys);
+  const encrypted = Buffer.from(packet.ciphertext, "base64");
+  if (encrypted.toString("base64") !== packet.ciphertext || sha(encrypted) !== packet.header.ciphertextSha256
+    || packet.header.scope !== head.body.scope || packet.header.sequence !== head.body.sequence
+    || packet.header.headHash !== head.body.headHash || packet.header.recipientSha256 !== head.body.recipientSha256
+    || packet.header.plaintextSha256 !== sha(canonical(bundle))) refuse("ERASURE_CUSTODY_INVALID");
 }
 
 /** Public recipient only; no recovery identity, plaintext file, shell or raw subprocess output. */
@@ -187,7 +200,8 @@ export class ErasureCustodian {
   }
 }
 
-/** Runtime has only verification keys and a scoped authenticated read adapter, no signer/S3 keys. */
+/** Legacy nonce capability seam. Actual runtime now uses a protected library read
+ * identity, never signer/recovery identity/write privileges or an HTTP fallback. */
 export async function readRemoteErasureLedger(input: { scope: "canary" | "production"; keys: ErasureKeys;
   read: (nonce: string) => Promise<RemoteErasureAck>; now?: () => Date }) {
   let ack: RemoteErasureAck | undefined;
