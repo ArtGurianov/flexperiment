@@ -60,11 +60,11 @@ The status moves `UPLOADING → PROCESSING → READY | FAILED`. `POST /v1/webhoo
 4. Active unrevoked COURSE/ALL_COURSES grant → `ALLOW` even if unlisted, stale lease or DENY_NON_ENTITLED override.
 5. Expired manifest lease → `DENY` for customers without a grant.
 6. Course/section/lesson effective visibility unlisted or active DENY_NON_ENTITLED override → `DENY`.
-7. Commerce offer FREE → `ALLOW`.
+7. `products.access = FREE` → `ALLOW` (product authority, not offer).
 8. Lesson freePreview → `ALLOW`.
 9. Otherwise → `PURCHASE_REQUIRED` or `NOT_FOR_SALE`.
 
-`POST /v1/lessons/{lessonRef}/playback` requires a session, is rate-limited, sends `Cache-Control: no-store` and discloses nothing about other customers' rights. A grant is `{mode:"open", videoId, resumeAt}` or `{mode:"protected", videoId, token, expiresAt, resumeAt}`. Protected tokens are short lived and bound to customer/video; the DRM callback re-checks current entitlement and withdrawal on use. Kinescope/Refref provider health fails the respective upload/playback/checkout boundaries, **not** core `/readyz`: core readiness fails for DB or configuration faults, including forbidden mock mode in production or missing required Refref configuration.
+`POST /v1/lessons/{lessonRef}/playback` requires a session, is rate-limited, sends `Cache-Control: no-store` and discloses nothing about other customers' rights. A grant is `{mode:"open", videoId, resumeAt}` or `{mode:"protected", videoId, token, expiresAt, resumeAt}`. Protected tokens are short lived and bound to customer/video; the DRM callback re-checks current entitlement and withdrawal on use. Core Commerce v2 `/readyz` also verifies Refref reachability; the implementation returns 503 when the configured Refref `/readyz` is unavailable (see `commerce-v2/src/app.ts` and `docs/plans/2026-10-10-commerce-v2-foundation-design.md`). DB and configuration faults also fail readiness. This supersedes the older ART-218 baseline that isolated Refref health exclusively at feature boundaries.
 
 ## Playback resume and player behavior (ART-219)
 
