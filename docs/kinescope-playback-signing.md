@@ -1,7 +1,7 @@
 # Kinescope playback signing key (ART-221)
 
 Protected playback (`KINESCOPE_DELIVERY_MODE=protected`) hands the player a short-lived token (2 minutes,
-at most 10) that Kinescope's DRM license request presents back to commerce (`/kinescope/drm/auth`), where
+at most 10) that Kinescope's DRM license request presents back to commerce (`POST /v1/kinescope/drm/authorize`), where
 it is verified against the customer and the video. The key that signs it is the boundary.
 
 ## Custody
@@ -38,7 +38,19 @@ re-requests a token on its next license request.
 Proven in commerce-v2's tests: a token is bound to its customer and video, expires, survives rotation only
 while its key is in the ring, and cannot be relabelled to another key.
 
-**Not yet proven (ART-36, HOLD on Kinescope API access, ART-212):** how Kinescope itself enforces the
+**Capability preflight (ART-342, 2026-10-12):** the paid workspace has an API token,
+but authenticated `GET /v1/drm/auth` at both workspace and Flexperiment-project
+scope returned `404 / 400404`, which Kinescope documents as authorization
+disabled. Its [Authorization Backend guide](https://docs.kinescope.ru/instrukcii-dlya-razrabotchikov/avtorizatsionnyy-bekend-dlya-kontrolya-dostupa-k-video/)
+documents a callback URL, Basic Auth and `drmauthtoken`; its
+[DRM API reference](https://docs.kinescope.com/api/player-delivery/protection/)
+documents `strict`. A configured callback must use `strict=true`: with
+`strict=false` Kinescope grants a license on any response except `403`, while
+this endpoint returns `401` for bad Basic Auth and `400` for malformed input.
+No provider configuration was changed; account-specific PUT entitlement and a
+Kinescope-origin POST remain unproven. Decision: `HOLD_PROVIDER_CONTRACT`.
+
+**Not yet proven (ART-36):** how Kinescope itself enforces the
 license — whether every segment is checked, what the browser sees as the video identifier, referrer and
 domain restrictions, and what revoking access does to a session already playing. ART-36's decision record
 states those from a working prototype against the real account; until then protected playback is not
