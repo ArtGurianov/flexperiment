@@ -365,3 +365,7 @@ complete copy inventory, erasure request admission, independent latest ledger,
 restore/send fencing and processor deletion coordination still need their own
 qualification. Existing backup infrastructure, schedules, runtime policy, legal
 bytes and production are not changed by adding this library.
+
+## Manual entitlement operations (ART-181)
+
+A manual course-access grant is modeled as a **zero-cost order** with its own audited provenance, and requires an active legal release when granted; it must not masquerade as a paid provider payment or bypass offer/legal authority. A manual revocation is permitted **only** for an access grant originally issued manually. Accepted purchased entitlements are managed through the payment/refund and withdrawal authorities instead. An ALL_COURSES grant includes future courses; delisting a course alone does not revoke an established entitlement.
