@@ -2,6 +2,9 @@
 
 ART-169 / ART-179 / ART-232 / ART-41. Решение владельца от 11.10.2026.
 
+Текущий операционный план: [Canary erasure installation/admission — 12.10.2026](#canary-erasure-installationadmission--12102026).
+Это подготовленный план, не разрешение на установку или live migrations.
+
 ## Решение и границы
 
 Stage A — этап запуска бесплатного доступа, не особая реализация первого курса.
@@ -349,3 +352,308 @@ Focused prerequisite commit kept separate from fencing changes within existing
 admission are required for the composed source. No live
 deployment, migrations, production/V1/Refref/routing/secrets/activation. LIVE_ERASURE
 and legal release remain HOLD; existing ART-232/179/41 only, no new issues.
+
+## Canary erasure installation/admission — 12.10.2026
+
+**PLAN_PREPARED / EXECUTION_HOLD.** План дополняет существующий Stage A contract,
+не вводит новую erasure-модель. Техническая база — merge #205
+`0d8def5549be0b4b6f9a26a630d19f82a3455a18`, tree
+`fcf76c3dca4ab46b349084423fd0602de6000293`; exact-head и merge-SHA checks SUCCESS.
+Документационный commit этого плана не является deployment source или новым image.
+Ни одна команда установки в этом разделе ещё не выполнена.
+
+После заполнения bindings требуется одно ограниченное canary execution authorization:
+новые изолированные custody/key/mount ресурсы, controlled S3 contract writes,
+offline copy proof, exclusive canary migration/replacement и private failure checks.
+Gates ниже — технические STOP/PASS, не запросы нового ручного GO на каждый шаг.
+Изменение production, публичных guards или legal/registration admission в это GO
+не входит; обнаруженная смена scope требует остановки, не расширения полномочий.
+
+### Keep from original plan
+
+Сохраняем signed ledger, encrypted remote bundles, fresh nonce-bound checkpoint,
+independent applied prefix, verified account capability, REQUEST/WORKER/SEND leases,
+отдельные authoring/legal/E2E gates. Принятые backups и frontend qualification не
+повторяются без изменения проверяемых условий. Production/V1/Refref/F7 неизменны;
+`PAYMENT_MODE=disabled`, `MARKETING_BROADCASTS_ENABLED=false`, четыре публичных HTTPS
+403 guards, registration/offers/legal activation/F9 CLOSED.
+
+### Adopt from alternative plan
+
+- **Critical fix:** установить host admission до допуска нового runtime. Отсутствие
+  mount или запись NEVER_INSTALLED после REQUIRED не является допустимым rollback.
+- **Critical fix:** доказать реальный Cloud.ru CAS/IAM и независимость read authority,
+  не выдавать SDK/local tests за installed custody.
+- **Critical fix:** inventory всех writers и exclusive migration/replacement. Runtime
+  fence не защищает произвольный SQL или standalone migration по факту наличия mount.
+- **Material improvement:** доказать newest-ledger suppression на старом архиве в
+  отдельной копии до замены действующего canary. Это изменённое recovery-условие,
+  не повтор общего infrastructure proof.
+- **Material improvement:** отдельные результаты custody / all-writer / recovery /
+  functional E2E; ни один из них не означает production или legal activation.
+
+### Reject from alternative plan
+
+Не переносим порядок пяти приоритетов в слепой набор уже исполнимых команд: пока не
+привязаны authority endpoint, IAM и owner launcher, такой набор был бы вымышленным.
+Не считаем nonce authority простой выдачей старого signed JSON из S3: нужен новый
+checkpoint после независимого current-head/read-back. Не добавляем новый ledger,
+универсальный daemon/controller или повтор всего CI ради подготовки плана.
+
+### Conflicts / decisions needed
+
+В текущем source подтверждены конкретные installation gaps, а не дефекты новой модели:
+
+1. `erasureRemoteReadAdapter()` требует HTTPS `GET /v1/erasure/read`, bearer token,
+   `x-erasure-nonce`, uncached ответ `{bundle,checkpoint,custodyHead}`. В репозитории
+   нет server/launcher этого endpoint. `ErasureCustodian.reconcile()` — библиотечная
+   операция, не установленная independent service. Размещение/URL ещё НЕ привязаны.
+2. `prepareErasureRuntime()` открывает fence только без `initialize:true`:
+   предварительная owner initialization обязательна. Готового operator launcher для
+   неё и `admitVerifiedErasure()` нет. Test harness не является operational launcher.
+3. `commerce-v2/src/migrate.ts` не читает installation policy/fence. В `server.ts`
+   `migrateV2()` идёт после policy check, но ДО remote/fence boot. Значит, migrations
+   допускаются только offline/exclusively; simultaneous boot/replacement запрещён.
+4. `scripts/v2/owner-rpc.py` не устанавливает erasure env/mount/authority. Его существующий
+   deploy может использоваться после staging, но не считается erasure admission.
+
+Перед execution нужно подтвердить существующий подходящий transport либо подготовить
+минимальный reviewed operational wrapper вокруг уже merged APIs. Не устанавливать
+signer/S3 credentials в Commerce и не сериализовать private VerifiedErasureRequest в
+JSON. Отдельного продуктового/юридического решения для подготовки этих bindings нет;
+операционная установка и новые canary keys требуют installation authorization.
+
+### Risk delta
+
+Новый обязательный mount блокирует boot даже с missing/false flag. Runtime verification
+file содержит PUBLIC signing keys и секретные subject HMAC keys всех сохранённых
+поколений; это не «публичный конфиг». Signer/age identity/S3 writer не попадают в app.
+BOOT_RESTORE инвалидирует ВСЕ восстановленные sessions/magic links, LIVE_ADMISSION —
+только целевое удаление. Unknown SEND/owner crash не освобождаются по таймеру.
+Commerce purge не удаляет Payload editorial DB, provider storage, logs, WAL/SSD или
+offline ciphertext. Эти disposition остаются явными gates, а не заявлением erasure PASS.
+
+### Revised merged plan
+
+#### 0. Exact bindings и read-only preflight
+
+До первой mutation сохранить private admission journal с approved source, actor,
+временем, точными resource IDs, baseline fingerprints и evidence references.
+Предлагаемый journal: `/root/flexperiment-v2-owner/erasure-admission.json`, UID0/0600;
+это новый планируемый файл, не заявление о его существовании. Секретные значения,
+PII, JWT/session headers, plaintext bundles и произвольные provider bodies не писать.
+
+| Binding | Значение / требуемый read-back |
+| --- | --- |
+| Commerce canary app | `xzuy7pk5y6ywjr9kh6nsk5ap`, port3002; проверить имя/destination/единственный current container |
+| Source / image | `0d8def5549be0b4b6f9a26a630d19f82a3455a18`; записать actual build digest и baked identity, не подставлять digest из старого review image |
+| Protected resources | LAB `ch8gumpvpriflqsct7clqafr`, Admin `v2w4tnlkkt8pj2fnfspyn5l5`, Platform `ks8c2wmlle1kvdfuwbiwthe1`; production/V1/Refref IDs брать из owner inventory |
+| Merchant DB | current qualified canary volume, `/var/lib/flexperiment-v2/commerce.sqlite`; host source/inode/lineage/ledger определить read-only |
+| Owner policy | proposed host `/var/lib/flexperiment-erasure-canary/installation` → fixed app `/etc/flexperiment-erasure:ro` |
+| Shared fence | proposed host `/var/lib/flexperiment-erasure-canary/fence` → app `/var/lib/flexperiment-erasure-canary/fence:rw` |
+| Verification keys | proposed host `/var/lib/flexperiment-erasure-canary/runtime-keys` → app `/etc/flexperiment-erasure-keys:ro`; actual filename/retained key IDs bind privately |
+| Owner ledger / keys | independent owner-only directory вне merchant/editorial/fence/archives; host/service UID, signing/subject generations и escrow ещё bind/verify |
+| Remote objects | exact adapter prefix `flexperiment/erasure/canary/`; endpoint/region/bucket/IAM identity UNBOUND, не наследовать broad backup credentials |
+| Read authority | independent off-VPS current-head authority; HTTPS host, token custody, certificate и launcher UNBOUND |
+
+Пути proposed, а не найденные live directories. Провести API + independent metadata
+read-back; не выводить `docker inspect .Config.Env`, private JSON или содержимое ключей.
+Подтвердить zero public FQDN/host ports/auto-deploy/previews/log drains; no queued job.
+Сопоставить все write-capable mounts/processes/cron/systemd/deploy commands. Проверить
+backup freshness и existing guards; текущие backups/timers не отключать.
+Снять schema lineage, exact migration ledger, safe counts и fingerprints (без rows).
+Наличие real users/financial or unclassified audit facts → отдельный admission HOLD,
+не очистка базы ради теста. Не предполагать, что source data по-прежнему пусты.
+
+**Gate0:** bindings полны, baseline непротиворечив, authority/owner launcher reviewed,
+installation authorization зафиксировано. Иначе дальнейшие фазы НЕ запускать.
+
+#### 1. Independent custody / keys / actual S3 contract
+
+Сначала isolated qualification без замены текущего Commerce. Использовать отдельный
+неавторитетный qualification bucket с тем же проверяемым permission contract и exact
+adapter prefix; его фактическое имя/владельца записать до PUT. Не использовать
+production namespace или authoritative `head.json` для destructive negative controls.
+
+1. Проверить действительные capabilities: If-None-Match create, stale/current ETag
+   If-Match CAS, concurrent publisher conflict, bounded GET и exact bytes/hash read-back.
+   Lost-response injection после фактического commit → только GET reconciliation,
+   без повторного submit/PUT. Неподдержанный CAS → HOLD, не unconditional overwrite.
+2. Доказать effective IAM: immutable bundles защищены от overwrite; head обновляется
+   только conditional CAS; DELETE/list/cross-environment/broad backup privileges не
+   нужны writer. Отрицательные destructive probes — только на явно disposable объектах.
+   Similar test-bucket policy не доказывает IAM итогового bucket: его permissions и
+   реальные безопасные negative controls квалифицируются отдельно.
+3. Подготовить отдельные canary signing/subject generations и read token после GO;
+   не ротировать существующие application/production keys. Ed25519 signer приватный;
+   subject HMAC32bytes; age private identity только в off-VPS recovery custody.
+   Независимо проверить decrypt + retained signing/subject keys с public fingerprints.
+4. Owner `ErasureLedgerStore` 0700/0600, actual owner UID, вне всех data/backup roots;
+   DELETE journal / synchronous EXTRA подтвердить read-back. Нельзя заменить его
+   старым merchant archive или молча создать пустой журнал после потери authority.
+5. На окончательно admitted canary bucket genesis публикуется явно через
+   `initializeEmptyCustody()` только если local ledger пуст И remote head отсутствует.
+   Найденный head/ledger с событиями → reconciliation/HOLD; никогда reset/delete.
+6. Independent authority выполняет `reconcile(null,nonce)` по актуальной owner ledger
+   и remote head/packet read-back, затем выдаёт fresh подписанный checkpoint. Проверить
+   nonce, scope, signature, head/count, ≤60s freshness, no-cache/no redirects/rollback.
+   Static file, mounted copy на VPS или mock `fetcher` не являются installed authority.
+
+**CUSTODY_PASS:** actual contract + final IAM + off-VPS recovery + uncached authority
+доказаны. Это пока не запуск runtime и не admission удаления пользователя.
+
+#### 2. Protected installation и предварительно CLOSED fence
+
+Все новые пути отдельные; existing volumes не пересоздавать. Host policy directory
+UID0/0555, `installation.json` UID0/0444, regular/nlink1/no symlink, ≤4096bytes;
+fixed kernel mount в app ровно один и ro. Proposed host parent owner-only.
+
+```json
+{"version":1,"installationId":"<new admitted UUID>","scope":"canary","state":"REQUIRED","fenceDirectory":"/var/lib/flexperiment-erasure-canary/fence"}
+```
+
+UUID — input owner admission, не literal template для установки. Записать canonical
+record hash в независимую custody. Marker не входит в merchant backup/restore.
+NEVER_INSTALLED допускается только для действительно никогда не installed closed
+lane, не для rollback REQUIRED. Не менять действующий canary до фаз3–4.
+
+Fence directory 0700 и файл0600, владельцем фактический app UID (проверить `id`,
+не предположить UID по названию image). Keys file0600 с тем же UID, ro mount.
+Owner launcher один раз создаёт `ErasureRuntimeFence({initialize:true,...})` в
+отдельном admitted storage, подтверждает CLOSED/sequence-1/no owner/leases0, затем
+закрывает connection. Никакого SQL schema imitation или initialization из runtime.
+Для дальнейшего boot constructor без initialize — уже существующая exact control DB.
+Все участники смотрят на ТОТ ЖЕ underlying host storage, не на отдельные Docker copies.
+
+| Runtime-only env | Значение / источник |
+| --- | --- |
+| `DEPLOY_ENV` / `ERASURE_SCOPE` | `staging` / `canary` |
+| `ERASURE_FENCING_ENABLED` | `true`, не build/preview |
+| `ERASURE_FENCE_DIRECTORY` | exact path из protected REQUIRED record |
+| `ERASURE_VERIFICATION_KEYS_FILE` | bound0600 file в ro keys mount; public signing + retained secret HMAC generations |
+| `ERASURE_REMOTE_READ_URL` | independently qualified HTTPS `/v1/erasure/read`, без query/userinfo/redirect |
+| `ERASURE_READ_TOKEN` | existing approved private channel, ≥32chars; value никогда не в journal/CI/argv |
+| `COMMERCE_V2_FOUNDATION_MODE` | `false` |
+| `PAYMENT_MODE` / `MARKETING_BROADCASTS_ENABLED` | `disabled` / `false` |
+
+Runtime НЕ получает signer, privileged S3 keys или age identity. Прочие env сохранять
+по fingerprint, проверить отсутствие фактических preview copies через API + DB.
+Missing/corrupt/writable mount tests делать в отдельной lane, не удаляя live marker.
+
+#### 3. Offline changed-state proof до canary replacement
+
+Взять точный ранее qualified encrypted canary archive, SHA/size/source facts и все
+retained runtime keys. Restore в отдельный private volume, никаких provider/mail/jobs.
+Ни archive, ни working merchant/editorial volumes, ни newest fence/ledger не менять.
+
+1. Read-only baseline: integrity/FKs/lineage + migration ledger. В isolated copy
+   trusted exact-source `migrateV2()` применяет только отсутствующие reviewed migrations:
+   0023 consent_attribution, 0024 course_commercial_control, 0025 authenticated_consent_events.
+   Unknown lineage/schema → STOP. Нет migration26 от #204/#205.
+2. Проверить full DDL fingerprint
+   `158654c61bd97be4dbcab4348651722fe105587f6ff202ad4db821512774e030` из reviewed code;
+   expected hash никогда не вычислять из candidate как новое значение допуска.
+3. Изолированная test identity/queued outbox/session/consents + backup BEFORE deletion
+   допустимы только как явно tagged failure fixture, не CMS course/legal release или
+   evidence реального browser consent. Авторство настоящего request отдельно проверяет
+   trusted Better Auth session adapter; fixture не делает operational transport PASS.
+4. Publish подтверждённый test erasure, затем restore старой copy; запросить NEW remote
+   nonce checkpoint, `applyIsolatedRestoreErasure()`, подтвердить отсутствие target
+   account/consents/outbox, suppression, невозможность старого login/session/marketing.
+   New same-email identity не присваивает прежние согласия и не снимает suppression.
+5. Повторить admission через настоящий runtime boot/fence на isolated restored copy,
+   не только library receipt. Missing/stale/forked ledger, dropped generation, lost
+   mount, false/missing flag/foundation → nonzero/CLOSED до traffic/timers.
+6. Merchant restore НЕ откатывает independent applied prefix/owner installation.
+   Сохранить cipher evidence, journal и integrity/count results без raw identity.
+
+**RECOVERY_PASS:** old-backup resurrection отвергнута на actual current artifact и
+installed authority; original backup остаётся доказанной исторической копией.
+Это не утверждение уничтожения всех offline копий/processor данных.
+
+#### 4. Exclusive migration и controlled normal-canary replacement
+
+Только после Gate0/CUSTODY/RECOVERY и execution GO. Сохранить текущий encrypted online
+snapshot и его remote hash, не повторяя unrelated foundation qualification.
+Остановить canary write-capable processes; запретить new jobs/overlapping deployment.
+Readonly backup reader не считается writer, но его raw archive не разрешён к traffic
+без fresh-ledger apply. Production backups продолжают работать без изменений.
+
+Standalone migrate и automatic server startup migrations НЕ lease-protected.
+Допускаются только при independently confirmed zero competing writable mounts/processes.
+Не использовать rolling old/new overlap: старый unfenced image не имеет защиты даже
+если делит volume. Coolify/controller replacement semantics проверить заранее; если
+exclusive stop/replacement не обеспечен штатно — HOLD, не custom command bypass.
+Migration failure → сохранить journal; restore отдельной copy с newest ledger, не
+down-migration, reverse SQL или overwrite original volume.
+
+Deploy exact admitted source только существующим normal-canary controller; одна
+постановка deployment, ambiguous result → GET/status reconciliation. Source/controller
+identity отдельны. Read-back: actual image/digest, baked SHA, mounts/UID/kernel ro,
+runtime-only secrets presence, 0preview, no public exposure; `/readyz` требует
+`erasure:qualified`, scope и реальную fresh authority. `/identity` отдельно от readiness.
+Проверить LAB/Admin/Platform private upstream DNS после Commerce replacement; не
+предполагать устойчивость timestamp container name. Production fingerprints,
+403 guards и backup freshness подтвердить независимо.
+
+#### 5. All-writer / failure admission, не публичный launch
+
+В явно изолированной lane проверить реальные REQUEST, Better Auth hooks/auth-email,
+campaign WORKER/SEND и controlled owner process через shared fence. Marketing timer
+остаётся false, Refref payment/refund rail disabled; тест worker вызывается controlled
+driver с bounded sink, не включением production-like рассылки. Payload jobs/manual
+Local API и editorial mutations остаются CLOSED до собственного admission.
+
+- Shared lease на async request/worker/send → drain отказ ДО remote publish/purge.
+- Второй independently booted участник делит тот же control storage; missing/different
+  fence/registry или unfenced old writer → admission HOLD. Инвентаризация OS/mounts
+  обязательна: нельзя доказать защиту произвольного SQL только API-тестом.
+- Crash/lost send response → durable ACTIVE/UNKNOWN и CLOSED; no timeout release,
+  no blind re-send. Проверить, что auth error swallowing не стирает SEND evidence.
+- Authority outage/change/rollback/fork → readiness/request refusal; восстановление
+  связи само по себе не reopen. Нужен новый qualified boot/admission без reset prefix.
+- Verified erasure получает fresh genuine Better Auth capability; Origin/account
+  binding перепроверяются до publication и после drain. Stale/unverified email case
+  в art@ остаётся PENDING_IDENTITY_VERIFICATION. JSON «capability» не принимается.
+- Actual owner admission: drain → custody ACK → purge/revoke → verified application
+  receipt → newest-head equality → reopen. processor/archive disposition PENDING
+  сохраняются честно; unrelated LIVE sessions не удаляются, restored credentials — да.
+
+**ALL_WRITER_PASS** требует complete mounted/process inventory + доказанные leases и
+отсутствие неподконтрольных writers. **PRIVATE_CANARY_ERASURE_QUALIFIED** только при
+CUSTODY_PASS + RECOVERY_PASS + ALL_WRITER_PASS + current runtime/security read-back.
+Public ingress/legal release/content authoring/registration по-прежнему CLOSED.
+
+#### STOP/HOLD и recovery вместо небезопасного rollback
+
+| Состояние | Разрешённое поведение |
+| --- | --- |
+| До current canary replacement | Отменить pending execution; сохранить baseline runtime/volumes, новые isolated evidence и private journal; нет cleanup чужих ресурсов |
+| REQUIRED установлен / signed event опубликован | Сохранить marker, highest prefix, keys, ledger и ciphertext; остановить participating writers, CLOSED. Не запускать older unfenced image и не переходить NEVER_INSTALLED |
+| Remote PUT/COMMIT/ACK неопределён | STOP, GET-only same request/head/packet reconciliation; no new requestId/PUT/re-encryption. `publishPending()` — отдельный явный owner repair после доказанного state, не автоматический retry |
+| Unknown SEND/owner claim/crash | Не очищать leases/owner SQL или TTL; independent provider/operation reconciliation и reviewed owner recovery procedure до reopen |
+| Migration/schema/identity/mount/IAM drift | Сохранить evidence, не чинить молча. Canonical restored copy + newest complete ledger + exact compatible artifact; отсутствие поддержки безопасного recovery — HOLD |
+| Потеря read authority/keys/current ledger | Никакого saved checkpoint/empty genesis fallback; CLOSED до восстановления независимой newest authority/key custody |
+
+Для каждого gate journal содержит enum результата, source/controller/image identities,
+resource IDs, permissions/mount fingerprints, schema/ledger hashes, safe counts и
+evidence locations. Никаких PII/token/secret bytes. Source snapshot до migration и
+current custody не удаляются как «временные» после неуспешной попытки.
+
+#### Следующий Stage A E2E — ART-179, отдельный функциональный admission
+
+После erasure qualification подготовить controlled private browser access при
+сохранении внешних 403 и без public registration. Exact owner-approved legal bytes
+с versions/hashes должны получить отдельный activation admission; review/approval
+не подменяют active release. Один настоящий курс вручную создаётся в Payload с
+реальными Kinescope IDs/правами: никаких синтетических course/legal facts.
+
+Проверить CMS→Commerce FREE, verified email/NotiSend/SmartCaptcha, unchecked separate
+consents, secure host-only cookies, session persistence/logout/revocation, required
+server gates, FREE entitlement и protected playback. Недоставленное письмо или
+неупражнённый browser/video path не получают PASS из `configured`/API-only результата.
+Маркетинг/PAID/payment/refund/F9 и production остаются вне этого canary admission.
+
+ART-232 хранит custody/erasure/processor gates, ART-179 — auth/E2E, ART-41 — cutover
+readiness. 0new issues, no Done transitions. План доступен для review; операционные
+bindings, launchers и permissions пока не квалифицированы, execution не начат.
