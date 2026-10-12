@@ -163,6 +163,7 @@ def inventory(path: Path, kind: str) -> dict:
             rows.append(item)
         nonempty = [item for item in rows if item["count"] and item["classification"] == "owner_review_required"]
         unmapped = [item for item in rows if item["count"] and item["group"] == "unmapped"]
+        schema_gaps = [item for item in rows if "schema_gap" in item]
         return {
             "kind": kind,
             "snapshot_sha256": sha256(path),
@@ -170,7 +171,8 @@ def inventory(path: Path, kind: str) -> dict:
             "nonempty_owner_review_tables": len(nonempty),
             "nonempty_unmapped_tables": len(unmapped),
             "missing_expected_tables": missing,
-            "decision": "STOP_REVIEW_REQUIRED" if nonempty or unmapped or missing else "OWNER_REVIEW_PENDING",
+            "schema_gaps": schema_gaps,
+            "decision": "STOP_REVIEW_REQUIRED" if nonempty or unmapped or missing or schema_gaps else "OWNER_REVIEW_PENDING",
         }
 
 

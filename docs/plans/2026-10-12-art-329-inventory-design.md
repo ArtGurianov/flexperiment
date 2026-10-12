@@ -17,7 +17,8 @@ are then opened with `mode=ro&immutable=1` for integrity and inventory queries.
 The CLI counts every non-internal table, including unknown additions. It groups
 the known tables and counts unfinished operations by state. It emits table names,
 counts, integrity results, source device/inode/mtime and SHA-256, but never row
-values. A nonempty data table or missing expected table yields
+values. A nonempty data table, missing expected table or missing
+operation-state column yields
 `STOP_REVIEW_REQUIRED`; even an entirely empty snapshot cannot autonomously
 declare `ZERO_REAL_DATA_CONFIRMED`. The owner must classify each nonempty group
 against the exact instance and snapshot time.

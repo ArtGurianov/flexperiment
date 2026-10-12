@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).parent))
-from art329_inventory import inventory, snapshot  # noqa: E402
+from art329_inventory import GROUPS, PENDING_STATES, inventory, snapshot  # noqa: E402
 
 
 class InventoryTest(unittest.TestCase):
@@ -14,13 +14,31 @@ class InventoryTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "commerce.sqlite"
             with sqlite3.connect(path) as db:
-                db.execute("CREATE TABLE schema_identity (lineage TEXT)")
+                for table in sorted(set().union(*GROUPS["commerce"].values())):
+                    columns = "lineage TEXT" if table == "schema_identity" else "id TEXT"
+                    pending = PENDING_STATES["commerce"].get(table)
+                    if pending:
+                        columns += f", \"{pending[0]}\" TEXT"
+                    if table == "customers":
+                        columns += ", email TEXT, secret TEXT"
+                    db.execute(f'CREATE TABLE "{table}" ({columns})')
                 db.execute("INSERT INTO schema_identity VALUES (?)", ("flexperiment-v2",))
-                db.execute("CREATE TABLE customers (email TEXT, secret TEXT)")
-                db.execute("INSERT INTO customers VALUES (?, ?)", ("private@example.test", "top-secret-value"))
-                db.execute("CREATE TABLE orders (id TEXT)")
+                db.commit()
+                empty = inventory(path, "commerce")
+                self.assertEqual(empty["decision"], "OWNER_REVIEW_PENDING")
+                self.assertEqual(empty["nonempty_owner_review_tables"], 0)
+                self.assertEqual(empty["missing_expected_tables"], [])
+                self.assertEqual(empty["schema_gaps"], [])
+                db.execute(
+                    "INSERT INTO customers (email, secret) VALUES (?, ?)",
+                    ("private@example.test", "top-secret-value"),
+                )
+                db.commit()
             result = inventory(path, "commerce")
             self.assertEqual(result["decision"], "STOP_REVIEW_REQUIRED")
+            self.assertEqual(result["nonempty_owner_review_tables"], 1)
+            self.assertEqual(result["missing_expected_tables"], [])
+            self.assertEqual(result["schema_gaps"], [])
             self.assertEqual(next(x for x in result["tables"] if x["table"] == "orders")["count"], 0)
             self.assertEqual(next(x for x in result["tables"] if x["table"] == "customers")["count"], 1)
             rendered = json.dumps(result)
