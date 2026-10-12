@@ -13,3 +13,9 @@ All external creation commands have durable idempotency and outbox-style attempt
 Refunds use frozen item-level fiscal evidence and line allocations; preserve distinctions between full and partial capabilities. Reconcile partial refund projections and ambiguous refund outcomes by provider/Refref evidence, never by amount-only matching or optimistic local assumptions. A full-only production provider must deterministically refuse partial refunds before any provider call. Refref webhooks may later supplement the reconciliation loop without becoming an alternate authority.
 
 Evidence: Flexperiment F7 integration (ART-30, ART-184–188), Refref merchant API contract and conformance suite (ART-90). Production payment acceptance remains a separate guarded milestone.
+
+## Handoff binding and ambiguous remote creation (ART-30/186)
+
+HMAC handoff state must bind the authenticated buyer, approved merchant session and the exact return path/origin: never accept an otherwise valid handoff state for another customer or redirect destination. The 15-minute quote is validated again at attempt/session boundaries. After a timeout or unknown create outcome, read `GET /integrations/merchant-orders/{id}` **before any replay**, recover the persisted attempt/session identifiers and verify the returned frozen checkout snapshot hash against the expected hash. A mismatched hash is a hard conflict, not a license to recreate. Return-page read-back is immediate; background polling is the independent convergence path.
+
+The paid checkout sale-mode gate re-reads the current live offer at preview, re-preview and confirmation; CLOSED refuses, ACCEPTANCE_ONLY requires the designated offer and verified buyer allowlist, and PUBLIC requires evidence qualified for the exact product kind. ONLINE_COURSE acceptance ART-240 cannot activate COURSE_BUNDLE; LAB uses ART-243.
