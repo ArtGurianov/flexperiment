@@ -519,7 +519,11 @@ lane, не для rollback REQUIRED. Не менять действующий ca
 
 Fence directory 0700 и файл0600, владельцем фактический app UID (проверить `id`,
 не предположить UID по названию image). Keys file0600 с тем же UID, ro mount.
-Owner launcher один раз создаёт `ErasureRuntimeFence({initialize:true,...})` в
+Keys mount directory UID0/0555; app может прочитать свой0600 файл, но не изменить
+ни файл через ro mount, ни список поколений. Owner fence launcher выполняется с
+проверенным app UID в изолированном operator context (root launcher не является
+тем же UID автоматически); signer/ledger custody остаётся вне app mounts/PID context.
+Он один раз создаёт `ErasureRuntimeFence({initialize:true,...})` в
 отдельном admitted storage, подтверждает CLOSED/sequence-1/no owner/leases0, затем
 закрывает connection. Никакого SQL schema imitation или initialization из runtime.
 Для дальнейшего boot constructor без initialize — уже существующая exact control DB.
