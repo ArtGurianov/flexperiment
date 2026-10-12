@@ -94,6 +94,29 @@ function erasureFixture() {
 }
 
 describe("canary-only erasure host installation consumption", () => {
+  function nativeFixture() {
+    const f = erasureFixture();
+    f.storage.canary.persistent_storages.splice(2);
+    for (const mount of erasureCanaryMounts) f.storage.canary.file_storages.push({fs_path: mount.source,
+      mount_path: mount.destination + (mount.rw ? ":rw" : ":ro"), is_directory: true, is_host_file: false, hasContent: false} as never);
+    return f;
+  }
+  it("admits the installed Coolify native Directory representation with identical runtime binds", async () => {
+    const f = nativeFixture();
+    expect(validateApp(f.apps.canary,f.env.canary,f.storage.canary,"canary",ids.canary,"normal-canary")).toHaveLength(7);
+    expect((await deployNormalCanary(sha,f.io)).canary.erasure).toBe("QUALIFIED");
+  });
+  it.each(["writable", "foreign", "file", "content", "extra", "mixed"])("rejects unsafe native directory configuration: %s", defect => {
+    const f = nativeFixture();
+    const dirs = f.storage.canary.file_storages as Record<string,unknown>[];
+    if (defect === "writable") dirs[0].mount_path = "/etc/flexperiment-erasure:rw";
+    if (defect === "foreign") dirs[0].fs_path = "/root/private-owner";
+    if (defect === "file") dirs[0].is_directory = false;
+    if (defect === "content") dirs[0].hasContent = true;
+    if (defect === "extra") dirs.push({...dirs[0]});
+    if (defect === "mixed") f.storage.canary.persistent_storages.push({name:ids.canary+"-extra",mount_path:"/foreign",host_path:null});
+    expect(() => validateApp(f.apps.canary,f.env.canary,f.storage.canary,"canary",ids.canary,"normal-canary")).toThrow();
+  });
   it("admits exactly five explicit custody binds, then stops and proves exclusivity before enqueue", async () => {
     const {io} = erasureFixture();const result = await deployNormalCanary(sha, io);
     expect(io.erasureAdmission).toHaveBeenCalledWith("canary", sha);

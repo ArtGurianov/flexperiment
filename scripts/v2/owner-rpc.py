@@ -91,7 +91,9 @@ def exclusive_canary(uuid):
     found = [row for row in volumes if row["mount_path"] == "/var/lib/flexperiment-v2" and not row.get("host_path")]
     if len(found) != 1 or not found[0]["name"].startswith(uuid + "-"):
         raise ValueError("ERASURE_MERCHANT_VOLUME_REFUSED")
-    name = uuid + "-" + found[0]["name"]
+    # API name is the complete Docker volume name; adding a prefix again targets
+    # a nonexistent triple-prefixed volume on the installed Coolify.
+    name = found[0]["name"]
     volume = json.loads(run(["docker", "volume", "inspect", name]))[0]
     data = os.path.realpath(volume["Mountpoint"])
     running = run(["docker", "ps", "-q"]).split()
@@ -223,7 +225,8 @@ def handle(message, config):
         if match[2] == "/storages":
             return {"persistent_storages": [{key: row.get(key) for key in ("name", "mount_path", "host_path")}
                                             for row in value["persistent_storages"]],
-                    "file_storages": [{} for _ in value["file_storages"]]}
+                    "file_storages": [{**{key: row.get(key) for key in ("fs_path", "mount_path", "is_directory", "is_host_file")},
+                                       "hasContent": bool(row.get("content"))} for row in value["file_storages"]]}
         return app_safe(value)
     if target not in apps or not re.fullmatch(r"[a-z0-9]{20,32}", apps[target]):
         raise ValueError("V2_TARGET_INVALID")

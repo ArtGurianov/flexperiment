@@ -94,7 +94,9 @@ export function validateApp(app, env, storages, target, uuid, mode = "foundation
       if (found.length !== 1 || found[0].value !== value || found[0].is_runtime !== true || found[0].is_buildtime !== false) refuse("V2_ERASURE_ENVIRONMENT_DIFFERS");
     }
   }
-  if (storages.file_storages?.length || storages.persistent_storages?.length !== (erasure ? 7 : 2)) refuse("V2_STORAGE_CONFIGURATION_DIFFERS");
+  const directories = storages.file_storages ?? [];
+  const nativeDirectories = erasure && directories.length === erasureCanaryMounts.length;
+  if ((directories.length && !nativeDirectories) || storages.persistent_storages?.length !== (erasure && !nativeDirectories ? 7 : 2)) refuse("V2_STORAGE_CONFIGURATION_DIFFERS");
   const volumes = storages.persistent_storages.filter(volume => !volume.host_path);
   if (volumes.length !== 2) refuse("V2_VOLUME_NOT_ISOLATED");
   for (const path of [required.COMMERCE_V2_BACKUP_PATH, "/var/lib/flexperiment-v2"]) {
@@ -104,10 +106,12 @@ export function validateApp(app, env, storages, target, uuid, mode = "foundation
   if (volumes[0].name === volumes[1].name) refuse("V2_VOLUME_NOT_ISOLATED");
   const mounts = volumes.map((volume) => ({ name: volume.name, destination: volume.mount_path }));
   if (erasure) for (const expected of erasureCanaryMounts) {
-    const found = storages.persistent_storages.filter(volume => volume.host_path === expected.source);
-    // Coolify 4.4.6 emits host_path:mount_path verbatim as a Compose mount.
+    const found = nativeDirectories ? directories.filter(volume => volume.fs_path === expected.source)
+      : storages.persistent_storages.filter(volume => volume.host_path === expected.source);
+    // Native Directory mount emits fs_path:mount_path; legacy records use host_path.
     if (found.length !== 1 || found[0].mount_path !== expected.destination + (expected.rw ? ":rw" : ":ro")
-      || !found[0].name?.startsWith(uuid + "-")) refuse("V2_ERASURE_MOUNT_DIFFERS");
+      || (nativeDirectories ? found[0].is_directory !== true || found[0].is_host_file !== false || found[0].hasContent !== false
+        : !found[0].name?.startsWith(uuid + "-"))) refuse("V2_ERASURE_MOUNT_DIFFERS");
     mounts.push({ type: "bind", ...expected });
   }
   return mounts;

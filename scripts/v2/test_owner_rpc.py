@@ -86,7 +86,7 @@ class OwnerControl(unittest.TestCase):
             self.assertTrue(rpc.exclusive_canary(CANARY)["pending"]); run.assert_not_called()
 
     def test_exclusive_census_checks_actual_named_volume_and_rw_mounts(self):
-        storage = {"persistent_storages": [{"name": CANARY + "-commerce-v2-data", "mount_path": "/var/lib/flexperiment-v2"}]}
+        storage = {"persistent_storages": [{"name": CANARY + "-" + CANARY + "-commerce-v2-data", "mount_path": "/var/lib/flexperiment-v2"}]}
         with tempfile.TemporaryDirectory() as directory:
             pathlib.Path(directory, "commerce.sqlite").touch()
             def execute(args):
@@ -329,6 +329,14 @@ class OwnerControl(unittest.TestCase):
     def test_safe_app_metadata_contains_no_environment_or_secret(self):
         value = {"uuid": CANARY, "environment_variables": "secret", "token": "secret", "settings": {"is_auto_deploy_enabled": False, "secret": "secret"}}
         self.assertNotIn("secret", json.dumps(rpc.app_safe(value)))
+
+    def test_native_directory_metadata_excludes_file_content(self):
+        value = {"persistent_storages": [], "file_storages": [{"fs_path": "/fixed/source", "mount_path": "/fixed/target:ro",
+                 "is_directory": True, "is_host_file": False, "content": "synthetic-private-file-content", "extra_secret": "synthetic-secret"}]}
+        with patch.object(rpc, "api", return_value=value):
+            result = rpc.handle({"operation":"api", "method":"GET", "path":f"/applications/{CANARY}/storages"}, CONFIG)
+        self.assertEqual(result["file_storages"], [{"fs_path":"/fixed/source", "mount_path":"/fixed/target:ro", "is_directory":True,"is_host_file":False,"hasContent":True}])
+        self.assertNotIn("synthetic",json.dumps(result))
 
     def test_override_flags_do_not_return_command_or_embedded_secrets(self):
         value = {"ports_mappings": "3002:3002", "custom_labels": "traefik-secret",

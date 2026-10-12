@@ -461,8 +461,13 @@ accepted provider CAS/recovery-baseline qualification.
 The existing normal-canary controller must admit exactly the two preserved named
 SQLite/backup volumes plus five fixed canary host binds: installation, runtime keys,
 reader configuration and bundle mirror read-only; shared fence read-write. Coolify
-4.4.6 emits `host_path:mount_path` verbatim, so native storage mount paths include
-`:ro`/`:rw`; no custom Docker command or routing override is needed. Runtime gets
+4.4.6 creates new host binds as native Directory records (`file_storages` with
+`is_directory=true`, `is_host_file=false`, no content), and emits `fs_path:mount_path`;
+legacy persistent records use `host_path:mount_path`. Admit either exact five-bind
+representation, not mixed/arbitrary file mounts. Storage mount paths include
+`:ro`/`:rw`; no custom Docker command or routing override is needed. The API's named
+volume name is already the complete Docker name; do not prepend the UUID again.
+Runtime gets
 only verification/HMAC generations and scoped reader credentials, never signer,
 writer or age recovery identity.
 
