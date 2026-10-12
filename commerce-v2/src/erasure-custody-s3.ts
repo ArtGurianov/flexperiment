@@ -8,13 +8,15 @@ function refuse(): never { throw new ErasureLedgerError("ERASURE_REMOTE_OPERATIO
  * operational admission. No default credential chain, redirects, retries, list or delete API. */
 export function createErasureS3Custody(input: { endpoint: string; region: string; bucket: string;
   prefix: string; scope: "canary" | "production"; accessKeyId: string; secretAccessKey: string;
+  expectedBucketOwner?: string;
   requestHandler?: S3ClientConfig["requestHandler"] }): ErasureCustodyObjects & { close(): void } {
   let url: URL;
   try { url = new URL(input.endpoint); } catch { return refuse(); }
   if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash || url.pathname !== "/"
     || !/^[a-z0-9-]{1,64}$/.test(input.region) || !/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(input.bucket)
     || !["canary", "production"].includes(input.scope) || input.prefix !== `flexperiment/erasure/${input.scope}/`
-    || !input.accessKeyId || !input.secretAccessKey) refuse();
+    || !input.accessKeyId || !input.secretAccessKey
+    || input.expectedBucketOwner !== undefined && !/^[^\r\n]{1,128}$/.test(input.expectedBucketOwner)) refuse();
   const client = new S3Client({ endpoint: url.origin, region: input.region, forcePathStyle: true,
     maxAttempts: 1, followRegionRedirects: false, requestChecksumCalculation: "WHEN_REQUIRED",
     responseChecksumValidation: "WHEN_REQUIRED", requestHandler: input.requestHandler,
@@ -28,13 +30,13 @@ export function createErasureS3Custody(input: { endpoint: string; region: string
     if (!bytes.length || bytes.length > CUSTODY_MAX_BYTES) refuse();
     try {
       await client.send(new PutObjectCommand({ Bucket: bucket, Key: key(name), Body: bytes,
-        ContentType: "application/json", CacheControl: "no-store", ...conditional }), { abortSignal: AbortSignal.timeout(10_000) });
+        ExpectedBucketOwner: input.expectedBucketOwner, ContentType: "application/json", CacheControl: "no-store", ...conditional }), { abortSignal: AbortSignal.timeout(10_000) });
     } catch { refuse(); } // Includes 409/412/lost response: GET-only reconciliation, never retry.
   };
   return {
     async read(name) {
       try {
-        const response = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key(name) }),
+        const response = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key(name), ExpectedBucketOwner: input.expectedBucketOwner }),
           { abortSignal: AbortSignal.timeout(10_000) });
         const body = response.Body;
         if (!(body instanceof Readable) || !response.ETag || !/^"[^"\r\n]{1,128}"$/.test(response.ETag)

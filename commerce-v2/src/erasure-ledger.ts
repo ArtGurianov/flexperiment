@@ -46,6 +46,7 @@ const canonical = (value: unknown): string => {
 };
 const hash = (value: unknown) => createHash("sha256").update(canonical(value)).digest("hex");
 const genesis = (environment: Scope) => hash({ version: 1, scope: environment, type: "flexperiment-erasure-genesis" });
+export const erasureGenesisHash = genesis;
 const parse = <T>(schema: z.ZodType<T>, value: unknown): T => {
   const result = schema.safeParse(value);
   return result.success ? result.data : refuse("ERASURE_LEDGER_INVALID");
@@ -163,11 +164,63 @@ export class VerifiedErasureLedger {
     Object.freeze(bundle.entries); Object.freeze(bundle);
     return new VerifiedErasureLedger(bundle, checkedAt, verificationAuthority);
   }
+  /** Trusted uncached custody adapter only, not an HTTP/body-to-capability parser.
+   * The adapter authenticates the provider, signatures and complete current head
+   * history. No signer/nonce authority is installed in the consumer. */
+  static async readCurrent(input: { scope: Scope; keys: ErasureKeys;
+    read: () => Promise<{ bundle: unknown; sequence: number; headHash: string }>; now?: () => Date }) {
+    const now = input.now ?? (() => new Date()); const started = now().getTime();
+    let current: Awaited<ReturnType<typeof input.read>>;
+    try { current = await input.read(); } catch { return refuse("ERASURE_CURRENT_CUSTODY_UNAVAILABLE"); }
+    const checkedAt = now().getTime();
+    if (!Number.isFinite(started) || !Number.isFinite(checkedAt) || checkedAt < started || checkedAt - started > 60_000) {
+      refuse("ERASURE_CURRENT_READ_EXPIRED");
+    }
+    const bundle = validateBundle(current.bundle, input.scope, input.keys);
+    if (current.sequence !== bundle.entries.length || current.headHash !== (bundle.entries.at(-1)?.hash ?? genesis(input.scope))
+      || (bundle.entries.at(-1) && Date.parse(bundle.entries.at(-1)!.body.recordedAt) > checkedAt)) {
+      refuse("ERASURE_LEDGER_STALE_OR_INCOMPLETE");
+    }
+    for (const entry of bundle.entries) { Object.freeze(entry.body.subject); Object.freeze(entry.body); Object.freeze(entry); }
+    Object.freeze(bundle.entries); Object.freeze(bundle);
+    return new VerifiedErasureLedger(bundle, checkedAt, verificationAuthority);
+  }
   assertFresh(now = new Date()) {
     if (!verifiedCapabilities.has(this)) refuse("ERASURE_ADMISSION_INVALID");
     const age = now.getTime() - this.verifiedAt;
     if (!Number.isFinite(age) || age < 0 || age > 60_000) refuse("ERASURE_ADMISSION_EXPIRED");
   }
+}
+
+/** Nonmutating owner export. Unlike store construction, inspection/read does not
+ * create a journal, triggers or genesis. Used by the one-shot CLI, not Commerce. */
+export function readOwnerErasureBundle(input: { directory: string; scope: Scope; keys: ErasureKeys; forbiddenRoots: readonly string[] }) {
+  let db: Database.Database | undefined;
+  try {
+    if (!isAbsolute(input.directory) || !input.forbiddenRoots.length) refuse("ERASURE_STORAGE_INVALID");
+    const dir = lstatSync(input.directory); const resolved = realpathSync(input.directory);
+    if (!dir.isDirectory() || dir.isSymbolicLink() || dir.uid !== process.getuid?.() || (dir.mode & 0o777) !== 0o700) refuse("ERASURE_STORAGE_INVALID");
+    for (const root of input.forbiddenRoots) { const rel = relative(realpathSync(root), resolved);
+      if (!rel || rel !== ".." && !rel.startsWith("../") && !isAbsolute(rel)) refuse("ERASURE_STORAGE_NOT_INDEPENDENT"); }
+    const filename = join(resolved, "erasure-ledger.sqlite"); const file = lstatSync(filename);
+    if (!file.isFile() || file.isSymbolicLink() || file.nlink !== 1 || file.uid !== dir.uid || (file.mode & 0o777) !== 0o600) refuse("ERASURE_STORAGE_INVALID");
+    db = new Database(filename, { readonly: true, fileMustExist: true });
+    const connection = db;
+    return connection.transaction(() => {
+      if (connection.prepare("SELECT scope FROM erasure_identity").all().length !== 1
+        || (connection.prepare("SELECT scope FROM erasure_identity").get() as { scope: string }).scope !== input.scope) refuse("ERASURE_SCOPE_MISMATCH");
+      if ((connection.prepare("SELECT COUNT(*) AS n FROM erasure_entries").get() as { n: number }).n > 100_000) refuse("ERASURE_CUSTODY_CAPACITY_REVIEW_REQUIRED");
+      const rows = connection.prepare("SELECT sequence,request_id,entry_json FROM erasure_entries ORDER BY sequence").all() as { sequence: number; request_id: string; entry_json: string }[];
+      const entries = rows.map((r, i) => {
+        if (r.sequence !== i + 1 || r.entry_json.length > 4096) refuse("ERASURE_CHAIN_INVALID");
+        const entry = parse(entrySchema, JSON.parse(r.entry_json));
+        if (entry.body.sequence !== r.sequence || entry.body.requestId !== r.request_id) refuse("ERASURE_CHAIN_INVALID");
+        return entry;
+      });
+      return validateBundle({ version: 1, scope: input.scope, entries }, input.scope, input.keys);
+    })();
+  } catch (error) { if (error instanceof ErasureLedgerError) throw error; return refuse("ERASURE_STORAGE_INVALID"); }
+  finally { db?.close(); }
 }
 
 /** Owner-side store. Never embedded in merchant/editorial SQLite or their archives.
@@ -268,6 +321,17 @@ export class ErasureLedgerStore {
       if (error instanceof ErasureLedgerError) throw error;
       return refuse("ERASURE_APPEND_REFUSED");
     }
+  }
+  /** Explicit disaster recovery of exact existing signatures into an EMPTY journal.
+   * Only a fresh remotely verified capability; never resign/reorder old events. */
+  restoreVerified(proof: VerifiedErasureLedger, now = new Date()) {
+    VerifiedErasureLedger.prototype.assertFresh.call(proof, now);
+    const recovered = validateBundle(proof.bundle, this.#options.scope, this.#options.keys);
+    this.#db.transaction(() => {
+      if (this.export().entries.length) refuse("ERASURE_REMOTE_INITIALIZATION_REFUSED");
+      const insert = this.#db.prepare("INSERT INTO erasure_entries(sequence,request_id,entry_json) VALUES (?,?,?)");
+      for (const entry of recovered.entries) insert.run(entry.body.sequence, entry.body.requestId, canonical(entry));
+    }).immediate();
   }
   close() { this.#db.close(); }
 }

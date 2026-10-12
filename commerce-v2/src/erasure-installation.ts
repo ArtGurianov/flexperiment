@@ -10,7 +10,8 @@ const authority = Object.freeze({});
 const base = { version: z.literal(1), installationId: z.string().uuid(), scope: z.enum(["canary", "production"]) };
 const policySchema = z.discriminatedUnion("state", [
   z.object({ ...base, state: z.literal("NEVER_INSTALLED") }).strict(),
-  z.object({ ...base, state: z.literal("REQUIRED"), fenceDirectory: z.string().max(1024).refine(isAbsolute) }).strict(),
+  z.object({ ...base, state: z.literal("REQUIRED"), fenceDirectory: z.string().max(1024).refine(isAbsolute),
+    readerBindingSha256: z.string().regex(/^[a-f0-9]{64}$/).optional() }).strict(),
 ]);
 type Policy = z.infer<typeof policySchema>;
 function refuse(code: string): never { throw new ErasureLedgerError(code); }
@@ -42,6 +43,10 @@ export class ErasureInstallationEvidence {
       refuse("ERASURE_INSTALLATION_BINDING_MISMATCH");
     }
     return true;
+  }
+  static assertReaderBinding(evidence: ErasureInstallationEvidence, digest: string) {
+    if (!admitted.has(evidence) || evidence.policy.state !== "REQUIRED"
+      || evidence.policy.readerBindingSha256 !== digest) refuse("ERASURE_INSTALLATION_READ_BINDING_MISMATCH");
   }
   static read(environment: Readonly<Record<string, string | undefined>>, options?: {
     // Trusted filesystem adapter seam for isolated tests only. Actual entrypoints

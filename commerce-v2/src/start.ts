@@ -1,6 +1,7 @@
 // Normal application behavior is unchanged. Restricted foundation boot does not
 // construct Better Auth, email delivery, Kinescope or the F7 payment rail.
 export {};
+process.umask(0o077);
 async function start() {
   if (process.env.COMMERCE_V2_FOUNDATION_MODE === "true") {
     const { startFoundation } = await import("./foundation");

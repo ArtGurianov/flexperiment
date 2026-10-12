@@ -12,9 +12,10 @@ afterEach(() => {
 /** Real permission/file checks; synthetic kernel mount adapter for non-root host
  * unit tests. Actual-image CI additionally verifies the real root-owned ro mount. */
 export function installationFixture(state: "NEVER_INSTALLED" | "REQUIRED", fenceDirectory = "/fixture/fence",
-  scope: "canary" | "production" = "canary") {
+  scope: "canary" | "production" = "canary", readerBindingSha256?: string) {
   const directory = mkdtempSync(join(tmpdir(), "erasure-host-admission-")); directories.push(directory);
-  const policy = { version: 1, installationId: randomUUID(), scope, state, ...(state === "REQUIRED" ? { fenceDirectory } : {}) };
+  const policy = { version: 1, installationId: randomUUID(), scope, state, ...(state === "REQUIRED" ? { fenceDirectory,
+    ...(readerBindingSha256 ? { readerBindingSha256 } : {}) } : {}) };
   writeFileSync(join(directory, "installation.json"), JSON.stringify(policy), { mode: 0o444 });
   chmodSync(directory, 0o555);
   const options = { directory, ownerUid: process.getuid!(), mountInfo: `1 0 0:1 / ${directory} ro - tmpfs fixture rw\n` };

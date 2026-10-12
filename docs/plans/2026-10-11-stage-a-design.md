@@ -349,3 +349,103 @@ Focused prerequisite commit kept separate from fencing changes within existing
 admission are required for the composed source. No live
 deployment, migrations, production/V1/Refref/routing/secrets/activation. LIVE_ERASURE
 and legal release remain HOLD; existing ART-232/179/41 only, no new issues.
+
+## Library integration under fixed threat model — 12.10.2026
+
+Authority: owner-approved [revision 2fd8b780](https://github.com/ArtGurianov/flexperiment/blob/2fd8b7805e3b6308394f92744cf6eeb3c6047238/docs/plans/2026-10-11-stage-a-design.md#threat-model--%D0%BE%D0%B4%D0%B8%D0%BD-vps--cloudru).
+This section supersedes earlier installation requirements for an off-VPS HTTP
+authority. One existing VPS/Coolify + Cloud.ru; no new daemon, server or mandatory
+`/v1/erasure/read`. In scope: stale backups, accidental rollback/configuration,
+VPS loss, partial writes/lost ACK, concurrent writers/sends. Malicious root and
+deliberate privileged ledger tampering are out of scope. Normal secret custody,
+permissions, signature verification and fail-closed remain required.
+
+### Read admission, not another ledger
+
+`erasure-library-read.ts` uses a scoped read-only AWS SDK identity with explicit
+Cloud.ru endpoint/region/bucket/prefix/expected owner and no implicit credentials,
+PUT/Delete, redirects or retry. Each admission reads the actual current signed
+head, exact encrypted packet, matching full signed bundle and a second head. The
+local bundle is an owner-exported **existing ErasureBundle format**, mounted RO,
+not independent authority or an ACK. Stale/missing mirror, failed read, missing
+key generation, different scope/recipient, corrupt packet or a fork keeps CLOSED.
+Runtime receives verification/HMAC generations + read credential only: no private
+signer, age recovery identity, writer credential or writable owner journal.
+
+Cold-reader admission checks retained signed head versions to detect accidental
+remote rollback even after losing the local prefix. Versioning must be Enabled;
+null/duplicate/missing versions, delete markers and incomplete pagination fail
+closed. Bounds: 10 pages of 100 versions, batches of 8 version reads. Crossing
+the history/ciphertext capacity is a separate review, never permission to discard
+old history. The checked historical prefix is retained in-process; every subsequent
+read still obtains uncached current head/packet/head and rejects a lower/forked
+prefix. This is **not** proof of Cloud.ru consistency or anti-malicious-root defense.
+
+Protected installation record remains v1; REQUIRED additionally pins
+`readerBindingSha256` for scope + endpoint/region + bucket/prefix + expected bucket
+owner + recipient digest. Actual library startup and owner CLI require this pin;
+old trusted core-test seams are not a runtime fallback. Runtime configuration file
+and bundle must be UID-app 0600 regular single-link files in independently
+RO-mounted directories outside merchant/fence roots. Kernel mountinfo is checked.
+Missing REQUIRED evidence, flag downgrade and foundation fallback remain refused.
+Startup umask 0077 protects newly created SQLite/WAL files; it neither repairs nor
+qualifies existing live permissions.
+
+### Small owner-only CLI, no live installation in this change
+
+Run from the admitted image/operator namespace with the same admitted app UID,
+fixed root-owned RO installation record, an exclusive shared fence and owner-only
+0700 custody/mirror directories:
+
+```sh
+node --import tsx commerce-v2/src/erasure-owner-cli.ts --config /private/owner.json
+```
+
+The 0600 JSON config explicitly pins canary scope, existing merchant databasePath,
+ledgerDirectory, fenceDirectory, mirrorFile, keysFile, subjectKeyId, signer keyId
+and privateKeyFile, age **public recipient**, remote endpoint/region/bucket/expected
+owner and separate read/write key-file paths; optional private authEnvironmentFile
+contains the existing Better Auth secret/origins. No secret values in argv, reports,
+CI, env publication or application config. Operation is strict bounded JSON on
+stdin. Supported explicit operations:
+
+- `inspect`: metadata only; never create/query remote or claim admission.
+- `initialize-fence`: new CLOSED control journal only; existing file is refused.
+- `initialize-custody`: explicit empty owner journal/conditional remote genesis;
+  no automatic initialization from a failed read.
+- `resume-initialization`: same empty journal after interrupted initialization;
+  read-first, reuse exact packet, never overwrite committed head or create keys.
+- `read`: validate current remote custody, no private signer/write-key access.
+- `publish-pending`: same pending journal after ambiguous ACK; GET-first, no new
+  request or replay of an already committed PUT. Remains CLOSED.
+- `reconcile`: fresh remote read → mirror export → LIVE purge under drain; no bank,
+  new ledger entry or PUT. Unknown sends/crashed owner claims stay HOLD.
+- `recover-ledger`: absent local journal only, exact retained signed entries from
+  owner-recovered bundle verified against latest remote history/packet. No resigning,
+  new key generation or PUT; remains CLOSED until boot/restore admission.
+- `admit`: requestId + authenticated Cookie/approved Origin through stdin, identity
+  derived by real Better Auth. Raw email/user claims are refused. Drain → append →
+  remote durability ACK → fsynced atomic mirror → purge → fresh read → reopen.
+  Mirror/ACK failure leaves CLOSED. Manual email case still needs verified identity.
+
+After VPS loss, escrowed generations and the current Cloud.ru ciphertext must be
+recovered privately; use existing age recovery offline to obtain the exact bundle.
+Do not restore an old owner journal/fence as authority. `recover-ledger` rejects a
+stale bundle, unverifiable remote state or existing journal; actual runtime boot
+still uses BOOT_RESTORE and invalidates restored sessions before traffic. CLI never
+clears UNKNOWN leases or owner claims by TTL. Those require independently evidenced
+operator reconciliation, not automatic repair. Processor deletion and old/offline
+archive disposition remain explicitly PENDING rather than implied by SQLite purge.
+
+### Remaining operational gates (ART-232 / ART-179 / ART-41)
+
+**EXECUTION_HOLD**: synthetic real-SDK/SQLite/age/auth tests are engineering evidence,
+not operational admission. Before installation separately qualify Cloud.ru endpoint
+and expected-owner compatibility, versioning/history retention and read IAM,
+conditional If-None-Match/If-Match behavior and concurrent CAS, durable read-back/lost
+ACK, isolated namespace, writer authority, key escrow and loss-of-VPS recovery.
+Inventory every SQLite writer and migrations/jobs/mail; one shared fence, exclusive
+replacement (no overlapping old/new writers), independent RO record/read mirror and
+actual permissions are mandatory. Existing backup timers/evidence remain unchanged.
+No deployment, live migration, custody initialization, public registration, legal
+activation, marketing, payment, production/V1/Refref change or F9 is admitted here.

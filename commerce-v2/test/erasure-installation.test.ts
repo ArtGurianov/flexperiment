@@ -23,7 +23,7 @@ describe("independent non-env installation admission", () => {
   it.each([undefined, "false"])("refuses installed → %s independently of merchant facts", async enabled => {
     const fixture = installationFixture("REQUIRED"); const read = vi.fn(async () => { throw new Error("SHOULD_NOT_FETCH"); });
     await expect(prepareErasureRuntime({ db: {} as Database.Database, environment: { ...environment, ERASURE_FENCING_ENABLED: enabled },
-      forbiddenRoots: ["/merchant"], installation: fixture.read(), fetcher: read })).rejects.toThrow("DOWNGRADE_REFUSED");
+      forbiddenRoots: ["/merchant"], installation: fixture.read(), libraryRead: read })).rejects.toThrow("DOWNGRADE_REFUSED");
     expect(read).not.toHaveBeenCalled();
   });
   it("an older merchant SQLite cannot erase installation evidence", async () => {
