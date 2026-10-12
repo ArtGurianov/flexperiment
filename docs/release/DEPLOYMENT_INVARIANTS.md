@@ -1,5 +1,8 @@
 # Deployment invariants
 
+> **v1 archive retention (ART-160):** The encrypted v1 offline insurance backup from 2026-09-29 has ciphertext SHA-256 `d666becc96298f8d4adc70de45c22112953379d43e8c157a40693167c309d410`. The owner-held archive and separate recovery key are intentionally outside the production application and its keys. Deletion is scheduled for **2027-09-29**; independently verify deletion and record evidence at that date. This archive is not a supported source for v2 data migration/backfill. Avoid copying local archive/key paths into public operating instructions.
+
+
 What must be true for a deploy to be safe, and who enforces it. It describes
 the system as it is. Where an invariant is enforced by code, the code is named;
 where it is proved by a test, the test is named in
@@ -547,8 +550,8 @@ database of its own.
 **Why that is admissible.** The rule above exists because external evidence - a
 payment, an acceptance, a consent, a register submission, a subscriber -
 outlives the database that recorded it. Retiring a lineage is safe only when no
-such evidence is left open. The read-only production audit (F1.4; the script
-and both of its runs are recorded in Linear, ART-155) found no external evidence
+such evidence is left open. The read-only production audit (F1.4; the executable script and both historical aggregate runs are preserved in
+`docs/release/V1_EVIDENCE_AUDIT.md` (source: Linear ART-155)) found no external evidence
 outside v1's own certification runs.
 
 The runs themselves are not all finished, and nothing here claims they are.

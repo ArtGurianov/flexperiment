@@ -1,3 +1,5 @@
+> **Historical scope:** This document describes the frozen **v1 commerce runtime** (including direct Точка callbacks and `/v1/public/checkouts`). Do **not** apply its payment execution, callback, or checkout steps to Commerce v2. Commerce v2 uses the Refref merchant checkout protocol documented in `docs/refref-checkout-protocol.md` and the v2 merchant schema.
+
 # Commerce runtime operations
 
 The public Next.js app remains a static export. The separately deployed single
