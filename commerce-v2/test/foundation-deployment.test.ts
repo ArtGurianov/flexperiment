@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { admitRelease, deployFoundation, deployNormalCanary, normalCanaryOrigins, validateApp, validateCheckout, verifyRuntime } from "../../scripts/v2/deployment.mjs";
+import { admitRelease, deployFoundation, deployNormalCanary, normalCanaryOrigins, validateApp, validateCheckout, verifyRuntime,
+  erasureCanaryEnvironment, erasureCanaryMounts } from "../../scripts/v2/deployment.mjs";
 import { readFileSync } from "node:fs";
 import { parse } from "yaml";
 
@@ -72,6 +73,79 @@ function normalFixture() {
   return { ...f, io: { ...f.io, snapshot: vi.fn(async () => ({ sha256: "f".repeat(64) })),
     backupRuntime: vi.fn(async () => ({ filename: "encrypted.age", sha256: "c".repeat(64), size: 100 })) } };
 }
+
+function erasureFixture() {
+  const f = normalFixture();
+  for (const [key, value] of Object.entries(erasureCanaryEnvironment)) f.env.canary.push({key, value,
+    is_runtime: true, is_buildtime: false, is_preview: false, present: true, length: value.length});
+  for (const [i, mount] of erasureCanaryMounts.entries()) f.storage.canary.persistent_storages.push({
+    name: ids.canary + "-erasure-" + i, mount_path: mount.destination + (mount.rw ? ":rw" : ":ro"), host_path: mount.source as never,
+  });
+  const original = f.io.waitRuntime.getMockImplementation()!;
+  f.io.waitRuntime.mockImplementation(async target => {
+    const result = await original(target);
+    result.mounts = result.mounts.slice(0, 2);
+    result.mounts.push(...erasureCanaryMounts.map(mount => ({type: "bind", ...mount}) as never));
+    Object.assign(result.ready.capabilities, {erasure: "qualified"});
+    return result;
+  });
+  return {...f, io: {...f.io, erasureAdmission: vi.fn(async () => ({qualified: true, sourceCommit: sha})),
+    stopCanary: vi.fn(async () => {}), assertNoWriters: vi.fn(async () => ({exclusive: true}))}};
+}
+
+describe("canary-only erasure host installation consumption", () => {
+  it("admits exactly five explicit custody binds, then stops and proves exclusivity before enqueue", async () => {
+    const {io} = erasureFixture();const result = await deployNormalCanary(sha, io);
+    expect(io.erasureAdmission).toHaveBeenCalledWith("canary", sha);
+    expect(io.stopCanary).toHaveBeenCalledWith("canary");
+    expect(io.stopCanary.mock.invocationCallOrder[0]).toBeLessThan(io.assertNoWriters.mock.invocationCallOrder[0]);
+    expect(io.assertNoWriters.mock.invocationCallOrder[0]).toBeLessThan(io.deploy.mock.invocationCallOrder[0]);
+    expect(io.deploy).toHaveBeenCalledOnce();expect(io.restart).not.toHaveBeenCalled();
+    expect(result.canary).toMatchObject({erasure: "QUALIFIED", replacement: "EXCLUSIVE", productionUnchanged: true});
+  });
+  it.each(["rw-marker", "foreign-source", "owner-secrets", "missing-bind", "duplicate-bind"])("rejects %s without stopping or enqueuing", async kind => {
+    const {io, storage} = erasureFixture();const mounts = storage.canary.persistent_storages;
+    if(kind === "rw-marker") mounts[2].mount_path = "/etc/flexperiment-erasure:rw";
+    if(kind === "foreign-source") mounts[2].host_path = "/var/lib/flexperiment-erasure-production/installation" as never;
+    if(kind === "owner-secrets") mounts[2].host_path = "/var/lib/flexperiment-erasure-canary/owner" as never;
+    if(kind === "missing-bind") mounts.pop();
+    if(kind === "duplicate-bind") mounts[3] = {...mounts[2]};
+    await expect(deployNormalCanary(sha, io)).rejects.toThrow();
+    expect(io.stopCanary).not.toHaveBeenCalled();expect(io.deploy).not.toHaveBeenCalled();
+  });
+  it.each(["disabled", "preview", "buildtime", "foreign-scope", "signer"])("rejects %s erasure inputs before mutations", async kind => {
+    const {io, env} = erasureFixture();const enabled = env.canary.find(row => row.key === "ERASURE_FENCING_ENABLED")!;
+    if(kind === "disabled") enabled.value = "false";
+    if(kind === "preview") env.canary.push({...enabled, is_preview: true});
+    if(kind === "buildtime") enabled.is_buildtime = true;
+    if(kind === "foreign-scope") env.canary.find(row => row.key === "ERASURE_SCOPE")!.value = "production";
+    if(kind === "signer") env.canary.push({...enabled, key: "ERASURE_SIGNING_PRIVATE_KEY"});
+    await expect(deployNormalCanary(sha, io)).rejects.toThrow();
+    expect(io.casRef).not.toHaveBeenCalled();expect(io.stopCanary).not.toHaveBeenCalled();
+  });
+  it("does not stop a healthy predecessor without independently admitted recovery/host custody", async () => {
+    const {io} = erasureFixture();io.erasureAdmission.mockResolvedValue({qualified: false, sourceCommit: sha});
+    await expect(deployNormalCanary(sha, io)).rejects.toThrow("V2_ERASURE_HOST_NOT_ADMITTED");
+    expect(io.stopCanary).not.toHaveBeenCalled();expect(io.casRef).not.toHaveBeenCalled();
+  });
+  it("a competing writer or failed stop prevents all deployment requests", async () => {
+    for(const kind of ["writer", "stop"]){const {io} = erasureFixture();
+      if(kind === "writer") io.assertNoWriters.mockResolvedValue({exclusive: false});
+      else io.stopCanary.mockRejectedValue(new Error("STOP_UNCONFIRMED"));
+      await expect(deployNormalCanary(sha, io)).rejects.toThrow();
+      expect(io.deploy).not.toHaveBeenCalled();expect(io.record).not.toHaveBeenCalled();}
+  });
+  it("consumes actual bind sources, kernel RW flags and qualified erasure readiness", async () => {
+    const {io, apps, env, storage} = erasureFixture();
+    const expected = validateApp(apps.canary, env.canary, storage.canary, "canary", ids.canary, "normal-canary");
+    const result = await io.waitRuntime("canary");
+    expect(() => verifyRuntime(result, sha, expected, "normal-canary")).not.toThrow();
+    Object.assign(result.mounts[2], {rw: true});expect(() => verifyRuntime(result, sha, expected, "normal-canary")).toThrow("V2_RUNTIME_VOLUME_DIFFERS");
+    Object.assign(result.mounts[2], {rw: false, source: "/foreign"});expect(() => verifyRuntime(result, sha, expected, "normal-canary")).toThrow("V2_RUNTIME_VOLUME_DIFFERS");
+    Object.assign(result.mounts[2], {source: erasureCanaryMounts[0].source});Object.assign(result.ready.capabilities, {erasure: "closed"});
+    expect(() => verifyRuntime(result, sha, expected, "normal-canary")).toThrow("V2_ERASURE_RUNTIME_NOT_QUALIFIED");
+  });
+});
 
 describe("ART-179 closed normal canary transition", () => {
   it("deploys canary once, preserves production and reports only API readiness", async () => {

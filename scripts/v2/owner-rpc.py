@@ -16,7 +16,113 @@ PUBLIC_ENV = {"NODE_ENV", "DEPLOY_ENV", "COMMERCE_V2_FOUNDATION_MODE", "COMMERCE
               "COMMERCE_V2_DATABASE_PATH", "COMMERCE_V2_BACKUP_PATH", "PORT", "MERCHANT_PROMOTION_PREFIX",
               "REFREF_READINESS_URL", "COMMERCE_V2_BACKUP_AGE_RECIPIENT",
               "PLATFORM_ORIGIN", "LAB_ORIGIN", "ADMIN_ORIGIN", "API_ORIGIN", "AUTH_EMAIL_PROVIDER",
-              "NOTISEND_FROM_EMAIL", "NOTISEND_FROM_NAME", "NOTISEND_REPLY_TO"}
+              "NOTISEND_FROM_EMAIL", "NOTISEND_FROM_NAME", "NOTISEND_REPLY_TO",
+              "ERASURE_FENCING_ENABLED", "ERASURE_SCOPE", "ERASURE_FENCE_DIRECTORY",
+              "ERASURE_VERIFICATION_KEYS_FILE", "ERASURE_LIBRARY_CONFIG_FILE"}
+ERASURE_ROOT = "/var/lib/flexperiment-erasure-canary"
+ERASURE_ENV = {"ERASURE_FENCING_ENABLED": "true", "ERASURE_SCOPE": "canary",
+               "ERASURE_FENCE_DIRECTORY": ERASURE_ROOT + "/fence",
+               "ERASURE_VERIFICATION_KEYS_FILE": "/etc/flexperiment-erasure-keys/verification.json",
+               "ERASURE_LIBRARY_CONFIG_FILE": "/etc/flexperiment-erasure-read/reader.json"}
+
+
+def erasure_environment(uuid):
+    rows = api("GET", "/applications/" + uuid + "/envs")
+    if any(row.get("is_preview") and row["key"].startswith("ERASURE_") for row in rows):
+        raise ValueError("ERASURE_PREVIEW_REFUSED")
+    main = [row for row in rows if not row.get("is_preview") and row["key"].startswith("ERASURE_")]
+    if len(main) != len(ERASURE_ENV):
+        raise ValueError("ERASURE_ENVIRONMENT_REFUSED")
+    for key, expected in ERASURE_ENV.items():
+        found = [row for row in main if row["key"] == key]
+        if len(found) != 1 or env_value(found[0]) != expected or found[0].get("is_buildtime") \
+                or found[0].get("is_runtime") is not True:
+            raise ValueError("ERASURE_ENVIRONMENT_REFUSED")
+
+
+def erasure_admission(uuid, sha):
+    if not re.fullmatch(r"[0-9a-f]{40}", sha or ""):
+        raise ValueError("SOURCE_INVALID")
+    erasure_environment(uuid)
+    journal = private_json(ROOT + "/erasure-admission.json")
+    if journal.get("sourceCommit") != sha or journal.get("recovery") != "PASS":
+        raise ValueError("ERASURE_ADMISSION_REFUSED")
+    directory = ERASURE_ROOT + "/installation"
+    record = directory + "/installation.json"
+    for path, mode, kind in [(directory, 0o555, stat.S_ISDIR), (record, 0o444, stat.S_ISREG)]:
+        info = os.lstat(path)
+        if info.st_uid != 0 or stat.S_IMODE(info.st_mode) != mode or not kind(info.st_mode):
+            raise ValueError("ERASURE_INSTALLATION_PERMISSIONS")
+    marker = os.lstat(record)
+    if marker.st_nlink != 1 or not 0 < marker.st_size <= 4096:
+        raise ValueError("ERASURE_INSTALLATION_PERMISSIONS")
+    with open(record, encoding="utf8") as source:
+        policy = json.load(source)
+    if policy.get("version") != 1 or policy.get("scope") != "canary" or policy.get("state") != "REQUIRED" \
+            or policy.get("fenceDirectory") != ERASURE_ENV["ERASURE_FENCE_DIRECTORY"] \
+            or policy.get("installationId") != journal.get("installationId") \
+            or not re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", policy.get("installationId", "")) \
+            or policy.get("readerBindingSha256") != journal.get("readerBindingSha256") \
+            or not re.fullmatch(r"[0-9a-f]{64}", policy.get("readerBindingSha256", "")):
+        raise ValueError("ERASURE_INSTALLATION_BINDING")
+    for subdirectory, filename in [("runtime-keys", "verification.json"), ("runtime-read", "reader.json"), ("mirror", "bundle.json")]:
+        parent = ERASURE_ROOT + "/" + subdirectory
+        info = os.lstat(parent)
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != 1000 or stat.S_IMODE(info.st_mode) != 0o700:
+            raise ValueError("ERASURE_RUNTIME_FILE_PERMISSIONS")
+        path = parent + "/" + filename
+        info = os.lstat(path)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != 1000 \
+                or stat.S_IMODE(info.st_mode) != 0o600:
+            raise ValueError("ERASURE_RUNTIME_FILE_PERMISSIONS")
+    result = json.loads(run(["/usr/local/bin/flexperiment-erasure", "read"]))
+    if result.get("state") != "REMOTE_VERIFIED" or result.get("scope") != "canary":
+        raise ValueError("ERASURE_CURRENT_CUSTODY_REFUSED")
+    return {"qualified": True, "sourceCommit": sha}
+
+
+def exclusive_canary(uuid):
+    if container(uuid, True):
+        return {"pending": True, "exclusive": False}
+    app = api("GET", "/applications/" + uuid)
+    if not str(app.get("status", "")).startswith(("exited", "stopped")):
+        return {"pending": True, "exclusive": False}
+    volumes = api("GET", "/applications/" + uuid + "/storages")["persistent_storages"]
+    found = [row for row in volumes if row["mount_path"] == "/var/lib/flexperiment-v2" and not row.get("host_path")]
+    if len(found) != 1 or not found[0]["name"].startswith(uuid + "-"):
+        raise ValueError("ERASURE_MERCHANT_VOLUME_REFUSED")
+    name = uuid + "-" + found[0]["name"]
+    volume = json.loads(run(["docker", "volume", "inspect", name]))[0]
+    data = os.path.realpath(volume["Mountpoint"])
+    running = run(["docker", "ps", "-q"]).split()
+    others = json.loads(run(["docker", "inspect", *running])) if running else []
+    if any(mount.get("RW") and os.path.realpath(mount["Source"]) == data for c in others for mount in c["Mounts"]):
+        raise ValueError("ERASURE_COMPETING_MOUNT")
+    identities = set()
+    for suffix in ("commerce.sqlite", "commerce.sqlite-wal"):
+        path = os.path.join(data, suffix)
+        if os.path.exists(path):
+            info = os.stat(path); identities.add((info.st_dev, info.st_ino))
+    if not identities:
+        raise ValueError("ERASURE_MERCHANT_DATABASE_MISSING")
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        try:
+            for fd in os.listdir("/proc/" + pid + "/fd"):
+                try:
+                    info = os.stat("/proc/" + pid + "/fd/" + fd)
+                    if (info.st_dev, info.st_ino) not in identities:
+                        continue
+                    with open("/proc/" + pid + "/fdinfo/" + fd) as source:
+                        flags = next(line.split()[1] for line in source if line.startswith("flags:"))
+                    if int(flags, 8) & 3:
+                        raise ValueError("ERASURE_COMPETING_SQLITE_WRITER")
+                except (FileNotFoundError, ProcessLookupError):
+                    continue
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+    return {"exclusive": True}
 
 
 def env_value(row):
@@ -122,6 +228,21 @@ def handle(message, config):
     if target not in apps or not re.fullmatch(r"[a-z0-9]{20,32}", apps[target]):
         raise ValueError("V2_TARGET_INVALID")
     uuid = apps[target]
+    if operation in ("erasure-admission", "stop-canary", "exclusive-canary"):
+        if target != "canary":
+            raise ValueError("ERASURE_CANARY_ONLY")
+        if operation == "erasure-admission":
+            return erasure_admission(uuid, message.get("sha"))
+        erasure_environment(uuid)
+        if operation == "exclusive-canary":
+            return exclusive_canary(uuid)
+        current = app_safe(api("GET", "/applications/" + uuid))
+        if current["fqdn"] or current["portsMapped"] or current["customRouting"] or current["hasUnsafeOverrides"] \
+                or current["name"] != "flexperiment-commerce-v2-canary" \
+                or current["dockerfile_location"] != "/Dockerfile.commerce-v2":
+            raise ValueError("V2_APP_NOT_ISOLATED")
+        api("POST", "/applications/" + uuid + "/stop")
+        return {"requested": True}
     if operation == "deploy" and message.get("mode", "foundation") not in ("foundation", "normal-canary"):
         raise ValueError("DEPLOYMENT_MODE_REFUSED")
     if operation == "deploy" and message.get("mode") == "normal-canary":
@@ -154,11 +275,23 @@ def handle(message, config):
         # Aggregate only: exact secret continuity without exporting credentials.
         return {"sha256": hashlib.sha256(json.dumps(snapshot, sort_keys=True, separators=(",", ":")).encode()).hexdigest()}
     if operation in ("deploy", "restart"):
+        # A persistent host marker survives accidental env/controller rollback.
+        # Never queue legacy/foundation/restart once host installation is required.
+        if target == "canary" and os.path.lexists(ERASURE_ROOT + "/installation/installation.json") \
+                and (operation != "deploy" or message.get("mode") != "normal-canary"):
+            raise ValueError("ERASURE_EXCLUSIVE_CONTROLLER_REQUIRED")
         current = app_safe(api("GET", "/applications/" + uuid))
         if current["fqdn"] or current["portsMapped"] or current["customRouting"] or current["hasUnsafeOverrides"] \
                 or current["dockerfile_location"] != "/Dockerfile.commerce-v2" \
                 or current["name"] != ("flexperiment-commerce-v2" if target == "production" else "flexperiment-commerce-v2-canary"):
             raise ValueError("V2_APP_NOT_ISOLATED")
+        if operation == "deploy" and message.get("mode") == "normal-canary":
+            rows = api("GET", "/applications/" + uuid + "/envs")
+            if os.path.lexists(ERASURE_ROOT + "/installation/installation.json") \
+                    or any(row["key"].startswith("ERASURE_") for row in rows):
+                erasure_admission(uuid, message["sha"])
+                if exclusive_canary(uuid).get("exclusive") is not True:
+                    raise ValueError("ERASURE_REPLACEMENT_NOT_EXCLUSIVE")
         if operation == "restart":
             api("POST", "/applications/" + uuid + "/restart")
             return {"requested": True}
@@ -194,7 +327,8 @@ def handle(message, config):
         code = 'Promise.all(["identity","readyz"].map(async p=>{const r=await fetch("http://127.0.0.1:3002/"+p,{signal:AbortSignal.timeout(5000)});if(!r.ok)throw Error("NOT_READY");return r.json()})).then(([identity,ready])=>console.log(JSON.stringify({identity,ready}))).catch(()=>process.exit(1))'
         health = json.loads(run(["docker", "exec", cid, "node", "-e", code]))
         health.update({"containerId": metadata["Id"], "startedAt": metadata["startedAt"],
-                       "mounts": [{"type": m["Type"], "name": m.get("Name"), "destination": m["Destination"], "rw": m["RW"]} for m in metadata["Mounts"]],
+                       "mounts": [{"type": m["Type"], "name": m.get("Name"), "destination": m["Destination"], "rw": m["RW"],
+                                   **({"source": m["Source"]} if m["Type"] == "bind" else {})} for m in metadata["Mounts"]],
                        "identityMode": run(["docker", "exec", cid, "stat", "-c", "%a", "/app/.identity/identity.json"]).strip(),
                        "baked": json.loads(run(["docker", "exec", cid, "cat", "/app/.identity/identity.json"]))})
         return health

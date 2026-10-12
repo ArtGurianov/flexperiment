@@ -22,7 +22,129 @@ CONFIG = {"apps": {"canary": CANARY, "production": PRODUCTION}}
 SHA = "a" * 40
 
 
+def erasure_rows():
+    return [{"key": key, "value": value, "is_literal": True, "is_runtime": True,
+             "is_buildtime": False, "is_preview": False} for key, value in rpc.ERASURE_ENV.items()]
+
+
 class OwnerControl(unittest.TestCase):
+    def test_erasure_operations_are_canary_only_before_any_io(self):
+        with patch.object(rpc, "api") as api:
+            for operation in ("erasure-admission", "stop-canary", "exclusive-canary"):
+                with self.subTest(operation=operation), self.assertRaisesRegex(ValueError, "ERASURE_CANARY_ONLY"):
+                    rpc.handle({"operation": operation, "target": "production", "sha": SHA}, CONFIG)
+            api.assert_not_called()
+
+    def test_persistent_installation_refuses_foundation_or_restart_after_env_rollback(self):
+        with patch.object(rpc.os.path, "lexists", return_value=True), patch.object(rpc, "api") as api:
+            for operation in ("deploy", "restart"):
+                with self.subTest(operation=operation), self.assertRaisesRegex(ValueError, "ERASURE_EXCLUSIVE_CONTROLLER_REQUIRED"):
+                    rpc.handle({"operation": operation, "target": "canary", "sha": SHA}, CONFIG)
+            api.assert_not_called()
+
+    def test_erasure_environment_cannot_hide_preview_signer_or_disabled_fencing(self):
+        for mutate in [lambda rows: rows[0].update(value="false"),
+                       lambda rows: rows[0].update(is_buildtime=True),
+                       lambda rows: rows[0].update(is_runtime=False),
+                       lambda rows: rows.append({**rows[0], "is_preview": True}),
+                       lambda rows: rows.append({**rows[0], "key": "ERASURE_SIGNING_PRIVATE_KEY"})]:
+            rows = erasure_rows(); mutate(rows)
+            with patch.object(rpc, "api", return_value=rows), self.assertRaises(ValueError):
+                rpc.erasure_environment(CANARY)
+
+    def test_erasure_stop_uses_coolify_post_only_after_runtime_and_isolation_checks(self):
+        current = {"name": "flexperiment-commerce-v2-canary", "dockerfile_location": "/Dockerfile.commerce-v2"}
+        with patch.object(rpc, "api", side_effect=[erasure_rows(), current, {}]) as api:
+            self.assertEqual(rpc.handle({"operation": "stop-canary", "target": "canary"}, CONFIG), {"requested": True})
+            self.assertEqual(api.call_args_list, [call("GET", f"/applications/{CANARY}/envs"),
+                                                 call("GET", f"/applications/{CANARY}"),
+                                                 call("POST", f"/applications/{CANARY}/stop")])
+        with patch.object(rpc, "api", side_effect=[erasure_rows(), {**current, "fqdn": "https://public.example"}]) as api:
+            with self.assertRaisesRegex(ValueError, "V2_APP_NOT_ISOLATED"):
+                rpc.handle({"operation": "stop-canary", "target": "canary"}, CONFIG)
+            self.assertTrue(all(item.args[0] == "GET" for item in api.call_args_list))
+
+    def test_erasure_enqueue_rechecks_admission_and_zero_writers(self):
+        rows = erasure_rows() + [{"key": key, "value": value, "is_runtime": True} for key, value in {
+            "COMMERCE_V2_FOUNDATION_MODE": "false", "PAYMENT_MODE": "disabled",
+            "MARKETING_BROADCASTS_ENABLED": "false", "SOURCE_COMMIT": SHA}.items()]
+        current = {"name": "flexperiment-commerce-v2-canary", "dockerfile_location": "/Dockerfile.commerce-v2"}
+        for admission_failure, exclusive in [(ValueError("ERASURE_CURRENT_CUSTODY_REFUSED"), {"exclusive": True}),
+                                              (None, {"pending": True}), (None, {"exclusive": False})]:
+            with patch.object(rpc, "api", side_effect=[rows, current, rows]) as api, \
+                    patch.object(rpc, "erasure_admission", side_effect=admission_failure) as admission, \
+                    patch.object(rpc, "exclusive_canary", return_value=exclusive), self.assertRaises(ValueError):
+                rpc.handle({"operation": "deploy", "target": "canary", "mode": "normal-canary", "sha": SHA}, CONFIG)
+            admission.assert_called_once_with(CANARY, SHA)
+            self.assertTrue(all(item.args[0] == "GET" for item in api.call_args_list))
+
+    def test_exclusive_census_waits_for_stopped_app_without_touching_volume(self):
+        with patch.object(rpc, "container", return_value="still-running"), patch.object(rpc, "run") as run:
+            self.assertEqual(rpc.exclusive_canary(CANARY), {"pending": True, "exclusive": False}); run.assert_not_called()
+        with patch.object(rpc, "container", return_value=None), patch.object(rpc, "api", return_value={"status": "running:healthy"}), \
+                patch.object(rpc, "run") as run:
+            self.assertTrue(rpc.exclusive_canary(CANARY)["pending"]); run.assert_not_called()
+
+    def test_exclusive_census_checks_actual_named_volume_and_rw_mounts(self):
+        storage = {"persistent_storages": [{"name": CANARY + "-commerce-v2-data", "mount_path": "/var/lib/flexperiment-v2"}]}
+        with tempfile.TemporaryDirectory() as directory:
+            pathlib.Path(directory, "commerce.sqlite").touch()
+            def execute(args):
+                if args[:3] == ["docker", "volume", "inspect"]:
+                    self.assertEqual(args[3], CANARY + "-" + CANARY + "-commerce-v2-data")
+                    return json.dumps([{"Mountpoint": directory}])
+                if args == ["docker", "ps", "-q"]:
+                    return "other"
+                return json.dumps([{"Mounts": [{"RW": True, "Source": directory}]}])
+            with patch.object(rpc, "container", return_value=None), patch.object(rpc, "api", side_effect=[{"status": "exited:unhealthy"}, storage]), \
+                    patch.object(rpc, "run", side_effect=execute), self.assertRaisesRegex(ValueError, "ERASURE_COMPETING_MOUNT"):
+                rpc.exclusive_canary(CANARY)
+            with patch.object(rpc, "container", return_value=None), patch.object(rpc, "api", side_effect=[{"status": "exited:unhealthy"}, storage]), \
+                    patch.object(rpc, "run", side_effect=[json.dumps([{"Mountpoint": directory}]), ""]), \
+                    patch.object(rpc.os, "listdir", return_value=[]):
+                self.assertEqual(rpc.exclusive_canary(CANARY), {"exclusive": True})
+
+    def test_erasure_admission_requires_exact_source_recovery_and_remote_verification(self):
+        policy = {"version": 1, "scope": "canary", "state": "REQUIRED", "installationId": "e8616a4d-5087-422e-a9ca-cbde6bb85384",
+                  "fenceDirectory": rpc.ERASURE_ENV["ERASURE_FENCE_DIRECTORY"], "readerBindingSha256": "b" * 64}
+        journal = {"sourceCommit": SHA, "recovery": "PASS", "installationId": policy["installationId"],
+                   "readerBindingSha256": policy["readerBindingSha256"]}
+        def info(path):
+            installation = "/installation" in path
+            directory = path.endswith(("installation", "runtime-keys", "runtime-read", "mirror"))
+            mode = (stat.S_IFDIR if directory else stat.S_IFREG) | ((0o555 if directory else 0o444) if installation else (0o700 if directory else 0o600))
+            return type("Stat", (), {"st_uid": 0 if installation else 1000, "st_mode": mode, "st_nlink": 1, "st_size": 512})()
+        from unittest.mock import mock_open
+        with patch.object(rpc, "erasure_environment"), patch.object(rpc, "private_json", return_value=journal), \
+                patch.object(rpc.os, "lstat", side_effect=info), patch.object(rpc.os.path, "isfile", return_value=True), \
+                patch("builtins.open", mock_open(read_data=json.dumps(policy))), patch.object(rpc, "run", return_value='{"state":"REMOTE_VERIFIED","scope":"canary"}'):
+            self.assertEqual(rpc.erasure_admission(CANARY, SHA), {"qualified": True, "sourceCommit": SHA})
+            with patch.object(rpc, "run", return_value='{"state":"CLOSED","scope":"canary"}'), self.assertRaisesRegex(ValueError, "ERASURE_CURRENT_CUSTODY_REFUSED"):
+                rpc.erasure_admission(CANARY, SHA)
+            with patch.object(rpc, "private_json", return_value={**journal, "sourceCommit": "c" * 40}), self.assertRaisesRegex(ValueError, "ERASURE_ADMISSION_REFUSED"):
+                rpc.erasure_admission(CANARY, SHA)
+            with patch.object(rpc, "private_json", return_value={**journal, "recovery": "PENDING"}), self.assertRaisesRegex(ValueError, "ERASURE_ADMISSION_REFUSED"):
+                rpc.erasure_admission(CANARY, SHA)
+            with patch("builtins.open", mock_open(read_data=json.dumps({**policy, "version": 2}))), self.assertRaisesRegex(ValueError, "ERASURE_INSTALLATION_BINDING"):
+                rpc.erasure_admission(CANARY, SHA)
+
+    def test_exclusive_census_rejects_writable_database_or_wal_fd_but_not_reader(self):
+        from unittest.mock import mock_open
+        storage = {"persistent_storages": [{"name": CANARY + "-commerce-v2-data", "mount_path": "/var/lib/flexperiment-v2"}]}
+        identity = type("Stat", (), {"st_dev": 7, "st_ino": 11})()
+        for flags in ("0100000", "0100001", "0100002"):
+            with self.subTest(flags=flags), patch.object(rpc, "container", return_value=None), \
+                    patch.object(rpc, "api", side_effect=[{"status": "stopped"}, storage]), \
+                    patch.object(rpc, "run", side_effect=[json.dumps([{"Mountpoint": "/isolated/test"}]), ""]), \
+                    patch.object(rpc.os.path, "exists", return_value=True), patch.object(rpc.os, "stat", return_value=identity), \
+                    patch.object(rpc.os, "listdir", side_effect=[["123", "sys"], ["4"]]), \
+                    patch("builtins.open", mock_open(read_data="flags:\t" + flags + "\n")):
+                if flags == "0100000":
+                    self.assertEqual(rpc.exclusive_canary(CANARY), {"exclusive": True})
+                else:
+                    with self.assertRaisesRegex(ValueError, "ERASURE_COMPETING_SQLITE_WRITER"):
+                        rpc.exclusive_canary(CANARY)
+
     def main_result(self, raw, failure=None):
         stdout = io.StringIO()
         stdin = type("Input", (), {"buffer": io.BytesIO(raw)})()

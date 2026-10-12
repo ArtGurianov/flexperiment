@@ -82,6 +82,18 @@ async function run() {
   const proofs = await controller(sha, { apps, github, api, casRef, deploy, runtime, waitRuntime,
     snapshot: (target) => rpc({ operation: "snapshot", target }),
     backupRuntime: (target) => rpc({ operation: "backup-runtime", target }),
+    erasureAdmission: (target, source) => rpc({ operation: "erasure-admission", target, sha: source }),
+    stopCanary: (target) => rpc({ operation: "stop-canary", target }),
+    assertNoWriters: async (target) => {
+      const deadline = Date.now() + 90_000;
+      while (Date.now() < deadline) {
+        const result = await rpc({ operation: "exclusive-canary", target });
+        if (result.exclusive === true) return result;
+        if (result.pending !== true) throw new Error("V2_ERASURE_WRITERS_NOT_EXCLUSIVE");
+        await pause(2_000);
+      }
+      throw new Error("V2_ERASURE_STOP_TIMEOUT");
+    },
     restart: (target) => rpc({ operation: "restart", target }),
     storage: (target, command, marker) => rpc({ operation: "storage", target, command, marker }),
     archiveBackup: (target, backup) => rpc({ operation: "archive", target, filename: backup.filename }),
