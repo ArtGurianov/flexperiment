@@ -9,6 +9,21 @@ export const normalCanaryOrigins = {
   API_ORIGIN: "https://canary-api.flexperiment.ru",
 };
 
+// Fixed canary-only host custody; never merchant/editorial/backup directories.
+export const erasureCanaryMounts = [
+  { source: "/var/lib/flexperiment-erasure-canary/installation", destination: "/etc/flexperiment-erasure", rw: false },
+  { source: "/var/lib/flexperiment-erasure-canary/runtime-keys", destination: "/etc/flexperiment-erasure-keys", rw: false },
+  { source: "/var/lib/flexperiment-erasure-canary/runtime-read", destination: "/etc/flexperiment-erasure-read", rw: false },
+  { source: "/var/lib/flexperiment-erasure-canary/mirror", destination: "/etc/flexperiment-erasure-mirror", rw: false },
+  { source: "/var/lib/flexperiment-erasure-canary/fence", destination: "/var/lib/flexperiment-erasure-canary/fence", rw: true },
+];
+export const erasureCanaryEnvironment = {
+  ERASURE_FENCING_ENABLED: "true", ERASURE_SCOPE: "canary",
+  ERASURE_FENCE_DIRECTORY: "/var/lib/flexperiment-erasure-canary/fence",
+  ERASURE_VERIFICATION_KEYS_FILE: "/etc/flexperiment-erasure-keys/verification.json",
+  ERASURE_LIBRARY_CONFIG_FILE: "/etc/flexperiment-erasure-read/reader.json",
+};
+
 export function validateCheckout(source, head, dirty, origin) {
   if (!shaPattern.test(source) || head !== source || dirty) refuse("V2_CONTROLLER_CHECKOUT_DIFFERS");
   if (!["git@github.com:ArtGurianov/flexperiment.git", "https://github.com/ArtGurianov/flexperiment.git",
@@ -69,14 +84,37 @@ export function validateApp(app, env, storages, target, uuid, mode = "foundation
     }
     if (rows.some((entry) => /^AUTH_EMAIL_DELIVERY_(ENDPOINT|TOKEN)$/.test(entry.key) && entry.present)) refuse("V2_NORMAL_MAIL_RELAY_FORBIDDEN");
   }
-  if (storages.file_storages?.length || storages.persistent_storages?.length !== 2) refuse("V2_STORAGE_CONFIGURATION_DIFFERS");
-  const volumes = storages.persistent_storages;
+  const erasureRows = rows.filter(entry => entry.key.startsWith("ERASURE_"));
+  const erasure = erasureRows.length > 0;
+  if (erasure) {
+    if (mode !== "normal-canary" || target !== "canary" || erasureRows.length !== Object.keys(erasureCanaryEnvironment).length
+      || env.some(entry => entry.is_preview && entry.key.startsWith("ERASURE_"))) refuse("V2_ERASURE_SCOPE_REFUSED");
+    for (const [key, value] of Object.entries(erasureCanaryEnvironment)) {
+      const found = erasureRows.filter(entry => entry.key === key);
+      if (found.length !== 1 || found[0].value !== value || found[0].is_runtime !== true || found[0].is_buildtime !== false) refuse("V2_ERASURE_ENVIRONMENT_DIFFERS");
+    }
+  }
+  const directories = storages.file_storages ?? [];
+  const nativeDirectories = erasure && directories.length === erasureCanaryMounts.length;
+  if ((directories.length && !nativeDirectories) || storages.persistent_storages?.length !== (erasure && !nativeDirectories ? 7 : 2)) refuse("V2_STORAGE_CONFIGURATION_DIFFERS");
+  const volumes = storages.persistent_storages.filter(volume => !volume.host_path);
+  if (volumes.length !== 2) refuse("V2_VOLUME_NOT_ISOLATED");
   for (const path of [required.COMMERCE_V2_BACKUP_PATH, "/var/lib/flexperiment-v2"]) {
     const found = volumes.filter((volume) => volume.mount_path === path);
     if (found.length !== 1 || !found[0].name?.startsWith(`${uuid}-`) || found[0].host_path) refuse("V2_VOLUME_NOT_ISOLATED");
   }
   if (volumes[0].name === volumes[1].name) refuse("V2_VOLUME_NOT_ISOLATED");
-  return volumes.map((volume) => ({ name: volume.name, destination: volume.mount_path }));
+  const mounts = volumes.map((volume) => ({ name: volume.name, destination: volume.mount_path }));
+  if (erasure) for (const expected of erasureCanaryMounts) {
+    const found = nativeDirectories ? directories.filter(volume => volume.fs_path === expected.source)
+      : storages.persistent_storages.filter(volume => volume.host_path === expected.source);
+    // Native Directory mount emits fs_path:mount_path; legacy records use host_path.
+    if (found.length !== 1 || found[0].mount_path !== expected.destination + (expected.rw ? ":rw" : ":ro")
+      || (nativeDirectories ? found[0].is_directory !== true || found[0].is_host_file !== false || found[0].hasContent !== false
+        : !found[0].name?.startsWith(uuid + "-"))) refuse("V2_ERASURE_MOUNT_DIFFERS");
+    mounts.push({ type: "bind", ...expected });
+  }
+  return mounts;
 }
 
 export function verifyRuntime(result, sha, expectedMounts, mode = "foundation") {
@@ -86,8 +124,11 @@ export function verifyRuntime(result, sha, expectedMounts, mode = "foundation") 
   if (result.ready?.sourceCommit !== sha || result.ready?.service !== "commerce-v2" || result.ready?.ok !== true
     || result.ready.foundationMode !== (mode === "foundation") || result.ready.core?.paymentMode !== "disabled"
     || result.ready.core?.database !== "ok" || result.ready.capabilities?.refref !== "ready") refuse("V2_RUNTIME_NOT_READY");
-  if (!result.containerId || !result.startedAt || !expectedMounts.every((expected) => result.mounts?.some((mount) =>
-    mount.type === "volume" && mount.name === expected.name && mount.destination === expected.destination && mount.rw === true))) refuse("V2_RUNTIME_VOLUME_DIFFERS");
+  if (!result.containerId || !result.startedAt || result.mounts?.length !== expectedMounts.length || !expectedMounts.every((expected) => result.mounts?.some((mount) =>
+    mount.type === (expected.type ?? "volume") && mount.destination === expected.destination
+      && (expected.type === "bind" ? mount.source === expected.source && mount.rw === expected.rw
+        : mount.name === expected.name && mount.rw === true)))) refuse("V2_RUNTIME_VOLUME_DIFFERS");
+  if (expectedMounts.some(mount => mount.type === "bind") && result.ready.capabilities?.erasure !== "qualified") refuse("V2_ERASURE_RUNTIME_NOT_QUALIFIED");
   if (mode === "normal-canary" && (result.ready.capabilities?.authEmail !== "configured"
     || result.ready.capabilities?.captcha !== "configured")) refuse("V2_NORMAL_CAPABILITY_MISSING");
 }
@@ -102,6 +143,11 @@ export async function deployNormalCanary(sha, io) {
   const app = await io.api("GET", `/applications/${uuid}`);
   const mounts = validateApp(app, await io.api("GET", `/applications/${uuid}/envs`),
     await io.api("GET", `/applications/${uuid}/storages`), "canary", uuid, "normal-canary");
+  const erasure = mounts.some(mount => mount.type === "bind");
+  if (erasure) {
+    const admission = await io.erasureAdmission("canary", sha);
+    if (admission?.qualified !== true || admission.sourceCommit !== sha) refuse("V2_ERASURE_HOST_NOT_ADMITTED");
+  }
   const prodUuid = io.apps.production;
   validateApp(await io.api("GET", `/applications/${prodUuid}`), await io.api("GET", `/applications/${prodUuid}/envs`),
     await io.api("GET", `/applications/${prodUuid}/storages`), "production", prodUuid);
@@ -125,11 +171,16 @@ export async function deployNormalCanary(sha, io) {
   validateApp(await io.api("GET", `/applications/${uuid}`), await io.api("GET", `/applications/${uuid}/envs`),
     await io.api("GET", `/applications/${uuid}/storages`), "canary", uuid, "normal-canary");
   if ((await io.snapshot("production")).sha256 !== production.sha256) refuse("V2_PRODUCTION_CHANGED");
+  if (erasure) {
+    await io.stopCanary("canary");
+    if ((await io.assertNoWriters("canary"))?.exclusive !== true) refuse("V2_ERASURE_WRITERS_NOT_EXCLUSIVE");
+  }
   await io.deploy("canary", sha);
   verifyRuntime(await io.waitRuntime("canary", sha, mounts), sha, mounts, "normal-canary");
   if ((await io.snapshot("production")).sha256 !== production.sha256) refuse("V2_PRODUCTION_CHANGED");
   const proof = { sourceCommit: sha, mode: "normal-canary", apiReadiness: "PASS", backup: archived,
     productionUnchanged: true, paymentMode: "disabled", qualification: "API_ONLY",
+    ...(erasure ? { erasure: "QUALIFIED", replacement: "EXCLUSIVE" } : {}),
     proxy: "NOT_QUALIFIED", magicLinkDelivery: "NOT_QUALIFIED", catalogueAndLegal: "OWNER_PENDING" };
   await io.record("canary", proof);
   return { canary: proof };
