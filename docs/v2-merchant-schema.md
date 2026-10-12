@@ -1,5 +1,10 @@
 # Flexperiment v2 merchant schema
 
+> **Activation evidence correction (2026-10-12):** Migration `0016_online_course_activation_fence.sql` forbids treating ART-240 as COURSE_BUNDLE acceptance. The relevant schema trigger is the authority; a course's successful production acceptance does not authorize selling the bundle.
+
+> **Fiscal policy qualification (ART-233):** Policies are offer-specific and immutable once created, with lifecycle `DRAFT → QUALIFIED → RETIRED` (at most one qualified policy per offer). Checkout freezes the qualified policy per order line and refuses missing/DRAFT policies; qualification requires an audited legal-basis reference and evidence digest. `REFREF_RECEIPT_PAYMENT_METHOD` has been retired and must not be configured. Course, bundle and LAB fiscal semantics are not interchangeable. ART-231 and ART-234 supply outstanding legal authority; code completion does not qualify an actual sale.
+
+
 This document is the normative storage contract for the Flexperiment v2
 merchant database. The database is created from
 the ordered migrations under `commerce-v2/migrations`; it is a new lineage and is never
@@ -61,7 +66,7 @@ does.
   editable. Public selling additionally requires a matching active
   `sales_activation` record, re-checked with the live payment mode at checkout
   preview and confirmation. An activation must cite the acceptance evidence
-  for its kind — ART-240 for courses and the bundle, ART-243 for LAB — which
+  for its kind — ART-240 for ONLINE_COURSE only, ART-243 for LAB; COURSE_BUNDLE requires its own explicitly qualified bundle evidence and must not reuse ART-240 — which
   the command and a schema trigger both enforce.
 - `merchant_promotion` contains only merchant promotion authority: a normalized
   reserved-prefix code, discount rule, optional eligible offer and active
@@ -360,3 +365,7 @@ complete copy inventory, erasure request admission, independent latest ledger,
 restore/send fencing and processor deletion coordination still need their own
 qualification. Existing backup infrastructure, schedules, runtime policy, legal
 bytes and production are not changed by adding this library.
+
+## Manual entitlement operations (ART-181)
+
+A manual course-access grant is modeled as a **zero-cost order** with its own audited provenance, and requires an active legal release when granted; it must not masquerade as a paid provider payment or bypass offer/legal authority. A manual revocation is permitted **only** for an access grant originally issued manually. Accepted purchased entitlements are managed through the payment/refund and withdrawal authorities instead. An ALL_COURSES grant includes future courses; delisting a course alone does not revoke an established entitlement.
