@@ -50,7 +50,7 @@ if [[ $service == platform ]]; then
         response.setHeader("content-type", "application/json");
         response.setHeader("cache-control", "no-store");
         if (request.url === "/readyz") return response.end(JSON.stringify({
-          ok: true, service: "commerce-v2", core: { database: "ok" }
+          ok: true, service: "commerce-v2", foundationMode: false, core: { database: "ok" }
         }));
         if (request.url === "/v1/courses") return response.end(JSON.stringify({ courses: [] }));
         response.statusCode = 404;
