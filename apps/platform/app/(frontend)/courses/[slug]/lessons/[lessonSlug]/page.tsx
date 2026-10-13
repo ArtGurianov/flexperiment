@@ -37,11 +37,9 @@ async function LessonContent({ params }: Props) {
   await connection();
   const { slug, lessonSlug } = await params;
   if (slug === buildShellSlug || lessonSlug === buildShellSlug) notFound();
-  const publicResult = await publicLesson(slug, lessonSlug);
-  if (!publicResult) notFound();
-  const privateResult = publicResult.lesson.description ? null
-    : await entitledLesson((await headers()).get("cookie") ?? "", slug, lessonSlug);
-  const result = privateResult ?? publicResult;
+  const privateResult = await entitledLesson((await headers()).get("cookie") ?? "", slug, lessonSlug);
+  const result = privateResult ?? await publicLesson(slug, lessonSlug);
+  if (!result) notFound();
   const { commercial } = result;
   const lessonDescription = result.lesson.description;
   const origin = platformOrigin();

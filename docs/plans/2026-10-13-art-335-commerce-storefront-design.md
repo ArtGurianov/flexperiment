@@ -21,17 +21,23 @@ Commerce serves public listed course summaries, a listed course's public
 outline, and a listed lesson's public metadata. It joins withdrawn product and
 lesson state before returning content, projects only allowlisted fields, and
 does not return draft, Kinescope video ID, signing material or credentials.
-The private library endpoint uses the existing Commerce session, current
-consent and `listCustomerLibrary` decision to enrich only allowed course and
-lesson refs with titles and URLs. No platform-side entitlement decision is
-authoritative. Public metadata never calls the private endpoint.
+The private library and course/lesson endpoints use the existing Commerce
+session, current consent and `listCustomerLibrary` decision to enrich only
+allowed course and lesson refs with titles, URLs and private lesson text.
+An entitled customer retains private SSR access to published `UNLISTED`
+course, section and lesson content, as the playback policy already allows;
+withdrawal and revocation still deny immediately. The platform tries private
+content first for a signed-in request, then the public listed read. No
+platform-side entitlement decision is authoritative. Public metadata never
+calls the private endpoint.
 
 The platform fetches these APIs with `cache: "no-store"` and bounded timeouts.
 Request-time course pages and their metadata render from the same committed
 version; private library responses and browser search are no-store. The
-Commerce playback route remains the only grant authority. Unlisted,
-withdrawn, unpublished, missing and unavailable content never produces a
-working lesson page or stale public search entry. Closed-canary robots stay
+Commerce playback route remains the only grant authority. Unlisted content
+never produces a public lesson page or stale public search entry; withdrawn,
+unpublished, missing and unavailable content never produces a working lesson
+page. Closed-canary robots stay
 disallow-all. IndexNow, ISR and durable publication effects belong to ART-339.
 
 ## Source transition and proof

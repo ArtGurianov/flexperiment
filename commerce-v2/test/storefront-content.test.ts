@@ -5,6 +5,7 @@ import { saveEditorialDraft, publishEditorialDraft } from "../src/course-editori
 import { migrateV2 } from "../src/db";
 import { grantManualEntitlement, revokeManualEntitlement } from "../src/entitlements";
 import { loadCommerceRuntimeConfig } from "../src/payment-mode";
+import { resolvePlaybackAccess } from "../src/playback-access";
 import { confirmSyntheticAccount } from "./fixtures/confirmed-account";
 
 let db: Database.Database;
@@ -96,5 +97,75 @@ describe("Commerce storefront read boundary", () => {
     revokeManualEntitlement(db, grant.entitlementId, { reason: "Test ended", evidenceRef: "ART-335-test",
       actor: "author" }, now.toISOString());
     expect((await server.request(path, { headers: { cookie: "session=customer" } })).status).toBe(404);
+  });
+
+  for (const level of ["course", "section", "lesson"] as const) {
+    it(`retains entitled private reading when the published ${level} is unlisted`, async () => {
+      publish();
+      const grant = grantManualEntitlement(db, { customerId: "customer", scope: "COURSE", courseRef: "demo",
+        reason: "Isolated storefront test", evidenceRef: "ART-335-test", legalTermsRef: "terms-v1",
+        idempotencyKey: `art335-${level}-grant`, actor: "author" }, now.toISOString());
+      const server = app();
+      const privateHeaders = { cookie: "session=customer" };
+      const publicLesson = "/v1/courses/demo/lessons/lesson";
+      const privateLesson = "/v1/me/courses/demo/lessons/lesson";
+      if (level === "course") db.prepare("UPDATE catalog_course_projection SET visibility='UNLISTED',editorial_restriction='EMERGENCY_UNLIST' WHERE course_ref='demo'").run();
+      if (level === "section") db.prepare("UPDATE catalog_section_projection SET visibility='UNLISTED' WHERE section_ref='section'").run();
+      if (level === "lesson") db.prepare("UPDATE catalog_lesson_projection SET visibility='UNLISTED' WHERE lesson_ref='lesson'").run();
+
+      expect((await server.request(publicLesson)).status).toBe(404);
+      const publicCourse = await server.request("/v1/courses/demo");
+      expect(publicCourse.status).toBe(level === "course" ? 404 : 200);
+      if (level !== "course") {
+        expect(await publicCourse.json()).toMatchObject({ outline: { lessons: [] } });
+      }
+      expect(await (await server.request("/v1/courses")).json()).toMatchObject({
+        courses: level === "course" ? [] : [{ course: { courseRef: "demo" } }],
+      });
+      const privateResponse = await server.request(privateLesson, { headers: privateHeaders });
+      expect(privateResponse.status).toBe(200);
+      expect(privateResponse.headers.get("cache-control")).toBe("private, no-store");
+      expect(await privateResponse.json()).toMatchObject({ lesson: { description: { root: { children: [
+        { children: [{ text: "Private lesson text" }] }] } } } });
+      expect((await server.request(privateLesson)).status).toBe(401);
+      expect(await (await server.request("/v1/me/courses/demo", { headers: privateHeaders })).json())
+        .toMatchObject({ outline: { lessons: [{ lessonRef: "lesson" }] } });
+      expect(await (await server.request("/v1/me/course-library", { headers: privateHeaders })).json())
+        .toMatchObject({ courses: [{ lessons: [{ lessonRef: "lesson", access: "ENTITLED" }] }] });
+      expect(resolvePlaybackAccess(db, { customerId: "customer", lessonRef: "lesson", now, leaseMs: 0 }).decision)
+        .toBe("ALLOW");
+      revokeManualEntitlement(db, grant.entitlementId, { reason: "Test ended", evidenceRef: "ART-335-test",
+        actor: "author" }, now.toISOString());
+      expect((await server.request(privateLesson, { headers: privateHeaders })).status).toBe(404);
+      expect((await server.request("/v1/me/courses/demo", { headers: privateHeaders })).status).toBe(404);
+      expect(await (await server.request("/v1/me/course-library", { headers: privateHeaders })).json())
+        .toEqual({ courses: [] });
+      expect(resolvePlaybackAccess(db, { customerId: "customer", lessonRef: "lesson", now, leaseMs: 0 }).decision)
+        .toBe("DENY");
+    });
+  }
+
+  it("suppresses entitled private reading on withdrawal and revocation", async () => {
+    publish();
+    const grant = grantManualEntitlement(db, { customerId: "customer", scope: "COURSE", courseRef: "demo",
+      reason: "Isolated storefront test", evidenceRef: "ART-335-test", legalTermsRef: "terms-v1",
+      idempotencyKey: "art335-withdrawal-grant", actor: "author" }, now.toISOString());
+    const server = app();
+    const headers = { cookie: "session=customer" };
+    const path = "/v1/me/courses/demo/lessons/lesson";
+    db.prepare("UPDATE catalog_lesson_projection SET withdrawn_at=?,withdrawn_reason='test' WHERE lesson_ref='lesson'")
+      .run(now.toISOString());
+    expect((await server.request(path, { headers })).status).toBe(404);
+    expect(await (await server.request("/v1/me/course-library", { headers })).json()).toEqual({ courses: [] });
+    db.prepare("UPDATE catalog_lesson_projection SET withdrawn_at=NULL,withdrawn_reason=NULL WHERE lesson_ref='lesson'").run();
+    db.prepare("UPDATE products SET withdrawn_at=?,withdrawn_reason='test',withdrawn_terms_ref='terms-v1' WHERE id='product'")
+      .run(now.toISOString());
+    expect((await server.request(path, { headers })).status).toBe(404);
+    expect((await server.request("/v1/me/courses/demo", { headers })).status).toBe(404);
+    expect(await (await server.request("/v1/me/course-library", { headers })).json()).toEqual({ courses: [] });
+    db.prepare("UPDATE products SET withdrawn_at=NULL,withdrawn_reason=NULL,withdrawn_terms_ref=NULL WHERE id='product'").run();
+    revokeManualEntitlement(db, grant.entitlementId, { reason: "Test ended", evidenceRef: "ART-335-test",
+      actor: "author" }, now.toISOString());
+    expect((await server.request(path, { headers })).status).toBe(404);
   });
 });

@@ -29,7 +29,7 @@ import { recordPlaybackAccessEvent } from "./playback-telemetry";
 import { loadCommerceOrigins, storefrontOrigin, type CommerceOrigins, type Storefront } from "./origins";
 import { databaseReady, type RefrefReadiness } from "./readiness";
 import { publicLabCatalogue } from "./lab-catalogue";
-import { getCustomerStorefrontLesson, getStorefrontCourse, getStorefrontLesson, listCustomerStorefrontLibrary, listStorefrontCourses } from "./storefront-content";
+import { getCustomerStorefrontCourse, getCustomerStorefrontLesson, getStorefrontCourse, getStorefrontLesson, listCustomerStorefrontLibrary, listStorefrontCourses } from "./storefront-content";
 import { authenticatedConsentStatus, hasRequiredAccountConsents, recordAuthenticatedConsents, type AuthenticatedConsentInput } from "./authenticated-consents";
 import { ErasureLedgerError } from "./erasure-ledger";
 import type { ErasureRuntimeFence } from "./erasure-fence";
@@ -1017,6 +1017,17 @@ export function createCommerceV2App(deps: Dependencies) {
     try { return context.json(listCustomerStorefrontLibrary(deps.db, customerId, now(),
       Number(process.env.CATALOG_LEASE_MS ?? 24 * 60 * 60 * 1000)), 200, { "Cache-Control": "private, no-store" }); }
     catch { return context.json({ code: "COURSE_CONTENT_UNAVAILABLE" }, 503, noStore); }
+  });
+  app.get("/v1/me/courses/:slug", async (context) => {
+    const customerId = await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;
+    if (!customerId) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
+    if (!hasRequiredAccountConsents(deps.db, customerId)) return context.json({ code: "CONSENT_REQUIRED" }, 403, noStore);
+    try {
+      const course = getCustomerStorefrontCourse(deps.db, customerId, context.req.param("slug"), now(),
+        Number(process.env.CATALOG_LEASE_MS ?? 24 * 60 * 60 * 1000));
+      return course ? context.json(course, 200, { "Cache-Control": "private, no-store" })
+        : context.json({ code: "COURSE_NOT_FOUND" }, 404, noStore);
+    } catch { return context.json({ code: "COURSE_CONTENT_UNAVAILABLE" }, 503, noStore); }
   });
   app.get("/v1/me/courses/:slug/lessons/:lessonSlug", async (context) => {
     const customerId = await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;

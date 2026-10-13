@@ -14,8 +14,9 @@ type LessonRow = { lesson_ref: string; section_ref: string; title: string; slug:
 const courseFrom = `FROM catalog_course_projection course
   JOIN products product ON product.course_ref=course.course_ref AND product.kind='ONLINE_COURSE'
   LEFT JOIN offers offer ON offer.product_id=product.id
-  WHERE course.authoring_source='COMMERCE_EDITORIAL' AND course.visibility='LISTED'
+  WHERE course.authoring_source='COMMERCE_EDITORIAL'
     AND product.withdrawn_at IS NULL AND course.title IS NOT NULL AND course.slug IS NOT NULL`;
+const publicVisibility = " AND course.visibility='LISTED'";
 const courseColumns = `course.course_ref,course.version,course.title,course.slug,course.summary,
   course.description_json,course.seo_json,course.applied_at,product.access_model,
   offer.offer_ref,offer.sale_mode,offer.price_kopecks`;
@@ -35,26 +36,34 @@ function projectCommercial(row: CourseRow) {
     withdrawn: false,
   };
 }
-function courseBySlug(db: Database.Database, slug: string) {
-  return db.prepare(`SELECT ${courseColumns} ${courseFrom} AND course.slug=?`).get(slug) as CourseRow | undefined;
+function courseBySlug(db: Database.Database, slug: string, publicOnly: boolean) {
+  return db.prepare(`SELECT ${courseColumns} ${courseFrom}${publicOnly ? publicVisibility : ""} AND course.slug=?`)
+    .get(slug) as CourseRow | undefined;
 }
-function courseByRef(db: Database.Database, courseRef: string) {
-  return db.prepare(`SELECT ${courseColumns} ${courseFrom} AND course.course_ref=?`).get(courseRef) as CourseRow | undefined;
+function courseByRef(db: Database.Database, courseRef: string, publicOnly: boolean) {
+  return db.prepare(`SELECT ${courseColumns} ${courseFrom}${publicOnly ? publicVisibility : ""} AND course.course_ref=?`)
+    .get(courseRef) as CourseRow | undefined;
 }
-function outline(db: Database.Database, courseRef: string) {
+function outline(db: Database.Database, courseRef: string, allowedLessonRefs?: ReadonlySet<string>) {
+  const publicOnly = !allowedLessonRefs;
   const sections = db.prepare(`SELECT section_ref,title,position FROM catalog_section_projection
-    WHERE course_ref=? AND visibility='LISTED' AND title IS NOT NULL ORDER BY position,section_ref`)
+    WHERE course_ref=? ${publicOnly ? "AND visibility='LISTED'" : ""}
+      AND title IS NOT NULL ORDER BY position,section_ref`)
     .all(courseRef) as SectionRow[];
   const sectionOrder = new Map(sections.map((section, index) => [section.section_ref, index]));
   const lessons = (db.prepare(`SELECT lesson_ref,section_ref,title,slug,position,free_preview,description_json,seo_json
-    FROM catalog_lesson_projection WHERE course_ref=? AND visibility='LISTED' AND ever_published=1
+    FROM catalog_lesson_projection WHERE course_ref=? ${publicOnly ? "AND visibility='LISTED'" : ""}
+      AND ever_published=1
       AND withdrawn_at IS NULL AND title IS NOT NULL AND slug IS NOT NULL
     ORDER BY position,lesson_ref`).all(courseRef) as LessonRow[])
-    .filter(lesson => sectionOrder.has(lesson.section_ref))
+    .filter(lesson => sectionOrder.has(lesson.section_ref)
+      && (!allowedLessonRefs || allowedLessonRefs.has(lesson.lesson_ref)))
     .sort((left, right) => (sectionOrder.get(left.section_ref)! - sectionOrder.get(right.section_ref)!)
       || left.position - right.position || left.lesson_ref.localeCompare(right.lesson_ref));
+  const visibleSectionRefs = allowedLessonRefs && new Set(lessons.map(lesson => lesson.section_ref));
   return {
-    sections: sections.map(section => ({ sectionRef: section.section_ref, title: section.title, position: section.position })),
+    sections: sections.filter(section => !visibleSectionRefs || visibleSectionRefs.has(section.section_ref))
+      .map(section => ({ sectionRef: section.section_ref, title: section.title, position: section.position })),
     lessons: lessons.map(lesson => ({ lessonRef: lesson.lesson_ref, sectionRef: lesson.section_ref,
       title: lesson.title, slug: lesson.slug, position: lesson.position, freePreview: Boolean(lesson.free_preview) })),
     lessonRows: lessons,
@@ -63,14 +72,14 @@ function outline(db: Database.Database, courseRef: string) {
 
 /** All responses are explicit allowlists, never raw SQLite rows or draft JSON. */
 export function listStorefrontCourses(db: Database.Database) {
-  const read = db.transaction(() => (db.prepare(`SELECT ${courseColumns} ${courseFrom} ORDER BY course.applied_at DESC,course.course_ref`)
+  const read = db.transaction(() => (db.prepare(`SELECT ${courseColumns} ${courseFrom}${publicVisibility} ORDER BY course.applied_at DESC,course.course_ref`)
     .all() as CourseRow[]).map(row => ({ course: projectCourse(row), commercial: projectCommercial(row) })));
   return read.deferred();
 }
 
 export function getStorefrontCourse(db: Database.Database, slug: string) {
   const read = db.transaction(() => {
-    const row = courseBySlug(db, slug);
+    const row = courseBySlug(db, slug, true);
     if (!row) return null;
     const graph = outline(db, row.course_ref);
     return { course: projectCourse(row), commercial: projectCommercial(row),
@@ -82,9 +91,9 @@ export function getStorefrontCourse(db: Database.Database, slug: string) {
 export function getStorefrontLesson(db: Database.Database, courseSlug: string, lessonSlug: string,
   allowedLessonRefs?: ReadonlySet<string>) {
   const read = db.transaction(() => {
-    const row = courseBySlug(db, courseSlug);
+    const row = courseBySlug(db, courseSlug, !allowedLessonRefs);
     if (!row) return null;
-    const graph = outline(db, row.course_ref);
+    const graph = outline(db, row.course_ref, allowedLessonRefs);
     const lesson = graph.lessonRows.find(item => item.slug === lessonSlug);
     if (!lesson) return null;
     const section = graph.sections.find(item => item.sectionRef === lesson.section_ref);
@@ -102,7 +111,7 @@ export function getStorefrontLesson(db: Database.Database, courseSlug: string, l
 export function getCustomerStorefrontLesson(db: Database.Database, customerId: string,
   courseSlug: string, lessonSlug: string, now: Date, leaseMs: number) {
   const read = db.transaction(() => {
-    const row = courseBySlug(db, courseSlug);
+    const row = courseBySlug(db, courseSlug, false);
     if (!row) return null;
     const permitted = listCustomerLibrary(db, customerId, now, leaseMs).courses.find(course => course.courseRef === row.course_ref);
     if (!permitted) return null;
@@ -113,13 +122,27 @@ export function getCustomerStorefrontLesson(db: Database.Database, customerId: s
   return read.deferred();
 }
 
+export function getCustomerStorefrontCourse(db: Database.Database, customerId: string,
+  courseSlug: string, now: Date, leaseMs: number) {
+  const read = db.transaction(() => {
+    const row = courseBySlug(db, courseSlug, false);
+    if (!row) return null;
+    const permitted = listCustomerLibrary(db, customerId, now, leaseMs).courses.find(course => course.courseRef === row.course_ref);
+    if (!permitted) return null;
+    const graph = outline(db, row.course_ref, new Set(permitted.lessons.map(lesson => lesson.lessonRef)));
+    return { course: projectCourse(row), commercial: projectCommercial(row),
+      outline: { sections: graph.sections, lessons: graph.lessons } };
+  });
+  return read.deferred();
+}
+
 export function listCustomerStorefrontLibrary(db: Database.Database, customerId: string, now: Date, leaseMs: number) {
   const read = db.transaction(() => {
     const authorized: CustomerLibrary = listCustomerLibrary(db, customerId, now, leaseMs);
     return { courses: authorized.courses.flatMap(item => {
-      const row = courseByRef(db, item.courseRef);
+      const row = courseByRef(db, item.courseRef, false);
       if (!row) return [];
-      const graph = outline(db, item.courseRef);
+      const graph = outline(db, item.courseRef, new Set(item.lessons.map(lesson => lesson.lessonRef)));
       const lessons = new Map(graph.lessons.map(lesson => [lesson.lessonRef, lesson]));
       const sections = new Map(graph.sections.map(section => [section.sectionRef, section]));
       return [{ courseRef: item.courseRef, title: row.title, url: `/courses/${row.slug}`, access: item.access,

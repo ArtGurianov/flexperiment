@@ -1,4 +1,4 @@
-import type { LessonDetail } from "./public";
+import type { CourseDetail, LessonDetail } from "./public";
 
 export type AccountLibraryCourse = {
   courseRef: string; title: string; url: string; access: "ENTITLED" | "FREE" | "PREVIEW";
@@ -20,6 +20,10 @@ async function privateContent<T>(cookieHeader: string, path: string): Promise<T 
 
 export async function accountLibrary(cookieHeader: string): Promise<AccountLibraryCourse[]> {
   return (await privateContent<{ courses: AccountLibraryCourse[] }>(cookieHeader, "/v1/me/course-library"))?.courses ?? [];
+}
+
+export function entitledCourse(cookieHeader: string, courseSlug: string) {
+  return privateContent<CourseDetail>(cookieHeader, `/v1/me/courses/${encodeURIComponent(courseSlug)}`);
 }
 
 export function entitledLesson(cookieHeader: string, courseSlug: string, lessonSlug: string) {
