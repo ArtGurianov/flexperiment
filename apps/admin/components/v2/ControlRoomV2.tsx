@@ -32,6 +32,7 @@ import { Notice } from "../ui/Notice";
 import { PageTitle } from "../ui/PageTitle";
 import { Panel } from "../ui/Panel";
 import { LessonVideoUpload } from "./LessonVideoUpload";
+import { EditorialCourseEditor } from "./EditorialCourseEditor";
 
 const useControlRoomQuery = <T,>(key: string, path: string) => useQuery({
   queryKey: ["control-room-v2", key],
@@ -176,6 +177,7 @@ export function CourseCatalogue() {
     {effectiveSelected ? <Panel title={effectiveSelected === "__new__" ? "Новый продукт" : "Коммерческая команда"}>
       <CourseEditor key={effectiveSelected === "__new__" ? "new" : `${selectedCourse?.productRef}:${selectedCourse?.version}`} course={selectedCourse} />
     </Panel> : null}
+    {query.data ? <Panel title="Редакция курса"><EditorialCourseEditor courses={query.data.courses} /></Panel> : null}
     {query.data ? <Panel title="Видео урока"><LessonVideoUpload courses={query.data.courses} /></Panel> : null}
   </>;
 }
