@@ -154,15 +154,17 @@ function operationOutcomes(db: Database.Database, manifest: CourseManifest): Omi
 export function applyCourseManifest(db: Database.Database, manifest: CourseManifest, now = new Date().toISOString()): ManifestApplyResult {
   validateManifest(manifest);
   const stateHash = manifestStateHash(manifest);
-  const current = db.prepare("SELECT version, content_hash, state_hash FROM catalog_course_projection WHERE course_ref = ?")
-    .get(manifest.courseRef) as { version: number; content_hash: string; state_hash: string | null } | undefined;
+  const current = db.prepare("SELECT version, content_hash, state_hash, authoring_source FROM catalog_course_projection WHERE course_ref = ?")
+    .get(manifest.courseRef) as { version: number; content_hash: string; state_hash: string | null; authoring_source: string } | undefined;
+  if (current?.authoring_source === "COMMERCE_EDITORIAL") throw new ManifestError("COURSE_COMMERCE_EDITORIAL_OWNED");
   if (current?.version === manifest.version
     && (current.content_hash === manifest.contentHash || current.state_hash === stateHash)) {
     // An unchanged course is still a reconciled one: the push proves the platform holds this
     // committed state, so the lease renews even though nothing else moves. The operation list may
     // be shorter than when this version was applied, because the platform acknowledged some.
-    db.prepare("UPDATE catalog_course_projection SET last_reconciled_at = ? WHERE course_ref = ? AND version = ?")
+    const renewed = db.prepare("UPDATE catalog_course_projection SET last_reconciled_at = ? WHERE course_ref = ? AND version = ? AND authoring_source = 'LEGACY_MANIFEST'")
       .run(now, manifest.courseRef, manifest.version);
+    if (renewed.changes !== 1) throw new ManifestError("COURSE_COMMERCE_EDITORIAL_OWNED");
     return { kind: "NO_OP", ...operationOutcomes(db, manifest) };
   }
   if (current && manifest.version <= current.version) throw new ManifestError("MANIFEST_VERSION_REJECTED");
@@ -198,6 +200,9 @@ export function applyCourseManifest(db: Database.Database, manifest: CourseManif
   }
 
   const apply = db.transaction(() => {
+    const owner = db.prepare("SELECT authoring_source FROM catalog_course_projection WHERE course_ref = ?")
+      .get(manifest.courseRef) as { authoring_source: string } | undefined;
+    if (owner?.authoring_source === "COMMERCE_EDITORIAL") throw new ManifestError("COURSE_COMMERCE_EDITORIAL_OWNED");
     db.prepare(`INSERT INTO catalog_course_projection(course_ref,version,content_hash,state_hash,visibility,last_reconciled_at,applied_at)
       VALUES (?,?,?,?,?,?,?) ON CONFLICT(course_ref) DO UPDATE SET version=excluded.version,content_hash=excluded.content_hash,
       state_hash=excluded.state_hash,visibility=excluded.visibility,last_reconciled_at=excluded.last_reconciled_at,applied_at=excluded.applied_at`)

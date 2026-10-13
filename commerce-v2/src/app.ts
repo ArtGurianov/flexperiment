@@ -5,6 +5,7 @@ import { bodyLimit } from "hono/body-limit";
 import { timingSafeEqual } from "node:crypto";
 import { createRestrictiveOverride, flagOrphanedOverrides, listPendingOverrides, releaseRolledBackOverride, type RestrictiveOverride, type RollbackReleaseProof } from "./access-overrides";
 import { applyCourseManifest, type CourseManifest } from "./manifest";
+import { getEditorialDraft, getEditorialPublished, publishEditorialDraft, restrictEditorialCourse, saveEditorialDraft, type EditorialDocument } from "./course-editorial";
 import { assertPaymentCreationEnabled, type CommerceRuntimeConfig } from "./payment-mode";
 import { saveResumePosition } from "./resume";
 import { confirmCheckout, prepareCheckout, reconcileCheckout, type PaymentRail } from "./checkout";
@@ -199,6 +200,62 @@ export function createCommerceV2App(deps: Dependencies) {
   });
 
   app.get("/v1/admin/v2/catalogue", (context) => context.json(controlRoomCatalogue(deps.db, now().toISOString()), 200, noStore));
+  app.get("/v1/admin/v2/courses/:courseRef/draft", (context) => {
+    const draft = getEditorialDraft(deps.db, context.req.param("courseRef"));
+    return draft ? context.json(draft, 200, noStore) : context.json({ error: { code: "DRAFT_NOT_FOUND" } }, 404, noStore);
+  });
+  app.get("/v1/admin/v2/courses/:courseRef/published", (context) => {
+    const published = getEditorialPublished(deps.db, context.req.param("courseRef"));
+    return published ? context.json(published, 200, noStore) : context.json({ error: { code: "PUBLISHED_COURSE_NOT_FOUND" } }, 404, noStore);
+  });
+  app.put("/v1/admin/v2/courses/:courseRef/draft", async (context) => {
+    try {
+      const input = await context.req.json<{ document: EditorialDocument; expectedRevision: number }>();
+      if (input.document?.courseRef !== context.req.param("courseRef")) throw new Error("COURSE_REF_MISMATCH");
+      return context.json(saveEditorialDraft(deps.db, { ...input, actor: context.get("controlRoomAdminId")! }, now().toISOString()), 200, noStore);
+    } catch (error) {
+      return context.json({ error: { code: error instanceof Error ? error.message : "DRAFT_SAVE_FAILED" } }, 409, noStore);
+    }
+  });
+  app.post("/v1/admin/v2/courses/:courseRef/publish", async (context) => {
+    try {
+      const input = await context.req.json<{ expectedRevision: number; expectedPublishedVersion: number; idempotencyKey: string }>();
+      const courseRef = context.req.param("courseRef");
+      const result = publishEditorialDraft(deps.db, { ...input, courseRef, actor: context.get("controlRoomAdminId")! }, now().toISOString());
+      let cacheInvalidation: "OK" | "FAILED" = "OK";
+      try {
+        await deps.invalidatePlatformCache?.(result.visibility === "UNLISTED" ? "immediate" : "swr", courseRef);
+      } catch { cacheInvalidation = "FAILED"; }
+      return context.json({ ...result, cacheInvalidation }, 200, noStore);
+    } catch (error) {
+      return context.json({ error: { code: error instanceof Error ? error.message : "COURSE_PUBLISH_FAILED" } }, 409, noStore);
+    }
+  });
+  app.post("/v1/admin/v2/courses/:courseRef/unlist", async (context) => {
+    try {
+      const input = await context.req.json<{ expectedPublishedVersion: number; idempotencyKey: string }>();
+      const courseRef = context.req.param("courseRef");
+      const result = restrictEditorialCourse(deps.db, { ...input, courseRef, actor: context.get("controlRoomAdminId")! }, now().toISOString());
+      let cacheInvalidation: "OK" | "FAILED" = "OK";
+      try { await deps.invalidatePlatformCache?.("immediate", courseRef); } catch { cacheInvalidation = "FAILED"; }
+      return context.json({ ...result, cacheInvalidation }, 200, noStore);
+    } catch (error) {
+      return context.json({ error: { code: error instanceof Error ? error.message : "COURSE_UNLIST_FAILED" } }, 409, noStore);
+    }
+  });
+  app.post("/v1/admin/v2/courses/:courseRef/withdraw", async (context) => {
+    try {
+      const input = await context.req.json<{ expectedPublishedVersion: number; idempotencyKey: string;
+        withdrawal: { productRef: string; expectedProductVersion: number; reason: string; termsRef: string } }>();
+      const courseRef = context.req.param("courseRef");
+      const result = restrictEditorialCourse(deps.db, { ...input, courseRef, actor: context.get("controlRoomAdminId")! }, now().toISOString());
+      let cacheInvalidation: "OK" | "FAILED" = "OK";
+      try { await deps.invalidatePlatformCache?.("immediate", courseRef, "WITHDRAWN"); } catch { cacheInvalidation = "FAILED"; }
+      return context.json({ ...result, cacheInvalidation }, 200, noStore);
+    } catch (error) {
+      return context.json({ error: { code: error instanceof Error ? error.message : "COURSE_WITHDRAW_FAILED" } }, 409, noStore);
+    }
+  });
   app.get("/v1/admin/v2/orders", (context) => context.json(controlRoomOrders(deps.db, now().toISOString()), 200, noStore));
   app.get("/v1/admin/v2/customers", (context) => context.json(controlRoomCustomers(deps.db, now().toISOString()), 200, noStore));
   app.get("/v1/admin/v2/entitlements", (context) => context.json(controlRoomEntitlements(deps.db, now().toISOString()), 200, noStore));

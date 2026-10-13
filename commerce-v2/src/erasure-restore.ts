@@ -4,13 +4,17 @@ import { classifyV2Database } from "./db";
 import { assertErasureSubjectKey, erasurePseudonym, ErasureLedgerError, VerifiedErasureLedger, type ErasureKeys } from "./erasure-ledger";
 import { DrainedErasureRuntime } from "./erasure-fence";
 
-// Reviewed schema 0001–0025, including triggers, views, columns, indexes and FKs.
-// A new migration/DDL must explicitly requalify erasure coverage. Deriving this
-// expected value from the restored DB would silently admit its unclassified data.
-const REVIEWED_SCHEMA_SHA256 = "158654c61bd97be4dbcab4348651722fe105587f6ff202ad4db821512774e030";
+// Exact reviewed 0001–0025 and 0001–0026 schemas. Migration 0026 adds only
+// Control Room authored course content/history, with no customer FK or subject
+// identity column; erasure still refuses financial/audit uncertainty. Keep the
+// previous hash for isolated old-backup restore. Unknown DDL remains refused.
+const REVIEWED_SCHEMA_SHA256 = new Set([
+  "158654c61bd97be4dbcab4348651722fe105587f6ff202ad4db821512774e030",
+  "19c350358cf935ec28e625d571d70cbdd2977d10dfb121dc0852ebabde9f5b2a",
+]);
 function assertReviewedSchema(db: Database.Database) {
   const schema = db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").all();
-  if (createHash("sha256").update(JSON.stringify(schema)).digest("hex") !== REVIEWED_SCHEMA_SHA256) {
+  if (!REVIEWED_SCHEMA_SHA256.has(createHash("sha256").update(JSON.stringify(schema)).digest("hex"))) {
     throw new ErasureLedgerError("ERASURE_RESTORE_UNCLASSIFIED_SCHEMA");
   }
 }

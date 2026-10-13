@@ -27,9 +27,13 @@ export class RetentionRefusal extends Error {
   constructor(code: string) { super(code); this.name = "RetentionRefusal"; }
 }
 const refuse = (code: string): never => { throw new RetentionRefusal(code); };
-// Independently generated from the complete canonical migration 0001–0025 DDL.
-// Unknown columns/tables/triggers require review before destructive cleanup.
-const supportedSchemaSha256 = "158654c61bd97be4dbcab4348651722fe105587f6ff202ad4db821512774e030";
+// Exact reviewed 0001–0025 and 0001–0026 DDL. The latter adds Control Room
+// authored course content/history, no customer FK or subject identity column.
+// Retention targets remain the same; unknown columns/tables/triggers still stop.
+const supportedSchemaSha256 = new Set([
+  "158654c61bd97be4dbcab4348651722fe105587f6ff202ad4db821512774e030",
+  "19c350358cf935ec28e625d571d70cbdd2977d10dfb121dc0852ebabde9f5b2a",
+]);
 const parse = <T>(schema: z.ZodType<T>, value: unknown): T => {
   const result = schema.safeParse(value); return result.success ? result.data : refuse("RETENTION_POLICY_OR_HOLD_INVALID");
 };
@@ -84,7 +88,7 @@ export function cleanupOfflinePersonalData(db: Database.Database, input: {
   db.pragma("secure_delete=ON");
   try { return db.transaction(() => {
     const schema = db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").all();
-    if (createHash("sha256").update(JSON.stringify(schema)).digest("hex") !== supportedSchemaSha256) refuse("RETENTION_SCHEMA_REVIEW_REQUIRED");
+    if (!supportedSchemaSha256.has(createHash("sha256").update(JSON.stringify(schema)).digest("hex"))) refuse("RETENTION_SCHEMA_REVIEW_REQUIRED");
     const rows = (table: string) => {
       const count = (db.prepare(`SELECT COUNT(*) n FROM ${table}`).get() as { n: number }).n;
       if (count > 100_000) refuse("RETENTION_BATCH_REVIEW_REQUIRED");
