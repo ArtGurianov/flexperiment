@@ -1,6 +1,6 @@
 import { validatePlatformCanary } from "./canary-config";
 
-export async function assertCanaryCommerceReady() {
+export async function assertCommerceReady() {
   const canary = validatePlatformCanary();
   const origin = process.env.COMMERCE_INTERNAL_ORIGIN;
   if (!origin) throw new Error("COMMERCE_NOT_CONFIGURED");
@@ -23,8 +23,8 @@ export async function assertCanaryCommerceReady() {
   }
   const ready = JSON.parse(Buffer.concat(chunks).toString("utf8"));
   if (ready.ok !== true || ready.service !== "commerce-v2" || ready.core?.database !== "ok"
-    || (canary && (ready.foundationMode !== false
-      || ready.sourceCommit !== process.env.PLATFORM_EXPECTED_COMMERCE_SHA
+    || ready.foundationMode !== false
+    || (canary && (ready.sourceCommit !== process.env.PLATFORM_EXPECTED_COMMERCE_SHA
       || ready.core?.paymentMode !== "disabled"
       || ready.capabilities?.refref !== "ready"))) throw new Error("CANARY_COMMERCE_UNAVAILABLE");
 }

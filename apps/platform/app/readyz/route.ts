@@ -1,9 +1,9 @@
 import { readBuildIdentity } from "@/lib/build-identity";
-import { assertCanaryCommerceReady } from "@/lib/canary-readiness";
+import { assertCommerceReady } from "@/lib/canary-readiness";
 
 export async function GET() {
   try {
-    await assertCanaryCommerceReady();
+    await assertCommerceReady();
     const identity = readBuildIdentity("platform");
     return Response.json({ ok: true, ...identity, commerce: "ok" }, {
       headers: { "Cache-Control": "no-store" },

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { canaryOrigins, validatePlatformCanary } from "../lib/canary-config";
 import { proxyCommerce } from "../lib/commerce-proxy";
-import { assertCanaryCommerceReady } from "../lib/canary-readiness";
+import { assertCommerceReady } from "../lib/canary-readiness";
 import * as transport from "../lib/canary-http";
 
 const env = {
@@ -95,16 +95,16 @@ describe("genuine read-only canary upstream readiness", () => {
   const ready = { ok: true, service: "commerce-v2", sourceCommit: env.PLATFORM_EXPECTED_COMMERCE_SHA, foundationMode: false, core: { database: "ok", paymentMode: "disabled" }, capabilities: { refref: "ready" } };
   it("checks exact expected canary SHA and payment mode with credential-free GET", async () => {
     const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json(ready));
-    await expect(assertCanaryCommerceReady()).resolves.toBeUndefined();
+    await expect(assertCommerceReady()).resolves.toBeUndefined();
     expect(fetch.mock.calls[0][1]).toMatchObject({ method: "GET", redirect: "error", cache: "no-store" });
     expect(fetch.mock.calls[0][1]?.headers).toBeUndefined();
   });
   it.each([{ sourceCommit: "c".repeat(40) }, { foundationMode: true }, { core: { database: "ok", paymentMode: "refref" } }, { capabilities: { refref: "unavailable" } }])("rejects wrong upstream identity/state %j", async drift => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ ...ready, ...drift }));
-    await expect(assertCanaryCommerceReady()).rejects.toThrow("CANARY_COMMERCE_UNAVAILABLE");
+    await expect(assertCommerceReady()).rejects.toThrow("CANARY_COMMERCE_UNAVAILABLE");
   });
   it("rejects oversized response", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("x".repeat(16385)));
-    await expect(assertCanaryCommerceReady()).rejects.toThrow("CANARY_COMMERCE_UNAVAILABLE");
+    await expect(assertCommerceReady()).rejects.toThrow("CANARY_COMMERCE_UNAVAILABLE");
   });
 });

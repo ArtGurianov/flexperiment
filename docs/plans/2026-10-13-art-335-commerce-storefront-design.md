@@ -74,3 +74,15 @@ withdrawal, private session/consent denial, Commerce outage, content-version
 consistency, and the absence of video IDs in public output. CI must build and
 boot the Payload-free platform image. Runtime installation, canary DB changes,
 retiring archived ciphertext and public opening stay in ART-337/339 gates.
+
+## Commerce readiness before production admission
+
+The platform must reject Commerce `foundationMode` in every environment, not
+only in canary. A foundation runtime can answer its own `/readyz` with HTTP 200
+while all course APIs remain closed, so platform readiness cannot treat its
+database check as sufficient. Requiring `foundationMode: false` only when
+`DEPLOY_ENV=production` leaves a staging admission gap. Changing Commerce's
+foundation readiness would affect other consumers. The narrow platform check
+requires the explicit false value everywhere and preserves the canary-only
+exact SHA, disabled payments and Refref checks. A non-canary HTTP regression
+asserts both `true` and an omitted field return 503, while `false` returns 200.
