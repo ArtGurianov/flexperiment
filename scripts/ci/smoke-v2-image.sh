@@ -19,9 +19,15 @@ response_file=$(mktemp "${TMPDIR:-/tmp}/flexperiment-v2-smoke.XXXXXX")
 headers_file=$(mktemp "${TMPDIR:-/tmp}/flexperiment-v2-smoke-headers.XXXXXX")
 installation_volume="${container_name}-host-admission"
 installation_args=()
+commerce_stub="${container_name}-commerce-read"
+smoke_network="${container_name}-network"
 cleanup() {
   docker logs "$container_name" || true
   docker rm -f "$container_name" >/dev/null 2>&1 || true
+  if [[ $service == platform ]]; then
+    docker rm -f "$commerce_stub" >/dev/null 2>&1 || true
+    docker network rm "$smoke_network" >/dev/null 2>&1 || true
+  fi
   if [[ $service == commerce-v2 ]]; then docker volume rm "$installation_volume" >/dev/null 2>&1 || true; fi
   rm -f "$response_file" "$headers_file"
 }
@@ -31,6 +37,24 @@ if [[ $service == commerce-v2 ]]; then
   source scripts/ci/erasure-installation-fixture.sh
   erasure_fixture_create "$image" "$installation_volume"
   installation_args=(--mount "type=volume,source=$installation_volume,target=/etc/flexperiment-erasure,readonly")
+fi
+
+if [[ $service == platform ]]; then
+  # The storefront is request-time Commerce-backed. Exercise its real SSR with
+  # an isolated synthetic read API instead of silently restoring Payload data.
+  docker network create "$smoke_network" >/dev/null
+  docker run --detach --name "$commerce_stub" --network "$smoke_network" \
+    --entrypoint node flexperiment-commerce-v2:test -e '
+      const http = require("node:http");
+      http.createServer((request, response) => {
+        response.setHeader("content-type", "application/json");
+        response.setHeader("cache-control", "no-store");
+        if (request.url === "/v1/courses") return response.end(JSON.stringify({ courses: [] }));
+        response.statusCode = 404;
+        response.end(JSON.stringify({ code: "COURSE_NOT_FOUND" }));
+      }).listen(3002, "0.0.0.0");
+    ' >/dev/null
+  installation_args+=(--network "$smoke_network" --env "COMMERCE_INTERNAL_ORIGIN=http://${commerce_stub}:3002")
 fi
 
 docker run --detach --name "$container_name" --publish "127.0.0.1:${host_port}:${container_port}" "${installation_args[@]}" "$@" "$image" >/dev/null
