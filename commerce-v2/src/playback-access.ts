@@ -12,6 +12,7 @@ type ProjectionRow = {
   lesson_withdrawn_at: string | null;
   section_visibility: "LISTED" | "UNLISTED";
   course_visibility: "LISTED" | "UNLISTED";
+  authoring_source: "LEGACY_MANIFEST" | "COMMERCE_EDITORIAL";
   last_reconciled_at: string;
   access_model: "FREE" | "PAID" | null;
   product_withdrawn_at: string | null;
@@ -52,7 +53,7 @@ function resolvePlaybackAccessLocked(db: Database.Database, input: {
     lesson.lesson_ref, lesson.course_ref, lesson.ever_published, lesson.visibility AS lesson_visibility,
     lesson.free_preview, lesson.withdrawn_at AS lesson_withdrawn_at,
     section.visibility AS section_visibility, course.visibility AS course_visibility,
-    course.last_reconciled_at, product.access_model, product.withdrawn_at AS product_withdrawn_at,
+    course.last_reconciled_at, course.authoring_source, product.access_model, product.withdrawn_at AS product_withdrawn_at,
     COALESCE(offer.sale_mode, 'CLOSED') AS sale_mode, product.id AS product_id, product.version AS product_version
     FROM catalog_lesson_projection lesson
     JOIN catalog_section_projection section ON section.section_ref = lesson.section_ref
@@ -62,7 +63,8 @@ function resolvePlaybackAccessLocked(db: Database.Database, input: {
     WHERE lesson.lesson_ref = ?`).get(input.lessonRef) as ProjectionRow | undefined;
   const grants = db.prepare(`SELECT scope, course_ref, revoked_at FROM course_entitlements
     WHERE customer_id = ? AND revoked_at IS NULL`).all(input.customerId) as Grant[];
-  const activeOverride = Boolean(row && db.prepare(`SELECT 1 FROM access_overrides WHERE course_ref=? AND state='PENDING' AND
+  const legacyManifest = row?.authoring_source === "LEGACY_MANIFEST";
+  const activeOverride = Boolean(legacyManifest && row && db.prepare(`SELECT 1 FROM access_overrides WHERE course_ref=? AND state='PENDING' AND
     (scope_level='COURSE' OR (scope_level='SECTION' AND scope_ref=(SELECT section_ref FROM catalog_lesson_projection WHERE lesson_ref=?)) OR (scope_level='LESSON' AND scope_ref=?)) LIMIT 1`)
     .get(row.course_ref, input.lessonRef, input.lessonRef));
   const effectiveVisibility = row && row.course_visibility === "LISTED" && row.section_visibility === "LISTED" && row.lesson_visibility === "LISTED"
@@ -81,7 +83,8 @@ function resolvePlaybackAccessLocked(db: Database.Database, input: {
     activeDenyNonEntitledOverride: activeOverride,
     retainedFreeEnrollment: Boolean(row?.product_id && db.prepare(`SELECT 1 FROM free_course_enrollments
       WHERE customer_id=? AND product_id=?`).get(input.customerId, row.product_id)),
-    projectionStale: row ? !Number.isFinite(Date.parse(row.last_reconciled_at)) || input.now.getTime() - Date.parse(row.last_reconciled_at) > input.leaseMs : false,
+    projectionStale: legacyManifest && row ? !Number.isFinite(Date.parse(row.last_reconciled_at))
+      || input.now.getTime() - Date.parse(row.last_reconciled_at) > input.leaseMs : false,
   });
   const paidEntitled = Boolean(row?.access_model === "PAID" && grants.some((grant) =>
     grant.scope === "ALL_COURSES" || (grant.scope === "COURSE" && grant.course_ref === row.course_ref)));

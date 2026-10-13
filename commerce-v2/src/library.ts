@@ -12,6 +12,7 @@ type LibraryRow = {
   ever_published: number;
   free_preview: number;
   lesson_withdrawn_at: string | null;
+  authoring_source: "LEGACY_MANIFEST" | "COMMERCE_EDITORIAL";
   last_reconciled_at: string;
   access_model: "FREE" | "PAID" | null;
   product_withdrawn_at: string | null;
@@ -38,6 +39,7 @@ export function listCustomerLibrary(
   const rows = db.prepare(`SELECT lesson.course_ref,lesson.lesson_ref,lesson.section_ref,
       course.visibility AS course_visibility,section.visibility AS section_visibility,lesson.visibility AS lesson_visibility,
       lesson.ever_published,lesson.free_preview,lesson.withdrawn_at AS lesson_withdrawn_at,course.last_reconciled_at,
+      course.authoring_source,
       product.access_model,product.withdrawn_at AS product_withdrawn_at,COALESCE(offer.sale_mode,'CLOSED') AS sale_mode
     FROM catalog_lesson_projection lesson
     JOIN catalog_section_projection section ON section.section_ref=lesson.section_ref
@@ -47,8 +49,10 @@ export function listCustomerLibrary(
     ORDER BY course.course_ref,section.position,lesson.position,lesson.lesson_ref`).all() as LibraryRow[];
   const grants = db.prepare(`SELECT scope,course_ref FROM course_entitlements
     WHERE customer_id=? AND revoked_at IS NULL`).all(customerId) as ActiveGrant[];
-  const overrides = db.prepare(`SELECT course_ref,scope_level,scope_ref FROM access_overrides
-    WHERE state='PENDING'`).all() as Array<{ course_ref: string; scope_level: "COURSE" | "SECTION" | "LESSON"; scope_ref: string }>;
+  const overrides = rows.some((row) => row.authoring_source === "LEGACY_MANIFEST")
+    ? db.prepare(`SELECT course_ref,scope_level,scope_ref FROM access_overrides
+      WHERE state='PENDING'`).all() as Array<{ course_ref: string; scope_level: "COURSE" | "SECTION" | "LESSON"; scope_ref: string }>
+    : [];
   const freeCourses = new Set((db.prepare(`SELECT p.course_ref FROM free_course_enrollments f
     JOIN products p ON p.id=f.product_id WHERE f.customer_id=?`).all(customerId) as Array<{ course_ref: string }>).map(row => row.course_ref));
   const entitledCourse = (courseRef: string) => grants.some((grant) =>
@@ -60,13 +64,14 @@ export function listCustomerLibrary(
     const effectiveVisibility = row.course_visibility === "LISTED"
       && row.section_visibility === "LISTED"
       && row.lesson_visibility === "LISTED" ? "LISTED" : "UNLISTED";
-    const activeOverride = overrides.some((override) => override.course_ref === row.course_ref && (
+    const legacyManifest = row.authoring_source === "LEGACY_MANIFEST";
+    const activeOverride = legacyManifest && overrides.some((override) => override.course_ref === row.course_ref && (
       override.scope_level === "COURSE"
       || (override.scope_level === "SECTION" && override.scope_ref === row.section_ref)
       || (override.scope_level === "LESSON" && override.scope_ref === row.lesson_ref)
     ));
     const reconciledAt = Date.parse(row.last_reconciled_at);
-    const projectionStale = !Number.isFinite(reconciledAt) || now.getTime() - reconciledAt > leaseMs;
+    const projectionStale = legacyManifest && (!Number.isFinite(reconciledAt) || now.getTime() - reconciledAt > leaseMs);
     const decision = decideLessonAccess({
       customerId,
       courseRef: row.course_ref,
