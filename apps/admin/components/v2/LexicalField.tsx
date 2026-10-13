@@ -18,25 +18,28 @@ function FormattingToolbar() {
   </div>;
 }
 
-export function LexicalField({ label, value, onChange }: {
-  label: string; value: LexicalContent | null | undefined; onChange: (value: LexicalContent) => void;
-}) {
+type LexicalFieldProps = { label: string; value: LexicalContent | null | undefined } & (
+  { readOnly: true; onChange?: never } | { readOnly?: false; onChange: (value: LexicalContent) => void }
+);
+
+export function LexicalField({ label, value, onChange, readOnly = false }: LexicalFieldProps) {
   return <div className="editorial-rich-field">
     <span className="editorial-rich-label">{label}</span>
     <LexicalComposer initialConfig={{
       namespace: `control-room-${label}`,
       editorState: value ? JSON.stringify(value) : undefined,
+      editable: !readOnly,
       theme: { paragraph: "editorial-paragraph", text: { bold: "editorial-bold", italic: "editorial-italic" } },
       onError: (error: Error) => { throw error; },
     }}>
-      <FormattingToolbar />
+      {!readOnly ? <FormattingToolbar /> : null}
       <RichTextPlugin
         contentEditable={<ContentEditable className="editorial-content" aria-label={label} />}
         placeholder={<span className="editorial-placeholder">Напишите содержание…</span>}
         ErrorBoundary={LexicalErrorBoundary}
       />
       <HistoryPlugin />
-      <OnChangePlugin ignoreSelectionChange onChange={(state) => onChange(state.toJSON() as LexicalContent)} />
+      {!readOnly && onChange ? <OnChangePlugin ignoreSelectionChange onChange={(state) => onChange(state.toJSON() as LexicalContent)} /> : null}
     </LexicalComposer>
   </div>;
 }

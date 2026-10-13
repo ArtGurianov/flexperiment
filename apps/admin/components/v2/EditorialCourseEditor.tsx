@@ -149,6 +149,7 @@ function LoadedEditorialSession({ course, initialDraft, initialPublished, publis
   if (!state) return <Loading />;
   const document = state.document;
   const restriction = published?.course.editorial_restriction ?? "NONE";
+  const publishedDocument = published ? documentFromPublished(published) : null;
   const publishedLessons = new Set(published?.lessons.map((lesson) => lesson.lesson_ref) ?? []);
   const patchSection = (sectionRef: string, change: (section: EditorialSection) => EditorialSection) =>
     update((value) => ({ ...value, sections: value.sections.map((section) => section.sectionRef === sectionRef ? change(section) : section) }));
@@ -237,13 +238,20 @@ function LoadedEditorialSession({ course, initialDraft, initialPublished, publis
       <label>Причина повторного открытия<input value={relistReason} onChange={(event) => setRelistReason(event.target.value)} /></label>
       <button type="button" disabled={busy || !relistReason.trim()} onClick={() => restrict("relist")}>Relist с аудитом</button>
     </div> : null}
-    {published ? <details className="editorial-published"><summary>Опубликованная версия v{published.course.version} · только чтение</summary>
-      <p><strong>{published.course.title}</strong> · {published.course.visibility}</p>
+    {published && publishedDocument ? <details className="editorial-published"><summary>Опубликованная версия v{published.course.version} · только чтение</summary>
+      <p><strong>{published.course.title}</strong> · {published.course.visibility} · {published.course.slug}</p>
       <p>{published.course.summary}</p>
-      {published.sections.map((section) => <div key={section.section_ref}>
+      {publishedDocument.seo ? <p>SEO: {publishedDocument.seo.title || "—"} · {publishedDocument.seo.description || "—"}</p> : null}
+      {publishedDocument.description ? <LexicalField key={`published-course-${published.course.version}`}
+        label="Опубликованный текст курса" value={publishedDocument.description} readOnly /> : null}
+      {publishedDocument.sections.map((section) => <div key={section.sectionRef}>
         <h4>{section.title} · {section.visibility}</h4>
-        <ul>{published.lessons.filter((lesson) => lesson.section_ref === section.section_ref).map((lesson) =>
-          <li key={lesson.lesson_ref}>{lesson.title} · {lesson.visibility}{lesson.free_preview ? " · preview" : ""}</li>)}</ul>
+        <ul>{publishedDocument.lessons.filter((lesson) => lesson.sectionRef === section.sectionRef).map((lesson) =>
+          <li key={lesson.lessonRef}>{lesson.title} · {lesson.visibility}{lesson.freePreview ? " · preview" : ""} · {lesson.slug}
+            {lesson.seo ? <p>SEO: {lesson.seo.title || "—"} · {lesson.seo.description || "—"}</p> : null}
+            {lesson.description ? <LexicalField key={`published-${lesson.lessonRef}-${published.course.version}`}
+              label={`Опубликованный текст урока ${lesson.title}`} value={lesson.description} readOnly /> : null}
+          </li>)}</ul>
       </div>)}
     </details> : null}
   </div>;

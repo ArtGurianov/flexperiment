@@ -5,7 +5,8 @@ import { createTestQueryClient, QueryClientWrapper } from "../../lib/test-query-
 import { EditorialCourseEditor } from "./EditorialCourseEditor";
 import type { EditorialDocument, PublishedSnapshot } from "./editorial-model";
 
-vi.mock("./LexicalField", () => ({ LexicalField: ({ label }: { label: string }) => <div data-testid="lexical-field">{label}</div> }));
+vi.mock("./LexicalField", () => ({ LexicalField: ({ label, readOnly }: { label: string; readOnly?: boolean }) =>
+  <div data-testid="lexical-field" data-readonly={readOnly ? "true" : "false"}>{label}</div> }));
 
 const response = (body: unknown, status = 200): Response => ({ ok: status >= 200 && status < 300,
   status, json: async () => body }) as Response;
@@ -132,6 +133,23 @@ describe("Control Room editorial course editor", () => {
     expect(fetchMock.mock.calls.filter(([url, options]) => String(url).endsWith("/draft") && options?.method === "PUT")).toHaveLength(1);
     resolveSave?.(response({ revision: 2 }));
     await screen.findByText(/Черновик сохранён/);
+  });
+
+  it("shows the saved course and lesson content in the published view", async () => {
+    const saved = published();
+    saved.course.description_json = JSON.stringify({ root: { type: "root", version: 1, children: [] } });
+    saved.course.seo_json = JSON.stringify({ title: "Published SEO" });
+    saved.lessons[0].description_json = JSON.stringify({ root: { type: "root", version: 1, children: [] } });
+    saved.lessons[0].seo_json = JSON.stringify({ title: "Lesson SEO" });
+    global.fetch = vi.fn().mockImplementation(async (input: RequestInfo | URL) => String(input).endsWith("/draft")
+      ? response({ courseRef: "course", revision: 1, document: document("Draft"), updatedAt: "2026-10-13" })
+      : response(saved));
+    const user = await mount();
+    await user.click(screen.getByText(/Опубликованная версия v1/));
+    expect(screen.getByText(/Published SEO/)).toBeInTheDocument();
+    expect(screen.getByText(/Lesson SEO/)).toBeInTheDocument();
+    expect(screen.getByText("Опубликованный текст курса")).toHaveAttribute("data-readonly", "true");
+    expect(screen.getByText("Опубликованный текст урока Lesson")).toHaveAttribute("data-readonly", "true");
   });
 
   it("reuses the publication key after an ambiguous network response", async () => {

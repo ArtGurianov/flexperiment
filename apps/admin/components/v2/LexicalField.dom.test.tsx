@@ -25,4 +25,16 @@ describe("minimal Lexical content field", () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(onChange).not.toHaveBeenCalled();
   });
+
+  it("renders a saved publication without editing controls", async () => {
+    const value: LexicalContent = { root: { type: "root", version: 1, children: [
+      { type: "paragraph", version: 1, children: [
+        { type: "text", version: 1, text: "Published text", detail: 0, format: 0, mode: "normal", style: "" },
+      ] },
+    ] } };
+    render(<LexicalField label="Опубликованный текст" value={value} readOnly />);
+    expect(await screen.findByText("Published text")).toBeInTheDocument();
+    expect(screen.queryByRole("toolbar")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Опубликованный текст")).toHaveAttribute("contenteditable", "false");
+  });
 });
