@@ -23,6 +23,7 @@ SECRET_FILE = SECRET_DIR / "drm-credentials.json"
 SOURCE = "84b1a6abcb43e9abf8f781e830f84822207c0dca"
 APP_UUID = "xzuy7pk5y6ywjr9kh6nsk5ap"
 BASE = "https://coolify.refref.ru/api/v1"
+OWNER_UID = 0
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -32,7 +33,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 def private_bytes(path):
     info = path.lstat()
-    if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1:
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != OWNER_UID or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1:
         raise RuntimeError("OWNER_SECRET_PERMISSIONS_INVALID")
     return path.read_bytes()
 
@@ -84,7 +85,7 @@ def main():
             raise RuntimeError("CANARY_ENVIRONMENT_REFUSED")
 
     directory = SECRET_DIR.lstat()
-    if not stat.S_ISDIR(directory.st_mode) or directory.st_uid != 0 or stat.S_IMODE(directory.st_mode) != 0o700:
+    if not stat.S_ISDIR(directory.st_mode) or directory.st_uid != OWNER_UID or stat.S_IMODE(directory.st_mode) != 0o700:
         raise RuntimeError("OWNER_SECRET_DIRECTORY_INVALID")
     if SECRET_FILE.exists():
         credentials = json.loads(private_bytes(SECRET_FILE))
