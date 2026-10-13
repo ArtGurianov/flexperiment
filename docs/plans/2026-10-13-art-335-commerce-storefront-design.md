@@ -54,6 +54,21 @@ The source cut removes Payload routes, config, collections, migrations,
 manifest workers, direct SQLite mount assumptions and Payload packages from
 the platform image after all callers move to Commerce. Build identity,
 Commerce readiness, account cookies, and the four-host 403 guard remain.
+The platform image starts Next directly, has no editorial SQLite mount or
+backup helper, and refuses the old Payload environment variables in closed
+canary mode. The Commerce server stops calling the platform revalidation
+route because every closed-canary content read is request-time and no-store.
+The old platform snapshot and scheduled-backup source files remain for the
+currently installed archive and are retired operationally only at the
+separately authorized ART-337 cutover; this source change does not delete
+archived ciphertext or alter the installed scheduler.
+ART-337 must first preserve and independently read back the exact archived
+Payload snapshot, disable and read back the old platform backup timer, remove
+the old editorial and backup volume mounts and Payload variables from the
+canary application, then install the reviewed image. The new canary admission
+refuses those variables, and its CI image proof asserts zero mounts and 404
+for the old admin/API routes. Commerce backup, erasure ledger and runtime
+fence retain their own independent qualification gates.
 Focused tests exercise public-field allowlists, current visibility and
 withdrawal, private session/consent denial, Commerce outage, content-version
 consistency, and the absence of video IDs in public output. CI must build and
