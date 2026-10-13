@@ -14,26 +14,32 @@ export class OverrideProofError extends Error {
 }
 
 export function createRestrictiveOverride(db: Database.Database, override: RestrictiveOverride) {
-  const existing = db.prepare(`SELECT course_ref,scope_level,scope_ref,expected_kind,expected_value,deadline_at,platform_epoch
-    FROM access_overrides WHERE operation_id=?`).get(override.operationId) as {
-      course_ref: string; scope_level: string; scope_ref: string; expected_kind: string;
-      expected_value: string; deadline_at: string; platform_epoch: string;
-    } | undefined;
-  if (existing) {
-    const matches = existing.course_ref === override.courseRef && existing.scope_level === override.scope.level &&
-      existing.scope_ref === override.scope.ref && existing.expected_kind === override.expected.kind &&
-      existing.expected_value === override.expected.value && existing.deadline_at === override.deadlineAt &&
-      existing.platform_epoch === override.platformEpoch;
-    if (!matches) throw new OverrideProofError("OPERATION_ID_REUSED");
-    return { created: false as const };
-  }
-  db.prepare(`INSERT INTO access_overrides
-      (operation_id,course_ref,scope_level,scope_ref,expected_kind,expected_value,deadline_at,platform_epoch)
-      VALUES (?,?,?,?,?,?,?,?)`).run(
-    override.operationId, override.courseRef, override.scope.level, override.scope.ref,
-    override.expected.kind, override.expected.value, override.deadlineAt, override.platformEpoch,
-  );
-  return { created: true as const };
+  const create = db.transaction(() => {
+    const authority = db.prepare("SELECT authoring_source FROM catalog_course_projection WHERE course_ref=?")
+      .get(override.courseRef) as { authoring_source: string } | undefined;
+    if (authority?.authoring_source === "COMMERCE_EDITORIAL") throw new OverrideProofError("COMMERCE_EDITORIAL_OWNED");
+    const existing = db.prepare(`SELECT course_ref,scope_level,scope_ref,expected_kind,expected_value,deadline_at,platform_epoch
+      FROM access_overrides WHERE operation_id=?`).get(override.operationId) as {
+        course_ref: string; scope_level: string; scope_ref: string; expected_kind: string;
+        expected_value: string; deadline_at: string; platform_epoch: string;
+      } | undefined;
+    if (existing) {
+      const matches = existing.course_ref === override.courseRef && existing.scope_level === override.scope.level &&
+        existing.scope_ref === override.scope.ref && existing.expected_kind === override.expected.kind &&
+        existing.expected_value === override.expected.value && existing.deadline_at === override.deadlineAt &&
+        existing.platform_epoch === override.platformEpoch;
+      if (!matches) throw new OverrideProofError("OPERATION_ID_REUSED");
+      return { created: false as const };
+    }
+    db.prepare(`INSERT INTO access_overrides
+        (operation_id,course_ref,scope_level,scope_ref,expected_kind,expected_value,deadline_at,platform_epoch)
+        VALUES (?,?,?,?,?,?,?,?)`).run(
+      override.operationId, override.courseRef, override.scope.level, override.scope.ref,
+      override.expected.kind, override.expected.value, override.deadlineAt, override.platformEpoch,
+    );
+    return { created: true as const };
+  });
+  return create.immediate();
 }
 
 export function listPendingOverrides(db: Database.Database) {

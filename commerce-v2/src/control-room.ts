@@ -160,7 +160,7 @@ export function controlRoomIntegrationSummary(
     outstandingCheckoutCount: count("SELECT COUNT(*) AS count FROM checkout_attempts WHERE state IN ('CREATING','CREATE_UNKNOWN','PENDING','CUSTOMER_ACTION_REQUIRED')"),
     processingRefundCount: count("SELECT COUNT(*) AS count FROM refund_executions WHERE state IN ('READY','PROCESSING')"),
     attentionOverrideCount: count("SELECT COUNT(*) AS count FROM access_overrides WHERE attention_reason IS NOT NULL"),
-    staleProjectionCount: count("SELECT COUNT(*) AS count FROM catalog_course_projection WHERE last_reconciled_at < ?", new Date(now.getTime() - leaseMs).toISOString()),
+    staleProjectionCount: count("SELECT COUNT(*) AS count FROM catalog_course_projection WHERE authoring_source='LEGACY_MANIFEST' AND last_reconciled_at < ?", new Date(now.getTime() - leaseMs).toISOString()),
     playbackAccess24h: playbackAccessSummary(db, new Date(now.getTime() - 24 * 60 * 60_000).toISOString()),
   };
 }
