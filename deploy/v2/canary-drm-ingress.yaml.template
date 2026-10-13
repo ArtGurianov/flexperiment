@@ -1,0 +1,41 @@
+# ART-336. Render __COMMERCE_CANARY_HOST__ only after verifying the live
+# Commerce canary container's source identity, Docker network and DNS alias.
+# Install as a separate Traefik file only after the admission checks in
+# docs/plans/2026-10-13-art-336-canary-drm-ingress.md pass.
+http:
+  routers:
+    flex-v2-canary-drm-authorize:
+      rule: Host(`canary-api.flexperiment.ru`) && Method(`POST`) && Path(`/v1/kinescope/drm/authorize`)
+      entryPoints:
+        - https
+      priority: 10000
+      service: flex-v2-canary-drm-authorize
+      middlewares:
+        - flex-v2-canary-drm-limit-body
+        - flex-v2-canary-drm-rate
+        - flex-v2-canary-drm-no-store
+      tls: {}
+  services:
+    flex-v2-canary-drm-authorize:
+      loadBalancer:
+        serversTransport: flex-v2-canary-drm-transport
+        servers:
+          - url: http://__COMMERCE_CANARY_HOST__:3002
+  serversTransports:
+    flex-v2-canary-drm-transport:
+      forwardingTimeouts:
+        dialTimeout: 3s
+        responseHeaderTimeout: 10s
+  middlewares:
+    flex-v2-canary-drm-limit-body:
+      buffering:
+        maxRequestBodyBytes: 16384
+    flex-v2-canary-drm-rate:
+      rateLimit:
+        average: 120
+        period: 1s
+        burst: 240
+    flex-v2-canary-drm-no-store:
+      headers:
+        customResponseHeaders:
+          Cache-Control: no-store
