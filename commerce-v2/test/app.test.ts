@@ -7,7 +7,8 @@ import { migrateV2 } from "../src/db";
 import { stageBLegalManifestJson } from "./fixtures/legal";
 import { activatePublicSales, qualifyTestFiscalPolicies } from "./fixtures/sales";
 import { loadCommerceRuntimeConfig } from "../src/payment-mode";
-import { withManifestHash } from "../src/manifest";
+import { applyCourseManifest, withManifestHash } from "../src/manifest";
+import { startVideoUpload } from "../src/kinescope";
 import { MockPaymentRail } from "../src/checkout";
 import { controlRoomEntitlements } from "../src/control-room";
 import type { CatalogueResponse, ControlRoomIntegrationSummary, CustomersResponse, EntitlementsResponse, OrdersResponse } from "@flexperiment/control-room-contracts";
@@ -42,18 +43,27 @@ const internal = (body: unknown) => ({
   body: JSON.stringify(body),
 });
 
-const seedPlayableLesson = async (server: ReturnType<typeof createCommerceV2App>) => {
+const seedPlayableLesson = () => {
   const manifest = withManifestHash({
     courseRef: "course", version: 1, visibility: "LISTED",
     sections: [{ sectionRef: "section", visibility: "LISTED" as const }],
     lessons: [{ lessonRef: "lesson", sectionRef: "section", everPublished: true, visibility: "LISTED" as const, freePreview: true }], operations: [],
   });
-  await server.request("/v1/internal/course-manifests", internal(manifest));
+  applyCourseManifest(db, manifest);
   db.prepare("INSERT INTO customers(id,email_normalized) VALUES ('customer','student@example.com')").run();
   confirmSyntheticAccount(db, "customer");
   db.prepare("INSERT INTO products(id,product_ref,kind,access_model,course_ref) VALUES ('p','course:course','ONLINE_COURSE','PAID','course')").run();
   db.prepare("INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode) VALUES ('o','course:course','p',100,'CLOSED')").run();
   db.prepare("INSERT INTO lesson_video_bindings(lesson_ref,active_video_id,bound_at,updated_at) VALUES ('lesson','private-video','now','now')").run();
+};
+
+const seedEditorialLesson = () => {
+  db.prepare(`INSERT INTO catalog_course_projection(course_ref,version,content_hash,state_hash,visibility,last_reconciled_at,applied_at,
+    authoring_source,editorial_requested_visibility) VALUES ('course',1,?,?, 'UNLISTED',?,?, 'COMMERCE_EDITORIAL','UNLISTED')`)
+    .run("a".repeat(64), "a".repeat(64), "2026-09-30T12:00:00.000Z", "2026-09-30T12:00:00.000Z");
+  db.prepare("INSERT INTO catalog_section_projection(section_ref,course_ref,visibility,position) VALUES ('section','course','UNLISTED',0)").run();
+  db.prepare(`INSERT INTO catalog_lesson_projection(lesson_ref,course_ref,section_ref,ever_published,visibility,free_preview,position)
+    VALUES ('lesson','course','section',1,'UNLISTED',0,0)`).run();
 };
 
 describe("commerce v2 boundaries", () => {
@@ -174,7 +184,7 @@ describe("commerce v2 boundaries", () => {
     expect(db.prepare("SELECT COUNT(*) AS count FROM control_room_audit_log WHERE action='PRODUCT_CONFIGURED'").get()).toEqual({ count: 1 });
   });
 
-  it("marks only a withdrawal's platform revalidation as a withdrawal", async () => {
+  it("marks only a Control Room withdrawal's platform revalidation as a withdrawal", async () => {
     const invalidatePlatformCache = vi.fn(async () => {});
     const server = app("disabled", { invalidatePlatformCache });
     const login = await server.request("/v1/admin/login", {
@@ -189,18 +199,9 @@ describe("commerce v2 boundaries", () => {
     expect((await server.request("/v1/admin/v2/catalogue/products/course:withdrawn/withdraw", { method: "POST", headers, body: JSON.stringify({
       reason: "Rights expired", termsRef: "offer-v1#withdrawal", expectedVersion: 1,
     }) })).status).toBe(200);
-    expect((await server.request("/v1/internal/catalog/products", internal({
-      productRef: "course:internal", offerRef: "course:internal", kind: "ONLINE_COURSE", courseRef: "internal",
-      accessModel: "FREE", priceKopecks: 0, saleMode: "CLOSED", actor: "operator", expectedVersion: 0,
-    }))).status).toBe(200);
-    expect((await server.request("/v1/internal/catalog/products/course:internal/withdraw", internal({
-      reason: "Rights expired", termsRef: "offer-v1#withdrawal", actor: "operator", expectedVersion: 1,
-    }))).status).toBe(200);
     expect(invalidatePlatformCache.mock.calls).toEqual([
       ["swr", "withdrawn"],
       ["immediate", "withdrawn", "WITHDRAWN"],
-      ["swr", "internal"],
-      ["immediate", "internal", "WITHDRAWN"],
     ]);
   });
 
@@ -434,10 +435,30 @@ describe("commerce v2 boundaries", () => {
     expect(await executed.json()).toMatchObject({ state: "SUCCEEDED" });
   });
 
-  it("authenticates internal manifest writes", async () => {
-    const manifest = withManifestHash({ courseRef: "course", version: 1, visibility: "LISTED", sections: [], lessons: [], operations: [] });
-    expect((await app().request("/v1/internal/course-manifests", { method: "POST" })).status).toBe(401);
-    expect((await app().request("/v1/internal/course-manifests", internal(manifest))).status).toBe(200);
+  it("does not expose retired Payload writer routes even to the internal service token", async () => {
+    const server = app();
+    const retired = [
+      ["POST", "/v1/internal/course-manifests"],
+      ["POST", "/v1/internal/access-overrides"],
+      ["GET", "/v1/internal/access-overrides/pending"],
+      ["POST", "/v1/internal/access-overrides/operation/release"],
+      ["POST", "/v1/internal/catalog/products"],
+      ["POST", "/v1/internal/catalog/products/course:retired/withdraw"],
+      ["POST", "/v1/internal/catalog/courses/retired/commercial"],
+      ["POST", "/v1/internal/catalog/payment-purpose/retired"],
+      ["POST", "/v1/internal/video-uploads"],
+      ["GET", "/v1/internal/video-uploads/retired-session"],
+    ] as const;
+    for (const [method, path] of retired) {
+      const response = await server.request(path, {
+        method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: method === "POST" ? "{}" : undefined,
+      });
+      expect(response.status, `${method} ${path}`).toBe(404);
+    }
+    for (const table of ["catalog_course_projection", "products", "access_overrides", "audit_log"]) {
+      expect(db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get(), table).toEqual({ count: 0 });
+    }
   });
 
   it("serves typed Control Room read models only through the internal boundary", async () => {
@@ -452,9 +473,9 @@ describe("commerce v2 boundaries", () => {
       VALUES ('offer','course:one','product',10000,'PUBLIC')`).run();
     qualifyTestFiscalPolicies(db);
     activatePublicSales(db);
-    await server.request("/v1/internal/course-manifests", internal(withManifestHash({
+    applyCourseManifest(db, withManifestHash({
       courseRef: "course-one", version: 1, visibility: "LISTED", sections: [], lessons: [], operations: [],
-    })));
+    }));
     const headers = { authorization: "Session customer", "content-type": "application/json", "idempotency-key": "cr-preview" };
     const preview = await server.request("/v1/checkout/preview", { method: "POST", headers, body: JSON.stringify({ offerRef: "course:one" }) });
     const quote = await preview.json() as { quoteId: string };
@@ -494,7 +515,7 @@ describe("commerce v2 boundaries", () => {
       sections: [{ sectionRef: "section", visibility: "LISTED" }],
       lessons: [{ lessonRef: "lesson", sectionRef: "section", everPublished: true, visibility: "LISTED", freePreview: true }], operations: [],
     });
-    await app().request("/v1/internal/course-manifests", internal(manifest));
+    applyCourseManifest(db, manifest);
     db.prepare("INSERT INTO customers(id,email_normalized) VALUES ('customer','student@example.com')").run();
     confirmSyntheticAccount(db, "customer");
     db.prepare("INSERT INTO products(id,product_ref,kind,access_model,course_ref) VALUES ('p','course:course','ONLINE_COURSE','PAID','course')").run();
@@ -517,7 +538,7 @@ describe("commerce v2 boundaries", () => {
       }),
       kinescopeDrmAuth: drm,
     });
-    await seedPlayableLesson(server);
+    seedPlayableLesson();
 
     const response = await server.request("/v1/lessons/lesson/playback", {
       method: "POST", headers: { authorization: "Session customer" },
@@ -560,7 +581,7 @@ describe("commerce v2 boundaries", () => {
       config: loadCommerceRuntimeConfig({ DEPLOY_ENV: "production", PAYMENT_MODE: "disabled", KINESCOPE_DELIVERY_MODE: "protected", MERCHANT_PROMOTION_PREFIX: "FX-" }),
       kinescopeDrmAuth: { keyring: { currentKeyId: "k1", keys: { k1: "s".repeat(32) } }, username: "drm", password: "synthetic" },
     });
-    await seedPlayableLesson(server);
+    seedPlayableLesson();
     const grant = await (await server.request("/v1/lessons/lesson/playback", { method: "POST", headers: { authorization: "Session customer" } })).json() as { token: string };
     const authorize = () => server.request("/v1/kinescope/drm/authorize", { method: "POST",
       headers: { authorization: `Basic ${Buffer.from("drm:synthetic").toString("base64")}`, "content-type": "application/json" },
@@ -572,7 +593,8 @@ describe("commerce v2 boundaries", () => {
       .toEqual({ event_type: "DRM_DENIED", reason: "CONSENT_REQUIRED" });
   });
 
-  it("keeps upload init internal and accepts only authenticated Kinescope status webhooks", async () => {
+  it("keeps video upload under Control Room and accepts only authenticated Kinescope status webhooks", async () => {
+    seedEditorialLesson();
     const kinescopeClient = {
       initUpload: vi.fn(async () => ({ endpoint: "https://tus.example/upload", videoId: "new-video" })),
       getVideo: async (videoId: string) => ({ id: videoId, status: "done" as const, durationSeconds: 180 }),
@@ -582,14 +604,15 @@ describe("commerce v2 boundaries", () => {
       kinescopeLessonsFolderId: "lessons-folder",
       kinescopeWebhookCredentials: { username: "webhook", password: "secret" },
     });
-    expect((await server.request("/v1/internal/video-uploads", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ lessonRef: "lesson", title: "Lesson" }),
-    })).status).toBe(401);
-    expect((await server.request("/v1/internal/video-uploads", internal({ lessonRef: "lesson", title: "Lesson" }))).status).toBe(422);
-    const initialized = await server.request("/v1/internal/video-uploads", internal({
-      lessonRef: "lesson", title: "Lesson", filename: "lesson.mp4", filesize: 1_048_576,
-    }));
+    const login = await server.request("/v1/admin/login", {
+      method: "POST", headers: { origin: "https://admin.flexperiment.ru", "content-type": "application/json" },
+      body: JSON.stringify({ password: adminPassword }),
+    });
+    const upload = { method: "POST", headers: {
+      cookie: login.headers.get("set-cookie")!, origin: "https://admin.flexperiment.ru", "content-type": "application/json",
+    }, body: JSON.stringify({ lessonRef: "lesson", title: "Lesson", filename: "lesson.mp4", filesize: 1_048_576 }) };
+    expect((await server.request("/v1/admin/v2/video-uploads", { ...upload, headers: { authorization: `Bearer ${token}`, "content-type": "application/json" } })).status).toBe(401);
+    const initialized = await server.request("/v1/admin/v2/video-uploads", upload);
     expect(initialized.status).toBe(201);
     expect(await initialized.json()).toEqual({ uploadSessionId: expect.any(String), endpoint: "https://tus.example/upload" });
     expect(kinescopeClient.initUpload).toHaveBeenCalledTimes(1);
@@ -611,13 +634,39 @@ describe("commerce v2 boundaries", () => {
       .toEqual({ active_video_id: "new-video", duration_seconds: 180 });
   });
 
+  it("retired service-token video routes neither call Kinescope nor mutate sessions or bindings", async () => {
+    applyCourseManifest(db, withManifestHash({
+      courseRef: "legacy", version: 1, visibility: "LISTED",
+      sections: [{ sectionRef: "section", visibility: "LISTED" }],
+      lessons: [{ lessonRef: "lesson", sectionRef: "section", everPublished: true, visibility: "LISTED", freePreview: false }],
+      operations: [],
+    }));
+    db.prepare(`INSERT INTO lesson_video_bindings(lesson_ref,active_video_id,bound_at,updated_at)
+      VALUES ('lesson','old-video','before','before')`).run();
+    const kinescopeClient = {
+      initUpload: vi.fn(async () => ({ endpoint: "https://tus.example/upload", videoId: "new-video" })),
+      getVideo: vi.fn(async (videoId: string) => ({ id: videoId, status: "done" as const, durationSeconds: 180 })),
+    };
+    const pending = await startVideoUpload(db, kinescopeClient, {
+      lessonRef: "lesson", title: "Legacy lesson", filename: "lesson.mp4", filesize: 1024, parentId: "folder",
+    });
+    kinescopeClient.initUpload.mockClear();
+    const sessions = db.prepare("SELECT * FROM video_upload_sessions").all();
+    const bindings = db.prepare("SELECT * FROM lesson_video_bindings").all();
+    const server = app("disabled", { kinescopeClient, kinescopeLessonsFolderId: "folder" });
+    const auth = { authorization: `Bearer ${token}` };
+    expect((await server.request("/v1/internal/video-uploads", internal({
+      lessonRef: "lesson", title: "Legacy lesson", filename: "replacement.mp4", filesize: 1024,
+    }))).status).toBe(404);
+    expect((await server.request(`/v1/internal/video-uploads/${pending.uploadSessionId}`, { headers: auth })).status).toBe(404);
+    expect(kinescopeClient.initUpload).not.toHaveBeenCalled();
+    expect(kinescopeClient.getVideo).not.toHaveBeenCalled();
+    expect(db.prepare("SELECT * FROM video_upload_sessions").all()).toEqual(sessions);
+    expect(db.prepare("SELECT * FROM lesson_video_bindings").all()).toEqual(bindings);
+  });
+
   it("keeps Control Room upload scoped to published Commerce lessons and preserves READY binding on failure", async () => {
-    db.prepare(`INSERT INTO catalog_course_projection(course_ref,version,content_hash,state_hash,visibility,last_reconciled_at,applied_at,
-      authoring_source,editorial_requested_visibility) VALUES ('course',1,?,?, 'UNLISTED',?,?, 'COMMERCE_EDITORIAL','UNLISTED')`)
-      .run("a".repeat(64), "a".repeat(64), "2026-09-30T12:00:00.000Z", "2026-09-30T12:00:00.000Z");
-    db.prepare("INSERT INTO catalog_section_projection(section_ref,course_ref,visibility,position) VALUES ('section','course','UNLISTED',0)").run();
-    db.prepare(`INSERT INTO catalog_lesson_projection(lesson_ref,course_ref,section_ref,ever_published,visibility,free_preview,position)
-      VALUES ('lesson','course','section',1,'UNLISTED',0,0)`).run();
+    seedEditorialLesson();
     db.prepare(`INSERT INTO catalog_course_projection(course_ref,version,content_hash,state_hash,visibility,last_reconciled_at,applied_at)
       VALUES ('legacy',1,?,?,'UNLISTED',?,?)`)
       .run("b".repeat(64), "b".repeat(64), "2026-09-30T12:00:00.000Z", "2026-09-30T12:00:00.000Z");
@@ -679,7 +728,7 @@ describe("commerce v2 boundaries", () => {
       sections: [{ sectionRef: "section", visibility: "LISTED" }],
       lessons: [{ lessonRef: "lesson", sectionRef: "section", everPublished: true, visibility: "LISTED", freePreview: true }], operations: [],
     });
-    await app().request("/v1/internal/course-manifests", internal(manifest));
+    applyCourseManifest(db, manifest);
     db.prepare("INSERT INTO customers(id,email_normalized) VALUES ('customer','student@example.com')").run();
     confirmSyntheticAccount(db, "customer");
     db.prepare("INSERT INTO products(id,product_ref,kind,access_model,course_ref) VALUES ('p','course:course','ONLINE_COURSE','PAID','course')").run();
@@ -699,7 +748,7 @@ describe("commerce v2 boundaries", () => {
       sections: [{ sectionRef: "section", visibility: "LISTED" }],
       lessons: [{ lessonRef: "lesson", sectionRef: "section", everPublished: true, visibility: "LISTED", freePreview: true }], operations: [],
     });
-    await app().request("/v1/internal/course-manifests", internal(manifest));
+    applyCourseManifest(db, manifest);
     db.prepare("INSERT INTO customers(id,email_normalized) VALUES ('customer','student@example.com')").run();
     confirmSyntheticAccount(db, "customer");
     db.prepare("INSERT INTO products(id,product_ref,kind,access_model,course_ref) VALUES ('p','course:course','ONLINE_COURSE','PAID','course')").run();

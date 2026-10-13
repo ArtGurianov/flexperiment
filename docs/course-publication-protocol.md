@@ -20,7 +20,12 @@ projection carries the same digest as its latest version.
 FREE/PAID, price and sale mode remain under catalog control; withdrawal also
 updates the product in the same transaction. Legacy manifest ingest rejects a
 Commerce-authored course. Existing Payload courses and their manifest protocol
-below remain the live path until the staged cutover. ART-331 removes the
+below remain the installed canary path until the staged cutover. The ART-337
+source candidate removes the service-token manifest, override and old catalog
+writer routes; it must not be installed until the Payload author is retired
+and the exact archive/restore and erasure gates are satisfied. The historical
+protocol below documents the currently installed runtime, not a permitted
+writer path in that candidate. ART-331 removes the
 manifest lease and override dependency from live access, and ART-339 makes
 publication effects durable; this source change alone is not runtime proof.
 
