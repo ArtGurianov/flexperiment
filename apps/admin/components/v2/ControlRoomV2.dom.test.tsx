@@ -28,7 +28,7 @@ describe("Control Room v2", () => {
         withdrawnTermsRef: null,
         version: 3,
         offer: { offerRef: "offer/base", priceKopecks: 1_000_000, saleMode: "PUBLIC", acceptanceAllowlist: [], paymentPurpose: "Synthetic merchant purpose" },
-        projection: { version: 7, visibility: "LISTED", lastReconciledAt: generatedAt },
+        projection: { version: 7, visibility: "LISTED", lastReconciledAt: generatedAt, authoringSource: "COMMERCE_EDITORIAL" },
       }],
     }));
     global.fetch = fetchMock;
@@ -37,7 +37,7 @@ describe("Control Room v2", () => {
     const user = userEvent.setup();
     render(<CourseCatalogue />, { wrapper: (props) => <QueryClientWrapper client={client}>{props.children}</QueryClientWrapper> });
 
-    expect(await screen.findByText("course/merchant-authority")).toBeInTheDocument();
+    expect((await screen.findAllByText("course/merchant-authority"))[0]).toBeInTheDocument();
     expect(screen.getByText("PAID")).toBeInTheDocument();
     expect(screen.getByText("PUBLIC")).toBeInTheDocument();
     expect(screen.getByText("LISTED")).toBeInTheDocument();

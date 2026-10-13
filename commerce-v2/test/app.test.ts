@@ -579,6 +579,68 @@ describe("commerce v2 boundaries", () => {
       .toEqual({ active_video_id: "new-video", duration_seconds: 180 });
   });
 
+  it("keeps Control Room upload scoped to published Commerce lessons and preserves READY binding on failure", async () => {
+    db.prepare(`INSERT INTO catalog_course_projection(course_ref,version,content_hash,state_hash,visibility,last_reconciled_at,applied_at,
+      authoring_source,editorial_requested_visibility) VALUES ('course',1,?,?, 'UNLISTED',?,?, 'COMMERCE_EDITORIAL','UNLISTED')`)
+      .run("a".repeat(64), "a".repeat(64), "2026-09-30T12:00:00.000Z", "2026-09-30T12:00:00.000Z");
+    db.prepare("INSERT INTO catalog_section_projection(section_ref,course_ref,visibility,position) VALUES ('section','course','UNLISTED',0)").run();
+    db.prepare(`INSERT INTO catalog_lesson_projection(lesson_ref,course_ref,section_ref,ever_published,visibility,free_preview,position)
+      VALUES ('lesson','course','section',1,'UNLISTED',0,0)`).run();
+    db.prepare(`INSERT INTO catalog_course_projection(course_ref,version,content_hash,state_hash,visibility,last_reconciled_at,applied_at)
+      VALUES ('legacy',1,?,?,'UNLISTED',?,?)`)
+      .run("b".repeat(64), "b".repeat(64), "2026-09-30T12:00:00.000Z", "2026-09-30T12:00:00.000Z");
+    db.prepare("INSERT INTO catalog_section_projection(section_ref,course_ref,visibility,position) VALUES ('legacy-section','legacy','UNLISTED',0)").run();
+    db.prepare(`INSERT INTO catalog_lesson_projection(lesson_ref,course_ref,section_ref,ever_published,visibility,free_preview,position)
+      VALUES ('legacy-lesson','legacy','legacy-section',1,'UNLISTED',0,0)`).run();
+    let nextId = 0;
+    const statuses = new Map<string, "processing" | "done" | "error">();
+    const kinescopeClient = {
+      initUpload: vi.fn(async () => {
+        const videoId = `video-${++nextId}`;
+        statuses.set(videoId, "processing");
+        return { endpoint: `https://tus.example/upload/${nextId}`, videoId };
+      }),
+      getVideo: vi.fn(async (videoId: string) => ({ id: videoId, status: statuses.get(videoId) ?? "processing", durationSeconds: 180 })),
+    };
+    const server = app("disabled", { kinescopeClient, kinescopeLessonsFolderId: "lessons-folder" });
+    const login = await server.request("/v1/admin/login", {
+      method: "POST", headers: { origin: "https://admin.flexperiment.ru", "content-type": "application/json" },
+      body: JSON.stringify({ password: adminPassword }),
+    });
+    const cookie = login.headers.get("set-cookie")!;
+    const upload = (lessonRef: string, headers: Record<string, string> = {}) => server.request("/v1/admin/v2/video-uploads", {
+      method: "POST", headers: { "content-type": "application/json", ...headers },
+      body: JSON.stringify({ lessonRef, title: "Synthetic lesson", filename: "tour.mp4", filesize: 1024 }),
+    });
+    expect((await upload("lesson")).status).toBe(401);
+    expect((await upload("unknown", { cookie })).status).toBe(404);
+    expect((await upload("legacy-lesson", { cookie })).status).toBe(404);
+    expect(kinescopeClient.initUpload).not.toHaveBeenCalled();
+    const first = await upload("lesson", { cookie });
+    expect(first.status).toBe(201);
+    expect(first.headers.get("cache-control")).toBe("no-store");
+    const firstBody = await first.json() as { uploadSessionId: string; endpoint: string };
+    expect(firstBody).toEqual({ uploadSessionId: expect.any(String), endpoint: "https://tus.example/upload/1" });
+    expect(JSON.stringify(firstBody)).not.toContain("video-1");
+    expect((await server.request(`/v1/admin/v2/video-uploads/${firstBody.uploadSessionId}`)).status).toBe(401);
+    const poll = (id: string) => server.request(`/v1/admin/v2/video-uploads/${id}`, { headers: { cookie } });
+    expect(await (await poll(firstBody.uploadSessionId)).json()).toMatchObject({ state: "PROCESSING" });
+    statuses.set("video-1", "done");
+    expect(await (await poll(firstBody.uploadSessionId)).json()).toMatchObject({ state: "READY", durationSeconds: 180 });
+    expect(db.prepare("SELECT active_video_id FROM lesson_video_bindings WHERE lesson_ref='lesson'").get())
+      .toEqual({ active_video_id: "video-1" });
+
+    const second = await upload("lesson", { cookie });
+    const secondBody = await second.json() as { uploadSessionId: string };
+    expect((await server.request("/v1/admin/v2/lessons/lesson/video-upload", { headers: { cookie } })).status).toBe(200);
+    expect(await (await server.request("/v1/admin/v2/lessons/lesson/video-upload", { headers: { cookie } })).json())
+      .toMatchObject({ upload: { uploadSessionId: secondBody.uploadSessionId, state: "UPLOADING" }, activeBinding: true, activeDurationSeconds: 180 });
+    statuses.set("video-2", "error");
+    expect(await (await poll(secondBody.uploadSessionId)).json()).toMatchObject({ state: "FAILED" });
+    expect(db.prepare("SELECT active_video_id FROM lesson_video_bindings WHERE lesson_ref='lesson'").get())
+      .toEqual({ active_video_id: "video-1" });
+  });
+
   it("accepts beacon-style resume writes and restarts a completed lesson", async () => {
     const manifest = withManifestHash({
       courseRef: "course", version: 1, visibility: "LISTED",
