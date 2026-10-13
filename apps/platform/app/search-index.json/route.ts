@@ -1,12 +1,13 @@
 import { NextResponse } from "next/server";
+import { connection } from "next/server";
 import { publicSearchDocuments } from "@/lib/content/public";
-import { getCommercialSummaries } from "@/lib/commerce-summary";
-import { buildPublicSearchIndex } from "@/lib/public-search";
 
 export async function GET() {
-  const [allDocuments, commercial] = await Promise.all([publicSearchDocuments(), getCommercialSummaries()]);
-  const documents = buildPublicSearchIndex(allDocuments, commercial);
+  await connection();
+  const documents = (await publicSearchDocuments()).map(({ type, ref, title, summary, url }) => ({
+    type, ref, title, summary, url,
+  }));
   return NextResponse.json(documents, {
-    headers: { "Cache-Control": "public, s-maxage=3600, stale-while-revalidate=86400" },
+    headers: { "Cache-Control": "no-store" },
   });
 }

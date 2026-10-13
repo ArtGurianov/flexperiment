@@ -29,6 +29,7 @@ import { recordPlaybackAccessEvent } from "./playback-telemetry";
 import { loadCommerceOrigins, storefrontOrigin, type CommerceOrigins, type Storefront } from "./origins";
 import { databaseReady, type RefrefReadiness } from "./readiness";
 import { publicLabCatalogue } from "./lab-catalogue";
+import { getCustomerStorefrontCourse, getCustomerStorefrontLesson, getStorefrontCourse, getStorefrontLesson, listCustomerStorefrontLibrary, listStorefrontCourses } from "./storefront-content";
 import { authenticatedConsentStatus, hasRequiredAccountConsents, recordAuthenticatedConsents, type AuthenticatedConsentInput } from "./authenticated-consents";
 import { ErasureLedgerError } from "./erasure-ledger";
 import type { ErasureRuntimeFence } from "./erasure-fence";
@@ -990,6 +991,55 @@ export function createCommerceV2App(deps: Dependencies) {
   app.get("/v1/lab/catalogue", (context) => {
     try { return context.json(publicLabCatalogue(deps.db, deps.config.paymentMode, now()), 200, noStore); }
     catch { return context.json({ code: "LAB_CATALOGUE_UNAVAILABLE" }, 503, noStore); }
+  });
+
+  app.get("/v1/courses", (context) => {
+    try { return context.json({ courses: listStorefrontCourses(deps.db) }, 200, noStore); }
+    catch { return context.json({ code: "COURSE_CONTENT_UNAVAILABLE" }, 503, noStore); }
+  });
+  app.get("/v1/courses/:slug", (context) => {
+    try {
+      const course = getStorefrontCourse(deps.db, context.req.param("slug"));
+      return course ? context.json(course, 200, noStore) : context.json({ code: "COURSE_NOT_FOUND" }, 404, noStore);
+    } catch { return context.json({ code: "COURSE_CONTENT_UNAVAILABLE" }, 503, noStore); }
+  });
+  app.get("/v1/courses/:slug/lessons/:lessonSlug", (context) => {
+    try {
+      const lesson = getStorefrontLesson(deps.db, context.req.param("slug"), context.req.param("lessonSlug"));
+      return lesson ? context.json(lesson, 200, noStore) : context.json({ code: "LESSON_NOT_FOUND" }, 404, noStore);
+    } catch { return context.json({ code: "COURSE_CONTENT_UNAVAILABLE" }, 503, noStore); }
+  });
+
+  app.get("/v1/me/course-library", async (context) => {
+    const customerId = await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;
+    if (!customerId) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
+    if (!hasRequiredAccountConsents(deps.db, customerId)) return context.json({ code: "CONSENT_REQUIRED" }, 403, noStore);
+    try { return context.json(listCustomerStorefrontLibrary(deps.db, customerId, now(),
+      Number(process.env.CATALOG_LEASE_MS ?? 24 * 60 * 60 * 1000)), 200, { "Cache-Control": "private, no-store" }); }
+    catch { return context.json({ code: "COURSE_CONTENT_UNAVAILABLE" }, 503, noStore); }
+  });
+  app.get("/v1/me/courses/:slug", async (context) => {
+    const customerId = await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;
+    if (!customerId) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
+    if (!hasRequiredAccountConsents(deps.db, customerId)) return context.json({ code: "CONSENT_REQUIRED" }, 403, noStore);
+    try {
+      const course = getCustomerStorefrontCourse(deps.db, customerId, context.req.param("slug"), now(),
+        Number(process.env.CATALOG_LEASE_MS ?? 24 * 60 * 60 * 1000));
+      return course ? context.json(course, 200, { "Cache-Control": "private, no-store" })
+        : context.json({ code: "COURSE_NOT_FOUND" }, 404, noStore);
+    } catch { return context.json({ code: "COURSE_CONTENT_UNAVAILABLE" }, 503, noStore); }
+  });
+  app.get("/v1/me/courses/:slug/lessons/:lessonSlug", async (context) => {
+    const customerId = await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;
+    if (!customerId) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
+    if (!hasRequiredAccountConsents(deps.db, customerId)) return context.json({ code: "CONSENT_REQUIRED" }, 403, noStore);
+    try {
+      const lesson = getCustomerStorefrontLesson(deps.db, customerId,
+        context.req.param("slug"), context.req.param("lessonSlug"), now(),
+        Number(process.env.CATALOG_LEASE_MS ?? 24 * 60 * 60 * 1000));
+      return lesson ? context.json(lesson, 200, { "Cache-Control": "private, no-store" })
+        : context.json({ code: "LESSON_NOT_FOUND" }, 404, noStore);
+    } catch { return context.json({ code: "COURSE_CONTENT_UNAVAILABLE" }, 503, noStore); }
   });
 
   app.get("/v1/library", async (context) => {
