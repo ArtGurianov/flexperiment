@@ -114,9 +114,15 @@ importers:
       '@flexperiment/control-room-contracts':
         specifier: workspace:*
         version: link:../../packages/control-room-contracts
+      '@lexical/react':
+        specifier: 0.50.0
+        version: 0.50.0(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(yjs@13.6.33)
       '@tanstack/react-query':
         specifier: ^5.102.2
         version: 5.102.2(react@19.2.8)
+      lexical:
+        specifier: 0.50.0
+        version: 0.50.0(typescript@5.9.3)
       next:
         specifier: 16.3.0
         version: 16.3.0(@babel/core@7.29.7)(@types/node@20.19.43)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(sass@1.77.4)
