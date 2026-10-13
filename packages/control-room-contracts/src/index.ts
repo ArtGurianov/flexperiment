@@ -21,6 +21,7 @@ export type ControlRoomCatalogueCourse = {
     version: number;
     visibility: "LISTED" | "UNLISTED";
     lastReconciledAt: string;
+    authoringSource: "LEGACY_MANIFEST" | "COMMERCE_EDITORIAL";
   };
 };
 

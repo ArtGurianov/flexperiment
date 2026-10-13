@@ -68,6 +68,28 @@ describe("Kinescope replacement lifecycle", () => {
     expect(await pollKinescopeUpload(db, client, upload.uploadSessionId)).toEqual({ status: "READY", durationSeconds: 180 });
     expect(db.prepare("SELECT active_video_id FROM lesson_video_bindings WHERE lesson_ref='lesson'").get()).toEqual({ active_video_id: "new-video" });
   });
+
+  it("supersedes an unfinished upload so a late provider success cannot replace the binding", async () => {
+    db.prepare(`INSERT INTO lesson_video_bindings(lesson_ref,active_video_id,bound_at,updated_at)
+      VALUES ('lesson','old-video','before','before')`).run();
+    const initUpload = vi.fn()
+      .mockResolvedValueOnce({ endpoint: "https://tus.example/one", videoId: "video-one" })
+      .mockResolvedValueOnce({ endpoint: "https://tus.example/two", videoId: "video-two" });
+    const retryClient: KinescopeClient = {
+      initUpload,
+      getVideo: async (videoId) => ({ id: videoId, status: "done", durationSeconds: 180 }),
+    };
+    const first = await startVideoUpload(db, retryClient, uploadInput);
+    const second = await startVideoUpload(db, retryClient, uploadInput);
+    expect(db.prepare("SELECT status,error_code FROM video_upload_sessions WHERE id=?").get(first.uploadSessionId))
+      .toEqual({ status: "FAILED", error_code: "SUPERSEDED" });
+    await pollKinescopeUpload(db, retryClient, first.uploadSessionId);
+    expect(db.prepare("SELECT active_video_id FROM lesson_video_bindings WHERE lesson_ref='lesson'").get())
+      .toEqual({ active_video_id: "old-video" });
+    await pollKinescopeUpload(db, retryClient, second.uploadSessionId);
+    expect(db.prepare("SELECT active_video_id FROM lesson_video_bindings WHERE lesson_ref='lesson'").get())
+      .toEqual({ active_video_id: "video-two" });
+  });
 });
 
 describe("Kinescope Tus initialisation", () => {
@@ -87,6 +109,15 @@ describe("Kinescope Tus initialisation", () => {
     expect(JSON.parse(String(init?.body))).toEqual({
       type: "video", parent_id: "folder", title: "Lesson", filename: "lesson.mp4", filesize: 1_048_576,
     });
+  });
+
+  it("rejects a provider response that would send lesson bytes outside the Kinescope uploader", async () => {
+    const request = vi.fn<typeof fetch>(async () => Response.json({
+      data: { id: "new-video", endpoint: "https://example.invalid/collect" },
+    }));
+    const http = new HttpKinescopeClient("api-token", request);
+    await expect(http.initUpload({ title: "Lesson", parentId: "folder", filename: "lesson.mp4", filesize: 1 }))
+      .rejects.toThrow("KINESCOPE_UPLOAD_ENDPOINT_INVALID");
   });
 
   it("rejects missing or malformed file metadata before calling Kinescope", async () => {

@@ -31,6 +31,7 @@ import { Loading } from "../ui/Loading";
 import { Notice } from "../ui/Notice";
 import { PageTitle } from "../ui/PageTitle";
 import { Panel } from "../ui/Panel";
+import { LessonVideoUpload } from "./LessonVideoUpload";
 
 const useControlRoomQuery = <T,>(key: string, path: string) => useQuery({
   queryKey: ["control-room-v2", key],
@@ -157,7 +158,7 @@ export function CourseCatalogue() {
   const effectiveSelected = selected ?? linkedProductRef ?? null;
   const selectedCourse = query.data?.courses.find((course) => course.productRef === effectiveSelected) ?? null;
   return <>
-    <PageTitle eyebrow="КАТАЛОГ / КУРСЫ" title={<>Редакция отдельно.<br /><i>Продажа отдельно.</i></>} text="Payload публикует содержание. Здесь видна только коммерческая истина: бесплатность, цена, режим продажи и отзыв продукта." />
+    <PageTitle eyebrow="КАТАЛОГ / КУРСЫ" title={<>Редакция отдельно.<br /><i>Продажа отдельно.</i></>} text="Commerce V2 хранит опубликованное содержание и коммерческое состояние курса. Продажи остаются закрытыми до отдельного решения." />
     <Panel title="Коммерческое состояние курсов">
       {query.error ? readError(query.error) : !query.data ? <Loading /> : <QueryState error={null} empty={!query.data.courses.length}>
         <table><thead><tr><th>Курс</th><th>Доступ</th><th>Оффер</th><th>Публикация</th><th>Сверка</th></tr></thead><tbody>
@@ -175,6 +176,7 @@ export function CourseCatalogue() {
     {effectiveSelected ? <Panel title={effectiveSelected === "__new__" ? "Новый продукт" : "Коммерческая команда"}>
       <CourseEditor key={effectiveSelected === "__new__" ? "new" : `${selectedCourse?.productRef}:${selectedCourse?.version}`} course={selectedCourse} />
     </Panel> : null}
+    {query.data ? <Panel title="Видео урока"><LessonVideoUpload courses={query.data.courses} /></Panel> : null}
   </>;
 }
 

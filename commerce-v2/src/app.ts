@@ -208,6 +208,57 @@ export function createCommerceV2App(deps: Dependencies) {
     const published = getEditorialPublished(deps.db, context.req.param("courseRef"));
     return published ? context.json(published, 200, noStore) : context.json({ error: { code: "PUBLISHED_COURSE_NOT_FOUND" } }, 404, noStore);
   });
+  const editorialLessonExists = (lessonRef: string) => Boolean(deps.db.prepare(`SELECT 1 FROM catalog_lesson_projection lesson
+    JOIN catalog_course_projection course ON course.course_ref=lesson.course_ref
+    WHERE lesson.lesson_ref=? AND lesson.ever_published=1 AND course.authoring_source='COMMERCE_EDITORIAL' LIMIT 1`).get(lessonRef));
+
+  app.post("/v1/admin/v2/video-uploads", async (context) => {
+    if (!deps.kinescopeClient || !deps.kinescopeLessonsFolderId) {
+      return context.json({ error: { code: "KINESCOPE_UPLOAD_NOT_CONFIGURED" } }, 503, noStore);
+    }
+    let input: ReturnType<typeof assertVideoUploadInput>;
+    try {
+      input = assertVideoUploadInput(await context.req.json<Record<string, unknown>>());
+    } catch (error) {
+      return context.json({ error: { code: error instanceof Error ? error.message : "VIDEO_UPLOAD_INPUT_INVALID" } }, 422, noStore);
+    }
+    if (!editorialLessonExists(input.lessonRef)) return context.json({ error: { code: "EDITORIAL_LESSON_NOT_FOUND" } }, 404, noStore);
+    try {
+      return context.json(await startVideoUpload(deps.db, deps.kinescopeClient, {
+        ...input, parentId: deps.kinescopeLessonsFolderId,
+      }), 201, noStore);
+    } catch {
+      return context.json({ error: { code: "KINESCOPE_UPLOAD_INIT_FAILED" } }, 503, noStore);
+    }
+  });
+
+  app.get("/v1/admin/v2/lessons/:lessonRef/video-upload", (context) => {
+    const lessonRef = context.req.param("lessonRef");
+    if (!editorialLessonExists(lessonRef)) return context.json({ error: { code: "EDITORIAL_LESSON_NOT_FOUND" } }, 404, noStore);
+    const upload = deps.db.prepare(`SELECT id AS uploadSessionId,status AS state,error_code AS errorCode
+      FROM video_upload_sessions WHERE lesson_ref=? ORDER BY rowid DESC LIMIT 1`).get(lessonRef);
+    const binding = deps.db.prepare(`SELECT duration_seconds AS durationSeconds FROM lesson_video_bindings WHERE lesson_ref=?`)
+      .get(lessonRef) as { durationSeconds: number | null } | undefined;
+    return context.json({ upload: upload ?? null, activeBinding: Boolean(binding), activeDurationSeconds: binding?.durationSeconds ?? null }, 200, noStore);
+  });
+
+  app.get("/v1/admin/v2/video-uploads/:id", async (context) => {
+    const id = context.req.param("id");
+    const session = deps.db.prepare(`SELECT session.lesson_ref FROM video_upload_sessions session
+      JOIN catalog_lesson_projection lesson ON lesson.lesson_ref=session.lesson_ref
+      JOIN catalog_course_projection course ON course.course_ref=lesson.course_ref
+      WHERE session.id=? AND lesson.ever_published=1 AND course.authoring_source='COMMERCE_EDITORIAL'`).get(id);
+    if (!session) return context.json({ error: { code: "VIDEO_UPLOAD_NOT_FOUND" } }, 404, noStore);
+    if (deps.kinescopeClient) {
+      try { await pollKinescopeUpload(deps.db, deps.kinescopeClient, id, now().toISOString()); }
+      catch { return context.json({ error: { code: "KINESCOPE_STATUS_UNAVAILABLE" } }, 503, noStore); }
+    }
+    const state = deps.db.prepare(`SELECT session.id AS uploadSessionId,session.status AS state,session.error_code AS errorCode,
+      binding.duration_seconds AS durationSeconds FROM video_upload_sessions session
+      LEFT JOIN lesson_video_bindings binding ON binding.lesson_ref=session.lesson_ref AND session.status='READY'
+      WHERE session.id=?`).get(id);
+    return context.json(state, 200, noStore);
+  });
   app.put("/v1/admin/v2/courses/:courseRef/draft", async (context) => {
     try {
       const input = await context.req.json<{ document: EditorialDocument; expectedRevision: number }>();

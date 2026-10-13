@@ -49,6 +49,11 @@ export class HttpKinescopeClient implements KinescopeClient {
     const endpoint = body.data?.endpoint;
     const videoId = body.data?.id ?? body.data?.video_id;
     if (!response.ok || typeof endpoint !== "string" || typeof videoId !== "string") throw new Error("KINESCOPE_UPLOAD_INIT_INVALID");
+    let uploadUrl: URL;
+    try { uploadUrl = new URL(endpoint); }
+    catch { throw new Error("KINESCOPE_UPLOAD_ENDPOINT_INVALID"); }
+    if (uploadUrl.protocol !== "https:" || uploadUrl.hostname !== "uploader.kinescope.io"
+      || uploadUrl.username || uploadUrl.password || uploadUrl.hash) throw new Error("KINESCOPE_UPLOAD_ENDPOINT_INVALID");
     return { endpoint, videoId };
   }
 
@@ -99,8 +104,15 @@ export async function startVideoUpload(
     title: valid.title, parentId: input.parentId, filename: valid.filename, filesize: valid.filesize,
   });
   const id = randomUUID();
-  db.prepare(`INSERT INTO video_upload_sessions(id,lesson_ref,video_id,status,uploader_endpoint)
-    VALUES (?,?,?,'UPLOADING',?)`).run(id, valid.lessonRef, initialized.videoId, initialized.endpoint);
+  db.transaction(() => {
+    // A retry supersedes unfinished transfers; a late provider status must never replace
+    // the READY binding with a video from an abandoned attempt.
+    db.prepare(`UPDATE video_upload_sessions SET status='FAILED',error_code='SUPERSEDED',updated_at=?
+      WHERE lesson_ref=? AND status IN ('UPLOADING','PROCESSING')`)
+      .run(new Date().toISOString(), valid.lessonRef);
+    db.prepare(`INSERT INTO video_upload_sessions(id,lesson_ref,video_id,status,uploader_endpoint)
+      VALUES (?,?,?,'UPLOADING',?)`).run(id, valid.lessonRef, initialized.videoId, initialized.endpoint);
+  }).immediate();
   return { uploadSessionId: id, endpoint: initialized.endpoint };
 }
 
@@ -121,15 +133,17 @@ export async function observeKinescopeStatus(
 }
 
 function applyAuthoritativeStatus(db: Database.Database, authoritative: KinescopeVideo, now: string) {
-  const session = db.prepare("SELECT id,lesson_ref,status FROM video_upload_sessions WHERE video_id=?").get(authoritative.id) as {
-    id: string; lesson_ref: string; status: VideoState;
-  } | undefined;
-  if (!session) throw new Error("KINESCOPE_UPLOAD_SESSION_NOT_FOUND");
-  const next = stateForStatus(authoritative.status);
-  const terminal = session.status === "READY" || session.status === "FAILED";
-  const rank = { UPLOADING: 0, PROCESSING: 1, READY: 2, FAILED: 2 } as const;
-  if (!terminal && rank[next] >= rank[session.status]) {
-    const run = db.transaction(() => {
+  const run = db.transaction(() => {
+    // Read under the same SQLite writer lock as supersession. Otherwise a late
+    // provider read can race a retry and revive the superseded session.
+    const session = db.prepare("SELECT id,lesson_ref,status FROM video_upload_sessions WHERE video_id=?").get(authoritative.id) as {
+      id: string; lesson_ref: string; status: VideoState;
+    } | undefined;
+    if (!session) throw new Error("KINESCOPE_UPLOAD_SESSION_NOT_FOUND");
+    const next = stateForStatus(authoritative.status);
+    const terminal = session.status === "READY" || session.status === "FAILED";
+    const rank = { UPLOADING: 0, PROCESSING: 1, READY: 2, FAILED: 2 } as const;
+    if (!terminal && rank[next] >= rank[session.status]) {
       db.prepare(`UPDATE video_upload_sessions SET status=?,error_code=?,updated_at=? WHERE id=?`)
         .run(next, next === "FAILED" ? authoritative.status.toUpperCase() : null, now, session.id);
       if (next === "READY") {
@@ -138,11 +152,11 @@ function applyAuthoritativeStatus(db: Database.Database, authoritative: Kinescop
           duration_seconds=excluded.duration_seconds,bound_at=excluded.bound_at,updated_at=excluded.updated_at`)
           .run(session.lesson_ref, authoritative.id, authoritative.durationSeconds ?? null, now, now);
       }
-    });
-    run.immediate();
-  }
-  const applied = db.prepare("SELECT status FROM video_upload_sessions WHERE id=?").get(session.id) as { status: VideoState };
-  return { status: applied.status, durationSeconds: authoritative.durationSeconds ?? null };
+    }
+    const applied = db.prepare("SELECT status FROM video_upload_sessions WHERE id=?").get(session.id) as { status: VideoState };
+    return { status: applied.status, durationSeconds: authoritative.durationSeconds ?? null };
+  });
+  return run.immediate();
 }
 
 export async function pollKinescopeUpload(
