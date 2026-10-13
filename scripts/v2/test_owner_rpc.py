@@ -28,6 +28,16 @@ def erasure_rows():
 
 
 class OwnerControl(unittest.TestCase):
+    def setUp(self):
+        # Offline tests must not inherit a real host's installation marker.
+        # Individual cases explicitly model installed-marker presence.
+        fixture = tempfile.TemporaryDirectory(prefix="owner-rpc-offline-")
+        self.addCleanup(fixture.cleanup)
+        for name in ("ROOT", "ERASURE_ROOT"):
+            isolated = patch.object(rpc, name, str(pathlib.Path(fixture.name) / name.lower()))
+            isolated.start()
+            self.addCleanup(isolated.stop)
+
     def test_requalified_admission_requires_archived_history_evidence_and_mirror(self):
         from unittest.mock import mock_open
         old = b'{"sourceCommit":"previous"}'

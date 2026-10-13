@@ -25,6 +25,8 @@ Inject a LOCKED callback separately and require refusal before a deadline
 check; distinguish this injected case from real SQLite contention. Add a real
 Python 3.10 invocation to the existing exact-head `test` CI gate without
 changing the other steps' interpreter or deployment workflows.
+Owner RPC test fixtures isolate their owner/erasure roots from any real host
+installation marker; marker-present guards remain explicitly tested.
 
 ## Execution boundary
 

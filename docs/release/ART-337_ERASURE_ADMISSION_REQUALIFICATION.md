@@ -48,7 +48,9 @@ WAL snapshot containing a committed row absent from the main file, real
 SQLite BUSY contention, the existing competing-writer reservation, and a real
 backup with controlled monotonic time crossing the deadline. LOCKED is a
 callback fault-injection test; it is not presented as a real contention proof.
-Owner RPC contracts also run under Python 3.10. Record the installed Python
+Owner RPC contracts also run under Python 3.10, with owner/erasure directories
+isolated per test so an installed host marker cannot contaminate the fixtures.
+Record the installed Python
 and SQLite versions during the next preflight:
 
 ```sh
