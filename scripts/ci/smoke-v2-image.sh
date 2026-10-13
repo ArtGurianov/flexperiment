@@ -158,7 +158,8 @@ if [[ $service == commerce-v2 ]]; then
     /v1/internal/access-overrides/operation/release /v1/internal/catalog/products \
     /v1/internal/catalog/products/course:retired/withdraw \
     /v1/internal/catalog/courses/retired/commercial \
-    /v1/internal/catalog/payment-purpose/retired; do
+    /v1/internal/catalog/payment-purpose/retired \
+    /v1/internal/video-uploads; do
     test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
       --header "Authorization: Bearer $retired_writer_token" --header 'Content-Type: application/json' \
       --request POST --data '{}' "http://127.0.0.1:${host_port}${path}")" = "404"
@@ -166,4 +167,11 @@ if [[ $service == commerce-v2 ]]; then
   test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
     --header "Authorization: Bearer $retired_writer_token" \
     "http://127.0.0.1:${host_port}/v1/internal/access-overrides/pending")" = "404"
+  test "$(curl --silent --output "$response_file" --write-out '%{http_code}' \
+    --header "Authorization: Bearer $retired_writer_token" \
+    "http://127.0.0.1:${host_port}/v1/internal/video-uploads/retired-session")" = "404"
+  if grep -q 'VIDEO_UPLOAD_NOT_FOUND' "$response_file"; then
+    echo "retired video poll handler remains in the Commerce image" >&2
+    exit 1
+  fi
 fi

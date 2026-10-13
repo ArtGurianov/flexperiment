@@ -6,7 +6,8 @@ The Payload-free platform source is merged, but the installed canary can still
 run the older Payload author until a separately approved hard cut. This source
 step removes the service-token routes used by that author: course manifests,
 restrictive override create/pending/release, and old internal catalog product,
-commercial, payment-purpose and withdrawal writes. It retains the Commerce
+commercial, payment-purpose and withdrawal writes, plus the legacy video upload
+init and status routes. It retains the Commerce
 editorial publication and Control Room product/withdrawal routes, which derive
 the actor from the admin session. Historical manifest and override tables and
 pure helpers remain so access to any legacy course stays restrictive until the
@@ -23,7 +24,8 @@ the old Payload author is still active.
 ## Proof and release gate
 
 An authenticated service-token request to every retired route must return 404
-and leave course projections, products, overrides and audit rows untouched.
+and leave course projections, products, overrides, video upload sessions,
+lesson video bindings and audit rows untouched, without contacting Kinescope.
 The actual Commerce image smoke repeats these negative calls. Existing tests
 continue to exercise manifest/override helper behavior directly for historical
 legacy safety, while the Control Room admin routes retain their own positive

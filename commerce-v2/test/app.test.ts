@@ -8,6 +8,7 @@ import { stageBLegalManifestJson } from "./fixtures/legal";
 import { activatePublicSales, qualifyTestFiscalPolicies } from "./fixtures/sales";
 import { loadCommerceRuntimeConfig } from "../src/payment-mode";
 import { applyCourseManifest, withManifestHash } from "../src/manifest";
+import { startVideoUpload } from "../src/kinescope";
 import { MockPaymentRail } from "../src/checkout";
 import { controlRoomEntitlements } from "../src/control-room";
 import type { CatalogueResponse, ControlRoomIntegrationSummary, CustomersResponse, EntitlementsResponse, OrdersResponse } from "@flexperiment/control-room-contracts";
@@ -54,6 +55,15 @@ const seedPlayableLesson = () => {
   db.prepare("INSERT INTO products(id,product_ref,kind,access_model,course_ref) VALUES ('p','course:course','ONLINE_COURSE','PAID','course')").run();
   db.prepare("INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode) VALUES ('o','course:course','p',100,'CLOSED')").run();
   db.prepare("INSERT INTO lesson_video_bindings(lesson_ref,active_video_id,bound_at,updated_at) VALUES ('lesson','private-video','now','now')").run();
+};
+
+const seedEditorialLesson = () => {
+  db.prepare(`INSERT INTO catalog_course_projection(course_ref,version,content_hash,state_hash,visibility,last_reconciled_at,applied_at,
+    authoring_source,editorial_requested_visibility) VALUES ('course',1,?,?, 'UNLISTED',?,?, 'COMMERCE_EDITORIAL','UNLISTED')`)
+    .run("a".repeat(64), "a".repeat(64), "2026-09-30T12:00:00.000Z", "2026-09-30T12:00:00.000Z");
+  db.prepare("INSERT INTO catalog_section_projection(section_ref,course_ref,visibility,position) VALUES ('section','course','UNLISTED',0)").run();
+  db.prepare(`INSERT INTO catalog_lesson_projection(lesson_ref,course_ref,section_ref,ever_published,visibility,free_preview,position)
+    VALUES ('lesson','course','section',1,'UNLISTED',0,0)`).run();
 };
 
 describe("commerce v2 boundaries", () => {
@@ -436,6 +446,8 @@ describe("commerce v2 boundaries", () => {
       ["POST", "/v1/internal/catalog/products/course:retired/withdraw"],
       ["POST", "/v1/internal/catalog/courses/retired/commercial"],
       ["POST", "/v1/internal/catalog/payment-purpose/retired"],
+      ["POST", "/v1/internal/video-uploads"],
+      ["GET", "/v1/internal/video-uploads/retired-session"],
     ] as const;
     for (const [method, path] of retired) {
       const response = await server.request(path, {
@@ -581,7 +593,8 @@ describe("commerce v2 boundaries", () => {
       .toEqual({ event_type: "DRM_DENIED", reason: "CONSENT_REQUIRED" });
   });
 
-  it("keeps upload init internal and accepts only authenticated Kinescope status webhooks", async () => {
+  it("keeps video upload under Control Room and accepts only authenticated Kinescope status webhooks", async () => {
+    seedEditorialLesson();
     const kinescopeClient = {
       initUpload: vi.fn(async () => ({ endpoint: "https://tus.example/upload", videoId: "new-video" })),
       getVideo: async (videoId: string) => ({ id: videoId, status: "done" as const, durationSeconds: 180 }),
@@ -591,14 +604,15 @@ describe("commerce v2 boundaries", () => {
       kinescopeLessonsFolderId: "lessons-folder",
       kinescopeWebhookCredentials: { username: "webhook", password: "secret" },
     });
-    expect((await server.request("/v1/internal/video-uploads", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ lessonRef: "lesson", title: "Lesson" }),
-    })).status).toBe(401);
-    expect((await server.request("/v1/internal/video-uploads", internal({ lessonRef: "lesson", title: "Lesson" }))).status).toBe(422);
-    const initialized = await server.request("/v1/internal/video-uploads", internal({
-      lessonRef: "lesson", title: "Lesson", filename: "lesson.mp4", filesize: 1_048_576,
-    }));
+    const login = await server.request("/v1/admin/login", {
+      method: "POST", headers: { origin: "https://admin.flexperiment.ru", "content-type": "application/json" },
+      body: JSON.stringify({ password: adminPassword }),
+    });
+    const upload = { method: "POST", headers: {
+      cookie: login.headers.get("set-cookie")!, origin: "https://admin.flexperiment.ru", "content-type": "application/json",
+    }, body: JSON.stringify({ lessonRef: "lesson", title: "Lesson", filename: "lesson.mp4", filesize: 1_048_576 }) };
+    expect((await server.request("/v1/admin/v2/video-uploads", { ...upload, headers: { authorization: `Bearer ${token}`, "content-type": "application/json" } })).status).toBe(401);
+    const initialized = await server.request("/v1/admin/v2/video-uploads", upload);
     expect(initialized.status).toBe(201);
     expect(await initialized.json()).toEqual({ uploadSessionId: expect.any(String), endpoint: "https://tus.example/upload" });
     expect(kinescopeClient.initUpload).toHaveBeenCalledTimes(1);
@@ -620,13 +634,39 @@ describe("commerce v2 boundaries", () => {
       .toEqual({ active_video_id: "new-video", duration_seconds: 180 });
   });
 
+  it("retired service-token video routes neither call Kinescope nor mutate sessions or bindings", async () => {
+    applyCourseManifest(db, withManifestHash({
+      courseRef: "legacy", version: 1, visibility: "LISTED",
+      sections: [{ sectionRef: "section", visibility: "LISTED" }],
+      lessons: [{ lessonRef: "lesson", sectionRef: "section", everPublished: true, visibility: "LISTED", freePreview: false }],
+      operations: [],
+    }));
+    db.prepare(`INSERT INTO lesson_video_bindings(lesson_ref,active_video_id,bound_at,updated_at)
+      VALUES ('lesson','old-video','before','before')`).run();
+    const kinescopeClient = {
+      initUpload: vi.fn(async () => ({ endpoint: "https://tus.example/upload", videoId: "new-video" })),
+      getVideo: vi.fn(async (videoId: string) => ({ id: videoId, status: "done" as const, durationSeconds: 180 })),
+    };
+    const pending = await startVideoUpload(db, kinescopeClient, {
+      lessonRef: "lesson", title: "Legacy lesson", filename: "lesson.mp4", filesize: 1024, parentId: "folder",
+    });
+    kinescopeClient.initUpload.mockClear();
+    const sessions = db.prepare("SELECT * FROM video_upload_sessions").all();
+    const bindings = db.prepare("SELECT * FROM lesson_video_bindings").all();
+    const server = app("disabled", { kinescopeClient, kinescopeLessonsFolderId: "folder" });
+    const auth = { authorization: `Bearer ${token}` };
+    expect((await server.request("/v1/internal/video-uploads", internal({
+      lessonRef: "lesson", title: "Legacy lesson", filename: "replacement.mp4", filesize: 1024,
+    }))).status).toBe(404);
+    expect((await server.request(`/v1/internal/video-uploads/${pending.uploadSessionId}`, { headers: auth })).status).toBe(404);
+    expect(kinescopeClient.initUpload).not.toHaveBeenCalled();
+    expect(kinescopeClient.getVideo).not.toHaveBeenCalled();
+    expect(db.prepare("SELECT * FROM video_upload_sessions").all()).toEqual(sessions);
+    expect(db.prepare("SELECT * FROM lesson_video_bindings").all()).toEqual(bindings);
+  });
+
   it("keeps Control Room upload scoped to published Commerce lessons and preserves READY binding on failure", async () => {
-    db.prepare(`INSERT INTO catalog_course_projection(course_ref,version,content_hash,state_hash,visibility,last_reconciled_at,applied_at,
-      authoring_source,editorial_requested_visibility) VALUES ('course',1,?,?, 'UNLISTED',?,?, 'COMMERCE_EDITORIAL','UNLISTED')`)
-      .run("a".repeat(64), "a".repeat(64), "2026-09-30T12:00:00.000Z", "2026-09-30T12:00:00.000Z");
-    db.prepare("INSERT INTO catalog_section_projection(section_ref,course_ref,visibility,position) VALUES ('section','course','UNLISTED',0)").run();
-    db.prepare(`INSERT INTO catalog_lesson_projection(lesson_ref,course_ref,section_ref,ever_published,visibility,free_preview,position)
-      VALUES ('lesson','course','section',1,'UNLISTED',0,0)`).run();
+    seedEditorialLesson();
     db.prepare(`INSERT INTO catalog_course_projection(course_ref,version,content_hash,state_hash,visibility,last_reconciled_at,applied_at)
       VALUES ('legacy',1,?,?,'UNLISTED',?,?)`)
       .run("b".repeat(64), "b".repeat(64), "2026-09-30T12:00:00.000Z", "2026-09-30T12:00:00.000Z");

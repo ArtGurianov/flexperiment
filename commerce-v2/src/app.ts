@@ -597,39 +597,6 @@ export function createCommerceV2App(deps: Dependencies) {
     }
   });
 
-  app.post("/v1/internal/video-uploads", async (context) => {
-    if (!deps.kinescopeClient || !deps.kinescopeLessonsFolderId) return context.json({ code: "KINESCOPE_UPLOAD_NOT_CONFIGURED" }, 503, noStore);
-    let input: ReturnType<typeof assertVideoUploadInput>;
-    try {
-      input = assertVideoUploadInput(await context.req.json<Record<string, unknown>>());
-    } catch (error) {
-      return context.json({ code: error instanceof Error ? error.message : "VIDEO_UPLOAD_INPUT_INVALID" }, 422, noStore);
-    }
-    try {
-      return context.json(await startVideoUpload(deps.db, deps.kinescopeClient, {
-        ...input, parentId: deps.kinescopeLessonsFolderId,
-      }), 201, noStore);
-    } catch {
-      // A provider outage degrades only this boundary; it is not the author's input that failed.
-      return context.json({ code: "KINESCOPE_UPLOAD_INIT_FAILED" }, 503, noStore);
-    }
-  });
-
-  app.get("/v1/internal/video-uploads/:id", async (context) => {
-    if (deps.kinescopeClient) {
-      try { await pollKinescopeUpload(deps.db, deps.kinescopeClient, context.req.param("id"), now().toISOString()); }
-      catch (error) {
-        if (error instanceof Error && error.message === "KINESCOPE_UPLOAD_SESSION_NOT_FOUND") return context.json({ code: "VIDEO_UPLOAD_NOT_FOUND" }, 404, noStore);
-        return context.json({ code: "KINESCOPE_STATUS_UNAVAILABLE" }, 503, noStore);
-      }
-    }
-    const session = deps.db.prepare(`SELECT session.id AS uploadSessionId,session.status AS state,session.error_code AS errorCode,
-      binding.duration_seconds AS durationSeconds FROM video_upload_sessions session
-      LEFT JOIN lesson_video_bindings binding ON binding.lesson_ref=session.lesson_ref AND session.status='READY'
-      WHERE session.id=?`).get(context.req.param("id"));
-    return session ? context.json(session, 200, noStore) : context.json({ code: "VIDEO_UPLOAD_NOT_FOUND" }, 404, noStore);
-  });
-
   app.post("/v1/checkout/preview", async (context) => {
     try {
       assertPaymentCreationEnabled(deps.config);
