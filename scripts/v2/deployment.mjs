@@ -30,6 +30,11 @@ export function validateCheckout(source, head, dirty, origin) {
     "https://github.com/ArtGurianov/flexperiment"].includes(origin)) refuse("V2_CONTROLLER_REMOTE_DIFFERS");
 }
 
+export function validateRequalificationController(source, controller, head, dirty, origin) {
+  if (source !== "08523bdf38eeddf5e745ce04d05e1f980a7ced93" || source === controller) refuse("V2_REQUALIFIED_CONTROLLER_SOURCE_REFUSED");
+  validateCheckout(controller, head, dirty, origin);
+}
+
 export async function admitRelease(sha, github) {
   if (!shaPattern.test(sha)) refuse("V2_SOURCE_SHA_INVALID");
   const main = await github("/commits/main");
@@ -182,6 +187,54 @@ export async function deployNormalCanary(sha, io) {
     productionUnchanged: true, paymentMode: "disabled", qualification: "API_ONLY",
     ...(erasure ? { erasure: "QUALIFIED", replacement: "EXCLUSIVE" } : {}),
     proxy: "NOT_QUALIFIED", magicLinkDelivery: "NOT_QUALIFIED", catalogueAndLegal: "OWNER_PENDING" };
+  await io.record("canary", proof);
+  return { canary: proof };
+}
+
+/** Exact ART-337 source resume after reviewed journal publication and stopped
+ * writers. Its archived, independently read-back backups replace the runtime
+ * backup that cannot execute in a stopped predecessor. */
+export async function deployRequalifiedCanary(sha, io) {
+  const target = "08523bdf38eeddf5e745ce04d05e1f980a7ced93";
+  const predecessor = "84b1a6abcb43e9abf8f781e830f84822207c0dca";
+  if (sha !== target) refuse("V2_REQUALIFIED_SOURCE_REFUSED");
+  await admitRelease(sha, io.github);
+  if (io.apps.canary === io.apps.production) refuse("V2_ENVIRONMENTS_NOT_SEPARATE");
+  const production = await io.snapshot("production");
+  if (!/^[0-9a-f]{64}$/.test(production?.sha256 ?? "")) refuse("V2_PRODUCTION_SNAPSHOT_REQUIRED");
+  const uuid = io.apps.canary;
+  const app = await io.api("GET", `/applications/${uuid}`);
+  const mounts = validateApp(app, await io.api("GET", `/applications/${uuid}/envs`),
+    await io.api("GET", `/applications/${uuid}/storages`), "canary", uuid, "normal-canary");
+  if (app.git_commit_sha !== predecessor || !mounts.some(mount => mount.type === "bind")) refuse("V2_REQUALIFIED_PREDECESSOR_REFUSED");
+  const admission = await io.requalifiedAdmission("canary", sha, predecessor);
+  if (admission?.qualified !== true || admission.sourceCommit !== sha || admission.predecessorSourceCommit !== predecessor
+    || admission.stoppedReplacement !== true || !/^[0-9a-f]{64}$/.test(admission.backup?.sha256 ?? "")
+    || !(admission.backup?.size > 0) || !/^[0-9a-f]{64}$/.test(admission.backup?.evidenceSha256 ?? "")) refuse("V2_REQUALIFIED_HOST_NOT_ADMITTED");
+  const prodUuid = io.apps.production;
+  validateApp(await io.api("GET", `/applications/${prodUuid}`), await io.api("GET", `/applications/${prodUuid}/envs`),
+    await io.api("GET", `/applications/${prodUuid}/storages`), "production", prodUuid);
+  await admitRelease(sha, io.github);
+  if ((await io.snapshot("production")).sha256 !== production.sha256) refuse("V2_PRODUCTION_CHANGED");
+  if (JSON.stringify(await io.requalifiedAdmission("canary", sha, predecessor)) !== JSON.stringify(admission)) refuse("V2_REQUALIFIED_ADMISSION_DRIFT");
+  await io.casRef("canary", sha);
+  await io.api("PATCH", `/applications/${uuid}`, { git_commit_sha: sha });
+  await io.api("PATCH", `/applications/${uuid}/envs`, { key: "SOURCE_COMMIT", value: sha,
+    is_buildtime: true, is_runtime: true, is_preview: false });
+  const pinned = await io.api("GET", `/applications/${uuid}`);
+  if (pinned.git_commit_sha !== sha) refuse("V2_SOURCE_PIN_NOT_SAVED");
+  const env = await io.api("GET", `/applications/${uuid}/envs`);
+  const source = env.filter(row => row.key === "SOURCE_COMMIT" && !row.is_preview);
+  if (source.length !== 1 || source[0].value !== sha || source[0].is_buildtime !== true) refuse("V2_BUILD_SHA_NOT_SAVED");
+  validateApp(pinned, env, await io.api("GET", `/applications/${uuid}/storages`), "canary", uuid, "normal-canary");
+  const final = await io.requalifiedAdmission("canary", sha, sha);
+  if (JSON.stringify(final) !== JSON.stringify(admission)) refuse("V2_REQUALIFIED_ADMISSION_DRIFT");
+  if ((await io.snapshot("production")).sha256 !== production.sha256) refuse("V2_PRODUCTION_CHANGED");
+  await io.deploy("canary", sha); // Owner RPC rechecks live state while holding the SQLite write barrier.
+  verifyRuntime(await io.waitRuntime("canary", sha, mounts), sha, mounts, "normal-canary");
+  if ((await io.snapshot("production")).sha256 !== production.sha256) refuse("V2_PRODUCTION_CHANGED");
+  const proof = { sourceCommit: sha, mode: "requalified-canary", apiReadiness: "PASS", backup: admission.backup,
+    erasure: "QUALIFIED", replacement: "EXCLUSIVE", productionUnchanged: true, paymentMode: "disabled", qualification: "API_ONLY" };
   await io.record("canary", proof);
   return { canary: proof };
 }

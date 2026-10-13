@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Bounded owner operations for two isolated V2 apps; secrets never returned."""
 import hashlib
+import importlib.util
 import json
 import os
 import re
 import stat
 import subprocess
 import sys
+from types import SimpleNamespace
 import urllib.request
 import urllib.error
 
@@ -44,6 +46,8 @@ def verify_requalified_admission(journal):
             or not re.fullmatch(r"sha256:[0-9a-f]{64}", journal.get("imageId", "")) \
             or not re.fullmatch(r"[0-9a-f]{64}", journal.get("mirrorSha256", "")) \
             or not re.fullmatch(r"[0-9a-f]{64}", journal.get("requalifierSha256", "")) \
+            or not re.fullmatch(r"[0-9a-f]{64}", journal.get("liveCommerceSnapshotSha256", "")) \
+            or not re.fullmatch(r"[0-9a-f]{64}", journal.get("livePayloadSnapshotSha256", "")) \
             or journal.get("controllerSha256") != SELF_SHA256:
         raise ValueError("ERASURE_REQUALIFICATION_REFUSED")
     history = ROOT + "/erasure-admission-history/"
@@ -51,12 +55,16 @@ def verify_requalified_admission(journal):
     if hashlib.sha256(private_bytes(previous)).hexdigest() != ART337_PREVIOUS_JOURNAL:
         raise ValueError("ERASURE_HISTORY_REFUSED")
     evidence = journal.get("evidence")
-    if not isinstance(evidence, dict) or set(evidence) != {"inventory", "qualification", "restore", "boot"}:
+    if not isinstance(evidence, dict) or set(evidence) != {"inventory", "qualification", "restore", "boot", "backup"}:
         raise ValueError("ERASURE_EVIDENCE_REFUSED")
     for kind, expected in evidence.items():
         if not re.fullmatch(r"[0-9a-f]{64}", expected) \
                 or hashlib.sha256(private_bytes(history + expected + "-" + kind + ".json")).hexdigest() != expected:
             raise ValueError("ERASURE_EVIDENCE_REFUSED")
+    inventory = json.loads(private_bytes(history + evidence["inventory"] + "-inventory.json"))
+    if inventory.get("snapshots", {}).get("commerce", {}).get("snapshot_sha256") != journal["liveCommerceSnapshotSha256"] \
+            or inventory.get("snapshots", {}).get("payload", {}).get("snapshot_sha256") != journal["livePayloadSnapshotSha256"]:
+        raise ValueError("ERASURE_SNAPSHOT_BINDING_REFUSED")
     mirror = ERASURE_ROOT + "/mirror/bundle.json"
     with open(mirror, "rb") as source:
         if hashlib.sha256(source.read(8_000_001)).hexdigest() != journal["mirrorSha256"]:
@@ -70,6 +78,22 @@ def private_bytes(path):
         raise ValueError("OWNER_FILE_PERMISSIONS")
     with open(path, "rb") as source:
         return source.read(8_000_001)
+
+
+def load_requalification():
+    journal = private_json(ROOT + "/erasure-admission.json")
+    path = os.path.join(os.path.dirname(__file__), "art337_erasure_requalification.py")
+    if hashlib.sha256(private_bytes(path)).hexdigest() != journal.get("requalifierSha256"):
+        raise ValueError("ERASURE_REQUALIFIER_CONTROLLER_DRIFT")
+    sys.dont_write_bytecode = True
+    spec = importlib.util.spec_from_file_location("art337_requalification", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    boundary = SimpleNamespace(api=api, private_json=private_json, env_value=env_value,
+                               exclusive_canary=exclusive_canary, container=container,
+                               erasure_environment=erasure_environment,
+                               verify_requalified_admission=verify_requalified_admission)
+    return module, boundary
 
 
 def erasure_environment(uuid):
@@ -282,11 +306,16 @@ def handle(message, config):
     if target not in apps or not re.fullmatch(r"[a-z0-9]{20,32}", apps[target]):
         raise ValueError("V2_TARGET_INVALID")
     uuid = apps[target]
-    if operation in ("erasure-admission", "stop-canary", "exclusive-canary"):
+    if operation in ("erasure-admission", "stop-canary", "exclusive-canary", "requalified-start-check"):
         if target != "canary":
             raise ValueError("ERASURE_CANARY_ONLY")
         if operation == "erasure-admission":
             return erasure_admission(uuid, message.get("sha"))
+        if operation == "requalified-start-check":
+            if message.get("sha") != ART337_TARGET or message.get("expectedSource") not in (ART337_PREVIOUS, ART337_TARGET):
+                raise ValueError("ERASURE_REQUALIFIED_SOURCE_REFUSED")
+            module, boundary = load_requalification()
+            return module.verify_start_admission(boundary, message["expectedSource"])
         erasure_environment(uuid)
         if operation == "exclusive-canary":
             return exclusive_canary(uuid)
@@ -349,7 +378,14 @@ def handle(message, config):
         if operation == "restart":
             api("POST", "/applications/" + uuid + "/restart")
             return {"requested": True}
-        result = api("POST", "/deploy?uuid=" + uuid + "&force=false")
+        if target == "canary" and message.get("sha") == ART337_TARGET:
+            module, boundary = load_requalification()
+            manifest, _ = module.json_file(module.ROOT / "art337-execution-manifest.json")
+            with module.merchant_write_barrier(manifest, boundary):
+                module.verify_start_admission(boundary, ART337_TARGET, locked=True)
+                result = api("POST", "/deploy?uuid=" + uuid + "&force=false")
+        else:
+            result = api("POST", "/deploy?uuid=" + uuid + "&force=false")
         deployment = result["deployments"][0]["deployment_uuid"]
         if not re.fullmatch(r"[a-zA-Z0-9-]+", deployment):
             raise ValueError("DEPLOYMENT_ID_INVALID")

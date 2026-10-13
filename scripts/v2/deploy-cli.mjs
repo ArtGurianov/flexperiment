@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { appendFileSync } from "node:fs";
-import { deployFoundation, deployNormalCanary, validateCheckout, verifyRuntime } from "./deployment.mjs";
+import { fileURLToPath } from "node:url";
+import { deployFoundation, deployNormalCanary, deployRequalifiedCanary, validateCheckout, validateRequalificationController, verifyRuntime } from "./deployment.mjs";
 import { ownerRpc } from "./owner-transport.mjs";
 
 const sha = process.env.V2_SOURCE_SHA;
@@ -9,17 +10,24 @@ const key = process.env.V2_OWNER_SSH_KEY_FILE;
 const rpcHash = process.env.V2_RPC_SHA256;
 const repository = process.env.GITHUB_REPOSITORY;
 const mode = process.env.V2_DEPLOYMENT_MODE ?? "foundation";
+const runtimeMode = mode === "foundation" ? "foundation" : "normal-canary";
 const shaPattern = /^[0-9a-f]{40}$/;
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function run() {
-  if (!["foundation", "normal-canary"].includes(mode)) throw new Error("V2_MODE_TARGET_REFUSED");
+  if (!["foundation", "normal-canary", "requalified-canary"].includes(mode)) throw new Error("V2_MODE_TARGET_REFUSED");
   if (!shaPattern.test(sha ?? "") || !/^[a-zA-Z0-9@._-]+$/.test(host ?? "")
     || (process.env.GITHUB_ACTIONS === "true" && !key) || !/^[0-9a-f]{64}$/.test(rpcHash ?? "") || repository !== "ArtGurianov/flexperiment") throw new Error("V2_WORKFLOW_CONFIG_REQUIRED");
   validateCheckout(sha,
     execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
     execFileSync("git", ["status", "--porcelain"], { encoding: "utf8" }).trim(),
     execFileSync("git", ["remote", "get-url", "origin"], { encoding: "utf8" }).trim());
+  if (mode === "requalified-canary") {
+    const controllerRoot = fileURLToPath(new URL("../../", import.meta.url));
+    const read = (...args) => execFileSync("git", ["-C", controllerRoot, ...args], { encoding: "utf8" }).trim();
+    validateRequalificationController(sha, process.env.V2_CONTROLLER_SHA,
+      read("rev-parse", "HEAD"), read("status", "--porcelain"), read("remote", "get-url", "origin"));
+  }
   const script = `/root/flexperiment-v2-owner/controllers/${sha}/owner-rpc.py`;
   const rpc = async (message) => {
     // Payload is stdin, not remote-shell text. Verify the transferred helper on every call.
@@ -46,14 +54,14 @@ async function run() {
       const result = await runtime(target);
       if (result?.pending) { await pause(5_000); continue; }
       // Converged malformed/security state is terminal, not a reason for retries.
-      verifyRuntime(result, source, mounts, mode);
+      verifyRuntime(result, source, mounts, runtimeMode);
       if (!previous || result.startedAt !== previous.startedAt) return result;
       await pause(5_000);
     }
     throw new Error("V2_RUNTIME_CONVERGENCE_TIMEOUT");
   };
   const deploy = async (target, source) => {
-    const { deployment } = await rpc({ operation: "deploy", target, sha: source, mode });
+    const { deployment } = await rpc({ operation: "deploy", target, sha: source, mode: runtimeMode });
     const deadline = Date.now() + 1_800_000;
     while (Date.now() < deadline) {
       const status = await rpc({ operation: "deployment", target, deployment });
@@ -78,11 +86,12 @@ async function run() {
     // An independently advanced ref cannot be overwritten after the observation.
     execFileSync("git", ["push", "origin", `${source}:${ref}`, `--force-with-lease=${ref}:${previous}`], { stdio: "ignore" });
   };
-  const controller = mode === "foundation" ? deployFoundation : deployNormalCanary;
+  const controller = mode === "foundation" ? deployFoundation : mode === "requalified-canary" ? deployRequalifiedCanary : deployNormalCanary;
   const proofs = await controller(sha, { apps, github, api, casRef, deploy, runtime, waitRuntime,
     snapshot: (target) => rpc({ operation: "snapshot", target }),
     backupRuntime: (target) => rpc({ operation: "backup-runtime", target }),
     erasureAdmission: (target, source) => rpc({ operation: "erasure-admission", target, sha: source }),
+    requalifiedAdmission: (target, source, expectedSource) => rpc({ operation: "requalified-start-check", target, sha: source, expectedSource }),
     stopCanary: (target) => rpc({ operation: "stop-canary", target }),
     assertNoWriters: async (target) => {
       const deadline = Date.now() + 90_000;
@@ -99,7 +108,8 @@ async function run() {
     archiveBackup: (target, backup) => rpc({ operation: "archive", target, filename: backup.filename }),
     record: (target, proof) => rpc({ operation: "record", target, proof }),
   });
-  const report = JSON.stringify({ schema: mode === "foundation" ? "flexperiment.v2-foundation-proof/1" : "flexperiment.v2-normal-canary-deployment/1", proofs });
+  const report = JSON.stringify({ schema: mode === "foundation" ? "flexperiment.v2-foundation-proof/1" : "flexperiment.v2-normal-canary-deployment/1",
+    ...(mode === "requalified-canary" ? { controllerCommit: process.env.V2_CONTROLLER_SHA } : {}), proofs });
   console.log(report);
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `V2 ${mode} deployment (no F9, no payments; normal-canary is API-only, not live auth qualification).\n\n\`\`\`json\n${report}\n\`\`\`\n`);
 }

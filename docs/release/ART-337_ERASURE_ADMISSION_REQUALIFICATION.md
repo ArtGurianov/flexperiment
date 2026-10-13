@@ -90,7 +90,9 @@ to prove its exact classification; counts alone never prove that.
 
 ## Recovery and journal transition after separate GO
 
-The stopped-writer check is mandatory for every admission mutation. If the old
+The stopped-writer check is mandatory for every admission mutation. Stop the
+separate Payload canary runtime and its jobs as specified below before either
+predecessor recovery or target admission. If the old
 canary is still fenced CLOSED, first recover **the exact predecessor source**
 under its existing admission: identify its old image and baked source, take
 the backups above, stop it through the owner controller, wait for Coolify and
@@ -103,11 +105,35 @@ ledger and archives independently. If exact-source recovery cannot be proved,
 HOLD. Then repeat the **full ART-337 preflight** before target admission.
 
 The target admission step is a distinct operation. Stop the predecessor via
-the bounded owner controller and require `exclusive-canary` again. Recheck
-current ledger, mirror, fence sequence/head/owner/leases, target image and all
-proof reports. An OPEN fence on a stopped and lease-free predecessor is allowed:
-the script does not change fence state. The new target runtime alone will
-perform `prepareErasureRuntime` and reopen after applying current erasures.
+the bounded owner controller and require `exclusive-canary` again. Also stop
+the separate `flexperiment-platform-v2-canary` Payload runtime through its
+existing Coolify owner control, disable and stop
+`platform-canary-backup.timer`, and confirm its service is inactive. The
+requalification script independently checks exact Platform app/source,
+`PAYLOAD_JOBS_ENABLED=false`, stopped container, disabled timer, no running
+container with a writable mount of its editorial volume, and no writable FD
+to `platform.sqlite` or its WAL. It verifies the Payload service credential
+matches Commerce's accepted credential, then refuses any running container
+or host process carrying that credential, even with no SQLite mount. The
+credential remains in memory and is never emitted. This is a required gate even though the
+Commerce and Payload SQLite files are separate. Unknown services or writers
+mean HOLD; do not revoke shared credentials or delete volumes here.
+
+Recheck current ledger, mirror, fence sequence/head/owner/leases, target image
+and all proof reports. Under the exclusive Commerce census, the script creates
+a fresh SQLite online-backup copy of **both live databases** and compares
+their SHA-256 and file identities with the WAL-aware inventory snapshots.
+For journal publication it acquires a Commerce `BEGIN IMMEDIATE` reservation
+with zero lock timeout and holds it through the final live recheck, atomic
+replacement, fsync and read-back. A separate read-only connection performs
+the snapshot under that reservation; it makes no row/schema changes and the
+reservation ends with rollback. New SQLite writers cannot commit between
+that snapshot and publication. It repeats the Payload quiescence check and
+all other live gates immediately before replacement. Any intervening row or schema change
+is HOLD even if inventory is less than one hour old. An OPEN fence on a
+stopped and lease-free predecessor is allowed: the script does not change
+fence state. The new target runtime alone will perform
+`prepareErasureRuntime` and reopen after applying current erasures.
 
 Prepare a root-owned `0600` JSON manifest with the exact fields below. Each
 `files` entry is an absolute path to a root-owned `0600` JSON artifact plus its
@@ -137,10 +163,22 @@ volumes and backups.
     "inventory": {"path": "<absolute path>", "sha256": "<64 hex>"},
     "qualification": {"path": "<absolute path>", "sha256": "<64 hex>"},
     "restore": {"path": "<absolute path>", "sha256": "<64 hex>"},
-    "boot": {"path": "<absolute path>", "sha256": "<64 hex>"}
+    "boot": {"path": "<absolute path>", "sha256": "<64 hex>"},
+    "backup": {"path": "<absolute path>", "sha256": "<64 hex>"}
   }
 }
 ```
+
+The sealed `backup` report is version 1, scope `canary`, predecessor
+`sourceCommit`, state `READBACK_PASS`, `previousChainReadback=PASS`,
+`recoveryKeys=AVAILABLE` and actual UTC `recordedAt` within one hour. Its
+`archives.commerce` and `archives.payload` contain the root-only ciphertext
+`path`, actual `size`, `sha256`, independently read-back `remoteSha256`, and
+the corresponding inventory `snapshotSha256`. It also contains the full
+`previousChainObjects` census: each remote object name, size, local SHA and
+independent remote SHA. Empty, duplicate, mismatching or incomplete custody
+evidence is HOLD. The script hashes the actual ciphertext files and archives
+the report. Preserve those original archives and the entire old chain.
 
 Run the reviewed script from a pinned, clean controller checkout, under the
 privileged owner account. Record its SHA-256 and the controller commit in the
@@ -155,13 +193,26 @@ sudo -n python3 scripts/v2/art337_erasure_requalification.py --manifest /root/fl
 
 `--commit` first writes the byte-identical predecessor journal into
 `/root/flexperiment-v2-owner/erasure-admission-history/`, then archives the
-four exact evidence files, then atomically publishes a version 2 journal.
+five exact evidence files, then atomically publishes a version 2 journal.
 Files and parent directories are fsynced, and the script reads back the
 journal and every archived hash. It refuses drift, a foreign history file or
-an abandoned pending file. If the result of a write is uncertain, inspect the
-exact old/new journal hashes and history before retrying; do not delete a
-pending record merely to make a retry pass. Never edit `sourceCommit` or
-`recovery` in place.
+an abandoned pending file. An error before or during `os.replace` leaves the
+pending file and archived evidence intact for investigation; it is never
+removed in a `finally` block. If replacement completed but the following
+directory `fsync` failed, a repeated invocation verifies the already published
+record and archived hashes, then returns **HOLD with a nonzero exit**. Existing
+history or pending bytes also prevent automatic retry. Use the explicit
+read-only reconciliation command, which works without fresh runtime proof:
+
+```sh
+sudo -n python3 scripts/v2/art337_erasure_requalification.py --manifest /root/flexperiment-v2-owner/art337-execution-manifest.json --inspect-publication
+```
+
+It reports old/new/pending hashes and always returns HOLD. This describes
+the journal bytes, not current runtime admission. Inspect
+the exact old/new journal hashes, pending file, history and remote ledger
+before deciding any next action; do not delete a pending record merely to
+make a retry pass. Never edit `sourceCommit` or `recovery` in place.
 
 The reviewed `owner-rpc.py` additionally verifies the v2 predecessor hash,
 archived evidence hashes, exact schema fingerprints, mirror SHA and current
@@ -172,17 +223,24 @@ evidence chain. **HOLD target deployment until the reviewed controller is
 active and the deployment path proves separate controller/source identities.**
 Keep a clean source checkout at `08523bdf…` as the working directory and a
 second, immutable controller checkout at the independently reviewed PR head.
-Stage that controller's `owner-rpc.py` under the protected
+Stage that controller's `owner-rpc.py`, `art337_erasure_requalification.py`
+and both reviewed proof scripts, root-owned `0600`, under the protected
 `/root/flexperiment-v2-owner/controllers/08523bdf…/owner-rpc.py` path, then
 read back its exact SHA-256. Invoke the reviewed controller's
 `scripts/v2/deploy-cli.mjs` **from the source checkout** with
-`V2_SOURCE_SHA=08523bdf…`, `V2_DEPLOYMENT_MODE=normal-canary`,
+`V2_SOURCE_SHA=08523bdf…`, `V2_CONTROLLER_SHA=<full reviewed PR head>`,
+`V2_DEPLOYMENT_MODE=requalified-canary`,
 `V2_RPC_SHA256=<reviewed controller file hash>`, the existing owner SSH
 transport inputs, and the repository/CI inputs required by that CLI. The CLI
-validates the working checkout as target, while its imported code and pinned
-RPC come from the reviewed controller. Record both full SHAs. A dry-run or
-isolated controller test must first prove this split; the workflow that copies
-RPC from its own source checkout cannot serve as that proof.
+validates both clean checkouts independently: working checkout as target,
+script checkout as reviewed controller. The stopped resume path consumes the
+archived backup/read-back report because `backup-runtime` cannot run in the
+stopped predecessor. It rechecks the host journal, both live snapshots,
+Payload isolation, custody and image before pinning and before deployment.
+Owner RPC holds the SQLite write barrier through its final recheck and the
+Coolify queue request. Exact current-main and exact-source CI admission remain
+mandatory. Local controller tests cover this path and its refusal cases;
+the ordinary workflow is not used because it transfers the older RPC.
 
 `admitRelease` also requires the exact target to remain current `main` with
 successful exact-SHA CI. Merging this PR before the target cut would move

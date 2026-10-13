@@ -32,8 +32,10 @@ class OwnerControl(unittest.TestCase):
         from unittest.mock import mock_open
         old = b'{"sourceCommit":"previous"}'
         old_hash = rpc.hashlib.sha256(old).hexdigest()
-        evidence = {key: rpc.hashlib.sha256(key.encode()).hexdigest()
-                    for key in ("inventory", "qualification", "restore", "boot")}
+        artifacts = {key: key.encode() for key in ("inventory", "qualification", "restore", "boot", "backup")}
+        artifacts["inventory"] = json.dumps({"snapshots": {"commerce": {"snapshot_sha256": "e" * 64},
+                                                        "payload": {"snapshot_sha256": "f" * 64}}}).encode()
+        evidence = {key: rpc.hashlib.sha256(raw).hexdigest() for key, raw in artifacts.items()}
         mirror = b'{"scope":"canary","entries":[]}'
         journal = {"version": 2, "scope": "canary", "sourceCommit": rpc.ART337_TARGET,
                    "recovery": "PASS", "previousSourceCommit": rpc.ART337_PREVIOUS,
@@ -41,13 +43,14 @@ class OwnerControl(unittest.TestCase):
                    "ownerDecision": "ZERO_REAL_DATA_CONFIRMED_WITH_CLASSIFIED_SYNTHETIC_EVENT",
                    "ledgerSequence": 1, "imageId": "sha256:" + "a" * 64,
                    "mirrorSha256": rpc.hashlib.sha256(mirror).hexdigest(), "evidence": evidence,
-                   "controllerSha256": rpc.SELF_SHA256, "requalifierSha256": "d" * 64}
+                   "controllerSha256": rpc.SELF_SHA256, "requalifierSha256": "d" * 64,
+                   "liveCommerceSnapshotSha256": "e" * 64, "livePayloadSnapshotSha256": "f" * 64}
         def read(path):
             if path.endswith(old_hash + ".json"):
                 return old
             for key, sha in evidence.items():
                 if path.endswith(sha + "-" + key + ".json"):
-                    return key.encode()
+                    return artifacts[key]
             return b"foreign"
         with patch.object(rpc, "ART337_PREVIOUS_JOURNAL", old_hash), \
                 patch.object(rpc, "private_bytes", side_effect=read), \
@@ -55,16 +58,62 @@ class OwnerControl(unittest.TestCase):
             rpc.verify_requalified_admission(journal)
             for changed, error in (({"schemaFingerprints": {}}, "ERASURE_REQUALIFICATION_REFUSED"),
                                    ({"evidence": {**evidence, "boot": "b" * 64}}, "ERASURE_EVIDENCE_REFUSED"),
+                                   ({"liveCommerceSnapshotSha256": "a" * 64}, "ERASURE_SNAPSHOT_BINDING_REFUSED"),
                                    ({"mirrorSha256": "c" * 64}, "ERASURE_MIRROR_DRIFT")):
                 with self.subTest(changed=changed), self.assertRaisesRegex(ValueError, error):
                     rpc.verify_requalified_admission({**journal, **changed})
 
     def test_erasure_operations_are_canary_only_before_any_io(self):
         with patch.object(rpc, "api") as api:
-            for operation in ("erasure-admission", "stop-canary", "exclusive-canary"):
+            for operation in ("erasure-admission", "stop-canary", "exclusive-canary", "requalified-start-check"):
                 with self.subTest(operation=operation), self.assertRaisesRegex(ValueError, "ERASURE_CANARY_ONLY"):
                     rpc.handle({"operation": operation, "target": "production", "sha": SHA}, CONFIG)
             api.assert_not_called()
+
+    def test_requalified_start_refuses_wrong_source_before_loading_privileged_module(self):
+        with patch.object(rpc, "load_requalification") as loader, self.assertRaisesRegex(ValueError, "ERASURE_REQUALIFIED_SOURCE_REFUSED"):
+            rpc.handle({"operation": "requalified-start-check", "target": "canary", "sha": SHA,
+                        "expectedSource": rpc.ART337_PREVIOUS}, CONFIG)
+        loader.assert_not_called()
+
+    def test_requalified_deploy_keeps_write_barrier_through_coolify_queue(self):
+        from types import SimpleNamespace
+        from contextlib import contextmanager
+        active = []
+        @contextmanager
+        def barrier(_manifest, _boundary):
+            active.append(True)
+            try: yield
+            finally: active.pop()
+        rows = erasure_rows() + [{"key": key, "value": value, "is_runtime": True} for key, value in {
+            "COMMERCE_V2_FOUNDATION_MODE": "false", "PAYMENT_MODE": "disabled",
+            "MARKETING_BROADCASTS_ENABLED": "false", "SOURCE_COMMIT": rpc.ART337_TARGET}.items()]
+        current = {"name": "flexperiment-commerce-v2-canary", "dockerfile_location": "/Dockerfile.commerce-v2"}
+        def api(method, path, _body=None):
+            if method == "POST":
+                self.assertTrue(active)
+                return {"deployments": [{"deployment_uuid": "qualified-start"}]}
+            return rows if path.endswith("/envs") else current
+        with tempfile.TemporaryDirectory() as directory:
+            module = SimpleNamespace(ROOT=pathlib.Path(directory), json_file=lambda _path: ({}, "a" * 64),
+                                     merchant_write_barrier=barrier, verify_start_admission=unittest.mock.Mock())
+            with patch.object(rpc, "ROOT", directory), patch.object(rpc, "api", side_effect=api), \
+                    patch.object(rpc, "erasure_admission"), patch.object(rpc, "exclusive_canary", return_value={"exclusive": True}), \
+                    patch.object(rpc, "load_requalification", return_value=(module, object())), \
+                    patch.object(rpc.os.path, "lexists", return_value=True):
+                result = rpc.handle({"operation": "deploy", "mode": "normal-canary", "target": "canary", "sha": rpc.ART337_TARGET}, CONFIG)
+            self.assertEqual(result, {"deployment": "qualified-start"})
+            self.assertEqual(module.verify_start_admission.call_args.kwargs, {"locked": True})
+            self.assertEqual(active, [])
+            module.verify_start_admission.side_effect = ValueError("LIVE_COMMERCE_INVENTORY_DRIFT")
+            with patch.object(rpc, "ROOT", directory), patch.object(rpc, "api", side_effect=api) as calls, \
+                    patch.object(rpc, "erasure_admission"), patch.object(rpc, "exclusive_canary", return_value={"exclusive": True}), \
+                    patch.object(rpc, "load_requalification", return_value=(module, object())), \
+                    patch.object(rpc.os.path, "lexists", return_value=True), \
+                    self.assertRaisesRegex(ValueError, "LIVE_COMMERCE_INVENTORY_DRIFT"):
+                rpc.handle({"operation": "deploy", "mode": "normal-canary", "target": "canary", "sha": rpc.ART337_TARGET}, CONFIG)
+            self.assertTrue(all(call.args[0] == "GET" for call in calls.call_args_list))
+            self.assertEqual(active, [])
 
     def test_persistent_installation_refuses_foundation_or_restart_after_env_rollback(self):
         with patch.object(rpc.os.path, "lexists", return_value=True), patch.object(rpc, "api") as api:

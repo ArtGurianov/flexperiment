@@ -3,10 +3,12 @@
 import importlib.util
 import json
 import pathlib
+import contextlib
+import sqlite3
 import tempfile
 import unittest
 from datetime import datetime, timezone
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
 spec = importlib.util.spec_from_file_location("art337", pathlib.Path(__file__).with_name("art337_erasure_requalification.py"))
 q = importlib.util.module_from_spec(spec)
@@ -28,8 +30,18 @@ def report_files(root, sequence=1):
                      "bootScriptSha256": q.digest(pathlib.Path(q.__file__).with_name("art337-proof-boot.mjs").read_bytes())}
     boot = {"target": q.TARGET, "result": "BOOT_PASS", "fence": "OPEN", "leases": 0,
             "erasure": "qualified", "integrity": "ok", "foreignKeys": "ok", "afterMigrations": 26}
+    backup = {"version": 1, "scope": "canary", "sourceCommit": q.PREDECESSOR, "state": "READBACK_PASS",
+              "previousChainReadback": "PASS", "recoveryKeys": "AVAILABLE", "archives": {},
+              "recordedAt": datetime.now(timezone.utc).isoformat(),
+              "previousChainObjects": [{"object": "synthetic/old.sqlite.age", "sha256": "c" * 64,
+                                        "remoteSha256": "c" * 64, "size": 100}]}
+    for kind in ("commerce", "payload"):
+        path = root / (kind + ".sqlite.age")
+        raw = ("synthetic-ciphertext-" + kind).encode(); path.write_bytes(raw)
+        backup["archives"][kind] = {"path": str(path), "sha256": q.digest(raw), "remoteSha256": q.digest(raw),
+                                    "size": len(raw), "snapshotSha256": "a" * 64}
     files = {}
-    for name, value in (("inventory", inventory), ("qualification", qualification), ("restore", restore), ("boot", boot)):
+    for name, value in (("inventory", inventory), ("qualification", qualification), ("restore", restore), ("boot", boot), ("backup", backup)):
         path = root / (name + ".json")
         raw = json.dumps(value).encode()
         path.write_bytes(raw)
@@ -37,7 +49,92 @@ def report_files(root, sequence=1):
     return files
 
 
+@contextlib.contextmanager
+def isolated_publish():
+    with tempfile.TemporaryDirectory() as directory:
+        root = pathlib.Path(directory)
+        old = b'{"sourceCommit":"' + q.PREDECESSOR.encode() + b'"}\n'
+        old_hash = q.digest(old)
+        files = report_files(root)
+        manifest = {"files": files, "ledgerSequence": 1, "mirrorSha256": "c" * 64,
+                    "imageId": "sha256:" + "d" * 64, "qualifiedAt": "2026-10-13T13:00:00+00:00",
+                    "ownerDecision": "ZERO_REAL_DATA_CONFIRMED_WITH_CLASSIFIED_SYNTHETIC_EVENT"}
+        (root / "erasure-admission.json").write_bytes(old)
+        real_lstat = q.os.lstat
+        def local_lstat(path, **kwargs):
+            info = real_lstat(path, **kwargs)
+            if pathlib.Path(path) == root / "erasure-admission-history":
+                return type("LocalStat", (), {"st_mode": info.st_mode, "st_uid": 0})()
+            return info
+        with patch.object(q, "ROOT", root), patch.object(q, "PREDECESSOR_SHA256", old_hash), \
+                patch.object(q, "private_bytes", side_effect=lambda path, *_args, **_kw: pathlib.Path(path).read_bytes()), \
+                patch.object(q.os, "lstat", side_effect=local_lstat):
+            yield root, manifest, old
+
+
 class Requalification(unittest.TestCase):
+    def test_payload_writer_requires_stopped_app_disabled_timer_and_no_volume_writer(self):
+        token = "synthetic-service-token-" + "a" * 32
+        class RPC:
+            @staticmethod
+            def api(_method, path):
+                if path.endswith("/envs"):
+                    if q.PLATFORM_APP not in path:
+                        return [{"key": "PLATFORM_SERVICE_TOKEN", "value": token, "is_runtime": True}]
+                    return [{"key": "PAYLOAD_JOBS_ENABLED", "value": "false", "is_runtime": True},
+                            {"key": "PLATFORM_COMMERCE_SERVICE_TOKEN", "value": token, "is_runtime": True}]
+                return {"uuid": q.PLATFORM_APP, "name": "flexperiment-platform-v2-canary",
+                        "git_repository": "ArtGurianov/flexperiment", "git_commit_sha": q.PLATFORM_SOURCE,
+                        "status": "stopped", "settings": {"is_auto_deploy_enabled": False}}
+            @staticmethod
+            def env_value(row): return row["value"]
+            @staticmethod
+            def container(_uuid, _optional): return None
+            @staticmethod
+            def private_json(_path): return {"apps": {"canary": "c" * 24}}
+        def systemctl(args, **_kw):
+            return Mock(stdout="disabled\n" if args[1] == "is-enabled" else "inactive\n")
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(q.subprocess, "run", side_effect=systemctl), \
+                    patch.object(q, "volume_directory", return_value=pathlib.Path(directory).resolve()), \
+                    patch.object(q, "command", return_value=""), patch.object(q, "no_writable_fd") as fds, \
+                    patch.object(q, "no_service_token_process"):
+                q.verify_payload_stopped(RPC)
+                fds.assert_called_once()
+                with patch.object(RPC, "container", return_value="still-running"), \
+                        self.assertRaisesRegex(ValueError, "PAYLOAD_RUNTIME_ACTIVE_OR_UNKNOWN"):
+                    q.verify_payload_stopped(RPC)
+                with patch.object(q.subprocess, "run", side_effect=lambda args, **kw: Mock(stdout="active\n")
+                                  if args[1] == "is-active" else systemctl(args, **kw)), \
+                        self.assertRaisesRegex(ValueError, "PAYLOAD_JOB_ACTIVE_OR_UNKNOWN"):
+                    q.verify_payload_stopped(RPC)
+                with patch.object(q.subprocess, "run", side_effect=lambda args, **kw: Mock(stdout="enabled\n")
+                                  if args[1] == "is-enabled" else systemctl(args, **kw)), \
+                        self.assertRaisesRegex(ValueError, "PAYLOAD_TIMER_ENABLED"):
+                    q.verify_payload_stopped(RPC)
+                with patch.object(q, "command", side_effect=lambda args: "other-platform-canary-worker.service loaded inactive dead\n"
+                                  if args[:2] == ["systemctl", "list-units"] else ""), \
+                        self.assertRaisesRegex(ValueError, "PAYLOAD_UNKNOWN_JOB_UNIT"):
+                    q.verify_payload_stopped(RPC)
+                with patch.object(q, "command", side_effect=lambda args: "running-id" if args[:3] == ["docker", "ps", "-q"]
+                                  else json.dumps([{"Mounts": [{"RW": True, "Source": directory}]}])), \
+                        self.assertRaisesRegex(ValueError, "PAYLOAD_COMPETING_MOUNT"):
+                    q.verify_payload_stopped(RPC)
+                with patch.object(q, "command", side_effect=lambda args: "running-id" if args[:3] == ["docker", "ps", "-q"]
+                                  else json.dumps([{"Mounts": [], "Config": {"Env": ["ANY_TOKEN=" + token]}}])), \
+                        self.assertRaisesRegex(ValueError, "PAYLOAD_SERVICE_TOKEN_CONTAINER_ACTIVE"):
+                    q.verify_payload_stopped(RPC)
+
+    def test_payload_service_token_host_process_is_refused_without_logging_values(self):
+        from unittest.mock import mock_open
+        token = "synthetic-service-token-" + "b" * 32
+        with patch.object(q.os, "listdir", return_value=["123"]), \
+                patch("builtins.open", mock_open(read_data=("TOKEN=" + token).encode())), \
+                self.assertRaisesRegex(ValueError, "PAYLOAD_SERVICE_TOKEN_PROCESS_ACTIVE"):
+            q.no_service_token_process(token)
+        with patch.object(q.os, "listdir", return_value=["123"]), patch("builtins.open", mock_open(read_data=b"unrelated=other")):
+            q.no_service_token_process(token)
+
     def test_live_qualification_refuses_writer_ledger_and_fence_drift(self):
         old = json.dumps({"sourceCommit": q.PREDECESSOR, "recovery": "PASS",
                           "installationId": q.INSTALLATION, "readerBindingSha256": q.READER_BINDING}).encode()
@@ -57,13 +154,17 @@ class Requalification(unittest.TestCase):
                              "is_preview": False, "is_runtime": True}]
                 return {"uuid": "c" * 24, "name": "flexperiment-commerce-v2-canary",
                         "git_commit_sha": q.PREDECESSOR, "git_repository": "ArtGurianov/flexperiment",
-                        "dockerfile_location": "/Dockerfile.commerce-v2", "settings": {"is_auto_deploy_enabled": False}}
+                        "dockerfile_location": "/Dockerfile.commerce-v2", "status": "stopped",
+                        "settings": {"is_auto_deploy_enabled": False}}
             @staticmethod
             def env_value(row):
                 return row["value"]
             @staticmethod
             def exclusive_canary(_uuid):
                 return {"exclusive": True}
+            @staticmethod
+            def container(_uuid, _optional):
+                return None
         def read_json(path, **_kwargs):
             if str(path).endswith("installation.json"):
                 return {"scope": "canary", "state": "REQUIRED", "installationId": q.INSTALLATION,
@@ -78,8 +179,12 @@ class Requalification(unittest.TestCase):
         state = ("canary", "CLOSED", 1, "head", None)
         with patch.object(q, "PREDECESSOR_SHA256", q.digest(old)), patch.object(q, "private_bytes", return_value=old), \
                 patch.object(q, "json_file", side_effect=read_json), patch.object(q, "command", side_effect=run), \
-                patch.object(q, "current_fence", return_value=(state, 0, 0)) as fence:
+                patch.object(q, "current_fence", return_value=(state, 0, 0)) as fence, \
+                patch.object(q, "verify_payload_stopped"), patch.object(q, "verify_live_payload_snapshot"), \
+                patch.object(q, "verify_live_commerce_snapshot"):
             self.assertEqual(q.verify_live(manifest, RPC), old)
+            with patch.object(RPC, "exclusive_canary", side_effect=AssertionError("locked path called census")):
+                self.assertEqual(q.verify_live(manifest, RPC, locked=True), old)
             original_api = RPC.api
             with patch.object(RPC, "api", side_effect=lambda method, path: {**original_api(method, path),
                     "git_commit_sha": q.TARGET} if not path.endswith("/envs") else original_api(method, path)), \
@@ -105,6 +210,7 @@ class Requalification(unittest.TestCase):
             with patch.object(q, "private_bytes", side_effect=lambda path, *_args, **_kw: pathlib.Path(path).read_bytes()):
                 self.assertEqual(q.verify_reports(manifest)["result"]["result"], "PASS")
                 for key, field, value, error in (("inventory", "environment", "production", "INVENTORY_INVALID"),
+                                                 ("backup", "state", "HOLD", "BACKUP_READBACK_INVALID"),
                                                  ("boot", "fence", "CLOSED", "BOOT_PROOF_INVALID"),
                                                  ("restore", "target", "b" * 40, "RESTORE_PROOF_INVALID")):
                     path = pathlib.Path(manifest["files"][key]["path"])
@@ -128,54 +234,232 @@ class Requalification(unittest.TestCase):
                     q.verify_reports(manifest)
 
     def test_commit_archives_predecessor_and_evidence_then_reads_back(self):
+        with isolated_publish() as (root, manifest, old):
+            current = q.publish(manifest, old)
+            journal = json.loads((root / "erasure-admission.json").read_bytes())
+            self.assertEqual(journal["version"], 2)
+            self.assertEqual(journal["sourceCommit"], q.TARGET)
+            self.assertEqual(journal["previousJournalSha256"], q.digest(old))
+            self.assertEqual(q.digest((root / "erasure-admission.json").read_bytes()), current)
+            history = root / "erasure-admission-history"
+            self.assertEqual((history / (q.digest(old) + ".json")).read_bytes(), old)
+            for key in q.REQUIRED_FILES:
+                sha = manifest["files"][key]["sha256"]
+                self.assertEqual(q.digest((history / (sha + "-" + key + ".json")).read_bytes()), sha)
+            with self.assertRaisesRegex(ValueError, "ALREADY_PUBLISHED_REQUIRES_REVIEW"):
+                q.publish(manifest, old)
+
+    def test_replace_failure_preserves_pending_and_refuses_automatic_retry(self):
+        with isolated_publish() as (root, manifest, old):
+            with patch.object(q.os, "replace", side_effect=OSError("injected replace failure")), \
+                    self.assertRaises(OSError):
+                q.publish(manifest, old)
+            self.assertEqual((root / "erasure-admission.json").read_bytes(), old)
+            self.assertEqual((root / "erasure-admission.json.requalification-pending").read_bytes(), q.journal_candidate(manifest))
+            self.assertEqual(q.inspect_publication(manifest)["reason"], "UNPUBLISHED_REQUIRES_REVIEW")
+            self.assertTrue((root / "erasure-admission.json.requalification-pending").exists())
+            with self.assertRaisesRegex(ValueError, "PENDING_RECORD_UNKNOWN"):
+                q.publish(manifest, old)
+
+    def test_foreign_pending_refuses_before_creating_history_and_is_preserved(self):
+        with isolated_publish() as (root, manifest, old):
+            pending = root / "erasure-admission.json.requalification-pending"
+            pending.write_bytes(b"unknown-result")
+            with self.assertRaisesRegex(ValueError, "PENDING_RECORD_UNKNOWN"):
+                q.publish(manifest, old)
+            with self.assertRaisesRegex(ValueError, "PENDING_RECORD_UNKNOWN"):
+                q.inspect_publication(manifest)
+            self.assertEqual(pending.read_bytes(), b"unknown-result")
+            self.assertEqual((root / "erasure-admission.json").read_bytes(), old)
+            self.assertFalse((root / "erasure-admission-history").exists())
+
+    def test_fsync_failure_preserves_first_history_file_and_refuses_retry(self):
+        with isolated_publish() as (root, manifest, old):
+            with patch.object(q.os, "fsync", side_effect=OSError("injected fsync failure")), \
+                    self.assertRaises(OSError):
+                q.publish(manifest, old)
+            self.assertEqual((root / "erasure-admission.json").read_bytes(), old)
+            self.assertEqual((root / "erasure-admission-history" / (q.digest(old) + ".json")).read_bytes(), old)
+            self.assertEqual(q.inspect_publication(manifest)["reason"], "UNPUBLISHED_REQUIRES_REVIEW")
+            with self.assertRaisesRegex(ValueError, "HISTORY_ALREADY_PRESENT_REQUIRES_REVIEW"):
+                q.publish(manifest, old)
+
+    def test_pending_fsync_failure_keeps_candidate_and_old_journal(self):
+        with isolated_publish() as (root, manifest, old):
+            actual_fsync = q.os.fsync
+            pending = root / "erasure-admission.json.requalification-pending"
+            def fail_pending_fsync(fd):
+                if pending.exists():
+                    raise OSError("injected pending fsync failure")
+                return actual_fsync(fd)
+            with patch.object(q.os, "fsync", side_effect=fail_pending_fsync), self.assertRaises(OSError):
+                q.publish(manifest, old)
+            self.assertEqual((root / "erasure-admission.json").read_bytes(), old)
+            self.assertEqual(pending.read_bytes(), q.journal_candidate(manifest))
+            self.assertEqual(q.inspect_publication(manifest)["reason"], "UNPUBLISHED_REQUIRES_REVIEW")
+            with self.assertRaisesRegex(ValueError, "PENDING_RECORD_UNKNOWN"):
+                q.publish(manifest, old)
+
+    def test_replace_commits_then_raises_preserves_new_journal_for_review(self):
+        with isolated_publish() as (root, manifest, old):
+            actual_replace = q.os.replace
+            def uncertain_replace(source, destination):
+                actual_replace(source, destination)
+                raise OSError("injected lost replace response")
+            with patch.object(q.os, "replace", side_effect=uncertain_replace), self.assertRaises(OSError):
+                q.publish(manifest, old)
+            self.assertEqual((root / "erasure-admission.json").read_bytes(), q.journal_candidate(manifest))
+            self.assertEqual(q.inspect_publication(manifest)["reason"], "ALREADY_PUBLISHED_REQUIRES_REVIEW")
+            with self.assertRaisesRegex(ValueError, "ALREADY_PUBLISHED_REQUIRES_REVIEW"):
+                q.publish(manifest, old)
+
+    def test_post_replace_fsync_failure_retains_published_evidence_for_retry(self):
+        with isolated_publish() as (root, manifest, old):
+            actual_sync = q.sync_directory
+            def fail_after_replace(path):
+                if pathlib.Path(path) == root and (root / "erasure-admission.json").read_bytes() != old:
+                    raise OSError("injected directory fsync failure")
+                return actual_sync(path)
+            with patch.object(q, "sync_directory", side_effect=fail_after_replace), self.assertRaises(OSError):
+                q.publish(manifest, old)
+            candidate = q.journal_candidate(manifest)
+            self.assertEqual((root / "erasure-admission.json").read_bytes(), candidate)
+            self.assertFalse((root / "erasure-admission.json.requalification-pending").exists())
+            with self.assertRaisesRegex(ValueError, "ALREADY_PUBLISHED_REQUIRES_REVIEW"):
+                q.publish(manifest, old)
+
+    def test_exclusive_snapshot_rejects_row_added_after_inventory(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
-            old = b'{"sourceCommit":"' + q.PREDECESSOR.encode() + b'"}\n'
-            old_hash = q.digest(old)
-            files = report_files(root)
-            manifest = {"files": files, "ledgerSequence": 1, "mirrorSha256": "c" * 64,
-                        "imageId": "sha256:" + "d" * 64, "qualifiedAt": "2026-10-13T13:00:00+00:00",
-                        "ownerDecision": "ZERO_REAL_DATA_CONFIRMED_WITH_CLASSIFIED_SYNTHETIC_EVENT"}
-            (root / "erasure-admission.json").write_bytes(old)
-            real_lstat = q.os.lstat
-            def local_lstat(path):
-                info = real_lstat(path)
-                if pathlib.Path(path) == root / "erasure-admission-history":
-                    return type("LocalStat", (), {"st_mode": info.st_mode, "st_uid": 0})()
-                return info
-            with patch.object(q, "ROOT", root), patch.object(q, "PREDECESSOR_SHA256", old_hash), \
-                    patch.object(q, "private_bytes", side_effect=lambda path, *_args, **_kw: pathlib.Path(path).read_bytes()), \
-                    patch.object(q.os, "lstat", side_effect=local_lstat):
-                current = q.publish(manifest, old)
-                journal = json.loads((root / "erasure-admission.json").read_bytes())
-                self.assertEqual(journal["version"], 2)
-                self.assertEqual(journal["sourceCommit"], q.TARGET)
-                self.assertEqual(journal["previousJournalSha256"], old_hash)
-                self.assertEqual(q.digest((root / "erasure-admission.json").read_bytes()), current)
-                history = root / "erasure-admission-history"
-                self.assertEqual((history / (old_hash + ".json")).read_bytes(), old)
-                for key in q.REQUIRED_FILES:
-                    sha = files[key]["sha256"]
-                    self.assertEqual(q.digest((history / (sha + "-" + key + ".json")).read_bytes()), sha)
+            db_path = root / "commerce.sqlite"
+            db = sqlite3.connect(db_path)
+            db.execute("CREATE TABLE example(id INTEGER PRIMARY KEY)")
+            db.execute("INSERT INTO example VALUES (1)")
+            db.commit(); db.close()
+            snapshot = root / "inventory.sqlite"
+            source = sqlite3.connect(db_path); output = sqlite3.connect(snapshot)
+            source.backup(output); source.close(); output.close()
+            expected = q.digest(snapshot.read_bytes())
+            db_info = db_path.stat()
+            identity = {"path": str(db_path), "device": db_info.st_dev, "inode": db_info.st_ino}
+            report = {"snapshots": {"commerce": {"source_before": identity,
+                                                  "source_after": identity,
+                                                  "snapshot_sha256": expected}}}
+            class RPC:
+                @staticmethod
+                def private_json(_path): return {"apps": {"canary": "c" * 24}}
+                @staticmethod
+                def api(_method, _path): return {"persistent_storages": [{"name": "c" * 24 + "-data",
+                    "mount_path": "/var/lib/flexperiment-v2"}]}
+                @staticmethod
+                def exclusive_canary(_uuid): return {"exclusive": True}
+            with patch.object(q, "ROOT", root), patch.object(q, "volume_directory", return_value=root), \
+                    patch.object(q, "checked_report", return_value=report):
+                self.assertEqual(q.verify_live_commerce_snapshot({}, RPC), expected)
+                db = sqlite3.connect(db_path); db.execute("INSERT INTO example VALUES (2)"); db.commit(); db.close()
+                with self.assertRaisesRegex(ValueError, "LIVE_COMMERCE_INVENTORY_DRIFT"):
+                    q.verify_live_commerce_snapshot({}, RPC)
+
+    def test_customer_created_after_inventory_refuses_final_publish_and_preserves_old_journal(self):
+        with isolated_publish() as (root, manifest, old):
+            db_path = root / "commerce.sqlite"
+            db = sqlite3.connect(db_path)
+            db.execute("CREATE TABLE customers(id TEXT PRIMARY KEY)")
+            db.commit(); db.close()
+            snapshot = root / "inventory.sqlite"
+            source = sqlite3.connect(db_path); output = sqlite3.connect(snapshot)
+            source.backup(output); source.close(); output.close()
+            info = db_path.stat()
+            identity = {"path": str(db_path), "device": info.st_dev, "inode": info.st_ino}
+            inventory_path = pathlib.Path(manifest["files"]["inventory"]["path"])
+            inventory = json.loads(inventory_path.read_bytes())
+            inventory["snapshots"]["commerce"] = {"source_before": identity, "source_after": identity,
+                                                   "snapshot_sha256": q.digest(snapshot.read_bytes())}
+            raw = json.dumps(inventory).encode(); inventory_path.write_bytes(raw)
+            manifest["files"]["inventory"]["sha256"] = q.digest(raw)
+            db = sqlite3.connect(db_path)
+            db.execute("INSERT INTO customers VALUES ('new-test-user')")
+            db.commit(); db.close()
+            class RPC:
+                @staticmethod
+                def private_json(_path): return {"apps": {"canary": "c" * 24}}
+                @staticmethod
+                def api(_method, _path): return {"persistent_storages": [{"name": "c" * 24 + "-data",
+                    "mount_path": "/var/lib/flexperiment-v2"}]}
+            with patch.object(q, "volume_directory", return_value=root):
+                with q.merchant_write_barrier(manifest, RPC), \
+                        self.assertRaisesRegex(ValueError, "LIVE_COMMERCE_INVENTORY_DRIFT"):
+                    q.publish(manifest, old, lambda: q.verify_live_commerce_snapshot(manifest, RPC, locked=True))
+            self.assertEqual((root / "erasure-admission.json").read_bytes(), old)
+            self.assertEqual((root / "erasure-admission.json.requalification-pending").read_bytes(), q.journal_candidate(manifest))
+
+    def test_payload_snapshot_rejects_row_added_after_inventory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            db_path = root / "platform.sqlite"
+            db = sqlite3.connect(db_path)
+            db.execute("CREATE TABLE example(id INTEGER PRIMARY KEY)")
+            db.execute("INSERT INTO example VALUES (1)")
+            db.commit(); db.close()
+            snapshot = root / "inventory.sqlite"
+            source = sqlite3.connect(db_path); output = sqlite3.connect(snapshot)
+            source.backup(output); source.close(); output.close()
+            info = db_path.stat()
+            identity = {"path": str(db_path), "device": info.st_dev, "inode": info.st_ino}
+            report = {"snapshots": {"payload": {"source_before": identity, "source_after": identity,
+                                                 "snapshot_sha256": q.digest(snapshot.read_bytes())}}}
+            with patch.object(q, "ROOT", root), patch.object(q, "volume_directory", return_value=root), \
+                    patch.object(q, "checked_report", return_value=report), patch.object(q, "no_writable_fd"):
+                self.assertEqual(q.verify_live_payload_snapshot({}, object()), report["snapshots"]["payload"]["snapshot_sha256"])
+                db = sqlite3.connect(db_path); db.execute("INSERT INTO example VALUES (2)"); db.commit(); db.close()
+                with self.assertRaisesRegex(ValueError, "LIVE_PAYLOAD_INVENTORY_DRIFT"):
+                    q.verify_live_payload_snapshot({}, object())
+
+    def test_write_barrier_blocks_competing_writer_and_uses_second_reader_for_snapshot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            db_path = root / "commerce.sqlite"
+            db = sqlite3.connect(db_path)
+            db.execute("PRAGMA journal_mode=WAL")
+            db.execute("CREATE TABLE example(id INTEGER PRIMARY KEY)")
+            db.execute("INSERT INTO example VALUES (1)")
+            db.commit(); db.close()
+            snapshot = root / "inventory.sqlite"
+            source = sqlite3.connect(db_path); output = sqlite3.connect(snapshot)
+            source.backup(output); source.close(); output.close()
+            info = db_path.stat()
+            identity = {"path": str(db_path), "device": info.st_dev, "inode": info.st_ino}
+            report = {"snapshots": {"commerce": {"source_before": identity, "source_after": identity,
+                                                  "snapshot_sha256": q.digest(snapshot.read_bytes())}}}
+            class RPC:
+                @staticmethod
+                def private_json(_path): return {"apps": {"canary": "c" * 24}}
+                @staticmethod
+                def api(_method, _path): return {"persistent_storages": [{"name": "c" * 24 + "-data",
+                    "mount_path": "/var/lib/flexperiment-v2"}]}
+            with patch.object(q, "ROOT", root), patch.object(q, "volume_directory", return_value=root), \
+                    patch.object(q, "checked_report", return_value=report):
+                with q.merchant_write_barrier({}, RPC):
+                    self.assertEqual(q.verify_live_commerce_snapshot({}, RPC, locked=True), report["snapshots"]["commerce"]["snapshot_sha256"])
+                    with self.assertRaisesRegex(ValueError, "MERCHANT_WRITE_BARRIER_REFUSED"):
+                        with q.merchant_write_barrier({}, RPC):
+                            self.fail("competing barrier acquired")
+                    competitor = sqlite3.connect(db_path, timeout=0)
+                    try:
+                        with self.assertRaises(sqlite3.OperationalError):
+                            competitor.execute("INSERT INTO example VALUES (2)")
+                    finally:
+                        competitor.close()
+                after = sqlite3.connect(db_path, timeout=0)
+                after.execute("INSERT INTO example VALUES (2)")
+                after.commit(); after.close()
 
     def test_history_conflict_refuses_before_active_journal_change(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = pathlib.Path(directory)
-            old = b"old"; old_hash = q.digest(old)
-            (root / "erasure-admission.json").write_bytes(old)
+        with isolated_publish() as (root, manifest, old):
             history = root / "erasure-admission-history"; history.mkdir(mode=0o700)
-            (history / (old_hash + ".json")).write_bytes(b"foreign")
-            real_lstat = q.os.lstat
-            def local_lstat(path):
-                info = real_lstat(path)
-                if pathlib.Path(path) == history:
-                    return type("LocalStat", (), {"st_mode": info.st_mode, "st_uid": 0})()
-                return info
-            with patch.object(q, "ROOT", root), patch.object(q, "PREDECESSOR_SHA256", old_hash), \
-                    patch.object(q, "private_bytes", side_effect=lambda path, *_args, **_kw: pathlib.Path(path).read_bytes()), \
-                    patch.object(q.os, "lstat", side_effect=local_lstat), \
-                    self.assertRaisesRegex(ValueError, "HISTORY_CONFLICT"):
-                q.publish({"files": {}}, old)
+            (history / (q.digest(old) + ".json")).write_bytes(b"foreign")
+            with self.assertRaisesRegex(ValueError, "HISTORY_ALREADY_PRESENT_REQUIRES_REVIEW"):
+                q.publish(manifest, old)
             self.assertEqual((root / "erasure-admission.json").read_bytes(), old)
 
     def test_fence_refuses_unknown_lease(self):
