@@ -45,12 +45,14 @@ function outline(db: Database.Database, courseRef: string) {
   const sections = db.prepare(`SELECT section_ref,title,position FROM catalog_section_projection
     WHERE course_ref=? AND visibility='LISTED' AND title IS NOT NULL ORDER BY position,section_ref`)
     .all(courseRef) as SectionRow[];
-  const allowed = new Set(sections.map(section => section.section_ref));
+  const sectionOrder = new Map(sections.map((section, index) => [section.section_ref, index]));
   const lessons = (db.prepare(`SELECT lesson_ref,section_ref,title,slug,position,free_preview,description_json,seo_json
     FROM catalog_lesson_projection WHERE course_ref=? AND visibility='LISTED' AND ever_published=1
       AND withdrawn_at IS NULL AND title IS NOT NULL AND slug IS NOT NULL
     ORDER BY position,lesson_ref`).all(courseRef) as LessonRow[])
-    .filter(lesson => allowed.has(lesson.section_ref));
+    .filter(lesson => sectionOrder.has(lesson.section_ref))
+    .sort((left, right) => (sectionOrder.get(left.section_ref)! - sectionOrder.get(right.section_ref)!)
+      || left.position - right.position || left.lesson_ref.localeCompare(right.lesson_ref));
   return {
     sections: sections.map(section => ({ sectionRef: section.section_ref, title: section.title, position: section.position })),
     lessons: lessons.map(lesson => ({ lessonRef: lesson.lesson_ref, sectionRef: lesson.section_ref,
