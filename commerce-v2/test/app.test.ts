@@ -7,7 +7,7 @@ import { migrateV2 } from "../src/db";
 import { stageBLegalManifestJson } from "./fixtures/legal";
 import { activatePublicSales, qualifyTestFiscalPolicies } from "./fixtures/sales";
 import { loadCommerceRuntimeConfig } from "../src/payment-mode";
-import { withManifestHash } from "../src/manifest";
+import { applyCourseManifest, withManifestHash } from "../src/manifest";
 import { MockPaymentRail } from "../src/checkout";
 import { controlRoomEntitlements } from "../src/control-room";
 import type { CatalogueResponse, ControlRoomIntegrationSummary, CustomersResponse, EntitlementsResponse, OrdersResponse } from "@flexperiment/control-room-contracts";
@@ -42,13 +42,13 @@ const internal = (body: unknown) => ({
   body: JSON.stringify(body),
 });
 
-const seedPlayableLesson = async (server: ReturnType<typeof createCommerceV2App>) => {
+const seedPlayableLesson = () => {
   const manifest = withManifestHash({
     courseRef: "course", version: 1, visibility: "LISTED",
     sections: [{ sectionRef: "section", visibility: "LISTED" as const }],
     lessons: [{ lessonRef: "lesson", sectionRef: "section", everPublished: true, visibility: "LISTED" as const, freePreview: true }], operations: [],
   });
-  await server.request("/v1/internal/course-manifests", internal(manifest));
+  applyCourseManifest(db, manifest);
   db.prepare("INSERT INTO customers(id,email_normalized) VALUES ('customer','student@example.com')").run();
   confirmSyntheticAccount(db, "customer");
   db.prepare("INSERT INTO products(id,product_ref,kind,access_model,course_ref) VALUES ('p','course:course','ONLINE_COURSE','PAID','course')").run();
@@ -174,7 +174,7 @@ describe("commerce v2 boundaries", () => {
     expect(db.prepare("SELECT COUNT(*) AS count FROM control_room_audit_log WHERE action='PRODUCT_CONFIGURED'").get()).toEqual({ count: 1 });
   });
 
-  it("marks only a withdrawal's platform revalidation as a withdrawal", async () => {
+  it("marks only a Control Room withdrawal's platform revalidation as a withdrawal", async () => {
     const invalidatePlatformCache = vi.fn(async () => {});
     const server = app("disabled", { invalidatePlatformCache });
     const login = await server.request("/v1/admin/login", {
@@ -189,18 +189,9 @@ describe("commerce v2 boundaries", () => {
     expect((await server.request("/v1/admin/v2/catalogue/products/course:withdrawn/withdraw", { method: "POST", headers, body: JSON.stringify({
       reason: "Rights expired", termsRef: "offer-v1#withdrawal", expectedVersion: 1,
     }) })).status).toBe(200);
-    expect((await server.request("/v1/internal/catalog/products", internal({
-      productRef: "course:internal", offerRef: "course:internal", kind: "ONLINE_COURSE", courseRef: "internal",
-      accessModel: "FREE", priceKopecks: 0, saleMode: "CLOSED", actor: "operator", expectedVersion: 0,
-    }))).status).toBe(200);
-    expect((await server.request("/v1/internal/catalog/products/course:internal/withdraw", internal({
-      reason: "Rights expired", termsRef: "offer-v1#withdrawal", actor: "operator", expectedVersion: 1,
-    }))).status).toBe(200);
     expect(invalidatePlatformCache.mock.calls).toEqual([
       ["swr", "withdrawn"],
       ["immediate", "withdrawn", "WITHDRAWN"],
-      ["swr", "internal"],
-      ["immediate", "internal", "WITHDRAWN"],
     ]);
   });
 
@@ -434,10 +425,28 @@ describe("commerce v2 boundaries", () => {
     expect(await executed.json()).toMatchObject({ state: "SUCCEEDED" });
   });
 
-  it("authenticates internal manifest writes", async () => {
-    const manifest = withManifestHash({ courseRef: "course", version: 1, visibility: "LISTED", sections: [], lessons: [], operations: [] });
-    expect((await app().request("/v1/internal/course-manifests", { method: "POST" })).status).toBe(401);
-    expect((await app().request("/v1/internal/course-manifests", internal(manifest))).status).toBe(200);
+  it("does not expose retired Payload writer routes even to the internal service token", async () => {
+    const server = app();
+    const retired = [
+      ["POST", "/v1/internal/course-manifests"],
+      ["POST", "/v1/internal/access-overrides"],
+      ["GET", "/v1/internal/access-overrides/pending"],
+      ["POST", "/v1/internal/access-overrides/operation/release"],
+      ["POST", "/v1/internal/catalog/products"],
+      ["POST", "/v1/internal/catalog/products/course:retired/withdraw"],
+      ["POST", "/v1/internal/catalog/courses/retired/commercial"],
+      ["POST", "/v1/internal/catalog/payment-purpose/retired"],
+    ] as const;
+    for (const [method, path] of retired) {
+      const response = await server.request(path, {
+        method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: method === "POST" ? "{}" : undefined,
+      });
+      expect(response.status, `${method} ${path}`).toBe(404);
+    }
+    for (const table of ["catalog_course_projection", "products", "access_overrides", "audit_log"]) {
+      expect(db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get(), table).toEqual({ count: 0 });
+    }
   });
 
   it("serves typed Control Room read models only through the internal boundary", async () => {
@@ -452,9 +461,9 @@ describe("commerce v2 boundaries", () => {
       VALUES ('offer','course:one','product',10000,'PUBLIC')`).run();
     qualifyTestFiscalPolicies(db);
     activatePublicSales(db);
-    await server.request("/v1/internal/course-manifests", internal(withManifestHash({
+    applyCourseManifest(db, withManifestHash({
       courseRef: "course-one", version: 1, visibility: "LISTED", sections: [], lessons: [], operations: [],
-    })));
+    }));
     const headers = { authorization: "Session customer", "content-type": "application/json", "idempotency-key": "cr-preview" };
     const preview = await server.request("/v1/checkout/preview", { method: "POST", headers, body: JSON.stringify({ offerRef: "course:one" }) });
     const quote = await preview.json() as { quoteId: string };
@@ -494,7 +503,7 @@ describe("commerce v2 boundaries", () => {
       sections: [{ sectionRef: "section", visibility: "LISTED" }],
       lessons: [{ lessonRef: "lesson", sectionRef: "section", everPublished: true, visibility: "LISTED", freePreview: true }], operations: [],
     });
-    await app().request("/v1/internal/course-manifests", internal(manifest));
+    applyCourseManifest(db, manifest);
     db.prepare("INSERT INTO customers(id,email_normalized) VALUES ('customer','student@example.com')").run();
     confirmSyntheticAccount(db, "customer");
     db.prepare("INSERT INTO products(id,product_ref,kind,access_model,course_ref) VALUES ('p','course:course','ONLINE_COURSE','PAID','course')").run();
@@ -517,7 +526,7 @@ describe("commerce v2 boundaries", () => {
       }),
       kinescopeDrmAuth: drm,
     });
-    await seedPlayableLesson(server);
+    seedPlayableLesson();
 
     const response = await server.request("/v1/lessons/lesson/playback", {
       method: "POST", headers: { authorization: "Session customer" },
@@ -560,7 +569,7 @@ describe("commerce v2 boundaries", () => {
       config: loadCommerceRuntimeConfig({ DEPLOY_ENV: "production", PAYMENT_MODE: "disabled", KINESCOPE_DELIVERY_MODE: "protected", MERCHANT_PROMOTION_PREFIX: "FX-" }),
       kinescopeDrmAuth: { keyring: { currentKeyId: "k1", keys: { k1: "s".repeat(32) } }, username: "drm", password: "synthetic" },
     });
-    await seedPlayableLesson(server);
+    seedPlayableLesson();
     const grant = await (await server.request("/v1/lessons/lesson/playback", { method: "POST", headers: { authorization: "Session customer" } })).json() as { token: string };
     const authorize = () => server.request("/v1/kinescope/drm/authorize", { method: "POST",
       headers: { authorization: `Basic ${Buffer.from("drm:synthetic").toString("base64")}`, "content-type": "application/json" },
@@ -679,7 +688,7 @@ describe("commerce v2 boundaries", () => {
       sections: [{ sectionRef: "section", visibility: "LISTED" }],
       lessons: [{ lessonRef: "lesson", sectionRef: "section", everPublished: true, visibility: "LISTED", freePreview: true }], operations: [],
     });
-    await app().request("/v1/internal/course-manifests", internal(manifest));
+    applyCourseManifest(db, manifest);
     db.prepare("INSERT INTO customers(id,email_normalized) VALUES ('customer','student@example.com')").run();
     confirmSyntheticAccount(db, "customer");
     db.prepare("INSERT INTO products(id,product_ref,kind,access_model,course_ref) VALUES ('p','course:course','ONLINE_COURSE','PAID','course')").run();
@@ -699,7 +708,7 @@ describe("commerce v2 boundaries", () => {
       sections: [{ sectionRef: "section", visibility: "LISTED" }],
       lessons: [{ lessonRef: "lesson", sectionRef: "section", everPublished: true, visibility: "LISTED", freePreview: true }], operations: [],
     });
-    await app().request("/v1/internal/course-manifests", internal(manifest));
+    applyCourseManifest(db, manifest);
     db.prepare("INSERT INTO customers(id,email_normalized) VALUES ('customer','student@example.com')").run();
     confirmSyntheticAccount(db, "customer");
     db.prepare("INSERT INTO products(id,product_ref,kind,access_model,course_ref) VALUES ('p','course:course','ONLINE_COURSE','PAID','course')").run();

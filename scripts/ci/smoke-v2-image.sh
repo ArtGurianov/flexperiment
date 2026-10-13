@@ -37,6 +37,8 @@ if [[ $service == commerce-v2 ]]; then
   source scripts/ci/erasure-installation-fixture.sh
   erasure_fixture_create "$image" "$installation_volume"
   installation_args=(--mount "type=volume,source=$installation_volume,target=/etc/flexperiment-erasure,readonly")
+  retired_writer_token=ci-retired-writer-route-token-32-bytes
+  installation_args+=(--env "PLATFORM_SERVICE_TOKEN=$retired_writer_token")
 fi
 
 if [[ $service == platform ]]; then
@@ -151,4 +153,17 @@ if [[ $service == commerce-v2 ]]; then
     if (result.schema !== "flexperiment.lab-catalogue/1" || result.paymentMode !== "disabled"
         || !Array.isArray(result.cities) || !Array.isArray(result.occurrences)) process.exit(1);
   ' "$response_file"
+  # The authorized old Payload writer surface must remain absent in the built image.
+  for path in /v1/internal/course-manifests /v1/internal/access-overrides \
+    /v1/internal/access-overrides/operation/release /v1/internal/catalog/products \
+    /v1/internal/catalog/products/course:retired/withdraw \
+    /v1/internal/catalog/courses/retired/commercial \
+    /v1/internal/catalog/payment-purpose/retired; do
+    test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+      --header "Authorization: Bearer $retired_writer_token" --header 'Content-Type: application/json' \
+      --request POST --data '{}' "http://127.0.0.1:${host_port}${path}")" = "404"
+  done
+  test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+    --header "Authorization: Bearer $retired_writer_token" \
+    "http://127.0.0.1:${host_port}/v1/internal/access-overrides/pending")" = "404"
 fi

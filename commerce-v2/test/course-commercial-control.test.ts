@@ -6,7 +6,6 @@ import { configureProduct, withdrawProduct } from "../src/catalog-control";
 import { loadCommerceRuntimeConfig } from "../src/payment-mode";
 import { resolvePlaybackAccess } from "../src/playback-access";
 import { listCustomerLibrary } from "../src/library";
-import { createCommerceV2App } from "../src/app";
 import { confirmSyntheticAccount } from "./fixtures/confirmed-account";
 
 let db: Database.Database;
@@ -101,21 +100,5 @@ describe("CMS canonical course commercial commands", () => {
     db.exec("UPDATE catalog_lesson_projection SET free_preview=1");
     expect(access({ recordFreeEnrollment: true }).decision).toBe("ALLOW");
     expect(db.prepare("SELECT count(*) n FROM free_course_enrollments").get()).toEqual({ n: 0 });
-  });
-  it("does not claim cache refresh when no invalidator is configured", async () => {
-    const server = createCommerceV2App({ db, config, sourceCommit: "a".repeat(40), serviceToken: "synthetic-service-token" });
-    const result = await server.request("/v1/internal/catalog/courses/one/commercial", { method: "POST",
-      headers: { authorization: "Bearer synthetic-service-token", "content-type": "application/json" }, body: JSON.stringify(command) });
-    expect(result.status).toBe(200);
-    expect(await result.json()).toMatchObject({ version: 1, cacheRefresh: "PENDING", saleMode: "CLOSED" });
-  });
-  it("requires service authority and reports committed state despite cache failure", async () => {
-    const server = createCommerceV2App({ db, config, sourceCommit: "a".repeat(40), serviceToken: "synthetic-service-token",
-      invalidatePlatformCache: async () => { throw new Error("secret exception"); } });
-    const path = "/v1/internal/catalog/courses/one/commercial";
-    expect((await server.request(path, { method: "POST", body: JSON.stringify(command) })).status).toBe(401);
-    const result = await server.request(path, { method: "POST", headers: { authorization: "Bearer synthetic-service-token", "content-type": "application/json" }, body: JSON.stringify({ ...command, courseRef: "foreign", saleMode: "PUBLIC" }) });
-    expect(result.status).toBe(200); expect(await result.json()).toMatchObject({ version: 1, cacheRefresh: "PENDING", saleMode: "CLOSED" });
-    expect(db.prepare("SELECT course_ref FROM products").get()).toEqual({ course_ref: "one" });
   });
 });

@@ -3,14 +3,12 @@ import { assertRegistrationChoices } from "./registration-choices";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { timingSafeEqual } from "node:crypto";
-import { createRestrictiveOverride, flagOrphanedOverrides, listPendingOverrides, releaseRolledBackOverride, type RestrictiveOverride, type RollbackReleaseProof } from "./access-overrides";
-import { applyCourseManifest, type CourseManifest } from "./manifest";
+import { flagOrphanedOverrides } from "./access-overrides";
 import { getEditorialDraft, getEditorialPublished, publishEditorialDraft, relistEditorialCourse, restrictEditorialCourse, saveEditorialDraft, type EditorialDocument } from "./course-editorial";
 import { assertPaymentCreationEnabled, type CommerceRuntimeConfig } from "./payment-mode";
 import { saveResumePosition } from "./resume";
 import { confirmCheckout, prepareCheckout, reconcileCheckout, type PaymentRail } from "./checkout";
-import { activateSales, configureProduct, setCoursePaymentPurpose, withdrawProduct } from "./catalog-control";
-import { configureCourseCommercial, type CourseCommercialCommand } from "./course-commercial-control";
+import { activateSales, configureProduct, withdrawProduct } from "./catalog-control";
 import { campaignStatus, confirmCampaign, createCampaign, dispatchCampaign, retryCampaign, unsubscribeCustomer, type CampaignEmail } from "./campaigns";
 import { assertVideoUploadInput, observeKinescopeStatus, pollKinescopeUpload, startVideoUpload, type KinescopeClient, type KinescopeStatus } from "./kinescope";
 import { activateLegalRelease, currentLegalRelease, type LegalReleaseManifest } from "./legal-control";
@@ -463,20 +461,6 @@ export function createCommerceV2App(deps: Dependencies) {
     app.all("/v1/auth/*", (context) => deps.authHandler!(context.req.raw));
   }
 
-  app.post("/v1/internal/access-overrides", async (context) => {
-    try {
-      const result = createRestrictiveOverride(deps.db, await context.req.json<RestrictiveOverride>());
-      return context.json({ state: "PENDING", enforced: true }, result.created ? 201 : 200, noStore);
-    } catch (error) {
-      return context.json({ code: error instanceof Error ? error.message : "INVALID_OVERRIDE" }, 409, noStore);
-    }
-  });
-
-  app.get("/v1/internal/access-overrides/pending", (context) => {
-    flagOrphanedOverrides(deps.db, now().toISOString());
-    return context.json({ overrides: listPendingOverrides(deps.db) }, 200, noStore);
-  });
-
   app.get("/v1/internal/catalog-summary", (context) => {
     const courses = deps.db.prepare(`SELECT product.course_ref AS courseRef,product.access_model AS accessModel,
       (product.withdrawn_at IS NOT NULL) AS withdrawn,offer.offer_ref AS offerRef,
@@ -489,15 +473,6 @@ export function createCommerceV2App(deps: Dependencies) {
 
   app.get("/v1/internal/control-room/catalogue", (context) =>
     context.json(controlRoomCatalogue(deps.db, now().toISOString()), 200, noStore));
-  app.post("/v1/internal/catalog/payment-purpose/:courseRef", async (context) => {
-    try {
-      const input = await context.req.json<{ paymentPurpose: string; expectedVersion: number; actor: string }>();
-      return context.json(setCoursePaymentPurpose(deps.db, { paymentPurpose: input.paymentPurpose,
-        expectedVersion: input.expectedVersion, actor: input.actor, courseRef: context.req.param("courseRef") }, now().toISOString()), 200, noStore);
-    } catch (error) {
-      return context.json({ error: { code: error instanceof Error ? error.message : "PAYMENT_PURPOSE_UPDATE_FAILED" } }, 409, noStore);
-    }
-  });
   app.get("/v1/internal/control-room/orders", (context) =>
     context.json(controlRoomOrders(deps.db, now().toISOString()), 200, noStore));
   app.get("/v1/internal/control-room/customers", (context) =>
@@ -517,53 +492,6 @@ export function createCommerceV2App(deps: Dependencies) {
   app.get("/v1/internal/control-room/email", (context) => context.json(controlRoomEmailOperations(deps.db, now().toISOString()), 200, noStore));
   app.get("/v1/internal/control-room/incidents", (context) => context.json(controlRoomIncidents(deps.db, now().toISOString()), 200, noStore));
   app.get("/v1/internal/control-room/audit", (context) => context.json(controlRoomAudit(deps.db, now().toISOString()), 200, noStore));
-
-  app.post("/v1/internal/catalog/products", async (context) => {
-    try {
-      const command = await context.req.json<Parameters<typeof configureProduct>[2]>();
-      const result = configureProduct(deps.db, deps.config, command, now().toISOString());
-      await deps.invalidatePlatformCache?.("swr", command.courseRef);
-      return context.json(result, 200, noStore);
-    } catch (error) {
-      return context.json({ code: error instanceof Error ? error.message : "PRODUCT_COMMAND_FAILED" }, 409, noStore);
-    }
-  });
-
-  app.post("/v1/internal/catalog/courses/:courseRef/commercial", async (context) => {
-    try {
-      const input = await context.req.json<CourseCommercialCommand>();
-      const result = configureCourseCommercial(deps.db, deps.config, {
-        courseRef: context.req.param("courseRef"), actor: input.actor, commandKey: input.commandKey,
-        accessModel: input.accessModel, priceKopecks: input.priceKopecks, expectedVersion: input.expectedVersion,
-      }, now().toISOString());
-      let cacheRefresh: "CONFIRMED" | "PENDING" = "PENDING";
-      try {
-        if (deps.invalidatePlatformCache) {
-          await deps.invalidatePlatformCache("swr", context.req.param("courseRef"));
-          cacheRefresh = "CONFIRMED";
-        }
-      }
-      catch { cacheRefresh = "PENDING"; }
-      return context.json({ ...result, cacheRefresh }, 200, noStore);
-    } catch (error) {
-      const allowed = ["COURSE_COMMERCIAL_COMMAND_INVALID", "COURSE_PRICE_INVALID", "COURSE_COMMAND_KEY_CONFLICT",
-        "COURSE_PRODUCT_AMBIGUOUS", "CATALOG_VERSION_CONFLICT", "WITHDRAWN_PRODUCT_IMMUTABLE", "FREE_ACCESS_HISTORY_REQUIRES_RECONCILIATION"];
-      const code = error instanceof Error && allowed.includes(error.message) ? error.message : "COURSE_COMMERCIAL_UPDATE_FAILED";
-      return context.json({ code }, 409, noStore);
-    }
-  });
-
-  app.post("/v1/internal/catalog/products/:productRef/withdraw", async (context) => {
-    try {
-      const body = await context.req.json<{ reason: string; termsRef: string; actor: string; expectedVersion: number }>();
-      const product = deps.db.prepare("SELECT course_ref FROM products WHERE product_ref=?").get(context.req.param("productRef")) as { course_ref: string | null } | undefined;
-      const result = withdrawProduct(deps.db, { productRef: context.req.param("productRef"), ...body }, now().toISOString());
-      await deps.invalidatePlatformCache?.("immediate", product?.course_ref ?? undefined, "WITHDRAWN");
-      return context.json(result, 200, noStore);
-    } catch (error) {
-      return context.json({ code: error instanceof Error ? error.message : "WITHDRAWAL_FAILED" }, 409, noStore);
-    }
-  });
 
   app.post("/v1/internal/sales-activations", async (context) => {
     try {
@@ -700,24 +628,6 @@ export function createCommerceV2App(deps: Dependencies) {
       LEFT JOIN lesson_video_bindings binding ON binding.lesson_ref=session.lesson_ref AND session.status='READY'
       WHERE session.id=?`).get(context.req.param("id"));
     return session ? context.json(session, 200, noStore) : context.json({ code: "VIDEO_UPLOAD_NOT_FOUND" }, 404, noStore);
-  });
-
-  app.post("/v1/internal/access-overrides/:operationId/release", async (context) => {
-    try {
-      releaseRolledBackOverride(deps.db, context.req.param("operationId"), await context.req.json<RollbackReleaseProof>());
-      return context.json({ state: "RELEASED_ROLLED_BACK" }, 200, noStore);
-    } catch (error) {
-      return context.json({ code: error instanceof Error ? error.message : "RELEASE_REFUSED" }, 409, noStore);
-    }
-  });
-
-  app.post("/v1/internal/course-manifests", async (context) => {
-    try {
-      const result = applyCourseManifest(deps.db, await context.req.json<CourseManifest>(), now().toISOString());
-      return context.json(result, 200, noStore);
-    } catch (error) {
-      return context.json({ code: error instanceof Error ? error.message : "MANIFEST_REJECTED" }, 409, noStore);
-    }
   });
 
   app.post("/v1/checkout/preview", async (context) => {
