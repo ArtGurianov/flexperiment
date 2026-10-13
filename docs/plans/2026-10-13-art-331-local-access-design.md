@@ -22,7 +22,7 @@ or deadline alone does not release an override.
 
 Tests publish actual Commerce editorial courses and check FREE, preview and
 retained FREE enrollment after 25 hours and seven days without reconciliation.
-Visibility and withdrawal deny immediately. A pending override blocks first
+Visibility, withdrawal and entitlement revocation deny immediately. A pending override blocks first
 publication; a later legacy override is refused. Existing legacy lease tests
 remain in place and must pass.
 

@@ -4,6 +4,7 @@ import { createRestrictiveOverride, releaseRolledBackOverride } from "../src/acc
 import { configureProduct, withdrawProduct } from "../src/catalog-control";
 import { saveEditorialDraft, publishEditorialDraft } from "../src/course-editorial";
 import { migrateV2 } from "../src/db";
+import { grantManualEntitlement, revokeManualEntitlement } from "../src/entitlements";
 import { listCustomerLibrary } from "../src/library";
 import { loadCommerceRuntimeConfig } from "../src/payment-mode";
 import { resolvePlaybackAccess } from "../src/playback-access";
@@ -73,6 +74,20 @@ describe("Commerce editorial access without a manifest lease", () => {
     withdrawProduct(db, { productRef: "course:free", expectedVersion: 1, actor: "control-room",
       reason: "Rights ended", termsRef: "terms-v1" }, later(7).toISOString());
     expect(access("free", later(7)).decision).toBe("DENY");
+    expect(library(later(7)).courses).toEqual([]);
+  });
+
+  it("honors an acquired grant and its revocation immediately after seven days", () => {
+    publishCourse("paid", "PAID");
+    expect(access("paid", later(7)).decision).toBe("NOT_FOR_SALE");
+    const grant = grantManualEntitlement(db, { customerId: "student", scope: "COURSE", courseRef: "paid",
+      reason: "Closed qualification", evidenceRef: "ART-331-test", legalTermsRef: "terms-v1",
+      idempotencyKey: "art331grantpaid", actor: "control-room" }, later(7).toISOString());
+    expect(access("paid", later(7)).decision).toBe("ALLOW");
+    expect(library(later(7)).courses[0].access).toBe("ENTITLED");
+    revokeManualEntitlement(db, grant.entitlementId, { reason: "Qualification ended",
+      evidenceRef: "ART-331-test", actor: "control-room" }, later(7).toISOString());
+    expect(access("paid", later(7)).decision).toBe("NOT_FOR_SALE");
     expect(library(later(7)).courses).toEqual([]);
   });
 
