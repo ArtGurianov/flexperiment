@@ -19,9 +19,13 @@ idempotency keys and the latest observed Refref projection needed to reconcile
 its own obligations. Provider credentials and provider-native payment state do
 not belong in this database.
 
-Payload's editorial SQLite database is separate. It stores drafts, published
-content, media metadata, versions and Payload jobs. Neither database attaches
-the other, and neither schema contains tables owned by the other service.
+For the current deployed Payload path, its editorial SQLite remains separate
+and stores its own drafts, published content, media metadata, versions and jobs.
+Migration 0026 adds Commerce-owned editorial drafts and immutable published
+version snapshots for the staged replacement. Commerce-authored courses publish
+directly into the existing `catalog_*_projection` tables, while legacy
+manifest-owned courses retain the old path. Neither database attaches the other.
+This migration alone does not activate the replacement reader or retire Payload.
 
 ## Public origin boundary
 
@@ -122,9 +126,18 @@ does.
   database rows or accept browser-supplied actor identities. Internal service
   reads continue to require the service token; browser reads and commands use
   the Control Room session and same-origin checks.
-- `catalog_*_projection` is the atomically applied, full-state content manifest.
-  Course versions only move forward. Section visibility participates in a
-  lesson's effective visibility.
+- `catalog_*_projection` is the current published graph. The legacy writer
+  applies a full-state manifest; the Commerce editorial writer marks its courses
+  and commits draft revision CAS, published version CAS, graph, audit,
+  idempotency result and immutable snapshot in one SQLite transaction. Legacy
+  manifest writes cannot overwrite Commerce-authored courses. Previously
+  published refs omitted from a new editorial draft remain unlisted instead of
+  being deleted. Emergency unlist persists across ordinary editorial publishes;
+  an audited CAS `relist` is required to release it, and withdrawal cannot be
+  released through that command. Version `content_hash` is SHA-256 of the exact
+  immutable `document_json` bytes, with the current projection carrying the
+  latest digest. Course versions only move forward; section visibility
+  participates in a lesson's effective visibility.
 - `access_overrides` records restrictive intent. PENDING overrides remain
   enforced until commerce resolves them to FINALIZED, SUPERSEDED or
   RELEASED_ROLLED_BACK with the required proof.

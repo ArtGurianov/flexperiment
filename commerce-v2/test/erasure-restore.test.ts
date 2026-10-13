@@ -67,7 +67,7 @@ describe("real isolated old SQLite backup + independent latest erasure journal",
       expect(restored.prepare("SELECT recipient_normalized FROM auth_email_outbox").all()).toEqual([{ recipient_normalized: "other-customer@example.test" }]);
       expect(restored.prepare("SELECT reason,removed_at FROM email_suppressions").get()).toEqual({ reason: "INDEPENDENT_ERASURE_LEDGER", removed_at: null });
       expect(restored.pragma("integrity_check", { simple: true })).toBe("ok"); expect(restored.pragma("foreign_key_check")).toEqual([]);
-      const count = rowCount(restored, "schema_migrations"); expect(count).toBe(25);
+      const count = rowCount(restored, "schema_migrations"); expect(count).toBe(26);
       expect(applyIsolatedRestoreErasure(restored, await verified(), keys, "canary", now).erasedAccounts).toBe(0);
       // Original source has not been erased by the isolated proof.
       expect(rowCount(db, "customers")).toBe(2); expect(rowCount(db, '"session"')).toBe(2);

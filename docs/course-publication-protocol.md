@@ -1,5 +1,29 @@
 # Course publication protocol (ART-207–210, ART-223)
 
+## Commerce editorial transition (ART-330, implemented in source; rollout pending)
+
+Migration 0026 adds a Commerce-owned editorial draft aggregate and immutable
+published version snapshots. The current published graph is the existing
+`catalog_*_projection` tables. Admin draft reads/writes and publication use
+`/v1/admin/v2/courses/:courseRef/{draft,published,publish,unlist,relist,withdraw}`
+under Control Room authentication. Publication checks draft and published
+versions, records an idempotency result, audit event and version snapshot, and
+updates the graph in one `BEGIN IMMEDIATE` transaction. The draft is never
+read by player/public routes. Previously published sections and lessons omitted
+from a later draft remain `UNLISTED`, with refs and video bindings retained.
+Emergency unlist pins effective course visibility even when a later ordinary
+publish requests `LISTED`. Only the explicit audited `relist` command releases
+that restriction; withdrawal cannot be released by this command. For every
+published version, `content_hash` is SHA-256 of the exact saved
+`course_editorial_versions.document_json` UTF-8 bytes. The current course
+projection carries the same digest as its latest version.
+FREE/PAID, price and sale mode remain under catalog control; withdrawal also
+updates the product in the same transaction. Legacy manifest ingest rejects a
+Commerce-authored course. Existing Payload courses and their manifest protocol
+below remain the live path until the staged cutover. ART-331 removes the
+manifest lease and override dependency from live access, and ART-339 makes
+publication effects durable; this source change alone is not runtime proof.
+
 ## Authorities and immutable identity
 
 Payload in the Next.js `apps/platform` server owns published editorial content: courses, ordered sections, lessons, stable `courseRef`/`sectionRef`/`lessonRef`, visibility, display and SEO. Commerce independently owns FREE/PAID, price, sale mode, entitlement, and private Kinescope asset bindings. Never copy a private video binding or provider secret into public Payload DTOs. GraphQL is disabled; server-side Payload reads that represent the public use Local API with `overrideAccess: false`.
