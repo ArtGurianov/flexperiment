@@ -8,7 +8,7 @@ one SQLite transaction. Playback and library reads for rows marked
 `last_reconciled_at` lease and pending Payload `access_overrides` apply only to
 `LEGACY_MANIFEST` rows while the old platform remains active. Existing grant,
 visibility, withdrawal, consent, FREE, retained enrollment and preview order
-is unchanged.
+is unchanged. Control Room counts only legacy projections as stale.
 
 Before the first Commerce publication, the publish transaction refuses any
 pending legacy override for that course. The legacy override writer takes an
@@ -28,7 +28,7 @@ remain in place and must pass.
 
 This is source compatibility for a staged cutover, not ART-331 completion.
 The old manifest/override endpoints, reconciliation job, readiness and
-integration metrics remain until the Payload-free platform and canary hard cut
+remaining legacy integration metrics remain until the Payload-free platform and canary hard cut
 are reviewed together. Before switching runtime, re-inventory pending
 overrides and the active course authoring sources; preserve the erasure ledger
 and fence. No canary, production or public access mode changes are included.
