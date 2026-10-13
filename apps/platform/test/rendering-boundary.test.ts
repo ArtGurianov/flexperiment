@@ -23,8 +23,11 @@ describe("static-first storefront rendering", () => {
       expect(route).toContain("<Suspense");
     }
     expect(catalog).toContain("await connection()");
-    expect(course).toContain("await headers()");
+    expect(course).toContain("await connection()");
+    expect(course).toContain("await publicCourse(slug)");
     expect(lesson).toContain("await headers()");
+    expect(lesson).toContain("await connection()");
+    expect(await source("lib/content/public.ts")).toContain('cache: "no-store"');
   });
 
   it("keeps runtime environment and baked identity routes out of the build-time cache", async () => {

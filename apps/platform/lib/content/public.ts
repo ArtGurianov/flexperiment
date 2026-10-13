@@ -1,52 +1,57 @@
-import { getPayload } from "payload";
-import config from "@payload-config";
-import { getPublicCourseBySlug, getPublicLessonBySlugs, listPublicCourseOutline, listPublicCourses } from "./editorial";
-import { unstable_cache } from "next/cache";
+import type { CourseCommercialSummary } from "@/lib/commerce-summary";
 
-const payload = () => getPayload({ config });
+export type StorefrontCourse = {
+  courseRef: string; version: number; title: string; slug: string; summary: string;
+  description: unknown; seo: { title?: string; description?: string } | null;
+  publicContentUpdatedAt: string;
+};
+export type StorefrontSection = { sectionRef: string; title: string; position: number };
+export type StorefrontLesson = { lessonRef: string; sectionRef: string; title: string; slug: string;
+  position: number; freePreview: boolean; description?: unknown; seo?: { title?: string; description?: string } | null };
+export type StorefrontOutline = { sections: StorefrontSection[]; lessons: StorefrontLesson[] };
+export type CourseDetail = { course: StorefrontCourse; commercial: CourseCommercialSummary; outline: StorefrontOutline };
+export type LessonDetail = CourseDetail & { lesson: StorefrontLesson; section: StorefrontSection };
 
-export const publicCourses = unstable_cache(async () => {
-  return listPublicCourses(await payload());
-}, ["public-courses"], { revalidate: 3600, tags: ["catalog", "search"] });
+async function commerceGet<T>(path: string): Promise<T | null> {
+  const origin = process.env.COMMERCE_INTERNAL_ORIGIN;
+  if (!origin) throw new Error("COMMERCE_CONTENT_NOT_CONFIGURED");
+  const response = await fetch(new URL(path, origin), {
+    cache: "no-store", redirect: "error", signal: AbortSignal.timeout(3_000),
+  });
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error("COMMERCE_CONTENT_UNAVAILABLE");
+  return await response.json() as T;
+}
 
-export const publicCourse = unstable_cache(async (slug: string) => {
-  const cms = await payload();
-  const course = await getPublicCourseBySlug(cms, slug);
-  if (!course) return null;
-  return { course, outline: await listPublicCourseOutline(cms, course.id) };
-}, ["public-course"], { revalidate: 3600, tags: ["course", "search"] });
+export async function publicCourses() {
+  const result = await commerceGet<{ courses: Array<{ course: StorefrontCourse; commercial: CourseCommercialSummary }> }>("/v1/courses");
+  if (!result) throw new Error("COMMERCE_CONTENT_UNAVAILABLE");
+  return result.courses;
+}
 
-export const publicLesson = unstable_cache(async (courseSlug: string, lessonSlug: string) => {
-  return getPublicLessonBySlugs(await payload(), courseSlug, lessonSlug);
-}, ["public-lesson"], { revalidate: 3600, tags: ["course", "lesson", "search"] });
+export const publicCourse = (slug: string) => commerceGet<CourseDetail>(`/v1/courses/${encodeURIComponent(slug)}`);
+
+export const publicLesson = (courseSlug: string, lessonSlug: string) => commerceGet<LessonDetail>(
+  `/v1/courses/${encodeURIComponent(courseSlug)}/lessons/${encodeURIComponent(lessonSlug)}`,
+);
 
 export type PublicSearchDocument = {
-  type: "course" | "lesson";
-  ref: string;
-  courseRef: string;
-  title: string;
-  summary: string;
-  url: string;
-  lastModified?: string | null;
+  type: "course" | "lesson"; ref: string; courseRef: string; title: string; summary: string;
+  url: string; lastModified?: string | null;
 };
 
-export const publicSearchDocuments = unstable_cache(async (): Promise<PublicSearchDocument[]> => {
-  const cms = await payload();
-  const courses = await listPublicCourses(cms);
-  const documents = await Promise.all(courses.map(async (course) => {
-    const outline = await listPublicCourseOutline(cms, course.id);
-    return [
-      { type: "course" as const, ref: course.courseRef, courseRef: course.courseRef, title: course.title, summary: course.summary, url: `/courses/${course.slug}`, lastModified: course.publicContentUpdatedAt },
-      ...outline.lessons.map((lesson) => ({
-        type: "lesson" as const,
-        ref: String(lesson.lessonRef),
-        courseRef: course.courseRef,
-        title: String(lesson.title),
-        summary: course.title,
-        url: `/courses/${course.slug}/lessons/${String(lesson.slug)}`,
-        lastModified: course.publicContentUpdatedAt,
-      })),
-    ];
-  }));
-  return documents.flat();
-}, ["public-search-documents"], { revalidate: 3600, tags: ["catalog", "course", "lesson", "search"] });
+export async function publicSearchDocuments(): Promise<PublicSearchDocument[]> {
+  const courses = await publicCourses();
+  const details = await Promise.all(courses.map(({ course }) => publicCourse(course.slug)));
+  return details.flatMap((detail) => {
+    if (!detail) return [];
+    const { course, outline } = detail;
+    return [{ type: "course" as const, ref: course.courseRef, courseRef: course.courseRef,
+      title: course.title, summary: course.summary, url: `/courses/${course.slug}`,
+      lastModified: course.publicContentUpdatedAt },
+    ...outline.lessons.map(lesson => ({ type: "lesson" as const, ref: lesson.lessonRef,
+      courseRef: course.courseRef, title: lesson.title, summary: course.title,
+      url: `/courses/${course.slug}/lessons/${lesson.slug}`,
+      lastModified: course.publicContentUpdatedAt }))];
+  });
+}

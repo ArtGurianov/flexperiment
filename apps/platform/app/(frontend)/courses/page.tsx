@@ -1,6 +1,5 @@
 import Link from "next/link";
 import { publicCourses } from "@/lib/content/public";
-import { getCommercialSummaries } from "@/lib/commerce-summary";
 import CourseSearch from "@/components/search/CourseSearch";
 import { Suspense } from "react";
 import { connection } from "next/server";
@@ -24,16 +23,12 @@ const money = (kopecks: number) => new Intl.NumberFormat("ru-RU", {
 }).format(kopecks / 100);
 
 async function CourseGrid() {
-  // The image build has an intentionally empty editorial database. Exclude
-  // production CMS reads from that pass; the response is cached after the
-  // first real request and invalidated by the manifest/revalidation path.
+  // The Commerce graph is read at request time; there is no content ISR in the closed canary.
   await connection();
-  const [courses, commercial] = await Promise.all([publicCourses(), getCommercialSummaries()]);
-  const visible = courses.filter((course) => !commercial.get(course.courseRef)?.withdrawn);
+  const courses = await publicCourses();
   return <section className="courseGrid" aria-label="Опубликованные курсы">
-    {visible.map((course, index) => {
-      const summary = commercial.get(course.courseRef);
-      const commercialLabel = !summary ? "Скоро" : summary.accessModel === "FREE" ? "Бесплатно" : summary.saleMode === "CLOSED" ? "Продажи закрыты" : summary.priceKopecks === null ? "Скоро" : money(summary.priceKopecks);
+    {courses.map(({ course, commercial }, index) => {
+      const commercialLabel = commercial.accessModel === "FREE" ? "Бесплатно" : commercial.saleMode === "CLOSED" ? "Продажи закрыты" : commercial.priceKopecks === null ? "Скоро" : money(commercial.priceKopecks);
       return (
         <article className="courseCard" key={course.courseRef}>
           <div className="courseCardNumber">{String(index + 1).padStart(2, "0")}</div>
@@ -42,7 +37,7 @@ async function CourseGrid() {
         </article>
       );
     })}
-    {visible.length === 0 && <p className="emptyState">Первый курс готовится к публикации.</p>}
+    {courses.length === 0 && <p className="emptyState">Первый курс готовится к публикации.</p>}
   </section>;
 }
 

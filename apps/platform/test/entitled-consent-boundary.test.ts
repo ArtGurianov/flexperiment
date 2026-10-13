@@ -1,30 +1,27 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { getPayload } from "payload";
-import { entitledCourse, listEntitledCourses } from "../lib/content/entitled";
-vi.mock("payload", () => ({ getPayload: vi.fn() }));
-vi.mock("@payload-config", () => ({ default: {} }));
+import { accountLibrary, entitledLesson } from "../lib/content/entitled";
+
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
-describe("Payload private readers require server-authoritative course consent", () => {
-  it.each(["missing", "unverified", "wrong storefront", "unconfirmed", "error"])("does not read private editorial data for %s", async state => {
+
+describe("Commerce private content transport", () => {
+  it("passes the same session to Commerce and never caches private data", async () => {
     vi.stubEnv("COMMERCE_INTERNAL_ORIGIN", "http://isolated-commerce:3002");
-    vi.spyOn(global, "fetch").mockImplementation(async input => String(input).includes("/consents")
-      ? Response.json({ storefront: state === "wrong storefront" ? "LAB" : "COURSES", verifiedAccount: state !== "unverified",
-        requiredChoicesConfirmed: state !== "unconfirmed" && state !== "missing" }, { status: state === "error" ? 503 : 200 })
-      : Response.json({ customer: { id: "synthetic" }, entitlements: [{ scope: "ALL_COURSES" }] }));
-    expect(await listEntitledCourses("synthetic-cookie")).toEqual([]);
-    expect(await entitledCourse("synthetic-cookie", "arbitrary-course")).toBeNull();
-    expect(getPayload).not.toHaveBeenCalled();
+    const fetcher = vi.spyOn(global, "fetch").mockResolvedValue(Response.json({ courses: [{ courseRef: "course" }] }));
+    expect(await accountLibrary("synthetic-cookie")).toEqual([{ courseRef: "course" }]);
+    expect(fetcher.mock.calls[0]).toMatchObject([new URL("http://isolated-commerce:3002/v1/me/course-library"),
+      { headers: { cookie: "synthetic-cookie" }, cache: "no-store", redirect: "error" }]);
+    expect(await entitledLesson("", "course", "lesson")).toBeNull();
+    expect(fetcher).toHaveBeenCalledTimes(1);
   });
-  it("checks both no-store authorities before querying entitled content", async () => {
+
+  it("treats session and consent refusal as denial and backend failure as unavailable", async () => {
     vi.stubEnv("COMMERCE_INTERNAL_ORIGIN", "http://isolated-commerce:3002");
-    const fetcher = vi.spyOn(global, "fetch").mockImplementation(async input => String(input).includes("/consents")
-      ? Response.json({ storefront: "COURSES", verifiedAccount: true, requiredChoicesConfirmed: true })
-      : Response.json({ customer: { id: "synthetic" }, entitlements: [{ scope: "ALL_COURSES" }] }));
-    const find = vi.fn(async () => ({ docs: [] }));
-    vi.mocked(getPayload).mockResolvedValue({ find } as never);
-    expect(await listEntitledCourses("synthetic-cookie")).toEqual([]);
-    expect(find).toHaveBeenCalledOnce();
-    expect(fetcher).toHaveBeenCalledTimes(2);
-    for (const [, init] of fetcher.mock.calls) expect(init).toMatchObject({ headers: { cookie: "synthetic-cookie" }, cache: "no-store" });
+    const fetcher = vi.spyOn(global, "fetch");
+    for (const status of [401, 403, 404]) {
+      fetcher.mockResolvedValueOnce(new Response(null, { status }));
+      expect(await entitledLesson("synthetic-cookie", "course", "lesson")).toBeNull();
+    }
+    fetcher.mockResolvedValueOnce(new Response(null, { status: 503 }));
+    await expect(entitledLesson("synthetic-cookie", "course", "lesson")).rejects.toThrow("COMMERCE_CONTENT_UNAVAILABLE");
   });
 });
