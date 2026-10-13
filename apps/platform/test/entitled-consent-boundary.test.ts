@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { accountLibrary, entitledCourse, entitledLesson } from "../lib/content/entitled";
+import { accountLibrary, entitledCourse, entitledLesson, viewerCourse, viewerLesson } from "../lib/content/entitled";
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 
@@ -28,5 +28,37 @@ describe("Commerce private content transport", () => {
     }
     fetcher.mockResolvedValueOnce(new Response(null, { status: 503 }));
     await expect(entitledLesson("synthetic-cookie", "course", "lesson")).rejects.toThrow("COMMERCE_CONTENT_UNAVAILABLE");
+  });
+
+  it("uses the entitled SSR read for an unlisted owner without calling the public endpoint", async () => {
+    vi.stubEnv("COMMERCE_INTERNAL_ORIGIN", "http://isolated-commerce:3002");
+    const fetcher = vi.spyOn(global, "fetch")
+      .mockResolvedValueOnce(Response.json({ course: { slug: "unlisted" }, outline: { lessons: [] } }))
+      .mockResolvedValueOnce(Response.json({ lesson: { slug: "hidden", description: { private: true } } }));
+    expect(await viewerCourse("owner-cookie", "unlisted")).toMatchObject({ course: { slug: "unlisted" } });
+    expect(await viewerLesson("owner-cookie", "unlisted", "hidden"))
+      .toMatchObject({ lesson: { description: { private: true } } });
+    expect(fetcher.mock.calls.map(([url]) => String(url))).toEqual([
+      "http://isolated-commerce:3002/v1/me/courses/unlisted",
+      "http://isolated-commerce:3002/v1/me/courses/unlisted/lessons/hidden",
+    ]);
+  });
+
+  it("falls back only to the public listed read when private access is denied", async () => {
+    vi.stubEnv("COMMERCE_INTERNAL_ORIGIN", "http://isolated-commerce:3002");
+    const fetcher = vi.spyOn(global, "fetch")
+      .mockResolvedValueOnce(new Response(null, { status: 404 }))
+      .mockResolvedValueOnce(new Response(null, { status: 404 }))
+      .mockResolvedValueOnce(new Response(null, { status: 404 }))
+      .mockResolvedValueOnce(Response.json({ lesson: { slug: "listed", description: null } }));
+    expect(await viewerCourse("revoked-cookie", "unlisted")).toBeNull();
+    expect(await viewerLesson("visitor-cookie", "listed", "listed"))
+      .toMatchObject({ lesson: { slug: "listed", description: null } });
+    expect(fetcher.mock.calls.map(([url]) => String(url))).toEqual([
+      "http://isolated-commerce:3002/v1/me/courses/unlisted",
+      "http://isolated-commerce:3002/v1/courses/unlisted",
+      "http://isolated-commerce:3002/v1/me/courses/listed/lessons/listed",
+      "http://isolated-commerce:3002/v1/courses/listed/lessons/listed",
+    ]);
   });
 });

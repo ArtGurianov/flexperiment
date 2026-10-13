@@ -1,4 +1,4 @@
-import type { CourseDetail, LessonDetail } from "./public";
+import { publicCourse, publicLesson, type CourseDetail, type LessonDetail } from "./public";
 
 export type AccountLibraryCourse = {
   courseRef: string; title: string; url: string; access: "ENTITLED" | "FREE" | "PREVIEW";
@@ -29,4 +29,13 @@ export function entitledCourse(cookieHeader: string, courseSlug: string) {
 export function entitledLesson(cookieHeader: string, courseSlug: string, lessonSlug: string) {
   return privateContent<LessonDetail>(cookieHeader,
     `/v1/me/courses/${encodeURIComponent(courseSlug)}/lessons/${encodeURIComponent(lessonSlug)}`);
+}
+
+/** Private authorization wins for retained owners; public listed content remains available to visitors. */
+export async function viewerCourse(cookieHeader: string, courseSlug: string) {
+  return await entitledCourse(cookieHeader, courseSlug) ?? await publicCourse(courseSlug);
+}
+
+export async function viewerLesson(cookieHeader: string, courseSlug: string, lessonSlug: string) {
+  return await entitledLesson(cookieHeader, courseSlug, lessonSlug) ?? await publicLesson(courseSlug, lessonSlug);
 }

@@ -7,7 +7,7 @@ import { Suspense } from "react";
 import LessonPlayer from "@/components/kinescope/LessonPlayer";
 import LessonNavigation from "@/components/courses/LessonNavigation";
 import { publicLesson } from "@/lib/content/public";
-import { entitledLesson } from "@/lib/content/entitled";
+import { viewerLesson } from "@/lib/content/entitled";
 import { lessonAccessLabel } from "@/lib/course-access-labels";
 import LexicalReadOnly from "@/components/courses/LexicalReadOnly";
 import { breadcrumbJsonLd, lessonIsAccessibleForFree } from "@/lib/seo";
@@ -37,8 +37,7 @@ async function LessonContent({ params }: Props) {
   await connection();
   const { slug, lessonSlug } = await params;
   if (slug === buildShellSlug || lessonSlug === buildShellSlug) notFound();
-  const privateResult = await entitledLesson((await headers()).get("cookie") ?? "", slug, lessonSlug);
-  const result = privateResult ?? await publicLesson(slug, lessonSlug);
+  const result = await viewerLesson((await headers()).get("cookie") ?? "", slug, lessonSlug);
   if (!result) notFound();
   const { commercial } = result;
   const lessonDescription = result.lesson.description;

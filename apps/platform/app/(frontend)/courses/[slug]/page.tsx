@@ -5,7 +5,7 @@ import { connection } from "next/server";
 import { Suspense } from "react";
 import { headers } from "next/headers";
 import { publicCourse } from "@/lib/content/public";
-import { entitledCourse } from "@/lib/content/entitled";
+import { viewerCourse } from "@/lib/content/entitled";
 import CourseCheckout from "@/components/checkout/CourseCheckout";
 import LexicalReadOnly from "@/components/courses/LexicalReadOnly";
 import { lessonAccessLabel } from "@/lib/course-access-labels";
@@ -37,8 +37,7 @@ async function CourseContent({ params }: Props) {
   await connection();
   const { slug } = await params;
   if (slug === buildShellSlug) notFound();
-  const privateResult = await entitledCourse((await headers()).get("cookie") ?? "", slug);
-  const result = privateResult ?? await publicCourse(slug);
+  const result = await viewerCourse((await headers()).get("cookie") ?? "", slug);
   if (!result) notFound();
   const { commercial } = result;
   const courseDescription = result.course.description;
