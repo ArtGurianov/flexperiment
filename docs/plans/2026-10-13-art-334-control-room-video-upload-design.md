@@ -18,6 +18,10 @@ Commerce.
 3. The browser transfers bytes to the Tus endpoint. It polls the admin-auth
    status route until `READY` or `FAILED`. A lesson-scoped read returns the
    latest persisted state after reload without disclosing the provider ID.
+   The client uses 10,000,000-byte Tus chunks, matching Kinescope's example.
+   This bounds retransmission after a dropped request while avoiding the
+   request overhead of smaller chunks. Automatic request retries use the
+   current durable session and provider endpoint.
 4. A retry marks unfinished prior sessions `FAILED / SUPERSEDED` before the
    new session is inserted. Late provider success for a superseded session
    cannot replace the active binding. The previous READY binding remains until

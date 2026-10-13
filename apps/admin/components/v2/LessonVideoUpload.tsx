@@ -69,6 +69,7 @@ export function LessonVideoUpload({ courses }: { courses: Course[] }) {
       setMessage("Передаём файл в Kinescope…");
       const upload = new Upload(file, {
         uploadUrl: initialized.endpoint,
+        chunkSize: 10_000_000,
         retryDelays: [0, 1_000, 3_000, 5_000, 10_000],
         metadata: { filename: file.name, filetype: file.type },
         removeFingerprintOnSuccess: true,
