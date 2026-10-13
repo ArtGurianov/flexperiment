@@ -24,6 +24,52 @@ ERASURE_ENV = {"ERASURE_FENCING_ENABLED": "true", "ERASURE_SCOPE": "canary",
                "ERASURE_FENCE_DIRECTORY": ERASURE_ROOT + "/fence",
                "ERASURE_VERIFICATION_KEYS_FILE": "/etc/flexperiment-erasure-keys/verification.json",
                "ERASURE_LIBRARY_CONFIG_FILE": "/etc/flexperiment-erasure-read/reader.json"}
+ART337_TARGET = "08523bdf38eeddf5e745ce04d05e1f980a7ced93"
+ART337_PREVIOUS = "84b1a6abcb43e9abf8f781e830f84822207c0dca"
+ART337_PREVIOUS_JOURNAL = "eb60e0b11769e3f263c4e0e9bbb48fd8431f571ffba25a77fb0a37e8d7a352dc"
+ART337_SCHEMAS = {"0025": "158654c61bd97be4dbcab4348651722fe105587f6ff202ad4db821512774e030",
+                  "0026": "c99f9ed0db449a2c13f2e51fa3b28a1ba44e367dd263185c99eddfec8c2d3b39"}
+with open(__file__, "rb") as _controller_file:
+    SELF_SHA256 = hashlib.sha256(_controller_file.read()).hexdigest()
+
+
+def verify_requalified_admission(journal):
+    if journal.get("version") != 2 or journal.get("scope") != "canary" \
+            or journal.get("sourceCommit") != ART337_TARGET or journal.get("recovery") != "PASS" \
+            or journal.get("previousSourceCommit") != ART337_PREVIOUS \
+            or journal.get("previousJournalSha256") != ART337_PREVIOUS_JOURNAL \
+            or journal.get("schemaFingerprints") != ART337_SCHEMAS \
+            or journal.get("ownerDecision") != "ZERO_REAL_DATA_CONFIRMED_WITH_CLASSIFIED_SYNTHETIC_EVENT" \
+            or not isinstance(journal.get("ledgerSequence"), int) or journal["ledgerSequence"] < 0 \
+            or not re.fullmatch(r"sha256:[0-9a-f]{64}", journal.get("imageId", "")) \
+            or not re.fullmatch(r"[0-9a-f]{64}", journal.get("mirrorSha256", "")) \
+            or not re.fullmatch(r"[0-9a-f]{64}", journal.get("requalifierSha256", "")) \
+            or journal.get("controllerSha256") != SELF_SHA256:
+        raise ValueError("ERASURE_REQUALIFICATION_REFUSED")
+    history = ROOT + "/erasure-admission-history/"
+    previous = history + ART337_PREVIOUS_JOURNAL + ".json"
+    if hashlib.sha256(private_bytes(previous)).hexdigest() != ART337_PREVIOUS_JOURNAL:
+        raise ValueError("ERASURE_HISTORY_REFUSED")
+    evidence = journal.get("evidence")
+    if not isinstance(evidence, dict) or set(evidence) != {"inventory", "qualification", "restore", "boot"}:
+        raise ValueError("ERASURE_EVIDENCE_REFUSED")
+    for kind, expected in evidence.items():
+        if not re.fullmatch(r"[0-9a-f]{64}", expected) \
+                or hashlib.sha256(private_bytes(history + expected + "-" + kind + ".json")).hexdigest() != expected:
+            raise ValueError("ERASURE_EVIDENCE_REFUSED")
+    mirror = ERASURE_ROOT + "/mirror/bundle.json"
+    with open(mirror, "rb") as source:
+        if hashlib.sha256(source.read(8_000_001)).hexdigest() != journal["mirrorSha256"]:
+            raise ValueError("ERASURE_MIRROR_DRIFT")
+
+
+def private_bytes(path):
+    info = os.lstat(path)
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or stat.S_IMODE(info.st_mode) != 0o600 \
+            or info.st_nlink != 1 or not 0 < info.st_size <= 8_000_000:
+        raise ValueError("OWNER_FILE_PERMISSIONS")
+    with open(path, "rb") as source:
+        return source.read(8_000_001)
 
 
 def erasure_environment(uuid):
@@ -47,6 +93,8 @@ def erasure_admission(uuid, sha):
     journal = private_json(ROOT + "/erasure-admission.json")
     if journal.get("sourceCommit") != sha or journal.get("recovery") != "PASS":
         raise ValueError("ERASURE_ADMISSION_REFUSED")
+    if journal.get("version") == 2 or sha == ART337_TARGET:
+        verify_requalified_admission(journal)
     directory = ERASURE_ROOT + "/installation"
     record = directory + "/installation.json"
     for path, mode, kind in [(directory, 0o555, stat.S_ISDIR), (record, 0o444, stat.S_ISREG)]:
@@ -77,6 +125,8 @@ def erasure_admission(uuid, sha):
             raise ValueError("ERASURE_RUNTIME_FILE_PERMISSIONS")
     result = json.loads(run(["/usr/local/bin/flexperiment-erasure", "read"]))
     if result.get("state") != "REMOTE_VERIFIED" or result.get("scope") != "canary":
+        raise ValueError("ERASURE_CURRENT_CUSTODY_REFUSED")
+    if journal.get("version") == 2 and result.get("sequence") != journal["ledgerSequence"]:
         raise ValueError("ERASURE_CURRENT_CUSTODY_REFUSED")
     return {"qualified": True, "sourceCommit": sha}
 
@@ -133,8 +183,9 @@ def env_value(row):
 
 
 def private_json(path):
-    info = os.stat(path)
-    if info.st_uid != 0 or stat.S_IMODE(info.st_mode) != 0o600:
+    info = os.lstat(path)
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != 0 \
+            or stat.S_IMODE(info.st_mode) != 0o600 or not 0 < info.st_size <= 8_000_000:
         raise ValueError("OWNER_FILE_PERMISSIONS")
     with open(path, encoding="utf8") as source:
         return json.load(source)

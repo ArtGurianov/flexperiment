@@ -28,6 +28,37 @@ def erasure_rows():
 
 
 class OwnerControl(unittest.TestCase):
+    def test_requalified_admission_requires_archived_history_evidence_and_mirror(self):
+        from unittest.mock import mock_open
+        old = b'{"sourceCommit":"previous"}'
+        old_hash = rpc.hashlib.sha256(old).hexdigest()
+        evidence = {key: rpc.hashlib.sha256(key.encode()).hexdigest()
+                    for key in ("inventory", "qualification", "restore", "boot")}
+        mirror = b'{"scope":"canary","entries":[]}'
+        journal = {"version": 2, "scope": "canary", "sourceCommit": rpc.ART337_TARGET,
+                   "recovery": "PASS", "previousSourceCommit": rpc.ART337_PREVIOUS,
+                   "previousJournalSha256": old_hash, "schemaFingerprints": rpc.ART337_SCHEMAS,
+                   "ownerDecision": "ZERO_REAL_DATA_CONFIRMED_WITH_CLASSIFIED_SYNTHETIC_EVENT",
+                   "ledgerSequence": 1, "imageId": "sha256:" + "a" * 64,
+                   "mirrorSha256": rpc.hashlib.sha256(mirror).hexdigest(), "evidence": evidence,
+                   "controllerSha256": rpc.SELF_SHA256, "requalifierSha256": "d" * 64}
+        def read(path):
+            if path.endswith(old_hash + ".json"):
+                return old
+            for key, sha in evidence.items():
+                if path.endswith(sha + "-" + key + ".json"):
+                    return key.encode()
+            return b"foreign"
+        with patch.object(rpc, "ART337_PREVIOUS_JOURNAL", old_hash), \
+                patch.object(rpc, "private_bytes", side_effect=read), \
+                patch("builtins.open", mock_open(read_data=mirror)):
+            rpc.verify_requalified_admission(journal)
+            for changed, error in (({"schemaFingerprints": {}}, "ERASURE_REQUALIFICATION_REFUSED"),
+                                   ({"evidence": {**evidence, "boot": "b" * 64}}, "ERASURE_EVIDENCE_REFUSED"),
+                                   ({"mirrorSha256": "c" * 64}, "ERASURE_MIRROR_DRIFT")):
+                with self.subTest(changed=changed), self.assertRaisesRegex(ValueError, error):
+                    rpc.verify_requalified_admission({**journal, **changed})
+
     def test_erasure_operations_are_canary_only_before_any_io(self):
         with patch.object(rpc, "api") as api:
             for operation in ("erasure-admission", "stop-canary", "exclusive-canary"):
@@ -127,6 +158,11 @@ class OwnerControl(unittest.TestCase):
                 rpc.erasure_admission(CANARY, SHA)
             with patch("builtins.open", mock_open(read_data=json.dumps({**policy, "version": 2}))), self.assertRaisesRegex(ValueError, "ERASURE_INSTALLATION_BINDING"):
                 rpc.erasure_admission(CANARY, SHA)
+            with patch.object(rpc, "verify_requalified_admission") as qualified, \
+                    patch.object(rpc, "private_json", return_value={**journal, "version": 2, "ledgerSequence": 1}), \
+                    self.assertRaisesRegex(ValueError, "ERASURE_CURRENT_CUSTODY_REFUSED"):
+                rpc.erasure_admission(CANARY, SHA)
+            qualified.assert_called_once()
 
     def test_exclusive_census_rejects_writable_database_or_wal_fd_but_not_reader(self):
         from unittest.mock import mock_open
