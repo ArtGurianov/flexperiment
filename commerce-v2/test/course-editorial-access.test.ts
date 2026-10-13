@@ -6,9 +6,12 @@ import { saveEditorialDraft, publishEditorialDraft } from "../src/course-editori
 import { migrateV2 } from "../src/db";
 import { grantManualEntitlement, revokeManualEntitlement } from "../src/entitlements";
 import { listCustomerLibrary } from "../src/library";
+import { activateLegalRelease } from "../src/legal-control";
 import { loadCommerceRuntimeConfig } from "../src/payment-mode";
+import { applyCourseManifest, withManifestHash } from "../src/manifest";
 import { resolvePlaybackAccess } from "../src/playback-access";
 import { confirmSyntheticAccount } from "./fixtures/confirmed-account";
+import { stageALegalManifest } from "./fixtures/legal";
 
 let db: Database.Database;
 const config = loadCommerceRuntimeConfig({ DEPLOY_ENV: "staging", PAYMENT_MODE: "disabled" });
@@ -91,6 +94,33 @@ describe("Commerce editorial access without a manifest lease", () => {
     expect(library(later(7)).courses).toEqual([]);
   });
 
+  it("requires current account consent even when the local course is FREE", () => {
+    publishCourse("free", "FREE");
+    expect(access("free", later(7)).decision).toBe("ALLOW");
+    activateLegalRelease(db, { storefront: "COURSES", version: "synthetic-required-v2",
+      manifest: stageALegalManifest, actor: "isolated-test" }, later(7).toISOString());
+    expect(access("free", later(7)).decision).toBe("CONSENT_REQUIRED");
+    expect(library(later(7)).courses).toEqual([]);
+  });
+
+  it("keeps a pending legacy restriction scoped to its manifest course", () => {
+    publishCourse("editorial", "FREE");
+    configureProduct(db, config, { kind: "ONLINE_COURSE", courseRef: "legacy", productRef: "course:legacy",
+      offerRef: "course:legacy", accessModel: "FREE", priceKopecks: 0,
+      saleMode: "CLOSED", expectedVersion: 0, actor: "control-room" }, publishedAt.toISOString());
+    applyCourseManifest(db, withManifestHash({ courseRef: "legacy", version: 1, visibility: "LISTED",
+      sections: [{ sectionRef: "legacy-section", visibility: "LISTED" }],
+      lessons: [{ lessonRef: "legacy-lesson", sectionRef: "legacy-section", everPublished: true,
+        visibility: "LISTED", freePreview: false }], operations: [] }), publishedAt.toISOString());
+    createRestrictiveOverride(db, { operationId: "legacy-unlist", courseRef: "legacy",
+      scope: { level: "COURSE", ref: "legacy" }, expected: { kind: "EFFECTIVE_VISIBILITY", value: "UNLISTED" },
+      deadlineAt: later(1).toISOString(), platformEpoch: "legacy-epoch" });
+
+    expect(access("legacy", publishedAt).decision).toBe("DENY");
+    expect(access("editorial", later(7)).decision).toBe("ALLOW");
+    expect(library(later(7)).courses.map((course) => course.courseRef)).toEqual(["editorial"]);
+  });
+
   it("refuses handover with a pending legacy restriction and rejects new legacy overrides", () => {
     const override = { operationId: "legacy-operation", courseRef: "free",
       scope: { level: "COURSE" as const, ref: "free" },
@@ -106,6 +136,9 @@ describe("Commerce editorial access without a manifest lease", () => {
       idempotencyKey: "publish-free", actor: "control-room" }, publishedAt.toISOString());
     expect(() => createRestrictiveOverride(db, { ...override, operationId: "late-operation" }))
       .toThrow("COMMERCE_EDITORIAL_OWNED");
+    expect(() => createRestrictiveOverride(db, override)).toThrow("COMMERCE_EDITORIAL_OWNED");
+    expect(db.prepare("SELECT state FROM access_overrides WHERE operation_id=?").get(override.operationId))
+      .toEqual({ state: "RELEASED_ROLLED_BACK" });
     expect(access("free", later(7)).decision).toBe("ALLOW");
   });
 });
