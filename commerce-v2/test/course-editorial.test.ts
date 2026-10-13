@@ -125,6 +125,26 @@ describe("Commerce editorial publication on the real V2 schema", () => {
     expect(getEditorialDraft(db, "course")?.revision).toBe(1);
   });
 
+  it("accepts Lexical's serialized paragraph and rejects unknown attributes", () => {
+    const textNode = { detail: 0, format: 3, mode: "normal", style: "", text: "Styled text", type: "text", version: 1 };
+    const paragraph = { children: [textNode], direction: null, format: "", indent: 0, type: "paragraph", version: 1,
+      textFormat: 0, textStyle: "" };
+    const root = { children: [paragraph], direction: null, format: "", indent: 0, type: "root" as const, version: 1 };
+    expect(save(document({ description: { root } })).revision).toBe(1);
+    const invalid = [
+      { root, html: "<script>unexpected</script>" },
+      { root: { ...root, secret: "unexpected" } },
+      { root: { ...root, children: [{ ...paragraph, unknown: "unexpected" }] } },
+      { root: { ...root, children: [{ ...paragraph, children: [{ ...textNode, unknown: "unexpected" }] }] } },
+      { root: { ...root, children: [{ ...paragraph, children: [{ ...textNode, style: "color:red" }] }] } },
+      { root: { ...root, children: [{ ...paragraph, children: [{ ...textNode, format: 4 }] }] } },
+      { root: { ...root, children: [{ ...paragraph, children: [{ ...textNode, mode: "token" }] }] } },
+      { root: { ...root, children: [{ ...paragraph, textStyle: "color:red" }] } },
+    ];
+    for (const description of invalid) expect(() => save(document({ description }), 1)).toThrow("LEXICAL_TREE_INVALID");
+    expect(getEditorialDraft(db, "course")?.revision).toBe(1);
+  });
+
   it("publishes restrictive visibility immediately and blocks late legacy manifest writes", () => {
     save(); publish();
     save(document({ visibility: "UNLISTED" }), 1);

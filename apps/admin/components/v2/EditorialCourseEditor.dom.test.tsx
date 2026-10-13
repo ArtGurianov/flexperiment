@@ -112,6 +112,52 @@ describe("Control Room editorial course editor", () => {
     expect(screen.getByText(/r2 · сохранён/)).toBeInTheDocument();
   });
 
+  it.each(["draft", "published"] as const)("preserves unsaved edits after a failed %s background refetch", async (failedRead) => {
+    const client = createTestQueryClient();
+    const user = userEvent.setup();
+    let failBackgroundRead = false;
+    global.fetch = vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (failBackgroundRead && path.endsWith(`/${failedRead}`)) throw new Error("Connection closed");
+      if (path.endsWith("/draft")) return response({ courseRef: "course", revision: 1,
+        document: document("Server title"), updatedAt: "2026-10-13" });
+      if (path.endsWith("/published")) return response(published());
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    render(<EditorialCourseEditor courses={[course]} />,
+      { wrapper: (props) => <QueryClientWrapper client={client}>{props.children}</QueryClientWrapper> });
+    await user.selectOptions(screen.getByLabelText("Курс для редакции"), "course");
+    const title = await screen.findByLabelText("Название курса");
+    await user.clear(title);
+    await user.type(title, "Unsaved local title");
+    expect(screen.getByText(/r1 · есть изменения/)).toBeInTheDocument();
+
+    failBackgroundRead = true;
+    await client.invalidateQueries({ queryKey: ["control-room-v2", `editorial-${failedRead}`, "course"] });
+    expect(await screen.findByRole("alert")).toHaveTextContent("Несохранённые правки остаются в редакторе");
+    expect(screen.getByLabelText("Название курса")).toBe(title);
+    expect(title).toHaveValue("Unsaved local title");
+    expect(screen.getByText(/r1 · есть изменения/)).toBeInTheDocument();
+
+    failBackgroundRead = false;
+    await client.invalidateQueries({ queryKey: ["control-room-v2", `editorial-${failedRead}`, "course"] });
+    await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+    expect(screen.getByLabelText("Название курса")).toBe(title);
+    expect(title).toHaveValue("Unsaved local title");
+  });
+
+  it("shows a fatal read error when no initial course data was loaded", async () => {
+    global.fetch = vi.fn().mockImplementation(async (input: RequestInfo | URL) => String(input).endsWith("/draft")
+      ? Promise.reject(new Error("Offline")) : response(published()));
+    const client = createTestQueryClient();
+    const user = userEvent.setup();
+    render(<EditorialCourseEditor courses={[course]} />,
+      { wrapper: (props) => <QueryClientWrapper client={client}>{props.children}</QueryClientWrapper> });
+    await user.selectOptions(screen.getByLabelText("Курс для редакции"), "course");
+    expect(await screen.findByText(/NETWORK_AMBIGUOUS/)).toBeInTheDocument();
+    expect(screen.queryByLabelText("Название курса")).not.toBeInTheDocument();
+  });
+
   it("shows a read-only publication and prevents duplicate draft submission", async () => {
     let resolveSave: ((value: Response) => void) | undefined;
     const fetchMock = vi.fn().mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {

@@ -36,17 +36,22 @@ function EditorialSession({ course }: { course: Course }) {
     queryFn: () => optionalRead<EditorialDraft>(`/v2/courses/${encodeURIComponent(courseRef)}/draft`) });
   const published = useQuery({ queryKey: ["control-room-v2", "editorial-published", courseRef],
     queryFn: () => optionalRead<PublishedSnapshot>(`/v2/courses/${encodeURIComponent(courseRef)}/published`) });
-  if (draft.error || published.error) return <Notice error={draft.error instanceof AdminApiError ? draft.error.code
-    : published.error instanceof AdminApiError ? published.error.code : "EDITORIAL_READ_FAILED"} />;
-  if (draft.isPending || published.isPending) return <Loading />;
+  const readError = draft.error ?? published.error;
+  if (draft.data === undefined || published.data === undefined) {
+    if (readError) return <Notice error={readError instanceof AdminApiError ? readError.code : "EDITORIAL_READ_FAILED"} />;
+    return <Loading />;
+  }
   const refreshRemote = async () => {
     const [freshDraft, freshPublished] = await Promise.all([draft.refetch(), published.refetch()]);
     if (freshDraft.error) throw freshDraft.error;
     if (freshPublished.error) throw freshPublished.error;
     return { draft: freshDraft.data ?? null, published: freshPublished.data ?? null };
   };
-  return <LoadedEditorialSession course={course} initialDraft={draft.data ?? null}
-    initialPublished={published.data ?? null} published={published.data ?? null} refreshRemote={refreshRemote} />;
+  return <>
+    {readError ? <p className="notice notice-error" role="alert">Фоновое обновление не удалось. Несохранённые правки остаются в редакторе.</p> : null}
+    <LoadedEditorialSession course={course} initialDraft={draft.data}
+      initialPublished={published.data} published={published.data} refreshRemote={refreshRemote} />
+  </>;
 }
 
 function LoadedEditorialSession({ course, initialDraft, initialPublished, published, refreshRemote }: {

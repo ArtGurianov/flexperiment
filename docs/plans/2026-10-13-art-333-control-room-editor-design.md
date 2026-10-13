@@ -11,7 +11,9 @@ Use a standalone Lexical client field inside the existing Control Room Courses
 page. A custom rich-text format would break the approved aggregate contract;
 retaining Payload would keep a second editor and SQLite writer. The first
 version registers only paragraph, text and line-break nodes, with simple inline
-formatting. Commerce validates this same small set before saving any draft.
+formatting. Commerce validates this same small set before saving any draft,
+rejecting unknown serialized attributes, nonempty inline styles and text
+formats beyond bold/italic. The accepted serialization is version 1.
 
 The editor loads the saved draft and published projection under the current
 Control Room session. It edits one bounded aggregate: course details, ordered
@@ -26,6 +28,10 @@ the key for retry, while a conflict offers an explicit server refresh without
 silently overwriting local changes. Ordinary publication cannot release an
 emergency unlist. `Unlist` uses the restrictive command, and `Relist` requires
 its separate audited command with a reason.
+
+A background draft or publication refetch failure leaves an already-loaded
+editor mounted with its local changes and shows a warning. Only an initial read
+without usable data replaces the editor with an error.
 
 ## Qualification
 
