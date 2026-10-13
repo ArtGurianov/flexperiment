@@ -72,6 +72,112 @@ def isolated_publish():
             yield root, manifest, old
 
 
+class OnlineBackupCompatibility(unittest.TestCase):
+    def test_snapshot_includes_committed_wal_without_changing_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source_path = root / "commerce.sqlite"
+            writer = sqlite3.connect(source_path)
+            try:
+                self.assertEqual(writer.execute("PRAGMA journal_mode=WAL").fetchone(), ("wal",))
+                writer.execute("PRAGMA wal_autocheckpoint=0")
+                writer.execute("CREATE TABLE example(id INTEGER PRIMARY KEY)")
+                writer.commit()
+                writer.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                writer.execute("INSERT INTO example VALUES (1)")
+                writer.commit()
+                wal = pathlib.Path(str(source_path) + "-wal")
+                self.assertGreater(wal.stat().st_size, 0)
+                # Main-file copying would omit the committed row in the WAL.
+                main_copy = root / "main-only.sqlite"
+                main_copy.write_bytes(source_path.read_bytes())
+                with contextlib.closing(sqlite3.connect(main_copy)) as main:
+                    self.assertEqual(main.execute("SELECT COUNT(*) FROM example").fetchone(), (0,))
+                expected_path = root / "expected.sqlite"
+                reader = sqlite3.connect(source_path.as_uri() + "?mode=ro", uri=True)
+                output = sqlite3.connect(expected_path)
+                try:
+                    reader.backup(output)
+                    self.assertEqual(output.execute("SELECT id FROM example").fetchall(), [(1,)])
+                finally:
+                    output.close(); reader.close()
+                before = (source_path.read_bytes(), wal.read_bytes())
+                with patch.object(q, "ROOT", root):
+                    self.assertEqual(q.online_backup_sha256(source_path, True), q.digest(expected_path.read_bytes()))
+                self.assertEqual((source_path.read_bytes(), wal.read_bytes()), before)
+                self.assertEqual(list(root.glob("art337-live-*")), [])
+            finally:
+                writer.close()
+
+    def test_busy_source_refuses_without_retry_or_source_changes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source_path = root / "commerce.sqlite"
+            writer = sqlite3.connect(source_path, timeout=0)
+            try:
+                writer.execute("CREATE TABLE example(id INTEGER PRIMARY KEY)")
+                writer.commit()
+                writer.execute("BEGIN EXCLUSIVE")
+                writer.execute("INSERT INTO example VALUES (1)")
+                # The real SQLite backup callback reports BUSY for this lock.
+                with patch.object(q, "ROOT", root), patch.object(q.time, "monotonic", side_effect=[0, 11]) as clock, \
+                        self.assertRaisesRegex(q.Refusal, "LIVE_SNAPSHOT_BUSY_OR_TIMEOUT"):
+                    q.online_backup_sha256(source_path, True)
+                # BUSY aborts immediately, before any deadline check or retry.
+                self.assertEqual(clock.call_count, 1)
+                self.assertEqual(list(root.glob("art337-live-*")), [])
+                writer.rollback()
+                self.assertEqual(writer.execute("SELECT COUNT(*) FROM example").fetchone(), (0,))
+            finally:
+                writer.close()
+
+    def test_locked_callback_refuses_without_retry(self):
+        # Inject the SQLite LOCKED callback, not sqlite3 module constants.
+        # Ordinary separate-connection lock contention reports BUSY instead.
+        actual_connect = sqlite3.connect
+        calls = []
+        class LockedSource(sqlite3.Connection):
+            def backup(self, destination, *, progress, **kwargs):
+                calls.append("backup")
+                progress(6, 0, 0)
+                raise AssertionError("LOCKED callback must abort backup")
+        def connect(database, **kwargs):
+            if kwargs.get("uri"):
+                kwargs["factory"] = LockedSource
+            return actual_connect(database, **kwargs)
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source_path = root / "commerce.sqlite"
+            db = actual_connect(source_path)
+            db.execute("CREATE TABLE example(id INTEGER PRIMARY KEY)")
+            db.commit(); db.close()
+            before = source_path.read_bytes()
+            with patch.object(q, "ROOT", root), patch.object(q.sqlite3, "connect", side_effect=connect), \
+                    patch.object(q.time, "monotonic", side_effect=[0, 11]) as clock, \
+                    self.assertRaisesRegex(q.Refusal, "LIVE_SNAPSHOT_BUSY_OR_TIMEOUT"):
+                q.online_backup_sha256(source_path, True)
+            self.assertEqual(clock.call_count, 1)
+            self.assertEqual(calls, ["backup"])
+            self.assertEqual(source_path.read_bytes(), before)
+            self.assertEqual(list(root.glob("art337-live-*")), [])
+
+    def test_real_backup_refuses_after_monotonic_deadline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source_path = root / "commerce.sqlite"
+            db = sqlite3.connect(source_path)
+            db.execute("CREATE TABLE example(value BLOB)")
+            db.execute("INSERT INTO example VALUES (zeroblob(1048576))")
+            db.commit(); db.close()
+            before = source_path.read_bytes()
+            # Only time is controlled: Connection.backup and its callback are real.
+            with patch.object(q, "ROOT", root), patch.object(q.time, "monotonic", side_effect=[0, 11]), \
+                    self.assertRaisesRegex(q.Refusal, "LIVE_SNAPSHOT_BUSY_OR_TIMEOUT"):
+                q.online_backup_sha256(source_path, True)
+            self.assertEqual(source_path.read_bytes(), before)
+            self.assertEqual(list(root.glob("art337-live-*")), [])
+
+
 class Requalification(unittest.TestCase):
     def test_payload_writer_requires_stopped_app_disabled_timer_and_no_volume_writer(self):
         token = "synthetic-service-token-" + "a" * 32

@@ -23,6 +23,11 @@ from datetime import datetime, timezone
 
 sys.dont_write_bytecode = True
 
+# SQLite primary result codes; Python 3.10 does not expose them on sqlite3.
+# https://www.sqlite.org/rescode.html
+SQLITE_BUSY = 5
+SQLITE_LOCKED = 6
+
 TARGET = "08523bdf38eeddf5e745ce04d05e1f980a7ced93"
 PREDECESSOR = "84b1a6abcb43e9abf8f781e830f84822207c0dca"
 PREDECESSOR_SHA256 = "eb60e0b11769e3f263c4e0e9bbb48fd8431f571ffba25a77fb0a37e8d7a352dc"
@@ -244,7 +249,7 @@ def online_backup_sha256(source_path, check_foreign_keys):
         try:
             deadline = time.monotonic() + 10
             def progress(status, _remaining, _total):
-                if status in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED) or time.monotonic() > deadline:
+                if status in (SQLITE_BUSY, SQLITE_LOCKED) or time.monotonic() > deadline:
                     refuse("LIVE_SNAPSHOT_BUSY_OR_TIMEOUT")
             source.backup(destination, pages=64, progress=progress, sleep=0.05)
             if destination.execute("PRAGMA integrity_check").fetchone() != ("ok",) \

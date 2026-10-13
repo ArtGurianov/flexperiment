@@ -30,6 +30,48 @@ live admission or a substitute for a fresh read and proof at execution time.
 The live fence was CLOSED, sequence 1, zero leases; `/readyz` was 503.
 Its original closure cause was not established.
 
+## Python 3.10 qualification and suspended execution
+
+The 13 October execution of controller
+`db63ab72ef1e4e3df78c2837d33f23f6a0d1955a` stopped at the requalification
+**dry-run**, before journal publication. VPS Python 3.10.12 does not expose
+`sqlite3.SQLITE_BUSY` or `sqlite3.SQLITE_LOCKED`; evaluating those names in the
+online-backup callback raised `AttributeError`. The compatibility repair uses
+the stable [SQLite primary result codes](https://www.sqlite.org/rescode.html)
+`SQLITE_BUSY = 5` and `SQLITE_LOCKED = 6`. It preserves immediate refusal on
+either code, the ten-second monotonic deadline, read-only source connections,
+the write reservation, and publication/read-back behavior.
+
+The offline contract suite runs on real Python 3.10 in the existing `test` CI
+job, in addition to the runner's default interpreter. It exercises a real
+WAL snapshot containing a committed row absent from the main file, real
+SQLite BUSY contention, the existing competing-writer reservation, and a real
+backup with controlled monotonic time crossing the deadline. LOCKED is a
+callback fault-injection test; it is not presented as a real contention proof.
+Owner RPC contracts also run under Python 3.10. Record the installed Python
+and SQLite versions during the next preflight:
+
+```sh
+python3 -c 'import sys, sqlite3; assert sys.version_info >= (3, 10); print(sys.version); print("SQLite", sqlite3.sqlite_version)'
+```
+
+The last execution read-back (13 October, 16:44–16:45 UTC) showed both runtimes
+stopped, Payload backup/freshness timers disabled, Commerce schema 0025,
+the byte-identical predecessor journal, no pending publication, and an OPEN
+sequence-1 fence with no leases. OPEN resulted only from qualified predecessor
+startup. This is historical evidence, not a current admission or readiness
+claim. The owner suspended live execution pending independent review and a
+new **GO TO EXECUTE bound to the repaired controller SHA**. Do not install the
+repair, invoke `--commit`, resume containers/timers, or reuse the prior GO as
+execution authority during this code qualification.
+
+After renewed execution approval, repeat the full preflight, encrypted
+backups, independent remote read-backs, remote ledger/fence checks and
+isolated recovery proofs. Prior backup/proof timestamps do not become fresh
+because the databases were stopped. Keep deployment source/current `main`
+`08523bdf…` and PR #222 unmerged; stage the newly reviewed controller only
+under the renewed GO.
+
 ## Required preflight before any mutation
 
 1. Confirm the two exact canary application UUIDs from the root-only owner
