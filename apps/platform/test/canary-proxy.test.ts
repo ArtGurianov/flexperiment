@@ -2,14 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { canaryOrigins, validatePlatformCanary } from "../lib/canary-config";
 import { proxyCommerce } from "../lib/commerce-proxy";
 import { assertCanaryCommerceReady } from "../lib/canary-readiness";
-import { closedEditorial, closedEmail } from "../lib/canary-editorial";
 import * as transport from "../lib/canary-http";
 
 const env = {
   ...canaryOrigins, PLATFORM_V2_CANARY: "true", COMMERCE_INTERNAL_ORIGIN: "http://xzuy7pk5y6ywjr9kh6nsk5ap-20261010T152433:3002",
-  PAYLOAD_DATABASE_URL: "file:/var/lib/flexperiment-platform-canary/platform.sqlite",
-  PAYLOAD_JOBS_ENABLED: "false", PAYMENT_MODE: "disabled", MARKETING_BROADCASTS_ENABLED: "false",
-  PAYLOAD_SECRET: "synthetic-private-payload-secret-32bytes", PLATFORM_COMMERCE_SERVICE_TOKEN: "synthetic-canary-service-token-32bytes",
+  PAYMENT_MODE: "disabled", MARKETING_BROADCASTS_ENABLED: "false",
   BUILD_IDENTITY_FILE: "/app/.identity/identity.json", PLATFORM_EXPECTED_COMMERCE_SHA: "b".repeat(40), S3_BUCKET: "",
   DEPLOY_ENV: "staging",
 };
@@ -34,21 +31,8 @@ describe("closed Platform canary configuration", () => {
   });
   it("default non-canary mode remains supported", () => expect(validatePlatformCanary({})).toBe(false));
   it("refuses configured media writes", () => expect(() => validatePlatformCanary({ ...env, S3_BUCKET: "production-media" })).toThrow());
-  it("refuses unqualified email without invoking Payload console logger", async () => {
-    const logger = vi.fn();
-    const adapter = closedEmail({ payload: { logger: { info: logger } } } as never);
-    await expect(adapter.sendEmail({ to: "synthetic@invalid.example", subject: "secret" })).rejects.toThrow("PLATFORM_CANARY_EMAIL_DISABLED");
-    expect(logger).not.toHaveBeenCalled();
-  });
-  it("prevents Local API writes before manifest hooks and rejects custom mutation endpoints", async () => {
-    const effect = vi.fn();
-    const collection = closedEditorial({ slug: "synthetic", fields: [], hooks: { beforeChange: [effect] }, endpoints: [{ path: "/edit", method: "post", handler: effect }] });
-    expect(collection.access?.create?.({} as never)).toBe(false);
-    expect(() => collection.hooks?.beforeChange?.[0]({} as never)).toThrow("PLATFORM_CANARY_EDITORIAL_CLOSED");
-    expect(() => collection.hooks?.beforeDelete?.[0]({} as never)).toThrow();
-    expect(Array.isArray(collection.endpoints)).toBe(true);
-    if (Array.isArray(collection.endpoints)) expect((await collection.endpoints[0].handler({} as never)).status).toBe(403);
-    expect(effect).not.toHaveBeenCalled();
+  it.each(["PAYLOAD_DATABASE_URL", "PAYLOAD_SECRET", "PAYLOAD_JOBS_ENABLED"])("refuses retained %s from the old runtime", key => {
+    expect(() => validatePlatformCanary({ ...env, [key]: "legacy-value" })).toThrow("PLATFORM_CANARY_CONFIG_INVALID");
   });
 });
 

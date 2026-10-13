@@ -41,7 +41,7 @@ fi
 
 if [[ $service == platform ]]; then
   # The storefront is request-time Commerce-backed. Exercise its real SSR with
-  # an isolated synthetic read API instead of silently restoring Payload data.
+  # an isolated synthetic read API with no editorial database mounted.
   docker network create "$smoke_network" >/dev/null
   docker run --detach --name "$commerce_stub" --network "$smoke_network" \
     --entrypoint node flexperiment-commerce-v2:test -e '
@@ -49,6 +49,9 @@ if [[ $service == platform ]]; then
       http.createServer((request, response) => {
         response.setHeader("content-type", "application/json");
         response.setHeader("cache-control", "no-store");
+        if (request.url === "/readyz") return response.end(JSON.stringify({
+          ok: true, service: "commerce-v2", core: { database: "ok" }
+        }));
         if (request.url === "/v1/courses") return response.end(JSON.stringify({ courses: [] }));
         response.statusCode = 404;
         response.end(JSON.stringify({ code: "COURSE_NOT_FOUND" }));
@@ -97,7 +100,6 @@ node -e '
 
 if [[ $service == platform ]]; then
   canonical_origin=${PLATFORM_CANONICAL_ORIGIN:?PLATFORM_CANONICAL_ORIGIN is required for the platform smoke}
-  revalidate_token=${PLATFORM_REVALIDATE_TOKEN:?PLATFORM_REVALIDATE_TOKEN is required for the platform smoke}
 
   curl --fail --silent --show-error --dump-header "$headers_file" \
     "http://127.0.0.1:${host_port}/courses" >"$response_file"
@@ -131,22 +133,8 @@ if [[ $service == platform ]]; then
     "http://127.0.0.1:${host_port}/sitemap.xml" >"$response_file"
   grep -q "${canonical_origin}/courses" "$response_file"
 
-  for mode in swr immediate; do
-    curl --fail --silent --show-error \
-      --request POST \
-      --header "Authorization: Bearer ${revalidate_token}" \
-      --header 'Content-Type: application/json' \
-      --data "{\"mode\":\"${mode}\",\"slug\":\"ci-rendered-smoke\"}" \
-      "http://127.0.0.1:${host_port}/internal/revalidate" >"$response_file"
-    node -e '
-      const fs = require("node:fs");
-      const [file, mode] = process.argv.slice(1);
-      const result = JSON.parse(fs.readFileSync(file, "utf8"));
-      if (result.revalidated !== true || result.mode !== mode) {
-        throw new Error(`revalidation mismatch: ${JSON.stringify(result)}`);
-      }
-    ' "$response_file" "$mode"
-  done
+  test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+    --request POST "http://127.0.0.1:${host_port}/internal/revalidate")" = "404"
 
   curl --fail --silent --show-error \
     "http://127.0.0.1:${host_port}/courses" >"$response_file"

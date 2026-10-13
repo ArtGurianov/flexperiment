@@ -1,16 +1,11 @@
-import { getPayload } from "payload";
-import config from "@payload-config";
-import { assertPayloadTransactions } from "@/lib/payload-transaction-assertion";
 import { readBuildIdentity } from "@/lib/build-identity";
 import { assertCanaryCommerceReady } from "@/lib/canary-readiness";
 
 export async function GET() {
   try {
-    const payload = await getPayload({ config });
-    await assertPayloadTransactions(payload);
     await assertCanaryCommerceReady();
     const identity = readBuildIdentity("platform");
-    return Response.json({ ok: true, ...identity, database: "ok" }, {
+    return Response.json({ ok: true, ...identity, commerce: "ok" }, {
       headers: { "Cache-Control": "no-store" },
     });
   } catch {

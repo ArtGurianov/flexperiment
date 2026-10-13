@@ -1,10 +1,7 @@
-"""Actual built Next/Payload image; isolated synthetic upstream, no public ports."""
+"""Actual Payload-free Next image; isolated synthetic upstream, no public ports."""
 import json
 import os
-from pathlib import Path
-import sqlite3
 import subprocess
-import tempfile
 import time
 import uuid
 
@@ -18,7 +15,6 @@ def main():
     sha = os.environ["SOURCE_COMMIT"]
     prefix = "platform-canary-test-" + uuid.uuid4().hex[:12]
     network, app, upstream = prefix + "-net", prefix + "-app", prefix + "-upstream"
-    data, backups = prefix + "-editorial", prefix + "-backups"
     checks = 0
 
     def check(condition):
@@ -33,8 +29,6 @@ def main():
 
     try:
         run("docker", "network", "create", "--internal", network)
-        for volume in (data, backups):
-            run("docker", "volume", "create", volume)
         mock = "const http=require('http');http.createServer((q,r)=>{const ready={ok:true,service:'commerce-v2',sourceCommit:process.env.SOURCE_COMMIT,foundationMode:false,core:{database:'ok',paymentMode:'disabled'},capabilities:{refref:'ready'}};r.setHeader('content-type','application/json');if(q.url==='/readyz')return r.end(JSON.stringify(ready));if(q.url.startsWith('/v1/checkout')){r.statusCode=503;return r.end(JSON.stringify({code:'PAYMENTS_DISABLED'}))}r.setHeader('set-cookie','session=synthetic; Path=/; Secure; HttpOnly; SameSite=Lax');r.setHeader('cache-control','public');r.end(JSON.stringify({host:q.headers.host,proto:q.headers['x-forwarded-proto'],cookie:q.headers.cookie,xff:q.headers['x-forwarded-for']??null,url:q.url}))}).listen(3002,'0.0.0.0')"
         run("docker", "run", "-d", "--name", upstream, "--network", network,
             "--network-alias", "xzuy7pk5y6ywjr9kh6nsk5ap", "-e", f"SOURCE_COMMIT={sha}",
@@ -43,13 +37,11 @@ def main():
             "PLATFORM_V2_CANARY": "true", "PLATFORM_ORIGIN": "https://canary-platform.flexperiment.ru",
             "LAB_ORIGIN": "https://canary-lab.flexperiment.ru", "ADMIN_ORIGIN": "https://canary-admin.flexperiment.ru",
             "API_ORIGIN": "https://canary-api.flexperiment.ru", "COMMERCE_INTERNAL_ORIGIN": "http://xzuy7pk5y6ywjr9kh6nsk5ap:3002",
-            "PLATFORM_EXPECTED_COMMERCE_SHA": sha, "PAYLOAD_DATABASE_URL": "file:/var/lib/flexperiment-platform-canary/platform.sqlite",
-            "PAYLOAD_SECRET": "synthetic-payload-runtime-key-32bytes", "PLATFORM_COMMERCE_SERVICE_TOKEN": "synthetic-canary-runtime-token-32bytes",
-            "PAYLOAD_JOBS_ENABLED": "false", "PAYMENT_MODE": "disabled", "MARKETING_BROADCASTS_ENABLED": "false",
+            "PLATFORM_EXPECTED_COMMERCE_SHA": sha,
+            "PAYMENT_MODE": "disabled", "MARKETING_BROADCASTS_ENABLED": "false",
             "DEPLOY_ENV": "staging",
         }
-        args = ["docker", "run", "-d", "--name", app, "--network", network,
-                "-v", f"{data}:/var/lib/flexperiment-platform-canary", "-v", f"{backups}:/var/lib/flexperiment-platform-canary-backups"]
+        args = ["docker", "run", "-d", "--name", app, "--network", network]
         for key, value in env.items():
             args.extend(["-e", f"{key}={value}"])
         run(*args, image)
@@ -70,8 +62,12 @@ def main():
             print(json.dumps({"startupFailure": category, "running": state["Running"], "exitCode": state["ExitCode"]}))
         check(ready)
         check(run("docker", "exec", "-e", "COREPACK_ENABLE_NETWORK=0", app, "pnpm", "--version") == "10.29.3")
-        check(run("docker", "exec", app, "stat", "-c", "%a", "/var/lib/flexperiment-platform-canary") == "700")
-        check(run("docker", "exec", app, "stat", "-c", "%a", "/var/lib/flexperiment-platform-canary/platform.sqlite") == "600")
+        mounts = json.loads(run("docker", "inspect", "--format", "{{json .Mounts}}", app))
+        check(mounts == [])
+        for retired in ("/var/lib/flexperiment-platform-canary", "/app/scripts/v2/platform-backup.py",
+                        "/app/apps/platform/payload.config.ts", "/app/apps/platform/migrations",
+                        "/app/apps/platform/node_modules/payload"):
+            check(run("docker", "exec", app, "test", "!", "-e", retired) == "")
         identity = json.loads(request("/identity")["body"])
         check(identity["service"] == "platform" and identity["sourceCommit"] == sha)
         response = request("/v1/me?test=synthetic", headers={"Cookie": "session=synthetic", "X-Forwarded-Proto": "http", "X-Forwarded-For": "spoof"})
@@ -84,33 +80,16 @@ def main():
         check(request("/v1/me", host="flexperiment.ru")["status"] == 403)
         check(request("/v1/me", headers={"Origin": "https://foreign.example"})["status"] == 403)
         check(request("/v1/checkout")["status"] == 503)
-        check(request("/api/users", method="POST")["status"] == 403)
+        check(request("/api/users", method="POST")["status"] == 404)
+        check(request("/api/users")["status"] == 404)
+        check(request("/admin")["status"] == 404)
         run("docker", "stop", upstream)
         check(request("/readyz")["status"] == 503)
-        with tempfile.TemporaryDirectory(prefix="editorial-image-restore-") as temporary:
-            root = Path(temporary)
-            key = root / "recovery.key"
-            run("age-keygen", "-o", str(key))
-            recipient = run("age-keygen", "-y", str(key))
-            proof = json.loads(run("docker", "exec", "-e", f"PLATFORM_BACKUP_AGE_RECIPIENT={recipient}", app,
-                                   "python3", "/app/scripts/v2/platform-backup.py"))
-            archive = root / "snapshot.age"
-            run("docker", "cp", f"{app}:/var/lib/flexperiment-platform-canary-backups/{proof['filename']}", str(archive))
-            import hashlib
-            check(hashlib.sha256(archive.read_bytes()).hexdigest() == proof["sha256"])
-            restored = root / "restored.sqlite"
-            run("age", "-d", "-i", str(key), "-o", str(restored), str(archive))
-            with sqlite3.connect(restored) as db:
-                check(db.execute("PRAGMA integrity_check").fetchone()[0] == "ok")
-                check(db.execute("SELECT COUNT(*) FROM payload_migrations").fetchone()[0] == 6)
-                check(db.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0)
         print(json.dumps({"scope": "isolated_actual_platform_image", "checks": checks, "status": "PASS"}))
     finally:
         # Only task-created exact names; never existing runtimes or volumes.
         for container in (app, upstream):
             subprocess.run(["docker", "rm", "-f", container], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        for volume in (data, backups):
-            subprocess.run(["docker", "volume", "rm", volume], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         subprocess.run(["docker", "network", "rm", network], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 

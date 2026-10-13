@@ -98,15 +98,12 @@ jobs:
         env:
           SOURCE_COMMIT: ${{ env.CI_SOURCE_SHA }}
           LAB_ORIGIN: https://lab.flexperiment.ru
-      - name: Build the Payload platform
+      - name: Build the Payload-free platform
         run: pnpm platform:build
         env:
           SOURCE_COMMIT: ${{ env.CI_SOURCE_SHA }}
-          PAYLOAD_SECRET: ci-build-only-not-a-runtime-secret
-          PAYLOAD_DATABASE_URL: file:/tmp/flexperiment-platform-ci.sqlite
           PLATFORM_ORIGIN: https://build.invalid
           DEPLOY_ENV: staging
-          PAYLOAD_JOBS_ENABLED: "false"
       - name: Static-export conformance
         run: pnpm test:export
       - name: Real-Nginx frontend static-export routing contract
@@ -189,7 +186,7 @@ jobs:
       # v2 is a separate lineage and two separate runtime applications. These
       # builds prove deployability only; this workflow never publishes a v1 or
       # v2 candidate and never mutates a deployment ref.
-      - name: Payload platform v2 image
+      - name: Payload-free platform v2 image
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -251,17 +248,13 @@ jobs:
           V2_FRONTEND_LAB_IMAGE: flexperiment-lab-v2:test
           V2_FRONTEND_ADMIN_IMAGE: flexperiment-admin-v2:test
 
-      - name: Boot and verify the Payload platform v2 image
+      - name: Boot and verify the Payload-free platform v2 image
         run: >-
           bash scripts/ci/smoke-v2-image.sh
           flexperiment-platform-v2:test platform-v2-smoke 3001 3101 platform
-          --env PAYLOAD_SECRET=ci-runtime-only-not-a-production-secret
-          --env PAYLOAD_JOBS_ENABLED=false
-          --env "PLATFORM_REVALIDATE_TOKEN=${PLATFORM_REVALIDATE_TOKEN}"
         env:
           SOURCE_COMMIT: ${{ env.CI_SOURCE_SHA }}
           PLATFORM_CANONICAL_ORIGIN: https://ci.platform.invalid
-          PLATFORM_REVALIDATE_TOKEN: ci-rendered-server-revalidation-token
 
       - name: Boot and verify the Commerce v2 image
         # Platform canary is tested separately on an internal-only synthetic network.
@@ -285,7 +278,7 @@ jobs:
           bash scripts/ci/smoke-v2-foundation.sh flexperiment-commerce-v2:test
         env:
           SOURCE_COMMIT: ${{ env.CI_SOURCE_SHA }}
-      - name: Platform canary — actual Next/Payload proxy, closed editorial and encrypted restore
+      - name: Platform canary — actual Payload-free Next image and closed proxy
         run: python3 scripts/ci/smoke-platform-canary.py
         env:
           SOURCE_COMMIT: ${{ env.CI_SOURCE_SHA }}

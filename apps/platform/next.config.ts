@@ -1,4 +1,3 @@
-import { withPayload } from "@payloadcms/next/withPayload";
 import type { NextConfig } from "next";
 import { publicImageContentSecurityPolicy, publicMediaRemotePattern } from "./lib/public-media";
 
@@ -8,9 +7,6 @@ const config: NextConfig = {
   poweredByHeader: false,
   cacheComponents: true,
   partialPrefetching: true,
-  experimental: {
-    optimizePackageImports: ["@payloadcms/ui"],
-  },
   images: {
     remotePatterns: [publicMediaRemotePattern()],
   },
@@ -22,4 +18,4 @@ const config: NextConfig = {
   },
 };
 
-export default withPayload(config);
+export default config;
