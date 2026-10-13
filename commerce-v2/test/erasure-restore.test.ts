@@ -1,5 +1,5 @@
 import Database from "better-sqlite3";
-import { generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
+import { createHash, generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,6 +11,7 @@ import { currentLegalRelease, legalManifestHash } from "../src/legal-control";
 import { ErasureLedgerStore, VerifiedErasureLedger, erasureSubject, issueErasureCheckpoint, type ErasureKeys } from "../src/erasure-ledger";
 import { applyIsolatedRestoreErasure } from "../src/erasure-restore";
 import { dispatchCampaign } from "../src/campaigns";
+import { getEditorialPublished, publishEditorialDraft, saveEditorialDraft } from "../src/course-editorial";
 
 const now = new Date("2026-10-11T15:00:00.000Z");
 let root: string; let db: Database.Database; let ledger: ErasureLedgerStore;
@@ -50,6 +51,17 @@ const verified = () => { const bundle = ledger.export(); return VerifiedErasureL
 
 describe("real isolated old SQLite backup + independent latest erasure journal", () => {
   it("cannot resurrect the deleted identity, sessions, consents, enrollment, progress or queued magic link", async () => {
+    saveEditorialDraft(db, { expectedRevision: 0, actor: "synthetic-editor", document: {
+      courseRef: "synthetic-course", title: "Synthetic course", slug: "synthetic-course", summary: "Recovery fixture",
+      visibility: "LISTED", sections: [{ sectionRef: "synthetic-section", title: "Section", position: 0, visibility: "LISTED" }],
+      lessons: [{ lessonRef: "synthetic-lesson", sectionRef: "synthetic-section", title: "Lesson", slug: "lesson",
+        position: 0, visibility: "LISTED", freePreview: false }],
+    } }, now.toISOString());
+    publishEditorialDraft(db, { courseRef: "synthetic-course", expectedRevision: 1, expectedPublishedVersion: 0,
+      idempotencyKey: "synthetic-publish", actor: "synthetic-editor" }, now.toISOString());
+    db.prepare(`INSERT INTO lesson_video_bindings(lesson_ref,active_video_id,bound_at,updated_at) VALUES (?,?,?,?)`)
+      .run("synthetic-lesson", "synthetic-video", now.toISOString(), now.toISOString());
+    const published = getEditorialPublished(db, "synthetic-course");
     const archive = join(root, "before-erasure.sqlite"); await db.backup(archive); // Genuine SQLite online backup with WAL.
     tombstone(); const proof = await verified();
     const restored = new Database(archive); restored.pragma("foreign_keys=ON");
@@ -66,6 +78,12 @@ describe("real isolated old SQLite backup + independent latest erasure journal",
       }
       expect(restored.prepare("SELECT recipient_normalized FROM auth_email_outbox").all()).toEqual([{ recipient_normalized: "other-customer@example.test" }]);
       expect(restored.prepare("SELECT reason,removed_at FROM email_suppressions").get()).toEqual({ reason: "INDEPENDENT_ERASURE_LEDGER", removed_at: null });
+      expect(getEditorialPublished(restored, "synthetic-course")).toEqual(published);
+      expect(restored.prepare("SELECT active_video_id FROM lesson_video_bindings WHERE lesson_ref='synthetic-lesson'").get())
+        .toEqual({ active_video_id: "synthetic-video" });
+      const version = restored.prepare("SELECT document_json,content_hash FROM course_editorial_versions WHERE course_ref='synthetic-course'")
+        .get() as { document_json: string; content_hash: string };
+      expect(createHash("sha256").update(version.document_json).digest("hex")).toBe(version.content_hash);
       expect(restored.pragma("integrity_check", { simple: true })).toBe("ok"); expect(restored.pragma("foreign_key_check")).toEqual([]);
       const count = rowCount(restored, "schema_migrations"); expect(count).toBe(26);
       expect(applyIsolatedRestoreErasure(restored, await verified(), keys, "canary", now).erasedAccounts).toBe(0);

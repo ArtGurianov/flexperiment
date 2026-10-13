@@ -27,6 +27,33 @@ directly into the existing `catalog_*_projection` tables, while legacy
 manifest-owned courses retain the old path. Neither database attaches the other.
 This migration alone does not activate the replacement reader or retire Payload.
 
+## Migration 0026 schema and recovery review (ART-332)
+
+The final P1 merchant DDL is migration `0026_course_editorial_publication.sql`.
+The reviewed `sqlite_master` SHA-256 is
+`c99f9ed0db449a2c13f2e51fa3b28a1ba44e367dd263185c99eddfec8c2d3b39`.
+Both offline retention and erasure restore also accept the prior 0001–0025
+fingerprint, `158654c61bd97be4dbcab4348651722fe105587f6ff202ad4db821512774e030`,
+for a reviewed older backup. Any other merchant DDL is refused by both paths.
+These fingerprints do not apply to the independent `erasure-fence.sqlite`.
+
+| 0026 surface | Data and identity classification | Recovery and deletion behavior |
+| --- | --- | --- |
+| `catalog_course_projection` editorial columns and section/lesson titles, slugs, Lexical and SEO JSON | Operator-authored catalogue content and access policy; no customer identity or customer FK. Text may contain incidental personal data and needs editorial review if reported. | Published graph remains in the merchant snapshot. Customer erasure does not delete the shared course or change its visibility. |
+| `course_editorial_drafts` | Unpublished content plus `actor`, an operator identifier; no customer FK. | Preserved by merchant backup. Customer erasure does not rewrite drafts; operator/content retention is a separate decision. |
+| `course_editorial_versions` | Immutable historical published graph, content hash, publication time and operator `actor`; course FK only. | Preserved with the exact SHA-256 preimage. Restored versions cannot be silently rewritten or deleted. |
+| `course_editorial_publish_commands` | Idempotency key, request/result JSON and timestamp; course FK only. | Preserved so an old publish command cannot execute again after restore. |
+| Existing `lesson_video_bindings`, product, grant and audit tables | Video ID belongs to the course; customer grants and access history retain their existing subject links. Publication audit stores operator identity and version/hash evidence. | Video binding survives customer erasure. Subject-linked facts follow the established erasure fence and restore suppression; financial/audit uncertainty still stops restore. |
+
+The isolated recovery tests take an online SQLite snapshot with uncheckpointed
+WAL, encrypt it, read back the restored editorial draft, published graph,
+versions, binding and migration ledger, then independently apply a newer erasure
+tombstone to an older snapshot. They verify that erased customer credentials and
+access history stay removed while shared course content and the video binding
+survive. These are source and isolated restore proofs, not canary installation,
+live point-in-time recovery, archive deletion or runtime admission. The prior
+Payload ciphertext archive remains separately retained pending its own review.
+
 ## Public origin boundary
 
 The four public authorities are configured independently: `PLATFORM_ORIGIN`
@@ -364,7 +391,8 @@ reference are hashed separately; there are no invented/default legal TTLs.
 | Unverified intent | Old customer and old UNVERIFIED_INTENT facts, no matching auth user, link, outbox, order, grant, quote, authenticated action, recipient, progress or audit reference. Legacy/qualified consent history is not guessed away. |
 | Backup archives | Pure exact-object planning by scope, timestamp and SHA-256; retained current independently verified object, foreign scopes and per-object holds are not selected. No local/remote/offline deletion is installed. |
 
-Immediate SQLite cleanup checks the full canonical 0001–0025 DDL and foreign keys,
+Immediate SQLite cleanup checks the full reviewed 0001–0026 DDL (or the
+0001–0025 fingerprint when examining an older backup) and foreign keys,
 with bounded batches. Unknown table/column/trigger semantics, expired/unbounded
 holds, malformed policy or unclassified data fail closed without partial deletes.
 Holds carry explicit category/subject, allowlisted justification, evidence hash,
