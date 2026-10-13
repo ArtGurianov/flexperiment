@@ -38,17 +38,19 @@ re-requests a token on its next license request.
 Proven in commerce-v2's tests: a token is bound to its customer and video, expires, survives rotation only
 while its key is in the ring, and cannot be relabelled to another key.
 
-**Capability preflight (ART-342, 2026-10-12):** the paid workspace has an API token,
-but authenticated `GET /v1/drm/auth` at both workspace and Flexperiment-project
-scope returned `404 / 400404`, which Kinescope documents as authorization
-disabled. Its [Authorization Backend guide](https://docs.kinescope.ru/instrukcii-dlya-razrabotchikov/avtorizatsionnyy-bekend-dlya-kontrolya-dostupa-k-video/)
-documents a callback URL, Basic Auth and `drmauthtoken`; its
-[DRM API reference](https://docs.kinescope.com/api/player-delivery/protection/)
-documents `strict`. A configured callback must use `strict=true`: with
-`strict=false` Kinescope grants a license on any response except `403`, while
-this endpoint returns `401` for bad Basic Auth and `400` for malformed input.
-No provider configuration was changed; account-specific PUT entitlement and a
-Kinescope-origin POST remain unproven. Decision: `HOLD_PROVIDER_CONTRACT`.
+**Capability preflight (ART-342, 2026-10-13):** after the owner enabled project
+encryption, both project and workspace `GET /v1/drm/auth` still returned
+`404 / 400404`. The project-scoped `PUT /v1/drm/auth/6964ab60-0ba1-4738-82d2-eada67792e0b`
+then returned HTTP 200. An independent project GET returned HTTP 200, callback
+host `canary-api.flexperiment.ru`, and `strict=true`; workspace GET remained
+`404 / 400404`. Decision: `AUTH_BACKEND_CAPABILITY_CONFIRMED` for the project.
+Kinescope's [Authorization Backend guide](https://docs.kinescope.com/developer-guides/authorization-backend/)
+documents the callback POST body (`id`, `type`, `token`) and Basic Auth. A
+configured callback must use `strict=true`: with `strict=false` Kinescope may
+grant a license on non-403 responses, while this endpoint returns `401` for bad
+Basic Auth and `400` for malformed input. The actual provider-origin POST and
+license enforcement remain unproven; ART-336 tracks ingress and ART-36 tracks
+provider security qualification.
 
 **Not yet proven (ART-36):** how Kinescope itself enforces the
 license — whether every segment is checked, what the browser sees as the video identifier, referrer and
