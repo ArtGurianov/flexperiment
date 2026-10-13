@@ -5,7 +5,7 @@ import { bodyLimit } from "hono/body-limit";
 import { timingSafeEqual } from "node:crypto";
 import { createRestrictiveOverride, flagOrphanedOverrides, listPendingOverrides, releaseRolledBackOverride, type RestrictiveOverride, type RollbackReleaseProof } from "./access-overrides";
 import { applyCourseManifest, type CourseManifest } from "./manifest";
-import { getEditorialDraft, getEditorialPublished, publishEditorialDraft, restrictEditorialCourse, saveEditorialDraft, type EditorialDocument } from "./course-editorial";
+import { getEditorialDraft, getEditorialPublished, publishEditorialDraft, relistEditorialCourse, restrictEditorialCourse, saveEditorialDraft, type EditorialDocument } from "./course-editorial";
 import { assertPaymentCreationEnabled, type CommerceRuntimeConfig } from "./payment-mode";
 import { saveResumePosition } from "./resume";
 import { confirmCheckout, prepareCheckout, reconcileCheckout, type PaymentRail } from "./checkout";
@@ -241,6 +241,18 @@ export function createCommerceV2App(deps: Dependencies) {
       return context.json({ ...result, cacheInvalidation }, 200, noStore);
     } catch (error) {
       return context.json({ error: { code: error instanceof Error ? error.message : "COURSE_UNLIST_FAILED" } }, 409, noStore);
+    }
+  });
+  app.post("/v1/admin/v2/courses/:courseRef/relist", async (context) => {
+    try {
+      const input = await context.req.json<{ expectedPublishedVersion: number; idempotencyKey: string; reason: string }>();
+      const courseRef = context.req.param("courseRef");
+      const result = relistEditorialCourse(deps.db, { ...input, courseRef, actor: context.get("controlRoomAdminId")! }, now().toISOString());
+      let cacheInvalidation: "OK" | "FAILED" = "OK";
+      try { await deps.invalidatePlatformCache?.("swr", courseRef); } catch { cacheInvalidation = "FAILED"; }
+      return context.json({ ...result, cacheInvalidation }, 200, noStore);
+    } catch (error) {
+      return context.json({ error: { code: error instanceof Error ? error.message : "COURSE_RELIST_FAILED" } }, 409, noStore);
     }
   });
   app.post("/v1/admin/v2/courses/:courseRef/withdraw", async (context) => {

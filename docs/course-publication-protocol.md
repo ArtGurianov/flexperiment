@@ -5,12 +5,18 @@
 Migration 0026 adds a Commerce-owned editorial draft aggregate and immutable
 published version snapshots. The current published graph is the existing
 `catalog_*_projection` tables. Admin draft reads/writes and publication use
-`/v1/admin/v2/courses/:courseRef/{draft,published,publish,unlist,withdraw}`
+`/v1/admin/v2/courses/:courseRef/{draft,published,publish,unlist,relist,withdraw}`
 under Control Room authentication. Publication checks draft and published
 versions, records an idempotency result, audit event and version snapshot, and
 updates the graph in one `BEGIN IMMEDIATE` transaction. The draft is never
 read by player/public routes. Previously published sections and lessons omitted
 from a later draft remain `UNLISTED`, with refs and video bindings retained.
+Emergency unlist pins effective course visibility even when a later ordinary
+publish requests `LISTED`. Only the explicit audited `relist` command releases
+that restriction; withdrawal cannot be released by this command. For every
+published version, `content_hash` is SHA-256 of the exact saved
+`course_editorial_versions.document_json` UTF-8 bytes. The current course
+projection carries the same digest as its latest version.
 FREE/PAID, price and sale mode remain under catalog control; withdrawal also
 updates the product in the same transaction. Legacy manifest ingest rejects a
 Commerce-authored course. Existing Payload courses and their manifest protocol

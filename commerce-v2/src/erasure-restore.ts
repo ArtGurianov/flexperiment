@@ -10,7 +10,7 @@ import { DrainedErasureRuntime } from "./erasure-fence";
 // previous hash for isolated old-backup restore. Unknown DDL remains refused.
 const REVIEWED_SCHEMA_SHA256 = new Set([
   "158654c61bd97be4dbcab4348651722fe105587f6ff202ad4db821512774e030",
-  "19c350358cf935ec28e625d571d70cbdd2977d10dfb121dc0852ebabde9f5b2a",
+  "c99f9ed0db449a2c13f2e51fa3b28a1ba44e367dd263185c99eddfec8c2d3b39",
 ]);
 function assertReviewedSchema(db: Database.Database) {
   const schema = db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").all();

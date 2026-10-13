@@ -92,7 +92,10 @@ export function saveEditorialDraft(db: Database.Database, input: SaveDraftInput,
 }
 
 function publishedSnapshot(db: Database.Database, courseRef: string) {
-  const course = db.prepare(`SELECT course_ref,version,title,slug,summary,description_json,seo_json,visibility,content_hash
+  // Exact serialized bytes are the immutable version's SHA-256 preimage.
+  // The digest itself must stay outside the snapshot to avoid self-reference.
+  const course = db.prepare(`SELECT course_ref,version,title,slug,summary,description_json,seo_json,visibility,
+    editorial_requested_visibility,editorial_restriction
     FROM catalog_course_projection WHERE course_ref=?`).get(courseRef);
   const sections = db.prepare(`SELECT section_ref,course_ref,title,position,visibility FROM catalog_section_projection
     WHERE course_ref=? ORDER BY position,section_ref`).all(courseRef);
@@ -128,8 +131,8 @@ export function publishEditorialDraft(db: Database.Database, input: PublishInput
     if (!draft || draft.revision !== input.expectedRevision) throw new EditorialError("DRAFT_REVISION_CONFLICT");
     const { document, json } = validateEditorialDocument(JSON.parse(draft.document_json));
     if (document.courseRef !== input.courseRef) throw new EditorialError("COURSE_REF_MISMATCH");
-    const current = db.prepare("SELECT version,authoring_source,slug FROM catalog_course_projection WHERE course_ref=?")
-      .get(input.courseRef) as { version: number; authoring_source: string; slug: string | null } | undefined;
+    const current = db.prepare("SELECT version,authoring_source,slug,editorial_restriction FROM catalog_course_projection WHERE course_ref=?")
+      .get(input.courseRef) as { version: number; authoring_source: string; slug: string | null; editorial_restriction: string } | undefined;
     if ((current?.version ?? 0) !== input.expectedPublishedVersion) throw new EditorialError("PUBLISHED_VERSION_CONFLICT");
     if (current && current.authoring_source !== "COMMERCE_EDITORIAL") throw new EditorialError("LEGACY_COURSE_OWNED");
     if (current?.slug && current.slug !== document.slug) throw new EditorialError("COURSE_SLUG_IMMUTABLE");
@@ -149,14 +152,19 @@ export function publishEditorialDraft(db: Database.Database, input: PublishInput
         throw new EditorialError("LESSON_IDENTITY_IMMUTABLE");
     }
     const version = input.expectedPublishedVersion + 1;
-    const contentHash = sha(json);
+    const effectiveVisibility = current?.editorial_restriction && current.editorial_restriction !== "NONE"
+      ? "UNLISTED" : document.visibility;
+    const temporaryHash = sha(json);
     db.prepare(`INSERT INTO catalog_course_projection(course_ref,version,content_hash,state_hash,visibility,last_reconciled_at,applied_at,
-      authoring_source,title,slug,summary,description_json,seo_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+      authoring_source,title,slug,summary,description_json,seo_json,editorial_requested_visibility,editorial_restriction)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(course_ref) DO UPDATE SET version=excluded.version,content_hash=excluded.content_hash,state_hash=excluded.state_hash,
       visibility=excluded.visibility,last_reconciled_at=excluded.last_reconciled_at,applied_at=excluded.applied_at,
-      title=excluded.title,summary=excluded.summary,description_json=excluded.description_json,seo_json=excluded.seo_json`)
-      .run(input.courseRef, version, contentHash, contentHash, document.visibility, now, now, "COMMERCE_EDITORIAL",
-        document.title, document.slug, document.summary, JSON.stringify(document.description ?? null), JSON.stringify(document.seo ?? null));
+      title=excluded.title,summary=excluded.summary,description_json=excluded.description_json,seo_json=excluded.seo_json,
+      editorial_requested_visibility=excluded.editorial_requested_visibility`)
+      .run(input.courseRef, version, temporaryHash, temporaryHash, effectiveVisibility, now, now, "COMMERCE_EDITORIAL",
+        document.title, document.slug, document.summary, JSON.stringify(document.description ?? null), JSON.stringify(document.seo ?? null),
+        document.visibility, current?.editorial_restriction ?? "NONE");
     const sectionRefs = document.sections.map(item => item.sectionRef);
     const lessonRefs = document.lessons.map(item => item.lessonRef);
     db.prepare(`UPDATE catalog_lesson_projection SET visibility='UNLISTED',free_preview=0 WHERE course_ref=? AND lesson_ref NOT IN (${lessonRefs.map(() => "?").join(",")})`)
@@ -174,10 +182,13 @@ export function publishEditorialDraft(db: Database.Database, input: PublishInput
       Number(item.freePreview), item.position, item.title, item.slug, JSON.stringify(item.description ?? null), JSON.stringify(item.seo ?? null));
     const snapshot = publishedSnapshot(db, input.courseRef);
     if (Buffer.byteLength(snapshot, "utf8") > 1_048_576) throw new EditorialError("PUBLISHED_GRAPH_TOO_LARGE");
+    const contentHash = sha(snapshot);
+    db.prepare("UPDATE catalog_course_projection SET content_hash=?,state_hash=? WHERE course_ref=?")
+      .run(contentHash, contentHash, input.courseRef);
     db.prepare(`INSERT INTO course_editorial_versions(course_ref,version,draft_revision,document_json,content_hash,actor,published_at)
       VALUES (?,?,?,?,?,?,?)`).run(input.courseRef, version, draft.revision, snapshot, contentHash, input.actor, now);
     const result: PublicationResult = { courseRef: input.courseRef, version, draftRevision: draft.revision,
-      contentHash, visibility: document.visibility, replayed: false };
+      contentHash, visibility: effectiveVisibility, replayed: false };
     db.prepare(`INSERT INTO course_editorial_publish_commands(course_ref,idempotency_key,request_hash,result_json,created_at)
       VALUES (?,?,?,?,?)`).run(input.courseRef, input.idempotencyKey, requestHash, JSON.stringify(result), now);
     db.prepare(`INSERT INTO audit_log(id,actor,action,subject_type,subject_ref,evidence_json,created_at)
@@ -211,8 +222,8 @@ export function restrictEditorialCourse(db: Database.Database, input: RestrictCo
       if (previous.request_hash !== requestHash) throw new EditorialError("IDEMPOTENCY_KEY_REUSED");
       return { ...(JSON.parse(previous.result_json) as PublicationResult), replayed: true };
     }
-    const current = db.prepare("SELECT version,authoring_source FROM catalog_course_projection WHERE course_ref=?")
-      .get(input.courseRef) as { version: number; authoring_source: string } | undefined;
+    const current = db.prepare("SELECT version,authoring_source,editorial_restriction FROM catalog_course_projection WHERE course_ref=?")
+      .get(input.courseRef) as { version: number; authoring_source: string; editorial_restriction: string } | undefined;
     if (!current || current.authoring_source !== "COMMERCE_EDITORIAL") throw new EditorialError("EDITORIAL_COURSE_NOT_FOUND");
     if (current.version !== input.expectedPublishedVersion) throw new EditorialError("PUBLISHED_VERSION_CONFLICT");
     if (input.withdrawal) {
@@ -223,18 +234,17 @@ export function restrictEditorialCourse(db: Database.Database, input: RestrictCo
         reason: input.withdrawal.reason, termsRef: input.withdrawal.termsRef, actor: input.actor }, now);
     }
     const version = current.version + 1;
-    db.prepare("UPDATE catalog_course_projection SET version=?,visibility='UNLISTED',applied_at=? WHERE course_ref=?")
-      .run(version, now, input.courseRef);
-    const hashState = JSON.parse(publishedSnapshot(db, input.courseRef)) as { course: { content_hash?: string } };
-    delete hashState.course.content_hash;
-    const contentHash = sha(JSON.stringify(hashState));
+    const restriction = input.withdrawal || current.editorial_restriction === "WITHDRAWN" ? "WITHDRAWN" : "EMERGENCY_UNLIST";
+    db.prepare("UPDATE catalog_course_projection SET version=?,visibility='UNLISTED',editorial_restriction=?,applied_at=? WHERE course_ref=?")
+      .run(version, restriction, now, input.courseRef);
+    const snapshot = publishedSnapshot(db, input.courseRef);
+    if (Buffer.byteLength(snapshot, "utf8") > 1_048_576) throw new EditorialError("PUBLISHED_GRAPH_TOO_LARGE");
+    const contentHash = sha(snapshot);
     db.prepare("UPDATE catalog_course_projection SET content_hash=?,state_hash=? WHERE course_ref=?")
       .run(contentHash, contentHash, input.courseRef);
     const draft = db.prepare("SELECT revision FROM course_editorial_drafts WHERE course_ref=?")
       .get(input.courseRef) as { revision: number } | undefined;
     const draftRevision = draft?.revision ?? 0;
-    const snapshot = publishedSnapshot(db, input.courseRef);
-    if (Buffer.byteLength(snapshot, "utf8") > 1_048_576) throw new EditorialError("PUBLISHED_GRAPH_TOO_LARGE");
     db.prepare(`INSERT INTO course_editorial_versions(course_ref,version,draft_revision,document_json,content_hash,actor,published_at)
       VALUES (?,?,?,?,?,?,?)`).run(input.courseRef, version, draftRevision, snapshot, contentHash, input.actor, now);
     const result: PublicationResult = { courseRef: input.courseRef, version, draftRevision, contentHash, visibility: "UNLISTED", replayed: false };
@@ -247,4 +257,57 @@ export function restrictEditorialCourse(db: Database.Database, input: RestrictCo
     return result;
   });
   return restrict.immediate();
+}
+
+export type RelistCourseInput = {
+  courseRef: string; expectedPublishedVersion: number; idempotencyKey: string; reason: string; actor: string;
+};
+
+/** Explicitly releases an emergency unlist for the current published graph. */
+export function relistEditorialCourse(db: Database.Database, input: RelistCourseInput, now = new Date().toISOString()) {
+  if (!ref.safeParse(input.courseRef).success || !input.actor || !input.idempotencyKey || input.idempotencyKey.length > 120
+    || !Number.isSafeInteger(input.expectedPublishedVersion) || input.expectedPublishedVersion < 1
+    || !input.reason?.trim() || input.reason.length > 1000) throw new EditorialError("EDITORIAL_COMMAND_INVALID");
+  const requestHash = sha(JSON.stringify({ operation: "RELIST", courseRef: input.courseRef,
+    expectedPublishedVersion: input.expectedPublishedVersion, idempotencyKey: input.idempotencyKey, reason: input.reason.trim() }));
+  const relist = db.transaction(() => {
+    const previous = db.prepare("SELECT request_hash,result_json FROM course_editorial_publish_commands WHERE course_ref=? AND idempotency_key=?")
+      .get(input.courseRef, input.idempotencyKey) as { request_hash: string; result_json: string } | undefined;
+    if (previous) {
+      if (previous.request_hash !== requestHash) throw new EditorialError("IDEMPOTENCY_KEY_REUSED");
+      return { ...(JSON.parse(previous.result_json) as PublicationResult), replayed: true };
+    }
+    const current = db.prepare(`SELECT course.version,course.authoring_source,course.editorial_restriction,
+      course.editorial_requested_visibility,product.withdrawn_at FROM catalog_course_projection course
+      LEFT JOIN products product ON product.course_ref=course.course_ref AND product.kind='ONLINE_COURSE'
+      WHERE course.course_ref=?`).get(input.courseRef) as { version: number; authoring_source: string;
+        editorial_restriction: string; editorial_requested_visibility: string | null; withdrawn_at: string | null } | undefined;
+    if (!current || current.authoring_source !== "COMMERCE_EDITORIAL") throw new EditorialError("EDITORIAL_COURSE_NOT_FOUND");
+    if (current.version !== input.expectedPublishedVersion) throw new EditorialError("PUBLISHED_VERSION_CONFLICT");
+    if (current.editorial_restriction !== "EMERGENCY_UNLIST") throw new EditorialError("EMERGENCY_UNLIST_REQUIRED");
+    if (current.editorial_requested_visibility !== "LISTED") throw new EditorialError("EDITORIAL_VISIBILITY_NOT_LISTED");
+    if (current.withdrawn_at !== null || !db.prepare("SELECT 1 FROM products WHERE course_ref=? AND kind='ONLINE_COURSE'").get(input.courseRef))
+      throw new EditorialError("ACTIVE_COURSE_PRODUCT_REQUIRED");
+    const version = current.version + 1;
+    db.prepare("UPDATE catalog_course_projection SET version=?,visibility='LISTED',editorial_restriction='NONE',applied_at=? WHERE course_ref=?")
+      .run(version, now, input.courseRef);
+    const snapshot = publishedSnapshot(db, input.courseRef);
+    if (Buffer.byteLength(snapshot, "utf8") > 1_048_576) throw new EditorialError("PUBLISHED_GRAPH_TOO_LARGE");
+    const contentHash = sha(snapshot);
+    db.prepare("UPDATE catalog_course_projection SET content_hash=?,state_hash=? WHERE course_ref=?")
+      .run(contentHash, contentHash, input.courseRef);
+    const draft = db.prepare("SELECT revision FROM course_editorial_drafts WHERE course_ref=?")
+      .get(input.courseRef) as { revision: number } | undefined;
+    const draftRevision = draft?.revision ?? 0;
+    db.prepare(`INSERT INTO course_editorial_versions(course_ref,version,draft_revision,document_json,content_hash,actor,published_at)
+      VALUES (?,?,?,?,?,?,?)`).run(input.courseRef, version, draftRevision, snapshot, contentHash, input.actor, now);
+    const result: PublicationResult = { courseRef: input.courseRef, version, draftRevision, contentHash, visibility: "LISTED", replayed: false };
+    db.prepare(`INSERT INTO course_editorial_publish_commands(course_ref,idempotency_key,request_hash,result_json,created_at)
+      VALUES (?,?,?,?,?)`).run(input.courseRef, input.idempotencyKey, requestHash, JSON.stringify(result), now);
+    db.prepare(`INSERT INTO audit_log(id,actor,action,subject_type,subject_ref,evidence_json,created_at)
+      VALUES (?,?,?,?,?,?,?)`).run(randomUUID(), input.actor, "COURSE_EDITORIAL_RELISTED", "course", input.courseRef,
+        JSON.stringify({ version, contentHash, idempotencyKey: input.idempotencyKey, reason: input.reason.trim() }), now);
+    return result;
+  });
+  return relist.immediate();
 }

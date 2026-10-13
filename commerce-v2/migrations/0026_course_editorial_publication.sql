@@ -6,6 +6,10 @@ ALTER TABLE catalog_course_projection ADD COLUMN slug TEXT;
 ALTER TABLE catalog_course_projection ADD COLUMN summary TEXT;
 ALTER TABLE catalog_course_projection ADD COLUMN description_json TEXT CHECK (description_json IS NULL OR json_valid(description_json));
 ALTER TABLE catalog_course_projection ADD COLUMN seo_json TEXT CHECK (seo_json IS NULL OR json_valid(seo_json));
+ALTER TABLE catalog_course_projection ADD COLUMN editorial_requested_visibility TEXT
+  CHECK (editorial_requested_visibility IS NULL OR editorial_requested_visibility IN ('LISTED','UNLISTED'));
+ALTER TABLE catalog_course_projection ADD COLUMN editorial_restriction TEXT NOT NULL DEFAULT 'NONE'
+  CHECK (editorial_restriction IN ('NONE','EMERGENCY_UNLIST','WITHDRAWN'));
 ALTER TABLE catalog_section_projection ADD COLUMN title TEXT;
 ALTER TABLE catalog_lesson_projection ADD COLUMN title TEXT;
 ALTER TABLE catalog_lesson_projection ADD COLUMN slug TEXT;
@@ -55,6 +59,18 @@ CREATE TRIGGER editorial_course_identity BEFORE UPDATE OF course_ref,slug,author
 WHEN OLD.authoring_source='COMMERCE_EDITORIAL' AND
   (NEW.course_ref<>OLD.course_ref OR NEW.slug IS NOT OLD.slug OR NEW.authoring_source<>OLD.authoring_source)
 BEGIN SELECT RAISE(ABORT,'EDITORIAL_COURSE_IDENTITY_IMMUTABLE'); END;
+CREATE TRIGGER editorial_visibility_insert BEFORE INSERT ON catalog_course_projection
+WHEN NEW.authoring_source='COMMERCE_EDITORIAL' AND (
+  NEW.editorial_requested_visibility IS NULL OR
+  (NEW.editorial_restriction='NONE' AND NEW.visibility<>NEW.editorial_requested_visibility) OR
+  (NEW.editorial_restriction<>'NONE' AND NEW.visibility<>'UNLISTED'))
+BEGIN SELECT RAISE(ABORT,'EDITORIAL_VISIBILITY_INCONSISTENT'); END;
+CREATE TRIGGER editorial_visibility_update BEFORE UPDATE ON catalog_course_projection
+WHEN NEW.authoring_source='COMMERCE_EDITORIAL' AND (
+  NEW.editorial_requested_visibility IS NULL OR
+  (NEW.editorial_restriction='NONE' AND NEW.visibility<>NEW.editorial_requested_visibility) OR
+  (NEW.editorial_restriction<>'NONE' AND NEW.visibility<>'UNLISTED'))
+BEGIN SELECT RAISE(ABORT,'EDITORIAL_VISIBILITY_INCONSISTENT'); END;
 CREATE TRIGGER editorial_section_no_delete BEFORE DELETE ON catalog_section_projection
 WHEN (SELECT authoring_source FROM catalog_course_projection WHERE course_ref=OLD.course_ref)='COMMERCE_EDITORIAL'
 BEGIN SELECT RAISE(ABORT,'EDITORIAL_SECTION_IMMUTABLE'); END;

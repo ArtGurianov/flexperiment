@@ -132,7 +132,11 @@ does.
   idempotency result and immutable snapshot in one SQLite transaction. Legacy
   manifest writes cannot overwrite Commerce-authored courses. Previously
   published refs omitted from a new editorial draft remain unlisted instead of
-  being deleted. Course versions only move forward; section visibility
+  being deleted. Emergency unlist persists across ordinary editorial publishes;
+  an audited CAS `relist` is required to release it, and withdrawal cannot be
+  released through that command. Version `content_hash` is SHA-256 of the exact
+  immutable `document_json` bytes, with the current projection carrying the
+  latest digest. Course versions only move forward; section visibility
   participates in a lesson's effective visibility.
 - `access_overrides` records restrictive intent. PENDING overrides remain
   enforced until commerce resolves them to FINALIZED, SUPERSEDED or

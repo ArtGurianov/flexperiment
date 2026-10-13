@@ -32,7 +32,7 @@ const refuse = (code: string): never => { throw new RetentionRefusal(code); };
 // Retention targets remain the same; unknown columns/tables/triggers still stop.
 const supportedSchemaSha256 = new Set([
   "158654c61bd97be4dbcab4348651722fe105587f6ff202ad4db821512774e030",
-  "19c350358cf935ec28e625d571d70cbdd2977d10dfb121dc0852ebabde9f5b2a",
+  "c99f9ed0db449a2c13f2e51fa3b28a1ba44e367dd263185c99eddfec8c2d3b39",
 ]);
 const parse = <T>(schema: z.ZodType<T>, value: unknown): T => {
   const result = schema.safeParse(value); return result.success ? result.data : refuse("RETENTION_POLICY_OR_HOLD_INVALID");

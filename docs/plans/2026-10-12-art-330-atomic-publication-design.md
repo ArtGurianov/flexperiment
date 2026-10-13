@@ -38,6 +38,23 @@ price, sale mode and payment purpose continue through `configureProduct` and
 catalog control. The first draft may exist without a product; publication
 requires the appropriate product/offer authority without creating a sale.
 
+## Review amendment: restrictive state and verifiable versions
+
+Emergency unlist and withdrawal are durable course-level publication states,
+separate from the draft's requested visibility. A normal publish may update
+content while an emergency hold is active, but the effective published course
+remains `UNLISTED`. Only an explicit `relist` command with the current published
+version, reason, idempotency key and audit record can release an emergency
+unlist. It requires the latest editorial intent to be `LISTED` and an active
+course product. Withdrawal cannot be released through `relist`.
+
+Every immutable version stores the exact current published graph JSON without
+its own digest. `content_hash` is SHA-256 of the UTF-8 bytes of that saved
+`document_json`, including retained hidden refs and the restriction state.
+The same digest is stored on the current course projection. This single rule
+applies to publish, emergency unlist, withdrawal and relist; a historical
+version can be checked independently after later draft changes.
+
 ## Operations and transaction
 
 Admin create/edit returns draft revision; stale revisions fail. Fetch draft is
