@@ -118,6 +118,38 @@ describe("commerce v2 boundaries", () => {
     expect(db.prepare("SELECT COUNT(*) AS count FROM control_room_audit_log WHERE action='SESSION_CREATED'").get()).toEqual({ count: 1 });
   });
 
+  it("keeps editorial draft and publication behind the Control Room session and origin", async () => {
+    db.prepare("INSERT INTO products(id,product_ref,kind,access_model,course_ref) VALUES ('p','course:course','ONLINE_COURSE','FREE','course')").run();
+    const server = app();
+    const document = { courseRef: "course", title: "Private course", slug: "private-course", summary: "Draft only",
+      visibility: "UNLISTED", sections: [{ sectionRef: "section", title: "Section", position: 0, visibility: "LISTED" }],
+      lessons: [{ lessonRef: "lesson", sectionRef: "section", title: "Lesson", slug: "lesson", position: 0,
+        visibility: "LISTED", freePreview: false }] };
+    const draftPath = "/v1/admin/v2/courses/course/draft";
+    const write = (headers: Record<string, string>) => server.request(draftPath, { method: "PUT",
+      headers: { "content-type": "application/json", ...headers },
+      body: JSON.stringify({ document, expectedRevision: 0, actor: "forged-actor" }) });
+    expect((await write({})).status).toBe(401);
+    expect((await server.request(draftPath)).status).toBe(401);
+    const login = await server.request("/v1/admin/login", { method: "POST",
+      headers: { origin: "https://admin.flexperiment.ru", "content-type": "application/json" },
+      body: JSON.stringify({ password: adminPassword }) });
+    const cookie = login.headers.get("set-cookie")!;
+    expect((await write({ cookie, origin: "https://attacker.invalid" })).status).toBe(403);
+    expect((await write({ cookie, origin: "https://admin.flexperiment.ru" })).status).toBe(200);
+    expect((await server.request("/v1/admin/v2/courses/course/published", { headers: { cookie } })).status).toBe(404);
+    expect(db.prepare("SELECT COUNT(*) n FROM catalog_course_projection").get()).toEqual({ n: 0 });
+    const result = await server.request("/v1/admin/v2/courses/course/publish", { method: "POST",
+      headers: { cookie, origin: "https://admin.flexperiment.ru", "content-type": "application/json" },
+      body: JSON.stringify({ expectedRevision: 1, expectedPublishedVersion: 0, idempotencyKey: "editorial-1", actor: "forged-actor" }) });
+    expect(result.status).toBe(200);
+    expect(await result.json()).toMatchObject({ version: 1, visibility: "UNLISTED" });
+    expect(db.prepare("SELECT actor FROM audit_log WHERE action='COURSE_EDITORIAL_PUBLISHED'").get())
+      .toEqual({ actor: "singleton-admin" });
+    await server.request("/v1/admin/logout", { method: "POST", headers: { cookie } });
+    expect((await write({ cookie })).status).toBe(401);
+  });
+
   it("derives catalogue actors from the Control Room session and rejects stale versions", async () => {
     const server = app();
     const login = await server.request("/v1/admin/login", {

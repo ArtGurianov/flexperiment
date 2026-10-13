@@ -35,16 +35,18 @@ function validateLexicalTree(value: unknown) {
   if (value === null || value === undefined) return;
   const root = value as { root: unknown };
   const visit = (node: unknown, depth: number, budget: { remaining: number }) => {
-    if (!node || typeof node !== "object" || Array.isArray(node) || depth > 32 || --budget.remaining < 0) {
+    if (!node || typeof node !== "object" || Array.isArray(node) || depth > 2 || --budget.remaining < 0) {
       throw new EditorialError("LEXICAL_TREE_INVALID");
     }
-    const item = node as { type?: unknown; version?: unknown; children?: unknown; text?: unknown };
+    const item = node as { type?: unknown; version?: unknown; children?: unknown; text?: unknown; style?: unknown };
     if (typeof item.type !== "string" || !item.type || !Number.isSafeInteger(item.version) || Number(item.version) < 1
       || (item.text !== undefined && typeof item.text !== "string")) throw new EditorialError("LEXICAL_TREE_INVALID");
-    if (item.children !== undefined) {
-      if (!Array.isArray(item.children)) throw new EditorialError("LEXICAL_TREE_INVALID");
-      for (const child of item.children) visit(child, depth + 1, budget);
-    }
+    const allowed = depth === 0 ? "root" : depth === 1 ? "paragraph" : null;
+    if (allowed ? item.type !== allowed || !Array.isArray(item.children) || item.text !== undefined
+      : !["text", "linebreak"].includes(item.type) || item.children !== undefined
+        || (item.type === "text" && (typeof item.text !== "string" || item.style !== undefined && item.style !== ""))
+        || (item.type === "linebreak" && item.text !== undefined)) throw new EditorialError("LEXICAL_TREE_INVALID");
+    if (Array.isArray(item.children)) for (const child of item.children) visit(child, depth + 1, budget);
   };
   visit(root.root, 0, { remaining: 5000 });
 }

@@ -112,6 +112,19 @@ describe("Commerce editorial publication on the real V2 schema", () => {
     expect(getEditorialDraft(db, "course")).toBeNull();
   });
 
+  it("accepts the small editor format and rejects unsupported Lexical nodes", () => {
+    const paragraph = { type: "paragraph", version: 1, children: [
+      { type: "text", version: 1, text: "Course content", format: 1, style: "" },
+      { type: "linebreak", version: 1 },
+    ] };
+    const description = { root: { type: "root" as const, version: 1, children: [paragraph] } };
+    expect(save(document({ description })).revision).toBe(1);
+    expect(() => save(document({ description: { root: { type: "root", version: 1, children: [
+      { type: "heading", version: 1, tag: "h1", children: [] },
+    ] } } }), 1)).toThrow("LEXICAL_TREE_INVALID");
+    expect(getEditorialDraft(db, "course")?.revision).toBe(1);
+  });
+
   it("publishes restrictive visibility immediately and blocks late legacy manifest writes", () => {
     save(); publish();
     save(document({ visibility: "UNLISTED" }), 1);
