@@ -4,6 +4,7 @@ import { migrateV2 } from "../src/db";
 import { getOrCreateCustomer, recordUnverifiedAccountIntent } from "../src/customers";
 import { confirmSyntheticAccount } from "./fixtures/confirmed-account";
 import { cleanupOfflinePersonalData, expiredBackupCandidates, type RetentionPolicy, type RetentionHold } from "../src/pd-retention";
+import { getEditorialDraft, getEditorialPublished, publishEditorialDraft, saveEditorialDraft } from "../src/course-editorial";
 
 const now = new Date("2026-10-11T15:00:00.000Z");
 // Explicit isolated test policy ONLY, not an owner-approved/live/legal duration.
@@ -51,6 +52,27 @@ describe("explicit category retention in offline SQLite, no runtime/default poli
     expect(count('"user"')).toBe(1); expect(count("customers")).toBe(1); expect(count('"session"')).toBe(1); expect(count("verification")).toBe(1);
     expect(db.prepare("SELECT * FROM authenticated_consent_events").all()).toEqual(events);
     expect(count("orders")).toBe(0); expect(db.pragma("foreign_key_check")).toEqual([]);
+  });
+  it("retains editorial drafts and immutable versions while cleaning subject-linked telemetry", () => {
+    db.prepare(`INSERT INTO products(id,product_ref,kind,access_model,course_ref)
+      VALUES ('editorial-product','course:editorial','ONLINE_COURSE','FREE','editorial')`).run();
+    saveEditorialDraft(db, { expectedRevision: 0, actor: "synthetic-editor", document: {
+      courseRef: "editorial", title: "Synthetic course", slug: "editorial", summary: "Retention fixture",
+      visibility: "LISTED", sections: [{ sectionRef: "editorial-section", title: "Section", position: 0, visibility: "LISTED" }],
+      lessons: [{ lessonRef: "editorial-lesson", sectionRef: "editorial-section", title: "Lesson", slug: "lesson",
+        position: 0, visibility: "LISTED", freePreview: false }],
+    } }, old);
+    publishEditorialDraft(db, { courseRef: "editorial", expectedRevision: 1, expectedPublishedVersion: 0,
+      idempotencyKey: "synthetic-publish", actor: "synthetic-editor" }, old);
+    const draft = getEditorialDraft(db, "editorial");
+    const published = getEditorialPublished(db, "editorial");
+    const versions = db.prepare("SELECT * FROM course_editorial_versions").all();
+    telemetry();
+
+    expect(cleanupOfflinePersonalData(db, input(), now).playbackTelemetry).toBe(1);
+    expect(getEditorialDraft(db, "editorial")).toEqual(draft);
+    expect(getEditorialPublished(db, "editorial")).toEqual(published);
+    expect(db.prepare("SELECT * FROM course_editorial_versions").all()).toEqual(versions);
   });
   it("supports actual Better Auth epoch-millisecond expiry and refuses grace-boundary deletion", () => {
     session("epoch-old", Date.parse(old)); verification("epoch-old", Date.parse(old));
