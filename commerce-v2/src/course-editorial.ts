@@ -152,6 +152,8 @@ export function publishEditorialDraft(db: Database.Database, input: PublishInput
       .get(input.courseRef) as { version: number; authoring_source: string; slug: string | null; editorial_restriction: string } | undefined;
     if ((current?.version ?? 0) !== input.expectedPublishedVersion) throw new EditorialError("PUBLISHED_VERSION_CONFLICT");
     if (current && current.authoring_source !== "COMMERCE_EDITORIAL") throw new EditorialError("LEGACY_COURSE_OWNED");
+    if (db.prepare("SELECT 1 FROM access_overrides WHERE course_ref=? AND state='PENDING' LIMIT 1").get(input.courseRef))
+      throw new EditorialError("PENDING_LEGACY_OVERRIDE");
     if (current?.slug && current.slug !== document.slug) throw new EditorialError("COURSE_SLUG_IMMUTABLE");
     const product = db.prepare("SELECT id,access_model,withdrawn_at FROM products WHERE kind='ONLINE_COURSE' AND course_ref=?")
       .get(input.courseRef) as { id: string; access_model: string; withdrawn_at: string | null } | undefined;

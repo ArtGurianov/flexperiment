@@ -60,4 +60,15 @@ describe("Control Room operational projections", () => {
     expect(summary.playbackAccess24h).toEqual({ allowed: 1, denied: 1, rateLimited: 1, invalidToken: 1 });
     expect(JSON.stringify(summary)).not.toContain("playback-secret");
   });
+
+  it("does not count Commerce editorial content as stale after the legacy lease", () => {
+    db.prepare(`INSERT INTO catalog_course_projection(course_ref,version,content_hash,visibility,last_reconciled_at,
+      authoring_source,editorial_requested_visibility)
+      VALUES ('legacy',1,?,'LISTED','2026-09-01T00:00:00.000Z','LEGACY_MANIFEST',NULL),
+             ('editorial',1,?,'LISTED','2026-09-01T00:00:00.000Z','COMMERCE_EDITORIAL','LISTED')`)
+      .run("a".repeat(64), "b".repeat(64));
+    const summary = controlRoomIntegrationSummary(db,
+      loadCommerceRuntimeConfig({ DEPLOY_ENV: "test", PAYMENT_MODE: "disabled" }), new Date(now));
+    expect(summary.staleProjectionCount).toBe(1);
+  });
 });
