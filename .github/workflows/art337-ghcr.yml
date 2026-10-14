@@ -1,0 +1,95 @@
+name: ART337 approved private GHCR artifacts
+
+on:
+  push:
+    branches: [codex/art-337-ghcr-artifacts]
+    paths:
+      - .github/workflows/art337-ghcr.yml
+      - scripts/v2/art337-ghcr.py
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: art337-private-ghcr
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.repository == 'ArtGurianov/flexperiment' && github.ref == 'refs/heads/codex/art-337-ghcr-artifacts'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: commerce-v2
+            file: Dockerfile.commerce-v2
+          - service: platform-v2
+            file: Dockerfile.platform
+          - service: admin-v2
+            file: Dockerfile.admin
+    env:
+      ART337_SOURCE: 08523bdf38eeddf5e745ce04d05e1f980a7ced93
+      ART337_REPOSITORY: ghcr.io/artgurianov/flexperiment-${{ matrix.service }}
+      ART337_TAG: source085-run${{ github.run_id }}-attempt${{ github.run_attempt }}
+      ART337_SERVICE: ${{ matrix.service }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: 08523bdf38eeddf5e745ce04d05e1f980a7ced93
+          path: deployment-source
+          persist-credentials: false
+      - name: Exact-source CI/main and private package admission
+        run: python3 scripts/v2/art337-ghcr.py admit
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ArtGurianov
+          password: ${{ github.token }}
+      - name: Publish the approved source once
+        id: image
+        uses: docker/build-push-action@v6
+        with:
+          context: deployment-source
+          file: deployment-source/${{ matrix.file }}
+          platforms: linux/amd64
+          provenance: false
+          sbom: false
+          push: true
+          tags: ${{ env.ART337_REPOSITORY }}:${{ env.ART337_TAG }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/ArtGurianov/flexperiment
+            org.opencontainers.image.revision=08523bdf38eeddf5e745ce04d05e1f980a7ced93
+          build-args: |
+            SOURCE_COMMIT=08523bdf38eeddf5e745ce04d05e1f980a7ced93
+            PLATFORM_ORIGIN=https://canary-platform.flexperiment.ru
+          cache-from: type=gha,scope=art337-${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=art337-${{ matrix.service }}
+      - name: Private package readback, digest pull, native identity and archive
+        run: python3 scripts/v2/art337-ghcr.py verify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ART337_DIGEST: ${{ steps.image.outputs.digest }}
+      - name: Isolated Commerce erasure compatibility in the published artifact
+        if: matrix.service == 'commerce-v2'
+        run: >-
+          docker run --rm --network none --platform linux/amd64 --user 0
+          --entrypoint node "$ART337_REPOSITORY@$ART337_DIGEST"
+          /app/node_modules/vitest/vitest.mjs run
+          commerce-v2/test/erasure-restore.test.ts commerce-v2/test/erasure-library-read.test.ts
+        env:
+          ART337_DIGEST: ${{ steps.image.outputs.digest }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: art337-ghcr-${{ matrix.service }}-${{ github.run_id }}
+          path: artifact-evidence/
+          retention-days: 30
+          if-no-files-found: error
