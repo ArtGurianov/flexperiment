@@ -40,6 +40,15 @@ ROOT = q.ROOT
 REQUIRED = {"inventory", "backup", "restore", "boot", "artifact", "isolation", "delivery"}
 SERVICES = {"commerce-v2": ORIGINAL_APP, "platform-v2": q.PLATFORM_APP,
             "admin-v2": "v2w4tnlkkt8pj2fnfspyn5l5"}
+# Native contracts in exact source085 images. Deployment resource roles differ
+# from Platform's baked service name; Admin carries a release descriptor.
+NATIVE_IDENTITIES = {
+    "commerce-v2": {"schema": "flexperiment.build-identity/1", "service": "commerce-v2", "sourceCommit": TARGET},
+    "platform-v2": {"schema": "flexperiment.build-identity/1", "service": "platform", "sourceCommit": TARGET},
+    "admin-v2": {"source_commit": TARGET, "admin_contract_version": "sales-availability-v1"},
+}
+NATIVE_IDENTITY_PATHS = {service: "/usr/share/nginx/html/release.json" if service == "admin-v2"
+                         else "/app/.identity/identity.json" for service in SERVICES}
 Refusal = q.Refusal
 refuse = q.refuse
 HASH = re.compile(r"[0-9a-f]{64}\Z")
@@ -139,11 +148,17 @@ def descriptor(value):
             or not isinstance(value["rootfs"], list) or not value["rootfs"] \
             or any(not DIGEST.fullmatch(x) for x in value["rootfs"]) \
             or len(value["rootfs"]) != len(manifest["layers"]) \
-            or value["identity"] not in [
-                {"schema": "flexperiment.build-identity/1", "service": service, "sourceCommit": TARGET}
-                for service in SERVICES]:
+            or value["identity"] not in NATIVE_IDENTITIES.values():
         refuse("ARTIFACT_PLATFORM_OR_IDENTITY_INVALID")
     return value
+
+
+def artifact_service(value):
+    """Derive a resource role only from the complete exact native contract."""
+    for service, identity in NATIVE_IDENTITIES.items():
+        if value.get("identity") == identity:
+            return service
+    refuse("ARTIFACT_PLATFORM_OR_IDENTITY_INVALID")
 
 
 def coolify_image_fields(reference):
@@ -176,19 +191,19 @@ def inspect_artifact(reference, service, pull=True):
     image = values[0]
     identity = json.loads(run(["docker", "run", "--rm", "--network", "none", "--read-only",
                               "--platform", "linux/amd64", "--entrypoint", "cat", image["Id"],
-                              "/app/.identity/identity.json"]))
+                              NATIVE_IDENTITY_PATHS[service]]))
     value = descriptor({"reference": reference, "manifestDigest": digest,
                         "manifest": json.loads(raw), "imageId": image["Id"],
                         "rootfs": image.get("RootFS", {}).get("Layers"), "os": image.get("Os"),
                         "architecture": image.get("Architecture"), "identity": identity})
-    if identity["service"] != service:
+    if artifact_service(value) != service:
         refuse("ARTIFACT_SERVICE_DRIFT")
     return value
 
 
 def verify_artifact(expected, pull=True):
     descriptor(expected)
-    if inspect_artifact(expected["reference"], expected["identity"]["service"], pull) != expected:
+    if inspect_artifact(expected["reference"], artifact_service(expected), pull) != expected:
         refuse("ARTIFACT_CONTENT_DRIFT")
 
 
@@ -205,7 +220,7 @@ def verify_runtime(expected, container_id):
     if image.get("RootFS", {}).get("Layers") != expected["rootfs"] \
             or (image.get("Os"), image.get("Architecture")) != (expected["os"], expected["architecture"]):
         refuse("INSTALLED_ROOTFS_OR_PLATFORM_MISMATCH")
-    identity = json.loads(run(["docker", "exec", container_id, "cat", "/app/.identity/identity.json"]))
+    identity = json.loads(run(["docker", "exec", container_id, "cat", NATIVE_IDENTITY_PATHS[artifact_service(expected)]]))
     if identity != expected["identity"]:
         refuse("INSTALLED_BAKED_IDENTITY_MISMATCH")
     return {"containerId": container["Id"], "imageId": image["Id"],
@@ -241,7 +256,7 @@ def validate(manifest):
         refuse("CONTINUATION_MANIFEST_INVALID")
     reports = {kind: report(manifest, kind) for kind in REQUIRED}
     artifact = descriptor(reports["artifact"]["artifact"])
-    if artifact["identity"]["service"] != "commerce-v2":
+    if artifact_service(artifact) != "commerce-v2":
         refuse("COMMERCE_ARTIFACT_REQUIRED")
     inventory = reports["inventory"]
     if inventory.get("environment") != "canary-v2" or inventory.get("issue") != "ART-329":
@@ -598,7 +613,7 @@ def inspect_publication():
 def create_delivery(artifact, rpc):
     """Supported Coolify Docker Image creation; no deploy, no env, no storage."""
     descriptor(artifact)
-    if artifact["identity"]["service"] != "commerce-v2":
+    if artifact_service(artifact) != "commerce-v2":
         refuse("COMMERCE_ARTIFACT_REQUIRED")
     verify_parent(rpc)
     if rpc.exclusive_canary(ORIGINAL_APP) != {"exclusive": True}:

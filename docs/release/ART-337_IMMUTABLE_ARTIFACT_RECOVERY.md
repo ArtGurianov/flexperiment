@@ -84,6 +84,28 @@ registry visibility changes nor creation of credentials is part of this
 procedure. Never put credentials in command arguments, runbook, Linear or CI.
 If the approved registry/authentication is unavailable, HOLD.
 
+Registry preparation was separately authorized for the three
+`ghcr.io/artgurianov/flexperiment-{commerce,platform,admin}-v2` packages.
+Owner PAT publication uses temporary Docker authentication and does not install
+Coolify/server pull credentials or grant execution. Private visibility must
+be independently read back; a public workflow's GITHUB_TOKEN inherits public
+repository visibility. Registry setup is not a live admission record.
+
+Exact source085 native identity contracts are service-specific:
+
+| Resource role | Path | Exact native contract |
+| --- | --- | --- |
+| commerce-v2 | `/app/.identity/identity.json` | build-identity/1, service commerce-v2, sourceCommit target |
+| platform-v2 | `/app/.identity/identity.json` | build-identity/1, service platform, sourceCommit target |
+| admin-v2 | `/usr/share/nginx/html/release.json` | source_commit target, admin_contract_version sales-availability-v1 |
+
+The qualifier records the actual native JSON and derives a role only from the
+complete exact contract. It does not add a synthetic identity file to Admin or
+change the target image/source. Role, source, contract, digest, image ID and
+RootFS drift all refuse. Native Admin/Platform cannot be used for Commerce
+admission. This correction needs independent review of the new controller SHA;
+the previous ec5fc435 review cannot authorize its live execution.
+
 Example (variables contain public identities only):
 
 ```sh

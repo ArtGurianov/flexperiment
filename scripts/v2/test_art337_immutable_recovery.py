@@ -85,6 +85,50 @@ class Descriptor(unittest.TestCase):
     def test_single_manifest_qualified(self):
         self.assertEqual(r.descriptor(artifact()), artifact())
 
+    def test_native_platform_and_admin_contracts_derive_resource_role(self):
+        for service in ("platform-v2", "admin-v2"):
+            a = artifact(); a["identity"] = copy.deepcopy(r.NATIVE_IDENTITIES[service])
+            self.assertEqual(r.descriptor(a), a)
+            self.assertEqual(r.artifact_service(a), service)
+
+    def test_native_contract_unknown_source_role_or_admin_version_refuses(self):
+        for identity in ({"schema": "flexperiment.build-identity/1", "service": "platform-v2", "sourceCommit": r.TARGET},
+                         {"source_commit": "7" * 40, "admin_contract_version": "sales-availability-v1"},
+                         {"source_commit": r.TARGET, "admin_contract_version": "unknown"},
+                         {**r.NATIVE_IDENTITIES["admin-v2"], "service": "commerce-v2"}):
+            a = artifact(); a["identity"] = identity
+            with self.subTest(identity=identity), self.assertRaises(r.Refusal): r.descriptor(a)
+
+    def test_inspect_native_images_uses_real_paths_and_refuses_role_confusion(self):
+        for service in ("platform-v2", "admin-v2"):
+            a = artifact(); a["identity"] = copy.deepcopy(r.NATIVE_IDENTITIES[service])
+            raw = r.canonical(a["manifest"])
+            a["manifestDigest"] = "sha256:" + r.q.digest(raw)
+            a["reference"] = a["reference"].partition("@")[0] + "@" + a["manifestDigest"]
+            image = {"Id": a["imageId"], "RootFS": {"Layers": a["rootfs"]}, "Os": "linux", "Architecture": "amd64"}
+            outputs = [raw, b"pulled", json.dumps([image]).encode(), json.dumps(a["identity"]).encode()]
+            with patch.object(r, "run", side_effect=outputs) as run:
+                self.assertEqual(r.inspect_artifact(a["reference"], service), a)
+                self.assertEqual(run.call_args.args[0][-1], r.NATIVE_IDENTITY_PATHS[service])
+            with patch.object(r, "run", side_effect=outputs), self.assertRaisesRegex(r.Refusal, "ARTIFACT_SERVICE_DRIFT"):
+                r.inspect_artifact(a["reference"], "commerce-v2")
+
+    def test_runtime_native_admin_rejects_descriptor_drift_and_uses_nginx_path(self):
+        a = artifact(); a["identity"] = copy.deepcopy(r.NATIVE_IDENTITIES["admin-v2"])
+        container = {"Id": "cid", "Image": a["imageId"], "Config": {"Image": a["reference"]}}
+        image = {"Id": a["imageId"], "RootFS": {"Layers": a["rootfs"]}, "Os": "linux", "Architecture": "amd64"}
+        for contract in (a["identity"], {**a["identity"], "source_commit": "7" * 40}):
+            with patch.object(r, "run", side_effect=[json.dumps([container]).encode(), json.dumps([image]).encode(), json.dumps(contract).encode()]) as run:
+                if contract == a["identity"]: self.assertEqual(r.verify_runtime(a, "cid")["identity"], contract)
+                else:
+                    with self.assertRaisesRegex(r.Refusal, "INSTALLED_BAKED_IDENTITY_MISMATCH"): r.verify_runtime(a, "cid")
+                self.assertEqual(run.call_args.args[0][-1], "/usr/share/nginx/html/release.json")
+
+    def test_native_admin_cannot_be_admitted_as_commerce(self):
+        with fixture() as (_, manifest, _, update):
+            update("artifact", lambda value: value["artifact"].update(identity=copy.deepcopy(r.NATIVE_IDENTITIES["admin-v2"])))
+            with self.assertRaisesRegex(r.Refusal, "COMMERCE_ARTIFACT_REQUIRED"): r.validate(manifest)
+
     def test_mutable_tags_indexes_wrong_architecture_service_layers(self):
         changes = [lambda a: a.update(reference="ghcr.io/artgurianov/flexperiment:latest"),
                    lambda a: a["manifest"].update(manifests=[]), lambda a: a.update(architecture="arm64"),
