@@ -75,7 +75,15 @@ class RealSystemd(unittest.TestCase):
                         time.sleep(.1)
                     self.assertEqual(before['units'][services[0]]['ActiveState'],'failed')
                     with self.assertRaises(t.Refusal):t.verify_isolated()
-                    after=t.isolate();t.verify_isolated(after)
+                    try:
+                        after=t.isolate();t.verify_isolated(after)
+                    except t.Refusal:
+                        # Synthetic proof units only: show the exact field drift,
+                        # never owner/provider data or installed unit secrets.
+                        for unit, expected in contracts.items():
+                            actual=t.show(unit)
+                            print('ISOLATED_BINDING_DIFFERENCES',unit,{k:(v,actual.get(k)) for k,v in expected.items() if actual.get(k)!=v})
+                        raise
                     count=events.read_text();time.sleep(.2);self.assertEqual(count,events.read_text())
                     fault.unlink()  # Only this disposable proof's synthetic failure marker.
                     t.run_backup();self.assertTrue(events.read_text().endswith('backup\n'))
