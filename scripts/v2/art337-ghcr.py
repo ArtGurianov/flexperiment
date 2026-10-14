@@ -50,8 +50,8 @@ def package(service, absent=False):
 
 
 def admit(service):
-    if os.environ['GITHUB_REPOSITORY'] != 'ArtGurianov/flexperiment' \
-            or os.environ['GITHUB_REF'] != 'refs/heads/codex/art-337-ghcr-artifacts' \
+    if os.environ['GITHUB_REPOSITORY'] != 'ArtGurianov/flexperiment-artifacts' \
+            or os.environ['GITHUB_REF'] != 'refs/heads/main' \
             or run(['git', '-C', 'deployment-source', 'rev-parse', 'HEAD']).decode().strip() != SOURCE \
             or run(['git', '-C', 'deployment-source', 'status', '--porcelain']).strip():
         refuse('PUBLISH_SCOPE_OR_SOURCE_REFUSED')
@@ -64,13 +64,15 @@ def admit(service):
         latest = max(named, key=lambda c: c['id']) if named else None
         if not latest or latest['conclusion'] != 'success':
             refuse('EXACT_SOURCE_CI_NOT_SUCCESS')
+    if api('repos/ArtGurianov/flexperiment-artifacts').get('private') is not True:
+        refuse('PRIVATE_PUBLISHER_REQUIRED')
     package(service, absent=True)
     print('PRIVATE_REGISTRY_PREPARATION_ADMITTED')
 
 
 def verify(service):
     p = package(service)
-    if p.get('repository', {}).get('full_name') != 'ArtGurianov/flexperiment':
+    if p.get('repository', {}).get('full_name') != 'ArtGurianov/flexperiment-artifacts':
         refuse('PACKAGE_REPOSITORY_BINDING_REFUSED')
     digest = os.environ['ART337_DIGEST']
     if not re.fullmatch(r'sha256:[0-9a-f]{64}', digest):

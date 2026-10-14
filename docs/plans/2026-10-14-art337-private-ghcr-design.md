@@ -6,31 +6,47 @@ Owner approved these exact repositories on 2026-10-14:
 - ghcr.io/artgurianov/flexperiment-platform-v2
 - ghcr.io/artgurianov/flexperiment-admin-v2
 
-Publish through a separate unmerged engineering branch using the ephemeral
-GitHub Actions token with contents read and packages write. Image archives are
-encrypted to the existing owner-held recovery key before Actions upload; only
-its public age recipient enters CI. Plaintext archives are removed before
-upload because the source repository and its Actions artifacts are public.
-The installed gh
-OAuth token lacks package scopes; it is not copied into a registry credential.
-New GHCR packages are private by default. Read package visibility before push
-when it exists and independently after push; public packages refuse.
+The publisher lives in private ArtGurianov/flexperiment-artifacts. Actions uses
+its ephemeral GITHUB_TOKEN with contents read and packages write. The public
+source repository is checked out separately at exact
+08523bdf38eeddf5e745ce04d05e1f980a7ced93. Registry admission checks publisher
+privacy, package privacy, current source main and exact-source green CI.
+No persistent write token, SSH, VPS or deployment credential enters this repo.
 
-The one-time push workflow is restricted to the exact engineering branch and
-approved repository. It builds source 08523bdf38eeddf5e745ce04d05e1f980a7ced93
-only, verifies current main and exact-source green checks before publication,
-and uses one unique run/attempt tag per service. Tags are discovery handles;
-admission consumes the single-platform manifest digest. Preserve image archive,
-archive hash, manifest bytes, image ID, RootFS and native baked identity after
-an independent digest pull. Admin uses its existing release.json contract;
-Commerce/Platform use their existing build-identity contract. No code is added
-to the deployment source and no changes enter main or PR #222.
+Publish one single-platform linux/amd64 manifest per service and unique run
+and attempt tag. Pull by digest independently, verify image ID/RootFS and
+native baked identity. Export an image archive, hash it, encrypt it to the
+existing owner-held recovery recipient, remove plaintext before upload, and
+preserve ciphertext independently before Actions retention expires. Native
+Admin release.json is preserved; it is not presented as a Commerce identity.
+Full copied-fence/schema26/live recovery remains a separate qualification.
 
-Alternative local PAT publication requires owner-created package credentials;
-publishing from main would change the pinned deployment source. The separate
-Actions branch preserves the reviewed controller and target while avoiding a
-new persistent write credential. Actual VPS pulling will still require an
-owner-managed read:packages credential, under separate authorization.
+## First attempt and bounded correction
 
-This workflow has no SSH, Coolify, erasure, runtime, live database, production
-or Kinescope operation. Registry preparation is not GO TO EXECUTE ART-337.
+First run38512656998 from public ArtGurianov/flexperiment created packages
+with public visibility. The private read-back gate refused; no recovery
+archive was uploaded. This follows the GITHUB_TOKEN workflow inheritance
+rule; assuming the generic private first-publish default was insufficient.
+The source code/image payload contained no live DB or runtime credentials.
+
+Run38513368483 deleted only those three newly created package IDs (15883058,
+15883082,15883052), after checking original repo, creation time, single version
+and exact unique tag source085-run38512656998-attempt1. Package/version
+metadata and delete intent/outcome are retained as evidence. Independent GET
+returned404 for all three. No old package or runtime artifact was deleted.
+The private publisher recreates the approved names with new private IDs.
+
+The public cleanup workflow is restricted to its original engineering branch
+and original IDs; it cannot delete recreated private packages or run on main.
+The copied publisher script here permits only the private publisher repository;
+it cannot publish from this public source repository.
+
+## Authorization boundary
+
+Owner authorized registry/service preparation only. Both source main and
+reviewed PR222 head remain unchanged/unmerged. No journal v3, Coolify resource,
+live database/fence/timer, provider setting, canary or production operation.
+VPS pull will require an owner-managed read:packages credential under separate
+secret installation/execution authorization. Do not use a temporary Actions
+token as a durable server credential. Registry publication and CI success are
+not ART337 canary admission, installed-image readback, E2E or F9 PASS.
