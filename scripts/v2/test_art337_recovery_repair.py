@@ -158,6 +158,12 @@ class KnownResource(unittest.TestCase):
 
 
 class BackupAndSchedules(unittest.TestCase):
+    def test_incomplete_restore_receipt_cannot_admit_rearm_or_final_pass(self):
+        with repair_fixture() as (root,_,_,_,_,_):
+            directory=root/'immutable-operations'
+            (directory/'commerce-timer-restore.intent.json').write_bytes(r.canonical({'applicationUuid':r.RECOVERY_APP,'profile':r.timers.FILES,'recovery':{}}))
+            (directory/'commerce-timer-restore.outcome.json').write_bytes(r.canonical({'state':'ACTIVATION_RETURNED_REQUIRES_READBACK','timers':list(r.timers.TIMERS),'recordedAt':datetime.now(timezone.utc).isoformat()}))
+            with self.assertRaisesRegex(r.Refusal,'TIMER_RESTORE_RECEIPT_DRIFT'):r.verify_timer_restore_receipt()
     def test_lost_rearm_service_start_preserves_intent_never_repeats(self):
         with repair_fixture() as (root,manifest,rpc,_,_,_),patch.object(r,'backup_adopted'), \
                 patch.object(r,'verify_timer_restore_receipt'), \

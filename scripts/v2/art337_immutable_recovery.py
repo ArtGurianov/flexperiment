@@ -1185,10 +1185,16 @@ def restore_canary_timers(manifest, rpc, proof_path):
 def verify_timer_restore_receipt():
     intent = json.loads(read(ROOT / "immutable-operations" / "commerce-timer-restore.intent.json"))
     outcome = json.loads(read(ROOT / "immutable-operations" / "commerce-timer-restore.outcome.json"))
-    if intent.get("applicationUuid") != RECOVERY_APP or intent.get("profile") != timers.FILES \
+    recovery = intent.get('recovery', {})
+    if set(intent) != {'applicationUuid', 'profile', 'recovery'} \
+            or set(recovery) != {'backupStatusSha256', 'archiveSha256', 'proofSha256', 'archiveFilename'} \
+            or any(not HASH.fullmatch(recovery.get(k, '')) for k in ('backupStatusSha256', 'archiveSha256', 'proofSha256')) \
+            or not re.fullmatch(r'canary-\d{8}T\d{6}Z-' + TARGET + r'-[a-f0-9-]{36}\.sqlite\.age', recovery.get('archiveFilename', '')) \
+            or set(outcome) != set(recovery) | {'timers', 'state', 'recordedAt'} \
+            or intent.get("applicationUuid") != RECOVERY_APP or intent.get("profile") != timers.FILES \
             or outcome.get("state") != "ACTIVATION_RETURNED_REQUIRES_READBACK" \
             or outcome.get("timers") != list(timers.TIMERS) \
-            or any(outcome.get(k) != v for k, v in intent.get("recovery", {}).items()):
+            or any(outcome.get(k) != v for k, v in recovery.items()):
         refuse("TIMER_RESTORE_RECEIPT_DRIFT")
     return outcome
 
