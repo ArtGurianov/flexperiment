@@ -88,7 +88,15 @@ class RealSystemd(unittest.TestCase):
                     fault.unlink()  # Only this disposable proof's synthetic failure marker.
                     t.run_backup();self.assertTrue(events.read_text().endswith('backup\n'))
                     self.assertEqual(t.restore()['state'],'ACTIVATION_RETURNED_REQUIRES_READBACK')
-                    wait_quiet();t.verify_restored()
+                    deadline=time.monotonic()+20
+                    while True:
+                        try:
+                            t.verify_restored();break
+                        except t.Refusal:
+                            if time.monotonic()>deadline:
+                                for unit in (*timers,*services):print('ISOLATED_RESTORE_STATE',unit,t.show(unit))
+                                raise
+                            time.sleep(.1)
                     self.assertIn('check',events.read_text().splitlines())
             finally:
                 subprocess.run(['systemctl','disable','--now',*timers],capture_output=True)
