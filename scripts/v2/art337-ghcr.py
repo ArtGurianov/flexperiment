@@ -41,6 +41,8 @@ def run(args):
 
 def package(service, absent=False):
     result = api('users/ArtGurianov/packages/container/' + PACKAGES[service], absent)
+    if result is not None:
+        print(json.dumps({'observedPackage': {k: result.get(k) for k in ('id', 'name', 'visibility')}}))
     if result is not None and (result.get('visibility') != 'private'
                               or result.get('name') != PACKAGES[service]):
         refuse('PACKAGE_VISIBILITY_OR_NAME_REFUSED')
@@ -109,6 +111,17 @@ def verify(service):
     with archive.open('rb') as source:
         while chunk := source.read(1024 * 1024):
             hasher.update(chunk)
+    recipient = os.environ['ART337_ARCHIVE_RECIPIENT']
+    if not re.fullmatch(r'age1[0-9a-z]{58}', recipient):
+        refuse('ARCHIVE_RECIPIENT_REQUIRED')
+    encrypted = archive.with_name(archive.name + '.age')
+    run(['age', '--recipient', recipient, '--output', str(encrypted), str(archive)])
+    archive_size = archive.stat().st_size
+    encrypted_hash = hashlib.sha256()
+    with encrypted.open('rb') as source:
+        while chunk := source.read(1024 * 1024):
+            encrypted_hash.update(chunk)
+    archive.unlink()
     report = {'state': 'PRIVATE_GHCR_ARTIFACT_PUBLISHED_NOT_DEPLOYED', 'service': service,
               'sourceCommit': SOURCE, 'publisherCommit': os.environ['GITHUB_SHA'],
               'runId': os.environ['GITHUB_RUN_ID'], 'reference': reference,
@@ -117,7 +130,9 @@ def verify(service):
               'architecture': image['Architecture'], 'nativeIdentityPath': identity_path,
               'nativeIdentity': native, 'packageId': p['id'], 'visibility': p['visibility'],
               'repository': p['repository']['full_name'], 'archiveSha256': hasher.hexdigest(),
-              'archiveSize': archive.stat().st_size, 'tag': os.environ['ART337_TAG'],
+              'archiveSize': archive_size, 'encryptedArchiveSha256': encrypted_hash.hexdigest(),
+              'encryptedArchiveSize': encrypted.stat().st_size, 'archiveRecipient': recipient,
+              'tag': os.environ['ART337_TAG'],
               'liveExecution': 'NOT_PERFORMED', 'restoreAdmission': 'NOT_QUALIFIED'}
     (directory/'artifact.json').write_text(json.dumps(report, indent=2))
     print(json.dumps({k: report[k] for k in ('state', 'reference', 'imageId', 'visibility', 'archiveSha256')}))

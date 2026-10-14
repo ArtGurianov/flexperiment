@@ -7,7 +7,11 @@ Owner approved these exact repositories on 2026-10-14:
 - ghcr.io/artgurianov/flexperiment-admin-v2
 
 Publish through a separate unmerged engineering branch using the ephemeral
-GitHub Actions token with contents read and packages write. The installed gh
+GitHub Actions token with contents read and packages write. Image archives are
+encrypted to the existing owner-held recovery key before Actions upload; only
+its public age recipient enters CI. Plaintext archives are removed before
+upload because the source repository and its Actions artifacts are public.
+The installed gh
 OAuth token lacks package scopes; it is not copied into a registry credential.
 New GHCR packages are private by default. Read package visibility before push
 when it exists and independently after push; public packages refuse.
