@@ -1,0 +1,27 @@
+name: ART337 remove only erroneous first-run public packages
+on:
+  push:
+    branches: [codex/art-337-ghcr-artifacts]
+    paths: [.github/workflows/art337-cleanup-public.yml, scripts/v2/art337-cleanup-public.py]
+permissions:
+  contents: read
+  packages: write
+jobs:
+  cleanup:
+    if: github.repository == 'ArtGurianov/flexperiment' && github.ref == 'refs/heads/codex/art-337-ghcr-artifacts'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Identity-bound cleanup of newly created failed candidates
+        run: python3 scripts/v2/art337-cleanup-public.py
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: art337-first-run-cleanup-${{ github.run_id }}
+          path: cleanup-evidence/
+          if-no-files-found: warn
