@@ -1,0 +1,8 @@
+[Unit]
+Description=Closed Flexperiment fast-cut canary hourly backup freshness
+[Timer]
+OnCalendar=hourly
+Persistent=true
+Unit=flexperiment-fast-cut-canary-freshness.service
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,8 @@
+[Unit]
+Description=Closed Flexperiment fast-cut canary backup every six hours
+[Timer]
+OnCalendar=*-*-* 00,06,12,18:15:00
+Persistent=true
+Unit=flexperiment-fast-cut-canary-backup.service
+[Install]
+WantedBy=timers.target
