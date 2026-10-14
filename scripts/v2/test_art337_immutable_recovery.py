@@ -159,7 +159,8 @@ class DeliveryBoundary(unittest.TestCase):
         rpc = Mock(); parent = self.parent_app()
         created = {"uuid": "n"*24, "environment_id": 6, "destination_id": 0, "build_pack": "dockerimage",
                    "name": "flexperiment-commerce-v2-canary-immutable",
-                   "settings": {"is_auto_deploy_enabled": False, "is_preview_deployments_enabled": False}}
+                   "settings": {"is_auto_deploy_enabled": False, "is_preview_deployments_enabled": False},
+                   **r.coolify_image_fields(artifact()["reference"])}
         rpc.exclusive_canary.return_value = {"exclusive": True}; rpc.container.return_value = None
         requests = []
         def api(method, path, body=None):
@@ -177,8 +178,30 @@ class DeliveryBoundary(unittest.TestCase):
         self.assertFalse(posts[0][2]["is_auto_deploy_enabled"])
         self.assertFalse(posts[0][2]["is_preview_deployments_enabled"])
         self.assertEqual(posts[0][2]["domains"], "")
+        self.assertEqual(posts[0][2]["docker_registry_image_name"], "ghcr.io/artgurianov/flexperiment")
+        self.assertEqual(posts[0][2]["docker_registry_image_tag"], "sha256-" + "a"*64)
         self.assertEqual(posts[0][2]["custom_network_aliases"], r.ORIGINAL_APP)
         self.assertNotIn("git_commit_sha", posts[0][2])
+
+    def test_validate_rejects_bare_tag_before_reading_secrets_or_mounts(self):
+        with fixture() as (_, manifest, _, _), patch.object(r, "configured_uuid", return_value="n"*24):
+            rpc = Mock(); rpc.api.return_value = {"uuid":"n"*24,
+                "name":"flexperiment-commerce-v2-canary-immutable", "build_pack":"dockerimage",
+                "docker_registry_image_name":"ghcr.io/artgurianov/flexperiment", "docker_registry_image_tag":"a"*64}
+            with self.assertRaisesRegex(r.Refusal, "IMMUTABLE_RESOURCE_DRIFT"):
+                r.validate_delivery(manifest, rpc, {})
+            self.assertEqual(rpc.api.call_count, 1)
+
+    def test_configure_rejects_bare_tag_before_provisioning(self):
+        with fixture() as (root, _, _, _), patch.object(r, "verify_parent"), \
+                patch.object(r, "configured_uuid", return_value="n"*24), patch.object(r.q, "verify_payload_stopped"):
+            directory=root/"immutable-operations"; directory.mkdir()
+            (directory/"commerce-resource-create.intent.json").write_bytes(r.canonical({"reference":artifact()["reference"]}))
+            rpc=Mock(); rpc.exclusive_canary.return_value={"exclusive":True}
+            rpc.api.side_effect=[self.parent_app(), {"docker_registry_image_name":"ghcr.io/artgurianov/flexperiment", "docker_registry_image_tag":"a"*64}]
+            with self.assertRaisesRegex(r.Refusal, "CONFIGURATION_ARTIFACT_OR_AUTODEPLOY_DRIFT"):
+                r.configure_delivery(rpc)
+            self.assertTrue(all(call.args[0]=="GET" for call in rpc.api.call_args_list))
 
     def test_unknown_topology_refuses_before_post(self):
         for mutation in ("project", "environment", "destination"):

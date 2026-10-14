@@ -146,6 +146,20 @@ def descriptor(value):
     return value
 
 
+def coolify_image_fields(reference):
+    """Canonical persisted fields for Coolify 4.4.6 Docker Image deployments.
+
+    Its deployment job recognizes sha256-<hex>. A bare hexadecimal tag also
+    triggers API name normalization to repo@sha256; never assume repo remains
+    unchanged. Use the unambiguous pair and require exactly that read-back.
+    """
+    if not re.fullmatch(r"[a-z0-9][a-z0-9.:-]*/[a-z0-9][a-z0-9/_-]*@sha256:[0-9a-f]{64}", reference):
+        refuse("IMMUTABLE_REFERENCE_REQUIRED")
+    repository, digest = reference.split("@")
+    return {"docker_registry_image_name": repository,
+            "docker_registry_image_tag": "sha256-" + digest[len("sha256:"):]}
+
+
 def inspect_artifact(reference, service, pull=True):
     if service not in SERVICES or not re.fullmatch(r"[a-z0-9][a-z0-9.:-]*/[a-z0-9][a-z0-9/_-]*@sha256:[0-9a-f]{64}", reference):
         refuse("IMMUTABLE_REFERENCE_REQUIRED")
@@ -413,10 +427,10 @@ def validate_delivery(manifest, rpc, expected, running=False):
     if uuid != configured_uuid():
         refuse("DELIVERY_UUID_NOT_CREATED_BY_THIS_OPERATION")
     app = rpc.api("GET", "/applications/" + uuid)
-    repository, digest = report(manifest, "artifact")["artifact"]["reference"].split("@")
+    fields = coolify_image_fields(report(manifest, "artifact")["artifact"]["reference"])
     if app.get("uuid") != uuid or app.get("name") != "flexperiment-commerce-v2-canary-immutable" \
-            or app.get("build_pack") != "dockerimage" or app.get("docker_registry_image_name") != repository \
-            or app.get("docker_registry_image_tag") != digest.removeprefix("sha256:") \
+            or app.get("build_pack") != "dockerimage" or app.get("docker_registry_image_name") != fields["docker_registry_image_name"] \
+            or app.get("docker_registry_image_tag") != fields["docker_registry_image_tag"] \
             or app.get("ports_exposes") != "3002" or app.get("fqdn") or app.get("ports_mappings") \
             or app.get("custom_network_aliases") != ORIGINAL_APP \
             or app.get("settings", {}).get("is_auto_deploy_enabled") is not False \
@@ -597,11 +611,10 @@ def create_delivery(artifact, rpc):
             or destination["uuid"] != "5gwzwaau6dfwx3xrqgahstzi" \
             or destination["server"]["uuid"] != "1460ru9bxuxzrqnswauxqxhc":
         refuse("CANARY_CREATE_TOPOLOGY_DRIFT")
-    repository, digest = artifact["reference"].split("@")
+    fields = coolify_image_fields(artifact["reference"])
     body = {"project_uuid": environment["project"]["uuid"], "server_uuid": destination["server"]["uuid"],
             "environment_uuid": environment["uuid"], "destination_uuid": destination["uuid"],
-            "name": "flexperiment-commerce-v2-canary-immutable", "docker_registry_image_name": repository,
-            "docker_registry_image_tag": digest.removeprefix("sha256:"), "ports_exposes": "3002",
+            "name": "flexperiment-commerce-v2-canary-immutable", **fields, "ports_exposes": "3002",
             "domains": "", "autogenerate_domain": False, "instant_deploy": False,
             "is_auto_deploy_enabled": False, "is_preview_deployments_enabled": False,
             "custom_network_aliases": ORIGINAL_APP}
@@ -613,6 +626,7 @@ def create_delivery(artifact, rpc):
     # Identity validation after create, before any credentials or data bindings.
     created = rpc.api("GET", "/applications/" + result["uuid"])
     if created["environment_id"] != app["environment_id"] or created["destination_id"] != app["destination_id"] \
+            or any(created.get(key) != value for key, value in fields.items()) \
             or created.get("uuid") != result["uuid"] or created.get("name") != "flexperiment-commerce-v2-canary-immutable" \
             or created.get("settings", {}).get("is_auto_deploy_enabled") is not False \
             or created.get("settings", {}).get("is_preview_deployments_enabled") is not False \
@@ -640,8 +654,8 @@ def configure_delivery(rpc):
     old = rpc.api("GET", "/applications/" + ORIGINAL_APP)
     new = rpc.api("GET", "/applications/" + uuid)
     intent = json.loads(read(ROOT / "immutable-operations" / "commerce-resource-create.intent.json"))
-    repository, digest = intent["reference"].split("@")
-    if new.get("docker_registry_image_name") != repository or new.get("docker_registry_image_tag") != digest.removeprefix("sha256:") \
+    fields = coolify_image_fields(intent["reference"])
+    if new.get("docker_registry_image_name") != fields["docker_registry_image_name"] or new.get("docker_registry_image_tag") != fields["docker_registry_image_tag"] \
             or new.get("custom_network_aliases") != ORIGINAL_APP \
             or new.get("settings", {}).get("is_auto_deploy_enabled") is not False \
             or new.get("settings", {}).get("is_preview_deployments_enabled") is not False:

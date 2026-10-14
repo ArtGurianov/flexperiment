@@ -38,7 +38,15 @@ Create a separate **stopped Docker Image** resource with the supported
 `POST /applications/dockerimage` API. Original environment/project/server/
 destination are checked before creation. No Git checkout/rebuild, public
 ports/domains, instant deployment, previews or automatic deployment. Its new
-UUID is bound in journal v3. It receives the old Commerce UUID as an internal
+UUID is bound in journal v3. Creation explicitly encodes and read-back requires
+`docker_registry_image_name=repository` and
+`docker_registry_image_tag=sha256-<64 lowercase hex>`. The installed deployment
+job resolves that pair as `repository@sha256:<hash>`. The same shared encoder
+is used by create, configuration and validation; a bare hash field is rejected
+before provisioning or deployment. See the captured 4.4.6 source fixture for
+API normalization (which can also change an image name for bare hash input).
+
+It receives the old Commerce UUID as an internal
 network alias; the stopped old resource retains its UUID and history.
 
 Native persistent-storage API prefixes a new UUID. Consequently the new
@@ -265,8 +273,12 @@ forward-fix only. ART-336 / ART-36 / protected browser E2E are separate gates.
 `test_art337_immutable_recovery.py` exercises schema26/parent/replay refusal,
 unknown writes, rename/fsync faults, registry descriptor drift, release gates
 and canary-only creation. Python 3.10 runs are wired into CI. The real local
-registry test builds source085 separately, pushes once, consumes digest and
-compares actual installed image/rootfs/platform/identity. It executes schema
+registry test builds source085 separately, pushes once and routes the actual
+controller create request through captured installed 4.4.6 PHP API/job code.
+It writes that job's Compose image field and executes its captured Compose
+pull/up commands before independently comparing the running image/rootfs/
+platform/identity. Request persistence, non-image infrastructure and the inert
+Node process are fixtures; this is not a full HTTP Coolify server deployment. It executes schema
 restore/remote-reader contracts in that same image with synthetic fixtures.
 This proves isolated artifact transport and runtime compatibility, **not** a
 real Coolify installation or fresh live remote-ledger recovery. Those require
