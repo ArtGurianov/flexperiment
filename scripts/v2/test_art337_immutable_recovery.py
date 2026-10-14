@@ -194,6 +194,14 @@ class DeliveryBoundary(unittest.TestCase):
             once.assert_not_called()
             self.assertTrue(all(x.args[0] == "GET" for x in rpc.api.call_args_list))
 
+    def test_writable_installation_directory_refuses_before_marker_read(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary); (root/"installation").mkdir(mode=0o755)
+            with patch.object(r.q, "ERASURE_ROOT", root), patch.object(r.q, "json_file") as read, \
+                    self.assertRaisesRegex(r.Refusal, "INSTALLATION_DIRECTORY_CUSTODY_DRIFT"):
+                r.installation_custody(Mock(), "n"*24)
+            read.assert_not_called()
+
     def test_concurrent_queue_unknown_response_refuses(self):
         for response in ({"deployments": [{"deployment_uuid": "active"}]}, {"unexpected": []}):
             rpc = Mock(); rpc.api.return_value = response

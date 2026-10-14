@@ -311,6 +311,26 @@ def verify_parent(rpc):
     return raw
 
 
+def installation_custody(rpc, uuid):
+    """Preserve the installed owner's ACL/required-marker contract for v3 too."""
+    rpc.erasure_environment(uuid)
+    directory = q.ERASURE_ROOT / "installation"
+    info = directory.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or stat.S_IMODE(info.st_mode) != 0o555:
+        refuse("INSTALLATION_DIRECTORY_CUSTODY_DRIFT")
+    policy, _ = q.json_file(directory / "installation.json", mode=0o444)
+    if policy.get("version") != 1 or policy.get("scope") != "canary" or policy.get("state") != "REQUIRED" \
+            or policy.get("installationId") != q.INSTALLATION or policy.get("readerBindingSha256") != q.READER_BINDING \
+            or policy.get("fenceDirectory") != str(q.ERASURE_ROOT / "fence"):
+        refuse("INSTALLATION_BINDING_DRIFT")
+    for subdirectory, filename in (("runtime-keys", "verification.json"), ("runtime-read", "reader.json"), ("mirror", "bundle.json")):
+        parent = q.ERASURE_ROOT / subdirectory
+        info = parent.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != 1000 or stat.S_IMODE(info.st_mode) != 0o700:
+            refuse("READER_DIRECTORY_CUSTODY_DRIFT")
+        q.private_bytes(parent / filename, uid=1000)
+
+
 def verify_preserved_chain(manifest, parent):
     parent_backup_sha = json.loads(parent)["evidence"]["backup"]
     old = json.loads(read(history_directory() / (parent_backup_sha + "-backup.json")))
@@ -357,7 +377,7 @@ def verify_live(manifest, rpc, locked=False):
     verify_preserved_chain(manifest, parent)
     if rpc.private_json(str(ROOT / "deploy-config.json"))["apps"]["canary"] != ORIGINAL_APP:
         refuse("ORIGINAL_OWNER_BINDING_DRIFT")
-    rpc.erasure_environment(ORIGINAL_APP)
+    installation_custody(rpc, ORIGINAL_APP)
     if rpc.container(ORIGINAL_APP, True) or (not locked and rpc.exclusive_canary(ORIGINAL_APP) != {"exclusive": True}):
         refuse("ORIGINAL_COMMERCE_WRITER_ACTIVE")
     q.verify_payload_stopped(rpc)
@@ -694,7 +714,7 @@ def deploy(manifest, rpc):
     verify_artifact(expected)
     uuid = manifest["applicationUuid"]
     # v2 lineage checks are preserved; neither journal nor deployment ref reset.
-    rpc.erasure_environment(ORIGINAL_APP)
+    installation_custody(rpc, uuid)
     if rpc.exclusive_canary(ORIGINAL_APP) != {"exclusive": True}:
         refuse("COMPETING_ORIGINAL_WRITER")
     q.verify_payload_stopped(rpc)
@@ -730,6 +750,7 @@ def observe(manifest, rpc):
     validate(manifest)
     verify_v3(manifest, rpc)
     uuid = manifest["applicationUuid"]
+    installation_custody(rpc, uuid)
     validate_delivery(manifest, rpc, report(manifest, "delivery"), running=True)
     container = rpc.container(uuid)
     artifact = report(manifest, "artifact")["artifact"]
