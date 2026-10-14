@@ -485,6 +485,13 @@ def validate_delivery(manifest, rpc, expected, running=False):
         refuse("IMMUTABLE_RESOURCE_DRIFT")
     if not running and (rpc.container(uuid, True) or not str(app.get("status", "")).startswith(("exited", "stopped"))):
         refuse("DELIVERY_WRITER_ALREADY_ACTIVE")
+    parent = rpc.api("GET", "/applications/" + ORIGINAL_APP)
+    if app.get("environment_id") != parent.get("environment_id") or app.get("destination_id") != parent.get("destination_id") \
+            or app.get("environment", {}).get("name") != "canary-v2" \
+            or app.get("environment", {}).get("project", {}).get("uuid") != "wclu2wovf4ctpbgam3h7grzb" \
+            or app.get("destination", {}).get("uuid") != "5gwzwaau6dfwx3xrqgahstzi" \
+            or app.get("destination", {}).get("server", {}).get("uuid") != "1460ru9bxuxzrqnswauxqxhc":
+        refuse("DELIVERY_NAMESPACE_DRIFT")
     env = rpc.api("GET", "/applications/" + uuid + "/envs")
     storages = rpc.api("GET", "/applications/" + uuid + "/storages")
     # Private entire records bind secret presence/values without publishing them.
@@ -1093,6 +1100,22 @@ def run_canary_backup(manifest, rpc):
                 "requestedAt": requested_at, "manifestSha256": q.digest(canonical(manifest))}, start)
 
 
+def rearm_canary_backup(manifest, rpc):
+    backup_adopted(manifest, rpc)
+    verify_timer_restore_receipt()
+    requested_at = int(datetime.now(timezone.utc).timestamp())
+    def start():
+        timers.run_rearmed_backup()
+        _, status, sha, _ = scheduled_status()
+        if status['verifiedAt'] < requested_at:
+            refuse('SCHEDULED_BACKUP_NOT_NEW')
+        return {'state': 'REARM_BACKUP_REQUIRES_INDEPENDENT_RECOVERY', 'applicationUuid': RECOVERY_APP,
+                'requestedAt': requested_at, 'backupStatusSha256': sha, 'archiveSha256': status['sha256'],
+                'archiveFilename': status['filename']}
+    return once('commerce-scheduled-backup-rearm', {'applicationUuid': RECOVERY_APP,
+                'requestedAt': requested_at, 'manifestSha256': q.digest(canonical(manifest))}, start)
+
+
 def verify_backup_recovery(manifest, rpc, proof_path, first=False):
     """Owner-side independent decrypt/restore report plus actual remote bytes.
 
@@ -1159,7 +1182,7 @@ def restore_canary_timers(manifest, rpc, proof_path):
                                           "recovery": recovered}, activate)
 
 
-def verify_restored_timers(manifest, rpc, proof_path):
+def verify_timer_restore_receipt():
     intent = json.loads(read(ROOT / "immutable-operations" / "commerce-timer-restore.intent.json"))
     outcome = json.loads(read(ROOT / "immutable-operations" / "commerce-timer-restore.outcome.json"))
     if intent.get("applicationUuid") != RECOVERY_APP or intent.get("profile") != timers.FILES \
@@ -1167,8 +1190,19 @@ def verify_restored_timers(manifest, rpc, proof_path):
             or outcome.get("timers") != list(timers.TIMERS) \
             or any(outcome.get(k) != v for k, v in intent.get("recovery", {}).items()):
         refuse("TIMER_RESTORE_RECEIPT_DRIFT")
+    return outcome
+
+
+def verify_restored_timers(manifest, rpc, proof_path):
+    verify_timer_restore_receipt()
     timers.verify_restored()
     recovered = verify_backup_recovery(manifest, rpc, proof_path)
+    rearmed = json.loads(read(ROOT / 'immutable-operations' / 'commerce-scheduled-backup-rearm.outcome.json'))
+    if rearmed.get('state') != 'REARM_BACKUP_REQUIRES_INDEPENDENT_RECOVERY' or rearmed.get('applicationUuid') != RECOVERY_APP:
+        refuse('TIMER_REARM_RECEIPT_DRIFT')
+    _, status, _, _ = scheduled_status()
+    if status['verifiedAt'] < rearmed.get('requestedAt', status['verifiedAt'] + 1):
+        refuse('TIMER_REARM_BACKUP_NOT_NEW')
     return {"state": "CANARY_SCHEDULES_AND_LATEST_BACKUP_VERIFIED_NOT_HARD_CUT_PASS", **recovered}
 
 
@@ -1182,7 +1216,7 @@ def main():
     parser.add_argument("--backup-proof", type=Path)
     parser.add_argument("--operation", choices=("artifact", "create", "reconcile-existing-resource", "repair-resource", "isolate-timers",
         "configure", "validate", "publish", "deploy", "observe", "adopt", "stop", "inspect-publication", "inspect-timers", "reconcile",
-        "run-canary-backup", "restore-timers", "verify-restored-timers"), required=True)
+        "run-canary-backup", "restore-timers", "rearm-canary-backup", "verify-restored-timers"), required=True)
     args = parser.parse_args()
     try:
         if args.operation == "artifact":
@@ -1227,12 +1261,14 @@ def main():
         elif args.operation == "deploy":
             result = deploy(manifest, rpc)
             print(json.dumps({"state": "QUEUED_NOT_PASS", "deploymentUuid": result["deploymentUuid"]}))
-        elif args.operation in ("run-canary-backup", "restore-timers", "verify-restored-timers"):
+        elif args.operation in ("run-canary-backup", "restore-timers", "rearm-canary-backup", "verify-restored-timers"):
             verify_release(manifest["controllerCommit"])
             if args.operation == "run-canary-backup":
                 print(json.dumps(run_canary_backup(manifest, rpc)))
             elif args.operation == "restore-timers":
                 print(json.dumps(restore_canary_timers(manifest, rpc, args.backup_proof)))
+            elif args.operation == "rearm-canary-backup":
+                print(json.dumps(rearm_canary_backup(manifest, rpc)))
             else:
                 print(json.dumps(verify_restored_timers(manifest, rpc, args.backup_proof)))
         else:

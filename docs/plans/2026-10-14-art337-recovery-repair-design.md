@@ -23,7 +23,10 @@ After installed artifact/readiness qualification and backup lookup adoption,
 run a new actual scheduled backup. Off-VPS independent decrypt/restore/copied
 fence boot and current remote bytes qualify one timer-restoration operation.
 Activation and final readback are separate; OnBootSec work is observed and the
-latest archive must bind its own independent proof.
+latest archive must bind its own independent proof. A separate one-shot backup
+start after activation establishes the recurring deadline if systemd unloaded
+the earlier completed service; the resulting second archive is independently
+recovered, never treated as a retry or inferred proof.
 
 ## Verification and authority
 

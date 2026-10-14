@@ -158,6 +158,14 @@ class KnownResource(unittest.TestCase):
 
 
 class BackupAndSchedules(unittest.TestCase):
+    def test_lost_rearm_service_start_preserves_intent_never_repeats(self):
+        with repair_fixture() as (root,manifest,rpc,_,_,_),patch.object(r,'backup_adopted'), \
+                patch.object(r,'verify_timer_restore_receipt'), \
+                patch.object(r.timers,'run_rearmed_backup',side_effect=TimeoutError('lost-start')) as start:
+            with self.assertRaises(TimeoutError):r.rearm_canary_backup(manifest,rpc)
+            with self.assertRaisesRegex(r.Refusal,'REPLAY_OR_UNKNOWN'):r.rearm_canary_backup(manifest,rpc)
+            start.assert_called_once()
+            self.assertTrue((root/'immutable-operations'/'commerce-scheduled-backup-rearm.intent.json').exists())
     @contextlib.contextmanager
     def recovered(self):
         with fixture() as (root,manifest,_,_):

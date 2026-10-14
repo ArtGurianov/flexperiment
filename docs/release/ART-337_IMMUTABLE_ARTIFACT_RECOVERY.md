@@ -189,7 +189,10 @@ not invoke or resend alerts. Shared unit files/helper and production instances
 are not modified. The timer module pins all four fragment hashes, the canary
 backup alert drop-in, installed helper hash, root ExecStart arguments, trigger
 relationships, no extra drop-ins, and no unknown scoped units. It checks pending
-jobs, PIDs/cgroups, orphan helper processes and alert jobs.
+jobs, PIDs/cgroups, orphan helper processes and alert jobs. An inactive timer
+may be garbage-collected between systemd show calls; its empty dynamic reverse
+edge is accepted only while that exact timer is disabled/inactive and its
+hashed fragment still binds the service. Unknown or active missing edges HOLD.
 
 Isolation is one recorded operation: disable/stop **only these two timers**,
 repeat census, stop drained services, reset historical failed service states,
@@ -364,6 +367,9 @@ python3 -B "$ART337_CONTROLLER/scripts/v2/art337_immutable_recovery.py" \
   --operation restore-timers --manifest "$ART337_CONTINUATION_MANIFEST" \
   --backup-proof "$ART337_POST_CUTOVER_RECOVERY"
 python3 -B "$ART337_CONTROLLER/scripts/v2/art337_immutable_recovery.py" \
+  --operation rearm-canary-backup --manifest "$ART337_CONTINUATION_MANIFEST"
+# Independently recover the resulting latest archive and renew this proof.
+python3 -B "$ART337_CONTROLLER/scripts/v2/art337_immutable_recovery.py" \
   --operation verify-restored-timers --manifest "$ART337_CONTINUATION_MANIFEST" \
   --backup-proof "$ART337_POST_CUTOVER_RECOVERY"
 ```
@@ -371,7 +377,14 @@ python3 -B "$ART337_CONTROLLER/scripts/v2/art337_immutable_recovery.py" \
 Restoration is a distinct fsynced one-shot: repeat recovery/readiness/lookup/
 isolation, require a successful freshness-service run, enable/start only the
 two timers. `ACTIVATION_RETURNED_REQUIRES_READBACK` is not completion. OnBootSec
-may immediately trigger a legitimate automatic backup. The read-only verifier
+may immediately trigger a legitimate automatic backup. A completed oneshot
+service can also be garbage-collected while its timer is disabled: this can
+leave an enabled timer `elapsed` without a recurring deadline. After activation
+and readonly draining, `rearm-canary-backup` is a **separate fsynced one-shot**
+start of the qualified backup service with the timer retaining its relationship.
+It produces a second new archive; independently recover it. This is neither a
+retry of the first known successful backup nor a retry of uncertain activation.
+The read-only verifier
 refuses pending/running jobs: observe completion without repeating activation.
 If the latest archive changed, independently recover that archive and supply a
 report bound to current status. Final timer readback requires enabled/active/

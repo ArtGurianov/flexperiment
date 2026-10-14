@@ -88,6 +88,7 @@ class RealSystemd(unittest.TestCase):
                     fault.unlink()  # Only this disposable proof's synthetic failure marker.
                     t.run_backup();self.assertTrue(events.read_text().endswith('backup\n'))
                     self.assertEqual(t.restore()['state'],'ACTIVATION_RETURNED_REQUIRES_READBACK')
+                    wait_quiet();t.run_rearmed_backup()
                     deadline=time.monotonic()+20
                     while True:
                         try:

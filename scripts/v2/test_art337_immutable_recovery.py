@@ -241,6 +241,16 @@ class DeliveryBoundary(unittest.TestCase):
                 r.validate_delivery(manifest, rpc, {})
             self.assertEqual(rpc.api.call_count, 1)
 
+    def test_namespace_change_after_configure_refuses_before_reading_secrets(self):
+        with fixture() as (_,manifest,_,_),patch.object(r,'configured_uuid',return_value='n'*24):
+            app={'uuid':'n'*24,'name':'flexperiment-commerce-v2-canary-immutable','build_pack':'dockerimage',
+                 'ports_exposes':'3002','custom_network_aliases':r.ORIGINAL_APP,'status':'exited:unhealthy',
+                 'environment_id':99,'destination_id':0,**r.coolify_image_fields(artifact()['reference']),
+                 'settings':{'is_auto_deploy_enabled':False,'is_preview_deployments_enabled':False}}
+            rpc=Mock();rpc.container.return_value=None;rpc.api.side_effect=[app,self.parent_app()]
+            with self.assertRaisesRegex(r.Refusal,'DELIVERY_NAMESPACE_DRIFT'):r.validate_delivery(manifest,rpc,{})
+            self.assertEqual(rpc.api.call_count,2)
+
     def test_configure_rejects_bare_tag_before_provisioning(self):
         with fixture() as (root, _, _, _), patch.object(r, "verify_parent"), \
                 patch.object(r, "verify_timer_isolation"), patch.object(r, "verify_repair_receipt"), patch.object(r, "verify_existing_resource"), \

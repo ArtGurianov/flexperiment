@@ -124,6 +124,13 @@ class TimerSafety(unittest.TestCase):
             t.restore();data[t.BACKUP_SERVICE].update(ActiveState='activating',SubState='start',MainPID='44')
             with self.assertRaisesRegex(Refusal,'JOB_ACTIVE'):t.verify_restored()
 
+    def test_elapsed_timer_needs_distinct_qualified_service_start_before_final_pass(self):
+        with backend(isolated=True) as (data,_,_,commands):
+            t.restore();data[t.BACKUP_TIMER]['SubState']='elapsed'
+            with self.assertRaisesRegex(Refusal,'SCHEDULE_NOT_RESTORED'):t.verify_restored()
+            t.run_rearmed_backup();self.assertIn(['systemctl','start',t.BACKUP_SERVICE],commands)
+        with backend(isolated=True),self.assertRaisesRegex(Refusal,'NOT_ACTIVATED'):t.run_rearmed_backup()
+
     def test_actual_orphan_helper_argv_detected_without_printing_arguments(self):
         class Process:
             name='999999'

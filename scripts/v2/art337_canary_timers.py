@@ -184,6 +184,29 @@ def restore():
     return {'timers': list(TIMERS), 'state': 'ACTIVATION_RETURNED_REQUIRES_READBACK'}
 
 
+def run_rearmed_backup():
+    """A separate known start after activation anchors OnUnitActiveSec.
+
+    systemd may GC the first completed service while its timer is disabled.
+    Starting it with the enabled timer retaining its reverse relationship
+    restores the recurring deadline. Never retry an uncertain prior start.
+    """
+    snapshot = capture()
+    for unit in TIMERS:
+        value = snapshot['units'][unit]
+        if value.get('UnitFileState') != 'enabled' or value.get('ActiveState') != 'active' \
+                or value.get('SubState') not in ('waiting', 'elapsed') or value.get('Job'):
+            refuse('CANARY_TIMER_NOT_ACTIVATED')
+    for service in SERVICES:
+        quiescent(snapshot['units'][service], failed=False)
+    command(['systemctl', 'start', BACKUP_SERVICE], timeout=930)
+    # Final waiting/next-archive proof is deliberately the separate observer.
+    current = capture()
+    if current['units'][BACKUP_SERVICE].get('Result') != 'success':
+        refuse('CANARY_SCHEDULED_BACKUP_FAILED')
+    return current
+
+
 def verify_restored():
     snapshot = capture()
     for timer in TIMERS:
