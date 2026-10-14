@@ -1,0 +1,123 @@
+{
+  "name": "flexperiment-closed-e2e",
+  "services": {
+    "drm-bridge": {
+      "image": "ghcr.io/artgurianov/flexperiment-admin-v2@sha256:85eadc71e50fdab0bc4d154a242a46188bd85bbe7f0edfed516f8863eb14dc77",
+      "read_only": true,
+      "restart": "unless-stopped",
+      "cap_drop": [
+        "ALL"
+      ],
+      "cap_add": [
+        "CHOWN",
+        "SETUID",
+        "SETGID",
+        "NET_BIND_SERVICE"
+      ],
+      "security_opt": [
+        "no-new-privileges:true"
+      ],
+      "tmpfs": [
+        "/tmp:rw,nosuid,nodev,noexec,size=64m",
+        "/var/cache/nginx:rw,nosuid,nodev,noexec,size=32m",
+        "/var/run:rw,nosuid,nodev,noexec,size=4m"
+      ],
+      "labels": {
+        "com.flexperiment.scope": "canary-closed-e2e",
+        "com.flexperiment.source": "08523bdf38eeddf5e745ce04d05e1f980a7ced93"
+      },
+      "container_name": "flexperiment-canary-drm-bridge",
+      "networks": [
+        "private",
+        "callback"
+      ],
+      "volumes": [
+        {
+          "type": "bind",
+          "source": "./drm-bridge.conf",
+          "target": "/etc/nginx/conf.d/default.conf",
+          "read_only": true,
+          "bind": {
+            "create_host_path": false
+          }
+        }
+      ],
+      "healthcheck": {
+        "test": [
+          "CMD",
+          "wget",
+          "-q",
+          "-O",
+          "/dev/null",
+          "http://127.0.0.1/healthz"
+        ],
+        "interval": "30s",
+        "timeout": "3s",
+        "retries": 3
+      }
+    },
+    "tester": {
+      "image": "ghcr.io/artgurianov/flexperiment-admin-v2@sha256:85eadc71e50fdab0bc4d154a242a46188bd85bbe7f0edfed516f8863eb14dc77",
+      "read_only": true,
+      "restart": "unless-stopped",
+      "cap_drop": [
+        "ALL"
+      ],
+      "cap_add": [
+        "CHOWN",
+        "SETUID",
+        "SETGID",
+        "NET_BIND_SERVICE"
+      ],
+      "security_opt": [
+        "no-new-privileges:true"
+      ],
+      "tmpfs": [
+        "/tmp:rw,nosuid,nodev,noexec,size=64m",
+        "/var/cache/nginx:rw,nosuid,nodev,noexec,size=32m",
+        "/var/run:rw,nosuid,nodev,noexec,size=4m"
+      ],
+      "labels": {
+        "com.flexperiment.scope": "canary-closed-e2e",
+        "com.flexperiment.source": "08523bdf38eeddf5e745ce04d05e1f980a7ced93"
+      },
+      "container_name": "flexperiment-canary-tester",
+      "networks": [
+        "private"
+      ],
+      "ports": [
+        "127.0.0.1:8446:443"
+      ],
+      "volumes": [
+        {
+          "type": "bind",
+          "source": "./tester.conf",
+          "target": "/etc/nginx/conf.d/default.conf",
+          "read_only": true,
+          "bind": {
+            "create_host_path": false
+          }
+        },
+        {
+          "type": "bind",
+          "source": "/etc/flexperiment-closed-e2e/tls",
+          "target": "/etc/canary-tls",
+          "read_only": true,
+          "bind": {
+            "create_host_path": false
+          }
+        }
+      ]
+    }
+  },
+  "networks": {
+    "private": {
+      "external": true,
+      "name": "flexperiment-fast-cut-canary"
+    },
+    "callback": {
+      "external": true,
+      "name": "coolify"
+    }
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "status": "OWNER_EXECUTION_APPROVAL_PENDING_NOT_ACTIVATED",
+  "scope": "closed canary COURSES only, existing approved-source bytes unchanged; not public/legal production admission",
+  "releaseVersion": "2026-10-15.closed-e2e",
+  "stage": "A",
+  "documents": [
+    {
+      "kind": "privacy",
+      "version": "2026-10-11.draft.2",
+      "sha256": "c900a358350e4103676c1f0b25874151d9caef024dfb69ad156327400927e49a",
+      "url": "https://canary-platform.flexperiment.ru/__closed_legal/privacy.md",
+      "source": "docs/legal/stage-a/2026-10-11-draft/privacy.md"
+    },
+    {
+      "kind": "personal_data",
+      "version": "2026-10-11.draft.2",
+      "sha256": "650e65fb2d1bae5e3e2487b9eddb88a29f2825c421027d4e6c174fa55a2cb744",
+      "url": "https://canary-platform.flexperiment.ru/__closed_legal/personal_data.md",
+      "source": "docs/legal/stage-a/2026-10-11-draft/personal_data.md"
+    },
+    {
+      "kind": "account_terms",
+      "version": "2026-10-11.draft.2",
+      "sha256": "928c70924019c618c3bd52ea0e0f47ba7576d00ac6c9176d65967669998b192e",
+      "url": "https://canary-platform.flexperiment.ru/__closed_legal/account_terms.md",
+      "source": "docs/legal/stage-a/2026-10-11-draft/account_terms.md"
+    },
+    {
+      "kind": "marketing_consent",
+      "version": "2026-10-11.draft.2",
+      "sha256": "2e51350e5778da1f0ba6c9b258e992e38459308fd8ab4f2a183e59982934e607",
+      "url": "https://canary-platform.flexperiment.ru/__closed_legal/marketing_consent.md",
+      "source": "docs/legal/stage-a/2026-10-11-draft/marketing_consent.md"
+    }
+  ]
+}
