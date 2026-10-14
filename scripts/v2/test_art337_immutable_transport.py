@@ -77,23 +77,42 @@ def main():
         new_uuid = token[:24]
         pipeline = None
         created = None
+        create_body = None
         def api(method, path, body=None):
-            nonlocal pipeline, created
+            nonlocal pipeline, created, create_body
             if method == 'POST' and path == '/applications/dockerimage':
+                create_body = body
                 pipeline = replay(body, {'containerName': container, 'workdir': str(workdir),
                                          'uuid': new_uuid, 'network': network})
                 created = {'uuid': new_uuid, 'environment_id': 6, 'destination_id': 0,
                     'build_pack': 'dockerimage', 'name': body['name'],
-                    'settings': {'is_auto_deploy_enabled': False, 'is_preview_deployments_enabled': False},
+                    'status': 'exited:unhealthy', 'ports_exposes': '3002', 'custom_network_aliases': r.ORIGINAL_APP,
+                    'settings': pipeline['settings'],
                     **pipeline['persisted']}
                 return {'uuid': new_uuid}
-            if method == 'GET': return original if path.endswith(r.ORIGINAL_APP) else created
+            if method == 'PATCH' and path == '/applications/' + r.RECOVERY_APP:
+                pipeline = replay(create_body, {'containerName': container, 'workdir': str(workdir),
+                                    'uuid': new_uuid, 'network': network}, patch=body)
+                created['settings'] = pipeline['settings']
+                return {'message': 'Application updated.'}
+            if method == 'GET':
+                if path.endswith('/envs'): return []
+                if path.endswith('/storages'): return {'persistent_storages': [], 'file_storages': []}
+                return original if path.endswith(r.ORIGINAL_APP) else created
             raise RuntimeError('UNEXPECTED_FIXTURE_API_CALL')
         rpc = Mock(); rpc.api.side_effect = api; rpc.container.return_value = None
         rpc.exclusive_canary.return_value = {'exclusive': True}
         with patch.object(r, 'verify_parent'), patch.object(r.q, 'verify_payload_stopped'), \
                 patch.object(r, 'once', side_effect=lambda name, request, action: action()):
-            r.create_delivery(expected, rpc)
+            try:
+                r.create_delivery(expected, rpc)
+                raise RuntimeError('COOLIFY_REAL_CREATE_DEFAULT_NOT_EXERCISED')
+            except r.Refusal as refusal:
+                if str(refusal) != 'CREATED_RESOURCE_TOPOLOGY_DRIFT': raise
+            with patch.object(r, 'configured_uuid', return_value=new_uuid), \
+                    patch.object(r, 'stopped_parent', return_value=original), patch.object(r, 'verify_timer_isolation'), \
+                    patch.object(r, 'RECOVERY_REFERENCE', reference), patch.object(r, 'RECOVERY_APP', new_uuid):
+                r.repair_existing_resource(rpc)
         if pipeline['job']['productionImage'] != reference:
             raise RuntimeError('COOLIFY_JOB_RESOLVED_MUTABLE_REFERENCE')
         compose = pipeline['job']['compose']
@@ -124,6 +143,7 @@ def main():
             'coolifySourceHashes': pipeline['sourceHashes'], 'coolifyPersistedResource': {
                 key: pipeline['persisted'][key] for key in ('docker_registry_image_name','docker_registry_image_tag')},
             'coolifyProductionImage': pipeline['job']['productionImage'],
+            'coolifyCreateSettings': pipeline['createdSettings'], 'coolifyRepairedSettings': pipeline['settings'],
             'executedCoolifyCommands': actual_commands, 'liveExecution': 'NOT_PERFORMED'}, indent=2))
         print(json.dumps({'state': 'ISOLATED_IMMUTABLE_TRANSPORT_PASS', 'sourceCommit': r.TARGET,
                           'manifestDigest': digest, 'imageId': expected['imageId']}))

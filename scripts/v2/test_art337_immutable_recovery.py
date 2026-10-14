@@ -58,6 +58,7 @@ def fixture():
                    "restore": {**proof, "result": "PASS", "syntheticErasedAccounts": 1, "currentUsers": 0},
                    "boot": {**proof, "result": "BOOT_PASS", "fence": "OPEN", "leases": 0},
                    "isolation": {"payloadWriters": "STOPPED", "commerceWriters": "STOPPED", "queuedDeployments": 0},
+                   "timers": {"state": "CANARY_TIMERS_ISOLATED", "profile": r.timers.FILES, "isolationOutcomeSha256": "4"*64},
                    "delivery": {"applicationUuid": "n" * 24, "sourceApplicationUuid": r.ORIGINAL_APP,
                        "buildPack": "dockerimage", "reference": image["reference"], "mountsVerified": "PASS",
                        "namespaceVerified": "PASS", "backupBindingVerified": "PASS"}}
@@ -66,6 +67,10 @@ def fixture():
             if kind != "inventory": report["recordedAt"] = now
             path = root / (kind + ".json"); path.write_bytes(r.canonical(report))
             files[kind] = {"path": str(path), "sha256": r.q.digest(path.read_bytes())}
+        isolation = reports['isolation']
+        isolation.update(commerceTimers='ISOLATED', timerIsolationSha256=files['timers']['sha256'])
+        pathlib.Path(files['isolation']['path']).write_bytes(r.canonical(isolation))
+        files['isolation']['sha256'] = r.q.digest(r.canonical(isolation))
         manifest = {"version": 3, "scope": "canary", "sourceCommit": r.TARGET,
                     "parentJournalSha256": r.q.digest(old), "schemaFingerprint": r.SCHEMA,
                     "installationId": r.q.INSTALLATION, "readerBindingSha256": r.q.READER_BINDING,
@@ -238,6 +243,7 @@ class DeliveryBoundary(unittest.TestCase):
 
     def test_configure_rejects_bare_tag_before_provisioning(self):
         with fixture() as (root, _, _, _), patch.object(r, "verify_parent"), \
+                patch.object(r, "verify_timer_isolation"), patch.object(r, "verify_repair_receipt"), patch.object(r, "verify_existing_resource"), \
                 patch.object(r, "configured_uuid", return_value="n"*24), patch.object(r.q, "verify_payload_stopped"):
             directory=root/"immutable-operations"; directory.mkdir()
             (directory/"commerce-resource-create.intent.json").write_bytes(r.canonical({"reference":artifact()["reference"]}))

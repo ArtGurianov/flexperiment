@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).parent))
 import art337_erasure_requalification as q
+import art337_canary_timers as timers
 
 TARGET = q.TARGET
 PARENT = "3496ccc7d51c691cb65035c6e09b69ac44ef24a1358d2021fc49ae88652a2a0b"
@@ -37,7 +38,11 @@ CURRENT_SNAPSHOTS = {
     "payload": "7168269bb0e6e3176caaca562aae1675183f87fb39afbd04ad25a7ca8ba0596b",
 }
 ROOT = q.ROOT
-REQUIRED = {"inventory", "backup", "restore", "boot", "artifact", "isolation", "delivery"}
+REQUIRED = {"inventory", "backup", "restore", "boot", "artifact", "isolation", "delivery", "timers"}
+RECOVERY_APP = "irskrskdhh2addt3xbkpbnrr"
+CREATE_INTENT = "b12c7c025fd44edc98cb0cb14d354a3cfc5915b63d4926909069964ea4b41dba"
+CREATE_OUTCOME = "96f176e1e48ac998238dd4e3f4f2a5ba16320f2585914e3dbd36db8292ac096f"
+RECOVERY_REFERENCE = "ghcr.io/artgurianov/flexperiment-commerce-v2@sha256:ae982e7629f93db45ebc79b9ef623756f13da85fb7b2a5a91d7e47a926754c92"
 SERVICES = {"commerce-v2": ORIGINAL_APP, "platform-v2": q.PLATFORM_APP,
             "admin-v2": "v2w4tnlkkt8pj2fnfspyn5l5"}
 # Native contracts in exact source085 images. Deployment resource roles differ
@@ -79,6 +84,21 @@ def github(path):
         return json.loads(response.read(2_000_001))
 
 
+def github_blob(controller, name):
+    """Exact immutable Git bytes, without spending REST quota per file.
+
+    Mutable main/CI admissions still use fresh REST reads on every invocation.
+    No credential, cache, mutable ref or redirect is used for these public bytes.
+    """
+    request = urllib.request.Request("https://raw.githubusercontent.com/ArtGurianov/flexperiment/" +
+        controller + "/scripts/v2/" + name, headers={"User-Agent": "flexperiment-art337-owner"})
+    with urllib.request.build_opener(NoRedirect).open(request, timeout=20) as response:
+        raw = response.read(2_000_001)
+    if len(raw) > 2_000_000:
+        refuse("CONTROLLER_BLOB_TOO_LARGE")
+    return hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
+
+
 def verify_release(controller):
     if not re.fullmatch(r"[0-9a-f]{40}", controller or "") or controller == TARGET:
         refuse("CONTROLLER_SOURCE_NOT_INDEPENDENT")
@@ -93,10 +113,10 @@ def verify_release(controller):
             latest = max(selected, key=lambda x: x["id"], default={})
             if latest.get("status") != "completed" or latest.get("conclusion") != "success":
                 refuse("EXACT_HEAD_CI_REQUIRED")
-    for name in ("art337_immutable_recovery.py", "art337_erasure_requalification.py", "scheduled-backup.py", "art337-proof-continue.mjs"):
+    for name in ("art337_immutable_recovery.py", "art337_erasure_requalification.py", "art337_canary_timers.py", "scheduled-backup.py", "art337-proof-continue.mjs"):
         raw = Path(__file__).with_name(name).read_bytes()
         blob = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
-        if github("contents/scripts/v2/" + name + "?ref=" + controller).get("sha") != blob:
+        if github_blob(controller, name) != blob:
             refuse("PINNED_CONTROLLER_FILE_DRIFT")
 
 
@@ -307,6 +327,12 @@ def validate(manifest):
             or reports["isolation"].get("commerceWriters") != "STOPPED" \
             or reports["isolation"].get("queuedDeployments") != 0:
         refuse("WRITER_ISOLATION_INVALID")
+    timer_report = reports["timers"]
+    if timer_report.get("state") != "CANARY_TIMERS_ISOLATED" or timer_report.get("profile") != timers.FILES \
+            or not HASH.fullmatch(timer_report.get("isolationOutcomeSha256", "")) \
+            or reports["isolation"].get("commerceTimers") != "ISOLATED" \
+            or reports["isolation"].get("timerIsolationSha256") != manifest["files"]["timers"]["sha256"]:
+        refuse("COMMERCE_TIMER_EVIDENCE_INVALID")
     delivery = reports["delivery"]
     if delivery.get("applicationUuid") != manifest["applicationUuid"] \
             or delivery.get("sourceApplicationUuid") != ORIGINAL_APP \
@@ -401,6 +427,10 @@ def no_queued_deployments(rpc, uuids):
 
 def verify_live(manifest, rpc, locked=False):
     reports = validate(manifest)
+    verify_timer_isolation()
+    verify_repair_receipt(rpc)
+    if q.digest(read(ROOT / "immutable-operations" / "commerce-timer-isolate.outcome.json")) != reports["timers"]["isolationOutcomeSha256"]:
+        refuse("COMMERCE_TIMER_RECEIPT_DRIFT")
     no_queued_deployments(rpc, (ORIGINAL_APP, q.PLATFORM_APP, manifest["applicationUuid"]))
     parent = verify_parent(rpc)
     verify_preserved_chain(manifest, parent)
@@ -652,15 +682,151 @@ def create_delivery(artifact, rpc):
 
 
 def configured_uuid():
-    result = json.loads(read(ROOT / "immutable-operations" / "commerce-resource-create.outcome.json"))
-    uuid = result.get("uuid", "")
-    if not UUID.fullmatch(uuid) or uuid in SERVICES.values():
-        refuse("CREATED_UUID_INVALID")
+    records = {}
+    for kind, sha in (("intent", CREATE_INTENT), ("outcome", CREATE_OUTCOME)):
+        raw = read(ROOT / "immutable-operations" / ("commerce-resource-create." + kind + ".json"))
+        if q.digest(raw) != sha:
+            refuse("EXISTING_CREATE_CUSTODY_DRIFT")
+        records[kind] = json.loads(raw)
+    if records["outcome"] != {"domains": None, "uuid": RECOVERY_APP} \
+            or records["intent"] != {"bodySha256": "48caa82b444531844094d5b774fe6d658bbdbe0afed9a88addb82a513ad93cd5",
+                                     "sourceUuid": ORIGINAL_APP, "reference": RECOVERY_REFERENCE}:
+        refuse("EXISTING_CREATE_CUSTODY_DRIFT")
+    return RECOVERY_APP
+
+
+def stopped_parent(rpc):
+    verify_parent(rpc)
+    no_queued_deployments(rpc, (ORIGINAL_APP, q.PLATFORM_APP, RECOVERY_APP))
+    if rpc.exclusive_canary(ORIGINAL_APP) != {"exclusive": True}:
+        refuse("ORIGINAL_WRITER_ACTIVE")
+    q.verify_payload_stopped(rpc)
+    app = rpc.api("GET", "/applications/" + ORIGINAL_APP)
+    if app.get("uuid") != ORIGINAL_APP or app.get("git_commit_sha") != TARGET \
+            or app.get("build_pack") != "dockerfile" or not str(app.get("status", "")).startswith(("exited", "stopped")) \
+            or app.get("settings", {}).get("is_auto_deploy_enabled") is not False \
+            or app.get("environment", {}).get("name") != "canary-v2" \
+            or app.get("environment", {}).get("project", {}).get("uuid") != "wclu2wovf4ctpbgam3h7grzb" \
+            or app.get("destination", {}).get("uuid") != "5gwzwaau6dfwx3xrqgahstzi" \
+            or app.get("destination", {}).get("server", {}).get("uuid") != "1460ru9bxuxzrqnswauxqxhc":
+        refuse("RECOVERY_PARENT_TOPOLOGY_DRIFT")
+    installation_custody(rpc, ORIGINAL_APP)
+    for kind, uuid, mount, volume, filename in (
+            ("commerce", ORIGINAL_APP, "/var/lib/flexperiment-v2", ORIGINAL_APP + "-" + ORIGINAL_APP + "-commerce-v2-data", "commerce.sqlite"),
+            ("payload", q.PLATFORM_APP, "/var/lib/flexperiment-platform-canary", q.PLATFORM_VOLUME, "platform.sqlite")):
+        directory = q.volume_directory(rpc, uuid, mount, volume)
+        if q.online_backup_sha256(directory / filename, kind == "commerce") != CURRENT_SNAPSHOTS[kind]:
+            refuse("RECOVERY_LIVE_SNAPSHOT_DRIFT")
+    parent = json.loads(read(ROOT / "erasure-admission.json"))
+    remote = json.loads(q.command(["/usr/local/bin/flexperiment-erasure", "read"]))
+    mirror, sha = q.json_file(q.ERASURE_ROOT / "mirror" / "bundle.json", uid=1000)
+    state, leases, unknown = q.current_fence(q.ERASURE_ROOT / "fence" / "erasure-fence.sqlite")
+    entries = mirror.get("entries", [])
+    if remote.get("scope") != "canary" or remote.get("state") != "REMOTE_VERIFIED" \
+            or remote.get("sequence") != parent["ledgerSequence"] or len(entries) != parent["ledgerSequence"] \
+            or not entries or sha != parent["mirrorSha256"] \
+            or state != ("canary", "OPEN", len(entries), entries[-1]["hash"], None) or leases or unknown:
+        refuse("RECOVERY_ERASURE_BINDING_DRIFT")
+    return app
+
+
+def check_existing_app(rpc, parent, expected_auto):
+    uuid = configured_uuid()
+    app = rpc.api("GET", "/applications/" + uuid)
+    required = {"uuid": uuid, "name": "flexperiment-commerce-v2-canary-immutable", "build_pack": "dockerimage",
+                "environment_id": parent["environment_id"], "destination_id": parent["destination_id"],
+                "ports_exposes": "3002", "custom_network_aliases": ORIGINAL_APP,
+                **coolify_image_fields(RECOVERY_REFERENCE)}
+    settings = app.get("settings", {})
+    if any(app.get(k) != v for k, v in required.items()) \
+            or settings.get("is_auto_deploy_enabled") is not expected_auto \
+            or settings.get("is_preview_deployments_enabled") is not False \
+            or not str(app.get("status", "")).startswith(("exited", "stopped")) or rpc.container(uuid, True) \
+            or any(app.get(k) for k in ("fqdn", "ports_mappings", "custom_labels", "custom_docker_run_options",
+                "pre_deployment_command", "post_deployment_command", "start_command", "install_command", "build_command",
+                "dockerfile", "docker_compose_raw", "github_app_id", "private_key_id")):
+        refuse("EXISTING_RESOURCE_DRIFT")
     return uuid
+
+
+def verify_existing_resource(rpc, expected_auto=True, empty=True):
+    """Read-only admission for the exact successful POST; never another create."""
+    parent = stopped_parent(rpc)
+    uuid = check_existing_app(rpc, parent, expected_auto)
+    if empty:
+        env = rpc.api("GET", "/applications/" + uuid + "/envs")
+        storage = rpc.api("GET", "/applications/" + uuid + "/storages")
+        if not isinstance(env, list) or env or not isinstance(storage, dict) \
+                or set(storage) != {"persistent_storages", "file_storages"} \
+                or storage["persistent_storages"] != [] or storage["file_storages"] != []:
+            refuse("EXISTING_RESOURCE_ALREADY_PROVISIONED")
+    return {"applicationUuid": uuid, "createIntentSha256": CREATE_INTENT, "createOutcomeSha256": CREATE_OUTCOME,
+            "reference": RECOVERY_REFERENCE, "autoDeploy": expected_auto, "state": "EXISTING_STOPPED_NOT_ADMITTED"}
+
+
+def repair_existing_resource(rpc):
+    verify_timer_isolation()
+    before = verify_existing_resource(rpc)
+    body = {"is_auto_deploy_enabled": False, "is_preview_deployments_enabled": False, "instant_deploy": False}
+    def patch_settings():
+        rpc.api("PATCH", "/applications/" + RECOVERY_APP, body)
+        after = verify_existing_resource(rpc, expected_auto=False)
+        return {**after, "state": "EXISTING_SETTINGS_REPAIRED_NOT_ADMITTED"}
+    return once("commerce-resource-settings-repair", {"before": before, "bodySha256": q.digest(canonical(body))}, patch_settings)
+
+
+def verify_repair_receipt(rpc):
+    directory = ROOT / "immutable-operations"
+    intent = json.loads(read(directory / "commerce-resource-settings-repair.intent.json"))
+    outcome = json.loads(read(directory / "commerce-resource-settings-repair.outcome.json"))
+    base = {"applicationUuid": configured_uuid(), "createIntentSha256": CREATE_INTENT,
+            "createOutcomeSha256": CREATE_OUTCOME, "reference": RECOVERY_REFERENCE}
+    body = {"is_auto_deploy_enabled": False, "is_preview_deployments_enabled": False, "instant_deploy": False}
+    if intent != {"before": {**base, "autoDeploy": True, "state": "EXISTING_STOPPED_NOT_ADMITTED"},
+                  "bodySha256": q.digest(canonical(body))} \
+            or outcome != {**base, "autoDeploy": False, "state": "EXISTING_SETTINGS_REPAIRED_NOT_ADMITTED"}:
+        refuse("SETTINGS_REPAIR_RECEIPT_DRIFT")
+    app = rpc.api("GET", "/applications/" + RECOVERY_APP)
+    if app.get("settings", {}).get("is_auto_deploy_enabled") is not False \
+            or app.get("settings", {}).get("is_preview_deployments_enabled") is not False:
+        refuse("SETTINGS_CHANGED_AFTER_REPAIR")
+
+
+def isolate_timers(rpc):
+    configured_uuid()
+    stopped_parent(rpc)
+    before = timers.capture()
+    def isolate():
+        actual = timers.isolate()
+        return {"recordedAt": datetime.now(timezone.utc).isoformat(), "state": "CANARY_TIMERS_ISOLATED",
+                "profile": timers.FILES, "snapshot": actual}
+    return once("commerce-timer-isolate", {"applicationUuid": RECOVERY_APP, "profile": timers.FILES,
+                                          "before": before}, isolate)
+
+
+def verify_timer_isolation():
+    directory = ROOT / "immutable-operations"
+    intent = json.loads(read(directory / "commerce-timer-isolate.intent.json"))
+    outcome = json.loads(read(directory / "commerce-timer-isolate.outcome.json"))
+    if intent.get("applicationUuid") != RECOVERY_APP or intent.get("profile") != timers.FILES \
+            or outcome.get("state") != "CANARY_TIMERS_ISOLATED" or outcome.get("profile") != timers.FILES:
+        refuse("COMMERCE_TIMER_RECEIPT_DRIFT")
+    timers.verify_isolated()
+    return outcome
+
+
+def timer_evidence():
+    verify_timer_isolation()
+    return {"recordedAt": datetime.now(timezone.utc).isoformat(), "state": "CANARY_TIMERS_ISOLATED",
+            "profile": timers.FILES, "snapshot": timers.verify_isolated(),
+            "isolationOutcomeSha256": q.digest(read(ROOT / "immutable-operations" / "commerce-timer-isolate.outcome.json"))}
 
 
 def configure_delivery(rpc):
     """Each privileged write is an independent one-shot operation, never retried."""
+    verify_timer_isolation()
+    verify_repair_receipt(rpc)
+    verify_existing_resource(rpc, expected_auto=False)
     verify_parent(rpc)
     if rpc.exclusive_canary(ORIGINAL_APP) != {"exclusive": True}:
         refuse("ORIGINAL_WRITER_ACTIVE")
@@ -691,12 +857,19 @@ def configure_delivery(rpc):
     if any(values.get(key) != value for key, value in required.items()) \
             or any(re.match(r"TOCHKA_|ALFA_|REFREF_API_KEY|REFUND_ENVELOPE_", key) and value for key, value in values.items()):
         refuse("ORIGINAL_RUNTIME_INPUT_DRIFT")
+    def before_write():
+        verify_timer_isolation()
+        verify_repair_receipt(rpc)
+        check_existing_app(rpc, old, False)
+        no_queued_deployments(rpc, (uuid,))
     for row in primary:
         body = {"key": row["key"], "value": rpc.env_value(row), "is_preview": False,
                 "is_runtime": True, "is_buildtime": False, "is_literal": True}
         # Neither secrets nor a raw API response containing them enter evidence.
         def save_environment(body=body):
+            before_write()
             rpc.api("POST", "/applications/" + uuid + "/envs", body)
+            before_write()
             return {"saved": True}
         once("env-" + q.digest(row["key"].encode())[:32],
              {"uuid": uuid, "key": row["key"], "bodySha256": q.digest(canonical(body))}, save_environment)
@@ -721,7 +894,9 @@ def configure_delivery(rpc):
     for row in mounts:
         body = {"type": "file", "is_directory": True, "is_host_file": False, **row}
         def save_storage(body=body):
+            before_write()
             rpc.api("POST", "/applications/" + uuid + "/storages", body)
+            before_write()
             return {"saved": True}
         once("mount-" + q.digest(row["mount_path"].encode())[:32],
              {"uuid": uuid, "bodySha256": q.digest(canonical(body))}, save_storage)
@@ -734,6 +909,8 @@ def deploy(manifest, rpc):
     """Queue one digest deployment, only from the new v3 / schema26 state."""
     validate(manifest)
     verify_release(manifest["controllerCommit"])
+    verify_timer_isolation()
+    verify_repair_receipt(rpc)
     verify_v3(manifest, rpc)
     outcome = json.loads(read(ROOT / "art337-immutable-publication.outcome.json"))
     if outcome != {"state": "PUBLISHED", "journalSha256": q.digest(candidate(manifest))}:
@@ -748,6 +925,7 @@ def deploy(manifest, rpc):
         refuse("COMPETING_ORIGINAL_WRITER")
     q.verify_payload_stopped(rpc)
     with q.merchant_write_barrier(manifest, rpc):
+        verify_timer_isolation()
         q.verify_live_commerce_snapshot(manifest, rpc, locked=True)
         verify_schema26(manifest, rpc)
         q.verify_live_payload_snapshot(manifest, rpc)
@@ -764,6 +942,7 @@ def deploy(manifest, rpc):
                 or state != ("canary", "OPEN", len(entries), entries[-1]["hash"], None) or leases or unknown:
             refuse("PRE_DEPLOYMENT_ERASURE_DRIFT")
         verify_release(manifest["controllerCommit"])
+        verify_timer_isolation()
         def queue():
             result = rpc.api("POST", "/deploy?uuid=" + uuid + "&force=false")
             values = result.get("deployments", [])
@@ -870,6 +1049,129 @@ def stop_delivery(rpc):
     return once("commerce-immutable-stop", {"uuid": uuid}, stop)
 
 
+def backup_adopted(manifest, rpc):
+    observe(manifest, rpc)
+    outcome = json.loads(read(ROOT / "immutable-operations" / "commerce-backup-adopt.outcome.json"))
+    config = read(ROOT / "deploy-config.json")
+    if outcome != {"state": "BACKUP_LOOKUP_ADOPTED_NOT_CUTOVER_PASS", "configSha256": q.digest(config)} \
+            or json.loads(config)["apps"]["canary"] != RECOVERY_APP:
+        refuse("BACKUP_LOOKUP_NOT_ADOPTED")
+
+
+def scheduled_status():
+    spec = importlib.util.spec_from_file_location("qualified_timer_backup", Path(__file__).with_name("scheduled-backup.py"))
+    backup = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(backup)
+    now = int(datetime.now(timezone.utc).timestamp())
+    backup.check("canary", now)
+    raw = read(backup.state_path("canary"))
+    status = json.loads(raw)
+    if status.get("sourceCommit") != TARGET or not re.fullmatch(
+            r"canary-\d{8}T\d{6}Z-" + TARGET + r"-[a-f0-9-]{36}\.sqlite\.age", status.get("filename", "")) \
+            or type(status.get("size")) is not int or status["size"] <= 0:
+        refuse("CANARY_SCHEDULED_BACKUP_IDENTITY_DRIFT")
+    archive = backup.LOCAL / "canary" / status["filename"]
+    ciphertext = read(archive)
+    if q.digest(ciphertext) != status["sha256"] or len(ciphertext) != status["size"]:
+        refuse("CANARY_SCHEDULED_ARCHIVE_DRIFT")
+    return backup, status, q.digest(raw), archive
+
+
+def run_canary_backup(manifest, rpc):
+    backup_adopted(manifest, rpc)
+    verify_timer_isolation()
+    requested_at = int(datetime.now(timezone.utc).timestamp())
+    def start():
+        timers.run_backup()
+        _, status, sha, _ = scheduled_status()
+        if status["verifiedAt"] < requested_at:
+            refuse("SCHEDULED_BACKUP_NOT_NEW")
+        return {"state": "NEW_SCHEDULED_BACKUP_REQUIRES_INDEPENDENT_RECOVERY", "applicationUuid": RECOVERY_APP,
+                "requestedAt": requested_at, "backupStatusSha256": sha, "archiveSha256": status["sha256"],
+                "archiveFilename": status["filename"]}
+    return once("commerce-scheduled-backup", {"applicationUuid": RECOVERY_APP,
+                "requestedAt": requested_at, "manifestSha256": q.digest(canonical(manifest))}, start)
+
+
+def verify_backup_recovery(manifest, rpc, proof_path, first=False):
+    """Owner-side independent decrypt/restore report plus actual remote bytes.
+
+    Private age keys stay off VPS. A mere service SUCCESS is insufficient.
+    """
+    backup_adopted(manifest, rpc)
+    backup, status, status_sha, archive = scheduled_status()
+    proof_raw = read(proof_path)
+    proof = json.loads(proof_raw)
+    fresh(proof["recordedAt"])
+    remote_object = "cloud:art-backups/flexperiment/commerce-v2/canary/sqlite/" + status["filename"]
+    if proof.get("version") != 1 or proof.get("scope") != "canary" or proof.get("sourceCommit") != TARGET \
+            or proof.get("applicationUuid") != RECOVERY_APP or proof.get("backupStatusSha256") != status_sha \
+            or proof.get("archiveFilename") != status["filename"] or proof.get("archiveSha256") != status["sha256"] \
+            or proof.get("remoteObject") != remote_object or proof.get("remoteSha256") != status["sha256"] \
+            or not HASH.fullmatch(proof.get("independentPlaintextSha256", "")):
+        refuse("SCHEDULED_BACKUP_INDEPENDENT_PROOF_DRIFT")
+    if first:
+        result = json.loads(read(ROOT / "immutable-operations" / "commerce-scheduled-backup.outcome.json"))
+        if result.get("state") != "NEW_SCHEDULED_BACKUP_REQUIRES_INDEPENDENT_RECOVERY" \
+                or result.get("applicationUuid") != RECOVERY_APP or result.get("backupStatusSha256") != status_sha \
+                or result.get("archiveSha256") != status["sha256"] or result.get("archiveFilename") != status["filename"]:
+            refuse("SCHEDULED_BACKUP_RECEIPT_DRIFT")
+    manual = json.loads(read(ROOT / "immutable-operations" / "commerce-scheduled-backup.outcome.json"))
+    if type(manual.get("requestedAt")) is not int or status["verifiedAt"] < manual["requestedAt"]:
+        refuse("SCHEDULED_BACKUP_NOT_NEW")
+    readback = backup.s3(archive.parent, 'rclone cat "' + remote_object + '" | sha256sum').decode().split()
+    if len(readback) != 2 or readback[0] != status["sha256"]:
+        refuse("SCHEDULED_BACKUP_REMOTE_READBACK_FAILED")
+    art = report(manifest, "artifact")["artifact"]
+    for kind, required_result in (("restore", "PASS"), ("boot", "BOOT_PASS")):
+        value = proof.get(kind, {})
+        fresh(value["recordedAt"])
+        expected = {"result": required_result, "sourceCommit": TARGET, "artifactSha256": q.digest(canonical(art)),
+            "proofScriptSha256": q.digest(Path(__file__).with_name("art337-proof-continue.mjs").read_bytes()),
+            "inputCommerceSha256": proof["independentPlaintextSha256"], "schemaFingerprint": SCHEMA,
+            "beforeMigrations": 26, "afterMigrations": 26, "integrity": "ok", "foreignKeys": "ok",
+            "ledgerSequence": manifest["ledgerSequence"], "mirrorSha256": manifest["mirrorSha256"]}
+        if any(value.get(key) != item for key, item in expected.items()) \
+                or (kind == "restore" and (value.get("syntheticErasedAccounts") != 1 or value.get("currentUsers") != 0)) \
+                or (kind == "boot" and (value.get("fence") != "OPEN" or value.get("leases") != 0)):
+            refuse("SCHEDULED_BACKUP_RECOVERY_FAILED")
+    remote = json.loads(q.command(["/usr/local/bin/flexperiment-erasure", "read"]))
+    mirror, mirror_sha = q.json_file(q.ERASURE_ROOT / "mirror" / "bundle.json", uid=1000)
+    state, leases, unknown = q.current_fence(q.ERASURE_ROOT / "fence" / "erasure-fence.sqlite")
+    entries = mirror.get("entries", [])
+    if remote.get("state") != "REMOTE_VERIFIED" or remote.get("sequence") != manifest["ledgerSequence"] \
+            or remote.get("scope") != "canary" or mirror_sha != manifest["mirrorSha256"] \
+            or not entries or state != ("canary", "OPEN", len(entries), entries[-1]["hash"], None) or leases or unknown:
+        refuse("SCHEDULED_BACKUP_ERASURE_DRIFT")
+    return {"backupStatusSha256": status_sha, "archiveSha256": status["sha256"],
+            "proofSha256": q.digest(proof_raw), "archiveFilename": status["filename"]}
+
+
+def restore_canary_timers(manifest, rpc, proof_path):
+    verify_timer_isolation()
+    recovered = verify_backup_recovery(manifest, rpc, proof_path, first=True)
+    def activate():
+        # Refuse source/status/proof drift immediately before the one activation.
+        if verify_backup_recovery(manifest, rpc, proof_path, first=True) != recovered:
+            refuse("TIMER_RESTORE_PROOF_CHANGED")
+        return {**timers.restore(), "recordedAt": datetime.now(timezone.utc).isoformat(), **recovered}
+    return once("commerce-timer-restore", {"applicationUuid": RECOVERY_APP, "profile": timers.FILES,
+                                          "recovery": recovered}, activate)
+
+
+def verify_restored_timers(manifest, rpc, proof_path):
+    intent = json.loads(read(ROOT / "immutable-operations" / "commerce-timer-restore.intent.json"))
+    outcome = json.loads(read(ROOT / "immutable-operations" / "commerce-timer-restore.outcome.json"))
+    if intent.get("applicationUuid") != RECOVERY_APP or intent.get("profile") != timers.FILES \
+            or outcome.get("state") != "ACTIVATION_RETURNED_REQUIRES_READBACK" \
+            or outcome.get("timers") != list(timers.TIMERS) \
+            or any(outcome.get(k) != v for k, v in intent.get("recovery", {}).items()):
+        refuse("TIMER_RESTORE_RECEIPT_DRIFT")
+    timers.verify_restored()
+    recovered = verify_backup_recovery(manifest, rpc, proof_path)
+    return {"state": "CANARY_SCHEDULES_AND_LATEST_BACKUP_VERIFIED_NOT_HARD_CUT_PASS", **recovered}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", type=Path)
@@ -877,7 +1179,10 @@ def main():
     parser.add_argument("--controller")
     parser.add_argument("--name", default="commerce-deploy")
     parser.add_argument("--service", choices=SERVICES, default="commerce-v2")
-    parser.add_argument("--operation", choices=("artifact", "create", "configure", "validate", "publish", "deploy", "observe", "adopt", "stop", "inspect-publication", "reconcile"), required=True)
+    parser.add_argument("--backup-proof", type=Path)
+    parser.add_argument("--operation", choices=("artifact", "create", "reconcile-existing-resource", "repair-resource", "isolate-timers",
+        "configure", "validate", "publish", "deploy", "observe", "adopt", "stop", "inspect-publication", "inspect-timers", "reconcile",
+        "run-canary-backup", "restore-timers", "verify-restored-timers"), required=True)
     args = parser.parse_args()
     try:
         if args.operation == "artifact":
@@ -889,11 +1194,20 @@ def main():
         if args.operation == "reconcile":
             print(json.dumps(reconcile(args.name)))
             raise SystemExit(1)
+        if args.operation == "inspect-timers":
+            print(json.dumps(timer_evidence()))
+            return
         rpc = original_rpc()
         if args.operation == "create":
+            refuse("CREATE_ALREADY_COMPLETED_USE_EXISTING_RESOURCE")
+        if args.operation in ("reconcile-existing-resource", "repair-resource", "isolate-timers"):
             verify_release(args.controller)
-            artifact = json.loads(read(args.manifest))
-            print(json.dumps(create_delivery(artifact, rpc)))
+            if args.operation == "reconcile-existing-resource":
+                print(json.dumps(verify_existing_resource(rpc)))
+            elif args.operation == "repair-resource":
+                print(json.dumps(repair_existing_resource(rpc)))
+            else:
+                print(json.dumps(isolate_timers(rpc)))
             return
         if args.operation == "stop":
             print(json.dumps(stop_delivery(rpc)))
@@ -913,6 +1227,14 @@ def main():
         elif args.operation == "deploy":
             result = deploy(manifest, rpc)
             print(json.dumps({"state": "QUEUED_NOT_PASS", "deploymentUuid": result["deploymentUuid"]}))
+        elif args.operation in ("run-canary-backup", "restore-timers", "verify-restored-timers"):
+            verify_release(manifest["controllerCommit"])
+            if args.operation == "run-canary-backup":
+                print(json.dumps(run_canary_backup(manifest, rpc)))
+            elif args.operation == "restore-timers":
+                print(json.dumps(restore_canary_timers(manifest, rpc, args.backup_proof)))
+            else:
+                print(json.dumps(verify_restored_timers(manifest, rpc, args.backup_proof)))
         else:
             verify_live(manifest, rpc)
             print(json.dumps({"state": "CONTINUATION_READY_NOT_EXECUTED"}))

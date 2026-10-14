@@ -18,6 +18,9 @@ Do not restore schema 0025 or merge PR #222.
 | Reader binding | `c41e2f717c83275cb4d4d5206b50b3994324c7f58f1c496126edee0b428a8490` |
 | Original Commerce UUID | `xzuy7pk5y6ywjr9kh6nsk5ap` |
 | Payload/Platform UUID | `ks8c2wmlle1kvdfuwbiwthe1` |
+| Existing stopped Commerce UUID | `irskrskdhh2addt3xbkpbnrr` |
+| Successful create intent SHA-256 | `b12c7c025fd44edc98cb0cb14d354a3cfc5915b63d4926909069964ea4b41dba` |
+| Successful create outcome SHA-256 | `96f176e1e48ac998238dd4e3f4f2a5ba16320f2585914e3dbd36db8292ac096f` |
 
 The original v2 `imageId` is historical evidence. It is never changed to the
 installed mismatching image or to a newly qualified image. Preserve the
@@ -34,9 +37,10 @@ not used. Its Dockerfile job explicitly disables `restart_only` for Dockerfile
 and Docker Image resources. A restart is therefore not an immutable-delivery
 repair. Deployment `vqdxaybzu5e22xsm6ryaekey` contains a second Docker build.
 
-Create a separate **stopped Docker Image** resource with the supported
-`POST /applications/dockerimage` API. Original environment/project/server/
-destination are checked before creation. No Git checkout/rebuild, public
+The separate **stopped Docker Image** resource already exists. Do not replay
+`POST /applications/dockerimage`, delete it or replace its create evidence.
+The controller CLI now unconditionally refuses `create`. Original
+environment/project/server/destination are checked during reconciliation. No Git checkout/rebuild, public
 ports/domains, instant deployment, previews or automatic deployment. Its new
 UUID is bound in journal v3. Creation explicitly encodes and read-back requires
 `docker_registry_image_name=repository` and
@@ -77,7 +81,11 @@ Use a clean detached deployment checkout at the exact source and a separate
 clean controller checkout at the independently reviewed controller SHA. Verify
 main and both `test`/`docker-build` SUCCESS on **both** exact commits. The new
 controller repeats these admissions before mutation/queueing and checks its
-own files against GitHub blobs at the controller commit.
+own files against GitHub blobs at the controller commit. Public immutable file
+bytes are downloaded from raw.githubusercontent.com at the exact40-character
+commit and hashed as Git blobs. Mutable main and latest exact-head CI are still
+fresh REST reads on every admission; no cache or credential export is used.
+This avoids exhausting the anonymous REST quota on repeated immutable files.
 
 Use an existing owner-approved private registry and authentication. Neither
 registry visibility changes nor creation of credentials is part of this
@@ -139,26 +147,76 @@ After execution GO only, stage reviewed controller files privately without
 replacing the archived original owner-rpc. Keep their exact Git blob identity.
 Preserve the original owner config and controller/source checkouts separately.
 
-`create` and `configure` are distinct one-shot operations. Each API write has
-a fsynced private intent **before** the call and a separate fsynced outcome.
-Creation derives the original environment/project/server/destination from
-read-only API relationships. Configuration copies only runtime inputs,
-rejects active writers, forbidden financial credentials and unsafe changes,
-and provisions no preview copies. Reports contain hashes, not secret values.
+### 2a. Reconcile the known resource and isolate Commerce timers
+
+Installed4.4.6 Docker Image creation removes the supplied auto-deploy field
+from the application request and omits its settings-model assignment. The
+captured migration default is **true**. The captured PATCH path persists
+false. The PHP fixture now executes the literal creation/default/cleanup/PATCH
+code; it does not invent a false GET. The known resource must initially have
+true auto-deploy, false previews, no container/env/mounts/domains/mapped ports.
+All create evidence hashes, UUID, topology and qualified digest must match.
+Any other deviation HOLDs before the settings PATCH.
+
+After independent review and **new owner execution GO** only:
 
 ```sh
 python3 -B "$ART337_CONTROLLER/scripts/v2/art337_immutable_recovery.py" \
-  --operation create --controller "$ART337_CONTROLLER_SHA" \
-  --manifest "$ART337_PRIVATE_DIRECTORY/artifact-descriptor.json"
+  --operation reconcile-existing-resource --controller "$ART337_CONTROLLER_SHA"
+python3 -B "$ART337_CONTROLLER/scripts/v2/art337_immutable_recovery.py" \
+  --operation isolate-timers --controller "$ART337_CONTROLLER_SHA"
+python3 -B "$ART337_CONTROLLER/scripts/v2/art337_immutable_recovery.py" \
+  --operation repair-resource --controller "$ART337_CONTROLLER_SHA"
+```
+
+Reconciliation is read-only and grants no deployment admission. The settings
+repair has a **separate** fsynced intent, one PATCH (auto-deploy/previews/instant
+false) and independent GET before outcome. The readback repeats stopped/empty/
+UUID/topology/digest/queue/journal/current snapshots/remote ledger checks.
+Lost acknowledgements preserve evidence and never authorize an inferred retry.
+Use `reconcile --name commerce-resource-settings-repair` for diagnostics;
+it always returns HOLD, including when current settings appear false.
+
+| Timer | Triggered service | Installed effect |
+| --- | --- | --- |
+| `flexperiment-commerce-v2-backup@canary.timer` | `flexperiment-commerce-v2-backup@canary.service` | status/lock writes, readonly snapshot, encrypted archive and remote transport/retention |
+| `commerce-canary-backup-freshness.timer` | `commerce-canary-backup-freshness.service` | canary lock/status freshness check |
+
+The installed helper writes status even before a failed backup attempt. Zero
+merchant writers alone does not establish isolation. Their two existing canary
+alert handlers are also checked for running/queued work; the controller does
+not invoke or resend alerts. Shared unit files/helper and production instances
+are not modified. The timer module pins all four fragment hashes, the canary
+backup alert drop-in, installed helper hash, root ExecStart arguments, trigger
+relationships, no extra drop-ins, and no unknown scoped units. It checks pending
+jobs, PIDs/cgroups, orphan helper processes and alert jobs.
+
+Isolation is one recorded operation: disable/stop **only these two timers**,
+repeat census, stop drained services, reset historical failed service states,
+independently require disabled/inactive timers and inactive/no-job services.
+An active or racing backup is HOLD; never kill it after possible remote side
+effects. Partial command/fsync outcomes retain intent and block replay.
+
+Save fresh read-only `--operation inspect-timers` output as private0600 evidence
+for the manifest. It binds the completed isolation outcome hash and current
+states. This permits later fresh preflight without replaying isolation or
+rewriting its timestamp. Publish/deploy repeat actual isolation inside the DB
+write barrier and immediately before queueing.
+
+### 2b. Configure only after successful settings repair
+
+```sh
 python3 -B "$ART337_CONTROLLER/scripts/v2/art337_immutable_recovery.py" \
   --operation configure --controller "$ART337_CONTROLLER_SHA"
 ```
 
-A failed/uncertain API call **stops** this procedure. Do not re-run configure
-or create. Read the immutable intent/outcome and independent Coolify GETs,
-then obtain reviewed reconciliation. Do not delete a partially created
-resource, rewrite outcomes or auto-resume provisioning. A successful creation
-is still stopped and cannot grant DB access or erasure admission.
+Configuration copies only qualified runtime inputs and the seven existing
+bindings, with separate fsynced intents/outcomes for every API write. Completed
+settings repair and current false flags are mandatory. Topology/settings/timer/
+queue checks repeat around every env/storage write; drift stops remaining
+provisioning. No preview credentials are created and no secrets enter reports.
+An uncertain PATCH/configure/isolation stops; never replay create, reset a
+receipt, delete the partially created resource or blindly continue.
 
 Repeat full fresh ART-329 online snapshots with WAL. For Commerce the approved
 nonzero counts are unchanged except `schema_migrations=26`; Payload unchanged.
@@ -199,9 +257,13 @@ artifact hash, input snapshot hash, sequence, mirror hash and script hash.
 ## 3. Sealed continuation manifest and journal v3
 
 Fresh private reports: `inventory`, `backup`, `restore`, `boot`, `artifact`,
-`isolation`, `delivery`. Every report is root-owned 0600, hash-bound and at most
+`isolation`, `delivery`, `timers`. Every report is root-owned 0600, hash-bound and at most
 one hour old. Inventory uses its `generated_at_utc`; others use `recordedAt`.
 `artifact` wraps `artifact-descriptor.json` as `artifact` plus `recordedAt`.
+`timers` binds the completed isolation outcome hash and a fresh read-only unit/
+job/process snapshot. `isolation` must contain `commerceTimers=ISOLATED` and
+`timerIsolationSha256` matching that report. Preserve/read back all parent
+archives as well as the full previous chain and schema26 post-stop archives.
 
 Manifest fields are version 3, scope canary, deployment `sourceCommit`, exact
 `parentJournalSha256`, schema-0026 `schemaFingerprint`, installationId,
@@ -271,9 +333,51 @@ capabilities). Adoption first repeats observe and the unchanged scheduled
 backup inspector against the proposed config, archives old config and changes
 only the canary lookup. Pending/unknown config publication is never retried.
 
-Then run the existing scheduled backup/freshness machinery against the new
-lookup. Preserve old records and prove encrypted remote read-back, independent
-decrypt/restoration and erasure admission again. Failure remains HOLD.
+### Qualified restoration of regular backups
+
+Timers remain disabled through deployment and lookup adoption. Start the real
+existing backup service **once**, after observe and verified adoption:
+
+```sh
+python3 -B "$ART337_CONTROLLER/scripts/v2/art337_immutable_recovery.py" \
+  --operation run-canary-backup --manifest "$ART337_CONTINUATION_MANIFEST"
+```
+
+The fsynced service-start outcome requires a **new** SUCCESS status from this
+attempt, source085 and exact current ciphertext filename/hash/size. Neither an
+old status nor successful service exit alone passes. The service timeout is
+15min; the controller wait is bounded at930sec, with no implicit short retry.
+Independently GET/decrypt this remote archive off VPS with the owner-held key,
+then restore and boot a copied fence through the same qualified digest and
+`art337-proof-continue.mjs`. Private keys never enter VPS or images.
+
+The private0600 proof report has `version=1`, `scope=canary`, `sourceCommit`,
+exact `applicationUuid`, fresh `recordedAt`, `backupStatusSha256`,
+`archiveFilename`, `archiveSha256`, exact canary `remoteObject`, `remoteSha256`,
+`independentPlaintextSha256`, and full fresh `restore`/`boot` reports from the
+reviewed script. Those bind artifact, recovered plaintext input, schema26
+before/after, integrity/FK, erased test-subject suppression and current ledger/
+mirror/copied OPEN/no leases. The controller independently GETs remote SHA again.
+
+```sh
+python3 -B "$ART337_CONTROLLER/scripts/v2/art337_immutable_recovery.py" \
+  --operation restore-timers --manifest "$ART337_CONTINUATION_MANIFEST" \
+  --backup-proof "$ART337_POST_CUTOVER_RECOVERY"
+python3 -B "$ART337_CONTROLLER/scripts/v2/art337_immutable_recovery.py" \
+  --operation verify-restored-timers --manifest "$ART337_CONTINUATION_MANIFEST" \
+  --backup-proof "$ART337_POST_CUTOVER_RECOVERY"
+```
+
+Restoration is a distinct fsynced one-shot: repeat recovery/readiness/lookup/
+isolation, require a successful freshness-service run, enable/start only the
+two timers. `ACTIVATION_RETURNED_REQUIRES_READBACK` is not completion. OnBootSec
+may immediately trigger a legitimate automatic backup. The read-only verifier
+refuses pending/running jobs: observe completion without repeating activation.
+If the latest archive changed, independently recover that archive and supply a
+report bound to current status. Final timer readback requires enabled/active/
+waiting, drained successful backup/freshness services and latest archive proof.
+Its result remains `...NOT_HARD_CUT_PASS`; all remaining live gates still apply.
+Uncertain backup/activation or failed recovery HOLDs; no receipt cleanup/retry.
 
 ## 5. Remaining hard-cut gates
 
@@ -297,7 +401,7 @@ unknown writes, rename/fsync faults, registry descriptor drift, release gates
 and canary-only creation. Python 3.10 runs are wired into CI. The real local
 registry test builds source085 separately, pushes once and routes the actual
 controller create request through captured installed 4.4.6 PHP API/job code.
-It writes that job's Compose image field and executes its captured Compose
+It executes the captured database defaults and settings PATCH, then writes that job's Compose image field and executes its captured Compose
 pull/up commands before independently comparing the running image/rootfs/
 platform/identity. Request persistence, non-image infrastructure and the inert
 Node process are fixtures; this is not a full HTTP Coolify server deployment. It executes schema

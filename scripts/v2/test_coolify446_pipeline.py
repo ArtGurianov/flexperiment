@@ -13,6 +13,21 @@ from coolify446_pipeline import replay
 
 @unittest.skipUnless(shutil.which('php'), 'PHP CLI required; enforced by CI prerequisite')
 class InstalledCoolifyPipeline(unittest.TestCase):
+    def test_real_post_default_survives_false_request_then_patch_persists(self):
+        body = {**r.coolify_image_fields(r.RECOVERY_REFERENCE), 'is_auto_deploy_enabled': False,
+                'is_preview_deployments_enabled': False, 'instant_deploy': False}
+        proof = replay(body, patch={'is_auto_deploy_enabled': False, 'is_preview_deployments_enabled': False})
+        self.assertIs(proof['createdSettings']['is_auto_deploy_enabled'], True)
+        self.assertIs(proof['createdSettings']['is_preview_deployments_enabled'], False)
+        self.assertIs(proof['settings']['is_auto_deploy_enabled'], False)
+        self.assertIs(proof['settings']['is_preview_deployments_enabled'], False)
+        self.assertNotIn('is_auto_deploy_enabled', proof['persisted'])
+        self.assertEqual(proof['job']['productionImage'], r.RECOVERY_REFERENCE)
+
+    def test_patch_absent_boolean_preserves_default_and_explicit_flip_is_real(self):
+        fields = r.coolify_image_fields(r.RECOVERY_REFERENCE)
+        self.assertIs(replay(fields, patch={})['settings']['is_auto_deploy_enabled'], True)
+        self.assertIs(replay(fields, patch={'is_auto_deploy_enabled': True})['settings']['is_auto_deploy_enabled'], True)
     def test_canonical_create_persistence_compose_pull_and_up(self):
         for repository in ('ghcr.io/artgurianov/flexperiment', 'localhost:51234/flexperiment/art337-proof'):
             reference = repository + '@sha256:' + 'a'*64
