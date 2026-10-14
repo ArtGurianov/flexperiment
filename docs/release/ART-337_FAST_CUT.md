@@ -56,7 +56,13 @@ Check actual three image IDs/RootFS/native identities and runtime readiness,
 schema26/integrity/FK, REQUIRED erasure admission with remote verified current
 ledger, OPEN/drained fence; run the ten retired routes with real service token
 (404). Internal smoke uses normal admin login/read/logout through canary nginx,
-private cookie/password in memory only. Capture outcomes, not credentials.
+private cookie/password in memory only:
+
+```sh
+python3 -B /opt/flexperiment-fast-cut-canary/scripts/v2/fast-cut.py smoke
+```
+
+Capture outcomes, not credentials.
 Four external hosts must still return403. No customer/course publication or
 Kinescope E2E is required here.
 

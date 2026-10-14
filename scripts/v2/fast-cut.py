@@ -160,6 +160,17 @@ def check():
     return result
 
 
+def smoke():
+    values=dict(line.split('=',1) for line in private(INPUT/'commerce.env').decode().splitlines())
+    inputs={'password':private(INPUT/'admin-password').decode(),'serviceToken':values['PLATFORM_SERVICE_TOKEN']}
+    code=Path(__file__).with_name('fast-cut-smoke.mjs').read_text()
+    result=subprocess.run(['docker','exec','-i','flexperiment-fast-cut-canary-commerce','node','--input-type=module','-e',code],
+                          input=json.dumps(inputs).encode(),stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=180)
+    require(result.returncode==0,'FAST_CUT_INTERNAL_SMOKE_FAILED')
+    report=json.loads(result.stdout);require(report.get('state')=='INTERNAL_SMOKE_PASS','FAST_CUT_INTERNAL_SMOKE_FAILED')
+    return report
+
+
 def transport():
     spec=importlib.util.spec_from_file_location('qualified_transport',Path(__file__).with_name('scheduled-backup.py'))
     module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module);return module
@@ -195,9 +206,9 @@ def check_backup():
 
 
 if __name__=='__main__':
-    parser=argparse.ArgumentParser();parser.add_argument('operation',choices=['prepare','check','backup','check-backup']);args=parser.parse_args()
+    parser=argparse.ArgumentParser();parser.add_argument('operation',choices=['prepare','check','smoke','backup','check-backup']);args=parser.parse_args()
     try:
-        print(json.dumps({'prepare':prepare,'check':check,'backup':backup,'check-backup':check_backup}[args.operation]()))
+        print(json.dumps({'prepare':prepare,'check':check,'smoke':smoke,'backup':backup,'check-backup':check_backup}[args.operation]()))
     except Exception:
         # Exceptions may contain private API responses/env. Never emit their text.
         print(json.dumps({'state':'FAST_CUT_HOLD','operation':args.operation}));raise SystemExit(1)
