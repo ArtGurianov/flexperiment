@@ -46,6 +46,13 @@ def backend(isolated=False):
 
 
 class TimerSafety(unittest.TestCase):
+    def test_garbage_collected_reverse_edge_only_allowed_for_disabled_inactive_timer(self):
+        with backend(isolated=True) as (data,_,_,_):
+            data[t.BACKUP_SERVICE]['TriggeredBy']='';t.verify_isolated()
+            data[t.BACKUP_SERVICE]['TriggeredBy']='unknown.timer'
+            with self.assertRaisesRegex(Refusal,'UNIT_BINDING_DRIFT'):t.verify_isolated()
+        with backend() as (data,_,_,_),self.assertRaisesRegex(Refusal,'UNIT_BINDING_DRIFT'):
+            data[t.BACKUP_SERVICE]['TriggeredBy']='';t.capture()
     def test_enabled_waiting_timers_are_not_isolated_even_without_writers(self):
         with backend(),self.assertRaisesRegex(Refusal,'NOT_ISOLATED'):t.verify_isolated()
 

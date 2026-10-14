@@ -110,8 +110,17 @@ def capture():
         refuse('CANARY_TIMER_INSTALLED_CODE_DRIFT')
     states = {unit: show(unit) for unit in (*TIMERS, *SERVICES, *ALERTS)}
     for unit, expected in CONTRACTS.items():
-        if any(states[unit].get(key) != value for key, value in expected.items()):
-            refuse('CANARY_TIMER_UNIT_BINDING_DRIFT')
+        for key, value in expected.items():
+            actual = states[unit].get(key)
+            # systemd can unload an inactive timer between two show calls.
+            # The service's dynamic reverse edge then disappears. The pinned
+            # fragment still declares the target; permit only this empty edge
+            # with its timer independently disabled/inactive. Unknown edges HOLD.
+            unloaded_reverse = key == 'TriggeredBy' and actual == '' and value in TIMERS \
+                and states[value].get('ActiveState') == 'inactive' \
+                and states[value].get('UnitFileState') == 'disabled'
+            if actual != value and not unloaded_reverse:
+                refuse('CANARY_TIMER_UNIT_BINDING_DRIFT')
     for service, verb in zip(SERVICES, ('backup', 'check')):
         argv = re.findall(r'argv\[\]=(.*?) ; ignore_errors=', states[service].get('ExecStart', ''))
         if argv != ['/usr/bin/python3 ' + HELPER + ' canary ' + verb]:
