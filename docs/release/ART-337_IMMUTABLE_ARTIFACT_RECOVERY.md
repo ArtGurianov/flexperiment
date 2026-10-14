@@ -1,0 +1,269 @@
+# ART-337: continuation from journal v2 and Commerce schema 0026
+
+**Engineering preparation only. Live execution HOLD.** Independent review of
+the new controller and a new owner GO TO EXECUTE are required. Do not run the
+original `requalification --commit` or `requalified-canary` deployment again.
+Do not restore schema 0025 or merge PR #222.
+
+## Durable starting point
+
+| Authority | Required value |
+| --- | --- |
+| Deployment source / current main | `08523bdf38eeddf5e745ce04d05e1f980a7ced93` |
+| Parent admission version | 2 |
+| Parent admission SHA-256 | `3496ccc7d51c691cb65035c6e09b69ac44ef24a1358d2021fc49ae88652a2a0b` |
+| Parent owner-rpc file SHA-256 | `3501e388c0d300d6cec871fd88cd65b40c77d946671e5b6b16539a66bb4c4d6f` |
+| Commerce schema | 0026; `c99f9ed0db449a2c13f2e51fa3b28a1ba44e367dd263185c99eddfec8c2d3b39` |
+| Installation | `6982499b-1567-46e4-b9e7-ab54416d8b8d` |
+| Reader binding | `c41e2f717c83275cb4d4d5206b50b3994324c7f58f1c496126edee0b428a8490` |
+| Original Commerce UUID | `xzuy7pk5y6ywjr9kh6nsk5ap` |
+| Payload/Platform UUID | `ks8c2wmlle1kvdfuwbiwthe1` |
+
+The original v2 `imageId` is historical evidence. It is never changed to the
+installed mismatching image or to a newly qualified image. Preserve the
+entire admission history, all original evidence, the Payload archives and the
+post-stop schema-0026 encrypted archives and remote chain. The original apps
+remain stopped; timers remain in their confirmed disabled/inactive state.
+New unknown records, queues, leases, schema/lineage drift or lost custody HOLD.
+
+## Delivery choice and compatibility
+
+Installed Coolify **4.4.6** was inspected read-only. Its PATCH validator uses
+`BuildPackTypes` without `dockerimage`; unsupported in-place conversion is
+not used. Its Dockerfile job explicitly disables `restart_only` for Dockerfile
+and Docker Image resources. A restart is therefore not an immutable-delivery
+repair. Deployment `vqdxaybzu5e22xsm6ryaekey` contains a second Docker build.
+
+Create a separate **stopped Docker Image** resource with the supported
+`POST /applications/dockerimage` API. Original environment/project/server/
+destination are checked before creation. No Git checkout/rebuild, public
+ports/domains, instant deployment, previews or automatic deployment. Its new
+UUID is bound in journal v3. It receives the old Commerce UUID as an internal
+network alias; the stopped old resource retains its UUID and history.
+
+Native persistent-storage API prefixes a new UUID. Consequently the new
+resource uses seven native **Directory** bindings: the two exact existing
+Docker-volume Mountpoints as RW binds, the existing RW fence directory and
+four existing RO erasure directories. No volume is recreated, copied/reset,
+deleted or mounted somewhere else. Name, absolute path, device and inode are
+checked against custody and then independently against installed mounts.
+Kernel RO mounts, UID 1000 reader files and required installation marker stay
+unchanged. Preserve old resource storage records as custody references.
+
+The existing scheduled-backup inspector already supports directory binds.
+Its owner `deploy-config.json` canary lookup is adopted **after** independent
+new-runtime verification, with the old config archived byte for byte. Only
+`apps.canary` changes; production and all other fields are preserved. A real
+scheduled encrypted backup, independent remote SHA read-back/decrypt and
+freshness check are mandatory afterwards. The old deployment RPC continues
+to refuse journal v3 and is not retargeted as a deploy authority.
+
+Sources: [Coolify Docker Image](https://coolify.io/docs/applications/deployments/docker-image),
+[Docker digest pulls](https://docs.docker.com/reference/cli/docker/image/pull/).
+Installed source inspection, rather than an assumption from those documents,
+is the basis for the API compatibility decisions above.
+
+## 1. Build once, publish, pull and qualify by digest
+
+Use a clean detached deployment checkout at the exact source and a separate
+clean controller checkout at the independently reviewed controller SHA. Verify
+main and both `test`/`docker-build` SUCCESS on **both** exact commits. The new
+controller repeats these admissions before mutation/queueing and checks its
+own files against GitHub blobs at the controller commit.
+
+Use an existing owner-approved private registry and authentication. Neither
+registry visibility changes nor creation of credentials is part of this
+procedure. Never put credentials in command arguments, runbook, Linear or CI.
+If the approved registry/authentication is unavailable, HOLD.
+
+Example (variables contain public identities only):
+
+```sh
+docker buildx build --platform linux/amd64 --provenance=false \
+  --build-arg SOURCE_COMMIT=08523bdf38eeddf5e745ce04d05e1f980a7ced93 \
+  -f Dockerfile.commerce-v2 --tag "$ART337_REGISTRY_REPOSITORY:$ART337_BUILD_NAME" \
+  --push "$ART337_DEPLOYMENT_CHECKOUT"
+```
+
+Resolve the registry's **single-platform manifest digest**. An OCI index,
+`latest`, a mutable tag or a source SHA cannot be consumed as admission.
+After publishing, use only `repository@sha256:<manifest digest>`.
+
+```sh
+python3 -B "$ART337_CONTROLLER/scripts/v2/art337_immutable_recovery.py" \
+  --operation artifact --reference "$ART337_DIGEST_REFERENCE" \
+  > "$ART337_PRIVATE_DIRECTORY/artifact-descriptor.json"
+chmod 600 "$ART337_PRIVATE_DIRECTORY/artifact-descriptor.json"
+```
+
+This performs a digest pull and checks exact registry manifest bytes, its
+config and compressed-layer descriptors, Docker image ID, uncompressed
+RootFS layer list, linux/amd64 and baked service/source. Qualify **this pulled
+artifact**, not a prior locally rebuilt image. Preserve a Docker/OCI archive
+and its SHA-256 outside Coolify cleanup; verify a second independent digest
+pull/read-back before proceeding. No generic tag is an identity guarantee.
+
+## 2. New stopped resource, isolation and fresh proofs
+
+After execution GO only, stage reviewed controller files privately without
+replacing the archived original owner-rpc. Keep their exact Git blob identity.
+Preserve the original owner config and controller/source checkouts separately.
+
+`create` and `configure` are distinct one-shot operations. Each API write has
+a fsynced private intent **before** the call and a separate fsynced outcome.
+Creation derives the original environment/project/server/destination from
+read-only API relationships. Configuration copies only runtime inputs,
+rejects active writers, forbidden financial credentials and unsafe changes,
+and provisions no preview copies. Reports contain hashes, not secret values.
+
+```sh
+python3 -B "$ART337_CONTROLLER/scripts/v2/art337_immutable_recovery.py" \
+  --operation create --controller "$ART337_CONTROLLER_SHA" \
+  --manifest "$ART337_PRIVATE_DIRECTORY/artifact-descriptor.json"
+python3 -B "$ART337_CONTROLLER/scripts/v2/art337_immutable_recovery.py" \
+  --operation configure --controller "$ART337_CONTROLLER_SHA"
+```
+
+A failed/uncertain API call **stops** this procedure. Do not re-run configure
+or create. Read the immutable intent/outcome and independent Coolify GETs,
+then obtain reviewed reconciliation. Do not delete a partially created
+resource, rewrite outcomes or auto-resume provisioning. A successful creation
+is still stopped and cannot grant DB access or erasure admission.
+
+Repeat full fresh ART-329 online snapshots with WAL. For Commerce the approved
+nonzero counts are unchanged except `schema_migrations=26`; Payload unchanged.
+Compare inode/device/path and snapshot SHA to actual live DB under exclusive
+control. No current users/orders/content/uploads or unidentified rows. The
+classified single synthetic playback event is preserved.
+
+Create new encrypted backups and independently remotely read back/decrypt
+both; reverify the whole old chain, including post-stop schema-0026 archives.
+Recover copied current26 SQLite from this ciphertext, not just a local main
+file. Read newest ledger using the independent read-only provider identity.
+Keep its copies separate from merchant/fence directories and preserve RO
+permissions, installation binding and full sequence/head agreement.
+
+Run `art337-proof-continue.mjs` in the digest-qualified target image with:
+
+- `/proof/current26.sqlite`: pristine recovered current snapshot (not mutated).
+- `/proof/merchant/current26.sqlite` and `boot26.sqlite`: exact private copies.
+- `/proof/merchant/synthetic26.sqlite`: isolated erased-test-person fixture,
+  already schema 0026; preserve its input hash separately.
+- `/proof/artifact.json`: the exact qualified descriptor.
+- `/proof/mirror/bundle.json`: independent current signed bundle.
+- `/proof/fence`: copied, drained CLOSED fence; never live fence.
+- Separate RO-mounted `/etc/flexperiment-erasure-keys` and
+  `/etc/flexperiment-erasure-read` with the installed binding.
+
+No live merchant/fence path may be mounted in the qualification container.
+The proof verifies the fingerprint and count 26 **before and after** restore
+and normal `prepareErasureRuntime`, including suppression of the erased test
+person and refusal of unknown remote/lease states. It never runs a 0025→0026
+migration on the installed DB. Save its restore/boot JSON output, actual
+artifact hash, input snapshot hash, sequence, mirror hash and script hash.
+
+## 3. Sealed continuation manifest and journal v3
+
+Fresh private reports: `inventory`, `backup`, `restore`, `boot`, `artifact`,
+`isolation`, `delivery`. Every report is root-owned 0600, hash-bound and at most
+one hour old. Inventory uses its `generated_at_utc`; others use `recordedAt`.
+`artifact` wraps `artifact-descriptor.json` as `artifact` plus `recordedAt`.
+
+Manifest fields are version 3, scope canary, deployment `sourceCommit`, exact
+`parentJournalSha256`, schema-0026 `schemaFingerprint`, installationId,
+readerBindingSha256, **new** applicationUuid, separate controllerCommit,
+current ledgerSequence/mirrorSha256 and `files` with absolute paths/hashes.
+Each backup archive also binds `independentPlaintextSha256` to the fresh
+source snapshot after independent remote ciphertext retrieval and decryption.
+The old-chain set must include all parent-chain objects and the two exact
+post-stop schema26 archives. See `validate()` for the exact report contracts; no unbound PASS flag is a
+substitute for a missing input. Delivery report binds the new resource,
+reference, secret-preserving runtime environment hash, storage API hash and
+original volume name→path/device/inode. It must include independently checked
+mount/namespace/backup compatibility PASS.
+
+```sh
+python3 -B "$ART337_CONTROLLER/scripts/v2/art337_immutable_recovery.py" \
+  --operation validate --manifest "$ART337_CONTINUATION_MANIFEST"
+python3 -B "$ART337_CONTROLLER/scripts/v2/art337_immutable_recovery.py" \
+  --operation publish --manifest "$ART337_CONTINUATION_MANIFEST"
+```
+
+`publish` holds BEGIN IMMEDIATE through final online snapshot comparison,
+v2/history/remote/fence/image verification, parent archival, new evidence
+archival, atomic rename, directory fsync and read-back. New v3 references the
+exact archived v2 parent; it does not overwrite the v2 historical imageId.
+A partial intent/history/pending/publication requires HOLD and read-only
+reconciliation. No cleanup or automatic retry.
+
+```sh
+python3 -B "$ART337_CONTROLLER/scripts/v2/art337_immutable_recovery.py" \
+  --operation inspect-publication
+python3 -B "$ART337_CONTROLLER/scripts/v2/art337_immutable_recovery.py" \
+  --operation reconcile --name commerce-deploy
+```
+
+These deliberately return HOLD even when bytes appear published. They work
+without treating expired proofs as fresh, and never authorize another call.
+
+## 4. Queue once, independently observe, then adopt backup lookup
+
+```sh
+python3 -B "$ART337_CONTROLLER/scripts/v2/art337_immutable_recovery.py" \
+  --operation deploy --manifest "$ART337_CONTINUATION_MANIFEST"
+```
+
+The operation repeats exact source/controller admission, current ledger/fence,
+zero queues/writers, schema26, both snapshots and private resource bindings.
+A DB reservation remains held until the one deployment queue call returns and
+its outcome is fsynced. `QUEUED_NOT_PASS` is not successful installation.
+Wait by GET for the recorded deployment UUID; do not queue another deployment.
+If API/SSH outcome is ambiguous, preserve intent/outcome and HOLD. If an
+unexpected runtime starts, bounded `--operation stop` requests only the
+recorded new resource; independently verify stopped/exclusive afterwards.
+No rollback, schema downgrade or automatic second start.
+
+```sh
+python3 -B "$ART337_CONTROLLER/scripts/v2/art337_immutable_recovery.py" \
+  --operation observe --manifest "$ART337_CONTINUATION_MANIFEST"
+python3 -B "$ART337_CONTROLLER/scripts/v2/art337_immutable_recovery.py" \
+  --operation adopt --manifest "$ART337_CONTINUATION_MANIFEST"
+```
+
+Observe verifies installed digest reference, image ID, RootFS/platform, baked
+identity/mode, default process/user, exact seven binds/network alias and normal
+Commerce readiness (payments disabled, erasure qualified, Refref/mail/captcha
+capabilities). Adoption first repeats observe and the unchanged scheduled
+backup inspector against the proposed config, archives old config and changes
+only the canary lookup. Pending/unknown config publication is never retried.
+
+Then run the existing scheduled backup/freshness machinery against the new
+lookup. Preserve old records and prove encrypted remote read-back, independent
+decrypt/restoration and erasure admission again. Failure remains HOLD.
+
+## 5. Remaining hard-cut gates
+
+Commerce recovery alone is **not** ART-337_CANARY_HARD_CUT_PASS. Platform and
+Admin must also be digest-qualified and independently checked using the same
+artifact descriptor contract. The remaining original hard-cut gates (Payload
+mount/environment retirement without archive deletion, Platform/Admin
+readiness/identity, schema26, live OPEN fence and remote ledger, ten legacy
+routes 404 with valid service token, Control Room, backup/recovery and all
+four external 403 guards) remain required. New resource namespace and backup
+lookup adoption are part of the **new** owner execution scope, not the expired
+old GO. No production/V1/Refref/DNS/provider/F9 changes.
+
+After new authoritative publication, stale Commerce restore is prohibited;
+forward-fix only. ART-336 / ART-36 / protected browser E2E are separate gates.
+
+## Engineering evidence boundary
+
+`test_art337_immutable_recovery.py` exercises schema26/parent/replay refusal,
+unknown writes, rename/fsync faults, registry descriptor drift, release gates
+and canary-only creation. Python 3.10 runs are wired into CI. The real local
+registry test builds source085 separately, pushes once, consumes digest and
+compares actual installed image/rootfs/platform/identity. It executes schema
+restore/remote-reader contracts in that same image with synthetic fixtures.
+This proves isolated artifact transport and runtime compatibility, **not** a
+real Coolify installation or fresh live remote-ledger recovery. Those require
+the future execution preflight and independent live read-backs above.

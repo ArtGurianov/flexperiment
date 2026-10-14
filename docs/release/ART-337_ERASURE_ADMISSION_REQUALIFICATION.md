@@ -1,3 +1,10 @@
+> **Operational supersession after the image mismatch:** the installed durable
+> state is now journal v2 plus Commerce schema 0026. Do not repeat the original
+> `--commit` or `requalified-canary` deployment below. Live execution is HOLD.
+> See [immutable artifact recovery](ART-337_IMMUTABLE_ARTIFACT_RECOVERY.md) for
+> the prepared next controller; independent review and a new owner execution GO remain required.
+> Historical evidence and this original procedure remain preserved.
+
 # ART-337 · Canary erasure admission requalification
 
 **State of this procedure: review candidate.** The live canary hard cut is HOLD.
