@@ -71,6 +71,12 @@ class FastCut(unittest.TestCase):
             with patch.object(f,'STACK',ROOT/'deploy/v2/fast-cut/compose.json'),patch.object(f,'private',return_value=json.dumps(qualified).encode()), \
                  patch.object(f,'run',side_effect=[json.dumps([container]).encode(),json.dumps([image]).encode(),json.dumps(identity).encode()]):return f.inspect('platform')
         self.assertEqual(check(c)[0],s['container_name'])
+        image['Config']=copy.deepcopy(config);image['Config']['User']=None
+        default=copy.deepcopy(c);default['Config']['User']=''
+        self.assertEqual(check(default)[0],s['container_name'])
+        wrong=copy.deepcopy(default);wrong['Config']['User']='1001'
+        with self.assertRaisesRegex(ValueError,'EXECUTION_OVERRIDE'):check(wrong)
+        image['Config']=config
         for mutate in [lambda x:x['HostConfig'].update(PortBindings={'80/tcp':[{}]}),lambda x:x['NetworkSettings']['Networks'].update(coolify={}),
                        lambda x:x.update(Image='different'),lambda x:x['Config']['Env'].append('PAYLOAD_SECRET=forbidden')]:
             bad=copy.deepcopy(c);mutate(bad)

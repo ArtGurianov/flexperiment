@@ -108,7 +108,11 @@ def inspect(role):
             and container['HostConfig']['ReadonlyRootfs'] and set(container['NetworkSettings']['Networks'])=={'flexperiment-fast-cut-canary'}
             and container['Config']['Labels'].get('com.flexperiment.scope')=='canary-fast-cut', 'FAST_CUT_RUNTIME_SCOPE')
     for field in ['User','Entrypoint','Cmd','WorkingDir']:
-        require(container['Config'].get(field)==image['Config'].get(field), 'FAST_CUT_EXECUTION_OVERRIDE')
+        actual, original = container['Config'].get(field), image['Config'].get(field)
+        # Docker canonicalizes an unspecified native nginx user from null to
+        # empty string. Both mean the image default root, not an override.
+        if field == 'User' and original is None: original = ''
+        require(actual == original, 'FAST_CUT_EXECUTION_OVERRIDE')
     path='/usr/share/nginx/html/release.json' if role=='admin' else '/app/.identity/identity.json'
     identity=json.loads(run(['docker','exec',name,'cat',path]))
     require(identity==qualified['identity'],'FAST_CUT_IDENTITY_DRIFT')
