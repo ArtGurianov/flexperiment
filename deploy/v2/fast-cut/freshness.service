@@ -1,0 +1,8 @@
+[Unit]
+Description=Closed Flexperiment fast-cut canary backup freshness
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/bin/python3 -B /opt/flexperiment-fast-cut-canary/scripts/v2/fast-cut.py check-backup
+NoNewPrivileges=true
+ProtectSystem=strict

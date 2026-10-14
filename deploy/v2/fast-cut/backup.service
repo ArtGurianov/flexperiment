@@ -1,0 +1,13 @@
+[Unit]
+Description=Closed Flexperiment fast-cut canary encrypted backup
+After=docker.service network-online.target
+Requires=docker.service
+[Service]
+Type=oneshot
+User=root
+UMask=0077
+ExecStart=/usr/bin/python3 -B /opt/flexperiment-fast-cut-canary/scripts/v2/fast-cut.py backup
+TimeoutStartSec=20min
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/backups/flexperiment-fast-cut-canary
