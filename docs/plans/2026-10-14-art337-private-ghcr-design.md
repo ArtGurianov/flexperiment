@@ -34,7 +34,18 @@ Run38513368483 deleted only those three newly created package IDs (15883058,
 and exact unique tag source085-run38512656998-attempt1. Package/version
 metadata and delete intent/outcome are retained as evidence. Independent GET
 returned404 for all three. No old package or runtime artifact was deleted.
-The private publisher recreates the approved names with new private IDs.
+The private publisher is intended to recreate the approved names with new
+private IDs; it has not done so yet. Run38513501824 on private publisher SHA
+0e55513537cb995bcafff222aaa1cf93b663d34a did not start any runner/step. GitHub's
+check annotation reports failed recent account payments or a spending limit
+that must be increased. No private package creation or image qualification
+occurred in that run. Account billing cannot be changed by this preparation.
+
+An alternative is owner-provided PAT classic read:packages/write:packages for
+local publication. The existing gh OAuth token has neither package scope and
+is not substituted for a supported registry credential. No token value should
+be sent to chat. The private publisher repository was created successfully;
+registry packages remain absent after the bounded cleanup.
 
 The public cleanup workflow is restricted to its original engineering branch
 and original IDs; it cannot delete recreated private packages or run on main.
