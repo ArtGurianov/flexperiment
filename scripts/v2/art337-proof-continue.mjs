@@ -63,10 +63,19 @@ try {
     db.pragma('foreign_keys=ON');
     assert.equal(migrations(db), 26);
     assert.equal(fingerprint(db), schemaFingerprint);
+    const copiedFence = new Database('/proof/fence/erasure-fence.sqlite', { fileMustExist: true, readonly: true });
+    try {
+      const state = copiedFence.prepare('SELECT scope,state,owner FROM fence_state WHERE id=1').get();
+      assert.deepEqual(state, { scope: 'canary', state: 'CLOSED', owner: null });
+      assert.equal(copiedFence.prepare('SELECT count(*) n FROM fence_leases').get().n, 0);
+    } finally { copiedFence.close(); }
+    assert.equal(db.prepare('SELECT count(*) n FROM "user"').get().n, 0);
     fence = await prepareErasureRuntime({ db, environment, forbiddenRoots: ['/proof/merchant'] });
     assert.equal(await fence.ready(), true);
     assert.equal(fence.status().state, 'OPEN');
     assert.equal(fence.status().leases, 0);
+    assert.equal(db.prepare('SELECT count(*) n FROM "user"').get().n, 0);
+    assert.equal(db.prepare('SELECT count(*) n FROM "session"').get().n, 0);
     assert.equal(migrations(db), 26);
     assert.equal(fingerprint(db), schemaFingerprint);
     assert.equal(db.pragma('integrity_check', { simple: true }), 'ok');

@@ -12,13 +12,22 @@ import subprocess
 import sys
 import tempfile
 import uuid
+import time
+import urllib.request
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).parent))
 import art337_immutable_recovery as r
 
 
 def command(args):
-    return subprocess.check_output(args, stderr=subprocess.DEVNULL, timeout=300).decode()
+    result = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300, text=True)
+    if result.returncode:
+        # This test has only synthetic fixtures and a local registry; keep real
+        # diagnostic output so CI failures can be repaired without blind retries.
+        print(result.stdout[-8000:], file=sys.stderr)
+        print(result.stderr[-4000:], file=sys.stderr)
+        raise RuntimeError('ISOLATED_COMMAND_FAILED:' + args[1])
+    return result.stdout
 
 
 def main():
@@ -32,6 +41,15 @@ def main():
     try:
         command(['docker', 'run', '-d', '--name', registry, '-p', '127.0.0.1::5000', 'registry:2'])
         port = json.loads(command(['docker', 'inspect', registry]))[0]['NetworkSettings']['Ports']['5000/tcp'][0]['HostPort']
+        deadline = time.monotonic() + 15
+        while True:
+            try:
+                with urllib.request.urlopen('http://127.0.0.1:' + port + '/v2/', timeout=1) as response:
+                    if response.status != 200: raise RuntimeError('REGISTRY_NOT_READY')
+                break
+            except (OSError, RuntimeError):
+                if time.monotonic() >= deadline: raise RuntimeError('REGISTRY_START_TIMEOUT')
+                time.sleep(0.1)
         repository = 'localhost:' + port + '/flexperiment/art337-proof'
         tag = repository + ':isolated'
         command(['docker', 'tag', args.image, tag])

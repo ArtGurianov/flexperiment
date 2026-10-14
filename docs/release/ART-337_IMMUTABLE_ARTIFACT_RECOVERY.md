@@ -134,7 +134,11 @@ Repeat full fresh ART-329 online snapshots with WAL. For Commerce the approved
 nonzero counts are unchanged except `schema_migrations=26`; Payload unchanged.
 Compare inode/device/path and snapshot SHA to actual live DB under exclusive
 control. No current users/orders/content/uploads or unidentified rows. The
-classified single synthetic playback event is preserved.
+classified single synthetic playback event is preserved. Fresh snapshot hashes
+must also equal the independently recovered post-stop hashes (`38071e…` for
+Commerce, `716826…` for Payload), not merely their counts. A replaced event or
+changed seed at the same row count is HOLD; no widening/reclassification occurs
+inside this controller.
 
 Create new encrypted backups and independently remotely read back/decrypt
 both; reverify the whole old chain, including post-stop schema-0026 archives.

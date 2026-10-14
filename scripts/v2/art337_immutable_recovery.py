@@ -30,6 +30,12 @@ PARENT = "3496ccc7d51c691cb65035c6e09b69ac44ef24a1358d2021fc49ae88652a2a0b"
 PARENT_CONTROLLER = "3501e388c0d300d6cec871fd88cd65b40c77d946671e5b6b16539a66bb4c4d6f"
 ORIGINAL_APP = "xzuy7pk5y6ywjr9kh6nsk5ap"
 SCHEMA = q.SCHEMAS["0026"]
+# Exact independently recovered post-stop online snapshots. Changed page/row
+# content is an owner-scope deviation, even if table counts still look benign.
+CURRENT_SNAPSHOTS = {
+    "commerce": "38071e958e5ef0700724a9e01e808f369b2fc740dc38f8145e58f5dc597c45f5",
+    "payload": "7168269bb0e6e3176caaca562aae1675183f87fb39afbd04ad25a7ca8ba0596b",
+}
 ROOT = q.ROOT
 REQUIRED = {"inventory", "backup", "restore", "boot", "artifact", "isolation", "delivery"}
 SERVICES = {"commerce-v2": ORIGINAL_APP, "platform-v2": q.PLATFORM_APP,
@@ -86,7 +92,7 @@ def verify_release(controller):
 
 
 def fresh(value):
-    timestamp = datetime.fromisoformat(value)
+    timestamp = datetime.fromisoformat(value[:-1] + "+00:00" if value.endswith("Z") else value)
     age = (datetime.now(timezone.utc) - timestamp).total_seconds() if timestamp.tzinfo else -1
     if not 0 <= age <= 3600:
         refuse("PROOF_STALE_OR_FUTURE")
@@ -232,7 +238,8 @@ def validate(manifest):
         tables = inventory["inventories"][kind]["tables"]
         if len({x["table"] for x in tables}) != len(tables) \
                 or {x["table"]: x["count"] for x in tables if x["count"]} != baseline \
-                or inventory["snapshots"][kind]["integrity_check"] != "ok":
+                or inventory["snapshots"][kind]["integrity_check"] != "ok" \
+                or inventory["snapshots"][kind]["snapshot_sha256"] != CURRENT_SNAPSHOTS[kind]:
             refuse("POST_MIGRATION_INVENTORY_DRIFT")
     backup = reports["backup"]
     if backup.get("state") != "READBACK_PASS" or backup.get("scope") != "canary" \
@@ -383,6 +390,8 @@ def verify_live(manifest, rpc, locked=False):
 
 def validate_delivery(manifest, rpc, expected, running=False):
     uuid = manifest["applicationUuid"]
+    if uuid != configured_uuid():
+        refuse("DELIVERY_UUID_NOT_CREATED_BY_THIS_OPERATION")
     app = rpc.api("GET", "/applications/" + uuid)
     repository, digest = report(manifest, "artifact")["artifact"]["reference"].split("@")
     if app.get("uuid") != uuid or app.get("name") != "flexperiment-commerce-v2-canary-immutable" \
@@ -584,6 +593,9 @@ def create_delivery(artifact, rpc):
     # Identity validation after create, before any credentials or data bindings.
     created = rpc.api("GET", "/applications/" + result["uuid"])
     if created["environment_id"] != app["environment_id"] or created["destination_id"] != app["destination_id"] \
+            or created.get("uuid") != result["uuid"] or created.get("name") != "flexperiment-commerce-v2-canary-immutable" \
+            or created.get("settings", {}).get("is_auto_deploy_enabled") is not False \
+            or created.get("settings", {}).get("is_preview_deployments_enabled") is not False \
             or created.get("fqdn") or created.get("ports_mappings") or created.get("build_pack") != "dockerimage" \
             or rpc.container(result["uuid"], True):
         refuse("CREATED_RESOURCE_TOPOLOGY_DRIFT")
@@ -614,7 +626,8 @@ def configure_delivery(rpc):
             or new.get("settings", {}).get("is_auto_deploy_enabled") is not False \
             or new.get("settings", {}).get("is_preview_deployments_enabled") is not False:
         refuse("CONFIGURATION_ARTIFACT_OR_AUTODEPLOY_DRIFT")
-    if new.get("environment_id") != old["environment_id"] or new.get("destination_id") != old["destination_id"] \
+    if not str(new.get("status", "")).startswith(("exited", "stopped")) \
+            or new.get("environment_id") != old["environment_id"] or new.get("destination_id") != old["destination_id"] \
             or new.get("build_pack") != "dockerimage" or rpc.container(uuid, True) \
             or new.get("fqdn") or new.get("ports_mappings") \
             or new.get("name") != "flexperiment-commerce-v2-canary-immutable":

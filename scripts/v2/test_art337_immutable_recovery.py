@@ -36,12 +36,12 @@ def fixture():
         (root / "erasure-admission.json").write_bytes(old)
         now = datetime.now(timezone.utc).isoformat()
         inventory = {"issue": "ART-329", "environment": "canary-v2", "generated_at_utc": now,
-            "snapshots": {kind: {"snapshot_sha256": "1" * 64, "integrity_check": "ok"} for kind in ("commerce", "payload")},
+            "snapshots": {kind: {"snapshot_sha256": r.CURRENT_SNAPSHOTS[kind], "integrity_check": "ok"} for kind in ("commerce", "payload")},
             "inventories": {kind: {"tables": [{"table": k, "count": (26 if k == "schema_migrations" else v)}
                 for k, v in counts.items()]} for kind, counts in r.q.APPROVED_NONZERO.items()}}
         image = artifact()
         proof = {"sourceCommit": r.TARGET, "artifactSha256": r.q.digest(r.canonical(image)),
-                 "inputCommerceSha256": "1" * 64, "schemaFingerprint": r.SCHEMA,
+                 "inputCommerceSha256": r.CURRENT_SNAPSHOTS["commerce"], "schemaFingerprint": r.SCHEMA,
                  "beforeMigrations": 26, "afterMigrations": 26, "integrity": "ok", "foreignKeys": "ok",
                  "ledgerSequence": 1, "mirrorSha256": "2" * 64,
                  "proofScriptSha256": r.q.digest(pathlib.Path(r.__file__).with_name("art337-proof-continue.mjs").read_bytes())}
@@ -52,7 +52,7 @@ def fixture():
             path = root / (kind + ".age"); path.write_bytes(b'isolated-ciphertext')
             sha = r.q.digest(path.read_bytes())
             backup["archives"][kind] = {"path": str(path), "sha256": sha, "remoteSha256": sha,
-                                       "size": path.stat().st_size, "snapshotSha256": "1" * 64, "independentPlaintextSha256": "1" * 64}
+                                       "size": path.stat().st_size, "snapshotSha256": r.CURRENT_SNAPSHOTS[kind], "independentPlaintextSha256": r.CURRENT_SNAPSHOTS[kind]}
         reports = {"inventory": inventory, "backup": backup,
                    "artifact": {"artifact": image},
                    "restore": {**proof, "result": "PASS", "syntheticErasedAccounts": 1, "currentUsers": 0},
@@ -115,11 +115,17 @@ class Descriptor(unittest.TestCase):
 
 
 class Evidence(unittest.TestCase):
+    def test_real_python310_accepts_node_iso_utc_and_refuses_future(self):
+        r.fresh(datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))
+        with self.assertRaisesRegex(r.Refusal, "STALE_OR_FUTURE"):
+            r.fresh((datetime.now(timezone.utc)+timedelta(minutes=5)).isoformat().replace("+00:00", "Z"))
+
     def test_schema26_positive(self):
         with fixture() as (_, manifest, _, _): r.validate(manifest)
 
     def test_new_customer_old_schema_restore_old_artifact_and_leases_refuse(self):
         cases = [("inventory", lambda v: v["inventories"]["commerce"]["tables"].append({"table": "customers", "count": 1})),
+                 ("inventory", lambda v: v["snapshots"]["commerce"].update(snapshot_sha256="9" * 64)),
                  ("inventory", lambda v: next(x for x in v["inventories"]["commerce"]["tables"] if x["table"] == "schema_migrations").update(count=25)),
                  ("restore", lambda v: v.update(beforeMigrations=25)),
                  ("boot", lambda v: v.update(artifactSha256="9" * 64)),
@@ -151,7 +157,9 @@ class DeliveryBoundary(unittest.TestCase):
 
     def test_create_only_canary_no_deploy_or_new_volume(self):
         rpc = Mock(); parent = self.parent_app()
-        created = {"uuid": "n"*24, "environment_id": 6, "destination_id": 0, "build_pack": "dockerimage"}
+        created = {"uuid": "n"*24, "environment_id": 6, "destination_id": 0, "build_pack": "dockerimage",
+                   "name": "flexperiment-commerce-v2-canary-immutable",
+                   "settings": {"is_auto_deploy_enabled": False, "is_preview_deployments_enabled": False}}
         rpc.exclusive_canary.return_value = {"exclusive": True}; rpc.container.return_value = None
         requests = []
         def api(method, path, body=None):
