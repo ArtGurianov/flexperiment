@@ -22,6 +22,7 @@ class InstalledCoolifyPipeline(unittest.TestCase):
             self.assertEqual(proof['job']['productionImage'], reference)
             self.assertEqual(proof['job']['compose']['services']['art337-fixture']['image'], reference)
             self.assertNotIn('build', proof['job']['compose']['services']['art337-fixture'])
+            self.assertEqual(proof['job']['compose']['services']['art337-fixture']['cpu_shares'], 1024)
             self.assertEqual(proof['job']['commands'][-2:], [
                 'docker compose --project-name art337-fixture --project-directory /proof pull',
                 ' docker compose --project-name art337-fixture --project-directory /proof up --build -d'])

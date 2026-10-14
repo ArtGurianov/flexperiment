@@ -53,7 +53,7 @@ public function execute($fields, $scenario = []) {
     $this->application = (object) array_merge(['build_pack'=>'dockerimage', 'dockerfile'=>null,
         'uuid'=>'art337-fixture', 'limits_memory'=>'0', 'limits_memory_swap'=>'0',
         'limits_memory_swappiness'=>60,'limits_memory_reservation'=>'0',
-        'limits_cpus'=>0,'cpu_shares'=>1024], $fields);
+        'limits_cpus'=>0,'limits_cpu_shares'=>1024], $fields);
     $this->application_deployment_queue = new TestQueue;
     $this->server = (object)['name'=>'isolated']; $this->destination = new TestDestination;
     $this->destination->network = $scenario["network"] ?? "art337-test-network";
