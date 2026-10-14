@@ -1,7 +1,16 @@
 // Internal synthetic Control Room smoke. Credentials arrive only on stdin.
 import { readFileSync } from 'node:fs';
+import http from 'node:http';
 const input = JSON.parse(readFileSync(0, 'utf8'));
 const base = 'http://admin';
+const request = (url, options = {}) => new Promise((resolve, reject) => {
+  const req = http.request(url, options, response => {
+    response.resume(); response.on('end', () => resolve({ status: response.statusCode,
+      headers: { get: key => { const value = response.headers[key.toLowerCase()]; return Array.isArray(value) ? value.join(',') : value; } } }));
+  });
+  req.setTimeout(15000, () => req.destroy(new Error('SMOKE_TRANSPORT')));
+  req.on('error', reject); req.end(options.body);
+});
 const headers = { host: 'canary-admin.flexperiment.ru', origin: 'https://canary-admin.flexperiment.ru', 'content-type': 'application/json' };
 const retired = [
   ['POST', '/v1/internal/course-manifests'], ['POST', '/v1/internal/access-overrides'],
@@ -20,22 +29,22 @@ try {
       ...(method === 'POST' ? { body: '{}' } : {}), signal: AbortSignal.timeout(15000) });
     await r.body?.cancel(); check(r.status === 404, 'SMOKE_RETIRED_404');
   }
-  let r = await fetch(base + '/v1/admin/v2/catalogue', { headers });
+  let r = await request(base + '/v1/admin/v2/catalogue', { headers });
   await r.body?.cancel(); check(r.status === 401, 'SMOKE_ADMIN_ANONYMOUS');
-  r = await fetch(base + '/v1/admin/login', { method: 'POST', headers, body: JSON.stringify({ password: input.password }) });
+  r = await request(base + '/v1/admin/login', { method: 'POST', headers, body: JSON.stringify({ password: input.password }) });
   const cookie = r.headers.get('set-cookie')?.split(';')[0];
   await r.body?.cancel(); check(r.status === 200 && cookie, 'SMOKE_ADMIN_LOGIN');
   for (const path of ['/v1/admin/session', '/v1/admin/v2/catalogue']) {
-    r = await fetch(base + path, { headers: { ...headers, cookie } });
+    r = await request(base + path, { headers: { ...headers, cookie } });
     await r.body?.cancel(); check(r.status === 200, 'SMOKE_ADMIN_READ');
   }
   for (const path of ['/login', '/courses', '/release.json']) {
-    r = await fetch(base + path, { headers }); await r.body?.cancel(); check(r.status === 200, 'SMOKE_ADMIN_STATIC');
+    r = await request(base + path, { headers }); await r.body?.cancel(); check(r.status === 200, 'SMOKE_ADMIN_STATIC');
   }
-  r = await fetch(base + '/partner', { headers }); await r.body?.cancel(); check(r.status === 404, 'SMOKE_PARTNER_CLOSED');
-  r = await fetch(base + '/v1/admin/logout', { method: 'POST', headers: { ...headers, cookie }, body: '{}' });
+  r = await request(base + '/partner', { headers }); await r.body?.cancel(); check(r.status === 404, 'SMOKE_PARTNER_CLOSED');
+  r = await request(base + '/v1/admin/logout', { method: 'POST', headers: { ...headers, cookie }, body: '{}' });
   await r.body?.cancel(); check(r.status === 200, 'SMOKE_ADMIN_LOGOUT');
-  r = await fetch(base + '/v1/admin/session', { headers: { ...headers, cookie } });
+  r = await request(base + '/v1/admin/session', { headers: { ...headers, cookie } });
   await r.body?.cancel(); check(r.status === 401, 'SMOKE_ADMIN_REVOCATION');
   console.log(JSON.stringify({ state: 'INTERNAL_SMOKE_PASS', retiredRoutes404: 10,
     adminAnonymous401: true, adminLoginReadLogout: true, revokedSession401: true, staticPages200: true, partner404: true }));
