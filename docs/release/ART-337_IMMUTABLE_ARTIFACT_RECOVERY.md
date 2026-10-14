@@ -26,7 +26,10 @@ The original v2 `imageId` is historical evidence. It is never changed to the
 installed mismatching image or to a newly qualified image. Preserve the
 entire admission history, all original evidence, the Payload archives and the
 post-stop schema-0026 encrypted archives and remote chain. The original apps
-remain stopped; timers remain in their confirmed disabled/inactive state.
+remain stopped. Payload timers were confirmed disabled/inactive; Commerce
+backup/freshness timers were still enabled/active at the last HOLD. Do not
+infer Commerce timer isolation from stopped containers: section 2a requires
+its separate qualified isolation before settings repair or admission.
 New unknown records, queues, leases, schema/lineage drift or lost custody HOLD.
 
 ## Delivery choice and compatibility
