@@ -91,3 +91,14 @@ backup/restoration and recurrence. Local/CI success alone is not live PASS.
 Otherwise report specific `ART-337_FAST_CUT_HOLD`; resolve reversible local
 configuration errors without escalating every API request. Never bypass erasure,
 immutable source, unknown real data or public guards. ART338/DRM/F9 stay separate.
+
+## Subsequent closed-canary application update
+
+The original three source085 images remain this historical fast-cut default.
+For independently reviewed Commerce/Platform updates with retained Admin, see
+[ART-338_CANDIDATE_UPGRADE.md](ART-338_CANDIDATE_UPGRADE.md). The helper can read
+a separately installed root0600 `/etc/flexperiment-fast-cut-canary/release.json`;
+it checks a per-role source/digest vector and the new Commerce backup source.
+This file is an observation expectation, not permission to deploy or reopen an
+erasure fence. A malformed present file fails closed; no file keeps the exact
+source085 default. No command installs or adopts the candidate automatically.

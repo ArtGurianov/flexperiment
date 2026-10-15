@@ -7,6 +7,7 @@ import tempfile
 import time
 import unittest
 import uuid
+from unittest.mock import Mock
 from unittest.mock import patch
 
 ROOT=Path(__file__).resolve().parents[2]
@@ -14,6 +15,57 @@ spec=importlib.util.spec_from_file_location('fast_cut',ROOT/'scripts/v2/fast-cut
 f=importlib.util.module_from_spec(spec);spec.loader.exec_module(f)
 
 class FastCut(unittest.TestCase):
+    def setUp(self):
+        f.release.cache_clear()
+
+    def tearDown(self):
+        f.release.cache_clear()
+
+    def candidate(self):
+        return json.loads((ROOT/'deploy/v2/fast-cut/closed-e2e-release.json').read_bytes())
+
+    def test_release_legacy_default_and_exact_new_role_vector(self):
+        with tempfile.TemporaryDirectory() as d, patch.object(f,'INPUT',Path(d)):
+            self.assertEqual(f.release(),{role:{'sourceCommit':f.SOURCE,'imageReference':image} for role,image in f.LEGACY_IMAGES.items()})
+        old=json.loads((ROOT/'deploy/v2/fast-cut/compose.json').read_bytes())
+        self.assertEqual(f.LEGACY_IMAGES,{role:row['image'] for role,row in old['services'].items()})
+        new=f.validate_release(self.candidate())
+        self.assertEqual(new['commerce']['sourceCommit'],new['platform']['sourceCommit'])
+        self.assertNotEqual(new['commerce']['sourceCommit'],new['admin']['sourceCommit'])
+        self.assertEqual(new['admin']['sourceCommit'],f.SOURCE)
+
+    def test_release_refuses_unknown_fields_scope_mutable_tag_role_swap_or_split_source(self):
+        mutations=[lambda x:x.update(scope='production'),lambda x:x.update(unknown=True),
+                   lambda x:x['roles'].pop('admin'),lambda x:x['roles'].update(worker=x['roles']['commerce']),
+                   lambda x:x['roles']['platform'].update(sourceCommit=f.SOURCE),
+                   lambda x:x['roles']['commerce'].update(sourceCommit='main'),
+                   lambda x:x['roles']['commerce'].update(imageReference='ghcr.io/artgurianov/flexperiment-commerce-v2:latest'),
+                   lambda x:x['roles']['commerce'].update(imageReference=x['roles']['platform']['imageReference']),
+                   lambda x:x['roles']['admin'].update(fence='OPEN')]
+        for mutate in mutations:
+            with self.subTest(mutate=mutate),self.assertRaises(ValueError):
+                candidate=self.candidate();mutate(candidate);f.validate_release(candidate)
+
+    def test_installed_release_uses_private_custody_and_pins_one_cli_vector(self):
+        with tempfile.TemporaryDirectory() as d,patch.object(f,'INPUT',Path(d)):
+            file=Path(d)/'release.json';file.write_text('placeholder')
+            with patch.object(f,'private',return_value=json.dumps(self.candidate()).encode()) as read:
+                first=f.release()
+                self.assertIs(f.release(),first);read.assert_called_once_with(file)
+            f.release.cache_clear()
+            with patch.object(f,'private',side_effect=ValueError('FAST_CUT_PRIVATE_CUSTODY')),self.assertRaisesRegex(ValueError,'PRIVATE_CUSTODY'):
+                f.release()
+
+    def test_present_invalid_or_duplicate_release_never_falls_back_to_legacy(self):
+        with tempfile.TemporaryDirectory() as d,patch.object(f,'INPUT',Path(d)):
+            file=Path(d)/'release.json';file.write_text('placeholder')
+            for raw in [b'{}',b'not json',b'{"scope":"production","scope":"canary"}']:
+                f.release.cache_clear()
+                with self.subTest(raw=raw),patch.object(f,'private',return_value=raw),self.assertRaises(ValueError):f.release()
+            file.write_bytes(b'x'*4097);f.release.cache_clear()
+            with patch.object(f,'private') as read,self.assertRaisesRegex(ValueError,'RELEASE_INVALID'):f.release()
+            read.assert_not_called()
+
     def test_manifest_has_no_public_ports_or_payload_and_preserves_erasure_authority(self):
         v=json.loads((ROOT/'deploy/v2/fast-cut/compose.json').read_bytes())
         self.assertEqual(set(v['services']),{'commerce','platform','admin'})
@@ -61,7 +113,7 @@ class FastCut(unittest.TestCase):
 
     def test_readback_rejects_published_port_wrong_network_and_mutated_image(self):
         manifest=json.loads((ROOT/'deploy/v2/fast-cut/compose.json').read_bytes());s=manifest['services']['platform'];identity={'schema':'flexperiment.build-identity/1','service':'platform','sourceCommit':f.SOURCE}
-        config={'Image':s['image'],'Env':['PLATFORM_V2_CANARY=true','PLATFORM_EXPECTED_COMMERCE_SHA='+f.SOURCE],
+        config={'Image':s['image'],'Env':['SOURCE_COMMIT='+f.SOURCE,'PLATFORM_V2_CANARY=true','PLATFORM_EXPECTED_COMMERCE_SHA='+f.SOURCE],
                 'Labels':{'com.flexperiment.scope':'canary-fast-cut'},'User':'node','Entrypoint':None,'Cmd':['node'],'WorkingDir':'/app'}
         c={'Config':config,'Image':'sha256:'+'a'*64,'HostConfig':{'PortBindings':{},'ReadonlyRootfs':True},'State':{'Running':True},
            'NetworkSettings':{'Networks':{'flexperiment-fast-cut-canary':{}}},'Mounts':[{'Type':'tmpfs','Destination':'/tmp'}]}
@@ -81,5 +133,113 @@ class FastCut(unittest.TestCase):
                        lambda x:x.update(Image='different'),lambda x:x['Config']['Env'].append('PAYLOAD_SECRET=forbidden')]:
             bad=copy.deepcopy(c);mutate(bad)
             with self.assertRaises(ValueError):check(bad)
+
+    def test_new_platform_requires_vector_image_native_source_env_and_expected_commerce(self):
+        vector=f.validate_release(self.candidate());row=vector['platform']
+        manifest=json.loads((ROOT/'deploy/v2/fast-cut/compose.json').read_bytes())
+        manifest['services']['platform']['image']=row['imageReference']
+        s=manifest['services']['platform'];identity={'schema':'flexperiment.build-identity/1','service':'platform','sourceCommit':row['sourceCommit']}
+        config={'Image':s['image'],'Env':['SOURCE_COMMIT='+row['sourceCommit'],'PLATFORM_V2_CANARY=true','PLATFORM_EXPECTED_COMMERCE_SHA='+row['sourceCommit']],
+                'Labels':{'com.flexperiment.scope':'canary-fast-cut'},'User':'node','Entrypoint':None,'Cmd':['node'],'WorkingDir':'/app'}
+        container={'Config':config,'Image':'sha256:'+'a'*64,'HostConfig':{'PortBindings':{},'ReadonlyRootfs':True},'State':{'Running':True},
+                   'NetworkSettings':{'Networks':{'flexperiment-fast-cut-canary':{}}},'Mounts':[]}
+        image={'Id':container['Image'],'RootFS':{'Layers':['layer']},'Config':copy.deepcopy(config),'Os':'linux','Architecture':'amd64'}
+        qualified={'imageId':image['Id'],'rootfs':['layer'],'identity':identity}
+        with tempfile.TemporaryDirectory() as d:
+            stack=Path(d)/'compose.json';stack.write_text(json.dumps(manifest))
+            def check(c,native=identity):
+                with patch.object(f,'STACK',stack),patch.object(f,'release',return_value=vector),patch.object(f,'private',return_value=json.dumps(qualified).encode()), \
+                     patch.object(f,'run',side_effect=[json.dumps([c]).encode(),json.dumps([image]).encode(),json.dumps(native).encode()]):return f.inspect('platform')
+            self.assertEqual(check(container)[1]['identity'],identity)
+            for mutate in [lambda c:c['Config']['Env'].append('SOURCE_COMMIT='+f.SOURCE),
+                           lambda c:c['Config']['Env'].append('PLATFORM_EXPECTED_COMMERCE_SHA='+f.SOURCE)]:
+                bad=copy.deepcopy(container);mutate(bad)
+                with self.assertRaises(ValueError):check(bad)
+            with self.assertRaises(ValueError):check(container,{**identity,'sourceCommit':f.SOURCE})
+            manifest['services']['platform']['image']=f.LEGACY_IMAGES['platform'];stack.write_text(json.dumps(manifest))
+            with self.assertRaisesRegex(ValueError,'RELEASE_IMAGE_MISMATCH'):check(container)
+
+    def test_mixed_release_admin_readiness_identifies_commerce_not_native_admin(self):
+        vector=f.validate_release(self.candidate());target=vector['commerce']['sourceCommit']
+        def connection(fence=False):
+            db=Mock()
+            def execute(query):
+                result=Mock()
+                if 'sqlite_master' in query:result.__iter__=Mock(return_value=iter([]))
+                elif 'foreign_key_check' in query:result.fetchall.return_value=[]
+                elif 'fence_state' in query:result.fetchone.return_value=('canary','OPEN',1,None)
+                elif 'fence_leases' in query:result.fetchone.return_value=(0,)
+                elif 'integrity_check' in query:result.fetchone.return_value=('ok',)
+                else:result.fetchone.return_value=(26,)
+                return result
+            db.execute.side_effect=execute;return db
+        def check(admin_source):
+            ready=[{'ok':True,'foundationMode':False,'capabilities':{'erasure':'qualified'},'core':{'paymentMode':'disabled'},'sourceCommit':target},
+                   {'sourceCommit':target},{'ok':True,'service':'commerce-v2','sourceCommit':admin_source},{'state':'REMOTE_VERIFIED','scope':'canary','sequence':1}]
+            with patch.object(f,'release',return_value=vector),patch.object(f,'inspect',side_effect=lambda role:(role,{})), \
+                 patch.object(f,'run',side_effect=[json.dumps(r).encode() for r in ready]), \
+                 patch.object(f.sqlite3,'connect',side_effect=[connection(),connection(True)]), \
+                 patch.object(f,'SCHEMA',__import__('hashlib').sha256(b'[]').hexdigest()):return f.check()
+        self.assertEqual(check(target)['sourceCommit'],target)
+        with self.assertRaisesRegex(ValueError,'ADMIN_NOT_READY'):check(f.SOURCE)
+
+    def test_actual_admin_nginx_readiness_has_new_upstream_source_and_retained_native_identity(self):
+        target=self.candidate()['roles']['commerce']['sourceCommit']
+        prefix='fast-cut-readiness-'+uuid.uuid4().hex[:12];network=prefix+'-net';upstream=prefix+'-upstream';admin=prefix+'-admin'
+        def docker(*args):return subprocess.check_output(['docker',*args],stderr=subprocess.DEVNULL,timeout=60)
+        with tempfile.TemporaryDirectory() as d:
+            identity=Path(d)/'release.json';identity.write_text(json.dumps({'source_commit':f.SOURCE,'admin_contract_version':'synthetic'}))
+            try:
+                docker('network','create','--internal',network)
+                code="require('node:http').createServer((q,r)=>{r.setHeader('content-type','application/json');r.end(JSON.stringify({ok:true,service:'commerce-v2',sourceCommit:process.argv[1]}))}).listen(3002,'0.0.0.0')"
+                docker('run','-d','--name',upstream,'--network',network,'--network-alias',f.ORIGINAL,'node:22-bookworm-slim','node','-e',code,target)
+                docker('run','-d','--name',admin,'--network',network,'--read-only','--tmpfs','/var/cache/nginx','--tmpfs','/var/run','--tmpfs','/tmp',
+                       '-v',str(ROOT/'deploy/v2/fast-cut/admin.conf')+':/etc/nginx/conf.d/default.conf:ro',
+                       '-v',str(ROOT/'deploy/v2/fast-cut/admin-common.conf')+':/etc/nginx/fast-cut/admin-common.conf:ro',
+                       '-v',str(ROOT/'deploy/v2/frontends')+':/etc/nginx/v2:ro',
+                       '-v',str(identity)+':/usr/share/nginx/html/release.json:ro','nginx:1.29-alpine')
+                for _ in range(30):
+                    try:
+                        ready=json.loads(docker('exec',admin,'wget','-qO-','http://127.0.0.1/readyz'));break
+                    except subprocess.CalledProcessError:time.sleep(.1)
+                else:self.fail('isolated Admin nginx did not become ready')
+                self.assertEqual(ready,{'ok':True,'service':'commerce-v2','sourceCommit':target})
+                native=json.loads(docker('exec',admin,'cat','/usr/share/nginx/html/release.json'))
+                self.assertEqual(native['source_commit'],f.SOURCE)
+                self.assertNotEqual(ready['sourceCommit'],native['source_commit'])
+            finally:
+                for name in [admin,upstream]:subprocess.run(['docker','rm','-f',name],capture_output=True,timeout=30)
+                subprocess.run(['docker','network','rm',network],capture_output=True,timeout=30)
+
+    def test_backup_after_candidate_switch_rejects_previous_source_status(self):
+        vector=f.validate_release(self.candidate());body=b'encrypted fixture';import hashlib
+        status={'status':'SUCCESS','sourceCommit':f.SOURCE,'verifiedAt':int(time.time()),
+                'filename':'fast-cut-20261015T000000Z-'+str(uuid.uuid4())+'.sqlite.age','sha256':hashlib.sha256(body).hexdigest(),'size':len(body)}
+        with patch.object(f,'release',return_value=vector):
+            with patch.object(f,'private',return_value=json.dumps(status).encode()),self.assertRaisesRegex(ValueError,'BACKUP_STALE'):f.check_backup()
+            status['sourceCommit']=vector['commerce']['sourceCommit']
+            with patch.object(f,'private',side_effect=[json.dumps(status).encode(),body]):self.assertEqual(f.check_backup()['status'],'FRESH')
+
+    def test_backup_new_source_filename_transport_status_and_freshness(self):
+        vector=f.validate_release(self.candidate());target=vector['commerce']['sourceCommit'];body=b'encrypted archive fixture'
+        import hashlib
+        proof={'filename':'canary-'+target+'-'+str(uuid.uuid4())+'.sqlite.age','sha256':hashlib.sha256(body).hexdigest(),'size':len(body)}
+        transport=Mock();transport.s3.side_effect=[b'',(proof['sha256']+'  archive').encode()]
+        with tempfile.TemporaryDirectory() as d:
+            backups=Path(d)/'backups'
+            def command(args,**kwargs):
+                if args[1]=='exec':return json.dumps(proof).encode()
+                Path(args[-1]).write_bytes(body);return b''
+            with patch.object(f,'release',return_value=vector),patch.object(f,'check'),patch.object(f,'inspect',return_value=('commerce',{})), \
+                 patch.object(f,'run',side_effect=command),patch.object(f,'BACKUPS',backups),patch.object(f,'transport',return_value=transport), \
+                 patch.object(f.os,'chown'),patch.object(f,'private',side_effect=lambda p:p.read_bytes()):
+                status=f.backup()
+                self.assertEqual(status['sourceCommit'],target)
+                self.assertEqual(json.loads((backups/'status.json').read_text()),status)
+                self.assertEqual(f.check_backup()['status'],'FRESH')
+                self.assertEqual(transport.s3.call_count,2)
+                proof['filename']='canary-'+f.SOURCE+'-'+str(uuid.uuid4())+'.sqlite.age'
+                with self.assertRaisesRegex(ValueError,'BACKUP_IDENTITY'):f.backup()
+                self.assertEqual(transport.s3.call_count,2)
 
 if __name__=='__main__':unittest.main()
