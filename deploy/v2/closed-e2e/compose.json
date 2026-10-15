@@ -106,6 +106,15 @@
           "bind": {
             "create_host_path": false
           }
+        },
+        {
+          "type": "bind",
+          "source": "/etc/flexperiment-closed-e2e/legal",
+          "target": "/etc/canary-legal",
+          "read_only": true,
+          "bind": {
+            "create_host_path": false
+          }
         }
       ]
     }

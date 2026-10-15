@@ -1,5 +1,5 @@
 {
-  "status": "OWNER_EXECUTION_APPROVAL_PENDING_NOT_ACTIVATED",
+  "status": "OWNER_EXECUTION_APPROVED_CANARY_ONLY",
   "scope": "closed canary COURSES only, existing approved-source bytes unchanged; not public/legal production admission",
   "releaseVersion": "2026-10-15.closed-e2e",
   "stage": "A",

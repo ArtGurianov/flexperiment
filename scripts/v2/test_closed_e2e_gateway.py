@@ -1,5 +1,6 @@
 """Real nginx/TLS boundaries on isolated fixtures; no VPS/provider or app E2E claim."""
 import json
+import hashlib
 import os
 from pathlib import Path
 import subprocess
@@ -41,7 +42,7 @@ class ClosedGateway(unittest.TestCase):
             for cap in ['CHOWN','SETUID','SETGID','NET_BIND_SERVICE']:cmd+=['--cap-add',cap]
             for mount in ['/tmp','/var/cache/nginx','/var/run']:cmd+=['--tmpfs',mount]
             cmd+=['-v',str(ROOT/'deploy/v2/closed-e2e'/(role+'.conf'))+':/etc/nginx/conf.d/default.conf:ro','-p','127.0.0.1::'+str(port)]
-            if role=='tester':cmd+=['-v',cls.volume+':/etc/canary-tls:ro']
+            if role=='tester':cmd+=['-v',cls.volume+':/etc/canary-tls:ro','-v',str(ROOT/'docs/legal/stage-a/2026-10-11-draft')+':/etc/canary-legal:ro']
             docker(*cmd,IMAGE)
             row=json.loads(docker('inspect',name))[0]
             if not row['State']['Running']:raise RuntimeError('NGINX_START_FAILED: '+docker('logs',name))
@@ -50,7 +51,8 @@ class ClosedGateway(unittest.TestCase):
             cls.urls[role]=int(bindings[0]['HostPort'])
         for _ in range(30):
             try:
-                if cls.request('drm-bridge','/healthz',HOSTS[0],host_override='localhost')[0]==200:break
+                if (cls.request('drm-bridge','/healthz',HOSTS[0],host_override='localhost')[0]==200
+                        and cls.request('tester','/fixture',HOSTS[1])[0]==200):break
             except subprocess.SubprocessError:pass
             time.sleep(.2)
         else:raise RuntimeError('FIXTURE_NOT_READY')
@@ -92,5 +94,16 @@ class ClosedGateway(unittest.TestCase):
             status,headers,raw=self.request('tester','/fixture',host,headers={'Cookie':'fixture=opaque'})
             self.assertEqual(status,200);data=json.loads(raw);self.assertEqual(data['host'],host);self.assertEqual(data['scheme'],'https');self.assertTrue(data['cookie']);self.assertIn('secure',headers['set-cookie']);self.assertEqual(headers['cache-control'],'no-store')
         self.assertEqual(self.request('tester','/',HOSTS[3])[0],403)
+
+    def test_approved_legal_bytes_are_platform_only_read_only_and_private(self):
+        proposal=json.loads((ROOT/'docs/plans/2026-10-15-canary-legal-activation-proposal.json').read_bytes())
+        for document in proposal['documents']:
+            path='/__closed_legal/'+document['kind']+'.md'
+            status,headers,raw=self.request('tester',path,HOSTS[1])
+            self.assertEqual(status,200);self.assertEqual(headers['cache-control'],'no-store')
+            self.assertEqual(hashlib.sha256(raw).hexdigest(),document['sha256'])
+            self.assertEqual(self.request('tester',path,HOSTS[1],'POST',b'{}')[0],403)
+            for host in [HOSTS[0],HOSTS[2],HOSTS[3]]:
+                self.assertIn(self.request('tester',path,host)[0],[403,404])
 
 if __name__=='__main__':unittest.main()

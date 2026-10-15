@@ -20,6 +20,9 @@ No shared proxy restart/network reconfiguration.
 Tester nginx has only the canary network and `127.0.0.1:8446:443`. It proxies
 API/Admin/Platform using their original HTTPS hosts; unknown and unused LAB
 hosts deny403. Host/cookies/HTTPS scheme are preserved; no token logs.
+Only the private Platform host serves four approved-source legal Markdown
+documents under `/__closed_legal/`, from a readonly root-owned mount; GET/HEAD
+only. Hash bytes must match the owner-approved proposal. Other hosts deny.
 
 ## Private TLS and browser
 
@@ -58,9 +61,17 @@ Normal operator browser authors/publishes a minimal real course/section/lesson;
 Tus uploads owner tour.mp4 and polls READY, private binding readback. Use an
 authorised controlled email, real delivered magic-link/CAPTCHA and authenticated
 consent. Current legal release is absent; the prepared canary-only activation
-proposal is docs/plans/2026-10-15-canary-legal-activation-proposal.json. Existing
-approved hashes alone do not authorise activation. Keep that operation pending
-until owner answers, no synthetic consent/account/grant substitute.
+proposal is docs/plans/2026-10-15-canary-legal-activation-proposal.json. Owner
+15October explicitly approved this canary-only activation and supplied the
+controlled mailbox/public widget key. Verify all four served HTTPS hashes,
+then invoke the existing fenced internal legal-release API once, retaining
+intent/outcome and independent current-release readback. No public legal/F9
+admission or candidate-delta activation, synthetic consent/account/grant.
+
+Live Control Room init exposed regional upload endpoint rejection; PR226 fixes
+the bounded provider contract and runtime public SmartCaptcha key configuration.
+Keep source085 installed until independent review/new artifact admission. Use
+SMARTCAPTCHA_CLIENT_KEY for runtime public-key injection; preserve server secret.
 
 Playback grant comes from normal Commerce endpoint and player drmauthtoken.
 Observe actual provider callback/license/playback, foreign/expiry/revoke/
@@ -70,9 +81,9 @@ F9/production is independently blocked by ART351 and other release gates.
 
 ## Qualification and limits
 
-Three real nginx/TLS contracts cover exact callback routing/auth passthrough,
+Four real nginx/TLS contracts cover exact callback routing/auth passthrough,
 body cap/no-store, private Host/scheme/Secure-cookie and manifest port/network
-boundaries. CI uses public nginx base; local run also uses the qualified Admin
+boundaries, plus exact legal bytes/host/method isolation. CI uses public nginx base; local run also uses the qualified Admin
 digest. Fixture TLS uses --cacert, never --insecure. No app/provider E2E claim.
 The read-only15min desktop heartbeat records and notifies health/CLOSED/backup
 changes without restart; it depends on desktop host/SSH availability and is
