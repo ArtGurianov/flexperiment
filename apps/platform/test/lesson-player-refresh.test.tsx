@@ -82,7 +82,7 @@ describe("protected player renewal with supported iframe controls", () => {
       ? Response.json({ accepted: true }) : new Promise(r => { resolve = r; }));
     await advance(90_000); cleanup(); resolve(Response.json(grant("late"))); await flush(); expect(sdk.create).toHaveBeenCalledTimes(1);
   });
-  it("honours a viewer pause while the new grant GET is pending", async () => {
+  it("honours a viewer pause while the new grant request is pending", async () => {
     await start(); playing(); let resolve!: (r: Response) => void;
     vi.mocked(global.fetch).mockImplementation(async (_url, options) => options?.method === "PUT"
       ? Response.json({ accepted: true }) : new Promise(r => { resolve = r; }));
@@ -113,12 +113,30 @@ describe("protected player renewal with supported iframe controls", () => {
     view.rerender(<LessonPlayer lessonRef="second" title="Second" />); await flush(); resolve(Response.json(grant("late-first"))); await flush();
     expect(sdk.create).toHaveBeenCalledTimes(2); expect(instances[1].play).not.toHaveBeenCalled(); expect(sdk.create.mock.calls[1][1].url).toContain("second-video");
   });
-  it("tears down by the old expiry when renewal GETs keep failing", async () => {
+  it("tears down by the old expiry when renewal requests keep failing", async () => {
     await start(); playing(); vi.mocked(global.fetch).mockImplementation(async (_url, options) => {
       if (options?.method === "PUT") return Response.json({ accepted: true }); throw new Error("synthetic transport failure");
     });
     await advance(120_001); expect(instances[0].destroy).toHaveBeenCalledTimes(1); expect(sdk.create).toHaveBeenCalledTimes(1);
     expect(screen.getByText(/Видео сейчас не загрузилось/)).toBeInTheDocument();
+  });
+  it("closes at expiry even if the renewal request never settles", async () => {
+    await start(); playing(); vi.mocked(global.fetch).mockImplementation(async (_url, options) => options?.method === "PUT"
+      ? Response.json({ accepted: true }) : new Promise(() => {}));
+    await advance(120_001); expect(instances[0].destroy).toHaveBeenCalledTimes(1); expect(sdk.create).toHaveBeenCalledTimes(1);
+    expect(screen.getByText(/Видео сейчас не загрузилось/)).toBeInTheDocument();
+  });
+  it("cannot reopen media on a successful response received after the old expiry", async () => {
+    await start(); playing(); let resolve!: (r: Response) => void;
+    vi.mocked(global.fetch).mockImplementation(async (_url, options) => options?.method === "PUT"
+      ? Response.json({ accepted: true }) : new Promise(r => { resolve = r; }));
+    await advance(120_001); resolve(Response.json(grant("late-after-expiry"))); await flush();
+    expect(instances[0].destroy).toHaveBeenCalledTimes(1); expect(sdk.create).toHaveBeenCalledTimes(1);
+  });
+  it("does not expire a newer accepted grant at the previous deadline", async () => {
+    await start(); playing(); await advance(90_000); expect(sdk.create).toHaveBeenCalledTimes(2);
+    await advance(30_001); expect(instances[1].destroy).not.toHaveBeenCalled();
+    expect(screen.queryByText(/Видео сейчас не загрузилось/)).not.toBeInTheDocument();
   });
   it("rejects an unknown delivery mode before touching the SDK", async () => {
     vi.mocked(global.fetch).mockResolvedValue(Response.json({ ...grant(), mode: "unexpected" }));

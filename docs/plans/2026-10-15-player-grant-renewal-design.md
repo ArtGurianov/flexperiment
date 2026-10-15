@@ -26,11 +26,15 @@ no claim of one uninterrupted encrypted media session.
 ## Safety
 
 The authoritative grant endpoint, JWT lifetime, current policy checks and
-existing finite GET retries remain unchanged. Denied/expired/failed admission
+existing finite grant-request retries remain unchanged. Denied/expired/failed admission
 removes the player without replacement. Old media is never kept as an
 availability fallback. No uncertain SDK token mutation is repeated. A failed
 new iframe shows the existing error state; browser autoplay refusal leaves the
 valid new player's normal controls available for an explicit Play.
+
+Expiry has its own timer, independent of request rejection. A never-settling renewal
+is aborted and the old player removed at its existing deadline. Late successful
+responses cannot reopen it. An old timer cannot clear a newer accepted grant.
 
 The accepted-grant ref is written at the asynchronous state-commit boundary.
 Cleanup compares it to the outgoing video/mode before preserving play intent.

@@ -80,6 +80,14 @@ function LessonPlayerSession({ lessonRef, title }: { lessonRef: string; title: s
     const controller = new AbortController();
     let timer: number | undefined;
     const expiresAt = Date.parse(grant.expiresAt);
+    // A hung grant request never reaches catch. Expiry must close the old player even
+    // when transport ignores cancellation or never settles at all.
+    const expiryTimer = window.setTimeout(() => {
+      if (grantSnapshotRef.current !== grant) return;
+      controller.abort();
+      setState("error");
+      setGrant(null);
+    }, Math.max(0, expiresAt - Date.now()));
     const schedule = (delay: number) => { timer = window.setTimeout(() => { void refresh(); }, delay); };
     const refresh = async () => {
       try {
@@ -101,7 +109,7 @@ function LessonPlayerSession({ lessonRef, title }: { lessonRef: string; title: s
       }
     };
     schedule(Math.max(1_000, expiresAt - Date.now() - 30_000));
-    return () => { controller.abort(); if (timer !== undefined) window.clearTimeout(timer); };
+    return () => { controller.abort(); window.clearTimeout(expiryTimer); if (timer !== undefined) window.clearTimeout(timer); };
   }, [grant, lessonRef, setGrant]);
 
   useEffect(() => {
