@@ -18,11 +18,11 @@ describe("LessonPlayer", () => {
   });
   const handlers: Record<string, (event: { data?: { currentTime?: number } }) => void> = {};
   const player = {
-    Events: { TimeUpdate: "time", Pause: "pause", Error: "error", Unsupported: "unsupported" },
+    Events: { TimeUpdate: "time", Pause: "pause", Playing: "playing", Ended: "ended", Error: "error", Unsupported: "unsupported" },
     on: vi.fn((event: string, handler: (event: { data?: { currentTime?: number } }) => void) => { handlers[event] = handler; }),
     getCurrentTime: vi.fn(async () => 47),
     seekTo: vi.fn(async () => undefined),
-    setPlaylistItemOptions: vi.fn(async () => undefined),
+    play: vi.fn(async () => undefined),
     destroy: vi.fn(async () => undefined),
   };
   const create = vi.fn(async (elementId: string, options: { url: string; behavior: { localStorage: boolean } }) => {
@@ -106,9 +106,9 @@ describe("LessonPlayer", () => {
     const playbackRequests = vi.mocked(global.fetch).mock.calls.filter(([input, init]) =>
       String(input) === "/v1/lessons/lesson/playback" && init?.method === "POST");
     expect(playbackRequests).toHaveLength(2);
-    expect(create).toHaveBeenCalledTimes(1);
-    expect(player.setPlaylistItemOptions).toHaveBeenCalledWith({ drm: { auth: { token: "second" } } });
-    expect(player.destroy).not.toHaveBeenCalled();
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(create.mock.calls[1]?.[1]).toMatchObject({ url: "https://kinescope.io/embed/video?drmauthtoken=second" });
+    expect(player.play).not.toHaveBeenCalled();
   });
 
   it("never embeds an already expired protected grant", async () => {

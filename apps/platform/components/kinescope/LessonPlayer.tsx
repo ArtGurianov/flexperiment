@@ -40,6 +40,8 @@ function LessonPlayerSession({ lessonRef, title }: { lessonRef: string; title: s
   const hostRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<KinescopePlayerInstance | null>(null);
   const positionRef = useRef(0);
+  const playingRef = useRef(false);
+  const continuePlaybackRef = useRef(false);
   const sequenceRef = useRef(0);
   const lastSavedAtRef = useRef(0);
   const [grant, commitGrant] = useState<PlaybackGrant | null>(null);
@@ -48,7 +50,6 @@ function LessonPlayerSession({ lessonRef, title }: { lessonRef: string; title: s
     grantSnapshotRef.current = next;
     commitGrant(next);
   }, []);
-  const playerIdentity = grant ? JSON.stringify([grant.mode, grant.videoId]) : null;
   const [state, setState] = useState<"loading" | "signin" | "consent" | "denied" | "ready" | "error">("loading");
 
   useEffect(() => {
@@ -91,27 +92,6 @@ function LessonPlayerSession({ lessonRef, title }: { lessonRef: string; title: s
         const next = await parseGrant(response);
         if (controller.signal.aborted) return;
         if (!next) { setState("denied"); setGrant(null); return; }
-        if (next.mode === "protected" && next.videoId === grant.videoId) {
-          const player = playerRef.current;
-          if (!player) throw new Error("PLAYER_NOT_READY_FOR_RENEWAL");
-          const remaining = expiresAt - Date.now() - 1_000;
-          if (remaining <= 0) { setState("error"); setGrant(null); return; }
-          let deadline: number | undefined;
-          try {
-            // A successful grant does not authorize keeping an old SDK token.
-            // Keep the existing instance only after the new token is acknowledged.
-            await Promise.race([
-              player.setPlaylistItemOptions({ drm: { auth: { token: next.token! } } }),
-              new Promise<never>((_, reject) => {
-                deadline = window.setTimeout(() => reject(new Error("PLAYER_AUTH_UPDATE_UNCONFIRMED")), Math.min(5_000, remaining));
-              }),
-            ]);
-          } catch {
-            if (!controller.signal.aborted) { setState("error"); setGrant(null); }
-            return;
-          } finally { window.clearTimeout(deadline); }
-          if (controller.signal.aborted || playerRef.current !== player) return;
-        }
         setGrant(next);
       } catch (error) {
         if (error instanceof DOMException && error.name === "AbortError") return;
@@ -125,11 +105,10 @@ function LessonPlayerSession({ lessonRef, title }: { lessonRef: string; title: s
   }, [grant, lessonRef, setGrant]);
 
   useEffect(() => {
-    // Token renewal updates the SDK above. Only a new video/mode starts a new
-    // instance; the snapshot is written at the asynchronous grant commit boundary.
-    const grant = grantSnapshotRef.current;
     const host = hostRef.current;
     if (!grant || !host) return;
+    const continuePlayback = continuePlaybackRef.current;
+    continuePlaybackRef.current = false;
     let cancelled = false;
     let player: KinescopePlayerInstance | null = null;
     const mount = document.createElement("div");
@@ -145,6 +124,7 @@ function LessonPlayerSession({ lessonRef, title }: { lessonRef: string; title: s
       lastSavedAtRef.current = now;
       if (observedSeconds === undefined) {
         const current = player ? await player.getCurrentTime().catch(() => positionRef.current) : positionRef.current;
+        if (cancelled) return;
         positionRef.current = Math.max(0, Math.floor(current));
       }
       sequenceRef.current += 1;
@@ -166,13 +146,17 @@ function LessonPlayerSession({ lessonRef, title }: { lessonRef: string; title: s
       if (cancelled) { await created.destroy().catch(() => undefined); return; }
       player = created;
       playerRef.current = created;
+      created.on(created.Events.Playing, () => { if (!cancelled) playingRef.current = true; });
+      created.on(created.Events.TimeUpdate, (event) => { if (!cancelled) void save(false, event.data?.currentTime); });
+      const paused = () => { if (!cancelled) { playingRef.current = false; void save(true); } };
+      created.on(created.Events.Pause, paused);
+      created.on(created.Events.Ended, paused);
+      created.on(created.Events.Error, () => { if (!cancelled) setState("error"); });
+      created.on(created.Events.Unsupported, () => { if (!cancelled) setState("error"); });
       const resumeAt = Math.max(grant.resumeAt, positionRef.current);
-      if (resumeAt > 0) await created.seekTo(resumeAt).catch(() => undefined);
-      created.on(created.Events.TimeUpdate, (event) => { void save(false, event.data?.currentTime); });
-      created.on(created.Events.Pause, () => { void save(true); });
-      created.on(created.Events.Error, () => setState("error"));
-      created.on(created.Events.Unsupported, () => setState("error"));
-    }).catch(() => setState("error"));
+      if (resumeAt > 0) await created.seekTo(resumeAt);
+      if (!cancelled && continuePlayback) await created.play().catch(() => undefined);
+    }).catch(() => { if (!cancelled) setState("error"); });
 
     const pageHide = () => {
       sequenceRef.current += 1;
@@ -181,14 +165,19 @@ function LessonPlayerSession({ lessonRef, title }: { lessonRef: string; title: s
     };
     window.addEventListener("pagehide", pageHide);
     return () => {
+      const next = grantSnapshotRef.current;
+      // Only a fresh authorized same-video grant may continue existing playback.
+      // Denial, another video and another keyed lesson never inherit autoplay.
+      continuePlaybackRef.current = playingRef.current && next !== null && next.videoId === grant.videoId && next.mode === grant.mode;
+      playingRef.current = false;
       cancelled = true;
       window.removeEventListener("pagehide", pageHide);
-      void save(true);
+      void save(true, positionRef.current);
       playerRef.current = null;
       void player?.destroy().catch(() => undefined);
       host.replaceChildren();
     };
-  }, [playerIdentity, lessonRef]);
+  }, [grant, lessonRef]);
 
   if (state === "signin") return <div className="playerGate"><p>Войдите, чтобы открыть урок.</p><Link className="primary" href={`/account?next=${encodeURIComponent(window.location.pathname)}`}>Получить ссылку →</Link></div>;
   if (state === "consent") return <div className="playerGate"><p>Подтвердите обработку ПД и правила в аккаунте, чтобы открыть урок. Реклама необязательна.</p><Link href={`/account?next=${encodeURIComponent(window.location.pathname)}`}>Подтвердить выбор</Link></div>;
