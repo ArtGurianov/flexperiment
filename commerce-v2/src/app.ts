@@ -779,7 +779,10 @@ export function createCommerceV2App(deps: Dependencies) {
     } catch {
       return context.json({ code: "KINESCOPE_DRM_SCHEMA_INVALID" }, 400, noStore);
     }
-    if (typeof body.id !== "string" || !body.id || typeof body.token !== "string" || !body.token || body.type !== "video") {
+    // Kinescope's VOD Authorization Backend uses "vod". Retain the existing
+    // "video" operator-probe alias; live/unknown content is not lesson video.
+    if (typeof body.id !== "string" || !body.id || typeof body.token !== "string" || !body.token
+      || (body.type !== "vod" && body.type !== "video")) {
       return context.json({ code: "KINESCOPE_DRM_SCHEMA_INVALID" }, 400, noStore);
     }
     let claims: ReturnType<typeof verifyPlaybackToken>;
