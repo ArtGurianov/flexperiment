@@ -22,6 +22,10 @@ export interface KinescopeClient {
   getVideo(videoId: string): Promise<KinescopeVideo>;
 }
 
+// Documented regional uploader pool, not arbitrary *.kinescope.io endpoints.
+const regionalUploaderHost = /^[a-z]{2}-[a-z]{3}-uploader-[1-9]\d*\.kinescope\.io$/;
+const uploadPath = /^\/v2\/upload\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export class HttpKinescopeClient implements KinescopeClient {
   constructor(
     private readonly token: string,
@@ -43,17 +47,22 @@ export class HttpKinescopeClient implements KinescopeClient {
         filename: input.filename,
         filesize: input.filesize,
       }),
+      redirect: "error",
       signal: AbortSignal.timeout(10_000),
     });
     const body = await response.json() as { data?: { endpoint?: unknown; id?: unknown; video_id?: unknown } };
     const endpoint = body.data?.endpoint;
     const videoId = body.data?.id ?? body.data?.video_id;
-    if (!response.ok || typeof endpoint !== "string" || typeof videoId !== "string") throw new Error("KINESCOPE_UPLOAD_INIT_INVALID");
+    if (!response.ok || typeof endpoint !== "string" || typeof videoId !== "string" || !videoId) throw new Error("KINESCOPE_UPLOAD_INIT_INVALID");
     let uploadUrl: URL;
     try { uploadUrl = new URL(endpoint); }
     catch { throw new Error("KINESCOPE_UPLOAD_ENDPOINT_INVALID"); }
-    if (uploadUrl.protocol !== "https:" || uploadUrl.hostname !== "uploader.kinescope.io"
-      || uploadUrl.username || uploadUrl.password || uploadUrl.hash) throw new Error("KINESCOPE_UPLOAD_ENDPOINT_INVALID");
+    const allowedHost = uploadUrl.hostname === "uploader.kinescope.io" || regionalUploaderHost.test(uploadUrl.hostname);
+    const queryKeys = [...uploadUrl.searchParams.keys()];
+    const allowedQuery = queryKeys.length === 0 || (queryKeys.length === 1 && queryKeys[0] === "id"
+      && uploadUrl.searchParams.get("id") === videoId);
+    if (uploadUrl.protocol !== "https:" || !allowedHost || uploadUrl.port || !uploadPath.test(uploadUrl.pathname)
+      || !allowedQuery || uploadUrl.username || uploadUrl.password || uploadUrl.hash) throw new Error("KINESCOPE_UPLOAD_ENDPOINT_INVALID");
     return { endpoint, videoId };
   }
 
@@ -61,6 +70,7 @@ export class HttpKinescopeClient implements KinescopeClient {
     const response = await this.request(`https://api.kinescope.io/v1/videos/${encodeURIComponent(videoId)}`, {
       headers: { authorization: `Bearer ${this.token}` },
       cache: "no-store",
+      redirect: "error",
       signal: AbortSignal.timeout(10_000),
     });
     const body = await response.json() as { data?: { id?: unknown; status?: unknown; duration?: unknown } };

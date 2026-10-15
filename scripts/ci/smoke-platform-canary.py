@@ -40,11 +40,15 @@ def main():
             "PLATFORM_EXPECTED_COMMERCE_SHA": sha,
             "PAYMENT_MODE": "disabled", "MARKETING_BROADCASTS_ENABLED": "false",
             "DEPLOY_ENV": "staging",
+            "SMARTCAPTCHA_SERVER_KEY": "ci-server-secret-never-serialize",
         }
-        args = ["docker", "run", "-d", "--name", app, "--network", network]
-        for key, value in env.items():
-            args.extend(["-e", f"{key}={value}"])
-        run(*args, image)
+        def start_app(site_key):
+            args = ["docker", "run", "-d", "--name", app, "--network", network]
+            for key, value in {**env, "SMARTCAPTCHA_CLIENT_KEY": site_key}.items():
+                args.extend(["-e", f"{key}={value}"])
+            run(*args, image)
+
+        start_app("ci-runtime-public-key-A")
         ready = False
         for _ in range(45):
             try:
@@ -70,6 +74,9 @@ def main():
             check(run("docker", "exec", app, "test", "!", "-e", retired) == "")
         identity = json.loads(request("/identity")["body"])
         check(identity["service"] == "platform" and identity["sourceCommit"] == sha)
+        account = request("/account")
+        check(account["status"] == 200 and "ci-runtime-public-key-A" in account["body"])
+        check("ci-server-secret-never-serialize" not in account["body"])
         response = request("/v1/me?test=synthetic", headers={"Cookie": "session=synthetic", "X-Forwarded-Proto": "http", "X-Forwarded-For": "spoof"})
         body = json.loads(response["body"])
         check(response["status"] == 200 and body["host"] == "canary-platform.flexperiment.ru" and body["proto"] == "https" and body["xff"] is None)
@@ -83,6 +90,24 @@ def main():
         check(request("/api/users", method="POST")["status"] == 404)
         check(request("/api/users")["status"] == 404)
         check(request("/admin")["status"] == 404)
+        # One built image must evaluate a different public key at runtime;
+        # NEXT_PUBLIC_ build-time freezing was the actual canary defect.
+        first_image_id = json.loads(run("docker", "inspect", app))[0]["Image"]
+        run("docker", "rm", "-f", app)
+        start_app("ci-runtime-public-key-B")
+        for _ in range(30):
+            try:
+                if request("/readyz")["status"] == 200:
+                    break
+            except Exception:
+                pass
+            time.sleep(.5)
+        else:
+            raise RuntimeError("SECOND_PLATFORM_RUNTIME_NOT_READY")
+        account = request("/account")
+        check(json.loads(run("docker", "inspect", app))[0]["Image"] == first_image_id)
+        check(account["status"] == 200 and "ci-runtime-public-key-B" in account["body"])
+        check("ci-runtime-public-key-A" not in account["body"] and "ci-server-secret-never-serialize" not in account["body"])
         run("docker", "stop", upstream)
         check(request("/readyz")["status"] == 503)
         print(json.dumps({"scope": "isolated_actual_platform_image", "checks": checks, "status": "PASS"}))

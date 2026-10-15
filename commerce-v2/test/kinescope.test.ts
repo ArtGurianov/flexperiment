@@ -93,22 +93,59 @@ describe("Kinescope replacement lifecycle", () => {
 });
 
 describe("Kinescope Tus initialisation", () => {
+  const uploadId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  const path = `/v2/upload/${uploadId}`;
   it("sends the documented init request with the selected file's metadata", async () => {
     const request = vi.fn<typeof fetch>(async () => Response.json({
-      data: { id: "new-video", endpoint: "https://uploader.kinescope.io/v2/upload/abc" },
+      data: { id: "new-video", endpoint: `https://uploader.kinescope.io${path}` },
     }));
     const http = new HttpKinescopeClient("api-token", request);
     await expect(http.initUpload({ title: "Lesson", parentId: "folder", filename: "lesson.mp4", filesize: 1_048_576 }))
-      .resolves.toEqual({ endpoint: "https://uploader.kinescope.io/v2/upload/abc", videoId: "new-video" });
+      .resolves.toEqual({ endpoint: `https://uploader.kinescope.io${path}`, videoId: "new-video" });
 
     expect(request).toHaveBeenCalledTimes(1);
     const [url, init] = request.mock.calls[0]!;
     expect(url).toBe("https://uploader.kinescope.io/v2/init");
     expect(init?.method).toBe("POST");
+    expect(init?.redirect).toBe("error");
     expect(init?.headers).toEqual({ authorization: "Bearer api-token", "content-type": "application/json" });
     expect(JSON.parse(String(init?.body))).toEqual({
       type: "video", parent_id: "folder", title: "Lesson", filename: "lesson.mp4", filesize: 1_048_576,
     });
+  });
+
+  it.each([
+    `https://eu-ams-uploader-1.kinescope.io${path}`,
+    `https://ru-msk-uploader-2.kinescope.io${path}?id=new-video`,
+  ])("accepts the documented regional Tus endpoint: %s", async (endpoint) => {
+    const request = vi.fn<typeof fetch>(async () => Response.json({ data: { id: "new-video", endpoint } }, { status: 201 }));
+    const http = new HttpKinescopeClient("api-token", request);
+    await expect(http.initUpload({ title: "Lesson", parentId: "project", filename: "tour.mp4", filesize: 1_349_508 }))
+      .resolves.toEqual({ endpoint, videoId: "new-video" });
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    `http://ru-msk-uploader-2.kinescope.io${path}`,
+    `https://ru-msk-uploader-2.kinescope.io:8443${path}`,
+    `https://user:password@ru-msk-uploader-2.kinescope.io${path}`,
+    `https://ru-msk-uploader-2.kinescope.io${path}#fragment`,
+    `https://ru-msk-uploader-2.kinescope.io.evil.example${path}`,
+    `https://uploads.kinescope.io${path}`,
+    `https://ru-msk-uploader-0.kinescope.io${path}`,
+    `https://127.0.0.1${path}`,
+    `https://ru-msk-uploader-2.kinescope.io/collect/${uploadId}`,
+    "https://ru-msk-uploader-2.kinescope.io/v2/upload/not-an-upload-id",
+    `https://ru-msk-uploader-2.kinescope.io${path}?id=foreign-video`,
+    `https://ru-msk-uploader-2.kinescope.io${path}?id=new-video&id=new-video`,
+    `https://ru-msk-uploader-2.kinescope.io${path}?token=unexpected`,
+  ])("rejects an unsafe endpoint before persisting a session: %s", async (endpoint) => {
+    const request = vi.fn<typeof fetch>(async () => Response.json({ data: { id: "new-video", endpoint } }, { status: 201 }));
+    const http = new HttpKinescopeClient("api-token", request);
+    const before = db.prepare("SELECT count(*) AS n FROM video_upload_sessions").get();
+    await expect(startVideoUpload(db, http, uploadInput)).rejects.toThrow("KINESCOPE_UPLOAD_ENDPOINT_INVALID");
+    expect(db.prepare("SELECT count(*) AS n FROM video_upload_sessions").get()).toEqual(before);
+    expect(request).toHaveBeenCalledTimes(1);
   });
 
   it("rejects a provider response that would send lesson bytes outside the Kinescope uploader", async () => {
