@@ -530,7 +530,7 @@ describe("commerce v2 boundaries", () => {
     expect(allowed.headers.get("cache-control")).toBe("no-store");
   });
 
-  it("returns a short-lived protected playback grant without making it cacheable", async () => {
+  it.each(["vod", "video"])("returns a short-lived protected grant for %s callbacks without making it cacheable", async (type) => {
     const drm = { keyring: { currentKeyId: "k1", keys: { k1: "s".repeat(32) } }, username: "drm", password: "secret" };
     const server = app("disabled", {
       config: loadCommerceRuntimeConfig({
@@ -551,18 +551,22 @@ describe("commerce v2 boundaries", () => {
     });
     expect(grant.token.split(".")).toHaveLength(3);
 
-    const authorize = (id: string, token = grant.token) => server.request("/v1/kinescope/drm/authorize", {
+    const authorize = (id: string, token = grant.token, callbackType: unknown = type) => server.request("/v1/kinescope/drm/authorize", {
       method: "POST",
       headers: {
         authorization: `Basic ${Buffer.from("drm:secret").toString("base64")}`,
         "content-type": "application/json",
       },
-      body: JSON.stringify({ id, token, type: "video" }),
+      body: JSON.stringify({ id, token, type: callbackType }),
     });
     expect((await server.request("/v1/kinescope/drm/authorize", {
       method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ id: "private-video", token: grant.token, type: "video" }),
+      body: JSON.stringify({ id: "private-video", token: grant.token, type }),
     })).status).toBe(401);
+    for (const unsupported of ["live", "VOD", "", null, 1]) {
+      expect((await authorize("private-video", grant.token, unsupported)).status).toBe(400);
+    }
+    expect((await authorize("private-video", "")).status).toBe(400);
     expect((await authorize("private-video")).status).toBe(200);
     db.prepare(`UPDATE products SET withdrawn_at='2026-09-30T12:00:30Z',withdrawn_reason='security',withdrawn_terms_ref='terms/v1'
       WHERE product_ref='course:course'`).run();
@@ -585,7 +589,7 @@ describe("commerce v2 boundaries", () => {
     const grant = await (await server.request("/v1/lessons/lesson/playback", { method: "POST", headers: { authorization: "Session customer" } })).json() as { token: string };
     const authorize = () => server.request("/v1/kinescope/drm/authorize", { method: "POST",
       headers: { authorization: `Basic ${Buffer.from("drm:synthetic").toString("base64")}`, "content-type": "application/json" },
-      body: JSON.stringify({ id: "private-video", token: grant.token, type: "video" }) });
+      body: JSON.stringify({ id: "private-video", token: grant.token, type: "vod" }) });
     expect((await authorize()).status).toBe(200);
     db.exec('UPDATE "user" SET email_verified=0;');
     expect((await authorize()).status).toBe(403);
