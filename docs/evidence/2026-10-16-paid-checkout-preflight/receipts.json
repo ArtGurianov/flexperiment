@@ -1,0 +1,168 @@
+{
+  "result": "CONTROLLED_PAYMENT_PREPARATION_HOLD",
+  "observedAt": "2026-10-15T17:09:12.667621+00:00",
+  "clientDate": "2026-10-16",
+  "task": "ART-39",
+  "ownerInput": {
+    "courseRef": "test-course",
+    "amountKopecks": 100,
+    "currency": "RUB",
+    "quantity": 1,
+    "refundMode": "FULL_ONLY",
+    "publicActivation": false
+  },
+  "buyer": {
+    "selectedByOwner": true,
+    "alreadyHasCustomerAccount": true,
+    "emailOmitted": true
+  },
+  "flexperiment": {
+    "source": "0d7dee0c8352dfb6cc1ea8ca7850b5d03fa18309",
+    "commerceImage": "ghcr.io/artgurianov/flexperiment-commerce-v2@sha256:650ec79b0f8c5eb0f89bb2e93ed674e5548cc54daf10a57a204ff125342566ab",
+    "platformSource": "2cb47c46ee3cca50546d327ae57245c85235c153",
+    "paymentMode": "disabled",
+    "kinescopeMode": "protected",
+    "marketing": false,
+    "fence": {
+      "state": "OPEN",
+      "sequence": 1,
+      "owner": null,
+      "leases": 0
+    },
+    "testCourseExists": false,
+    "checkoutAttempts": 0,
+    "orders": 3,
+    "ordersAreManualZeroValueFixtures": true,
+    "fiscalPolicies": 0,
+    "currentLegalRelease": {
+      "version": "2026-10-15.closed-e2e",
+      "stage": "A"
+    },
+    "refrefInputsPresent": false,
+    "refundEnvelopeKeysPresent": false
+  },
+  "refref": {
+    "installedSource": "202c0fb3c63b53cc7d1fdb3f1ee07235319dd13c",
+    "configuredAcquiring": [
+      "alfa",
+      "tochka"
+    ],
+    "migrationHeads": {
+      "production": {
+        "idx": 25,
+        "file": "000025_payment_purpose_submission_contract.sql",
+        "sha256": "8c1efb924b0be869a62f412d8053fe0d3335f89b2b8e6b2a1fbf7ac3f2610f1e"
+      },
+      "canary": {
+        "idx": 25,
+        "file": "000025_payment_purpose_submission_contract.sql",
+        "sha256": "8c1efb924b0be869a62f412d8053fe0d3335f89b2b8e6b2a1fbf7ac3f2610f1e"
+      }
+    },
+    "tenants": {
+      "production": {
+        "business": [
+          {
+            "slug": "flexperiment",
+            "status": "ACTIVE",
+            "activeowners": 1
+          }
+        ],
+        "apiKeys": null,
+        "provider": [
+          {
+            "provider_key": "tochka",
+            "connection_type": "ACQUIRING",
+            "status": "ACTIVE",
+            "minimum_charge_kopecks": 100,
+            "sealedcredentialpresent": true,
+            "profileversion": 1,
+            "environment": "PRODUCTION",
+            "link_ttl_minutes": 20,
+            "payment_modes": [
+              "card",
+              "sbp"
+            ],
+            "can_execute_payment": true,
+            "can_execute_refund": true,
+            "can_execute_partial_refund": false,
+            "can_read_payment": true
+          }
+        ],
+        "attemptStates": null,
+        "paymentStates": null,
+        "refundExecutionStates": null,
+        "fulfillmentCounts": {
+          "merchant_customer_identity": 0,
+          "merchant_order": 0
+        }
+      },
+      "canary": {
+        "business": [
+          {
+            "slug": "flexperiment",
+            "status": "ACTIVE",
+            "activeowners": 1
+          }
+        ],
+        "apiKeys": null,
+        "provider": null,
+        "attemptStates": null,
+        "paymentStates": null,
+        "refundExecutionStates": null,
+        "fulfillmentCounts": {
+          "merchant_customer_identity": 0,
+          "merchant_order": 0
+        }
+      }
+    },
+    "productionMerchantEnablementCounts": {
+      "offer": 0,
+      "campaign": 0,
+      "domain_verification": 0,
+      "api_key": 0
+    },
+    "bankAuthenticatedGetThisRun": false,
+    "capabilitiesEvidence": "fresh local durable registry/profile read; not fresh provider authorization"
+  },
+  "implementationGaps": [
+    {
+      "code": "PLATFORM_CANARY_REQUIRES_PAYMENTS_DISABLED",
+      "paths": [
+        "apps/platform/lib/canary-config.ts",
+        "apps/platform/lib/canary-readiness.ts"
+      ]
+    },
+    {
+      "code": "FASTCUT_HELPER_REQUIRES_PAYMENTS_DISABLED",
+      "paths": [
+        "scripts/v2/fast-cut.py"
+      ]
+    },
+    {
+      "code": "STAGING_READINESS_PINNED_TO_REFREF_CANARY",
+      "paths": [
+        "commerce-v2/src/readiness.ts"
+      ],
+      "currentRefrefCanaryHasFlexperimentConnection": false
+    },
+    {
+      "code": "REFREF_ENABLEMENT_ALFA_MANIFEST_AND_BOOTSTRAP_ONLY",
+      "upstreamSource": "202c0fb3c63b53cc7d1fdb3f1ee07235319dd13c",
+      "paths": [
+        "apps/app/src/operator/merchant-provisioning.ts"
+      ],
+      "fakeAlfaManifestAllowed": false
+    }
+  ],
+  "noEffects": {
+    "applicationCodeChanged": false,
+    "runtimeOrSecretChanged": false,
+    "refrefWrite": false,
+    "providerCall": false,
+    "paymentCreated": false,
+    "refundCreated": false,
+    "publicSalesActivated": false,
+    "ART338Reopened": false
+  }
+}
