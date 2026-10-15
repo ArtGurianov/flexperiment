@@ -158,13 +158,8 @@ export function createCurrentErasureRead(input: { scope: "canary" | "production"
           verifyCustodyPacket(packet.bytes, head, bundle, input.keys);
           lastStage = "final_head";
           if (canonical((await readHead()).body) !== canonical(head.body)) refuse("ERASURE_REMOTE_ACK_UNCONFIRMED");
-          // An overlapping read may have advanced the confirmed prefix while
-          // this verification was awaiting its final remote head.
-          if (established && (established.sequence > head.body.sequence || hashAt(established.sequence) !== established.headHash)) {
-            lastStage = "prefix"; refuse("ERASURE_REMOTE_LEDGER_ROLLBACK_OR_FORK");
-          }
-          established = { sequence: head.body.sequence, headHash: head.body.headHash };
-          return { bundle, ...established };
+          lastStage = "freshness";
+          return { bundle, sequence: head.body.sequence, headHash: head.body.headHash };
         } catch (error) {
           const failure = erasureReadFailure(lastStage, error);
           reportErasure(input.diagnostics, {event: "ERASURE_READ_FAILURE", scope: input.scope, stage: failure.stage,
@@ -174,6 +169,14 @@ export function createCurrentErasureRead(input: { scope: "canary" | "production"
       }
       return refuse();
     } });
+      // Only an actually issued, completely verified capability may establish
+      // the prefix. Recheck after awaits: an overlapping read may be newer.
+      lastStage = "prefix";
+      const sequence = proof.bundle.entries.length;
+      const hashAt = (n: number) => n === 0 ? erasureGenesisHash(input.scope) : proof.bundle.entries[n - 1]?.hash;
+      if (established && (established.sequence > sequence || hashAt(established.sequence) !== established.headHash))
+        refuse("ERASURE_REMOTE_LEDGER_ROLLBACK_OR_FORK");
+      established = {sequence, headHash: hashAt(sequence)!};
       if (attemptsUsed > 1) reportErasure(input.diagnostics, {event: "ERASURE_READ_RECOVERED", scope: input.scope,
         attempt: attemptsUsed, elapsedMs: Math.round(performance.now() - started)});
       return proof;
@@ -181,7 +184,7 @@ export function createCurrentErasureRead(input: { scope: "canary" | "production"
       // Includes bundle signature/freshness validation performed by the opaque
       // capability issuer after the remote callback returned.
       if (!callbackFailed) {
-        const failure = erasureReadFailure("freshness", error);
+        const failure = erasureReadFailure(lastStage, error);
         reportErasure(input.diagnostics, {event: "ERASURE_READ_FAILURE", scope: input.scope, stage: failure.stage,
           reason: failure.reason, code: failure.code, attempt: attemptsUsed, elapsedMs: Math.round(performance.now() - started)});
       }
