@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { loadIframeApi, type KinescopePlayerInstance } from "./iframeApi";
 
 export type PlaybackGrant = {
@@ -29,20 +29,26 @@ export const playbackEmbedUrl = (grant: PlaybackGrant) => {
 const parseGrant = async (response: Response) => {
   if (!response.ok) return null;
   const grant = await response.json() as PlaybackGrant;
-  if (!grant.videoId || !Number.isFinite(grant.resumeAt)) return null;
+  if ((grant.mode !== "open" && grant.mode !== "protected") || !grant.videoId || !Number.isFinite(grant.resumeAt)) return null;
   if (grant.mode === "protected" && (
     !grant.token || !grant.expiresAt || !Number.isFinite(Date.parse(grant.expiresAt)) || Date.parse(grant.expiresAt) <= Date.now()
   )) return null;
   return grant;
 };
 
-export default function LessonPlayer({ lessonRef, title }: { lessonRef: string; title: string }) {
+function LessonPlayerSession({ lessonRef, title }: { lessonRef: string; title: string }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<KinescopePlayerInstance | null>(null);
   const positionRef = useRef(0);
   const sequenceRef = useRef(0);
   const lastSavedAtRef = useRef(0);
-  const [grant, setGrant] = useState<PlaybackGrant | null>(null);
+  const [grant, commitGrant] = useState<PlaybackGrant | null>(null);
+  const grantSnapshotRef = useRef<PlaybackGrant | null>(null);
+  const setGrant = useCallback((next: PlaybackGrant | null) => {
+    grantSnapshotRef.current = next;
+    commitGrant(next);
+  }, []);
+  const playerIdentity = grant ? JSON.stringify([grant.mode, grant.videoId]) : null;
   const [state, setState] = useState<"loading" | "signin" | "consent" | "denied" | "ready" | "error">("loading");
 
   useEffect(() => {
@@ -53,9 +59,11 @@ export default function LessonPlayer({ lessonRef, title }: { lessonRef: string; 
       credentials: "same-origin",
       signal: controller.signal,
     }).then(async (response) => {
+      if (controller.signal.aborted) return;
       if (response.status === 401) { setState("signin"); return; }
       if (response.status === 403 && (await response.clone().json()).decision === "CONSENT_REQUIRED") { setState("consent"); return; }
       const next = await parseGrant(response);
+      if (controller.signal.aborted) return;
       if (!next) { setState("denied"); return; }
       setGrant(next);
       positionRef.current = next.resumeAt;
@@ -64,7 +72,7 @@ export default function LessonPlayer({ lessonRef, title }: { lessonRef: string; 
       if (!(error instanceof DOMException && error.name === "AbortError")) setState("error");
     });
     return () => controller.abort();
-  }, [lessonRef]);
+  }, [lessonRef, setGrant]);
 
   useEffect(() => {
     if (grant?.mode !== "protected" || !grant.expiresAt) return;
@@ -77,10 +85,33 @@ export default function LessonPlayer({ lessonRef, title }: { lessonRef: string; 
         const response = await fetch(playbackPath(lessonRef), {
           method: "POST", cache: "no-store", credentials: "same-origin", signal: controller.signal,
         });
+        if (controller.signal.aborted) return;
         if (response.status === 401) { setState("signin"); setGrant(null); return; }
         if (response.status === 403 && (await response.clone().json()).decision === "CONSENT_REQUIRED") { setState("consent"); setGrant(null); return; }
         const next = await parseGrant(response);
+        if (controller.signal.aborted) return;
         if (!next) { setState("denied"); setGrant(null); return; }
+        if (next.mode === "protected" && next.videoId === grant.videoId) {
+          const player = playerRef.current;
+          if (!player) throw new Error("PLAYER_NOT_READY_FOR_RENEWAL");
+          const remaining = expiresAt - Date.now() - 1_000;
+          if (remaining <= 0) { setState("error"); setGrant(null); return; }
+          let deadline: number | undefined;
+          try {
+            // A successful grant does not authorize keeping an old SDK token.
+            // Keep the existing instance only after the new token is acknowledged.
+            await Promise.race([
+              player.setPlaylistItemOptions({ drm: { auth: { token: next.token! } } }),
+              new Promise<never>((_, reject) => {
+                deadline = window.setTimeout(() => reject(new Error("PLAYER_AUTH_UPDATE_UNCONFIRMED")), Math.min(5_000, remaining));
+              }),
+            ]);
+          } catch {
+            if (!controller.signal.aborted) { setState("error"); setGrant(null); }
+            return;
+          } finally { window.clearTimeout(deadline); }
+          if (controller.signal.aborted || playerRef.current !== player) return;
+        }
         setGrant(next);
       } catch (error) {
         if (error instanceof DOMException && error.name === "AbortError") return;
@@ -91,9 +122,12 @@ export default function LessonPlayer({ lessonRef, title }: { lessonRef: string; 
     };
     schedule(Math.max(1_000, expiresAt - Date.now() - 30_000));
     return () => { controller.abort(); if (timer !== undefined) window.clearTimeout(timer); };
-  }, [grant, lessonRef]);
+  }, [grant, lessonRef, setGrant]);
 
   useEffect(() => {
+    // Token renewal updates the SDK above. Only a new video/mode starts a new
+    // instance; the snapshot is written at the asynchronous grant commit boundary.
+    const grant = grantSnapshotRef.current;
     const host = hostRef.current;
     if (!grant || !host) return;
     let cancelled = false;
@@ -154,11 +188,15 @@ export default function LessonPlayer({ lessonRef, title }: { lessonRef: string; 
       void player?.destroy().catch(() => undefined);
       host.replaceChildren();
     };
-  }, [grant, lessonRef]);
+  }, [playerIdentity, lessonRef]);
 
   if (state === "signin") return <div className="playerGate"><p>Войдите, чтобы открыть урок.</p><Link className="primary" href={`/account?next=${encodeURIComponent(window.location.pathname)}`}>Получить ссылку →</Link></div>;
   if (state === "consent") return <div className="playerGate"><p>Подтвердите обработку ПД и правила в аккаунте, чтобы открыть урок. Реклама необязательна.</p><Link href={`/account?next=${encodeURIComponent(window.location.pathname)}`}>Подтвердить выбор</Link></div>;
   if (state === "denied") return <div className="playerGate"><p>Урок пока недоступен для вашего аккаунта.</p><Link href="/courses">Вернуться к курсам</Link></div>;
   if (state === "error") return <div className="playerGate"><p>Видео сейчас не загрузилось. Попробуйте обновить страницу.</p></div>;
   return <div className="lessonPlayer" aria-label={`Видео: ${title}`}><div ref={hostRef} className="lessonPlayerHost" />{state === "loading" && <p>Проверяем доступ…</p>}</div>;
+}
+
+export default function LessonPlayer(props: { lessonRef: string; title: string }) {
+  return <LessonPlayerSession key={props.lessonRef} {...props} />;
 }

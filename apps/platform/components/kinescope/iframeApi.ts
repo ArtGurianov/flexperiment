@@ -8,6 +8,7 @@ export type KinescopePlayerInstance = {
   on: (event: string, handler: (payload: KinescopePlayerEvent) => void) => void;
   getCurrentTime: () => Promise<number>;
   seekTo: (seconds: number) => Promise<void>;
+  setPlaylistItemOptions: (options: { drm: { auth: { token: string } } }) => Promise<void>;
   destroy: () => Promise<void>;
 };
 
