@@ -22,7 +22,9 @@ This controller change does not become the application deployment source.
 `/etc/flexperiment-fast-cut-canary/release.json` is root0600 beneath the existing
 root0700 directory. Exact schema, canary scope, three roles, role-specific private
 GHCR repositories, immutable digests and full source SHAs are mandatory.
-Commerce and Platform must share a source; Admin may retain its prior source.
+Originally Commerce and Platform shared a source. The later
+[Commerce-only candidate](2026-10-15-commerce-only-release-design.md) permits
+independent native role sources while retaining explicit upstream SHA checks.
 An invalid present file never falls back. One vector is read per CLI process.
 The reviewed candidate JSON is a proposal, not an execution/admission receipt.
 

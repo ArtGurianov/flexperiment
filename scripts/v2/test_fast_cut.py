@@ -24,6 +24,9 @@ class FastCut(unittest.TestCase):
     def candidate(self):
         return json.loads((ROOT/'deploy/v2/fast-cut/closed-e2e-release.json').read_bytes())
 
+    def commerce_candidate(self):
+        return json.loads((ROOT/'deploy/v2/fast-cut/art-351-commerce-release.json').read_bytes())
+
     def test_release_legacy_default_and_exact_new_role_vector(self):
         with tempfile.TemporaryDirectory() as d, patch.object(f,'INPUT',Path(d)):
             self.assertEqual(f.release(),{role:{'sourceCommit':f.SOURCE,'imageReference':image} for role,image in f.LEGACY_IMAGES.items()})
@@ -34,10 +37,18 @@ class FastCut(unittest.TestCase):
         self.assertNotEqual(new['commerce']['sourceCommit'],new['admin']['sourceCommit'])
         self.assertEqual(new['admin']['sourceCommit'],f.SOURCE)
 
-    def test_release_refuses_unknown_fields_scope_mutable_tag_role_swap_or_split_source(self):
+    def test_commerce_only_vector_retains_platform_and_admin_artifacts(self):
+        previous=f.validate_release(self.candidate())
+        candidate=f.validate_release(self.commerce_candidate())
+        self.assertNotEqual(candidate['commerce'],previous['commerce'])
+        self.assertNotEqual(candidate['commerce']['sourceCommit'],candidate['platform']['sourceCommit'])
+        self.assertEqual(candidate['platform'],previous['platform'])
+        self.assertEqual(candidate['admin'],previous['admin'])
+
+    def test_release_refuses_unknown_fields_scope_mutable_tag_role_swap_or_invalid_source(self):
         mutations=[lambda x:x.update(scope='production'),lambda x:x.update(unknown=True),
                    lambda x:x['roles'].pop('admin'),lambda x:x['roles'].update(worker=x['roles']['commerce']),
-                   lambda x:x['roles']['platform'].update(sourceCommit=f.SOURCE),
+                   lambda x:x['roles']['platform'].update(sourceCommit='a'*39),
                    lambda x:x['roles']['commerce'].update(sourceCommit='main'),
                    lambda x:x['roles']['commerce'].update(imageReference='ghcr.io/artgurianov/flexperiment-commerce-v2:latest'),
                    lambda x:x['roles']['commerce'].update(imageReference=x['roles']['platform']['imageReference']),
@@ -135,11 +146,11 @@ class FastCut(unittest.TestCase):
             with self.assertRaises(ValueError):check(bad)
 
     def test_new_platform_requires_vector_image_native_source_env_and_expected_commerce(self):
-        vector=f.validate_release(self.candidate());row=vector['platform']
+        vector=f.validate_release(self.commerce_candidate());row=vector['platform']
         manifest=json.loads((ROOT/'deploy/v2/fast-cut/compose.json').read_bytes())
         manifest['services']['platform']['image']=row['imageReference']
         s=manifest['services']['platform'];identity={'schema':'flexperiment.build-identity/1','service':'platform','sourceCommit':row['sourceCommit']}
-        config={'Image':s['image'],'Env':['SOURCE_COMMIT='+row['sourceCommit'],'PLATFORM_V2_CANARY=true','PLATFORM_EXPECTED_COMMERCE_SHA='+row['sourceCommit']],
+        config={'Image':s['image'],'Env':['SOURCE_COMMIT='+row['sourceCommit'],'PLATFORM_V2_CANARY=true','PLATFORM_EXPECTED_COMMERCE_SHA='+vector['commerce']['sourceCommit']],
                 'Labels':{'com.flexperiment.scope':'canary-fast-cut'},'User':'node','Entrypoint':None,'Cmd':['node'],'WorkingDir':'/app'}
         container={'Config':config,'Image':'sha256:'+'a'*64,'HostConfig':{'PortBindings':{},'ReadonlyRootfs':True},'State':{'Running':True},
                    'NetworkSettings':{'Networks':{'flexperiment-fast-cut-canary':{}}},'Mounts':[]}
@@ -152,7 +163,7 @@ class FastCut(unittest.TestCase):
                      patch.object(f,'run',side_effect=[json.dumps([c]).encode(),json.dumps([image]).encode(),json.dumps(native).encode()]):return f.inspect('platform')
             self.assertEqual(check(container)[1]['identity'],identity)
             for mutate in [lambda c:c['Config']['Env'].append('SOURCE_COMMIT='+f.SOURCE),
-                           lambda c:c['Config']['Env'].append('PLATFORM_EXPECTED_COMMERCE_SHA='+f.SOURCE)]:
+                           lambda c:c['Config']['Env'].append('PLATFORM_EXPECTED_COMMERCE_SHA='+row['sourceCommit'])]:
                 bad=copy.deepcopy(container);mutate(bad)
                 with self.assertRaises(ValueError):check(bad)
             with self.assertRaises(ValueError):check(container,{**identity,'sourceCommit':f.SOURCE})
@@ -160,7 +171,7 @@ class FastCut(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'RELEASE_IMAGE_MISMATCH'):check(container)
 
     def test_mixed_release_admin_readiness_identifies_commerce_not_native_admin(self):
-        vector=f.validate_release(self.candidate());target=vector['commerce']['sourceCommit']
+        vector=f.validate_release(self.commerce_candidate());target=vector['commerce']['sourceCommit']
         def connection(fence=False):
             db=Mock()
             def execute(query):
@@ -173,15 +184,16 @@ class FastCut(unittest.TestCase):
                 else:result.fetchone.return_value=(26,)
                 return result
             db.execute.side_effect=execute;return db
-        def check(admin_source):
+        def check(admin_source,platform_source=vector['platform']['sourceCommit']):
             ready=[{'ok':True,'foundationMode':False,'capabilities':{'erasure':'qualified'},'core':{'paymentMode':'disabled'},'sourceCommit':target},
-                   {'sourceCommit':target},{'ok':True,'service':'commerce-v2','sourceCommit':admin_source},{'state':'REMOTE_VERIFIED','scope':'canary','sequence':1}]
+                   {'sourceCommit':platform_source},{'ok':True,'service':'commerce-v2','sourceCommit':admin_source},{'state':'REMOTE_VERIFIED','scope':'canary','sequence':1}]
             with patch.object(f,'release',return_value=vector),patch.object(f,'inspect',side_effect=lambda role:(role,{})), \
                  patch.object(f,'run',side_effect=[json.dumps(r).encode() for r in ready]), \
                  patch.object(f.sqlite3,'connect',side_effect=[connection(),connection(True)]), \
                  patch.object(f,'SCHEMA',__import__('hashlib').sha256(b'[]').hexdigest()):return f.check()
         self.assertEqual(check(target)['sourceCommit'],target)
         with self.assertRaisesRegex(ValueError,'ADMIN_NOT_READY'):check(f.SOURCE)
+        with self.assertRaisesRegex(ValueError,'PLATFORM_NOT_READY'):check(target,platform_source=target)
 
     def test_actual_admin_nginx_readiness_has_new_upstream_source_and_retained_native_identity(self):
         target=self.candidate()['roles']['commerce']['sourceCommit']
@@ -212,8 +224,8 @@ class FastCut(unittest.TestCase):
                 subprocess.run(['docker','network','rm',network],capture_output=True,timeout=30)
 
     def test_backup_after_candidate_switch_rejects_previous_source_status(self):
-        vector=f.validate_release(self.candidate());body=b'encrypted fixture';import hashlib
-        status={'status':'SUCCESS','sourceCommit':f.SOURCE,'verifiedAt':int(time.time()),
+        vector=f.validate_release(self.commerce_candidate());body=b'encrypted fixture';import hashlib
+        status={'status':'SUCCESS','sourceCommit':vector['platform']['sourceCommit'],'verifiedAt':int(time.time()),
                 'filename':'fast-cut-20261015T000000Z-'+str(uuid.uuid4())+'.sqlite.age','sha256':hashlib.sha256(body).hexdigest(),'size':len(body)}
         with patch.object(f,'release',return_value=vector):
             with patch.object(f,'private',return_value=json.dumps(status).encode()),self.assertRaisesRegex(ValueError,'BACKUP_STALE'):f.check_backup()
@@ -221,7 +233,7 @@ class FastCut(unittest.TestCase):
             with patch.object(f,'private',side_effect=[json.dumps(status).encode(),body]):self.assertEqual(f.check_backup()['status'],'FRESH')
 
     def test_backup_new_source_filename_transport_status_and_freshness(self):
-        vector=f.validate_release(self.candidate());target=vector['commerce']['sourceCommit'];body=b'encrypted archive fixture'
+        vector=f.validate_release(self.commerce_candidate());target=vector['commerce']['sourceCommit'];body=b'encrypted archive fixture'
         import hashlib
         proof={'filename':'canary-'+target+'-'+str(uuid.uuid4())+'.sqlite.age','sha256':hashlib.sha256(body).hexdigest(),'size':len(body)}
         transport=Mock();transport.s3.side_effect=[b'',(proof['sha256']+'  archive').encode()]
