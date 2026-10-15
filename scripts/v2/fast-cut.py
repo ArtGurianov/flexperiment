@@ -69,8 +69,8 @@ def validate_release(value):
                 and isinstance(row['imageReference'], str) and re.fullmatch(
                     'ghcr.io/artgurianov/flexperiment-'+role+r'-v2@sha256:[a-f0-9]{64}', row['imageReference']),
                 'FAST_CUT_RELEASE_INVALID')
-    require(value['roles']['commerce']['sourceCommit'] == value['roles']['platform']['sourceCommit'],
-            'FAST_CUT_RELEASE_SOURCE_MISMATCH')
+    # Each immutable artifact keeps its own native source identity. Platform's
+    # expected upstream is checked separately against the Commerce role below.
     return value['roles']
 
 

@@ -1,0 +1,18 @@
+{
+  "schema": "flexperiment.closed-canary-release/1",
+  "scope": "canary",
+  "roles": {
+    "commerce": {
+      "sourceCommit": "b5d902b475b4b7a49ab6be52efe53eae6ff555a1",
+      "imageReference": "ghcr.io/artgurianov/flexperiment-commerce-v2@sha256:d4732e401a79eba2c158df19d23cd42e3314f89c27e5b114d0e8e2ee7e004f79"
+    },
+    "platform": {
+      "sourceCommit": "46305e7a422a8239def139dab6e2e28790de3c61",
+      "imageReference": "ghcr.io/artgurianov/flexperiment-platform-v2@sha256:653b11e4f307442563297de929614c9e33a5328e78877d2b735b693adcc5a119"
+    },
+    "admin": {
+      "sourceCommit": "08523bdf38eeddf5e745ce04d05e1f980a7ced93",
+      "imageReference": "ghcr.io/artgurianov/flexperiment-admin-v2@sha256:85eadc71e50fdab0bc4d154a242a46188bd85bbe7f0edfed516f8863eb14dc77"
+    }
+  }
+}
