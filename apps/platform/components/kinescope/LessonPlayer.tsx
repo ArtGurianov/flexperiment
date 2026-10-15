@@ -154,7 +154,7 @@ function LessonPlayerSession({ lessonRef, title }: { lessonRef: string; title: s
       created.on(created.Events.Error, () => { if (!cancelled) setState("error"); });
       created.on(created.Events.Unsupported, () => { if (!cancelled) setState("error"); });
       const resumeAt = Math.max(grant.resumeAt, positionRef.current);
-      if (resumeAt > 0) await created.seekTo(resumeAt).catch(() => undefined);
+      if (resumeAt > 0) await created.seekTo(resumeAt);
       if (!cancelled && continuePlayback) await created.play().catch(() => undefined);
     }).catch(() => { if (!cancelled) setState("error"); });
 

@@ -60,6 +60,11 @@ describe("protected player renewal with supported iframe controls", () => {
     await advance(90_000); expect(next.play).toHaveBeenCalledTimes(1);
     expect(screen.getByLabelText("Видео: Fixture")).toBeInTheDocument(); expect(screen.queryByText(/Видео сейчас не загрузилось/)).not.toBeInTheDocument();
   });
+  it("does not silently restart at zero if restoring the known position fails", async () => {
+    await start(); playing(); const next = player(); next.seekTo.mockRejectedValue(new Error("synthetic seek uncertainty")); sdk.create.mockResolvedValue(next);
+    await advance(90_000); expect(next.play).not.toHaveBeenCalled();
+    expect(screen.getByText(/Видео сейчас не загрузилось/)).toBeInTheDocument();
+  });
   it("destroys a late-created replacement after unmount without playing it", async () => {
     await start(); playing(); let resolve!: (p: ReturnType<typeof player>) => void; sdk.create.mockImplementation(() => new Promise(r => { resolve = r; }));
     await advance(90_000); cleanup(); const late = player(); resolve(late); await flush();
