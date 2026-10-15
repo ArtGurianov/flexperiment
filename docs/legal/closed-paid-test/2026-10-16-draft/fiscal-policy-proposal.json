@@ -1,0 +1,35 @@
+{
+  "status": "DRAFT_NOT_EXECUTABLE",
+  "scope": "one closed test-course purchase and full refund; public sales remain closed",
+  "offerRef": "course:test-course",
+  "kind": "ONLINE_COURSE",
+  "quantity": 1,
+  "amountKopecks": 100,
+  "currency": "RUB",
+  "itemName": "Доступ к видеоматериалу «Test Course»",
+  "paymentPurpose": "Доступ к видеоматериалу Test Course, закрытая тестовая покупка",
+  "proposed": {
+    "taxSystem": "USN_INCOME",
+    "vatCode": "NONE",
+    "paymentMethod": "FULL_PAYMENT",
+    "paymentObject": "SERVICE",
+    "fiscalizationMode": "PROVIDER"
+  },
+  "confirmed": {
+    "taxSystem": true,
+    "vatExemptionAtPayment": true,
+    "paymentMethodOwnerConfirmed": true,
+    "paymentObjectOwnerConfirmed": true,
+    "fiscalizationPartiesAndSetup": false,
+    "exactDocumentBytesApproved": false
+  },
+  "confirmationAuthority": "direct owner statements in this chat on 2026-10-16; not an independent counsel/accountant opinion; revalidate if facts change before payment",
+  "legalBasis": {
+    "offerTermsRef": null,
+    "counselRef": null,
+    "evidenceSha256": null
+  },
+  "draftCommand": null,
+  "qualificationCommand": null,
+  "runtimePolicyCreated": false
+}

@@ -48,3 +48,9 @@ A separate Refref-canary acquiring setup would duplicate bank/client/callback pr
 ART-39/224 own this experiment and its engineering preparation. ART-83 owns merchant enablement; ART-88/89 own real bank payment/refund evidence; ART-92/12 retain production conformance; ART-231/234 own paid legal/fiscal facts. ART-240 remains production acceptance with its separate gates. ART-338 stays Done; ART-36/351 and public F9 are not closed by this packet.
 
 Sanitized evidence: [receipts.json](receipts.json). Raw read-only scripts/observations and owner input are kept under the private `art39-checkout-preflight-20261016` artifact directory. No secret, card field, cookie, signed payment URL or buyer email is included here.
+
+## Subsequent document preparation — no runtime change
+
+After this read-only observation the owner requested a minimal paid-test package, then confirmed USN_INCOME, continuing VAT exemption based on aggregate IP income in2025/2026, the IP registration address, FULL_PAYMENT and SERVICE. The [eight draft texts and fiscal proposal](../../legal/closed-paid-test/2026-10-16-draft/README.md) record those statements with their actual owner authority. No independent counsel/accountant conclusion is claimed.
+
+Document bytes and SHA-256 values now exist; the initial inventory above remains the historical runtime observation. Exact-byte approval, real document hosting/read-back, legal-basis references and engineering preparation are still outstanding. No policy was created/qualified, legal release activated, merchant enabled, application installed, payment created or refund sent by this documentation step. ART-338 remains Done.

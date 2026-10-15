@@ -12,14 +12,16 @@ Planned new merchant product: ONLINE_COURSE `course:test-course`, offer `course:
 
 A real Control Room course/section/lesson and a fresh independently bound video must exist before payment. Existing owner-owned video source files may supply the test content after the intended source is selected; do not bind one provider video ambiguously to multiple lessons or substitute a manual entitlement for payment fulfillment.
 
-## Required owner data
+## Limited paid-test documents and owner facts
 
-Already supplied: course name/ref, buyer address (private), exact100kopeck amount, real-payment/full-refund intent.
+Already supplied: course name/ref, buyer address (private), exact100kopeck amount, real-payment/full-refund intent. On16October the owner also confirmed USN_INCOME, continuing VAT exemption accounting for aggregate IP income in2025/2026, registration address, FULL_PAYMENT and, separately, SERVICE. These are genuine owner statements, not an independent counsel/accountant opinion.
 
-Still absent from current repository/runtime authority:
+The [minimal closed paid-test package](../legal/closed-paid-test/2026-10-16-draft/README.md) now contains eight proposed texts, a fiscal proposal, SHA-256 list and pending approval form. Receipt item: **Доступ к видеоматериалу «Test Course»**. It proposes indefinite access until a contractual termination, no subscription, catalogue unlisting preserving purchased access, and a full100kopeck test refund even after viewing. This narrow experiment does not require completion of the full public-catalogue legal package; ART-231/234 public-launch work remains separate.
 
-- Paid `course_offer`, `refund_terms`, `receipt_contact` and `fiscal_items` document bytes/versions/HTTPS URLs/hashes for a Stage B release. The Stage A account/free-access release cannot be relabeled as paid purchase terms.
-- Exact receipt item name, payment purpose and tax/payment classification for this offer, plus the reviewed legal-basis references/hash needed by `qualifyFiscalPolicy`. Do not manufacture a counsel conclusion or mark a DRAFT qualified just to pass the gate. A proposed test-only document must remain a draft until its exact bytes are accepted.
+Still absent from runtime/execution authority:
+
+- Approval of exact final paid document bytes, real served HTTPS URLs and independent response hash read-back for Stage B. Draft bytes and hashes exist; proposed URLs are explicitly unserved. The Stage A account/free-access release cannot be relabeled as paid purchase terms.
+- Reviewed legal-basis references/hash needed by `qualifyFiscalPolicy`; no actual `counselRef` has been supplied. Do not manufacture a counsel conclusion or mark a DRAFT qualified just to pass the gate. The confirmed fiscal values do not establish acceptance of exact document bytes. Resolve the remaining bank/fiscal-partner/OFD and retention details against existing actual agreements; Refref and Flexperiment already have the same IP operator and an existing private signed internal regulation, not a missing two-party contract.
 - A reviewed production merchant-enablement packet for the existing signed OWNER identity, narrow private-storefront return paths, unattributed offer/terms/evidence policy and necessary API scopes. Existing bank credentials/client/callback are retained; no provider re-provisioning.
 
 Financial values never come from a browser-supplied price. Freeze the live offer and qualified fiscal policy into the quote, then the immutable V2 shared-checkout snapshot. A final price other than100kopecks or unexpected discount is HOLD; do not silently increase the charge or reuse a different offer.
@@ -31,6 +33,7 @@ Financial values never come from a browser-supplied price. Freeze the live offer
 3. **Real dependency identity.** Tie the readiness host to the reviewed production API/checkout origins for this controlled experiment. Keep staging/canary runtime and data boundaries. Do not change DEPLOY_ENV to production merely to bypass the staging URL guard, probe a different Refref environment or make readiness optional.
 4. **Exact artifacts and runtime-only secrets.** Review/CI the final source and publish immutable candidate images. Independently verify manifest/config/native source/RootFS on the VPS. Provision merchant key, signed handoff secret and refund-envelope keyring through owner-only custody with needed recovery keys retained. No bank secret belongs in Platform/browser.
 5. **Admission and recovery.** Fresh current signed ledger, drained owner/leases, encrypted independently fetched/restored backup and exact per-role vector precede one normal canary installation. Preserve current business data. Normal BOOT_RESTORE may invalidate sessions; use genuine CAPTCHA/email login afterwards. Post-install image/readiness/internal smoke, source-matching backup, independent off-host decrypt/restore/copied-fence boot and prior timer schedules are distinct receipts. Stop on CLOSED/ACTIVE/UNKNOWN; no manual OPEN, stale authority, blind restart or old DB overwrite.
+6. **Buyer-visible paid terms and receipt contact.** The current `CourseCheckout.tsx` shows price/confirmation but no paid-document links or receipt email. The authenticated consent writer records only personal-data/account/marketing choices, not a separate course-offer acceptance. Before money, provide a reviewed way for this buyer to see the exact paid texts/contact and record a deliberate purchase acceptance bound to their versions/hash. An activated manifest or generic account consent is not evidence of that action. The narrow test may use a genuine separately retained acceptance artifact if explicitly reviewed; never backfill an event claiming an unseen UI action.
 
 Preparatory CI/fixtures are implementation evidence. They do not count as a real bank payment, fiscal receipt, provider permission or production acceptance.
 
