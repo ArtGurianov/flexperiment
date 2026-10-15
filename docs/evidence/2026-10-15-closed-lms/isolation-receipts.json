@@ -1,0 +1,598 @@
+{
+  "independent-auth": {
+    "ready": true,
+    "separateRealProfiles": true,
+    "cookieOrSessionCopied": false,
+    "customersDistinct": true,
+    "ownedEmailsMatched": true,
+    "customerHashes": {
+      "A": "e9216ddf6d40be3d41021752c10919e11dd35c63926e4ae1dfe43d345cb8dad9",
+      "B": "8cab975c86ce14cd66217a2fa596ea399ccedd6fbf48b8d0f89c1ee1136aa4eb"
+    },
+    "APaidEntitlement": true,
+    "BPaidEntitlement": false,
+    "at": "2026-10-15T15:22:27.159Z"
+  },
+  "first-party-isolation": {
+    "state": "REAL_TWO_ACCOUNT_FIRST_PARTY_ISOLATION_PASS",
+    "at": "2026-10-15T15:54:09.368Z",
+    "BConsent": {
+      "http": 200,
+      "verified": true,
+      "confirmed": true
+    },
+    "positiveControls": {
+      "AProtectedPaid200": true,
+      "BProtectedFree200": true,
+      "tokenSubjectsMatchTheirSeparateAuthenticatedCustomers": true
+    },
+    "checks": [
+      {
+        "case": "B_NORMAL_PAID",
+        "http": 403,
+        "decision": "NOT_FOR_SALE",
+        "tokenPresent": false,
+        "videoIdPresent": false,
+        "noStore": true
+      },
+      {
+        "case": "B_FORGED_CUSTOMER_BODY_QUERY_HEADER",
+        "http": 403,
+        "decision": "NOT_FOR_SALE",
+        "tokenPresent": false,
+        "videoIdPresent": false,
+        "noStore": true
+      },
+      {
+        "case": "B_WITH_A_DRM_BEARER",
+        "http": 403,
+        "decision": "NOT_FOR_SALE",
+        "tokenPresent": false,
+        "videoIdPresent": false,
+        "noStore": true
+      },
+      {
+        "case": "B_PRIVATE_CONTENT",
+        "path": "/v1/me/courses/art338-long-canary",
+        "http": 404,
+        "privateMarkerPresent": false,
+        "noStore": true
+      },
+      {
+        "case": "B_PRIVATE_CONTENT",
+        "path": "/v1/me/courses/art338-long-canary/lessons/tour",
+        "http": 404,
+        "privateMarkerPresent": false,
+        "noStore": true
+      }
+    ],
+    "library": {
+      "http": 200,
+      "containsAPaidCourse": false,
+      "containsFreeCourse": true
+    }
+  },
+  "provider-own-free": {
+    "case": "own-free",
+    "startedAt": "2026-10-15T15:51:04.756Z",
+    "endedAt": "2026-10-15T15:51:31.764Z",
+    "realSeparateProfiles": true,
+    "normalFreshGrants": true,
+    "cookieTransfer": false,
+    "tokenUnchanged": true,
+    "videoMatched": true,
+    "grantExpiry": "2026-10-15T15:53:06.000Z",
+    "init": {
+      "created": true
+    },
+    "state": {
+      "currentTime": 4,
+      "events": [
+        {
+          "name": "playing",
+          "at": 1792079473454
+        },
+        {
+          "name": "ended",
+          "at": 1792079477482
+        }
+      ]
+    },
+    "frameState": {
+      "videoPresent": true,
+      "time": 4,
+      "paused": true,
+      "readyState": 4,
+      "drmError": false,
+      "playButtonPresent": false
+    },
+    "licenseResponses": [
+      {
+        "at": "2026-10-15T15:51:10.210Z",
+        "host": "license.kinescope.io",
+        "method": "POST",
+        "status": 200,
+        "fromServiceWorker": false
+      },
+      {
+        "at": "2026-10-15T15:51:11.872Z",
+        "host": "license.kinescope.io",
+        "method": "POST",
+        "status": 200,
+        "fromServiceWorker": false
+      }
+    ]
+  },
+  "provider-wrong-video": {
+    "case": "wrong-video",
+    "startedAt": "2026-10-15T15:51:37.057Z",
+    "endedAt": "2026-10-15T15:52:03.186Z",
+    "realSeparateProfiles": true,
+    "normalFreshGrants": true,
+    "cookieTransfer": false,
+    "tokenUnchanged": true,
+    "videoMatched": false,
+    "grantExpiry": "2026-10-15T15:53:38.000Z",
+    "init": {
+      "created": true
+    },
+    "state": {
+      "currentTime": 0,
+      "events": []
+    },
+    "frameState": {
+      "videoPresent": false,
+      "drmError": true,
+      "playButtonPresent": false
+    },
+    "licenseResponses": [
+      {
+        "at": "2026-10-15T15:51:41.504Z",
+        "host": "license.kinescope.io",
+        "method": "POST",
+        "status": 403,
+        "fromServiceWorker": false
+      }
+    ]
+  },
+  "provider-tampered-subject": {
+    "case": "tampered-subject",
+    "startedAt": "2026-10-15T15:52:14.127Z",
+    "endedAt": "2026-10-15T15:52:41.604Z",
+    "realSeparateProfiles": true,
+    "normalFreshGrants": true,
+    "cookieTransfer": false,
+    "tokenUnchanged": false,
+    "videoMatched": true,
+    "grantExpiry": "2026-10-15T15:54:14.000Z",
+    "init": {
+      "created": true
+    },
+    "state": {
+      "currentTime": 0,
+      "events": []
+    },
+    "frameState": {
+      "videoPresent": false,
+      "drmError": true,
+      "playButtonPresent": false
+    },
+    "licenseResponses": [
+      {
+        "at": "2026-10-15T15:52:19.491Z",
+        "host": "license.kinescope.io",
+        "method": "POST",
+        "status": 403,
+        "fromServiceWorker": false
+      }
+    ]
+  },
+  "provider-intact-foreign": {
+    "case": "intact-foreign",
+    "startedAt": "2026-10-15T15:52:42.312Z",
+    "endedAt": "2026-10-15T15:53:09.885Z",
+    "realSeparateProfiles": true,
+    "normalFreshGrants": true,
+    "cookieTransfer": false,
+    "tokenUnchanged": true,
+    "videoMatched": true,
+    "grantExpiry": "2026-10-15T15:54:43.000Z",
+    "init": {
+      "created": true
+    },
+    "state": {
+      "currentTime": 18.328026,
+      "events": [
+        {
+          "name": "playing",
+          "at": 1792079571326
+        }
+      ]
+    },
+    "frameState": {
+      "videoPresent": true,
+      "time": 18.55571,
+      "paused": false,
+      "readyState": 4,
+      "drmError": false,
+      "playButtonPresent": false
+    },
+    "licenseResponses": [
+      {
+        "at": "2026-10-15T15:52:47.442Z",
+        "host": "license.kinescope.io",
+        "method": "POST",
+        "status": 200,
+        "fromServiceWorker": false
+      },
+      {
+        "at": "2026-10-15T15:52:49.542Z",
+        "host": "license.kinescope.io",
+        "method": "POST",
+        "status": 200,
+        "fromServiceWorker": false
+      }
+    ]
+  },
+  "ownerAcceptance": {
+    "browserScope": "Chrome evidence sufficient for ART-338",
+    "intactBearerTransfer": "Accepted MVP limit; further protection belongs to ART-36",
+    "productionSecurityPass": false
+  },
+  "resumeFix": {
+    "pr": 235,
+    "reviewedHead": "9b16fd25d03f62f4a6f0ed9dfe2ccb2d48791f91",
+    "mergeSource": "0d7dee0c8352dfb6cc1ea8ca7850b5d03fa18309",
+    "liveExploitAgainstOldHandler": false,
+    "isolatedRedGreenBothMethods": true,
+    "installation": "SESSION_OWNED_RESUME_CANARY_INSTALL_PASS",
+    "manifestDigest": "sha256:650ec79b0f8c5eb0f89bb2e93ed674e5548cc54daf10a57a204ff125342566ab",
+    "isolatedPackagedTests": 114,
+    "previousLiveHandlerExploited": false,
+    "normalBootInvalidatedSessions": true,
+    "postBootChromeSessions": [
+      {
+        "profile": "A",
+        "authenticated": false,
+        "playbackHttp": 401
+      },
+      {
+        "profile": "B",
+        "authenticated": false,
+        "playbackHttp": 401
+      }
+    ],
+    "postInstallRealAuthenticatedResumeRetest": "NOT_RUN; boot invalidated genuine sessions; ownership regression runs inside exact image"
+  },
+  "sourceChecks": {
+    "reviewedHeadCI": {
+      "run": 38760288892,
+      "test": "SUCCESS",
+      "docker-build": "SUCCESS"
+    },
+    "mergedSourceCI": {
+      "run": 38764019867,
+      "source": "0d7dee0c8352dfb6cc1ea8ca7850b5d03fa18309",
+      "test": "SUCCESS",
+      "docker-build": "SUCCESS"
+    }
+  },
+  "providerAudits": {
+    "observedAt": "2026-10-15T15:57:46.678758+00:00",
+    "events": [
+      {
+        "event": "DRM_ALLOWED",
+        "reason": "ALLOW",
+        "at": "2026-10-15T15:51:11.894Z"
+      },
+      {
+        "event": "DRM_ALLOWED",
+        "reason": "ALLOW",
+        "at": "2026-10-15T15:51:13.255Z"
+      },
+      {
+        "event": "DRM_TOKEN_INVALID",
+        "reason": "PLAYBACK_TOKEN_VIDEO_MISMATCH",
+        "at": "2026-10-15T15:51:42.845Z"
+      },
+      {
+        "event": "DRM_TOKEN_INVALID",
+        "reason": "PLAYBACK_TOKEN_SIGNATURE_INVALID",
+        "at": "2026-10-15T15:52:21.160Z"
+      },
+      {
+        "event": "DRM_ALLOWED",
+        "reason": "ALLOW",
+        "at": "2026-10-15T15:52:48.735Z"
+      },
+      {
+        "event": "DRM_ALLOWED",
+        "reason": "ALLOW",
+        "at": "2026-10-15T15:52:51.230Z"
+      }
+    ]
+  },
+  "localQualificationIncident": {
+    "initialSmoke": "ENOSPC /tmp/tsx-1000 in Docker Desktop",
+    "fixed": "Removed three exact unused Platform build cache records totaling about1.06GB",
+    "sameImmutableImageRebuilt": false,
+    "sameImmutableImageRepushed": false,
+    "foundationRetest": "PASS"
+  },
+  "installationPostCheckNote": "Same-process post-check held the deliberately cached prior release vector. Fresh-process full runtime check passed; no second Commerce boot.",
+  "vpnRetry": {
+    "state": "SAME_BACKUP_NORMAL_SSH_RESUMED_GET_HASH_PASS",
+    "size": 856472,
+    "sha256": "b964527fbf7de260deed1c65b68234f7ee9360ed71ab02b8227448f68f9b6068",
+    "resumedAtByte": 753664,
+    "resumeSeconds": 14.06,
+    "singleUninterruptedTransfer": false,
+    "verificationWeakened": false
+  },
+  "canaryAcceptance": {
+    "state": "SESSION_OWNED_RESUME_CANARY_INSTALL_PASS",
+    "runtime": {
+      "sourceCommit": "0d7dee0c8352dfb6cc1ea8ca7850b5d03fa18309",
+      "roles": {
+        "commerce": {
+          "imageReference": "ghcr.io/artgurianov/flexperiment-commerce-v2@sha256:650ec79b0f8c5eb0f89bb2e93ed674e5548cc54daf10a57a204ff125342566ab",
+          "imageId": "sha256:650ec79b0f8c5eb0f89bb2e93ed674e5548cc54daf10a57a204ff125342566ab",
+          "rootfs": [
+            "sha256:e58989146fcec76699871403b9897b5c014af1ccd85f5a9300a215e7975525d7",
+            "sha256:4990a62cab1587a2ed690c9d4f41675b9216d68120e99033d664b558662e90c8",
+            "sha256:3714bbaf32038e259cddcddea09e13fc9aaa1a86a644274a6c6e263b00972240",
+            "sha256:f6becc1249c39a0f6d687460220dcfcf9f2a46d01770a70fc0a8ed4c98a6fd49",
+            "sha256:cae24708e29a74f04cc1ec51fc52e2d283c35f243ab21912e036095a2b50dbde",
+            "sha256:72a85bda0006816e8e52033cc9fcaf14901b2a1e6c4daf3281870f1822c52263",
+            "sha256:30cee20e2646bb16e9e70b01dda86262b4686f4b16e92f757955904b53e37211",
+            "sha256:bf6dbefb3184fb74cf1e3c4ac2683e8d05e1407fdadc54413097f171710b29c7",
+            "sha256:7f64ee3fd8d0ab8584f9d96916ee17af7c53acf7bf4fea96bc61185329e880d7",
+            "sha256:bcd1acbbcb3949ac7bb409b2e69c43ca15b568e391e1d5a02db1825d833c5826",
+            "sha256:2cf970dbd178ccfd65ab8c5bb023e9fbf8bd102b1779ae534c676e0149239782",
+            "sha256:9bf5be0a6a6c483ae0d70eec5c8f62b611355340bf595d5b06eb56a67a2c25e4",
+            "sha256:e6c34d0335990f61d2c636f75a2f30089c211ac88784ab1630713fe7f731adf9"
+          ],
+          "identity": {
+            "schema": "flexperiment.build-identity/1",
+            "service": "commerce-v2",
+            "sourceCommit": "0d7dee0c8352dfb6cc1ea8ca7850b5d03fa18309"
+          }
+        },
+        "platform": {
+          "imageReference": "ghcr.io/artgurianov/flexperiment-platform-v2@sha256:379f43ad63f624ec2b4e83078688b9a9f3170f85e86c3aeb165cb649aab22ee3",
+          "imageId": "sha256:379f43ad63f624ec2b4e83078688b9a9f3170f85e86c3aeb165cb649aab22ee3",
+          "rootfs": [
+            "sha256:e58989146fcec76699871403b9897b5c014af1ccd85f5a9300a215e7975525d7",
+            "sha256:4990a62cab1587a2ed690c9d4f41675b9216d68120e99033d664b558662e90c8",
+            "sha256:3714bbaf32038e259cddcddea09e13fc9aaa1a86a644274a6c6e263b00972240",
+            "sha256:f6becc1249c39a0f6d687460220dcfcf9f2a46d01770a70fc0a8ed4c98a6fd49",
+            "sha256:cae24708e29a74f04cc1ec51fc52e2d283c35f243ab21912e036095a2b50dbde",
+            "sha256:72a85bda0006816e8e52033cc9fcaf14901b2a1e6c4daf3281870f1822c52263",
+            "sha256:3b3a421744559fc0579c763fde4304c99bed6bf5fb0345ca0313e9810a10f766",
+            "sha256:ef288ec5d58d380f4303f21256e3467d4e88dff20c4837b5e89fd51af4f86bc7",
+            "sha256:a95d76111102f66bd41a3331262efe2a4607cc5fbd2b0e5c3818d4ba54bd701f",
+            "sha256:99cba606396b77335f9457e65a92f8d4359e9cbea019bfb47c44d468bc551949",
+            "sha256:b3952637b676269dcf1b453bc1624601902e2bb3a0a9053bd13fe20743cf85d2",
+            "sha256:05127c161b2d451d27609a81faaba4c244ee40db323b706932795b96c2d25e91"
+          ],
+          "identity": {
+            "schema": "flexperiment.build-identity/1",
+            "service": "platform",
+            "sourceCommit": "2cb47c46ee3cca50546d327ae57245c85235c153"
+          }
+        },
+        "admin": {
+          "imageReference": "ghcr.io/artgurianov/flexperiment-admin-v2@sha256:85eadc71e50fdab0bc4d154a242a46188bd85bbe7f0edfed516f8863eb14dc77",
+          "imageId": "sha256:85eadc71e50fdab0bc4d154a242a46188bd85bbe7f0edfed516f8863eb14dc77",
+          "rootfs": [
+            "sha256:29df493baa13de438d6d2ece3a8333032e0b7b9b9d8cce4ee82194da255f61e1",
+            "sha256:e6082cdc2516c48531390c6f369268148ed5189748b4cdbcb30d8de04d4ef146",
+            "sha256:f4eddaa4c30384a3db34177c1132ca20f44c1216fe41ba7f607dcee58b908104",
+            "sha256:00a43f6306382cee5fdb8e738ce0b5c7022448687d5edea1912e169c6ee03ebb",
+            "sha256:f7b74afe8798753eb53d962f1676c409e590b5865b456c309c2e364cfe98f55e",
+            "sha256:646d544dc619be2ab0e784ee691dc06e7a1d5ca76176b6e7fb1c8933b58350ff",
+            "sha256:2b12ccfb247ac0c9ec2d186864ef4f2a893499e24935b14941e74aec27e62143",
+            "sha256:36c003a300d15169fe53876c4c807b1668568414660e5249ba6d168badab54fa",
+            "sha256:952043e786eb5cd6961fe593c83d2ad0e5a51d828824bb8814cddf1e568f0bf5",
+            "sha256:125668bc497d03ea2b9d225bd2a09d7bd125975c6239f0981ca6d352210a0040"
+          ],
+          "identity": {
+            "source_commit": "08523bdf38eeddf5e745ce04d05e1f980a7ced93",
+            "admin_contract_version": "sales-availability-v1"
+          }
+        }
+      },
+      "schemaFingerprint": "c99f9ed0db449a2c13f2e51fa3b28a1ba44e367dd263185c99eddfec8c2d3b39",
+      "fence": "OPEN",
+      "ledgerSequence": 1,
+      "leases": 0,
+      "state": "RUNTIME_CHECK_PASS_NOT_FINAL_ACCEPTANCE"
+    },
+    "smoke": {
+      "state": "INTERNAL_SMOKE_PASS",
+      "retiredRoutes404": 10,
+      "adminAnonymous401": true,
+      "adminLoginReadLogout": true,
+      "revokedSession401": true,
+      "staticPages200": true,
+      "partner404": true
+    },
+    "backupFreshness": {
+      "status": "FRESH",
+      "verifiedAt": 1792080667
+    },
+    "timers": {
+      "backup": [
+        "NextElapseUSecRealtime=Thu 2026-10-15 18:15:00 UTC",
+        "ActiveState=active",
+        "UnitFileState=enabled"
+      ],
+      "freshness": [
+        "NextElapseUSecRealtime=Thu 2026-10-15 17:00:00 UTC",
+        "ActiveState=active",
+        "UnitFileState=enabled"
+      ]
+    },
+    "productionTouched": false
+  },
+  "preInstallExactImageRestore": {
+    "restore": {
+      "recordedAt": "2026-10-15T16:09:28.078Z",
+      "businessContinuity": "PASS",
+      "sourceCommit": "0d7dee0c8352dfb6cc1ea8ca7850b5d03fa18309",
+      "artifactSha256": "64a72a7ec7e3f9468eb5b5b0e7d0b0c61570571dfe7e29c83ad935f72534b294",
+      "inputCommerceSha256": "e2c2d52b2efb979eee732f7d91a58212751c6d99ce28fb9d86212cb9a541235b",
+      "schemaFingerprint": "c99f9ed0db449a2c13f2e51fa3b28a1ba44e367dd263185c99eddfec8c2d3b39",
+      "proofScriptSha256": "09cad78a13d52d1d73b57a18adb7e1a1b8ac07ce06a52d92dc7d379b2aa9e833",
+      "beforeMigrations": 26,
+      "afterMigrations": 26,
+      "integrity": "ok",
+      "foreignKeys": "ok",
+      "ledgerSequence": 1,
+      "mirrorSha256": "6d6639cb4dec5d2bd6ea4340c9abebee19aa60740d7ded262b3e6dade2eaa222",
+      "result": "PASS",
+      "syntheticErasedAccounts": 1,
+      "currentUsers": 2
+    },
+    "boot": {
+      "recordedAt": "2026-10-15T16:09:28.078Z",
+      "businessContinuity": "PASS",
+      "sourceCommit": "0d7dee0c8352dfb6cc1ea8ca7850b5d03fa18309",
+      "artifactSha256": "64a72a7ec7e3f9468eb5b5b0e7d0b0c61570571dfe7e29c83ad935f72534b294",
+      "inputCommerceSha256": "e2c2d52b2efb979eee732f7d91a58212751c6d99ce28fb9d86212cb9a541235b",
+      "schemaFingerprint": "c99f9ed0db449a2c13f2e51fa3b28a1ba44e367dd263185c99eddfec8c2d3b39",
+      "proofScriptSha256": "09cad78a13d52d1d73b57a18adb7e1a1b8ac07ce06a52d92dc7d379b2aa9e833",
+      "beforeMigrations": 26,
+      "afterMigrations": 26,
+      "integrity": "ok",
+      "foreignKeys": "ok",
+      "ledgerSequence": 1,
+      "mirrorSha256": "6d6639cb4dec5d2bd6ea4340c9abebee19aa60740d7ded262b3e6dade2eaa222",
+      "result": "BOOT_PASS",
+      "fence": "OPEN",
+      "leases": 0
+    }
+  },
+  "postInstallExactImageRestore": {
+    "restore": {
+      "recordedAt": "2026-10-15T16:14:08.785Z",
+      "businessContinuity": "PASS",
+      "sourceCommit": "0d7dee0c8352dfb6cc1ea8ca7850b5d03fa18309",
+      "artifactSha256": "64a72a7ec7e3f9468eb5b5b0e7d0b0c61570571dfe7e29c83ad935f72534b294",
+      "inputCommerceSha256": "f83972d2572c4d8a525e07666704db006ca63d31ed9520991ea6254d7bb09f71",
+      "schemaFingerprint": "c99f9ed0db449a2c13f2e51fa3b28a1ba44e367dd263185c99eddfec8c2d3b39",
+      "proofScriptSha256": "09cad78a13d52d1d73b57a18adb7e1a1b8ac07ce06a52d92dc7d379b2aa9e833",
+      "beforeMigrations": 26,
+      "afterMigrations": 26,
+      "integrity": "ok",
+      "foreignKeys": "ok",
+      "ledgerSequence": 1,
+      "mirrorSha256": "6d6639cb4dec5d2bd6ea4340c9abebee19aa60740d7ded262b3e6dade2eaa222",
+      "result": "PASS",
+      "syntheticErasedAccounts": 1,
+      "currentUsers": 2
+    },
+    "boot": {
+      "recordedAt": "2026-10-15T16:14:08.785Z",
+      "businessContinuity": "PASS",
+      "sourceCommit": "0d7dee0c8352dfb6cc1ea8ca7850b5d03fa18309",
+      "artifactSha256": "64a72a7ec7e3f9468eb5b5b0e7d0b0c61570571dfe7e29c83ad935f72534b294",
+      "inputCommerceSha256": "f83972d2572c4d8a525e07666704db006ca63d31ed9520991ea6254d7bb09f71",
+      "schemaFingerprint": "c99f9ed0db449a2c13f2e51fa3b28a1ba44e367dd263185c99eddfec8c2d3b39",
+      "proofScriptSha256": "09cad78a13d52d1d73b57a18adb7e1a1b8ac07ce06a52d92dc7d379b2aa9e833",
+      "beforeMigrations": 26,
+      "afterMigrations": 26,
+      "integrity": "ok",
+      "foreignKeys": "ok",
+      "ledgerSequence": 1,
+      "mirrorSha256": "6d6639cb4dec5d2bd6ea4340c9abebee19aa60740d7ded262b3e6dade2eaa222",
+      "result": "BOOT_PASS",
+      "fence": "OPEN",
+      "leases": 0
+    }
+  },
+  "postSourceBackup": {
+    "state": "NORMAL_BACKUP_AND_INDEPENDENT_S3_GET_HASH_PASS",
+    "stage": "after",
+    "status": "SUCCESS",
+    "sourceCommit": "0d7dee0c8352dfb6cc1ea8ca7850b5d03fa18309",
+    "verifiedAt": 1792080667,
+    "sha256": "a5995eb8cb67a14c05b567c754cfe3c48f54ffd93410050c0313f90c5442c411",
+    "size": 856472
+  },
+  "offHostPostSourceRestore": {
+    "sha256": "f83972d2572c4d8a525e07666704db006ca63d31ed9520991ea6254d7bb09f71",
+    "integrity": "ok",
+    "foreignKeys": "ok",
+    "schema": 26,
+    "counts": {
+      "user": 2,
+      "customers": 2,
+      "orders": 3,
+      "session": 0,
+      "video_upload_sessions": 3,
+      "lesson_video_bindings": 3
+    },
+    "offHostDecryption": true,
+    "ciphertextHashVerified": true,
+    "downloadSeconds": 133.31
+  },
+  "preToPostLiveBusinessContinuity": {
+    "state": "PASS",
+    "businessSha256": "ac27ab453d5b34d46e837240817ed9810ce3600688cc4637e3f89083f9777010",
+    "excludedAuthenticationSessions": "Normal boot cleared them by contract"
+  },
+  "postUpdateDirectExternalHttps": {
+    "state": "EXTERNAL_HTTPS_READBACK_UNCONFIRMED",
+    "at": "2026-10-15T16:15:14.657623+00:00",
+    "rows": [
+      {
+        "host": "canary-api.flexperiment.ru",
+        "http": 0,
+        "returnCode": 35,
+        "transportError": "curl: (35) LibreSSL SSL_connect: SSL_ERROR_SYSCALL in connection to canary-api.flexperiment.ru:443"
+      },
+      {
+        "host": "canary-platform.flexperiment.ru",
+        "http": 0,
+        "returnCode": 35,
+        "transportError": "curl: (35) LibreSSL SSL_connect: SSL_ERROR_SYSCALL in connection to canary-platform.flexperiment.ru:443"
+      },
+      {
+        "host": "canary-admin.flexperiment.ru",
+        "http": 0,
+        "returnCode": 35,
+        "transportError": "curl: (35) LibreSSL SSL_connect: SSL_ERROR_SYSCALL in connection to canary-admin.flexperiment.ru:443"
+      },
+      {
+        "host": "canary-lab.flexperiment.ru",
+        "http": 0,
+        "returnCode": 35,
+        "transportError": "curl: (35) LibreSSL SSL_connect: SSL_ERROR_SYSCALL in connection to canary-lab.flexperiment.ru:443"
+      }
+    ],
+    "tlsVerificationDefault": true
+  },
+  "postUpdateVpsPublicIngressLoopbackTls": {
+    "defaultTlsVerification": true,
+    "rows": [
+      {
+        "host": "canary-api.flexperiment.ru",
+        "http": 403
+      },
+      {
+        "host": "canary-platform.flexperiment.ru",
+        "http": 403
+      },
+      {
+        "host": "canary-admin.flexperiment.ru",
+        "http": 403
+      },
+      {
+        "host": "canary-lab.flexperiment.ru",
+        "http": 403
+      }
+    ],
+    "independentDirectMacHttpsClaim": false
+  }
+}

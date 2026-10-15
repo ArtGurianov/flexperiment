@@ -18,9 +18,14 @@ Actual Chrome/provider evidence:
 | Atomic withdrawal | new grant403/DENY; unused unexpired pre-withdraw grant license403; DRM_DENIED/DENY |
 | Naturally expired genuine grant | provider license403; no playable video |
 | No drmauthtoken | provider license403; no playable video |
-| Wrong video (operator callback negative) |403 / PLAYBACK_TOKEN_VIDEO_MISMATCH; not presented as a provider-origin test |
+| Wrong video (initial operator callback negative) |403 / PLAYBACK_TOKEN_VIDEO_MISMATCH; separate from the later actual provider test |
+| B FREE token used against A PAID video, real provider player |license403 / PLAYBACK_TOKEN_VIDEO_MISMATCH; no playable video |
+| A token subject changed to B without re-signing, real provider player |license403 / PLAYBACK_TOKEN_SIGNATURE_INVALID; no playable video |
+| Intact A PAID token in independently authenticated B profile |license200; actual playback18.56s; owner-accepted MVP bearer limit |
 | Anonymous browser | grant401; no token |
 | UNLISTED with active PAID entitlement | authoritative public course/lesson404; private course200/no-store; explicit relist afterwards |
+
+The owner accepted Chrome evidence as sufficient for ART-338 and intact bearer transfer as an MVP limit on15October2026. The [two-account qualification](cross-user-qualification.md) records separate real sessions/consents, first-party403/404 and provider-origin positive/negative controls. Further anti-transfer protection remains in ART-36.
 
 ## Limits
 
