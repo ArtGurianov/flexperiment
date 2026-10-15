@@ -947,7 +947,10 @@ export function createCommerceV2App(deps: Dependencies) {
     try {
       const body = await context.req.json<{ seconds: number; clientSeq: number; clientTs: string }>();
       const result = deps.db.transaction(() => hasRequiredAccountConsents(deps.db, customerId)
-        ? saveResumePosition(deps.db, { customerId, lessonRef: context.req.param("lessonRef"), ...body }, now().toISOString()) : null).immediate();
+        ? saveResumePosition(deps.db, {
+          customerId, lessonRef: context.req.param("lessonRef"),
+          seconds: body.seconds, clientSeq: body.clientSeq, clientTs: body.clientTs,
+        }, now().toISOString()) : null).immediate();
       if (!result) return context.json({ code: "CONSENT_REQUIRED" }, 403, noStore);
       return context.json(result, 200, noStore);
     } catch (error) {
