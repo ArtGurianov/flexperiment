@@ -726,6 +726,28 @@ describe("commerce v2 boundaries", () => {
       .toEqual({ active_video_id: "video-1" });
   });
 
+  it.each(["PUT", "POST"])("keeps %s resume ownership in the authenticated session and route", async (method) => {
+    seedPlayableLesson();
+    db.prepare("INSERT INTO customers(id,email_normalized) VALUES ('other-customer','other@example.com')").run();
+    db.prepare(`INSERT INTO catalog_lesson_projection(lesson_ref,course_ref,section_ref,ever_published,visibility,free_preview,position)
+      VALUES ('other-lesson','course','section',1,'LISTED',0,1)`).run();
+    db.prepare(`INSERT INTO lesson_resume_positions(customer_id,lesson_ref,seconds,client_seq,client_ts,updated_at)
+      VALUES ('other-customer','other-lesson',88,5,'2026-09-30T11:00:00Z','2026-09-30T11:00:00Z')`).run();
+    const victimBefore = db.prepare("SELECT * FROM lesson_resume_positions WHERE customer_id='other-customer'").get();
+
+    const response = await app().request("/v1/lessons/lesson/resume", {
+      method, headers: { authorization: "Session customer", "content-type": "application/json" },
+      body: JSON.stringify({ customerId: "other-customer", lessonRef: "other-lesson",
+        seconds: 17, clientSeq: 100, clientTs: "2026-09-30T12:00:00Z" }),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ accepted: true });
+    expect(db.prepare("SELECT * FROM lesson_resume_positions WHERE customer_id='other-customer'").get()).toEqual(victimBefore);
+    expect(db.prepare("SELECT customer_id,lesson_ref,seconds FROM lesson_resume_positions WHERE customer_id='customer'").get())
+      .toEqual({ customer_id: "customer", lesson_ref: "lesson", seconds: 17 });
+    expect(db.prepare("SELECT COUNT(*) n FROM lesson_resume_positions").get()).toEqual({ n: 2 });
+  });
+
   it("accepts beacon-style resume writes and restarts a completed lesson", async () => {
     const manifest = withManifestHash({
       courseRef: "course", version: 1, visibility: "LISTED",
