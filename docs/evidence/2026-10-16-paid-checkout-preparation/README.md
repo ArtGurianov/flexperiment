@@ -21,7 +21,9 @@ No entitlement was granted. Actual paid checkout, fiscal receipt, protected play
 
 The Flexperiment candidate adds the [closed paid profile](../../release/ART-39_PRIVATE_CHECKOUT_PROFILE.md): fixed course/offer/price and sole hashed buyer binding, exact production dependency source and final legal manifest pins, live preview/confirm scope checks, no discounts/other paid offer/PUBLIC/LAB/bundle opening, a single historical order limit, and deliberate buyer acceptance recorded atomically with the order. The Platform shows document links and receipt email with one checkbox. The host backup observer recognizes the same separately admitted root-owned profile, preserving default disabled behavior and existing erasure/source/image/lineage checks. No schema migration, manual entitlement or install is part of that candidate.
 
-Local validation:19new closed-profile contracts,127targeted Commerce checkout/refund/foundation/catalog tests overall,136Platform tests, Platform typecheck, focused ESLint and diff/link/JSON checks. CI and image build are separate future receipts on the exact candidate; local tests are not provider or production PASS.
+Local validation:19new closed-profile contracts,127targeted Commerce checkout/refund/foundation/catalog tests overall,136Platform tests, root/Platform typecheck, focused ESLint and diff/link/JSON checks. The host observer suite now passes17tests; its two pre-existing Platform fixtures explicitly include disabled mode, with new private-profile/custody/cross-role negatives. The first candidate CI caught those underspecified fixtures and was not green.
+
+A local linux/amd64 Commerce image at source `218034a796705d4a2a91804fd5122b50b2c76896` built and passed an isolated network-none/read-only/non-root smoke (tmpfs `/tmp`), matching native identity and loading the new shared profile module with disabled default. It is local engineering evidence, not a published/installed or final-head artifact. Exact current-head CI/build remain separate receipts; local tests are not provider or production PASS. The merged-main documentation run38779417403 at90dadea4… completed SUCCESS.
 
 ## What still precedes money
 
