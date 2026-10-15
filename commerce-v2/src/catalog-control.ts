@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import { assertOfferSaleModeAllowed, type CommerceRuntimeConfig, type SaleMode, type SaleModePolicyConfig } from "./payment-mode";
 import { validPaymentPurpose } from "./payment-purpose";
+import { assertClosedPaidTestOffer } from "./closed-paid-test";
 
 export type ProductCommand = {
   productRef: string;
@@ -53,6 +54,9 @@ export function configureProduct(db: Database.Database, config: CommerceRuntimeC
     throw new Error("LAB_OCCURRENCE_NOT_FOUND");
   }
   assertLiveOfferSaleMode(db, config, command);
+  if (command.saleMode !== "CLOSED" && command.accessModel === "PAID") {
+    assertClosedPaidTestOffer(config, { ...command, acceptanceAllowlist: command.acceptanceAllowlist ?? [] });
+  }
   const apply = db.transaction(() => {
     const existing = db.prepare(`SELECT product.id,product.withdrawn_at,product.version,product.kind,product.course_ref,
       product.occurrence_ref,product.access_model,offer.offer_ref FROM products product LEFT JOIN offers offer ON offer.product_id=product.id

@@ -1,0 +1,73 @@
+{
+  "status": "COURSE_PREPARED_CHECKOUT_NOT_ENABLED",
+  "observedAtUtc": "2026-10-15T18:05:34.475069+00:00",
+  "clientDate": "2026-10-16",
+  "scope": {
+    "courseRef": "test-course",
+    "offerRef": "course:test-course",
+    "quantity": 1,
+    "amountKopecks": 100,
+    "fullRefund": true,
+    "publicSales": false
+  },
+  "documentation": {
+    "pr": 237,
+    "head": "68c4bf36cb0b99eb1dbebd5fad013fd6b30bee4d",
+    "headCiRun": 38777901687,
+    "headTest": "SUCCESS",
+    "headDockerBuild": "SUCCESS",
+    "mergeSha": "90dadea4fee32080495432ab557f8fbd85d6b3cd",
+    "legalStatus": "DRAFT_NOT_ACTIVATED"
+  },
+  "liveReadback": {
+    "sourceCommit": "0d7dee0c8352dfb6cc1ea8ca7850b5d03fa18309",
+    "paymentMode": "disabled",
+    "course": {
+      "access_model": "PAID",
+      "sale_mode": "CLOSED",
+      "price_kopecks": 100,
+      "visibility": "UNLISTED",
+      "acceptanceAllowlistSize": 0
+    },
+    "video": {
+      "ready": true,
+      "durationSeconds": 150,
+      "independentBinding": true
+    },
+    "ordersForOffer": 0,
+    "fiscalPoliciesForOffer": 0,
+    "allOtherPaidOffersClosed": true
+  },
+  "videoSource": {
+    "size": 4351423,
+    "sha256": "429bc31f93fb5704d5a678e3231537bba49f61c1d32aa112f4b7eb57585491dd",
+    "transferShaVerified": true
+  },
+  "providerVideo": {
+    "state": "READY",
+    "durationSeconds": 150,
+    "activeBinding": true
+  },
+  "refrefEngineering": {
+    "pr": "https://github.com/ArtGurianov/refref/pull/77",
+    "source": "2f9d13a9bf410d2c8ed1f0eda04f75658dc163f9",
+    "focusedPostgresContracts": {
+      "passed": 26,
+      "total": 26
+    },
+    "typecheck": "PASS",
+    "focusedLint": "PASS",
+    "fullLocalCi": "STARTED_NOT_YET_ATTESTED",
+    "liveEnablementExecuted": false
+  },
+  "execution": {
+    "newCheckoutProfileInstalled": false,
+    "newMerchantApiKeyCreated": false,
+    "fiscalPolicyQualified": false,
+    "legalReleaseActivated": false,
+    "paymentCreated": false,
+    "refundSent": false,
+    "manualEntitlementGranted": false,
+    "art338Reopened": false
+  }
+}

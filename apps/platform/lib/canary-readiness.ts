@@ -1,4 +1,5 @@
 import { validatePlatformCanary } from "./canary-config";
+import { CLOSED_PAID_TEST_PROFILE } from "../../../lib/closed-paid-test-profile";
 
 export async function assertCommerceReady() {
   const canary = validatePlatformCanary();
@@ -25,6 +26,9 @@ export async function assertCommerceReady() {
   if (ready.ok !== true || ready.service !== "commerce-v2" || ready.core?.database !== "ok"
     || ready.foundationMode !== false
     || (canary && (ready.sourceCommit !== process.env.PLATFORM_EXPECTED_COMMERCE_SHA
-      || ready.core?.paymentMode !== "disabled"
+      || ready.core?.paymentMode !== (process.env.CLOSED_PAID_TEST_PROFILE ? "refref" : "disabled")
+      || (process.env.CLOSED_PAID_TEST_PROFILE && (ready.core?.closedPaidTestProfile !== CLOSED_PAID_TEST_PROFILE
+        || ready.core?.closedPaidTestLegalSha256 !== process.env.CLOSED_PAID_TEST_LEGAL_SHA256
+        || ready.core?.closedPaidTestRefrefSource !== process.env.CLOSED_PAID_TEST_REFREF_SOURCE))
       || ready.capabilities?.refref !== "ready"))) throw new Error("CANARY_COMMERCE_UNAVAILABLE");
 }

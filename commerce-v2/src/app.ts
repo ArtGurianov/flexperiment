@@ -7,7 +7,7 @@ import { flagOrphanedOverrides } from "./access-overrides";
 import { getEditorialDraft, getEditorialPublished, publishEditorialDraft, relistEditorialCourse, restrictEditorialCourse, saveEditorialDraft, type EditorialDocument } from "./course-editorial";
 import { assertPaymentCreationEnabled, type CommerceRuntimeConfig } from "./payment-mode";
 import { saveResumePosition } from "./resume";
-import { confirmCheckout, prepareCheckout, reconcileCheckout, type PaymentRail } from "./checkout";
+import { confirmCheckout, prepareCheckout, reconcileCheckout, type PaidCheckoutAcceptance, type PaymentRail } from "./checkout";
 import { activateSales, configureProduct, withdrawProduct } from "./catalog-control";
 import { campaignStatus, confirmCampaign, createCampaign, dispatchCampaign, retryCampaign, unsubscribeCustomer, type CampaignEmail } from "./campaigns";
 import { assertVideoUploadInput, observeKinescopeStatus, pollKinescopeUpload, startVideoUpload, type KinescopeClient, type KinescopeStatus } from "./kinescope";
@@ -123,13 +123,17 @@ export function createCommerceV2App(deps: Dependencies) {
     const protectedKinescopeMissing = deps.config.kinescopeDeliveryMode === "protected"
       && (deps.runtimeCapabilities?.kinescopeApiConfigured === false || !deps.kinescopeDrmAuth);
     const erasureReady=deps.erasureFence ? await deps.erasureFence.ready() : true;
-    const ready = databaseOk && !protectedKinescopeMissing && refref !== "unavailable" && erasureReady;
+    const ready = databaseOk && !protectedKinescopeMissing && refref !== "unavailable" && erasureReady
+      && (!deps.config.closedPaidTest || refref === "ready");
     return context.json({
       ok: ready,
       service: "commerce-v2",
       sourceCommit: deps.sourceCommit,
       foundationMode: deps.foundationMode ?? false,
-      core: { database: databaseOk ? "ok" : "unavailable", configuration: protectedKinescopeMissing ? "incomplete" : "ok", paymentMode: deps.config.paymentMode },
+      core: { database: databaseOk ? "ok" : "unavailable", configuration: protectedKinescopeMissing ? "incomplete" : "ok", paymentMode: deps.config.paymentMode,
+        ...(deps.config.closedPaidTest ? { closedPaidTestProfile: deps.config.closedPaidTest.id,
+          closedPaidTestLegalSha256: deps.config.closedPaidTest.legalManifestSha256,
+          closedPaidTestRefrefSource: deps.config.closedPaidTest.refrefSourceCommit } : {}) },
       capabilities: {
         refref: refref ?? (deps.config.paymentMode === "refref" ? "configured_not_probed" : "not_required"),
         authEmail: deps.foundationMode ? "disabled" : deps.runtimeCapabilities?.authEmailConfigured === false ? "missing" : "configured",
@@ -633,7 +637,7 @@ export function createCommerceV2App(deps: Dependencies) {
       if (!deps.paymentRail) return context.json({ code: "PAYMENT_RAIL_UNAVAILABLE" }, 503, noStore);
       const customer = deps.db.prepare("SELECT email_normalized FROM customers WHERE id=?").get(customerId) as { email_normalized: string } | undefined;
       if (!customer) return context.json({ code: "CUSTOMER_NOT_FOUND" }, 409, noStore);
-      const body = await context.req.json<{ quoteId?: string; state?: string }>();
+      const body = await context.req.json<{ quoteId?: string; state?: string; legalAcceptance?: PaidCheckoutAcceptance }>();
       if (!body.quoteId) throw new Error("CHECKOUT_QUOTE_REQUIRED");
       const handoff = deps.config.paymentMode === "refref"
         ? verifyCheckoutHandoffState(deps.config.refref!.handoffStateSecret, body.state ?? "", customerId, now().getTime())
@@ -651,6 +655,7 @@ export function createCommerceV2App(deps: Dependencies) {
         expectedOrderPublicId: handoff?.orderPublicId,
         storefront: handoff?.storefront,
         successUrl: successUrl?.toString(),
+        legalAcceptance: body.legalAcceptance,
       }, now().toISOString());
       return context.json(result, result.state === "CREATE_UNKNOWN" ? 202 : 201, noStore);
     } catch (error) {

@@ -1,3 +1,4 @@
+import { CLOSED_PAID_TEST_PROFILE, closedPaidTestEnabled } from "../../lib/closed-paid-test-profile";
 export type PaymentMode = "disabled" | "mock" | "refref";
 export type KinescopeDeliveryMode = "open" | "protected";
 export type SaleMode = "CLOSED" | "ACCEPTANCE_ONLY" | "PUBLIC";
@@ -11,6 +12,8 @@ export type CommerceRuntimeConfig = {
   readonly paymentMode: PaymentMode;
   readonly kinescopeDeliveryMode: KinescopeDeliveryMode;
   readonly merchantPromotionPrefix: string;
+  readonly closedPaidTest?: { readonly id: typeof CLOSED_PAID_TEST_PROFILE; readonly buyerEmailSha256: string; readonly refrefSourceCommit: string;
+    readonly legalManifestSha256: string; readonly legalVersion: string };
   readonly refref?: {
     readonly apiKey: string;
     readonly merchantSlug: string;
@@ -36,6 +39,14 @@ export function loadCommerceRuntimeConfig(env: Environment = process.env): Comme
   }
   const paymentMode = (env.PAYMENT_MODE ?? (deployEnvironment === "production" ? "disabled" : "mock")) as PaymentMode;
   if (!["disabled", "mock", "refref"].includes(paymentMode)) throw new CommerceConfigurationError("PAYMENT_MODE_INVALID");
+  const paidTest = closedPaidTestEnabled(env);
+  const canary = env.COMMERCE_V2_ENVIRONMENT === "canary" || env.ERASURE_SCOPE === "canary"
+    || env.PLATFORM_ORIGIN === "https://canary-platform.flexperiment.ru";
+  if (canary && paymentMode === "refref" && !paidTest) throw new CommerceConfigurationError("CLOSED_PAID_TEST_PROFILE_REQUIRED");
+  if (paidTest && (!/^[a-f0-9]{64}$/.test(env.CLOSED_PAID_TEST_BUYER_SHA256 ?? "")
+    || env.COMMERCE_V2_ENVIRONMENT !== "canary" || env.ERASURE_SCOPE !== "canary" || env.ERASURE_FENCING_ENABLED !== "true")) {
+    throw new CommerceConfigurationError("CLOSED_PAID_TEST_CONFIG_INVALID");
+  }
   if (deployEnvironment === "production" && paymentMode === "mock") throw new CommerceConfigurationError("MOCK_FORBIDDEN_IN_PRODUCTION");
 
   const kinescopeDeliveryMode = (env.KINESCOPE_DELIVERY_MODE ?? "open") as KinescopeDeliveryMode;
@@ -65,6 +76,9 @@ export function loadCommerceRuntimeConfig(env: Environment = process.env): Comme
     paymentMode,
     kinescopeDeliveryMode,
     merchantPromotionPrefix,
+    ...(paidTest ? { closedPaidTest: { id: CLOSED_PAID_TEST_PROFILE, buyerEmailSha256: env.CLOSED_PAID_TEST_BUYER_SHA256!,
+      refrefSourceCommit: env.CLOSED_PAID_TEST_REFREF_SOURCE!, legalManifestSha256: env.CLOSED_PAID_TEST_LEGAL_SHA256!,
+      legalVersion: env.CLOSED_PAID_TEST_LEGAL_VERSION! } } : {}),
     refref: {
       apiKey: required(env, "REFREF_API_KEY"),
       merchantSlug: required(env, "REFREF_MERCHANT_SLUG"),
@@ -76,7 +90,7 @@ export function loadCommerceRuntimeConfig(env: Environment = process.env): Comme
   };
 }
 
-export type SaleModePolicyConfig = Pick<CommerceRuntimeConfig, "deployEnvironment" | "paymentMode">;
+export type SaleModePolicyConfig = Pick<CommerceRuntimeConfig, "deployEnvironment" | "paymentMode" | "closedPaidTest">;
 
 export function assertOfferSaleModeAllowed(
   config: SaleModePolicyConfig,
@@ -84,6 +98,8 @@ export function assertOfferSaleModeAllowed(
   activationExists: boolean,
 ) {
   if (offer.saleMode === "CLOSED") return;
+  if (config.closedPaidTest && (offer.kind !== "ONLINE_COURSE"
+    || (offer.accessModel === "PAID" && offer.saleMode !== "ACCEPTANCE_ONLY"))) throw new CommerceConfigurationError("CLOSED_PAID_TEST_SCOPE_REFUSED");
   if (config.paymentMode === "disabled" && (offer.accessModel === "PAID" || offer.kind === "LAB")) {
     throw new CommerceConfigurationError("PAYMENTS_DISABLED");
   }

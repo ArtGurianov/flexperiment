@@ -24,7 +24,12 @@ type CheckoutQuote = {
   merchantPromotionCode: string | null;
   checkoutCodeOutcome: CheckoutCodeOutcome;
   expiresAt: string;
+  legalAcceptance?: { releaseVersion: string; manifestSha256: string; receiptEmail: string;
+    documents: Array<{ kind: string; version: string; sha256: string; url: string }> };
 };
+const documentLabels: Record<string, string> = { course_offer: "Условия покупки", refund_terms: "Правила возврата",
+  receipt_contact: "Данные для чека", fiscal_items: "Фискальные сведения", privacy: "Политика данных",
+  personal_data: "Согласие на обработку данных", account_terms: "Правила аккаунта", marketing_consent: "Рекламный выбор" };
 
 const price = (kopecks: number) => new Intl.NumberFormat("ru-RU", { style: "currency", currency: "RUB", maximumFractionDigits: 0 }).format(kopecks / 100);
 
@@ -45,6 +50,7 @@ export default function CourseCheckout({ courseRef, offerRef, saleMode, priceKop
   const [status, setStatus] = useState("");
   const [busy, setBusy] = useState(false);
   const [quote, setQuote] = useState<CheckoutQuote | null>(null);
+  const [termsAccepted, setTermsAccepted] = useState(false);
   const [checkoutCode, setCheckoutCode] = useState("");
   const previewIdempotencyKey = useRef<string | null>(null);
   const paymentIdempotencyKey = useRef<string | null>(null);
@@ -67,7 +73,7 @@ export default function CourseCheckout({ courseRef, offerRef, saleMode, priceKop
     queueMicrotask(() => {
       if (!active) return;
       setBusy(true);
-      setStatus("Платёж принят. Открываем доступ…");
+      setStatus("Проверяем оплату…");
     });
     void observeCheckout({ orderPublicId, state: "PENDING" })
       .then((result) => {
@@ -118,6 +124,7 @@ export default function CourseCheckout({ courseRef, offerRef, saleMode, priceKop
       if (result.checkoutUrl) { window.location.assign(result.checkoutUrl); return; }
       if (result.state !== "PRICE_REVIEW_REQUIRED" || !result.quoteId) throw new Error("CHECKOUT_QUOTE_INVALID");
       setQuote(result);
+      setTermsAccepted(false);
       const codeMessage = checkoutCodeMessage(result.merchantPromotionCode, result.checkoutCodeOutcome);
       setStatus(`${codeMessage}${codeMessage ? " " : ""}${result.discountKopecks > 0
         ? `Скидка ${price(result.discountKopecks)}. Проверьте итог и подтвердите оплату.`
@@ -131,14 +138,16 @@ export default function CourseCheckout({ courseRef, offerRef, saleMode, priceKop
   };
 
   const confirmCheckout = async () => {
-    if (!quote) return;
+    if (!quote || (quote.legalAcceptance && !termsAccepted)) return;
     setBusy(true); setStatus("Создаём заказ…");
     paymentIdempotencyKey.current ??= crypto.randomUUID();
     try {
       const response = await fetch("/v1/checkout", {
         method: "POST", credentials: "same-origin",
         headers: { "content-type": "application/json", "idempotency-key": paymentIdempotencyKey.current },
-        body: JSON.stringify({ quoteId: quote.quoteId, state: new URLSearchParams(window.location.search).get("state") || undefined }),
+        body: JSON.stringify({ quoteId: quote.quoteId, state: new URLSearchParams(window.location.search).get("state") || undefined,
+          ...(quote.legalAcceptance ? { legalAcceptance: { accepted: termsAccepted, releaseVersion: quote.legalAcceptance.releaseVersion,
+            manifestSha256: quote.legalAcceptance.manifestSha256, receiptEmail: quote.legalAcceptance.receiptEmail } } : {}) }),
       });
       let result = await response.json() as CheckoutResult;
       if (!response.ok) throw new Error(result.code || "CHECKOUT_FAILED");
@@ -165,7 +174,17 @@ export default function CourseCheckout({ courseRef, offerRef, saleMode, priceKop
     {!quote && <label>Промокод
       <input autoComplete="off" disabled={busy} maxLength={64} onChange={(event) => setCheckoutCode(event.target.value)} value={checkoutCode} />
     </label>}
-    <button className="primary" disabled={busy || session === "loading"} type="button" onClick={() => void (quote ? confirmCheckout() : previewCheckout())}>
+    {quote?.legalAcceptance && <div>
+      <p>Электронный чек придёт на {quote.legalAcceptance.receiptEmail}.</p>
+      <ul>{quote.legalAcceptance.documents.map(document => <li key={document.kind}>
+        <a href={document.url} target="_blank" rel="noopener noreferrer">{documentLabels[document.kind] ?? "Документ покупки"}</a>
+      </li>)}</ul>
+      <label><input type="checkbox" checked={termsAccepted} disabled={busy}
+        onChange={event => setTermsAccepted(event.target.checked)} />
+        Принимаю условия покупки и возврата, ознакомился с обработкой данных и направлением чека.
+      </label>
+    </div>}
+    <button className="primary" disabled={busy || session === "loading" || Boolean(quote?.legalAcceptance && !termsAccepted)} type="button" onClick={() => void (quote ? confirmCheckout() : previewCheckout())}>
       {busy ? "Проверяем…" : quote ? "Подтвердить и оплатить →" : "Купить курс →"}
     </button>
     {quote && quote.discountKopecks > 0 && <p>
