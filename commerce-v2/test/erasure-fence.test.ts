@@ -1,3 +1,4 @@
+import type { ErasureDiagnostic } from "../src/erasure-diagnostics";
 import Database from "better-sqlite3";
 import { generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
@@ -80,6 +81,39 @@ describe("durable runtime/send fencing, not operational installation",()=>{
     await bootstrap();expect(await gate.ready()).toBe(true);
     const other=makeGate();await expect(other.run("REQUEST",async()=>undefined)).rejects.toThrow("BOOT_UNQUALIFIED");
     expect(()=>applyDrainedRuntimeErasure(db,{} as VerifiedErasureLedger,keys,"canary",{} as DrainedErasureRuntime,clock)).toThrow("DRAIN_INVALID");
+  });
+  it.each(["REQUEST", "WORKER"] as const)("refuses a pending %s after concurrent readiness closes the shared fence", async kind => {
+    const started = deferred(), finish = deferred(); let delay = false, fail = false;
+    const readCurrent = async () => {
+      if (fail) throw new Error("REFLECTED_SECRET_PROVIDER_BODY");
+      if (delay) {delay = false; started.resolve(); await finish.promise;}
+      return proof();
+    };
+    const diagnostics: ErasureDiagnostic[] = [];
+    const concurrent = new ErasureRuntimeFence({...gateOptions(), readCurrent, diagnostics: e => diagnostics.push(e)}); gates.push(concurrent);
+    await bootstrap(concurrent); delay = true;
+    const handler = vi.fn(async () => undefined);
+    const pending = concurrent.run(kind, handler); const refused = expect(pending).rejects.toThrow("AUTHORITY_UNAVAILABLE");
+    await started.promise; fail = true;
+    expect(await concurrent.ready()).toBe(false);
+    fail = false; finish.resolve(); await refused;
+    expect(handler).not.toHaveBeenCalled(); expect(concurrent.status()).toEqual({state: "CLOSED", leases: 0, unknown: 0});
+    expect(await concurrent.ready()).toBe(false);
+    expect(diagnostics.map(e => [e.event, e.operation])).toEqual([["ERASURE_ADMISSION_CLOSED", "READY"], ["ERASURE_ADMISSION_CLOSED", kind]]);
+    expect(JSON.stringify(diagnostics)).not.toContain("REFLECTED_SECRET");
+  });
+  it("does not send email after an overlapping authority verification closed admission", async () => {
+    const started = deferred(), finish = deferred(); let delay = false;
+    const concurrent = new ErasureRuntimeFence({...gateOptions(), readCurrent: async () => {
+      if (delay) {delay = false; started.resolve(); await finish.promise;}
+      return proof();
+    }}); gates.push(concurrent); await bootstrap(concurrent);
+    const provider = vi.fn(async () => undefined);
+    const pending = concurrent.run("REQUEST", async () => {delay = true; return concurrent.send("owner@example.test", provider, "AUTH_MAIL");});
+    const refused = expect(pending).rejects.toThrow("AUTHORITY_UNAVAILABLE");
+    await started.promise; unavailable = true; expect(await concurrent.ready()).toBe(false);
+    unavailable = false; finish.resolve(); await refused;
+    expect(provider).not.toHaveBeenCalled(); expect(concurrent.status()).toEqual({state: "CLOSED", leases: 0, unknown: 0});
   });
   it("blocks erasure before ledger publication while an async request still owns a lease",async()=>{
     await bootstrap();account();const verified=await request();const started=deferred(),finish=deferred();

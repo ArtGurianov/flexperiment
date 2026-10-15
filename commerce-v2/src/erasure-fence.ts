@@ -1,3 +1,5 @@
+import { performance } from "node:perf_hooks";
+import { reportErasure, erasureFailureCode, type ErasureDiagnostics } from "./erasure-diagnostics";
 import Database from "better-sqlite3";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
@@ -42,10 +44,11 @@ export class ErasureRuntimeFence {
   readonly #keys: ErasureKeys;
   readonly #read: () => Promise<VerifiedErasureLedger>;
   readonly #now: () => Date;
+  readonly #diagnostics?: ErasureDiagnostics;
   readonly #context = new AsyncLocalStorage<Context>();
   #bootQualified = false;
   constructor(input: {directory: string; forbiddenRoots: readonly string[]; scope: "canary" | "production";
-    keys: ErasureKeys; readCurrent: () => Promise<VerifiedErasureLedger>; now?: () => Date; initialize?:boolean}) {
+    keys: ErasureKeys; readCurrent: () => Promise<VerifiedErasureLedger>; now?: () => Date; initialize?:boolean; diagnostics?:ErasureDiagnostics}) {
     let connection: Database.Database | undefined;
     try {
     if (!["canary","production"].includes(input.scope) || !input.forbiddenRoots.length || !isAbsolute(input.directory)) refuse("ERASURE_FENCE_STORAGE_INVALID");
@@ -82,7 +85,7 @@ export class ErasureRuntimeFence {
       if (this.#state().scope!==input.scope || (this.#db.prepare("SELECT COUNT(*) AS n FROM fence_state").get() as {n:number}).n!==1) refuse("ERASURE_FENCE_STORAGE_INVALID");
     } catch {refuse("ERASURE_FENCE_STORAGE_INVALID");}
     this.#scope=input.scope; this.#keys={signing:{...input.keys.signing},subject:Object.fromEntries(Object.entries(input.keys.subject).map(([id,key])=>[id,Buffer.from(key)]))};
-    this.#read=input.readCurrent; this.#now=input.now??(()=>new Date());
+    this.#diagnostics=input.diagnostics; this.#read=input.readCurrent; this.#now=input.now??(()=>new Date());
     } catch(error) {
       connection?.close();
       if(error instanceof ErasureLedgerError)throw error;
@@ -107,10 +110,11 @@ export class ErasureRuntimeFence {
     unknown:(this.#db.prepare("SELECT COUNT(*) AS n FROM fence_leases WHERE outcome='UNKNOWN'").get() as {n:number}).n};}
   async ready() {
     if(!this.#bootQualified || this.#state().state!=="OPEN" || this.#state().owner)return false;
+    const started=performance.now();
     try {const proof=await this.#read();this.#proof(proof);const state=this.#state();
-      if(state.sequence!==proof.bundle.entries.length || state.head_hash!==(proof.bundle.entries.at(-1)?.hash??"EMPTY")) throw new Error();
+      if(state.sequence!==proof.bundle.entries.length || state.head_hash!==(proof.bundle.entries.at(-1)?.hash??"EMPTY")) refuse("ERASURE_RUNTIME_LEDGER_UNAPPLIED");
       return state.state==="OPEN" && !state.owner;
-    } catch {this.closeAdmission();return false;}
+    } catch (error) {this.closeAdmission();reportErasure(this.#diagnostics,{event:"ERASURE_ADMISSION_CLOSED",scope:this.#scope,operation:"READY",code:erasureFailureCode(error),elapsedMs:Math.round(performance.now()-started)});return false;}
   }
   #assertDrained() {if(this.#state().state!=="CLOSED" || this.status().leases) refuse("ERASURE_DRAIN_PENDING");}
   /** Only this exclusive owner closure may append/apply/reopen. Crash leaves owner set:
@@ -152,12 +156,17 @@ export class ErasureRuntimeFence {
       const state=this.#state(); if(state.state!=="OPEN" || state.owner) refuse("ERASURE_RUNTIME_CLOSED");
       this.#db.prepare("INSERT INTO fence_leases VALUES (?,?,'ACTIVE')").run(id,kind);
     }).immediate();
+    const started=performance.now();
     try {
       const proof=await this.#read(); this.#proof(proof); const state=this.#state();
+      // Another readiness/request may have closed admission while this read
+      // was awaiting S3. Its success cannot authorize a handler past CLOSED.
+      if(!this.#bootQualified || state.state!=="OPEN" || state.owner) refuse("ERASURE_RUNTIME_CLOSED");
       if(state.sequence!==proof.bundle.entries.length || state.head_hash!==(proof.bundle.entries.at(-1)?.hash??"EMPTY")) refuse("ERASURE_RUNTIME_LEDGER_UNAPPLIED");
       return {id,proof,active:true};
-    } catch {
+    } catch (error) {
       this.closeAdmission(); this.#db.prepare("DELETE FROM fence_leases WHERE id=?").run(id);
+      reportErasure(this.#diagnostics,{event:"ERASURE_ADMISSION_CLOSED",scope:this.#scope,operation:kind,code:erasureFailureCode(error),elapsedMs:Math.round(performance.now()-started)});
       return refuse("ERASURE_RUNTIME_AUTHORITY_UNAVAILABLE");
     }
   }
