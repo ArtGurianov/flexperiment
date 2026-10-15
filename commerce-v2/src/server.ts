@@ -33,7 +33,7 @@ migrateV2(db);
 // Before traffic, auth construction or timers. Installation is separately admitted;
 // an enabled but unqualified authority/control DB fails closed, without fallback.
 const erasureFence=await prepareErasureRuntime({db,environment:process.env,
-  forbiddenRoots:[dirname(db.name)],installation});
+  forbiddenRoots:[dirname(db.name)],installation,diagnostics:event=>console.error(JSON.stringify({...event,observedAt:new Date().toISOString()}))});
 const buildIdentity = readBuildIdentity("commerce-v2");
 if (buildIdentity.sourceCommit === "development" && config.deployEnvironment === "production") throw new Error("SOURCE_COMMIT_REQUIRED");
 

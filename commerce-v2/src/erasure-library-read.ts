@@ -4,6 +4,8 @@ import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, relative } from "node:path";
 import { z } from "zod";
+import { performance } from "node:perf_hooks";
+import { ErasureReaderFailure, erasureReadFailure, erasureFailureCode, reportErasure, type ErasureDiagnostics, type ErasureReadStage } from "./erasure-diagnostics";
 import { CUSTODY_MAX_BYTES, validateCustodyHead, verifyCustodyPacket, type CustodyObject } from "./erasure-custody";
 import { ErasureLedgerError, VerifiedErasureLedger, erasureGenesisHash, type ErasureBundle, type ErasureKeys } from "./erasure-ledger";
 
@@ -28,8 +30,9 @@ export interface ErasureCurrentObjects {
   headVersions(): Promise<readonly string[]>;
 }
 
-/** Read-only provider identity: no Put/Delete/control-plane commands, implicit
- * credentials, retries or redirects. Version history is checked at cold boot to
+/** Read-only provider identity: no Put/Delete/configuration mutations, implicit
+ * credentials, SDK retries or redirects. The current-proof layer permits one
+ * full GET-only re-verification after a typed transient read failure. Version history is checked at cold boot to
  * detect an accidental older head even after loss of the local applied prefix.
  * Cloud.ru consistency/IAM/version retention remain operational admission gates. */
 export function createErasureCurrentObjects(configuration: ErasureReadConfiguration, requestHandler?: S3ClientConfig["requestHandler"])
@@ -44,31 +47,36 @@ export function createErasureCurrentObjects(configuration: ErasureReadConfigurat
     async read(name, versionId) {
       if (name !== "head.json" && !/^bundles\/[0-9]+-[a-f0-9]{64}\.json$/.test(name)) refuse();
       if (versionId !== undefined && (name !== "head.json" || !versionId || versionId === "null" || versionId.length > 1024)) refuse();
+      const objectStage = name === "head.json" ? versionId ? "history_head" : "head" : "packet";
+      let stage: ErasureReadStage = objectStage;
       try {
         const response = await client.send(new GetObjectCommand({ Bucket: c.bucket, Key: c.prefix + name, VersionId: versionId, ExpectedBucketOwner: c.expectedBucketOwner }),
           { abortSignal: AbortSignal.timeout(10_000) });
         const body = response.Body;
         if (!(body instanceof Readable) || !response.ETag || !/^"[^"\r\n]{1,128}"$/.test(response.ETag)
           || response.ContentLength === undefined || response.ContentLength > CUSTODY_MAX_BYTES) {
-          if (body instanceof Readable) body.destroy(); refuse();
+          if (body instanceof Readable) body.destroy(); throw new ErasureReaderFailure(stage, "INVALID_RESPONSE");
         }
+        stage = `${objectStage}_body`;
         const chunks: Buffer[] = []; let length = 0;
-        const timer = setTimeout(() => body.destroy(new Error("ERASURE_READ_TIMEOUT")), 10_000);
+        const timer = setTimeout(() => body.destroy(new ErasureReaderFailure(`${objectStage}_body`, "TIMEOUT")), 10_000);
         try { for await (const value of body) { const bytes = Buffer.from(value); length += bytes.length;
-          if (length > CUSTODY_MAX_BYTES) refuse(); chunks.push(bytes); } }
+          if (length > CUSTODY_MAX_BYTES) throw new ErasureReaderFailure(`${objectStage}_body`, "INVALID_RESPONSE"); chunks.push(bytes); } }
         finally { clearTimeout(timer); body.destroy(); }
-        if (!length || length !== response.ContentLength) refuse();
+        if (!length || length !== response.ContentLength) throw new ErasureReaderFailure(`${objectStage}_body`, "INVALID_RESPONSE");
         return { bytes: Buffer.concat(chunks, length), etag: response.ETag };
       } catch (error) {
         if (error instanceof Error && error.name === "NoSuchKey"
           && (error as Error & { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode === 404) return null;
-        return refuse();
+        throw erasureReadFailure(stage, error);
       }
     },
     async headVersions() {
+      let stage: ErasureReadStage = "versioning";
       try {
         const versioning = await client.send(new GetBucketVersioningCommand({ Bucket: c.bucket, ExpectedBucketOwner: c.expectedBucketOwner }), { abortSignal: AbortSignal.timeout(10_000) });
         if (versioning.Status !== "Enabled") refuse("ERASURE_HISTORY_NOT_QUALIFIED");
+        stage = "versions";
         const versions: string[] = []; const seen = new Set<string>();
         let keyMarker: string | undefined; let versionMarker: string | undefined;
         for (let page = 0; page < 10; page++) {
@@ -87,7 +95,7 @@ export function createErasureCurrentObjects(configuration: ErasureReadConfigurat
           keyMarker = result.NextKeyMarker; versionMarker = result.NextVersionIdMarker;
         }
         return refuse("ERASURE_HISTORY_CAPACITY_REVIEW_REQUIRED");
-      } catch { return refuse("ERASURE_HISTORY_NOT_QUALIFIED"); }
+      } catch (error) { throw erasureReadFailure(stage, error); }
     },
     close: () => client.destroy(),
   };
@@ -96,39 +104,93 @@ export function createErasureCurrentObjects(configuration: ErasureReadConfigurat
 /** Mirror is existing signed ErasureBundle JSON, never a new ledger/authority.
  * A stale mirror, missing remote object or fork cannot mint an admission proof. */
 export function createCurrentErasureRead(input: { scope: "canary" | "production"; keys: ErasureKeys;
-  recipientSha256: string; remote: ErasureCurrentObjects; readBundle: () => unknown; now?: () => Date }) {
+  recipientSha256: string; remote: ErasureCurrentObjects; readBundle: () => unknown; now?: () => Date; diagnostics?: ErasureDiagnostics }) {
   const now = input.now ?? (() => new Date());
   let established: { sequence: number; headHash: string } | undefined;
   let history: Promise<readonly ReturnType<typeof validateCustodyHead>[]> | undefined;
   const readHead = async (versionId?: string) => {
     const value = await input.remote.read("head.json", versionId); if (!value) refuse("ERASURE_REMOTE_UNINITIALIZED");
-    const head = validateCustodyHead(JSON.parse(value.bytes.toString("utf8")), input.scope, input.keys);
-    if (head.body.recipientSha256 !== input.recipientSha256) refuse("ERASURE_CUSTODY_RECIPIENT_INVALID");
-    return head;
-  };
-  return () => VerifiedErasureLedger.readCurrent({ scope: input.scope, keys: input.keys, now, read: async () => {
     try {
-      const head = await readHead();
-      if (!history) history = (async () => {
-        const ids = await input.remote.headVersions();
-        if (!ids.length || ids.length > 1000 || new Set(ids).size !== ids.length) refuse();
-        const heads: ReturnType<typeof validateCustodyHead>[] = [];
-        for (let i = 0; i < ids.length; i += 8) heads.push(...await Promise.all(ids.slice(i, i + 8).map(id => readHead(id))));
-        return heads;
-      })();
-      const previous = await history;
-      const bundle = input.readBundle() as ErasureBundle;
-      const hashAt = (n: number) => n === 0 ? erasureGenesisHash(input.scope) : bundle.entries[n - 1]?.hash;
-      for (const old of [...previous.map(v => v.body), ...(established ? [established] : [])]) {
-        if (old.sequence > head.body.sequence || hashAt(old.sequence) !== old.headHash) refuse("ERASURE_REMOTE_LEDGER_ROLLBACK_OR_FORK");
+      const head = validateCustodyHead(JSON.parse(value.bytes.toString("utf8")), input.scope, input.keys);
+      if (head.body.recipientSha256 !== input.recipientSha256) refuse("ERASURE_CUSTODY_RECIPIENT_INVALID");
+      return head;
+    } catch (error) { throw new ErasureReaderFailure(versionId ? "history_head" : "head_signature", "VERIFICATION", undefined, erasureFailureCode(error)); }
+  };
+  return async () => {
+    const started = performance.now();
+    let lastStage: ErasureReadStage = "head";
+    let callbackFailed = false;
+    let attemptsUsed = 0;
+    try { const proof = await VerifiedErasureLedger.readCurrent({ scope: input.scope, keys: input.keys, now, read: async () => {
+      // Two finite full verifications, never a cached-success fallback, SDK retry,
+      // provider write retry, restart or CLOSED -> OPEN transition. The original
+      // 60s proof deadline covers both attempts (not a renewed clock per retry).
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        attemptsUsed = attempt;
+        try {
+          lastStage = "head";
+          const head = await readHead();
+          lastStage = "history";
+          if (!history) {
+            const pending = (async () => {
+              const ids = await input.remote.headVersions();
+              if (!ids.length || ids.length > 1000 || new Set(ids).size !== ids.length) refuse();
+              const heads: ReturnType<typeof validateCustodyHead>[] = [];
+              for (let i = 0; i < ids.length; i += 8) heads.push(...await Promise.all(ids.slice(i, i + 8).map(id => readHead(id))));
+              return heads;
+            })();
+            history = pending;
+            // Do not latch a rejected cold-history Promise forever. Identity
+            // comparison prevents a late rejection from deleting a newer read.
+            void pending.catch(() => { if (history === pending) history = undefined; });
+          }
+          const previous = await history;
+          lastStage = "mirror";
+          const bundle = input.readBundle() as ErasureBundle;
+          lastStage = "prefix";
+          const hashAt = (n: number) => n === 0 ? erasureGenesisHash(input.scope) : bundle.entries[n - 1]?.hash;
+          for (const old of [...previous.map(v => v.body), ...(established ? [established] : [])]) {
+            if (old.sequence > head.body.sequence || hashAt(old.sequence) !== old.headHash) refuse("ERASURE_REMOTE_LEDGER_ROLLBACK_OR_FORK");
+          }
+          lastStage = "packet";
+          const packet = await input.remote.read(head.body.objectRef); if (!packet) refuse("ERASURE_REMOTE_READBACK_FAILED");
+          lastStage = "packet_verification";
+          verifyCustodyPacket(packet.bytes, head, bundle, input.keys);
+          lastStage = "final_head";
+          if (canonical((await readHead()).body) !== canonical(head.body)) refuse("ERASURE_REMOTE_ACK_UNCONFIRMED");
+          lastStage = "freshness";
+          return { bundle, sequence: head.body.sequence, headHash: head.body.headHash };
+        } catch (error) {
+          const failure = erasureReadFailure(lastStage, error);
+          reportErasure(input.diagnostics, {event: "ERASURE_READ_FAILURE", scope: input.scope, stage: failure.stage,
+            reason: failure.reason, code: failure.code, httpStatus: failure.httpStatus, attempt, elapsedMs: Math.round(performance.now() - started)});
+          if (attempt === 2 || !failure.retryable) { callbackFailed = true; throw failure; }
+        }
       }
-      const packet = await input.remote.read(head.body.objectRef); if (!packet) refuse("ERASURE_REMOTE_READBACK_FAILED");
-      verifyCustodyPacket(packet.bytes, head, bundle, input.keys);
-      if (canonical((await readHead()).body) !== canonical(head.body)) refuse("ERASURE_REMOTE_ACK_UNCONFIRMED");
-      established = { sequence: head.body.sequence, headHash: head.body.headHash };
-      return { bundle, ...established };
-    } catch { return refuse(); }
-  } });
+      return refuse();
+    } });
+      // Only an actually issued, completely verified capability may establish
+      // the prefix. Recheck after awaits: an overlapping read may be newer.
+      lastStage = "prefix";
+      const sequence = proof.bundle.entries.length;
+      const hashAt = (n: number) => n === 0 ? erasureGenesisHash(input.scope) : proof.bundle.entries[n - 1]?.hash;
+      if (established && (established.sequence > sequence || hashAt(established.sequence) !== established.headHash))
+        refuse("ERASURE_REMOTE_LEDGER_ROLLBACK_OR_FORK");
+      established = {sequence, headHash: hashAt(sequence)!};
+      if (attemptsUsed > 1) reportErasure(input.diagnostics, {event: "ERASURE_READ_RECOVERED", scope: input.scope,
+        attempt: attemptsUsed, elapsedMs: Math.round(performance.now() - started)});
+      return proof;
+    } catch (error) {
+      // Includes bundle signature/freshness validation performed by the opaque
+      // capability issuer after the remote callback returned.
+      if (!callbackFailed) {
+        const failure = erasureReadFailure(lastStage, error);
+        reportErasure(input.diagnostics, {event: "ERASURE_READ_FAILURE", scope: input.scope, stage: failure.stage,
+          reason: failure.reason, code: failure.code, attempt: attemptsUsed, elapsedMs: Math.round(performance.now() - started)});
+      }
+      return refuse();
+    }
+  };
 }
 
 /** Actual runtime files must be independent, owner-scoped and kernel RO-mounted.
@@ -150,7 +212,7 @@ export function readErasureReaderFile(file: string, forbiddenRoots: readonly str
 }
 
 export function prepareLibraryErasureRead(input: { file: string; scope: "canary" | "production"; keys: ErasureKeys;
-  forbiddenRoots: readonly string[]; now?: () => Date }) {
+  forbiddenRoots: readonly string[]; now?: () => Date; diagnostics?: ErasureDiagnostics }) {
   const parsed = configSchema.safeParse(readErasureReaderFile(input.file, input.forbiddenRoots));
   if (!parsed.success || parsed.data.scope !== input.scope) refuse("ERASURE_LIBRARY_CONFIGURATION_INVALID");
   const configuration = parsed.data; const remote = createErasureCurrentObjects(configuration);

@@ -372,6 +372,12 @@ key generation, different scope/recipient, corrupt packet or a fork keeps CLOSED
 Runtime receives verification/HMAC generations + read credential only: no private
 signer, age recovery identity, writer credential or writable owner journal.
 
+**ART351 amendment (15 October):** the zero-repeat current-reader behavior above
+is superseded by one finite full GET-only re-verification for typed transient
+failures. SDK retries, write retries, stale fallback and automatic admission
+reopen remain prohibited. See [reader resilience design](2026-10-15-art-351-reader-resilience-design.md)
+and [qualified recovery](../release/ART-351_READER_RECOVERY.md).
+
 Cold-reader admission checks retained signed head versions to detect accidental
 remote rollback even after losing the local prefix. Versioning must be Enabled;
 null/duplicate/missing versions, delete markers and incomplete pagination fail

@@ -1,3 +1,5 @@
+import { performance } from "node:perf_hooks";
+import { reportErasure, erasureFailureCode, type ErasureDiagnostics } from "./erasure-diagnostics";
 import { createPublicKey } from "node:crypto";
 import { lstatSync, readFileSync } from "node:fs";
 import { z } from "zod";
@@ -57,7 +59,7 @@ export function readErasureVerificationKeys(file:string,scope:"canary"|"producti
  * evidence permits legacy behavior; missing evidence or installed downgrade stops
  * BEFORE traffic/timers. No env switch or merchant restore establishes admission. */
 export async function prepareErasureRuntime(input:{db:Database.Database; environment:Readonly<Record<string,string|undefined>>;
-  forbiddenRoots:readonly string[]; libraryRead?:()=>Promise<VerifiedErasureLedger>; now?:()=>Date; installation?:ErasureInstallationEvidence}) {
+  forbiddenRoots:readonly string[]; libraryRead?:()=>Promise<VerifiedErasureLedger>; now?:()=>Date; installation?:ErasureInstallationEvidence; diagnostics?:ErasureDiagnostics}) {
   const env=input.environment;
   const installation=input.installation??readErasureInstallation(env);
   if(!ErasureInstallationEvidence.assertRuntime(installation,env))return undefined;
@@ -69,14 +71,15 @@ export async function prepareErasureRuntime(input:{db:Database.Database; environ
   // Trusted dependency seam for isolated composition tests only. Actual startup
   // selects a protected library configuration; no HTTPS/unfenced fallback.
   const library=input.libraryRead ? undefined : prepareLibraryErasureRead({file:env.ERASURE_LIBRARY_CONFIG_FILE??"",scope,keys,
-    forbiddenRoots:input.forbiddenRoots,now});
+    forbiddenRoots:input.forbiddenRoots,now,diagnostics:input.diagnostics});
   if(library) {try {ErasureInstallationEvidence.assertReaderBinding(installation,library.bindingSha256);}
     catch(error){library.close();throw error;}}
   const readCurrent=input.libraryRead??library!.read;
   let fence:ErasureRuntimeFence;
-  try {fence=new ErasureRuntimeFence({directory:env.ERASURE_FENCE_DIRECTORY??"",forbiddenRoots:input.forbiddenRoots,scope,keys,readCurrent,now});}
+  try {fence=new ErasureRuntimeFence({directory:env.ERASURE_FENCE_DIRECTORY??"",forbiddenRoots:input.forbiddenRoots,scope,keys,readCurrent,now,diagnostics:input.diagnostics});}
   catch(error){library?.close();throw error;}
   const close=fence.close.bind(fence);fence.close=()=>{library?.close();close();};
+  const bootStarted=performance.now();
   try {
     await fence.withDrained(input.db,async drain=>{
       const proof=await readCurrent();
@@ -84,7 +87,7 @@ export async function prepareErasureRuntime(input:{db:Database.Database; environ
       await fence.reopen(drain,proof,application.application);
     });
     fence.openQualified(); return fence;
-  } catch {fence.close();return refuse("ERASURE_RUNTIME_BOOT_HOLD");}
+  } catch (error) {reportErasure(input.diagnostics,{event:"ERASURE_BOOT_HOLD",scope,operation:"BOOT",code:erasureFailureCode(error),elapsedMs:Math.round(performance.now()-bootStarted)});fence.close();return refuse("ERASURE_RUNTIME_BOOT_HOLD");}
 }
 
 /** Owner-side workflow, not a public endpoint. Verify fresh session before closing;
