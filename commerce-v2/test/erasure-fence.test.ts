@@ -115,6 +115,50 @@ describe("durable runtime/send fencing, not operational installation",()=>{
     unavailable = false; finish.resolve(); await refused;
     expect(provider).not.toHaveBeenCalled(); expect(concurrent.status()).toEqual({state: "CLOSED", leases: 0, unknown: 0});
   });
+  it.each(["REQUEST", "WORKER", "SEND"] as const)("refuses %s when CLOSED is queued after acquire completes but before operation entry", async kind => {
+    const current = await proof(); let armed = false; let closedWithActiveLease = false;
+    const concurrent = new ErasureRuntimeFence({...gateOptions(), readCurrent: () => {
+      const result = Promise.resolve(current);
+      if (armed) {
+        armed = false;
+        // This .then runs before acquire's await continuation. Its nested
+        // microtask runs AFTER acquire's final OPEN check / fulfilled return,
+        // but BEFORE run/send resumes its await and calls the operation.
+        void result.then(() => queueMicrotask(() => {
+          closedWithActiveLease = concurrent.status().leases > 0;
+          concurrent.closeAdmission();
+        }));
+      }
+      return result;
+    }}); gates.push(concurrent); await bootstrap(concurrent);
+    const operation = vi.fn(async () => undefined);
+    const pending = kind === "SEND" ? concurrent.run("REQUEST", async () => {
+      armed = true; return concurrent.send("owner@example.test", operation, "AUTH_MAIL");
+    }) : (armed = true, concurrent.run(kind, operation));
+    await expect(pending).rejects.toThrow("ERASURE_RUNTIME_CLOSED");
+    expect(closedWithActiveLease).toBe(true); expect(operation).not.toHaveBeenCalled();
+    expect(concurrent.status()).toEqual({state: "CLOSED", leases: 0, unknown: 0});
+  });
+  it.each(["REQUEST", "SEND"] as const)("validates the %s lease immediately before entry and preserves UNKNOWN evidence", async kind => {
+    const current = await proof(); let armed = false;
+    const control = new Database(join(root, "fence", "erasure-fence.sqlite"));
+    const concurrent = new ErasureRuntimeFence({...gateOptions(), readCurrent: () => {
+      const result = Promise.resolve(current);
+      if (armed) {armed = false; void result.then(() => queueMicrotask(() => {
+        control.prepare("UPDATE fence_leases SET outcome='UNKNOWN' WHERE kind=?").run(kind);
+      }));}
+      return result;
+    }}); gates.push(concurrent);
+    try {
+      await bootstrap(concurrent); const operation = vi.fn(async () => undefined);
+      const pending = kind === "SEND" ? concurrent.run("REQUEST", async () => {
+        armed = true; return concurrent.send("owner@example.test", operation, "AUTH_MAIL");
+      }) : (armed = true, concurrent.run(kind, operation));
+      await expect(pending).rejects.toThrow("ERASURE_RUNTIME_CLOSED");
+      expect(operation).not.toHaveBeenCalled(); expect(concurrent.status()).toEqual({state: "CLOSED", leases: 1, unknown: 1});
+      await expect(concurrent.withDrained(db, async () => undefined)).rejects.toThrow("DRAIN_PENDING");
+    } finally {control.close();}
+  });
   it("blocks erasure before ledger publication while an async request still owns a lease",async()=>{
     await bootstrap();account();const verified=await request();const started=deferred(),finish=deferred();
     const active=gate.run("REQUEST",async()=>{started.resolve();await finish.promise;db.exec(`UPDATE "user" SET name='late-name' WHERE id='user'`);});

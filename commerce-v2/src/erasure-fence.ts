@@ -170,10 +170,22 @@ export class ErasureRuntimeFence {
       return refuse("ERASURE_RUNTIME_AUTHORITY_UNAVAILABLE");
     }
   }
+  /** No await between this check and operation entry: acquire's fulfilled
+   * Promise itself introduces a continuation gap in run/send. */
+  #assertOperationStart(context: Context, kind: "REQUEST" | "WORKER" | "SEND") {
+    const state=this.#state();
+    const lease=this.#db.prepare("SELECT kind,outcome FROM fence_leases WHERE id=?").get(context.id) as {kind:string;outcome:string}|undefined;
+    if(!this.#bootQualified || !context.active || state.state!=="OPEN" || state.owner
+      || lease?.kind!==kind || lease.outcome!=="ACTIVE") {
+      this.closeAdmission();
+      reportErasure(this.#diagnostics,{event:"ERASURE_ADMISSION_CLOSED",scope:this.#scope,operation:kind,code:"ERASURE_RUNTIME_CLOSED",elapsedMs:0});
+      refuse("ERASURE_RUNTIME_CLOSED");
+    }
+  }
   async run<T>(kind: "REQUEST" | "WORKER", operation: () => Promise<T>): Promise<T> {
     const context=await this.#acquire(kind);
-    try {return await this.#context.run(context,operation);}
-    finally {context.active=false; this.#db.prepare("DELETE FROM fence_leases WHERE id=?").run(context.id);}
+    try {this.#assertOperationStart(context,kind);return await this.#context.run(context,operation);}
+    finally {context.active=false; this.#db.prepare("DELETE FROM fence_leases WHERE id=? AND kind=? AND outcome='ACTIVE'").run(context.id,kind);}
   }
   assertIdentity(identity: {email?: string; userId?: string; customerId?: string}, purpose: "ACCOUNT" | "AUTH_MAIL" | "MARKETING") {
     if(!["ACCOUNT","AUTH_MAIL","MARKETING"].includes(purpose))refuse("ERASURE_RUNTIME_PURPOSE_INVALID");
@@ -194,8 +206,8 @@ export class ErasureRuntimeFence {
     this.assertIdentity({email},purpose);
     const context=await this.#acquire("SEND");
     // Definite pre-send refusal is not an ambiguous provider attempt.
-    try {this.assertIdentity({email},purpose);}
-    catch(error) {this.#db.prepare("DELETE FROM fence_leases WHERE id=?").run(context.id);throw error;}
+    try {this.#assertOperationStart(context,"SEND");this.assertIdentity({email},purpose);}
+    catch(error) {context.active=false;this.#db.prepare("DELETE FROM fence_leases WHERE id=? AND kind='SEND' AND outcome='ACTIVE'").run(context.id);throw error;}
     try {
       const result=await operation();
       this.#db.prepare("DELETE FROM fence_leases WHERE id=?").run(context.id); return result;

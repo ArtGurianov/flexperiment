@@ -13,7 +13,10 @@ Production/V1/Refref/provider/public registration/payments/marketing/F9 stay clo
   attempt never authorizes a protected operation; only a fully verified current
   second result can do so. No loop, stale mirror/unsigned fallback, cached success
   or automatic CLOSED→OPEN. Integrity/policy/freshness errors never get a retry.
-- Rechecks shared admission after an awaited read, including SEND acquisition.
+- Rechecks shared admission after an awaited read, including SEND acquisition,
+  and again synchronously after awaiting acquire, immediately before operation
+  entry. Qualification, OPEN/no owner and the exact ACTIVE lease/kind are required;
+  definite refusal never starts transport or discards existing UNKNOWN evidence.
 - Emits redacted failure-stage/reason/allowlisted-code/latency and closure events.
 
 This can tolerate an isolated transient and removes reproducible cold-history

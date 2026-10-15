@@ -44,7 +44,11 @@ prepareErasureRuntime drain/application/latest-read/reopen path can recover,
 with REQUIRED binding, exact supported schema and no owner/ACTIVE/UNKNOWN leases.
 
 After any awaited remote read, request/worker/send acquisition must recheck
-process qualification and shared OPEN/no owner. A successful pending read cannot
+process qualification and shared OPEN/no owner. Because awaiting the fulfilled
+acquisition itself yields, run/send also synchronously check qualification,
+shared OPEN/no owner and their exact ACTIVE lease/kind immediately before
+invoking the handler/transport, with no intervening await. Definite pre-entry
+cleanup removes only their matching ACTIVE lease, preserving UNKNOWN evidence. A successful pending read cannot
 run a handler or send mail after another readiness check has closed admission.
 Existing durable leases/UNKNOWN evidence and writer coverage are unchanged.
 
