@@ -17,9 +17,53 @@ f=importlib.util.module_from_spec(spec);spec.loader.exec_module(f)
 class FastCut(unittest.TestCase):
     def setUp(self):
         f.release.cache_clear()
+        f.paid_test.cache_clear()
 
     def tearDown(self):
         f.release.cache_clear()
+        f.paid_test.cache_clear()
+
+    def paid_candidate(self):
+        return {'schema':'flexperiment.closed-paid-test/1','profile':'art39-test-course-rub1-v1',
+                'courseRef':'test-course','offerRef':'course:test-course','amountKopecks':100,
+                'buyerEmailSha256':'a'*64,'refrefSourceCommit':'b'*40,'legalVersion':'synthetic-paid',
+                'legalManifestSha256':'c'*64}
+
+    def test_paid_profile_is_explicit_exact_private_and_pinned_per_process(self):
+        candidate=self.paid_candidate()
+        self.assertEqual(f.validate_paid_test(candidate),candidate)
+        for mutation in [{'courseRef':'other'},{'offerRef':'other'},{'amountKopecks':101},{'amountKopecks':True},
+                         {'buyerEmailSha256':'x'},{'refrefSourceCommit':'main'},{'legalManifestSha256':''},{'unknown':True}]:
+            with self.subTest(mutation=mutation),self.assertRaises(ValueError):f.validate_paid_test({**candidate,**mutation})
+        with tempfile.TemporaryDirectory() as d,patch.object(f,'INPUT',Path(d)):
+            self.assertIsNone(f.paid_test());f.paid_test.cache_clear()
+            path=Path(d)/'paid-test.json';path.write_text('placeholder')
+            with patch.object(f,'private',return_value=json.dumps(candidate).encode()) as read:
+                first=f.paid_test();self.assertIs(f.paid_test(),first);read.assert_called_once_with(path)
+            f.paid_test.cache_clear()
+            with patch.object(f,'private',side_effect=ValueError('PRIVATE_CUSTODY')),self.assertRaisesRegex(ValueError,'PRIVATE_CUSTODY'):f.paid_test()
+            f.paid_test.cache_clear()
+            with patch.object(f,'private',return_value=b'{"schema":1,"schema":2}'),self.assertRaises(ValueError):f.paid_test()
+
+    def test_paid_environment_cannot_be_a_bare_flip_or_leak_keys_to_platform(self):
+        p=self.paid_candidate()
+        env={**f.ORIGINS,'PAYMENT_MODE':'refref','DEPLOY_ENV':'staging','MARKETING_BROADCASTS_ENABLED':'false',
+             'CLOSED_PAID_TEST_PROFILE':p['profile'],'CLOSED_PAID_TEST_REFREF_SOURCE':p['refrefSourceCommit'],
+             'CLOSED_PAID_TEST_LEGAL_VERSION':p['legalVersion'],'CLOSED_PAID_TEST_LEGAL_SHA256':p['legalManifestSha256'],
+             'REFREF_API_BASE_URL':'https://api.refref.ru/v1-rc','REFREF_CHECKOUT_ORIGIN':'https://checkout.refref.ru',
+             'REFREF_READINESS_URL':'https://ops.refref.ru/readyz'}
+        f.assert_payment_environment(env,'platform',p)
+        with self.assertRaises(ValueError):f.assert_payment_environment(env,'platform',None)
+        for field in ['REFREF_API_KEY','REFREF_HANDOFF_STATE_SECRET','REFUND_ENVELOPE_KEYS','CLOSED_PAID_TEST_BUYER_SHA256']:
+            with self.subTest(field=field),self.assertRaises(ValueError):f.assert_payment_environment({**env,field:'synthetic'},'platform',p)
+        commerce={**env,'CLOSED_PAID_TEST_BUYER_SHA256':p['buyerEmailSha256'],'KINESCOPE_DELIVERY_MODE':'protected',
+                  'COMMERCE_V2_ENVIRONMENT':'canary','ERASURE_SCOPE':'canary','ERASURE_FENCING_ENABLED':'true',
+                  **{key:'synthetic' for key in ['REFREF_API_KEY','REFREF_MERCHANT_ID','REFREF_MERCHANT_SLUG',
+                    'REFREF_HANDOFF_STATE_SECRET','REFUND_ENVELOPE_KEYS','REFUND_ENVELOPE_CURRENT_KEY']}}
+        f.assert_payment_environment(commerce,'commerce',p)
+        for mutation in [{'CLOSED_PAID_TEST_BUYER_SHA256':'d'*64},{'REFREF_READINESS_URL':'https://canary-ops.refref.ru/readyz'},
+                         {'ERASURE_FENCING_ENABLED':'false'},{'REFREF_API_KEY':''},{'KINESCOPE_DELIVERY_MODE':'open'}]:
+            with self.subTest(mutation=mutation),self.assertRaises(ValueError):f.assert_payment_environment({**commerce,**mutation},'commerce',p)
 
     def candidate(self):
         return json.loads((ROOT/'deploy/v2/fast-cut/closed-e2e-release.json').read_bytes())
@@ -124,7 +168,7 @@ class FastCut(unittest.TestCase):
 
     def test_readback_rejects_published_port_wrong_network_and_mutated_image(self):
         manifest=json.loads((ROOT/'deploy/v2/fast-cut/compose.json').read_bytes());s=manifest['services']['platform'];identity={'schema':'flexperiment.build-identity/1','service':'platform','sourceCommit':f.SOURCE}
-        config={'Image':s['image'],'Env':['SOURCE_COMMIT='+f.SOURCE,'PLATFORM_V2_CANARY=true','PLATFORM_EXPECTED_COMMERCE_SHA='+f.SOURCE],
+        config={'Image':s['image'],'Env':['SOURCE_COMMIT='+f.SOURCE,'PLATFORM_V2_CANARY=true','PLATFORM_EXPECTED_COMMERCE_SHA='+f.SOURCE,'PAYMENT_MODE=disabled'],
                 'Labels':{'com.flexperiment.scope':'canary-fast-cut'},'User':'node','Entrypoint':None,'Cmd':['node'],'WorkingDir':'/app'}
         c={'Config':config,'Image':'sha256:'+'a'*64,'HostConfig':{'PortBindings':{},'ReadonlyRootfs':True},'State':{'Running':True},
            'NetworkSettings':{'Networks':{'flexperiment-fast-cut-canary':{}}},'Mounts':[{'Type':'tmpfs','Destination':'/tmp'}]}
@@ -150,7 +194,7 @@ class FastCut(unittest.TestCase):
         manifest=json.loads((ROOT/'deploy/v2/fast-cut/compose.json').read_bytes())
         manifest['services']['platform']['image']=row['imageReference']
         s=manifest['services']['platform'];identity={'schema':'flexperiment.build-identity/1','service':'platform','sourceCommit':row['sourceCommit']}
-        config={'Image':s['image'],'Env':['SOURCE_COMMIT='+row['sourceCommit'],'PLATFORM_V2_CANARY=true','PLATFORM_EXPECTED_COMMERCE_SHA='+vector['commerce']['sourceCommit']],
+        config={'Image':s['image'],'Env':['SOURCE_COMMIT='+row['sourceCommit'],'PLATFORM_V2_CANARY=true','PLATFORM_EXPECTED_COMMERCE_SHA='+vector['commerce']['sourceCommit'],'PAYMENT_MODE=disabled'],
                 'Labels':{'com.flexperiment.scope':'canary-fast-cut'},'User':'node','Entrypoint':None,'Cmd':['node'],'WorkingDir':'/app'}
         container={'Config':config,'Image':'sha256:'+'a'*64,'HostConfig':{'PortBindings':{},'ReadonlyRootfs':True},'State':{'Running':True},
                    'NetworkSettings':{'Networks':{'flexperiment-fast-cut-canary':{}}},'Mounts':[]}

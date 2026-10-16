@@ -10,9 +10,11 @@ import type { RefundEnvelope } from "./refund-envelope";
 import { assertMerchantPromotionStillApplicable, resolveCheckoutCode, type MerchantPromotionSnapshot } from "./promotions";
 import { assertLiveOfferSaleMode } from "./catalog-control";
 import type { CommerceRuntimeConfig } from "./payment-mode";
+import { assertClosedPaidTestFiscal, assertClosedPaidTestOffer, assertClosedPaidTestPrice, buyerEmailSha256 } from "./closed-paid-test";
 
 /** The runtime facts checkout re-evaluates on every preview and confirm. */
-export type CheckoutPolicyConfig = Pick<CommerceRuntimeConfig, "deployEnvironment" | "paymentMode" | "merchantPromotionPrefix">;
+export type CheckoutPolicyConfig = Pick<CommerceRuntimeConfig, "deployEnvironment" | "paymentMode" | "merchantPromotionPrefix" | "closedPaidTest">;
+export type PaidCheckoutAcceptance = { accepted: boolean; releaseVersion: string; manifestSha256: string; receiptEmail: string };
 
 export type RailState = "PENDING" | "CUSTOMER_ACTION_REQUIRED" | "PAID" | "DECLINED" | "EXPIRED" | "REFUND_PENDING" | "REFUNDED" | "REVIEW_REQUIRED";
 export type RailProjection = {
@@ -310,6 +312,9 @@ function assertOfferOpenToCustomer(db: Database.Database, config: CheckoutPolicy
   if (offer.access_model === "FREE") throw new Error("FREE_PRODUCT_CHECKOUT_FORBIDDEN");
   if (offer.sale_mode === "CLOSED") throw new Error("OFFER_CLOSED");
   assertLiveOfferSaleMode(db, config, { kind: offer.kind, accessModel: offer.access_model, saleMode: offer.sale_mode });
+  assertClosedPaidTestOffer(config, { kind: offer.kind, accessModel: offer.access_model, saleMode: offer.sale_mode,
+    offerRef: offer.offer_ref, courseRef: offer.course_ref, priceKopecks: offer.price_kopecks,
+    acceptanceAllowlist: JSON.parse(offer.acceptance_allowlist_json) }, customerEmail);
   if (offer.sale_mode === "ACCEPTANCE_ONLY") {
     const allowlist = JSON.parse(offer.acceptance_allowlist_json) as string[];
     if (!allowlist.map((email) => email.trim().toLowerCase()).includes(customerEmail.trim().toLowerCase())) throw new Error("ACCEPTANCE_ONLY");
@@ -349,6 +354,26 @@ const quoteResponse = (quoteId: string, quote: RailQuote, pricing: CheckoutQuote
   expiresAt,
 });
 
+function paidTestReview(db: Database.Database, config: CheckoutPolicyConfig, email: string) {
+  if (!config.closedPaidTest) return undefined;
+  const legal = legalRelease(db, "COURSES");
+  if (!legal) throw new Error("LEGAL_RELEASE_REQUIRED");
+  const manifest = JSON.parse(legal.manifest_json) as LegalReleaseManifest;
+  const manifestSha256 = legalManifestHash(manifest);
+  const required = ["privacy", "personal_data", "account_terms", "marketing_consent", "course_offer", "receipt_contact", "fiscal_items", "refund_terms"];
+  if (manifest.stage !== "B" || required.some(kind => !manifest.documents.some(doc => doc.kind === kind))
+    || legal.version !== config.closedPaidTest.legalVersion || manifestSha256 !== config.closedPaidTest.legalManifestSha256) {
+    throw new Error("CLOSED_PAID_TEST_LEGAL_RELEASE_REFUSED");
+  }
+  return { releaseVersion: legal.version, manifestSha256, receiptEmail: email, documents: manifest.documents };
+}
+
+function assertNoOtherPaidTestOrder(db: Database.Database, config: CheckoutPolicyConfig, offerRef: string) {
+  if (config.closedPaidTest && db.prepare("SELECT 1 FROM order_lines WHERE offer_ref_snapshot=? LIMIT 1").get(offerRef)) {
+    throw new Error("CLOSED_PAID_TEST_ALREADY_ATTEMPTED");
+  }
+}
+
 type StoredCheckoutQuote = {
   id: string;
   customer_id: string;
@@ -378,6 +403,10 @@ export async function prepareCheckout(
   now = new Date().toISOString(),
 ) {
   if (!input.previewIdempotencyKey.trim()) throw new Error("IDEMPOTENCY_KEY_REQUIRED");
+  if (config.closedPaidTest && input.checkoutCode?.trim()) throw new Error("CLOSED_PAID_TEST_PRICE_REFUSED");
+  // This is review data, not an acceptance event. A later explicit confirm writes the event.
+  const review = paidTestReview(db, config, input.customerEmail);
+  const respond = (...args: Parameters<typeof quoteResponse>) => ({ ...quoteResponse(...args), ...(review ? { legalAcceptance: review } : {}) });
   const checkoutCodeInput = input.checkoutCode?.trim() || null;
   const existing = db.prepare(`SELECT id,customer_id,offer_id,expires_at,rail_quote_json,catalog_amount_kopecks,
     merchant_discount_kopecks,merchant_promotion_snapshot_json,checkout_code_input,line_snapshot_json FROM checkout_quotes WHERE preview_idempotency_key=?`)
@@ -388,10 +417,12 @@ export async function prepareCheckout(
       || existing.checkout_code_input !== checkoutCodeInput) throw new Error("IDEMPOTENCY_KEY_REUSED");
     if (existing.expires_at <= now) throw new Error("CHECKOUT_QUOTE_EXPIRED");
     assertOfferOpenToCustomer(db, config, requestedOffer, input.customerEmail);
-    return quoteResponse(existing.id, JSON.parse(existing.rail_quote_json) as RailQuote, storedPricing(existing), existing.expires_at);
+    assertClosedPaidTestPrice(config, JSON.parse(existing.rail_quote_json) as RailQuote, existing.merchant_discount_kopecks);
+    return respond(existing.id, JSON.parse(existing.rail_quote_json) as RailQuote, storedPricing(existing), existing.expires_at);
   }
 
   const offer = assertOfferCanBePurchased(db, config, offerByRef(db, input.offerRef), input.customerId, input.customerEmail);
+  assertNoOtherPaidTestOrder(db, config, offer.offer_ref);
   const storefront = storefrontForOffer(offer);
   if (input.storefront && input.storefront !== storefront) throw new Error("CHECKOUT_STOREFRONT_MISMATCH");
   const legal = legalRelease(db, storefront);
@@ -405,12 +436,14 @@ export async function prepareCheckout(
       if (resumed.customer_id !== input.customerId || resumed.offer_id !== offer.offer_id
         || resumed.checkout_code_input !== checkoutCodeInput) throw new Error("CHECKOUT_HANDOFF_REUSED");
       if (resumed.state !== "REVIEW" || resumed.expires_at <= now) throw new Error("CHECKOUT_QUOTE_UNAVAILABLE");
-      return quoteResponse(resumed.id, JSON.parse(resumed.rail_quote_json) as RailQuote, storedPricing(resumed), resumed.expires_at);
+      assertClosedPaidTestPrice(config, JSON.parse(resumed.rail_quote_json) as RailQuote, resumed.merchant_discount_kopecks);
+      return respond(resumed.id, JSON.parse(resumed.rail_quote_json) as RailQuote, storedPricing(resumed), resumed.expires_at);
     }
   }
   const quoteId = randomUUID();
   const lineRef = randomUUID();
   const lineSnapshot = freezeLine(db, offer);
+  assertClosedPaidTestFiscal(config, lineSnapshot.fiscal);
   const codeResolution = resolveCheckoutCode(db, input.checkoutCode, offer.offer_ref, offer.price_kopecks, config.merchantPromotionPrefix, now);
   const merchantDiscountKopecks = codeResolution.promotion?.merchantDiscountKopecks ?? 0;
   const merchantOfferAmountKopecks = offer.price_kopecks - merchantDiscountKopecks;
@@ -432,6 +465,7 @@ export async function prepareCheckout(
     checkoutCode: codeResolution.refrefCheckoutCode,
   });
   if (resolved.state === "CUSTOMER_ACTION_REQUIRED") return { ...resolved, orderPublicId };
+  assertClosedPaidTestPrice(config, resolved.quote, merchantDiscountKopecks);
   if (resolved.quote.baseAmountKopecks !== merchantOfferAmountKopecks
     || resolved.quote.finalAmountKopecks !== merchantOfferAmountKopecks - resolved.quote.discountKopecks
     || resolved.quote.finalAmountKopecks <= 0) throw new Error("PAYMENT_QUOTE_INVALID");
@@ -447,7 +481,7 @@ export async function prepareCheckout(
     codeResolution.promotion?.id ?? null, codeResolution.promotion ? JSON.stringify(codeResolution.promotion) : null,
     resolved.quote.checkoutCodeOutcome ?? "NONE", checkoutCodeInput, JSON.stringify(lineSnapshot),
   );
-  return quoteResponse(quoteId, resolved.quote, {
+  return respond(quoteId, resolved.quote, {
     catalogAmountKopecks: offer.price_kopecks,
     merchantDiscountKopecks,
     merchantPromotion: codeResolution.promotion ?? null,
@@ -466,6 +500,7 @@ export async function confirmCheckout(
     expectedOrderPublicId?: string;
     storefront?: Storefront;
     successUrl?: string;
+    legalAcceptance?: PaidCheckoutAcceptance;
   },
   now = new Date().toISOString(),
 ) {
@@ -506,10 +541,19 @@ export async function confirmCheckout(
   if (input.storefront && input.storefront !== storefront) throw new Error("CHECKOUT_STOREFRONT_MISMATCH");
   const activeLegal = legalRelease(db, storefront);
   const frozenLine = JSON.parse(pending.line_snapshot_json) as FrozenLineSnapshot;
+  assertClosedPaidTestFiscal(config, frozenLine.fiscal);
   if (offer.offer_id !== pending.offer_id || offer.price_kopecks !== pending.catalog_amount_kopecks
     || activeLegal?.id !== pending.legal_release_id
     || JSON.stringify(freezeLine(db, offer)) !== pending.line_snapshot_json) throw new Error("CHECKOUT_QUOTE_STALE");
   const quote = JSON.parse(pending.rail_quote_json) as RailQuote;
+  assertClosedPaidTestPrice(config, quote, pending.merchant_discount_kopecks);
+  assertClosedPaidTestPrice(config, { baseAmountKopecks: pending.base_amount_kopecks, finalAmountKopecks: pending.final_amount_kopecks,
+    discountKopecks: pending.discount_kopecks }, pending.merchant_discount_kopecks);
+  const review = paidTestReview(db, config, input.customerEmail);
+  if (review && (input.legalAcceptance?.accepted !== true || input.legalAcceptance.releaseVersion !== review.releaseVersion
+    || input.legalAcceptance.manifestSha256 !== review.manifestSha256 || input.legalAcceptance.receiptEmail !== review.receiptEmail)) {
+    throw new Error("PAID_CHECKOUT_TERMS_ACCEPTANCE_REQUIRED");
+  }
   const merchantPromotion = pending.merchant_promotion_snapshot_json
     ? JSON.parse(pending.merchant_promotion_snapshot_json) as MerchantPromotionSnapshot
     : null;
@@ -554,6 +598,17 @@ export async function confirmCheckout(
     successUrl: input.successUrl,
   };
   const create = db.transaction(() => {
+    assertNoOtherPaidTestOrder(db, config, offer.offer_ref);
+    if (review) {
+      // Re-read under the same write transaction as order creation; no backfilled UI event.
+      const current = paidTestReview(db, config, input.customerEmail)!;
+      const customer = db.prepare("SELECT email_normalized FROM customers WHERE id=?").get(input.customerId) as { email_normalized: string } | undefined;
+      if (customer?.email_normalized !== current.receiptEmail) throw new Error("PAID_CHECKOUT_CONTACT_CHANGED");
+      db.prepare(`INSERT INTO audit_log(id,actor,action,subject_type,subject_ref,evidence_json,created_at)
+        VALUES (?,?, 'PAID_CHECKOUT_TERMS_ACCEPTED','ORDER',?,?,?)`).run(randomUUID(), `customer:${input.customerId}`, publicId,
+        JSON.stringify({ quoteId: pending.id, legalReleaseVersion: current.releaseVersion, legalManifestSha256: current.manifestSha256,
+          receiptEmailSha256: buyerEmailSha256(current.receiptEmail), source: "AUTHENTICATED_CHECKOUT_CONFIRM" }), now);
+    }
     db.prepare(`INSERT INTO orders(id,public_id,customer_id,state,total_kopecks,checkout_snapshot_json,snapshot_hash,legal_release_id,created_at,updated_at)
       VALUES (?,?,?,'PAYMENT_PENDING',?,?,?,?,?,?)`).run(orderId, publicId, input.customerId, pending.final_amount_kopecks, snapshotJson, snapshotHashHex, pending.legal_release_id, now, now);
     db.prepare(`INSERT INTO order_lines(id,order_id,product_id,offer_ref_snapshot,title_snapshot,unit_amount_kopecks,legal_terms_ref,created_at,

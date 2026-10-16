@@ -1,0 +1,81 @@
+{
+  "status": "BUYER_ROUTE_PREPARED_LIVE_CHECKOUT_NOT_ENABLED",
+  "clientDate": "2026-10-16",
+  "liveReadback": {
+    "observedAt": "2026-10-15T23:58:26.368570+00:00",
+    "sourceCommit": "0d7dee0c8352dfb6cc1ea8ca7850b5d03fa18309",
+    "paymentMode": "disabled",
+    "course": {
+      "access_model": "PAID",
+      "sale_mode": "CLOSED",
+      "price_kopecks": 100,
+      "visibility": "LISTED",
+      "version": 2,
+      "acceptanceAllowlistSize": 0
+    },
+    "ordersForOffer": 0,
+    "courseEntitlements": 0,
+    "fiscalPoliciesForOffer": 0,
+    "allOtherPaidOffersClosed": true
+  },
+  "browserRehearsal": {
+    "environment": "isolated localhost Next16.3.3 Turbopack + real Commerce Hono/in-memory SQLite + MockPaymentRail",
+    "applicationBase": "b10b7ac65480b26326437f816a606ee2c4e4b725",
+    "frontendLayoutSha256": "dc773156059ffcecb60ecdee1156cb11b0c83344505599edee5e3c0883e5e36e",
+    "customerAuthentication": "synthetic dependency, no live account or session",
+    "entitlementsSeeded": 0,
+    "visibility": "LISTED",
+    "saleMode": "ACCEPTANCE_ONLY",
+    "amountKopecks": 100,
+    "previewHttpStatus": 200,
+    "paidDocumentLinks": 8,
+    "syntheticTermsOpened": true,
+    "confirmDisabledBeforeCheckbox": true,
+    "confirmEnabledAfterCheckbox": true,
+    "paymentButtonClicked": false,
+    "providerCreate": "replaced with unconditional refusal",
+    "providerHandoff": "synthetic signed state; not a live Refref handoff",
+    "legalDocuments": "synthetic HTTP-only local fixtures, not final approved terms",
+    "blockingRouteError": "reproduced before layout Suspense; absent on fresh request after repair",
+    "liveBuyerPreview": "NOT_RUN_INSTALLATION_AND_FINAL_LEGAL_HOLD"
+  },
+  "manifestReview": {
+    "sha256": "ab8d370280650f6f898b0bb938251cf0be97bdf485813a71141601605ad64f91",
+    "status": "PRIVATE_REVIEW_CANDIDATE_NOT_ADMITTED",
+    "strictSchemaParser": "PASS",
+    "ownerIdentityPinFromIndependentCustody": true,
+    "productionIdentityReadbackAsRuntimeRole": "PASS",
+    "platformSeedHashMatches": true,
+    "destinationOrigin": "https://canary-platform.flexperiment.ru",
+    "allowedPathPrefixes": [
+      "/checkout/return"
+    ],
+    "scopes": [
+      "integrations:checkout",
+      "integrations:refund",
+      "integrations:fulfillment"
+    ],
+    "rewardValue": 0,
+    "bankOrIdentityReprovisioning": false,
+    "keyCreated": false,
+    "servingRefrefEvidencePolicyMapRequired": true,
+    "servingRefrefConfigApplied": false
+  },
+  "validation": {
+    "platformTests": {
+      "passed": 136,
+      "total": 136
+    },
+    "platformTypecheck": "PASS",
+    "layoutEslint": "PASS",
+    "nextBuild": "PASS",
+    "exactHeadCI": "PENDING_NEW_COMMIT"
+  },
+  "execution": {
+    "installed": false,
+    "paymentCreated": false,
+    "finalLegalActivated": false,
+    "fiscalQualified": false,
+    "art338Reopened": false
+  }
+}

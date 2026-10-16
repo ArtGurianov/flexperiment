@@ -100,6 +100,57 @@ def raw_env(values):
     return ''.join(key+'='+values[key]+'\n' for key in sorted(values)).encode()
 
 
+def validate_paid_test(value):
+    fields = {'schema', 'profile', 'courseRef', 'offerRef', 'amountKopecks', 'buyerEmailSha256',
+              'refrefSourceCommit', 'legalVersion', 'legalManifestSha256'}
+    require(isinstance(value, dict) and set(value) == fields
+            and value['schema'] == 'flexperiment.closed-paid-test/1'
+            and value['profile'] == 'art39-test-course-rub1-v1' and value['courseRef'] == 'test-course'
+            and value['offerRef'] == 'course:test-course' and type(value['amountKopecks']) is int
+            and value['amountKopecks'] == 100, 'FAST_CUT_PAID_TEST_INVALID')
+    for field, pattern in [('buyerEmailSha256', '[a-f0-9]{64}'), ('refrefSourceCommit', '[a-f0-9]{40}'),
+                           ('legalManifestSha256', '[a-f0-9]{64}'), ('legalVersion', '[A-Za-z0-9._-]{1,120}')]:
+        require(isinstance(value[field], str) and re.fullmatch(pattern, value[field]), 'FAST_CUT_PAID_TEST_INVALID')
+    return value
+
+
+@functools.lru_cache(maxsize=1)
+def paid_test():
+    # Observation authority installed with the reviewed private profile, never inferred from env.
+    path = INPUT/'paid-test.json'
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return None
+    require(info.st_size <= 4096, 'FAST_CUT_PAID_TEST_INVALID')
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            require(key not in result, 'FAST_CUT_PAID_TEST_INVALID'); result[key] = value
+        return result
+    return validate_paid_test(json.loads(private(path), object_pairs_hook=unique))
+
+
+def assert_payment_environment(env, role, profile):
+    if profile is None:
+        require(env.get('PAYMENT_MODE') == 'disabled' and 'CLOSED_PAID_TEST_PROFILE' not in env, 'FAST_CUT_PAYMENT_PROFILE')
+        return
+    expected = {'PAYMENT_MODE': 'refref', 'DEPLOY_ENV': 'staging', 'MARKETING_BROADCASTS_ENABLED': 'false',
+                'CLOSED_PAID_TEST_PROFILE': profile['profile'], 'CLOSED_PAID_TEST_REFREF_SOURCE': profile['refrefSourceCommit'],
+                'CLOSED_PAID_TEST_LEGAL_VERSION': profile['legalVersion'], 'CLOSED_PAID_TEST_LEGAL_SHA256': profile['legalManifestSha256'],
+                'REFREF_API_BASE_URL': 'https://api.refref.ru/v1-rc', 'REFREF_CHECKOUT_ORIGIN': 'https://checkout.refref.ru',
+                'REFREF_READINESS_URL': 'https://ops.refref.ru/readyz', **ORIGINS}
+    if role == 'commerce':
+        expected.update(CLOSED_PAID_TEST_BUYER_SHA256=profile['buyerEmailSha256'], KINESCOPE_DELIVERY_MODE='protected',
+                        COMMERCE_V2_ENVIRONMENT='canary', ERASURE_SCOPE='canary', ERASURE_FENCING_ENABLED='true')
+        require(all(env.get(key) for key in ['REFREF_API_KEY', 'REFREF_MERCHANT_ID', 'REFREF_MERCHANT_SLUG',
+                    'REFREF_HANDOFF_STATE_SECRET', 'REFUND_ENVELOPE_KEYS', 'REFUND_ENVELOPE_CURRENT_KEY']), 'FAST_CUT_PAID_TEST_SECRETS')
+    else:
+        require(not any(env.get(key) for key in ['REFREF_API_KEY', 'REFREF_HANDOFF_STATE_SECRET',
+                    'REFUND_ENVELOPE_KEYS', 'CLOSED_PAID_TEST_BUYER_SHA256']), 'FAST_CUT_PLATFORM_PAYMENT_SECRET')
+    require(all(env.get(key) == value for key, value in expected.items()), 'FAST_CUT_PAYMENT_PROFILE')
+
+
 def prepare():
     require(os.geteuid()==0 and not INPUT.exists(), 'FAST_CUT_INPUT_EXISTS_OR_NOT_ROOT')
     token = private(Path('/root/flexperiment-v2-owner/coolify-api.token')).decode().strip()
@@ -164,7 +215,8 @@ def inspect(role):
     if role!='admin':
         require(env.get('SOURCE_COMMIT')==expected_release['sourceCommit'], 'FAST_CUT_RELEASE_SOURCE_MISMATCH')
     if role=='commerce':
-        require(env.get('PAYMENT_MODE')=='disabled' and env.get('ERASURE_FENCING_ENABLED')=='true'
+        assert_payment_environment(env, role, paid_test())
+        require(env.get('ERASURE_FENCING_ENABLED')=='true'
                 and env.get('ERASURE_SCOPE')=='canary' and env.get('MARKETING_BROADCASTS_ENABLED')=='false', 'FAST_CUT_COMMERCE_GUARD')
         mounts={v['Destination']:v for v in container['Mounts']}
         for folder,target,readonly in [('installation','/etc/flexperiment-erasure',True),('runtime-keys','/etc/flexperiment-erasure-keys',True),
@@ -173,6 +225,7 @@ def inspect(role):
         for target,suffix in [('/var/lib/flexperiment-v2','commerce-v2-data'),('/var/lib/flexperiment-v2-backups','commerce-v2-backups')]:
             row=mounts.get(target);require(row and row['Name']==ORIGINAL+'-'+ORIGINAL+'-'+suffix and row['RW'],'FAST_CUT_DATA_MOUNT')
     if role=='platform':
+        assert_payment_environment(env, role, paid_test())
         require(env.get('PLATFORM_V2_CANARY')=='true' and env.get('PLATFORM_EXPECTED_COMMERCE_SHA')==release()['commerce']['sourceCommit']
                 and not any(k.startswith('PAYLOAD_') for k in env) and not any(v['Type'] in ('bind','volume') for v in container['Mounts']),'FAST_CUT_PLATFORM_PAYLOAD')
     return name,{'imageReference':expected['image'],'imageId':image['Id'],'rootfs':qualified['rootfs'],'identity':identity}
@@ -185,7 +238,13 @@ def check():
         if role=='commerce':
             ready=json.loads(run(['docker','exec',name,'curl','-fsS','--max-time','10','http://127.0.0.1:3002/readyz']))
             require(ready['ok'] and ready['foundationMode'] is False and ready['capabilities']['erasure']=='qualified'
-                    and ready['core']['paymentMode']=='disabled' and ready['sourceCommit']==release()[role]['sourceCommit'],'FAST_CUT_COMMERCE_NOT_READY')
+                    and ready['core']['paymentMode']==('refref' if paid_test() else 'disabled')
+                    and ready['sourceCommit']==release()[role]['sourceCommit'],'FAST_CUT_COMMERCE_NOT_READY')
+            if paid_test():
+                require(ready['core'].get('closedPaidTestProfile')==paid_test()['profile']
+                        and ready['core'].get('closedPaidTestLegalSha256')==paid_test()['legalManifestSha256']
+                        and ready['core'].get('closedPaidTestRefrefSource')==paid_test()['refrefSourceCommit']
+                        and ready['capabilities']['refref']=='ready', 'FAST_CUT_PAID_TEST_NOT_READY')
         elif role=='platform':
             raw=run(['docker','exec',name,'node','-e',"fetch('http://127.0.0.1:3001/readyz').then(async r=>{if(!r.ok)process.exit(1);console.log(await r.text())}).catch(()=>process.exit(1))"])
             require(json.loads(raw)['sourceCommit']==release()[role]['sourceCommit'],'FAST_CUT_PLATFORM_NOT_READY')

@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import { V2_SCHEMA_LINEAGE } from "./db";
+import { closedPaidTestEnabled } from "../../lib/closed-paid-test-profile";
 
 export type RefrefReadiness = "ready" | "unavailable" | "not_required";
 const MAX_RESPONSE_BYTES = 8192;
@@ -8,7 +9,8 @@ const MAX_RESPONSE_BYTES = 8192;
 export function createRefrefReadinessProbe(environment: Readonly<Record<string, string | undefined>>, request = fetch) {
   const raw = environment.REFREF_READINESS_URL;
   if (!raw) throw new Error("REFREF_READINESS_URL_REQUIRED");
-  const expected = environment.DEPLOY_ENV === "production"
+  const paidTest = closedPaidTestEnabled(environment);
+  const expected = environment.DEPLOY_ENV === "production" || paidTest
     ? "https://ops.refref.ru/readyz" : "https://canary-ops.refref.ru/readyz";
   if (raw !== expected) throw new Error("REFREF_READINESS_URL_NOT_ALLOWED");
   return async (): Promise<RefrefReadiness> => {
@@ -31,6 +33,7 @@ export function createRefrefReadinessProbe(environment: Readonly<Record<string, 
       const payload = JSON.parse(Buffer.concat(chunks).toString("utf8"));
       return payload?.service === "refref-runtime" && payload.status === "READY"
         && /^[0-9a-f]{40}$/.test(payload.sourceCommit)
+        && (!paidTest || payload.sourceCommit === environment.CLOSED_PAID_TEST_REFREF_SOURCE)
         && payload.checks && typeof payload.checks === "object" && !Array.isArray(payload.checks)
         && Object.keys(payload.checks).length > 0 && Object.values(payload.checks).every((value) => value === true)
         ? "ready" : "unavailable";

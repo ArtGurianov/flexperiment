@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import type { ReactNode } from "react";
+import { Suspense, type ReactNode } from "react";
 import AnalyticsConsentManager, { AnalyticsSettingsButton } from "@/components/analytics/AnalyticsConsent";
 import { platformOrigin } from "@/lib/origins";
 import "./styles.css";
@@ -26,5 +26,5 @@ export default function FrontendLayout({ children }: { children: ReactNode }) {
     "@context": "https://schema.org", "@type": "Organization",
     name: "Flexperiment", url: origin,
   };
-  return <html lang="ru"><body>{children}<footer><span>© Flexperiment</span><AnalyticsSettingsButton /></footer><AnalyticsConsentManager /><script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(organization).replace(/</g, "\\u003c") }} /></body></html>;
+  return <html lang="ru"><body>{children}<footer><span>© Flexperiment</span><AnalyticsSettingsButton /></footer><Suspense fallback={null}><AnalyticsConsentManager /></Suspense><script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(organization).replace(/</g, "\\u003c") }} /></body></html>;
 }
