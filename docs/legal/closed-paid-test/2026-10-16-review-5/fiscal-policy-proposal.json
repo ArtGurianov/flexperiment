@@ -1,0 +1,41 @@
+{
+  "status": "REVIEW_NOT_EXECUTABLE",
+  "scope": "one closed test-course purchase and full refund; public sales remain closed",
+  "offerRef": "course:test-course",
+  "kind": "ONLINE_COURSE",
+  "quantity": 1,
+  "amountKopecks": 100,
+  "currency": "RUB",
+  "itemName": "Доступ к курсу «Test Course»",
+  "paymentPurpose": "Доступ к курсу Test Course, закрытая тестовая покупка",
+  "proposed": {
+    "taxSystem": "USN_INCOME",
+    "vatCode": "NONE",
+    "paymentMethod": "FULL_PAYMENT",
+    "paymentObject": "SERVICE",
+    "fiscalizationMode": "PROVIDER"
+  },
+  "confirmed": {
+    "taxSystem": true,
+    "vatExemptionAtPayment": true,
+    "paymentMethodOwnerConfirmed": true,
+    "paymentObjectOwnerConfirmed": true,
+    "fiscalizationPartiesAndSetup": true,
+    "exactDocumentBytesApproved": false
+  },
+  "confirmationAuthority": "Existing genuine owner fiscal decisions are retained as prior evidence; exact review.5 contact revision awaits owner approval. No new payment or fiscal qualification is authorized by this proposal.",
+  "legalBasis": {
+    "type": "OWNER_LEGAL_DECISION",
+    "ownerLegalDecisionId": null,
+    "evidenceSha256": null
+  },
+  "draftCommand": null,
+  "qualificationCommand": null,
+  "runtimePolicyCreated": false,
+  "ownerServiceConfirmation": "Tochka Cheki; direct owner statement 2026-10-16",
+  "serviceApplicabilityReadbackCompleted": true,
+  "historicalReceiptModelConfirmed": true,
+  "historicalOfd": "ООО «Эвотор ОФД», ИНН9715260691",
+  "newTestReceiptVerified": true,
+  "priorQualifiedPolicyRetained": true
+}
