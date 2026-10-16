@@ -30,14 +30,14 @@ Existing consents and fiscal decisions are historical evidence, not automatic
 approval of a new legal hash. This closed-course revision does not publish
 conditions for LAB or the full catalogue.
 
-The owner has confirmed that `refunds@flexperiment.ru` was created. Actual
-receipt/reply and the final provider/forwarding route remain separate facts;
-mailbox creation is not treated as a completed delivery test.
-
-The test mail must explicitly state that this is an ART-224 verification and
-does not request another bank refund. Preserve its actual Message-ID/received
-time, authenticated mailbox evidence and reply privately. A sender string or
-DNS MX result alone is not proof of receipt or ownership.
+The owner confirmed creation of `refunds@flexperiment.ru`, actual receipt of the
+nonfinancial ART-224 test message and the reply from refunds@, and REG.RU as the
+mail provider. This is a direct owner attestation from this conversation,
+recorded privately. The agent did not independently access the mailbox or
+receive Message-ID/headers; no DKIM/header verification is claimed. The test
+explicitly requests no repeated bank refund. Retain this evidence boundary in
+the live duplicate-refusal check; future real cases require their actual mail
+reference and the administrator's ownership/authenticity check.
 
 ## Accepted nonfinancial acceptance split
 

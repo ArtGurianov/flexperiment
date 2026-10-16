@@ -1,6 +1,6 @@
 # ART-224 email refund release preparation
 
-**PREPARED / MAILBOX FACTS PENDING / LEGAL DRAFT / NOT INSTALLED.**
+**PREPARED / MAIL OWNER-CONFIRMED / EXACT LEGAL APPROVAL PENDING / NOT INSTALLED.**
 
 This is preparation for the shared V2 process, not reopening ART-39, another
 paid E2E, or another LAB V1 retirement audit. The owner accepted live rejection
@@ -51,20 +51,22 @@ and the one already refunded 100-kopeck order. No eligible positive fulfilled
 order exists. No deployment, legal activation, bank execution or Refref change
 was performed during this preparation.
 
-The owner directly confirmed creation of `refunds@flexperiment.ru` on16October.
-This confirms the owner's setup statement; it does not claim an independent
-delivery test. DNS points the domain's MX to REG.RU. Gmail returned
-USER_NOT_LOGGED_IN; final forwarding/provider route, reply capability and actual
-receipt/reply remain **not verified**. The owner was asked to send a clearly
-nonfinancial test from the buyer email and reply from refunds@, then confirm
-delivery and the actual provider. No bank operation is requested by that mail.
+The owner directly confirmed creation of `refunds@flexperiment.ru`, then
+successful receipt of the requested nonfinancial test message and the reply
+from refunds@, and REG.RU as provider: “оба письма дошли - провайдер REG.RU”.
+This is owner-attested two-way delivery. The agent did not independently read
+the mailbox or receive headers/Message-ID. Gmail access was unavailable; no
+independent mailbox/header authentication is claimed. No bank operation was
+requested by the test message.
 
-[Review.5](../../legal/closed-paid-test/2026-10-16-review-5/README.md) is a draft;
-its initial 12-file inventory passes, package SHA-256
-`5114b8afa11828a28cf5520ea910b7ed6c23c87cf5fc76793465f366a64c5ba9`.
-Six legal texts change only version; the purchase/refund terms introduce the
-refund contact/manual process. Review.4 is byte-for-byte unchanged. Final mail
-facts may require a further draft delta before exact owner approval.
+[Review.5](../../legal/closed-paid-test/2026-10-16-review-5/README.md) is ready
+for exact owner review. Its twelve covered files pass the checksum inventory;
+package SHA-256
+`fdaf8244877f888167447afbcc145185e5cced47885d06c3789939eefd09750d`.
+Purchase/refund terms introduce the manual refund contact/process;
+privacy/consent/processing matrix disclose REG.RU for handling correspondence.
+The other four legal texts change only version. Review.4 is byte-for-byte
+unchanged. The new package is not approved, published or active yet.
 
 The existing LAB V2 frontend reports unhealthy on the shared Coolify network;
 it requires a scoped, durable route to the existing private Commerce canary.
