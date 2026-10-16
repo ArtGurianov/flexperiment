@@ -3,9 +3,9 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { checkout, MockPaymentRail, reconcileCheckout, type AcceptedRefund, type RailProjection, type RefundSubmission } from "../src/checkout";
 import { migrateV2 } from "../src/db";
 import type { RefundEnvelope, RefundEnvelopeKeyring } from "../src/refund-envelope";
-import { stageBLegalManifestJson } from "./fixtures/legal";
+import { stageALegalManifestJson, stageBLegalManifestJson } from "./fixtures/legal";
 import { activatePublicSales, qualifyTestFiscalPolicies, testCheckoutConfig } from "./fixtures/sales";
-import { decideRefund, executeApprovedRefund, listRefundCases, reconcilePendingRefunds, recordCourseAccessStart, requestRefund } from "../src/refunds";
+import { decideRefund, executeApprovedRefund, listRefundCases, reconcilePendingRefunds, recordCourseAccessStart, registerEmailRefund, requestRefund } from "../src/refunds";
 
 const keys: RefundEnvelopeKeyring = { currentKeyId: "k1", keys: { k1: Buffer.alloc(32, 1), k0: Buffer.alloc(32, 2) } };
 
@@ -69,6 +69,86 @@ async function approvedRefund(scenario?: string, amountKopecks = 10_000) {
 
 const revoked = () => (db.prepare("SELECT revoked_at IS NOT NULL AS revoked FROM course_entitlements").get() as { revoked: number }).revoked;
 const execution = () => db.prepare("SELECT state,provider_execution_id,canonical_refund_id,last_error_code FROM refund_executions").get();
+
+describe("email refund intake", () => {
+  const mail = { senderEmail: "Student@Example.com", evidenceRef: "mailbox/message-123", receivedAt: "2026-09-30T10:01:00.000Z",
+    customerNote: "Please refund", idempotencyKey: "mail-123", actor: "operator" };
+  const now = "2026-09-30T12:00:00.000Z";
+
+  it("derives the customer from the paid order and records evidence without decision, execution or revocation", async () => {
+    const order = await paidOrder();
+    const input = { ...mail, orderPublicId: order.orderPublicId };
+    const result = registerEmailRefund(db, input, now);
+    expect(result).toMatchObject({ state: "REQUESTED", created: true });
+    expect(listRefundCases(db).refunds[0]).toMatchObject({ customerNote: "Please refund", policyFacts: {
+      productKind: "ONLINE_COURSE", automatedEligibility: "NOT_EVALUATED",
+      emailIntake: { channel: "EMAIL", evidenceRef: mail.evidenceRef, receivedAt: mail.receivedAt, registeredBy: "operator" },
+    } });
+    expect(JSON.stringify(listRefundCases(db))).not.toContain("student@example.com");
+    expect(db.prepare("SELECT customer_id FROM refund_requests").get()).toEqual({ customer_id: "customer" });
+    expect(db.prepare("SELECT COUNT(*) n FROM refund_decisions").get()).toEqual({ n: 0 });
+    expect(db.prepare("SELECT COUNT(*) n FROM refund_executions").get()).toEqual({ n: 0 });
+    expect(rail.sent).toHaveLength(0); expect(revoked()).toBe(0);
+    await expect(executeApprovedRefund(db, rail, keys, result.requestPublicId)).rejects.toThrow("REFUND_APPROVAL_REQUIRED");
+    expect(registerEmailRefund(db, input, now)).toEqual({ ...result, created: false });
+    decideRefund(db, result.requestPublicId, { outcome: "APPROVE", amountKopecks: 10000, policyBasis: "offer-v1", rationale: "reviewed", actor: "operator" }, now);
+    await executeApprovedRefund(db, rail, keys, result.requestPublicId, now);
+    expect(registerEmailRefund(db, input, now)).toEqual({ ...result, created: false, state: "REFUNDED" });
+    expect(rail.sent).toHaveLength(1);
+  });
+
+  it("refuses mismatched senders, missing evidence, invalid/future times and absent orders without creating a case", async () => {
+    const order = await paidOrder();
+    const input = { ...mail, orderPublicId: order.orderPublicId };
+    for (const patch of [{ senderEmail: "other@example.com" }, { senderEmail: "invalid" }, { evidenceRef: " " },
+      { receivedAt: "2026-02-30T10:00:00.000Z" }, { receivedAt: "2026-09-30T13:00:00.000Z" },
+      { orderPublicId: "missing" }, { customerNote: "x".repeat(2001) }]) {
+      expect(() => registerEmailRefund(db, { ...input, ...patch }, now)).toThrow();
+    }
+    expect(db.prepare("SELECT COUNT(*) n FROM refund_requests").get()).toEqual({ n: 0 });
+  });
+
+  it("rejects changed evidence/body under the original key and a second open request", async () => {
+    const order = await paidOrder();
+    const input = { ...mail, orderPublicId: order.orderPublicId };
+    registerEmailRefund(db, input, now);
+    for (const patch of [{ evidenceRef: "another-message" }, { senderEmail: "other@example.com" }, { actor: "other-operator" },
+      { customerNote: "different reason" }, { receivedAt: "2026-09-30T10:02:00.000Z" }]) {
+      expect(() => registerEmailRefund(db, { ...input, ...patch }, now)).toThrow("IDEMPOTENCY_KEY_REUSED");
+    }
+    expect(() => registerEmailRefund(db, { ...input, idempotencyKey: "another-key" }, now)).toThrow("REFUND_REQUEST_ALREADY_OPEN");
+    expect(db.prepare("SELECT COUNT(*) n FROM refund_requests").get()).toEqual({ n: 1 });
+  });
+
+  it("rolls back the request if recording intake evidence fails", async () => {
+    const order = await paidOrder();
+    db.exec("CREATE TRIGGER fail_intake BEFORE UPDATE OF policy_facts_json ON refund_requests BEGIN SELECT RAISE(ABORT,'EVIDENCE_WRITE_FAILED'); END");
+    expect(() => registerEmailRefund(db, { ...mail, orderPublicId: order.orderPublicId }, now)).toThrow("EVIDENCE_WRITE_FAILED");
+    expect(db.prepare("SELECT COUNT(*) n FROM refund_requests").get()).toEqual({ n: 0 });
+  });
+
+  it("uses the same manual case and separate decision for a LAB order on its existing V2 payment rail", async () => {
+    db.prepare(`INSERT INTO legal_releases(id,storefront,version,manifest_json,effective_at,active)
+      VALUES ('lab-legal','LAB','lab-fixture-v1',?,'2026-09-30T00:00:00Z',1)`).run(stageALegalManifestJson);
+    db.prepare("INSERT INTO cities(id,slug,title) VALUES ('city','fixture-city','Fixture city')").run();
+    db.prepare(`INSERT INTO lab_occurrences(id,occurrence_ref,city_id,title,starts_at,ends_at,timezone,capacity,sales_status)
+      VALUES ('occurrence','lab:fixture','city','Fixture LAB','2026-11-01T09:00:00Z','2026-11-01T17:00:00Z','Asia/Novosibirsk',20,'PUBLIC')`).run();
+    db.prepare(`INSERT INTO products(id,product_ref,kind,access_model,occurrence_ref)
+      VALUES ('lab-product','lab:fixture','LAB','PAID','lab:fixture')`).run();
+    db.prepare(`INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode)
+      VALUES ('lab-offer','lab:fixture','lab-product',10000,'PUBLIC')`).run();
+    qualifyTestFiscalPolicies(db); activatePublicSales(db, "LAB");
+    const order = await checkout(db, rail, testCheckoutConfig, { customerId: "customer", customerEmail: "student@example.com",
+      offerRef: "lab:fixture", idempotencyKey: "lab-payment" }, "2026-09-30T10:00:00Z");
+    const request = registerEmailRefund(db, { ...mail, orderPublicId: order.orderPublicId }, now);
+    expect(listRefundCases(db).refunds[0].policyFacts).toMatchObject({ productKind: "LAB", courseRef: null, emailIntake: { channel: "EMAIL" } });
+    await expect(executeApprovedRefund(db, rail, keys, request.requestPublicId, now)).rejects.toThrow("REFUND_APPROVAL_REQUIRED");
+    decideRefund(db, request.requestPublicId, { outcome: "APPROVE", amountKopecks: 10000, policyBasis: "lab-offer-v1", rationale: "manual review", actor: "operator" }, now);
+    expect(await executeApprovedRefund(db, rail, keys, request.requestPublicId, now)).toMatchObject({ state: "SUCCEEDED" });
+    expect(rail.sent).toHaveLength(1);
+    expect(db.prepare("SELECT state FROM orders WHERE public_id=?").get(order.orderPublicId)).toEqual({ state: "REFUNDED" });
+  });
+});
 
 describe("refund authority", () => {
   it("records immutable policy facts but cannot execute without an operator decision", async () => {

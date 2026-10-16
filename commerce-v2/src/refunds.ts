@@ -1,6 +1,7 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { z } from "zod";
 import type Database from "better-sqlite3";
-import type { ControlRoomRefundCase, RefundCasesResponse, RefundDecisionCommand } from "@flexperiment/control-room-contracts";
+import type { ControlRoomRefundCase, RefundCasesResponse, RefundDecisionCommand, RefundEmailRegistrationCommand, RefundPolicyFacts } from "@flexperiment/control-room-contracts";
 import type { AcceptedRefund, PaymentRail, RefundSubmission } from "./checkout";
 import { revokeEntitlementForOrderLine } from "./entitlements";
 import { openRefundEnvelope, sealRefundEnvelope, type RefundEnvelope, type RefundEnvelopeKeyring } from "./refund-envelope";
@@ -90,6 +91,50 @@ export function requestRefund(
     VALUES (?,?,?,?,?,?,?,?, 'REQUESTED',?,?)`)
     .run(randomUUID(), publicId, idempotencyKey, input.customerId, row.line_id, input.reasonCode, customerNote, JSON.stringify(facts), now, now);
   return { requestPublicId: publicId, state: "REQUESTED" as const };
+}
+
+/** Register received mail as a case only. The operator's separate decision still owns any refund. */
+export function registerEmailRefund(
+  db: Database.Database,
+  input: RefundEmailRegistrationCommand & { actor: string },
+  now = new Date().toISOString(),
+) {
+  const required = (value: unknown, max: number, code: string) => {
+    if (typeof value !== "string" || !value.trim() || value.trim().length > max) throw new Error(code);
+    return value.trim();
+  };
+  const orderPublicId = required(input.orderPublicId, 200, "REFUND_ORDER_REQUIRED");
+  const evidenceRef = required(input.evidenceRef, 1000, "REFUND_EMAIL_EVIDENCE_REQUIRED");
+  const sender = required(input.senderEmail, 320, "REFUND_EMAIL_SENDER_REQUIRED").toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(sender)) throw new Error("REFUND_EMAIL_SENDER_INVALID");
+  const received = required(input.receivedAt, 64, "REFUND_EMAIL_RECEIVED_AT_INVALID");
+  if (!z.iso.datetime({ offset: true }).safeParse(received).success || Date.parse(received) > Date.parse(now)) throw new Error("REFUND_EMAIL_RECEIVED_AT_INVALID");
+  const actor = required(input.actor, 200, "REFUND_ACTOR_REQUIRED");
+  const key = "admin-email:" + required(input.idempotencyKey, 200, "IDEMPOTENCY_KEY_REQUIRED");
+  if (input.customerNote !== undefined && typeof input.customerNote !== "string") throw new Error("REFUND_NOTE_INVALID");
+  const intake: NonNullable<RefundPolicyFacts["emailIntake"]> = {
+    channel: "EMAIL", evidenceRef, receivedAt: new Date(received).toISOString(), registeredBy: actor,
+    senderEmailSha256: createHash("sha256").update(sender).digest("hex"),
+  };
+  return db.transaction(() => {
+    const order = db.prepare(`SELECT orders.customer_id AS customerId,customer.email_normalized AS email
+      FROM orders JOIN customers customer ON customer.id=orders.customer_id
+      WHERE orders.public_id=? AND orders.total_kopecks>0`).get(orderPublicId) as { customerId: string; email: string } | undefined;
+    if (!order) throw new Error("REFUND_REQUEST_NOT_AVAILABLE");
+    const prior = db.prepare("SELECT policy_facts_json FROM refund_requests WHERE idempotency_key=?").get(key) as { policy_facts_json: string } | undefined;
+    if (prior) {
+      const priorIntake = (JSON.parse(prior.policy_facts_json) as RefundPolicyFacts).emailIntake;
+      if (!priorIntake || JSON.stringify(priorIntake) !== JSON.stringify(intake)) throw new Error("IDEMPOTENCY_KEY_REUSED");
+    } else if (order.email.toLowerCase() !== sender) throw new Error("REFUND_EMAIL_SENDER_MISMATCH");
+    const result = requestRefund(db, { customerId: order.customerId, orderPublicId,
+      reasonCode: "CUSTOMER_REQUEST", customerNote: input.customerNote, idempotencyKey: key }, now);
+    if (!prior) {
+      const row = db.prepare("SELECT policy_facts_json FROM refund_requests WHERE public_id=?").get(result.requestPublicId) as { policy_facts_json: string };
+      const facts: RefundPolicyFacts = { ...JSON.parse(row.policy_facts_json), emailIntake: intake };
+      db.prepare("UPDATE refund_requests SET policy_facts_json=? WHERE public_id=?").run(JSON.stringify(facts), result.requestPublicId);
+    }
+    return { ...result, created: !prior };
+  }).immediate();
 }
 
 const successfulRefundedAmount = (db: Database.Database, orderLineId: string) =>
@@ -320,7 +365,7 @@ export async function reconcilePendingRefunds(db: Database.Database, rail: Payme
 }
 
 export function listRefundCases(db: Database.Database, now = new Date().toISOString()): RefundCasesResponse {
-  const rows = db.prepare(`SELECT request.public_id AS requestPublicId,orders.public_id AS orderPublicId,request.reason_code AS reasonCode,
+  const rows = db.prepare(`SELECT request.public_id AS requestPublicId,orders.public_id AS orderPublicId,request.reason_code AS reasonCode,request.customer_note AS customerNote,
     request.state,request.policy_facts_json AS policyFactsJson,request.requested_at AS requestedAt,
     decision.outcome,decision.amount_kopecks AS amountKopecks,decision.policy_basis AS policyBasis,
     decision.rationale,decision.decided_by AS decidedBy,decision.decided_at AS decidedAt,

@@ -24,4 +24,5 @@ export type {
   ProductWithdrawalCommand,
   RefundCasesResponse,
   RefundDecisionCommand,
+  RefundEmailRegistrationCommand,
 } from "@flexperiment/control-room-contracts";

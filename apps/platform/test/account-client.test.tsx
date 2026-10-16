@@ -40,6 +40,8 @@ describe("AccountClient", () => {
     expect(await screen.findByRole("heading", { name: "Практический курс" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Первый урок" })).toHaveAttribute("href", "/courses/practice/lessons/first");
     expect(screen.getByText("FX-V2-1")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "refunds@flexperiment.ru" })).toHaveAttribute("href", "mailto:refunds@flexperiment.ru");
+    expect(screen.queryByRole("button", { name: /возврат/i })).not.toBeInTheDocument();
     expect(screen.getByText(/1[\s\u00a0]?200\s*₽/)).toBeInTheDocument();
   });
 

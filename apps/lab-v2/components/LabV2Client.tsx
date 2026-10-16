@@ -1,4 +1,6 @@
 "use client";
+
+import { RefundContact } from "../../../packages/customer-support/RefundContact";
 import { useEffect, useState } from "react";
 import { commerceApiUrl } from "../../../lib/commerce-api";
 import { labCatalogueSchema, labHistorySchema, labMeSchema, type LabCatalogue } from "../../../lib/lab-v2-contract";
@@ -55,6 +57,6 @@ export default function LabV2Client() {
     <section aria-labelledby="account-title"><div className="sectionHeading"><span>02 /</span><h2 id="account-title">Ваш аккаунт</h2></div>
       {email ? <><p>{email}</p><button onClick={logout} disabled={busy}>{busy ? "Выходим…" : "Выйти из аккаунта"}</button><h3>Заказы LAB</h3>{orders.length ? <ol>{orders.map((order) => <li key={order.orderPublicId + order.offerRef}><strong>{order.title}</strong><span>{order.state} · {money(order.amountKopecks)}</span></li>)}</ol> : <p className="empty">Заказов LAB пока нет.</p>}</>
         : <p className="empty">Вход и регистрация не открыты до утверждения юридических документов и проверки magic links.</p>}
-    </section><footer>Без синтетического каталога. Без денежных операций.</footer>
+    </section><RefundContact /><footer>Без синтетического каталога. Без денежных операций.</footer>
   </main>;
 }

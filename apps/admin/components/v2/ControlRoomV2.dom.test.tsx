@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTestQueryClient, QueryClientWrapper } from "../../lib/test-query-client";
@@ -53,6 +53,35 @@ describe("Control Room v2", () => {
     expect(JSON.parse(String(commandCall?.[1]?.body))).toMatchObject({ expectedVersion: 3, priceKopecks: 1_200_000,
       paymentPurpose: "Synthetic merchant purpose" });
     expect(JSON.parse(String(commandCall?.[1]?.body))).not.toHaveProperty("actor");
+  });
+
+  it("registers an email request with an unchanged retry after a lost response, without deciding or executing", async () => {
+    const posts: Array<Record<string, unknown>> = [];
+    global.fetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method !== "POST") return response({ generatedAt, refunds: [] });
+      posts.push(JSON.parse(String(init.body)));
+      if (posts.length === 1) throw new Error("answer lost");
+      return response({ requestPublicId: "email-case-1", state: "REQUESTED", created: false });
+    });
+    const user = userEvent.setup(); const client = createTestQueryClient();
+    render(<RefundsView />, { wrapper: (props) => <QueryClientWrapper client={client}>{props.children}</QueryClientWrapper> });
+    await user.type(screen.getByLabelText("Номер заказа"), "FX-V2-1");
+    await user.type(screen.getByLabelText("Почта отправителя"), "buyer@example.test");
+    await user.type(screen.getByLabelText("Ссылка или ID письма"), "mailbox/message-123");
+    fireEvent.change(screen.getByLabelText("Письмо получено (ваше местное время)"), { target: { value: "2026-09-30T11:00" } });
+    await user.type(screen.getByLabelText("Суть обращения"), "Прошу возврат");
+    await user.click(screen.getByRole("button", { name: "Зарегистрировать заявку" }));
+    await screen.findByRole("button", { name: "Повторить регистрацию" });
+    expect(screen.getByLabelText("Номер заказа")).toBeDisabled();
+    expect(posts).toHaveLength(1);
+    expect(posts[0]).toMatchObject({ orderPublicId: "FX-V2-1", senderEmail: "buyer@example.test", evidenceRef: "mailbox/message-123", customerNote: "Прошу возврат" });
+    expect(posts[0]).not.toHaveProperty("actor"); expect(posts[0]).not.toHaveProperty("customerId");
+    expect(posts[0]).not.toHaveProperty("outcome");
+    await user.click(screen.getByRole("button", { name: "Повторить регистрацию" }));
+    await screen.findByText("Заявка зарегистрирована. Выберите её для отдельного решения.");
+    expect(posts).toHaveLength(2); expect(posts[1]).toEqual(posts[0]);
+    expect((global.fetch as ReturnType<typeof vi.fn>).mock.calls.filter(([, init]) => init?.method === "POST")
+      .every(([url]) => url === "/v1/admin/v2/refunds")).toBe(true);
   });
 
   it("submits a refund decision without accepting a browser-supplied actor", async () => {
