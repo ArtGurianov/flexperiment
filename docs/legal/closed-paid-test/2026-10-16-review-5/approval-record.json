@@ -1,0 +1,13 @@
+{
+  "status": "OWNER_APPROVED_EXACT_BYTES",
+  "releaseVersion": "2026-10-16.closed-paid-test.review.5",
+  "approvedPackageSha256": "fdaf8244877f888167447afbcc145185e5cced47885d06c3789939eefd09750d",
+  "reviewedCommit": "98cd2518ef00f071640973a2bb9ffd52d41337e3",
+  "approvalSource": "Direct owner reply in this conversation",
+  "ownerStatement": "Утверждаю точный комплект review.5",
+  "recordedAt": "2026-10-16T14:46:26.638142+00:00",
+  "scope": "Closed Test Course contact/manual email refund process and REG.RU correspondence disclosure",
+  "newPaymentOrRefundExecutionAuthorized": false,
+  "priorReview4Unchanged": true,
+  "buyerConsentsCreated": false
+}

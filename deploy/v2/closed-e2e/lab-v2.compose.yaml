@@ -1,0 +1,40 @@
+# Existing Coolify LAB application, raw Compose mode. Controller Git SHA is
+# distinct from this immutable application's native source identity.
+services:
+  lab-v2:
+    image: ghcr.io/artgurianov/flexperiment-lab-v2@sha256:8b3e50921a56ec3299b262b740216018ed324d06de1e2e54a6c22aaf8393b19b
+    container_name: flexperiment-art224-lab-v2
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETUID, SETGID, NET_BIND_SERVICE]
+    security_opt: [no-new-privileges:true]
+    environment:
+      SOURCE_COMMIT: 80a11bde55c38973bcde99b4a92ee9e09c5dc6ad
+      V2_COMMERCE_UPSTREAM: xzuy7pk5y6ywjr9kh6nsk5ap:3002
+      PAYMENT_MODE: disabled
+      MARKETING_BROADCASTS_ENABLED: "false"
+    tmpfs:
+      - /etc/nginx/conf.d:rw,nosuid,nodev,noexec,size=4m
+      - /var/cache/nginx:rw,nosuid,nodev,noexec,size=32m
+      - /var/run:rw,nosuid,nodev,noexec,size=4m
+      - /tmp:rw,nosuid,nodev,noexec,size=16m
+    networks:
+      canary:
+        aliases: [flexperiment-art224-lab-v2]
+    labels:
+      - traefik.enable=false
+      - coolify.managed=true
+      - coolify.applicationUuid=ch8gumpvpriflqsct7clqafr
+      - coolify.type=application
+      - com.flexperiment.scope=canary-art224
+      - com.flexperiment.source=80a11bde55c38973bcde99b4a92ee9e09c5dc6ad
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, http://127.0.0.1/readyz]
+      interval: 15s
+      timeout: 10s
+      retries: 6
+networks:
+  canary:
+    external: true
+    name: flexperiment-fast-cut-canary
