@@ -411,7 +411,6 @@ export async function prepareCheckout(
   // This is review data, not an acceptance event. A later explicit confirm writes the event.
   const review = paidTestReview(db, config, input.customerEmail);
   assertClosedPaidTestAccountConsents(db, config, input.customerId);
-  if (config.closedPaidTest) readyImmediateCourseAccess(db, offer.course_ref!);
   const respond = (...args: Parameters<typeof quoteResponse>) => ({ ...quoteResponse(...args), ...(review ? { legalAcceptance: review } : {}) });
   const checkoutCodeInput = input.checkoutCode?.trim() || null;
   const existing = db.prepare(`SELECT id,customer_id,offer_id,expires_at,rail_quote_json,catalog_amount_kopecks,
@@ -423,12 +422,14 @@ export async function prepareCheckout(
       || existing.checkout_code_input !== checkoutCodeInput) throw new Error("IDEMPOTENCY_KEY_REUSED");
     if (existing.expires_at <= now) throw new Error("CHECKOUT_QUOTE_EXPIRED");
     assertOfferOpenToCustomer(db, config, requestedOffer, input.customerEmail);
+    if (config.closedPaidTest) readyImmediateCourseAccess(db, requestedOffer?.course_ref ?? "");
     assertClosedPaidTestPrice(config, JSON.parse(existing.rail_quote_json) as RailQuote, existing.merchant_discount_kopecks);
     return respond(existing.id, JSON.parse(existing.rail_quote_json) as RailQuote, storedPricing(existing), existing.expires_at);
   }
 
   const offer = assertOfferCanBePurchased(db, config, offerByRef(db, input.offerRef), input.customerId, input.customerEmail);
   assertNoOtherPaidTestOrder(db, config, offer.offer_ref);
+  if (config.closedPaidTest) readyImmediateCourseAccess(db, offer.course_ref!);
   const storefront = storefrontForOffer(offer);
   if (input.storefront && input.storefront !== storefront) throw new Error("CHECKOUT_STOREFRONT_MISMATCH");
   const legal = legalRelease(db, storefront);
@@ -614,6 +615,7 @@ export async function confirmCheckout(
       throw new Error("CHECKOUT_QUOTE_STALE");
     }
     assertNoOtherPaidTestOrder(db, config, offer.offer_ref);
+  if (config.closedPaidTest) readyImmediateCourseAccess(db, offer.course_ref!);
     if (review) {
       // Re-read under the same write transaction as order creation; no backfilled UI event.
       const current = paidTestReview(db, config, input.customerEmail)!;
