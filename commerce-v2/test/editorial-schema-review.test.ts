@@ -16,8 +16,8 @@ describe("reviewed merchant schema across the editorial upgrade", () => {
     db.pragma("foreign_keys=ON");
     try {
       const migrations = readdirSync(migrationDirectory).filter((name) => name.endsWith(".sql")).sort();
-      expect(migrations).toHaveLength(26);
-      for (const name of migrations.slice(0, -1)) {
+      expect(migrations.length).toBeGreaterThanOrEqual(26);
+      for (const name of migrations.slice(0, 25)) {
         applyV2Migration(db, name, readFileSync(join(migrationDirectory, name), "utf8"));
       }
       expect(fingerprint(db)).toBe("158654c61bd97be4dbcab4348651722fe105587f6ff202ad4db821512774e030");

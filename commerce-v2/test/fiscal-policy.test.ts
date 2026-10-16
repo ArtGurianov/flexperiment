@@ -5,7 +5,7 @@ import { migrateV2 } from "../src/db";
 import { draftFiscalPolicy, qualifiedFiscalPolicy, qualifyFiscalPolicy, retireFiscalPolicy } from "../src/fiscal-policy";
 import { legalManifestHash } from "../src/legal-control";
 import { stageALegalManifestJson } from "./fixtures/legal";
-import { activatePublicSales, testCheckoutConfig } from "./fixtures/sales";
+import { activatePublicSales, testCheckoutConfig, testOwnerLegalDecision } from "./fixtures/sales";
 
 let db: Database.Database;
 let rail: MockPaymentRail;
@@ -14,7 +14,17 @@ const basis = { offerTermsRef: "offer-v3#refunds (ART-231)", counselRef: "counse
 const semantics = { taxSystem: "USN_INCOME", vatCode: "NONE", paymentMethod: "FULL_PREPAYMENT", paymentObject: "SERVICE" } as const;
 const draft = (offerRef: string, kind: "ONLINE_COURSE" | "COURSE_BUNDLE" | "LAB", itemName: string, paymentMethod: "FULL_PREPAYMENT" | "ADVANCE" = "FULL_PREPAYMENT") =>
   draftFiscalPolicy(db, { offerRef, kind, itemName, ...semantics, paymentMethod, actor: "owner" }, T0).policyId;
-const qualify = (policyId: string) => qualifyFiscalPolicy(db, { policyId, actor: "owner", legalBasis: basis }, T0);
+const ownerBasis = (policyId: string) => {
+  const d = testOwnerLegalDecision(db, policyId);
+  return { type: "OWNER_LEGAL_DECISION", ownerLegalDecisionId: d.ownerLegalDecisionId,
+    offerTermsRef: "synthetic:offer", evidenceSha256: "c".repeat(64) };
+};
+const qualify = (policyId: string) => {
+  const row = db.prepare("SELECT id,offer_terms_ref,evidence_sha256 FROM owner_legal_decisions WHERE fiscal_policy_id=? ORDER BY version DESC LIMIT 1").get(policyId) as
+    { id: string; offer_terms_ref: string; evidence_sha256: string } | undefined;
+  const legalBasis = row ? { ownerLegalDecisionId: row.id } : ownerBasis(policyId);
+  return qualifyFiscalPolicy(db, { policyId, actor: "owner", ownerLegalDecisionId: legalBasis.ownerLegalDecisionId }, T0);
+};
 
 beforeEach(() => {
   db = new Database(":memory:");
@@ -95,8 +105,8 @@ describe("product-specific fiscal authority (ART-233)", () => {
 
   it("qualification needs its legal basis, and is final", () => {
     const policyId = draft("course:one", "ONLINE_COURSE", "Курс");
-    for (const legalBasis of [{ ...basis, offerTermsRef: " " }, { ...basis, counselRef: "" }, { ...basis, evidenceSha256: "short" }]) {
-      expect(() => qualifyFiscalPolicy(db, { policyId, actor: "owner", legalBasis }, T0)).toThrow("FISCAL_POLICY_LEGAL_BASIS_REQUIRED");
+    for (const ownerLegalDecisionId of ["", " ", "missing"]) {
+      expect(() => qualifyFiscalPolicy(db, { policyId, actor: "owner", ownerLegalDecisionId }, T0)).toThrow("FISCAL_POLICY_LEGAL_BASIS_REQUIRED");
     }
     qualify(policyId);
     expect(() => qualify(policyId)).toThrow("FISCAL_POLICY_TRANSITION_INVALID");
@@ -122,7 +132,7 @@ describe("product-specific fiscal authority (ART-233)", () => {
     // Two qualified for one offer cannot exist, even written directly with a complete basis.
     const second = draft("course:one", "ONLINE_COURSE", "Курс 2");
     expect(() => db.prepare(`UPDATE fiscal_policy_versions SET status='QUALIFIED',legal_basis_json=?,qualified_by='owner',qualified_at=? WHERE id=?`)
-      .run(JSON.stringify(basis), T0, second)).toThrow(/UNIQUE constraint failed/);
+      .run(JSON.stringify(ownerBasis(second)), T0, second)).toThrow(/UNIQUE constraint failed/);
   });
 
   it("direct SQL cannot qualify without the legal basis either", () => {
@@ -142,7 +152,7 @@ describe("product-specific fiscal authority (ART-233)", () => {
       expect(() => qualifyDirect(legalBasis, by), `${legalBasis} by ${JSON.stringify(by)}`).toThrow("FISCAL_POLICY_LEGAL_BASIS_REQUIRED");
     }
     expect(db.prepare("SELECT status FROM fiscal_policy_versions WHERE id=?").get(policyId)).toEqual({ status: "DRAFT" });
-    qualifyDirect(JSON.stringify(basis));
+    qualifyDirect(JSON.stringify(ownerBasis(policyId)));
     expect(qualifiedFiscalPolicy(db, "course:one", "ONLINE_COURSE").policyId).toBe(policyId);
   });
 });

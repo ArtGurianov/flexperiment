@@ -25,7 +25,7 @@ Already supplied: course name/ref, buyer address (private), exact100kopeck amoun
 
 The [minimal closed paid-test package](../legal/closed-paid-test/2026-10-16-draft/README.md) now contains eight proposed texts, a fiscal proposal, SHA-256 list and pending approval form. Receipt item: **Доступ к видеоматериалу «Test Course»**. It proposes indefinite access until a contractual termination, no subscription, catalogue unlisting preserving purchased access, and a full100kopeck test refund even after viewing. This narrow experiment does not require completion of the full public-catalogue legal package; ART-231/234 public-launch work remains separate.
 
-Still absent from runtime/execution authority:
+Historical initial-preparation gaps (superseded by current execution below):
 
 - Approval of exact final paid document bytes, real served HTTPS URLs and independent response hash read-back for Stage B. Draft bytes and hashes exist; proposed URLs are explicitly unserved. The Stage A account/free-access release cannot be relabeled as paid purchase terms.
 - Reviewed legal-basis references/hash needed by `qualifyFiscalPolicy`; no actual `counselRef` has been supplied. Do not manufacture a counsel conclusion or mark a DRAFT qualified just to pass the gate. The confirmed fiscal values are distinct from the subsequently approved exact review.3 bytes. Historical CIB/Platforma OFD evidence and approved retention are recorded in that package; Refref and Flexperiment already have the same IP operator and an existing private signed internal regulation, not a missing two-party contract.
@@ -64,3 +64,15 @@ ART-39 / ART-224 stay open until this real chain passes. ART-83/88/89 and ART-92
 Latest owner receipt identifies the historical CIB/Platforma OFD agent model; no separate owner OFD login or bank refund-fee confirmation is needed. Exact [review.3](../legal/closed-paid-test/2026-10-16-review-3/README.md) is owner approved, closed-HTTPS/hash verified and active Stage B; owner tax values are not relabeled as a specialist opinion. Genuine ART-234 remains Backlog with no document/attachment in the tracker; no actual counselRef was found in the available source or owner evidence. Merchant DNS/HTTPS choice was separately requested after the current DNS-only operator run; do not retarget the current manifest, operator or serving runtime to unfinished successor code.
 
 Current execution supersedes earlier preparation: exact manifest replay READY; one key with provider/offhost recovery and restored database read-back; minimal shared policy map applied with same-source healthy restart. See [current evidence](../evidence/2026-10-16-paid-checkout-autonomous-preparation/README.md). New Flex image pair remains uninstalled, PAYMENT_MODE=disabled and offer CLOSED; fiscal qualification blocks the paid runtime and buyer preview. No payment operation was created.
+
+## Current approval authority — owner decision, 16 October 2026
+
+Mandatory external counsel/counselRef is superseded by
+[versioned owner legal evidence](../legal/OWNER_LEGAL_DECISIONS.md). Existing
+qualified history and exact review.3 bytes remain intact. The remaining
+[fiscal issue](../legal/ART-234_FULL_PAYMENT_RESEARCH.md) is the applicability of
+one FULL_PAYMENT receipt for platform access in the actual CIB arrangement,
+not absence of an external specialist. The owner explicitly authorizes one
+receipt only. No new live decision, qualification, install or payment is implied
+by this source change; existing autonomous installation authority remains and
+MONEY HOLD continues. Earlier gaps/receipts above retain their historical dates.

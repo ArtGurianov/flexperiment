@@ -1,16 +1,19 @@
+import { ownerLegalEvidenceMentions } from "./owner-legal-decision";
 import type Database from "better-sqlite3";
 import { createHash } from "node:crypto";
 import { classifyV2Database } from "./db";
 import { assertErasureSubjectKey, erasurePseudonym, ErasureLedgerError, VerifiedErasureLedger, type ErasureKeys } from "./erasure-ledger";
 import { DrainedErasureRuntime } from "./erasure-fence";
 
-// Exact reviewed 0001–0025 and 0001–0026 schemas. Migration 0026 adds only
+// Exact reviewed 0001–0025, 0001–0026 and 0001–0027 schemas. Migration 0026 adds only
 // Control Room authored course content/history, with no customer FK or subject
 // identity column; erasure still refuses financial/audit uncertainty. Keep the
-// previous hash for isolated old-backup restore. Unknown DDL remains refused.
+// previous hashes for isolated old-backup restore. Migration 0027 adds retained
+// owner legal evidence; possible subject mentions require audit review. Unknown DDL remains refused.
 const REVIEWED_SCHEMA_SHA256 = new Set([
   "158654c61bd97be4dbcab4348651722fe105587f6ff202ad4db821512774e030",
   "c99f9ed0db449a2c13f2e51fa3b28a1ba44e367dd263185c99eddfec8c2d3b39",
+  "8549f2c8d41eb72153d06e6cd5d6d320bb8c9a735b88ec44b2feee3a940cb0d6",
 ]);
 function assertReviewedSchema(db: Database.Database) {
   const schema = db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").all();
@@ -111,7 +114,7 @@ function applyErasure(db: Database.Database, ledger: VerifiedErasureLedger, keys
           const adminAudit = db.prepare(`SELECT 1 FROM control_room_audit_log WHERE entity_id=?
             OR instr(details_json,?)>0 OR instr(details_json,?)>0 LIMIT 1`)
             .get(customer.id, customer.id, customer.email_normalized);
-          if (audit || adminAudit) throw new ErasureLedgerError("ERASURE_AUDIT_REVIEW_REQUIRED");
+          if (audit || adminAudit || ownerLegalEvidenceMentions(db, [customer.id, customer.email_normalized])) throw new ErasureLedgerError("ERASURE_AUDIT_REVIEW_REQUIRED");
           for (const table of ["authenticated_consent_actions", "account_consents", "marketing_consents",
             "notification_campaign_recipients", "free_course_enrollments", "checkout_quotes", "course_access_starts",
             "lesson_resume_positions", "playback_grant_rate_limits", "playback_access_events"]) {
@@ -121,7 +124,7 @@ function applyErasure(db: Database.Database, ledger: VerifiedErasureLedger, keys
           erasedAccounts++; deletedCustomers.add(customer.id);
         }
         for (const user of targetUsers) {
-          if(db.prepare(`SELECT 1 FROM audit_log WHERE actor=? OR subject_ref=? OR instr(evidence_json,?)>0 LIMIT 1`)
+          if(ownerLegalEvidenceMentions(db, [user.id, user.email]) || db.prepare(`SELECT 1 FROM audit_log WHERE actor=? OR subject_ref=? OR instr(evidence_json,?)>0 LIMIT 1`)
             .get(user.id,user.id,user.id) || db.prepare(`SELECT 1 FROM control_room_audit_log WHERE admin_id=? OR instr(details_json,?)>0 LIMIT 1`)
             .get(user.id,user.id)) throw new ErasureLedgerError("ERASURE_AUDIT_REVIEW_REQUIRED");
           // FK cascades remove session/account credentials; a foreign binding or

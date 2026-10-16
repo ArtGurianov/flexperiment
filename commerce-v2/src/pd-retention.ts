@@ -1,3 +1,4 @@
+import { ownerLegalEvidenceMentions } from "./owner-legal-decision";
 import type Database from "better-sqlite3";
 import { createHash } from "node:crypto";
 import { z } from "zod";
@@ -27,12 +28,14 @@ export class RetentionRefusal extends Error {
   constructor(code: string) { super(code); this.name = "RetentionRefusal"; }
 }
 const refuse = (code: string): never => { throw new RetentionRefusal(code); };
-// Exact reviewed 0001–0025 and 0001–0026 DDL. The latter adds Control Room
+// Exact reviewed 0001–0025, 0001–0026 and 0001–0027 DDL. Migration 0026 adds Control Room
 // authored course content/history, no customer FK or subject identity column.
+// Migration 0027 retains merchant legal evidence and requires subject-mention review.
 // Retention targets remain the same; unknown columns/tables/triggers still stop.
 const supportedSchemaSha256 = new Set([
   "158654c61bd97be4dbcab4348651722fe105587f6ff202ad4db821512774e030",
   "c99f9ed0db449a2c13f2e51fa3b28a1ba44e367dd263185c99eddfec8c2d3b39",
+  "8549f2c8d41eb72153d06e6cd5d6d320bb8c9a735b88ec44b2feee3a940cb0d6",
 ]);
 const parse = <T>(schema: z.ZodType<T>, value: unknown): T => {
   const result = schema.safeParse(value); return result.success ? result.data : refuse("RETENTION_POLICY_OR_HOLD_INVALID");
@@ -161,6 +164,7 @@ export function cleanupOfflinePersonalData(db: Database.Database, input: {
         .get(customer.id, customer.id, customer.id, customer.email_normalized)) continue;
       if (db.prepare("SELECT 1 FROM control_room_audit_log WHERE entity_id=? OR instr(details_json,?)>0 OR instr(details_json,?)>0 LIMIT 1")
         .get(customer.id, customer.id, customer.email_normalized)) continue;
+      if (ownerLegalEvidenceMentions(db, [customer.id, customer.email_normalized])) continue;
       db.prepare("DELETE FROM account_consents WHERE customer_id=?").run(customer.id);
       db.prepare("DELETE FROM marketing_consents WHERE customer_id=?").run(customer.id);
       result.unboundIntents += db.prepare("DELETE FROM customers WHERE id=? AND auth_user_id IS NULL").run(customer.id).changes;

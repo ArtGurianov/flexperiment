@@ -68,7 +68,9 @@ CI or this delta. ART-338 stays Done; no new tracker issues are required.
 
 Owner decision16October2026: `REFUND_RECEIPT_FEE_RISK_ACCEPTED`; planning assumption up to10₽ for two receipts plus acquiring, not a bank-confirmed refund tariff or guaranteed total cost cap. Separate bank confirmation of refund-receipt pricing is no longer a blocker. Execution permission is now present; actual DNS/READY, custody/recovery and legal publication are now verified; fiscal admission and financial GO remain separate.
 
-Current unresolved fact: genuine ART-234 framing/counselRef under the existing
-fiscal qualification gate. Final live paid-profile admission and actual buyer
-preflight depend on it. DNS, key escrow, shared map, owner exact-byte approval
+Current unresolved fact: applicability of one FULL_PAYMENT receipt to CIB KKT and
+the actual platform-access timing. Mandatory external counsel approval is
+superseded by [owner evidence](../legal/OWNER_LEGAL_DECISIONS.md);
+[ART-234 research](../legal/ART-234_FULL_PAYMENT_RESEARCH.md) records the remaining fact.
+Final live paid-profile admission and actual buyer preflight depend on it. DNS, key escrow, shared map, owner exact-byte approval
 and closed legal publication are complete. No new per-step technical GO is required.

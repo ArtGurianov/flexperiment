@@ -1,3 +1,4 @@
+import { qualifyTestFiscalPolicy } from "./fixtures/sales";
 import Database from "better-sqlite3";
 import { execFileSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -5,7 +6,7 @@ import { migrateV2 } from "../src/db";
 import { configureProduct } from "../src/catalog-control";
 import { buyerEmailSha256 } from "../src/closed-paid-test";
 import { confirmCheckout, MockPaymentRail, prepareCheckout } from "../src/checkout";
-import { draftFiscalPolicy, qualifyFiscalPolicy } from "../src/fiscal-policy";
+import { draftFiscalPolicy } from "../src/fiscal-policy";
 import { activateLegalRelease, legalManifestHash } from "../src/legal-control";
 import { authenticatedConsentStatus, recordAuthenticatedConsents } from "../src/authenticated-consents";
 import { loadCommerceRuntimeConfig } from "../src/payment-mode";
@@ -57,7 +58,7 @@ beforeEach(() => {
     paymentPurpose: "Synthetic test purchase", actor: "fixture", expectedVersion: 0 });
   const policy = draftFiscalPolicy(db, { offerRef: "course:test-course", kind: "ONLINE_COURSE", itemName: "Доступ к видеоматериалу «Test Course»",
     taxSystem: "USN_INCOME", vatCode: "NONE", paymentMethod: "FULL_PAYMENT", paymentObject: "SERVICE", actor: "fixture" });
-  qualifyFiscalPolicy(db, { ...policy, actor: "fixture", legalBasis: { offerTermsRef: "fixture:terms", counselRef: "fixture:counsel", evidenceSha256: "c".repeat(64) } });
+  qualifyTestFiscalPolicy(db, policy.policyId, "fixture", new Date().toISOString());
 });
 afterEach(() => db.close());
 
@@ -116,7 +117,7 @@ describe("closed paid test admission", () => {
   it("rejects a differently qualified fiscal item before resolving upstream", async () => {
     const policy = draftFiscalPolicy(db, { offerRef: input.offerRef, kind: "ONLINE_COURSE", itemName: "Other item",
       taxSystem: "USN_INCOME", vatCode: "NONE", paymentMethod: "FULL_PREPAYMENT", paymentObject: "SERVICE", actor: "fixture" });
-    qualifyFiscalPolicy(db, { ...policy, actor: "fixture", legalBasis: { offerTermsRef: "fixture:other", counselRef: "fixture:counsel", evidenceSha256: "d".repeat(64) } });
+    qualifyTestFiscalPolicy(db, policy.policyId, "fixture", new Date().toISOString());
     const resolve = vi.spyOn(rail, "resolve"); await expect(preview()).rejects.toThrow("CLOSED_PAID_TEST_FISCAL_POLICY_REFUSED");
     expect(resolve).not.toHaveBeenCalled();
   });
