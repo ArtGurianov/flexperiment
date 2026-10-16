@@ -1,6 +1,6 @@
 # ART-39 / ART-83 — successor install/config review
 
-**Current, 16 October 2026: INSTALLED / BUYER PREFLIGHT PENDING / MONEY HOLD.**
+**Current, 16 October 2026: ART39_INSTALLED_READY_FOR_MONEY_GO / MONEY HOLD.**
 See [installed evidence](../evidence/2026-10-16-paid-checkout-installed/README.md) for actual merged sources/images, review.4 publication, owner-backed
 fiscal qualification and independent recovery. The preparation statements below
 are historical; they do not describe the installed runtime. Separate financial

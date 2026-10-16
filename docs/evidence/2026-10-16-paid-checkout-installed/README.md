@@ -1,6 +1,6 @@
 # ART-39 / ART-83 / ART-224 — installed closed checkout
 
-**ART39_INSTALLED_BUYER_PREFLIGHT_PENDING / MONEY HOLD.** 16 October 2026.
+**ART39_INSTALLED_READY_FOR_MONEY_GO / MONEY HOLD.** 16 October 2026.
 The owner authorized autonomous installation of the existing canary and approved
 exact review.4. No real purchase or refund is authorized or reported here.
 ART-338 remains Done; public F9 and production security qualification stay closed.
@@ -111,7 +111,7 @@ evidence. Platform has no merchant secrets. No plaintext configuration archive
 or private recovery key was placed on the VPS. The private key stays with the
 owner; the encrypted recoverable configuration does not replace erasure custody.
 
-## Actual canary and remaining buyer step
+## Actual canary and genuine buyer preflight
 
 Commerce/Platform readiness, source/image/RootFS and schema/ledger admission
 passed. All4 public hosts still return403. Backup and freshness timers are
@@ -122,25 +122,54 @@ manual entitlement, payment operation, charge or refund was created.
 
 A separate official Chrome profile was launched with owner permission and
 hostname mapping through a loopback SSH tunnel. HTTPS certificate verification
-remains enabled; no OS DNS/proxy change or certificate bypass was used. A direct
-TLS/readiness check through that tunnel passed. Native UI control currently
-selects the personal Chrome process rather than the separate canary process.
-The owner completed normal login. Independent server read-back confirms fresh
-review.4 authenticated consent at10:01:29UTC: personal_data=true,
-account_terms=true, marketing_consent=false. No consent was copied from review.3.
-The owner is operating the real handoff in the test profile without a promo code.
-Return → preview with1₽, current documents and receipt email remains pending;
-infrastructure and fixture checks do not prove it.
+remains enabled; no OS DNS/proxy change or certificate bypass was used. Direct
+TLS/readiness through that tunnel passed. The native UI tool could select only
+the personal Chrome process, so the owner operated the isolated test profile.
+This is a genuine owner-operated browser run with independent server read-back,
+not an agent-observed screenshot or an automated browser fixture.
 
-Do not report `ART39_INSTALLED_READY_FOR_MONEY_GO` until that real preflight is
-observed. Stop before `POST /v1/checkout` and **«Подтвердить и оплатить»**. Payment,
-receipt, paid entitlement/playback, full refund, refund receipt and revocation
-remain unrun and require separate financial GO. ART-39/83/224 remain in progress.
+The owner completed normal login and separate review.4 consent. Authenticated
+server evidence at10:01:29UTC confirms personal_data=true, account_terms=true,
+marketing_consent=false, bound to the selected buyer/current release. No consent
+was transferred from review.3. The real Refref handoff returned to the same
+private course. Current UI requires a second **«Купить курс»** press after return
+to request preview; it does not request preview automatically. That second
+press completed successfully without a promo code.
+
+The owner reported the actual preview: **1₽**, the selected receipt email, all8
+review.4 document links, purchase checkbox and **«Подтвердить и оплатить»**.
+Independent server read-back10:07:31UTC confirms the same handoff's REVIEW quote,
+catalog100/final100kopecks, merchant/referral discounts0, current legal release,
+requiresImmediateAccess and exact qualified fiscal policy in the frozen line.
+Quote SHA-256 is
+`e8b224f35b37fdfa2db9c9767b3825df4e94d25927758f90539ea005e7df8c4b`;
+frozen-line SHA-256 is
+`0dd79999fc28b544588d7c4aa52a8ff530cca2fda268c43643530bd2c2a8a8a1`.
+No bearer return token or selected-buyer identity is copied into this index.
+
+A fresh post-preflight encrypted backup also passed independent provider GET,
+off-host decrypt/hash and isolated schema27 restore at10:10:39UTC. It recovers
+the actual buyer consents, same handoff REVIEW100 quote, qualified policy and
+owner decision with zero checkout attempts/orders. Ciphertext SHA-256:
+`2e88a12ca8deb4555ff847c81b1ff06d4c554e6c4401f3830a4a3f1b2afa7ed3`
+(909720bytes). Owned plaintext restore was removed after verification.
+
+Execution stopped before `POST /v1/checkout` and the final payment button.
+Read-back confirms **zero checkout attempts, zero test-course orders and zero
+test-course entitlements**. The preview is temporary and is not a payment
+operation or purchase acceptance. If it expires before a financial GO, obtain a
+fresh preview through the normal flow rather than reuse expired return data.
+
+**ART39_INSTALLED_READY_FOR_MONEY_GO** records completion of installation,
+recovery and genuine buyer preflight only. MONEY HOLD remains. Payment, receipt,
+paid entitlement/playback, full refund, refund receipt and revocation remain
+unrun and require separate financial GO. ART-39/83/224 remain in progress.
 
 Private receipt names: `installation-receipt.json`, `offer-opening-receipt.json`,
 `installed-independent-restore.json`, `copied-fence-restore-proof.json`,
 `installed-config-recovery-proof.json`, `installed-copied-fence-restore-proof.json`,
-`installed-final-readback.json`, under
+`installed-final-readback.json`, `buyer-preflight-proof.json`,
+`post-preflight-independent-restore.json`, under
 owner-only `art39-checkout-preflight-20261016/owner-legal-decisions-20261016`.
 No buyer identifiers, secret values or fiscal receipt coordinates are included
 in this public index. Older sealed installation packets are retained unchanged.

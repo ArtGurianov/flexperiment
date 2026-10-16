@@ -1,6 +1,6 @@
 # ART-39 — private paid-checkout profile
 
-**INSTALLED / BUYER PREFLIGHT PENDING / MONEY HOLD.** See [installed evidence](../evidence/2026-10-16-paid-checkout-installed/README.md). The existing canary has the exact review.4 profile, qualified owner-backed policy and only the selected ACCEPTANCE_ONLY offer. This is not public sales admission or permission to charge; ART-338 stays Done.
+**ART39_INSTALLED_READY_FOR_MONEY_GO / MONEY HOLD.** See [installed evidence](../evidence/2026-10-16-paid-checkout-installed/README.md). The existing canary has the exact review.4 profile, qualified owner-backed policy and only the selected ACCEPTANCE_ONLY offer. This is not public sales admission or permission to charge; ART-338 stays Done.
 
 ## Exact configuration to review before installation
 
@@ -31,7 +31,8 @@ its own final-document action and pre-payment read-back. The installed server gu
 handoff, preview and confirm/replay, with a transactional check before order creation.
 It requires the exact legal pins and does not record consent on the buyer's behalf.
 It is installed from1f27cbd2; the earlier a548774 image pair is superseded. Exact
-review.4 is approved and active; real buyer evidence and financial GO remain required.
+review.4 is approved and active; genuine owner-operated buyer preflight and independent server read-back passed.
+Financial GO remains required.
 
 The course description must be LISTED, without free preview: an unentitled buyer cannot reach CourseCheckout on an UNLISTED course. Keep CLOSED during preparation; only eventual accepted runtime admits ACCEPTANCE_ONLY. Follow the [concrete preparation/install packet](ART-39_INSTALL_PACKET.md).
 
@@ -45,4 +46,4 @@ Install the exact reviewed helper alongside a per-role `release.json`, immutable
 
 Refref's [owner-commerce engineering PR77](https://github.com/ArtGurianov/refref/pull/77) supplies a provider-neutral enablement path for the existing signed OWNER. Enablement is READY and the one key, actual policy mapping and independent recovery are confirmed in [installed evidence](../evidence/2026-10-16-paid-checkout-installed/README.md). Preserve that existing manifest and key. No fake Alfa manifest, duplicate Business or bank reprovisioning.
 
-Review.4 publication and owner-backed qualification are complete. Fresh buyer PD/account consent and genuine handoff/return/preview are still required. Only after separately authorized money action may the owner perform card/SBP interaction. No card/OTP data is handled by the agent. [ART-39 execution steps](ART-39_CONTROLLED_CHECKOUT.md) remain authoritative for payment, receipt, entitlement, playback, full refund, refund receipt and access revocation.
+Review.4 publication and owner-backed qualification are complete. Fresh buyer PD/account consent and genuine handoff/return/preview passed with independent server quote read-back. Only after separately authorized money action may the owner perform card/SBP interaction. No card/OTP data is handled by the agent. [ART-39 execution steps](ART-39_CONTROLLED_CHECKOUT.md) remain authoritative for payment, receipt, entitlement, playback, full refund, refund receipt and access revocation.
