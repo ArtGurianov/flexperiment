@@ -1,5 +1,20 @@
 # ART-39 — one controlled real course payment and full refund
 
+## Completed closed financial run — 16 October 2026
+
+**ART39_CLOSED_PAID_E2E_PASS.** The separately authorized one100-kopeck SBP
+purchase and one full refund completed with genuine protected playback, both
+actual fiscal receipts, canonical financial read-backs, entitlement revocation,
+a normal refused playback grant, closed offers and independent post-refund
+recovery. [Financial evidence and exact installed source vector](../evidence/2026-10-16-paid-checkout-financial-e2e/README.md).
+The scope of the one financial GO is consumed; public sales remain closed.
+
+The owner chose email intake at `refunds@flexperiment.ru` followed by manual
+Admin decision/execution for both courses and LAB. The test's console request
+is not the customer product flow. [Current differences and remaining ART-224
+work](REFUND_FLOW.md) are explicit. Historical preparation/HOLD statements below
+are superseded only by the completed boundaries in the linked evidence.
+
 **Current, 16 October 2026: ART39_INSTALLED_READY_FOR_MONEY_GO / MONEY HOLD.**
 See [installed evidence](../evidence/2026-10-16-paid-checkout-installed/README.md) for actual merged sources/images, review.4 publication, owner-backed
 fiscal qualification and independent recovery. The preparation statements below
