@@ -1,6 +1,9 @@
 # ART-39 — one controlled real course payment and full refund
 
-State: **PREPARATION / NOT EXECUTED**. Owner-selected course `test-course`, quantity1, currencyRUB, total100kopecks, one privately selected existing customer, full refund. This packet does not activate public sales or claim ART-240 production acceptance. ART-338 remains finally closed.
+State: **AUTONOMOUS INSTALLATION GO / MONEY HOLD; DNS/FISCAL DEPENDENCIES PENDING**.
+See [current evidence](../evidence/2026-10-16-paid-checkout-autonomous-preparation/README.md)
+for merged240, new images and partial production merchant enablement. Historical
+preparation-only observations below are superseded only where that evidence says so. Owner-selected course `test-course`, quantity1, currencyRUB, total100kopecks, one privately selected existing customer, full refund. This packet does not activate public sales or claim ART-240 production acceptance. ART-338 remains finally closed.
 
 Fresh starting evidence: [16October preflight](../evidence/2026-10-16-paid-checkout-preflight/README.md). Current immutable application vector and erasure authority must be re-read before any eventual installation. Do not retarget durable/uncertain operations based on main.
 
@@ -57,3 +60,5 @@ Preparatory CI/fixtures are implementation evidence. They do not count as a real
 Record every boundary separately: preparation, configuration/install, customer paid, accepted Payment, payment receipt, single entitlement/ACK, protected playback, refund submitted, accepted Refund, refund receipt and access revoked. No later observation substitutes for an unrun stage. Neither a successful API response nor a stored capability is a new provider qualification.
 
 ART-39 / ART-224 stay open until this real chain passes. ART-83/88/89 and ART-92/12 keep their owning evidence; use existing issues only. ART-240/242, ART-36/351 and F9 remain separate public-launch gates. No LAB/bundle/Mikluha/V1 sales or bank changes belong to this experiment.
+
+Latest owner receipt identifies the historical CIB/Platforma OFD agent model; no separate owner OFD login or bank refund-fee confirmation is needed. Final candidate [review.3](../legal/closed-paid-test/2026-10-16-review-3/README.md) remains unapproved/unpublished; owner tax values are not relabeled as a specialist opinion. Merchant DNS/HTTPS choice was separately requested after the current DNS-only operator run; do not retarget the current manifest, operator or serving runtime to unfinished successor code.

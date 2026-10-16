@@ -1,6 +1,7 @@
 # ART-39 / ART-83 — successor install/config review
 
-**HOLD_NOT_EXECUTABLE / NO APPLICATION AUTHORITY.**16October2026.
+**AUTONOMOUS INSTALLATION GO / MONEY HOLD; DEPENDENCIES PENDING.**16October2026.
+Latest execution facts: [autonomous preparation](../evidence/2026-10-16-paid-checkout-autonomous-preparation/README.md).
 This supersedes the manual-only consent procedure of the sealed
 `install-review-a548774` packet; that historical packet is not rewritten.
 PR239 merged docs only as `6e48e22a7a6c958ca7deb77d665726b522a382ee`.
@@ -10,20 +11,22 @@ PR239 merged docs only as `6e48e22a7a6c958ca7deb77d665726b522a382ee`.
 | Component | Baseline/prepared identity | Proposed delta |
 | --- | --- | --- |
 | Host controller | reviewed a548774 source, helper SHA256 `c4d5eb6516a147a7536c466b559f156349aafe2c0bcf8e41bca399a0c0b7160d` | No helper/workflow repair in this change; retain separately pinned controller |
-| Commerce/Platform candidates | a548774 images in [old packet](ART-39_INSTALL_PACKET.md) | New source guard + account recovery link require new exact-source CI/build/digests; old artifacts cannot satisfy this gate |
+| Commerce/Platform candidates | a548774 images in [old packet](ART-39_INSTALL_PACKET.md) | Merged3222845 owns green CI and new independently verified digest pair; old a548 artifacts cannot satisfy this gate |
 | Admin | retained source08523bd…/existing immutable image | Retain unchanged, no rebuild |
-| Refref operator | source4f533ec…; digest10645410… | Retain one-off artifact; do not run until exact manifest is approved |
+| Refref operator | source4f533ec…; digest10645410… | Retained one-off artifact; admitted exact manifest executed to DNS_CHALLENGE_PENDING, no key issued |
 | Shared serving Refref | observed202c0fb…; observed policy map `{}` | After actual READY only, add selected Business→returned `evidencePolicyVersionId`, preserving all existing entries; source/runtime upgrade not implied |
-| Legal | active free Stage A, paid draft unactivated | [review.2](../legal/closed-paid-test/2026-10-16-review-2/README.md) is not final; require approved exact bytes + HTTPS read-back + actual qualified policy |
+| Legal | active free Stage A, paid draft unactivated | [review.3](../legal/closed-paid-test/2026-10-16-review-3/README.md) is not approved; require approved exact bytes + HTTPS read-back + actual qualified policy |
 | Closed profile | payments disabled, sole offer CLOSED | Only separately admitted matching Commerce/Platform runtime may use scoped refref/ACCEPTANCE_ONLY; price stays100kopecks |
 
 The private merchant candidate remains SHA256
 `ab8d370280650f6f898b0bb938251cf0be97bdf485813a71141601605ad64f91`.
-It is **NOT ADMITTED**. Return origin is canary-platform, only `/checkout/return`;
+It was technically admitted under delegated owner authority; execution returned
+**DNS_CHALLENGE_PENDING**, not READY. Independent DB read-back matched the actual
+offer/campaign/terms/evidence IDs and pending challenge; API keys0. Return origin is canary-platform, only `/checkout/return`;
 scopes checkout/refund/fulfillment; single unattributed zero-reward campaign.
 No policy UUID, merchant key or final legal hash may be invented to complete it.
 
-## Configuration construction before a later approval
+## Configuration construction after actual dependency admission
 
 A successor private review delta records each role source/image separately,
 reviewed controller, unchanged operator artifact, current observed serving source,
@@ -52,9 +55,15 @@ reconciliation of an existing payment/refund remain available.
 
 The updated [Tochka tariff review](ART-39_TOCHKA_CHEKI_OCTOBER.md) changes the
 seller's planned test expenses, not the100kopeck checkout or full refund.
-Final expense approval remains separate from installation and money GO.
+The owner has accepted the receipt-fee planning assumption; no separate bank
+confirmation of refund-receipt pricing is required. Installation and money GO
+remain separate.
 
 Fresh encrypted backup/off-host retrieval/decrypt/isolated restore, erasure
 admission, custody and the actual buyer→documents→handoff→preview proof remain
 prerequisites. No new installation/restore/provider proof is claimed by source
 CI or this delta. ART-338 stays Done; no new tracker issues are required.
+
+Owner decision16October2026: `REFUND_RECEIPT_FEE_RISK_ACCEPTED`; planning assumption up to10₽ for two receipts plus acquiring, not a bank-confirmed refund tariff or guaranteed total cost cap. Separate bank confirmation of refund-receipt pricing is no longer a blocker. Execution permission is now present; actual DNS/READY, custody/recovery, legal/fiscal admission and financial GO remain separate.
+
+Current unresolved facts: DNS confirmation for the admitted unchanged manifest; true fiscal legal basis/counselRef under the existing gate; final exact-byte legal approval/publication; actual merchant key escrow/recovery and final live profile admission. No new per-step technical GO is required.

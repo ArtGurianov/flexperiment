@@ -55,3 +55,5 @@ Tests cover no upstream calls/writes on refusal, correct-account acceptance with
 marketing=false, foreign/stale evidence, replay and asynchronous changes, HTTP
 session identity/forged fields and the UI account link. These are synthetic local
 checks, not actual buyer acceptance or installed-runtime qualification.
+
+Latest authority is AUTONOMOUS INSTALLATION GO / MONEY HOLD. The [review.3 candidate](../legal/closed-paid-test/2026-10-16-review-3/README.md) incorporates historical CIB/OFD evidence and the processing matrix; no final bytes or customer PD action is inferred approved. Server guard is merged in3222845 and built into the new independently verified image pair; the pair is not installed yet.

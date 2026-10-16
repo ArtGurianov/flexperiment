@@ -28,7 +28,7 @@
     "fullRefund": true,
     "publicActivation": false
   },
-  "note": "This blank form is not owner approval, counsel evidence, a legal release, or authority to qualify a policy. Do not fill from inferred acceptance of a PR.",
+  "note": "Owner principles, refund-receipt fee risk and conditional autonomous installation authority are recorded separately. Final customer legal bytes and specialist framing are not inferred. Existing bank setup is retained; historical receipt identifies the CIB agent/OFD model without proving a new Test Course receipt.",
   "ownerServiceConfirmation": "Tochka Cheki; direct owner statement 2026-10-16",
   "proposedRetentionApproved": true,
   "merchantManifestApproved": false,
@@ -49,5 +49,42 @@
     "merchantManifestApproved": false,
     "installationAuthorized": false,
     "paymentAuthorized": false
+  },
+  "refundReceiptFeeRiskDecision": {
+    "status": "REFUND_RECEIPT_FEE_RISK_ACCEPTED",
+    "source": "direct owner decision in this chat on 2026-10-16",
+    "customerChargeKopecks": 100,
+    "customerFullRefundKopecks": 100,
+    "sellerPaysAcquiringAndFiscalization": true,
+    "additionalRefundReceiptFeeRiskKopecks": 500,
+    "feeMayBeNonrefundable": true,
+    "planningAssumptionTwoReceiptsKopecks": 1000,
+    "acquiringExtra": true,
+    "bankConfirmedRefundTariff": false,
+    "bankRefundTariffConfirmationRequired": false,
+    "paymentAuthorized": false,
+    "installationAuthorized": false
+  },
+  "autonomousInstallationAuthority": {
+    "status": "AUTONOMOUS_INSTALLATION_GO_MONEY_HOLD",
+    "source": "direct owner authorization in this chat 2026-10-16",
+    "installationAuthorizedSubjectToAdmission": true,
+    "merchantEnablementAuthorizedSubjectToSignedOwnerAndNoDrift": true,
+    "sharedRefrefMinimalConfigRestartAuthorizedAfterReady": true,
+    "exactCustomerLegalBytesAutomaticallyApproved": false,
+    "fiscalLegalBasisGateBypassAuthorized": false,
+    "paymentAuthorized": false,
+    "publicLaunchAuthorized": false
+  },
+  "ownerLatestClarifications": {
+    "existingJwtApiWebhooksConfigured": true,
+    "useExistingCoolifyCredentialsWithoutReconfiguration": true,
+    "bankPortalInspectionNotRequested": true,
+    "serviceAndFullPaymentReconfirmed": true,
+    "specialistOpinionReferenceProvided": false,
+    "receiptProvidedByOwner": true,
+    "receiptModelReference": "internal-evidence:ART39-HISTORICAL-CHEKI-RECEIPT-2026-08-30",
+    "historicalOfd": "ООО «Эвотор ОФД» / Платформа ОФД, ИНН 9715260691",
+    "historicalReceiptIsNewTestQualification": false
   }
 }
