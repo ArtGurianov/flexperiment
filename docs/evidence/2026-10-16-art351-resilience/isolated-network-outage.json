@@ -1,0 +1,95 @@
+{
+  "state": "ISOLATED_REAL_NETWORK_OUTAGE_RECOVERY_PASS",
+  "applicationSource": "80a11bde55c38973bcde99b4a92ee9e09c5dc6ad",
+  "startedAt": "2026-10-16T16:07:53.576Z",
+  "completedAt": "2026-10-16T16:08:19.135Z",
+  "checks": {
+    "nativeBoot": "OPEN",
+    "realNetworkLoss": {
+      "state": "CLOSED",
+      "attempts": 2,
+      "elapsedMs": 20011,
+      "reasons": [
+        "TIMEOUT",
+        "TIMEOUT"
+      ],
+      "method": "only this container disconnected from egress; sole remaining Docker network internal=true",
+      "requestHandlerCalls": 2
+    },
+    "providerRecovered": {
+      "freshRemoteProof": true,
+      "admissionStill": "CLOSED",
+      "protectedOperationEntered": false
+    },
+    "s3": {
+      "methods": [
+        "GET"
+      ],
+      "handlerDelegatedCalls": 18,
+      "scope": "read-only actual Cloud.ru; real egress loss in disposable container only; no handler error injection",
+      "measurementNote": "Original reused harness called delegations successfulTransportCalls; this is not a count of successful HTTP responses. Two real timeout requests occurred during egress loss."
+    },
+    "normalQualifiedRecovery": {
+      "state": "OPEN",
+      "leases": 0,
+      "unknown": 0,
+      "usedNativeReader": true
+    }
+  },
+  "diagnostics": [
+    {
+      "event": "ERASURE_READ_FAILURE",
+      "scope": "canary",
+      "stage": "head",
+      "reason": "TIMEOUT",
+      "attempt": 1,
+      "elapsedMs": 10002,
+      "observedAt": "2026-10-16T16:08:06.667Z"
+    },
+    {
+      "event": "ERASURE_READ_FAILURE",
+      "scope": "canary",
+      "stage": "head",
+      "reason": "TIMEOUT",
+      "attempt": 2,
+      "elapsedMs": 20008,
+      "observedAt": "2026-10-16T16:08:16.672Z"
+    },
+    {
+      "event": "ERASURE_ADMISSION_CLOSED",
+      "scope": "canary",
+      "operation": "READY",
+      "code": "ERASURE_LIBRARY_READ_UNAVAILABLE",
+      "elapsedMs": 20009,
+      "observedAt": "2026-10-16T16:08:16.674Z"
+    }
+  ],
+  "financialAndLegalHistoryUnchanged": true,
+  "checkedTables": [
+    "orders",
+    "order_lines",
+    "course_entitlements",
+    "refund_requests",
+    "refund_decisions",
+    "refund_executions",
+    "checkout_attempts",
+    "legal_releases",
+    "fiscal_policy_versions",
+    "owner_legal_decisions"
+  ],
+  "migrations": 27,
+  "integrity": "ok",
+  "actualProviderOutageClaim": false,
+  "liveAdmissionTouched": false,
+  "bankOrMailOperations": false,
+  "image": "ghcr.io/artgurianov/flexperiment-commerce-v2@sha256:c928ef2a9e33e2e2bcb7e646e89fe8b239489395539d9eb9094350a683433e4c",
+  "rootfsSha256": "7a28524b3715a38cbb4e99c2bc4b6991e6376bb3eb738923cf41c23d56e1dabd",
+  "liveFenceBeforeAfterEqual": true,
+  "separateNetwork": true,
+  "noPublishedPorts": true,
+  "noFinancialCredentialsOrServerWorkers": true,
+  "scriptSha256": "899fd519bcd2099c0b305f604f618ca5f3fd6c5c86a2595fd1927b8fc9d39090",
+  "temporaryPlaintextAndContainerRemoved": true,
+  "networkRemoved": true,
+  "originalReceiptSha256": "9e19a4ee2595244945bb1f4e905841607025d8361394e453555fb9864d864a64"
+}

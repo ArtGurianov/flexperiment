@@ -1,0 +1,30 @@
+{
+  "state": "DIRECT_MAC_S3_GET_OWNER_KEY_SQLITE_RESTORE_PASS",
+  "observedAt": "2026-10-16T16:03:15.703179+00:00",
+  "sourceCommit": "80a11bde55c38973bcde99b4a92ee9e09c5dc6ad",
+  "sha256": "fd841a42393512a94cc0db7f07937d58dbc6466b9f8670c0601da1bf5b5df364",
+  "size": 942504,
+  "verifiedAt": 1792163561,
+  "downloadTransport": "Mac directly to https://s3.cloud.ru with standard TLS verification; no VPS byte relay",
+  "authorizationPreparation": "one exact GET signed on VPS; no secret key exported; capability not retained",
+  "migrations": 27,
+  "integrity": "ok",
+  "foreignKeyViolations": 0,
+  "activeLegalVersion": "2026-10-16.closed-paid-test.review.5",
+  "orderStateCounts": [
+    [
+      "FULFILLED",
+      0,
+      3
+    ],
+    [
+      "REFUNDED",
+      100,
+      1
+    ]
+  ],
+  "allPaidOffersClosed": true,
+  "plaintextSha256": "8f972237ddacf2f9c69e9e91c1b2bee1877c057a054a04961aadaca18afb81c8",
+  "temporaryPlaintextRemoved": true,
+  "newFinancialOperations": false
+}

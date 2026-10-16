@@ -1,0 +1,245 @@
+{
+  "alert-install-proof.json": {
+    "state": "CANARY_BACKUP_ALERT_WIRING_INSTALLED_ONE_PROBE_COMPLETED",
+    "observedAt": "2026-10-16T16:11:51.670343+00:00",
+    "deltas": {
+      "flexperiment-fast-cut-canary-backup.service": {
+        "target": "/etc/systemd/system/flexperiment-fast-cut-canary-backup.service.d/art351-alert.conf",
+        "baseSha256": "b00be1cd64ef87c6b6bb91ea78ac87e3b8b701a19dc99074181c81182edcd10f",
+        "content": "[Unit]\nOnFailure=flexperiment-v2-canary-alert@commerce-backup.service\n",
+        "sha256": "e5b0326630714c840bb54cbbaeeaf95a8e2e0c8c22c06dddf29381c0bd0dca01"
+      },
+      "flexperiment-fast-cut-canary-freshness.service": {
+        "target": "/etc/systemd/system/flexperiment-fast-cut-canary-freshness.service.d/art351-alert.conf",
+        "baseSha256": "4249e43016c58b84a8271de89cf138434845feddcfebfc68a6bc173b676d97b1",
+        "content": "[Unit]\nOnFailure=flexperiment-v2-canary-alert@commerce-freshness.service\n",
+        "sha256": "62391d4b74d46c687360b8ea19e39c78702b5c644f7b9897448ce14219cfbf88"
+      }
+    },
+    "handlerSha256": "259f53547108541741505ef2da4cbdf5f681b21dc1f79d31a045264e5f928e89",
+    "templateSha256": "f988138e7e4630a919e619862a857c1f3388b0aa6fa7c757950bd1b8686e6c16",
+    "before": {
+      "flexperiment-fast-cut-canary-backup.service": {
+        "Result": "success",
+        "ExecMainStartTimestamp": "Fri 2026-10-16 12:15:01 UTC",
+        "OnFailure": "",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "InvocationID": "b6dd71c33eee458c817406190c7fff84"
+      },
+      "flexperiment-fast-cut-canary-freshness.service": {
+        "Result": "success",
+        "ExecMainStartTimestamp": "Fri 2026-10-16 16:00:01 UTC",
+        "OnFailure": "",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "InvocationID": "c9f545b832f34c5aa5107db17d6255d5"
+      },
+      "flexperiment-fast-cut-canary-backup.timer": {
+        "Result": "success",
+        "OnFailure": "",
+        "ActiveState": "active",
+        "SubState": "waiting",
+        "InvocationID": "6b059a1964a246f6a9003441ade2ec42"
+      },
+      "flexperiment-fast-cut-canary-freshness.timer": {
+        "Result": "success",
+        "OnFailure": "",
+        "ActiveState": "active",
+        "SubState": "waiting",
+        "InvocationID": "e4aa176ade414535a45884616e5453b9"
+      },
+      "flexperiment-v2-canary-alert@probe.service": {
+        "Result": "success",
+        "ExecMainStartTimestamp": "n/a",
+        "OnFailure": "",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "InvocationID": ""
+      },
+      "canary-alert-probe.service": {
+        "Result": "success",
+        "ExecMainStartTimestamp": "n/a",
+        "OnFailure": "flexperiment-v2-canary-alert@probe.service",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "InvocationID": ""
+      }
+    },
+    "after": {
+      "flexperiment-fast-cut-canary-backup.service": {
+        "Result": "success",
+        "OnFailure": "flexperiment-v2-canary-alert@commerce-backup.service",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "InvocationID": "b6dd71c33eee458c817406190c7fff84"
+      },
+      "flexperiment-fast-cut-canary-freshness.service": {
+        "Result": "success",
+        "OnFailure": "flexperiment-v2-canary-alert@commerce-freshness.service",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "InvocationID": "c9f545b832f34c5aa5107db17d6255d5"
+      },
+      "flexperiment-fast-cut-canary-backup.timer": {
+        "Result": "success",
+        "OnFailure": "",
+        "ActiveState": "active",
+        "SubState": "waiting",
+        "InvocationID": "6b059a1964a246f6a9003441ade2ec42"
+      },
+      "flexperiment-fast-cut-canary-freshness.timer": {
+        "Result": "success",
+        "OnFailure": "",
+        "ActiveState": "active",
+        "SubState": "waiting",
+        "InvocationID": "e4aa176ade414535a45884616e5453b9"
+      },
+      "flexperiment-v2-canary-alert@probe.service": {
+        "Result": "exit-code",
+        "OnFailure": "",
+        "ActiveState": "failed",
+        "SubState": "failed",
+        "InvocationID": "7b1881229eed43c099b0b4b2c7d1c97b"
+      },
+      "canary-alert-probe.service": {
+        "Result": "exit-code",
+        "OnFailure": "flexperiment-v2-canary-alert@probe.service",
+        "ActiveState": "failed",
+        "SubState": "failed",
+        "InvocationID": "e2247999d8314e939175989b6d531948"
+      }
+    },
+    "oneProbeOutcome": {
+      "event": "probe",
+      "reference": "4a02579e-0420-43f0-8b28-4fac6a3c55ca",
+      "timestamp": "2026-10-16T16:08:51.784923+00:00",
+      "channels": {
+        "notisend": {
+          "result": "ACCEPTED",
+          "httpStatus": 201,
+          "messageId": 21624314026,
+          "providerStatus": "queued"
+        },
+        "telebuzzy": {
+          "result": "REFUSED",
+          "httpStatus": 404
+        }
+      }
+    },
+    "actualBackupFailedForTest": false,
+    "actualBackupOrRuntimeRestarted": false,
+    "notificationDeliveryConfirmed": {
+      "notisend": "owner-confirmed email",
+      "telebuzzy": false
+    },
+    "deliveryEvidence": "Original owner confirmation did not prove Telegram: API returned404; owner clarified key needed rotation. See separately authorized new-key test.",
+    "olderFailedAlertUnitsNotReset": true,
+    "reconciliation": "Initial evidence collector rejected ISO timestamp in journalctl; reconciled existing single probe with UTC journal read, no resend"
+  },
+  "alert-final-readback.json": {
+    "state": "ALERT_CHANNELS_DELIVERED_AFTER_OWNER_AUTHORIZED_KEY_ROTATION",
+    "observedAt": "2026-10-16T16:20:48.732512+00:00",
+    "email": "owner-confirmed",
+    "telegram": {
+      "state": "TELEBUZZY_ROTATED_KEY_SINGLE_TEST_RESULT",
+      "observedAt": "2026-10-16T16:18:09.291714+00:00",
+      "reference": "b4245743-b210-4483-a4f4-3a510f930d10",
+      "outcome": {
+        "result": "ACCEPTED",
+        "httpStatus": 200
+      },
+      "noEmail": true,
+      "attempts": 1,
+      "deliveryConfirmed": true,
+      "deliveryEvidence": "Owner pasted Telegram event probe with exact reference b4245743-b210-4483-a4f4-3a510f930d10 and UTC16:18:06",
+      "confirmedAt": "2026-10-16T16:20:04.088246+00:00"
+    },
+    "units": {
+      "flexperiment-fast-cut-canary-backup.service": {
+        "Result": "success",
+        "OnFailure": "flexperiment-v2-canary-alert@commerce-backup.service",
+        "ActiveState": "inactive"
+      },
+      "flexperiment-fast-cut-canary-freshness.service": {
+        "Result": "success",
+        "OnFailure": "flexperiment-v2-canary-alert@commerce-freshness.service",
+        "ActiveState": "inactive"
+      },
+      "flexperiment-fast-cut-canary-backup.timer": {
+        "NextElapseUSecRealtime": "Fri 2026-10-16 18:15:00 UTC",
+        "Result": "success",
+        "OnFailure": "",
+        "ActiveState": "active"
+      },
+      "flexperiment-fast-cut-canary-freshness.timer": {
+        "NextElapseUSecRealtime": "Fri 2026-10-16 17:00:00 UTC",
+        "Result": "success",
+        "OnFailure": "",
+        "ActiveState": "active"
+      },
+      "flexperiment-v2-canary-alert@commerce-backup.service": {
+        "Result": "exit-code",
+        "OnFailure": "",
+        "ActiveState": "failed"
+      },
+      "refref-monitor.timer": {
+        "NextElapseUSecRealtime": "Fri 2026-10-16 16:21:30 UTC",
+        "Result": "success",
+        "OnFailure": "",
+        "ActiveState": "active"
+      },
+      "refref-monitor.service": {
+        "Result": "success",
+        "OnFailure": "",
+        "ActiveState": "inactive"
+      }
+    },
+    "olderFailedAlertUnitsPreserved": true,
+    "testFailuresOnlyReset": true,
+    "realBackupNeverFailedForTest": true,
+    "systemdProbeAttempts": 1,
+    "additionalTelebuzzyOnlyAttempts": 1
+  },
+  "telebuzzy-rotation-proof.json": {
+    "state": "TELEBUZZY_KEY_ROTATED_VERIFIED_NO_RUNTIME_RESTART",
+    "observedAt": "2026-10-16T16:17:21.923601+00:00",
+    "targets": [
+      "/root/flexperiment-v2-owner/canary-alerts.json",
+      "/etc/refref-monitor/telebuzzy.env"
+    ],
+    "rootOnly0600": true,
+    "onlyTelebuzzyCredentialChanged": true,
+    "oldAndNewKeysEncryptedCustodyAndIndependentOwnerRecovery": true,
+    "ciphertextSha256": "eb3233a1aa10be2b5cf6f6182fe6b3d1ef5d5133c4ca59b5f987d425b231d019",
+    "pendingPlaintextKeyRemoved": true,
+    "runningApplicationIdentitiesUnchanged": true,
+    "existingMonitorEnvironments": [
+      {
+        "environment": "PRODUCTION",
+        "kind": "refref"
+      },
+      {
+        "environment": "CANARY",
+        "kind": "refref"
+      }
+    ],
+    "notificationTestRepeated": false,
+    "configurationReadEachNewHandlerOrMonitorInvocation": true,
+    "containerEnvConsumersFoundAtSurvey": 0
+  },
+  "telebuzzy-new-key-test-proof.json": {
+    "state": "TELEBUZZY_ROTATED_KEY_SINGLE_TEST_RESULT",
+    "observedAt": "2026-10-16T16:18:09.291714+00:00",
+    "reference": "b4245743-b210-4483-a4f4-3a510f930d10",
+    "outcome": {
+      "result": "ACCEPTED",
+      "httpStatus": 200
+    },
+    "noEmail": true,
+    "attempts": 1,
+    "deliveryConfirmed": true,
+    "deliveryEvidence": "Owner pasted Telegram event probe with exact reference b4245743-b210-4483-a4f4-3a510f930d10 and UTC16:18:06",
+    "confirmedAt": "2026-10-16T16:20:04.088246+00:00"
+  }
+}

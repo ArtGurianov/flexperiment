@@ -1,0 +1,75 @@
+{
+  "observedAt": "2026-10-16T16:27:43.577255+00:00",
+  "state": "FINAL_READ_ONLY_BOUNDARY_READBACK",
+  "http": {
+    "canary-api.flexperiment.ru": {
+      "ordinaryDnsRequest": 403,
+      "fixedIpHostnameAndTlsVerified": {
+        "status": 403,
+        "sslVerifyResult": 0,
+        "curlExit": 0
+      }
+    },
+    "canary-platform.flexperiment.ru": {
+      "ordinaryDnsRequest": 403,
+      "fixedIpHostnameAndTlsVerified": {
+        "status": 403,
+        "sslVerifyResult": 0,
+        "curlExit": 0
+      }
+    },
+    "canary-admin.flexperiment.ru": {
+      "ordinaryDnsRequest": 403,
+      "fixedIpHostnameAndTlsVerified": {
+        "status": 403,
+        "sslVerifyResult": 0,
+        "curlExit": 0
+      }
+    },
+    "canary-lab.flexperiment.ru": {
+      "ordinaryDnsRequest": 403,
+      "fixedIpHostnameAndTlsVerified": {
+        "status": 403,
+        "sslVerifyResult": 0,
+        "curlExit": 0
+      }
+    },
+    "flexperiment.ru": {
+      "ordinaryDnsRequest": 410,
+      "fixedIpHostnameAndTlsVerified": {
+        "status": 410,
+        "sslVerifyResult": 0,
+        "curlExit": 0
+      }
+    },
+    "lab.flexperiment.ru": {
+      "ordinaryDnsRequest": 410,
+      "fixedIpHostnameAndTlsVerified": {
+        "status": 410,
+        "sslVerifyResult": 0,
+        "curlExit": 0
+      }
+    },
+    "admin.flexperiment.ru": {
+      "ordinaryDnsRequest": 410,
+      "fixedIpHostnameAndTlsVerified": {
+        "status": 410,
+        "sslVerifyResult": 0,
+        "curlExit": 0
+      }
+    },
+    "partner.flexperiment.ru": {
+      "ordinaryDnsRequest": {
+        "unavailable": "gaierror"
+      },
+      "fixedIpHostnameAndTlsVerified": {
+        "status": 0,
+        "sslVerifyResult": 18,
+        "curlExit": 60
+      }
+    }
+  },
+  "helperSha256": "8121ac1678288976dc947c79e3a6165a38d6232847238258d8489cfeaaa9b5ae",
+  "pendingKeyAbsent": true,
+  "noNotificationSent": true
+}

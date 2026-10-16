@@ -1,0 +1,133 @@
+{
+  "state": "FINAL_CANARY_READBACK_PASS",
+  "observedAt": "2026-10-16T16:25:43.576523+00:00",
+  "roles": {
+    "commerce": {
+      "containerId": "cbd9185c2acc8acf34c6d8373e2eadaed79bc92c11e321b7bf063acfb3c29e07",
+      "image": "ghcr.io/artgurianov/flexperiment-commerce-v2@sha256:c928ef2a9e33e2e2bcb7e646e89fe8b239489395539d9eb9094350a683433e4c",
+      "imageId": "sha256:c928ef2a9e33e2e2bcb7e646e89fe8b239489395539d9eb9094350a683433e4c",
+      "startedAt": "2026-10-16T14:54:42.053996652Z",
+      "health": "healthy",
+      "restartCount": 0,
+      "logDriver": "json-file"
+    },
+    "platform": {
+      "containerId": "43304c79e64ecedd5c392d264e9cc3765e3a4fd3b6b692aa5438ad85f7dfd2b2",
+      "image": "ghcr.io/artgurianov/flexperiment-platform-v2@sha256:9c7fee07994457e7b9dd4ac8345e54addd39c91c45e45f49a05bba546e972655",
+      "imageId": "sha256:9c7fee07994457e7b9dd4ac8345e54addd39c91c45e45f49a05bba546e972655",
+      "startedAt": "2026-10-16T14:54:47.684020415Z",
+      "health": "healthy",
+      "restartCount": 0,
+      "logDriver": "json-file"
+    },
+    "admin": {
+      "containerId": "0f9312d7b6edf0344db3aa57d391ccb684ad33847dfc966ce7abd1f8aafd4502",
+      "image": "ghcr.io/artgurianov/flexperiment-admin-v2@sha256:b5c1fe054a736628a9496eaef30d7ee56708bfa57f0d51c8243de7d763945b5e",
+      "imageId": "sha256:b5c1fe054a736628a9496eaef30d7ee56708bfa57f0d51c8243de7d763945b5e",
+      "startedAt": "2026-10-16T14:58:22.612314209Z",
+      "health": "healthy",
+      "restartCount": 0,
+      "logDriver": "json-file"
+    }
+  },
+  "sameRoleIdentitiesAndStartTimesAsInitialObservation": true,
+  "fence": {
+    "scope": "canary",
+    "state": "OPEN",
+    "sequence": 1,
+    "head_hash": "31d71e9093e17b4621f433d9b99a795fe6d4db6da1fcb71e51addffa9713fa49",
+    "owner": null
+  },
+  "leases": 0,
+  "unknownLeases": 0,
+  "backup": {
+    "status": "SUCCESS",
+    "sourceCommit": "80a11bde55c38973bcde99b4a92ee9e09c5dc6ad",
+    "verifiedAt": 1792163561,
+    "sha256": "fd841a42393512a94cc0db7f07937d58dbc6466b9f8670c0601da1bf5b5df364",
+    "size": 942504,
+    "ageSeconds": 4382
+  },
+  "serviceState": {
+    "flexperiment-fast-cut-canary-backup.service": {
+      "Result": "success",
+      "ExecMainStartTimestamp": "Fri 2026-10-16 12:15:01 UTC",
+      "ExecMainExitTimestamp": "Fri 2026-10-16 12:15:07 UTC",
+      "ExecMainStatus": "0",
+      "ActiveState": "inactive",
+      "SubState": "dead"
+    },
+    "flexperiment-fast-cut-canary-freshness.service": {
+      "Result": "success",
+      "ExecMainStartTimestamp": "Fri 2026-10-16 16:00:01 UTC",
+      "ExecMainExitTimestamp": "Fri 2026-10-16 16:00:01 UTC",
+      "ExecMainStatus": "0",
+      "ActiveState": "inactive",
+      "SubState": "dead"
+    },
+    "flexperiment-fast-cut-canary-backup.timer": {
+      "NextElapseUSecRealtime": "Fri 2026-10-16 18:15:00 UTC",
+      "Result": "success",
+      "ActiveState": "active",
+      "SubState": "waiting"
+    },
+    "flexperiment-fast-cut-canary-freshness.timer": {
+      "NextElapseUSecRealtime": "Fri 2026-10-16 17:00:00 UTC",
+      "Result": "success",
+      "ActiveState": "active",
+      "SubState": "waiting"
+    }
+  },
+  "historicalBackupFailure": {
+    "initialRawJournalExportSha256": "c024204286d5e7e0d3c588d00c6099637538d98c9398dd17e9d5e39a3f020e41",
+    "entryCount": 5,
+    "sameSanitizedEntriesOnIndependentSecondRead": true,
+    "sanitizedEntriesSha256": "d3f09ca17f87b79dd7f64108fbc2451a7e55ce4a4eed0ff6b9a7096555b4030c",
+    "entries": [
+      {
+        "timestampUs": "1792060929638773",
+        "codes": [],
+        "errorTypes": [],
+        "signals": [
+          "Starting"
+        ]
+      },
+      {
+        "timestampUs": "1792060931435783",
+        "codes": [
+          "FAST_CUT_HOLD"
+        ],
+        "errorTypes": [],
+        "signals": []
+      },
+      {
+        "timestampUs": "1792060931444418",
+        "codes": [],
+        "errorTypes": [],
+        "signals": [
+          "status=1/FAILURE"
+        ]
+      },
+      {
+        "timestampUs": "1792060931444716",
+        "codes": [],
+        "errorTypes": [],
+        "signals": [
+          "Failed",
+          "exit-code"
+        ]
+      },
+      {
+        "timestampUs": "1792060931445030",
+        "codes": [],
+        "errorTypes": [],
+        "signals": [
+          "Failed"
+        ]
+      }
+    ],
+    "cause": "UNDETERMINED",
+    "rawExportNote": "journalctl JSON key order can differ between exports; raw-byte hash identifies that capture, not canonical journal contents"
+  },
+  "currentErasureDiagnostics": {}
+}

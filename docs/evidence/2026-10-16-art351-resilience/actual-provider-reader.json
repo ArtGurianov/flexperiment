@@ -1,0 +1,111 @@
+{
+  "state": "ISOLATED_ACTUAL_PROVIDER_READER_RECOVERY_PASS",
+  "applicationSource": "80a11bde55c38973bcde99b4a92ee9e09c5dc6ad",
+  "startedAt": "2026-10-16T16:02:09.743Z",
+  "completedAt": "2026-10-16T16:02:13.501Z",
+  "checks": {
+    "nativeBoot": "OPEN",
+    "oneFailure": {
+      "state": "OPEN",
+      "attempts": 2,
+      "wireCalls": 4,
+      "completeFreshProof": true
+    },
+    "twoFailures": {
+      "state": "CLOSED",
+      "attempts": 2,
+      "wireCalls": 2
+    },
+    "providerRecovered": {
+      "freshRemoteProof": true,
+      "admissionStill": "CLOSED",
+      "protectedOperationEntered": false
+    },
+    "s3": {
+      "methods": [
+        "GET"
+      ],
+      "attemptedWireCalls": 22,
+      "successfulTransportCalls": 19,
+      "scope": "read-only actual Cloud.ru; faults injected in isolated handler only"
+    },
+    "normalQualifiedRecovery": {
+      "state": "OPEN",
+      "leases": 0,
+      "unknown": 0,
+      "usedNativeReader": true
+    }
+  },
+  "diagnostics": [
+    {
+      "event": "ERASURE_READ_FAILURE",
+      "scope": "canary",
+      "stage": "head",
+      "reason": "TRANSPORT",
+      "attempt": 1,
+      "elapsedMs": 1,
+      "observedAt": "2026-10-16T16:02:12.093Z"
+    },
+    {
+      "event": "ERASURE_READ_RECOVERED",
+      "scope": "canary",
+      "attempt": 2,
+      "elapsedMs": 206,
+      "observedAt": "2026-10-16T16:02:12.297Z"
+    },
+    {
+      "event": "ERASURE_READ_FAILURE",
+      "scope": "canary",
+      "stage": "head",
+      "reason": "TRANSPORT",
+      "attempt": 1,
+      "elapsedMs": 1,
+      "observedAt": "2026-10-16T16:02:12.300Z"
+    },
+    {
+      "event": "ERASURE_READ_FAILURE",
+      "scope": "canary",
+      "stage": "head",
+      "reason": "TRANSPORT",
+      "attempt": 2,
+      "elapsedMs": 2,
+      "observedAt": "2026-10-16T16:02:12.300Z"
+    },
+    {
+      "event": "ERASURE_ADMISSION_CLOSED",
+      "scope": "canary",
+      "operation": "READY",
+      "code": "ERASURE_LIBRARY_READ_UNAVAILABLE",
+      "elapsedMs": 3,
+      "observedAt": "2026-10-16T16:02:12.302Z"
+    }
+  ],
+  "financialAndLegalHistoryUnchanged": true,
+  "checkedTables": [
+    "orders",
+    "order_lines",
+    "course_entitlements",
+    "refund_requests",
+    "refund_decisions",
+    "refund_executions",
+    "checkout_attempts",
+    "legal_releases",
+    "fiscal_policy_versions",
+    "owner_legal_decisions"
+  ],
+  "migrations": 27,
+  "integrity": "ok",
+  "actualProviderOutageClaim": false,
+  "liveAdmissionTouched": false,
+  "bankOrMailOperations": false,
+  "image": "ghcr.io/artgurianov/flexperiment-commerce-v2@sha256:c928ef2a9e33e2e2bcb7e646e89fe8b239489395539d9eb9094350a683433e4c",
+  "rootfsSha256": "7a28524b3715a38cbb4e99c2bc4b6991e6376bb3eb738923cf41c23d56e1dabd",
+  "liveFenceBeforeAfterEqual": true,
+  "separateNetwork": true,
+  "noPublishedPorts": true,
+  "noFinancialCredentialsOrServerWorkers": true,
+  "scriptSha256": "a9ca965302db71b104cf7d164236816b0ccaed989d88a5571b4974951f90aabc",
+  "temporaryPlaintextAndContainerRemoved": true,
+  "networkRemoved": true,
+  "counterNote": "wireCalls are request-handler invocations including injected faults; not successful HTTP responses"
+}

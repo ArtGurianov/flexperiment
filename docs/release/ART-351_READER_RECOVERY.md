@@ -15,7 +15,7 @@ The owner resumed ART351 diagnostics; no new money operation or public opening
 is authorized. Preserve current containers, signed authority, leases and data.
 Do not repeat the withdrawn Mac-disconnect/restart experiment.
 
-## What this patch does (and does not establish)
+## Reader guarantees retained from PR228
 
 - Clears only a rejected cold-history Promise, never a confirmed history/prefix.
 - Makes at most one complete additional GET-only verification for a typed S3
@@ -138,3 +138,27 @@ of an expired/untrusted certificate. Never disable hostname/trust verification,
 change global TLS settings or conflate workstation failure with VPS authority
 failure. Inspect current backup service failure as well as age and source of
 its retained last SUCCESS.
+
+
+## 16 October qualification and installed alert delta
+
+The [ART351 execution record](../evidence/2026-10-16-art351-resilience/README.md)
+separates the repaired Mac network, independent direct S3 restore, actual-provider
+handler faults and a real network outage confined to a disposable copy. It does
+not establish the cause of the historical VPS failure or production SLOs.
+
+The two existing fast-cut services now have owner-authorized OnFailure drop-ins.
+Their canonical bytes live in `deploy/v2/fast-cut/backup.service.d/art351-alert.conf`
+and `deploy/v2/fast-cut/freshness.service.d/art351-alert.conf`; installed target
+prefix is `/etc/systemd/system/flexperiment-fast-cut-canary-`. Preserve the
+existing alert template/handler and root-only config. Do not copy canary
+credentials into images, retired V1 or unrelated app containers. Backup cadence
+and freshness thresholds remain six-hour/hourly/8h; age-only alert detection can
+approach9h plus scheduler delay. Failure notifications are observations, not
+permission to restart, retry a financial operation or reopen admission.
+
+A routine credential replacement must preserve only the intended field, retain
+an encrypted predecessor and independently prove owner recovery before apply.
+Provider acceptance and owner-confirmed delivery are separate facts. Preserve
+older failed alert instances as historical evidence; do not reset all failed
+units to obtain a green dashboard.
