@@ -30,6 +30,7 @@ import { publicLabCatalogue } from "./lab-catalogue";
 import { getCustomerStorefrontCourse, getCustomerStorefrontLesson, getStorefrontCourse, getStorefrontLesson, listCustomerStorefrontLibrary, listStorefrontCourses } from "./storefront-content";
 import { authenticatedConsentStatus, hasRequiredAccountConsents, recordAuthenticatedConsents, type AuthenticatedConsentInput } from "./authenticated-consents";
 import { ErasureLedgerError } from "./erasure-ledger";
+import { assertClosedPaidTestAccountConsents } from "./closed-paid-test";
 import type { ErasureRuntimeFence } from "./erasure-fence";
 
 type Dependencies = {
@@ -625,7 +626,8 @@ export function createCommerceV2App(deps: Dependencies) {
       }, now().toISOString());
       return context.json(result, 200, noStore);
     } catch (error) {
-      return context.json({ code: error instanceof Error ? error.message : "CHECKOUT_PREVIEW_UNAVAILABLE" }, 503, noStore);
+      const code = error instanceof Error ? error.message : "CHECKOUT_PREVIEW_UNAVAILABLE";
+      return context.json({ code }, code === "CONSENT_REQUIRED" ? 403 : 503, noStore);
     }
   });
 
@@ -659,7 +661,8 @@ export function createCommerceV2App(deps: Dependencies) {
       }, now().toISOString());
       return context.json(result, result.state === "CREATE_UNKNOWN" ? 202 : 201, noStore);
     } catch (error) {
-      return context.json({ code: error instanceof Error ? error.message : "CHECKOUT_UNAVAILABLE" }, 503, noStore);
+      const code = error instanceof Error ? error.message : "CHECKOUT_UNAVAILABLE";
+      return context.json({ code }, code === "CONSENT_REQUIRED" ? 403 : 503, noStore);
     }
   });
 
@@ -668,6 +671,7 @@ export function createCommerceV2App(deps: Dependencies) {
     if (!customerId) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
     if (deps.config.paymentMode !== "refref") return context.json({ required: false }, 200, noStore);
     try {
+      assertClosedPaidTestAccountConsents(deps.db, deps.config, customerId);
       const { returnPath, storefront } = await context.req.json<{ returnPath: string; storefront: Storefront }>();
       if (storefront !== "COURSES" && storefront !== "LAB") throw new Error("CHECKOUT_STOREFRONT_INVALID");
       const issued = issueCheckoutHandoffState(deps.config.refref!.handoffStateSecret, { customerId, returnPath, storefront }, now().getTime());
@@ -678,7 +682,8 @@ export function createCommerceV2App(deps: Dependencies) {
       target.searchParams.set("state", issued.token);
       return context.json({ required: true, url: target.toString() }, 200, noStore);
     } catch (error) {
-      return context.json({ code: error instanceof Error ? error.message : "CHECKOUT_HANDOFF_FAILED" }, 422, noStore);
+      const code = error instanceof Error ? error.message : "CHECKOUT_HANDOFF_FAILED";
+      return context.json({ code }, code === "CONSENT_REQUIRED" ? 403 : 422, noStore);
     }
   });
 

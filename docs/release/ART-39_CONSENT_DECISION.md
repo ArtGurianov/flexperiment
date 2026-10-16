@@ -1,56 +1,52 @@
-# ART-39 — separate account consent and purchase acceptance
+# ART-39 — separate consent and purchase acceptance
 
-**PROPOSED MODEL / FINAL LEGAL APPROVAL AND PAYMENT HOLD.**16October2026.
-Source reviewed: `a548774692fa8a9b50fe8da02890e913857537d3` (merged PR238).
-This records the installation packet's proposed procedure; it neither approves
-new legal bytes nor changes the existing DRAFT package/hash.
+**SERVER GUARD PREPARED / FINAL LEGAL APPROVAL, INSTALLATION AND PAYMENT HOLD.**
+16October2026. PR239 merged documentation as
+`6e48e22a7a6c958ca7deb77d665726b522a382ee`, without deployment.
+The new guard is a source change; it is absent from the previously published
+Commerce/Platform artifacts built from `a548774…`.
 
-## Proposed model for the single closed purchase
+## Model proposed for final approval
 
-Retain a separate `personal_data` action for the specifically approved account
-operations, with the final document defining purposes, recipients and duration.
-Necessary purchase/receipt operations must have their confirmed contractual or
-statutory basis in the final documents; do not broaden account consent to cover
-every operation. Do not infer that buying, providing a receipt email or accepting
-purchase terms grants optional marketing permission.
+Retain an explicit `personal_data` action, separate from account terms and
+purchase/refund acceptance. The owner confirmed Tochka's «Чеки». Its published
+contract requires buyer consent for transmitting data to the processor, so
+purely relying on contractual/statutory processing for all payment transfers
+would not cover that service requirement. The
+[new review package](../legal/closed-paid-test/2026-10-16-review-2/README.md)
+names the processor and proposes the consent scope/retention. Actual connection,
+OFD and remaining legal facts/bytes still require approval. Marketing is optional
+and stays false for this test. Do not fabricate consent or copy Stage A choices.
 
-The existing authenticated account form can supply the separate action:
+After separately admitted final Stage B publication/activation, the buyer opens
+`/account`, reviews the final documents and marks separate personal-data/account
+choices. Session-derived `POST /v1/me/consents` records action and document
+version/hash evidence; no service/operator insertion replaces the buyer's action.
+The checkout checkbox separately accepts purchase/refund conditions and receipt
+information. `PAID_CHECKOUT_TERMS_ACCEPTED` is not independent PD consent.
 
-1. After separately authorized publication/activation of final Stage B bytes,
-   the buyer opens `/account` and reviews the actual final documents.
-2. `AuthenticatedConsentGate` has separate `personalDataConsent` and
-   `accountTermsAccepted` checkboxes. Marketing is optional and remains false for
-   this experiment. The normal session-derived `POST /v1/me/consents` records an
-   action and an individual `personal_data` event with its document version/hash.
-   Do not insert or manufacture acceptance evidence.
-3. Before financial admission, independently verify the actual buyer,
-   `verifiedAccount=true`, `requiredChoicesConfirmed=true`, the current release
-   ID/version/manifest hash and granted `personal_data` event for the final bytes.
-   Recheck after changing the release or account. Earlier free-access acceptance
-   does not qualify a different release: `authenticatedConsentStatus` checks all
-   those bindings.
-4. The checkout checkbox separately accepts purchase/refund terms and
-   acknowledges the data/receipt information. Its `PAID_CHECKOUT_TERMS_ACCEPTED`
-   event is evidence of that purchase action, **not independent PD consent**.
+## Server enforcement for the closed paid profile
 
-## Current implementation limit
+`assertClosedPaidTestAccountConsents` first matches the current COURSES legal
+version/manifest hash to the closed profile's approved pins, then calls
+`hasRequiredAccountConsents`. That function requires a verified/bound account,
+latest confirmed choices for the active release ID/version/hash and exact PD/account
+documents. Missing, foreign-customer/storefront, stale and unverified evidence
+fails closed; optional marketing is not required.
 
-At this source, `CourseCheckout` is not wrapped in
-`AuthenticatedConsentGate`; `POST /v1/checkout/preview` and
-`POST /v1/checkout` do not call `hasRequiredAccountConsents`. The existence of the
-account form therefore does not prove that a buyer completed it before payment.
-The read-back above is a mandatory separate pre-payment gate for the proposed
-single-buyer procedure. It is not an automatic server guard. If final legal
-approval requires that guard, implement and qualify it before payment rather
-than declaring the current runtime compliant.
+The guard runs before handoff, before every preview (including replay), after an
+asynchronous quote resolution, before confirm replay/new payment and again in
+the write transaction creating the order. No provider resolution/payment creation
+or local order/acceptance writes occur on an initial refusal. `CONSENT_REQUIRED`
+returns403/no-store and Platform links to the separate account form. The guard
+records no acceptance. Other payment profiles keep their existing behavior.
 
-The final model, actual recipients/retention and exact legal bytes remain
-unapproved. [The DRAFT legal package](../legal/closed-paid-test/2026-10-16-draft/README.md)
-and [installation packet](ART-39_INSTALL_PACKET.md) retain their HOLDs. No claim
-that the present checkout checkbox proves all consents is made.
+Financial reconciliation/status reads, workers and refunds retain their existing
+paths: losing consent must not prevent resolving or refunding an already created
+financial operation. A buyer/account read-back is still required before money,
+but it supplements the server guard. It is not its substitute.
 
-Code traced: `apps/platform/components/auth/AuthenticatedConsentGate.tsx`,
-`apps/platform/components/checkout/CourseCheckout.tsx`,
-`commerce-v2/src/authenticated-consents.ts`, `commerce-v2/src/app.ts` and
-`commerce-v2/src/checkout.ts`. This is a code/procedure review, not a real buyer
-acceptance receipt or legal opinion.
+Tests cover no upstream calls/writes on refusal, correct-account acceptance with
+marketing=false, foreign/stale evidence, replay and asynchronous changes, HTTP
+session identity/forged fields and the UI account link. These are synthetic local
+checks, not actual buyer acceptance or installed-runtime qualification.

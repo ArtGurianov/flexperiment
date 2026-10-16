@@ -1,0 +1,35 @@
+{
+  "status": "PENDING_NOT_APPROVED",
+  "candidateVersion": "2026-10-16.closed-paid-test.review.2",
+  "approvedFinalVersion": null,
+  "approvedPackageSha256": null,
+  "approvedBy": null,
+  "approvedAt": null,
+  "ownerDecisionReference": null,
+  "taxStatusEvidenceReference": null,
+  "ownerFiscalDecision": {
+    "source": "direct owner statements in this chat on 2026-10-16",
+    "taxSystem": "USN_INCOME",
+    "vatCode": "NONE",
+    "paymentMethod": "FULL_PAYMENT",
+    "paymentObject": "SERVICE",
+    "ipAddressReconfirmed": true,
+    "independentCounselOpinionProvided": false,
+    "exactDocumentBytesApproved": false
+  },
+  "counselEvidenceReference": null,
+  "counselEvidenceSha256": null,
+  "paymentDataRecipientsEvidenceReference": null,
+  "publishedDocumentReadbackReference": null,
+  "scope": {
+    "courseRef": "test-course",
+    "amountKopecks": 100,
+    "quantity": 1,
+    "fullRefund": true,
+    "publicActivation": false
+  },
+  "note": "This blank form is not owner approval, counsel evidence, a legal release, or authority to qualify a policy. Do not fill from inferred acceptance of a PR.",
+  "ownerServiceConfirmation": "Tochka Cheki; direct owner statement 2026-10-16",
+  "proposedRetentionApproved": false,
+  "merchantManifestApproved": false
+}

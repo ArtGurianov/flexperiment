@@ -27,9 +27,12 @@ The buyer sees the exact paid document links and receipt email. One explicit che
 
 That checkout action is purchase acceptance, not independent PD consent. The
 [proposed separate account-consent procedure](ART-39_CONSENT_DECISION.md) requires
-its own final-document action and pre-payment read-back. The current checkout
-does not automatically enforce that account-consent gate; final legal approval
-must resolve the model before money.
+its own final-document action and pre-payment read-back. The prepared server guard now enforces current, verified account choices before
+handoff, preview and confirm/replay, with a transactional check before order creation.
+It requires the exact legal pins and does not record consent on the buyer's behalf.
+It is not installed and is absent from the earlier a548774 image pair; use the
+[superseding config review](ART-39_CONFIG_DELTA_REVIEW.md). Final legal approval
+and real buyer evidence remain required before money.
 
 The course description must be LISTED, without free preview: an unentitled buyer cannot reach CourseCheckout on an UNLISTED course. Keep CLOSED during preparation; only eventual accepted runtime admits ACCEPTANCE_ONLY. Follow the [concrete preparation/install packet](ART-39_INSTALL_PACKET.md).
 

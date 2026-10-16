@@ -8,6 +8,27 @@ vi.mock("next/navigation", () => ({ usePathname: () => "/courses/test-course" })
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe("closed paid purchase review", () => {
+  it.each(["handoff", "preview", "confirm"])("offers the separate account form when %s refuses missing consent", async phase => {
+    let confirms = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: string) => {
+      if (input === "/v1/me") return Response.json({ customer: { id: "fixture" }, entitlements: [] });
+      if (input === `/v1/checkout/${phase}` || (phase === "confirm" && input === "/v1/checkout")) {
+        if (phase === "confirm") confirms++;
+        return Response.json({ code: "CONSENT_REQUIRED" }, { status: 403 });
+      }
+      if (input === "/v1/checkout/handoff") return Response.json({ required: false });
+      return Response.json({ quoteId: "quote", state: "PRICE_REVIEW_REQUIRED", finalAmountKopecks: 100, baseAmountKopecks: 100,
+        discountKopecks: 0, merchantDiscountKopecks: 0, referralDiscountKopecks: 0, checkoutCodeOutcome: "NONE" });
+    }));
+    render(<CourseCheckout courseRef="test-course" offerRef="course:test-course" saleMode="ACCEPTANCE_ONLY" priceKopecks={100} />);
+    const buy = screen.getByRole("button", { name: "Купить курс →" });
+    await waitFor(() => expect(buy).toBeEnabled()); fireEvent.click(buy);
+    if (phase === "confirm") fireEvent.click(await screen.findByRole("button", { name: "Подтвердить и оплатить →" }));
+    expect(await screen.findByRole("link", { name: "Проверить документы аккаунта →" }))
+      .toHaveAttribute("href", "/account?next=%2Fcourses%2Ftest-course");
+    expect(screen.getByRole("button")).toBeDisabled();
+    expect(confirms).toBe(phase === "confirm" ? 1 : 0);
+  });
   it("shows the receipt contact/documents and requires one deliberate acceptance before confirm", async () => {
     const legalAcceptance = { releaseVersion: "synthetic-paid", manifestSha256: "a".repeat(64), receiptEmail: "synthetic@example.test",
       documents: [{ kind: "course_offer", version: "v1", sha256: "b".repeat(64), url: "https://canary-platform.flexperiment.ru/legal/offer" }] };

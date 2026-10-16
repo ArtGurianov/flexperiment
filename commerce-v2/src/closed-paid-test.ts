@@ -2,6 +2,24 @@ import { createHash } from "node:crypto";
 import { CLOSED_PAID_TEST_AMOUNT, CLOSED_PAID_TEST_COURSE, CLOSED_PAID_TEST_OFFER } from "../../lib/closed-paid-test-profile";
 import type { CommerceRuntimeConfig } from "./payment-mode";
 import type { FrozenFiscalPolicy } from "./fiscal-policy";
+import type Database from "better-sqlite3";
+import { hasRequiredAccountConsents } from "./authenticated-consents";
+import { currentLegalRelease, legalManifestHash } from "./legal-control";
+
+/** Only the closed paid profile requires this gate; never record consent on the buyer's behalf. */
+export function assertClosedPaidTestAccountConsents(db: Database.Database,
+  config: Pick<CommerceRuntimeConfig, "closedPaidTest">, customerId: string) {
+  const profile = config.closedPaidTest;
+  if (!profile) return;
+  return db.transaction(() => {
+    const legal = currentLegalRelease(db, "COURSES");
+    if (!legal || legal.version !== profile.legalVersion
+      || legalManifestHash(legal.manifest) !== profile.legalManifestSha256) {
+      throw new Error("CLOSED_PAID_TEST_LEGAL_RELEASE_REFUSED");
+    }
+    if (!hasRequiredAccountConsents(db, customerId, "COURSES")) throw new Error("CONSENT_REQUIRED");
+  })();
+}
 
 export const buyerEmailSha256 = (email: string) => createHash("sha256").update(email.trim().toLowerCase()).digest("hex");
 export function assertClosedPaidTestFiscal(config: Pick<CommerceRuntimeConfig, "closedPaidTest">, fiscal: FrozenFiscalPolicy) {

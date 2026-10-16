@@ -1,0 +1,83 @@
+{
+  "status": "REVIEW_NOT_EXECUTABLE",
+  "releaseVersion": "2026-10-16.closed-paid-test.review.2",
+  "storefront": "COURSES",
+  "stage": "B",
+  "scope": {
+    "courseRef": "test-course",
+    "offerRef": "course:test-course",
+    "amountKopecks": 100,
+    "quantity": 1,
+    "publicActivation": false
+  },
+  "candidateDocuments": [
+    {
+      "kind": "privacy",
+      "version": "2026-10-16.closed-paid-test.review.2",
+      "sha256": "aa8af1fb1b89f2e2cd73f7c0a0371db94673fc144a279eb29756d6d736e52e87",
+      "source": "docs/legal/closed-paid-test/2026-10-16-review-2/privacy.md",
+      "proposedUrl": "https://canary-platform.flexperiment.ru/__closed_legal/paid-test/2026-10-16-review-2/privacy.md",
+      "urlStatus": "PROPOSED_NOT_SERVED"
+    },
+    {
+      "kind": "personal_data",
+      "version": "2026-10-16.closed-paid-test.review.2",
+      "sha256": "120c54ff7f41078d5fb5e3c1973ac3c3b27422a997a82753dbdc294e51a822c1",
+      "source": "docs/legal/closed-paid-test/2026-10-16-review-2/personal_data.md",
+      "proposedUrl": "https://canary-platform.flexperiment.ru/__closed_legal/paid-test/2026-10-16-review-2/personal_data.md",
+      "urlStatus": "PROPOSED_NOT_SERVED"
+    },
+    {
+      "kind": "account_terms",
+      "version": "2026-10-16.closed-paid-test.review.2",
+      "sha256": "c04c2962945fde6a506b85b417554626e8b2c9bb741717386969177bf9845985",
+      "source": "docs/legal/closed-paid-test/2026-10-16-review-2/account_terms.md",
+      "proposedUrl": "https://canary-platform.flexperiment.ru/__closed_legal/paid-test/2026-10-16-review-2/account_terms.md",
+      "urlStatus": "PROPOSED_NOT_SERVED"
+    },
+    {
+      "kind": "marketing_consent",
+      "version": "2026-10-16.closed-paid-test.review.2",
+      "sha256": "1f79da48c4a8ade240af4090a4c812416abfe727b0d5bd2a538edba5b5a94f60",
+      "source": "docs/legal/closed-paid-test/2026-10-16-review-2/marketing_consent.md",
+      "proposedUrl": "https://canary-platform.flexperiment.ru/__closed_legal/paid-test/2026-10-16-review-2/marketing_consent.md",
+      "urlStatus": "PROPOSED_NOT_SERVED"
+    },
+    {
+      "kind": "course_offer",
+      "version": "2026-10-16.closed-paid-test.review.2",
+      "sha256": "ce250fd94c5f21e6912afd61a6fb25437f924eb15e6e60731caa61d3e5b9e26e",
+      "source": "docs/legal/closed-paid-test/2026-10-16-review-2/course_offer.md",
+      "proposedUrl": "https://canary-platform.flexperiment.ru/__closed_legal/paid-test/2026-10-16-review-2/course_offer.md",
+      "urlStatus": "PROPOSED_NOT_SERVED"
+    },
+    {
+      "kind": "receipt_contact",
+      "version": "2026-10-16.closed-paid-test.review.2",
+      "sha256": "c3ebae8b96c7fcd5b7d5fb2b30ee2898e77bdee47df252c95489785aaeb8bc70",
+      "source": "docs/legal/closed-paid-test/2026-10-16-review-2/receipt_contact.md",
+      "proposedUrl": "https://canary-platform.flexperiment.ru/__closed_legal/paid-test/2026-10-16-review-2/receipt_contact.md",
+      "urlStatus": "PROPOSED_NOT_SERVED"
+    },
+    {
+      "kind": "fiscal_items",
+      "version": "2026-10-16.closed-paid-test.review.2",
+      "sha256": "ccd553d20b067a6f7112fdbe2b6de5d03c18cf702804ddb1c123e9f3d7c83e0a",
+      "source": "docs/legal/closed-paid-test/2026-10-16-review-2/fiscal_items.md",
+      "proposedUrl": "https://canary-platform.flexperiment.ru/__closed_legal/paid-test/2026-10-16-review-2/fiscal_items.md",
+      "urlStatus": "PROPOSED_NOT_SERVED"
+    },
+    {
+      "kind": "refund_terms",
+      "version": "2026-10-16.closed-paid-test.review.2",
+      "sha256": "0e9e55f9ce1cd876e2ac0fc6d6928eec596855dd8916847371afed31fbe52844",
+      "source": "docs/legal/closed-paid-test/2026-10-16-review-2/refund_terms.md",
+      "proposedUrl": "https://canary-platform.flexperiment.ru/__closed_legal/paid-test/2026-10-16-review-2/refund_terms.md",
+      "urlStatus": "PROPOSED_NOT_SERVED"
+    }
+  ],
+  "activationManifest": null,
+  "exactBytesApproved": false,
+  "httpsReadbackCompleted": false,
+  "runtimeActivated": false
+}
