@@ -1,6 +1,10 @@
 # ART-39 — bounded installation preparation
 
-**REVIEW PACKET / INSTALLATION HOLD / MONEY HOLD.**16October2026. This updates the current closed canary; it does not reopen ART-338, run the old ART-338 qualification matrix or authorize production/public sales. The owner-approved engineering scope includes preparing these artifacts. Final legal approval, admitted exact runtime and a separate owner1₽ GO remain necessary.
+**HISTORICAL a548774 PACKET; superseded by [autonomous preparation](../evidence/2026-10-16-paid-checkout-autonomous-preparation/README.md).**
+Current owner authority: AUTONOMOUS INSTALLATION GO / MONEY HOLD. Dependencies remain
+mandatory; the old no-execution statements below describe that historical packet.
+
+**HISTORICAL REVIEW PACKET / INSTALLATION HOLD / MONEY HOLD.**16October2026. This updates the current closed canary; it does not reopen ART-338, run the old ART-338 qualification matrix or authorize production/public sales. The owner-approved engineering scope includes preparing these artifacts. Final legal approval, admitted exact runtime and a separate owner1₽ GO remain necessary.
 
 ## Superseding consent-guard preparation
 

@@ -2,6 +2,7 @@
 import json
 import hashlib
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import tempfile
@@ -33,6 +34,8 @@ class ClosedGateway(unittest.TestCase):
         docker('network','create',cls.network);docker('volume','create',cls.volume)
         # Root-owned600 key in a private fixture volume matches the actual nginx custody.
         docker('run','--rm','-v',str(p)+':/source:ro','-v',cls.volume+':/tls','--entrypoint','sh',IMAGE,'-c','cp /source/*.pem /tls/; chmod 600 /tls/privkey.pem; chmod 644 /tls/fullchain.pem')
+        shutil.copytree(ROOT/'docs/legal/stage-a/2026-10-11-draft',p/'legal')
+        shutil.copytree(ROOT/'docs/legal/closed-paid-test/2026-10-16-review-3',p/'legal/paid-test/2026-10-16-review-3')
         upstream=cls.prefix+'-upstream';cls.containers.append(upstream)
         docker('run','-d','--name',upstream,'--network',cls.network,'--network-alias','flexperiment-fast-cut-canary-commerce','--network-alias','flexperiment-fast-cut-canary-platform','--network-alias','flexperiment-fast-cut-canary-admin','node:22-alpine','node','-e',FIXTURE)
         cls.urls={}
@@ -42,7 +45,7 @@ class ClosedGateway(unittest.TestCase):
             for cap in ['CHOWN','SETUID','SETGID','NET_BIND_SERVICE']:cmd+=['--cap-add',cap]
             for mount in ['/tmp','/var/cache/nginx','/var/run']:cmd+=['--tmpfs',mount]
             cmd+=['-v',str(ROOT/'deploy/v2/closed-e2e'/(role+'.conf'))+':/etc/nginx/conf.d/default.conf:ro','-p','127.0.0.1::'+str(port)]
-            if role=='tester':cmd+=['-v',cls.volume+':/etc/canary-tls:ro','-v',str(ROOT/'docs/legal/stage-a/2026-10-11-draft')+':/etc/canary-legal:ro']
+            if role=='tester':cmd+=['-v',cls.volume+':/etc/canary-tls:ro','-v',str(p/'legal')+':/etc/canary-legal:ro']
             docker(*cmd,IMAGE)
             row=json.loads(docker('inspect',name))[0]
             if not row['State']['Running']:raise RuntimeError('NGINX_START_FAILED: '+docker('logs',name))
@@ -99,6 +102,20 @@ class ClosedGateway(unittest.TestCase):
         proposal=json.loads((ROOT/'docs/plans/2026-10-15-canary-legal-activation-proposal.json').read_bytes())
         for document in proposal['documents']:
             path='/__closed_legal/'+document['kind']+'.md'
+            status,headers,raw=self.request('tester',path,HOSTS[1])
+            self.assertEqual(status,200);self.assertEqual(headers['cache-control'],'no-store')
+            self.assertEqual(hashlib.sha256(raw).hexdigest(),document['sha256'])
+            self.assertEqual(self.request('tester',path,HOSTS[1],'POST',b'{}')[0],403)
+            for host in [HOSTS[0],HOSTS[2],HOSTS[3]]:
+                self.assertIn(self.request('tester',path,host)[0],[403,404])
+
+    def test_paid_review3_exact_approved_bytes_keep_host_and_method_boundary(self):
+        root=ROOT/'docs/legal/closed-paid-test/2026-10-16-review-3'
+        approval=json.loads((root/'approval-record.json').read_bytes())
+        self.assertEqual(hashlib.sha256((root/'SHA256SUMS').read_bytes()).hexdigest(),approval['approvedPackageSha256'])
+        proposal=json.loads((root/'release-proposal.json').read_bytes())
+        for document in proposal['candidateDocuments']:
+            path='/__closed_legal/paid-test/2026-10-16-review-3/'+document['kind']+'.md'
             status,headers,raw=self.request('tester',path,HOSTS[1])
             self.assertEqual(status,200);self.assertEqual(headers['cache-control'],'no-store')
             self.assertEqual(hashlib.sha256(raw).hexdigest(),document['sha256'])
