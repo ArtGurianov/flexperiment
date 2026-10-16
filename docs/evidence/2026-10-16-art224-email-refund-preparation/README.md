@@ -2,6 +2,9 @@
 
 **PREPARED / MAIL OWNER-CONFIRMED / EXACT LEGAL APPROVAL PENDING / NOT INSTALLED.**
 
+This is the historical preparation checkpoint, superseded by the
+[executed release evidence](../2026-10-16-art224-email-refund-release/README.md).
+
 This is preparation for the shared V2 process, not reopening ART-39, another
 paid E2E, or another LAB V1 retirement audit. The owner accepted live rejection
 of a duplicate request plus isolated positive acceptance instead of a new payment.

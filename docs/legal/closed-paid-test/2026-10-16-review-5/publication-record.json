@@ -1,0 +1,15 @@
+{
+  "status": "OWNER_APPROVED_PUBLISHED_ACTIVATED_READ_BACK",
+  "packageSha256": "fdaf8244877f888167447afbcc145185e5cced47885d06c3789939eefd09750d",
+  "releaseVersion": "2026-10-16.closed-paid-test.review.5",
+  "legalReleaseId": "93084c37-d43f-4e66-b95b-2bdfc1fd19c2",
+  "activationManifestSha256": "5541c0ccd0da1772d6cdc28fb9d45dc382d631ed667e2f8e070574502d7b8d33",
+  "httpsDocumentHashReadback": true,
+  "documentCount": 8,
+  "review3Review4StageAUrlsPreserved": true,
+  "customerConsentsCreatedAutomatically": false,
+  "newFiscalPolicyQualified": false,
+  "newPaymentOrRefundExecutionCreated": false,
+  "activatedAt": "2026-10-16T14:49:56.583Z",
+  "runtimeVerifiedAt": "2026-10-16T15:13:26.865622+00:00"
+}
