@@ -1,0 +1,432 @@
+{
+  "browser": "Chrome/155.0.8059.80",
+  "actualWidevinePlayback": true,
+  "ordinaryTls": true,
+  "cacheDisabled": true,
+  "fixtureOnly": true,
+  "cases": [
+    {
+      "case": "allow",
+      "originCase": "allowed",
+      "reference": "c30b94f4-af74-4975-984d-6d506ff03000",
+      "startedAt": "2026-10-16T17:19:43.707Z",
+      "completedAt": "2026-10-16T17:20:07.084Z",
+      "page": {
+        "origin": "https://canary-platform.flexperiment.ru",
+        "secure": true,
+        "eme": true,
+        "title": ""
+      },
+      "init": {
+        "created": true
+      },
+      "parent": {
+        "time": 4,
+        "events": [
+          {
+            "event": "playing",
+            "at": 1792171201342
+          },
+          {
+            "event": "ended",
+            "at": 1792171205356
+          }
+        ]
+      },
+      "frames": [
+        {
+          "hasVideo": true,
+          "time": 4,
+          "paused": true,
+          "ended": true,
+          "readyState": 4,
+          "decodedFrames": 100,
+          "drmError": false,
+          "privacyError": false,
+          "documentReferrerOrigin": "https://canary-platform.flexperiment.ru"
+        }
+      ],
+      "licenseResponses": [
+        {
+          "kind": "LICENSE",
+          "host": "license.kinescope.io",
+          "method": "POST",
+          "suffix": null,
+          "signedCdnQuery": false,
+          "status": 200,
+          "elapsedMs": 1885,
+          "fromCache": false,
+          "fromServiceWorker": false
+        },
+        {
+          "kind": "LICENSE",
+          "host": "license.kinescope.io",
+          "method": "POST",
+          "suffix": null,
+          "signedCdnQuery": false,
+          "status": 200,
+          "elapsedMs": 513,
+          "fromCache": false,
+          "fromServiceWorker": false
+        }
+      ],
+      "embedRequests": [
+        {
+          "referrerHeaderPresent": true,
+          "referrerOrigin": "https://canary-platform.flexperiment.ru",
+          "referrerPolicy": "strict-origin-when-cross-origin"
+        }
+      ],
+      "matchedProviderCallbacks": [
+        {
+          "event": "ART36_FIXTURE_CALLBACK",
+          "kind": "allow",
+          "reference": "c30b94f4-af74-4975-984d-6d506ff03000",
+          "intendedStatus": 200,
+          "responseAlreadyDestroyed": false,
+          "elapsedMs": 1,
+          "observedAt": "2026-10-16T17:20:00.384Z"
+        },
+        {
+          "event": "ART36_FIXTURE_CALLBACK",
+          "kind": "allow",
+          "reference": "c30b94f4-af74-4975-984d-6d506ff03000",
+          "intendedStatus": 200,
+          "responseAlreadyDestroyed": false,
+          "elapsedMs": 1,
+          "observedAt": "2026-10-16T17:20:01.274Z"
+        }
+      ],
+      "receiptSha256": "bd908d65760a295d7ea56caf05f25b37f80b07726479f71d63ffc4a84dded06d"
+    },
+    {
+      "case": "deny",
+      "originCase": "allowed",
+      "reference": "9e35c96e-5200-44ef-817f-37e396d2eb83",
+      "startedAt": "2026-10-16T17:16:06.572Z",
+      "completedAt": "2026-10-16T17:16:22.940Z",
+      "page": {
+        "origin": "https://canary-platform.flexperiment.ru",
+        "secure": true,
+        "eme": true,
+        "title": ""
+      },
+      "init": {
+        "created": true
+      },
+      "parent": {
+        "time": 0,
+        "events": []
+      },
+      "frames": [
+        {
+          "hasVideo": false,
+          "drmError": true,
+          "privacyError": false
+        }
+      ],
+      "licenseResponses": [
+        {
+          "kind": "LICENSE",
+          "host": "license.kinescope.io",
+          "method": "POST",
+          "status": 403,
+          "elapsedMs": 1135,
+          "fromCache": false,
+          "fromServiceWorker": false
+        }
+      ],
+      "embedRequests": [],
+      "matchedProviderCallbacks": [
+        {
+          "event": "ART36_FIXTURE_CALLBACK",
+          "kind": "deny",
+          "reference": "9e35c96e-5200-44ef-817f-37e396d2eb83",
+          "intendedStatus": 403,
+          "responseAlreadyDestroyed": false,
+          "elapsedMs": 1,
+          "observedAt": "2026-10-16T17:16:17.838Z"
+        }
+      ],
+      "receiptSha256": "584bc530f0fe8a440eeba269ed3a805ef2cdb701a3cada8c67fccaa63ceeb7d4"
+    },
+    {
+      "case": "unauthorized",
+      "originCase": "allowed",
+      "reference": "1ee7c8da-045f-49bf-9ef7-9effc03464be",
+      "startedAt": "2026-10-16T17:16:23.006Z",
+      "completedAt": "2026-10-16T17:16:37.976Z",
+      "page": {
+        "origin": "https://canary-platform.flexperiment.ru",
+        "secure": true,
+        "eme": true,
+        "title": ""
+      },
+      "init": {
+        "created": true
+      },
+      "parent": {
+        "time": 0,
+        "events": []
+      },
+      "frames": [
+        {
+          "hasVideo": false,
+          "drmError": true,
+          "privacyError": false
+        }
+      ],
+      "licenseResponses": [
+        {
+          "kind": "LICENSE",
+          "host": "license.kinescope.io",
+          "method": "POST",
+          "status": 403,
+          "elapsedMs": 1350,
+          "fromCache": false,
+          "fromServiceWorker": false
+        }
+      ],
+      "embedRequests": [],
+      "matchedProviderCallbacks": [
+        {
+          "event": "ART36_FIXTURE_CALLBACK",
+          "kind": "unauthorized",
+          "reference": "1ee7c8da-045f-49bf-9ef7-9effc03464be",
+          "intendedStatus": 401,
+          "responseAlreadyDestroyed": false,
+          "elapsedMs": 0,
+          "observedAt": "2026-10-16T17:16:34.635Z"
+        }
+      ],
+      "receiptSha256": "a26dcbb485fd008621c2a55ea24d19cc504fba8c57e4f1f75123ce43e46bcc77"
+    },
+    {
+      "case": "error",
+      "originCase": "allowed",
+      "reference": "6556c917-c041-4e70-b6eb-efbdb153be86",
+      "startedAt": "2026-10-16T17:16:38.048Z",
+      "completedAt": "2026-10-16T17:16:53.043Z",
+      "page": {
+        "origin": "https://canary-platform.flexperiment.ru",
+        "secure": true,
+        "eme": true,
+        "title": ""
+      },
+      "init": {
+        "created": true
+      },
+      "parent": {
+        "time": 0,
+        "events": []
+      },
+      "frames": [
+        {
+          "hasVideo": false,
+          "drmError": true,
+          "privacyError": false
+        }
+      ],
+      "licenseResponses": [
+        {
+          "kind": "LICENSE",
+          "host": "license.kinescope.io",
+          "method": "POST",
+          "status": 403,
+          "elapsedMs": 930,
+          "fromCache": false,
+          "fromServiceWorker": false
+        }
+      ],
+      "embedRequests": [],
+      "matchedProviderCallbacks": [
+        {
+          "event": "ART36_FIXTURE_CALLBACK",
+          "kind": "error",
+          "reference": "6556c917-c041-4e70-b6eb-efbdb153be86",
+          "intendedStatus": 500,
+          "responseAlreadyDestroyed": false,
+          "elapsedMs": 1,
+          "observedAt": "2026-10-16T17:16:48.491Z"
+        }
+      ],
+      "receiptSha256": "1e652424c3eaeb265f90d5d7ce1bb371a83bf756e4696d93e7b561c0e08e5a34"
+    },
+    {
+      "case": "timeout",
+      "originCase": "allowed",
+      "reference": "c7b93329-5215-4e9b-a3d5-15fd83c8b221",
+      "startedAt": "2026-10-16T17:16:53.105Z",
+      "completedAt": "2026-10-16T17:17:09.449Z",
+      "page": {
+        "origin": "https://canary-platform.flexperiment.ru",
+        "secure": true,
+        "eme": true,
+        "title": ""
+      },
+      "init": {
+        "created": true
+      },
+      "parent": {
+        "time": 0,
+        "events": []
+      },
+      "frames": [
+        {
+          "hasVideo": false,
+          "drmError": true,
+          "privacyError": false
+        }
+      ],
+      "licenseResponses": [
+        {
+          "kind": "LICENSE",
+          "host": "license.kinescope.io",
+          "method": "POST",
+          "status": 403,
+          "elapsedMs": 5302,
+          "fromCache": false,
+          "fromServiceWorker": false
+        }
+      ],
+      "embedRequests": [],
+      "matchedProviderCallbacks": [
+        {
+          "event": "ART36_FIXTURE_CALLBACK",
+          "kind": "timeout",
+          "reference": "c7b93329-5215-4e9b-a3d5-15fd83c8b221",
+          "intendedStatus": 200,
+          "responseAlreadyDestroyed": true,
+          "elapsedMs": 7002,
+          "observedAt": "2026-10-16T17:17:09.151Z"
+        }
+      ],
+      "receiptSha256": "451edaa9b6121b8150e16dade132a10ccaf3f33e1e39c8d204bf3f4834f0b608"
+    },
+    {
+      "case": "disconnect",
+      "originCase": "allowed",
+      "reference": "a699e62f-e86f-49e6-b8b7-968a98ee7a3e",
+      "startedAt": "2026-10-16T17:17:09.524Z",
+      "completedAt": "2026-10-16T17:17:24.433Z",
+      "page": {
+        "origin": "https://canary-platform.flexperiment.ru",
+        "secure": true,
+        "eme": true,
+        "title": ""
+      },
+      "init": {
+        "created": true
+      },
+      "parent": {
+        "time": 0,
+        "events": []
+      },
+      "frames": [
+        {
+          "hasVideo": false,
+          "drmError": true,
+          "privacyError": false
+        }
+      ],
+      "licenseResponses": [
+        {
+          "kind": "LICENSE",
+          "host": "license.kinescope.io",
+          "method": "POST",
+          "status": 403,
+          "elapsedMs": 661,
+          "fromCache": false,
+          "fromServiceWorker": false
+        }
+      ],
+      "embedRequests": [],
+      "matchedProviderCallbacks": [
+        {
+          "event": "ART36_FIXTURE_CALLBACK",
+          "kind": "disconnect",
+          "reference": "a699e62f-e86f-49e6-b8b7-968a98ee7a3e",
+          "intendedStatus": null,
+          "responseAlreadyDestroyed": false,
+          "elapsedMs": 0,
+          "observedAt": "2026-10-16T17:17:19.524Z"
+        }
+      ],
+      "receiptSha256": "bc009b47cfe3f6c5cdc1b76b6b64bd749f58c14fad3b217979965b2640f64244"
+    },
+    {
+      "case": "allow",
+      "originCase": "denied",
+      "reference": "c8a7326d-b54b-475d-b960-7174b16a1e44",
+      "startedAt": "2026-10-16T17:17:24.506Z",
+      "completedAt": "2026-10-16T17:17:55.096Z",
+      "page": {
+        "origin": "https://canary-lab.flexperiment.ru",
+        "secure": true,
+        "eme": true,
+        "title": ""
+      },
+      "init": {
+        "created": false,
+        "stage": "PLAYER_INIT_HOLD"
+      },
+      "parent": {
+        "events": []
+      },
+      "frames": [
+        {
+          "hasVideo": false,
+          "drmError": false,
+          "privacyError": true
+        }
+      ],
+      "licenseResponses": [],
+      "embedRequests": [],
+      "matchedProviderCallbacks": [],
+      "receiptSha256": "6d1dc50247bc65bbf600dbd595132dd6939a949cb1c208831751549a49eac254"
+    },
+    {
+      "case": "allow",
+      "originCase": "no-referrer",
+      "reference": "386da9a8-fca2-4256-a8bf-7f3f88c908a9",
+      "startedAt": "2026-10-16T17:30:24.145Z",
+      "completedAt": "2026-10-16T17:31:00.143Z",
+      "page": {
+        "origin": "https://canary-platform.flexperiment.ru",
+        "secure": true,
+        "eme": true,
+        "title": ""
+      },
+      "init": {
+        "created": false,
+        "stage": "PLAYER_INIT_HOLD"
+      },
+      "parent": {
+        "events": []
+      },
+      "frames": [
+        {
+          "hasVideo": false,
+          "drmError": false,
+          "privacyError": true,
+          "documentReferrerOrigin": null
+        }
+      ],
+      "licenseResponses": [],
+      "embedRequests": [
+        {
+          "referrerHeaderPresent": false,
+          "referrerOrigin": null,
+          "referrerPolicy": "no-referrer"
+        },
+        {
+          "referrerHeaderPresent": false,
+          "referrerOrigin": null,
+          "referrerPolicy": "no-referrer"
+        }
+      ],
+      "matchedProviderCallbacks": [],
+      "receiptSha256": "620b733a0de91f2227696d3d43cee264705e324f9bd8f581a6ea99d772f00ab5"
+    }
+  ]
+}
