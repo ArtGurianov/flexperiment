@@ -42,6 +42,10 @@ jobs:
         run: python3 scripts/v2/test_platform_backup.py -v
       - name: Isolated Platform canary scheduled transport and recovery admission
         run: python3 scripts/v2/test_platform_scheduled_backup.py -v
+      - name: Isolated ART36 provider fault fixture boundary
+        run: |
+          node --test scripts/v2/art36/provider-fixture.test.mjs
+          python3 -B -m unittest discover -s scripts/v2/art36 -p 'test_*.py' -v
       - name: Canary-only backup alert channel isolation and secret safety
         run: python3 scripts/v2/test_canary_backup_alert.py -v
       - name: Closed fast-cut Compose and backup contracts
