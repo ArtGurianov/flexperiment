@@ -36,8 +36,94 @@ ORIGINS = {key:'https://canary-'+name+'.flexperiment.ru' for key,name in
            [('PLATFORM_ORIGIN','platform'),('LAB_ORIGIN','lab'),('ADMIN_ORIGIN','admin'),('API_ORIGIN','api')]}
 
 
+# Diagnostics are observations only. No retry, fallback or admission mutation.
+DIAGNOSTIC_STAGE = 'startup'
+DIAGNOSTIC_STAGES = frozenset({
+    'startup', 'prepare', 'smoke', 'commerce_identity', 'commerce_readiness',
+    'platform_identity', 'platform_readiness', 'admin_identity', 'admin_readiness',
+    'database', 'fence', 'remote_ledger', 'snapshot', 'snapshot_identity',
+    'archive_copy', 'local_archive', 'transport_configuration', 'remote_upload',
+    'remote_readback', 'status_publish', 'freshness_status', 'freshness_archive',
+})
+DIAGNOSTIC_CODES = frozenset({
+    'FAST_CUT_ADMIN_NOT_READY',
+    'FAST_CUT_BACKUP_CHANGED',
+    'FAST_CUT_BACKUP_IDENTITY',
+    'FAST_CUT_BACKUP_STALE',
+    'FAST_CUT_COMMAND_FAILED',
+    'FAST_CUT_COMMERCE_GUARD',
+    'FAST_CUT_COMMERCE_NOT_READY',
+    'FAST_CUT_DATA_MOUNT',
+    'FAST_CUT_ENV_INVALID',
+    'FAST_CUT_ERASURE_MOUNT',
+    'FAST_CUT_EXECUTION_OVERRIDE',
+    'FAST_CUT_FENCE',
+    'FAST_CUT_IDENTITY_DRIFT',
+    'FAST_CUT_IMAGE_DRIFT',
+    'FAST_CUT_INPUT_EXISTS_OR_NOT_ROOT',
+    'FAST_CUT_INPUT_GUARD',
+    'FAST_CUT_INTERNAL_SMOKE_FAILED',
+    'FAST_CUT_LOCAL_BACKUP_HASH',
+    'FAST_CUT_PAID_TEST_INVALID',
+    'FAST_CUT_PAID_TEST_NOT_READY',
+    'FAST_CUT_PAID_TEST_SECRETS',
+    'FAST_CUT_PAYMENT_PROFILE',
+    'FAST_CUT_PLATFORM_NOT_READY',
+    'FAST_CUT_PLATFORM_PAYLOAD',
+    'FAST_CUT_PLATFORM_PAYMENT_SECRET',
+    'FAST_CUT_PRIVATE_CUSTODY',
+    'FAST_CUT_REDIRECT_REFUSED',
+    'FAST_CUT_RELEASE_IMAGE_MISMATCH',
+    'FAST_CUT_RELEASE_INVALID',
+    'FAST_CUT_RELEASE_SOURCE_MISMATCH',
+    'FAST_CUT_REMOTE_BACKUP_HASH',
+    'FAST_CUT_REMOTE_LEDGER',
+    'FAST_CUT_RESPONSE_LIMIT',
+    'FAST_CUT_RUNTIME_SCOPE',
+    'FAST_CUT_SCHEMA',
+    'FAST_CUT_SOURCE_AMBIGUOUS',
+    'FAST_CUT_SOURCE_SCOPE',
+})
+
+
+class GuardRefusal(ValueError):
+    pass
+
+
+def mark_stage(stage):
+    global DIAGNOSTIC_STAGE
+    # Never accept a runtime-derived label in a report.
+    DIAGNOSTIC_STAGE = stage if stage in DIAGNOSTIC_STAGES else 'startup'
+
+
+def failure_report(operation, error, started):
+    code = None
+    if type(error) is GuardRefusal and len(error.args) == 1:
+        candidate = error.args[0]
+        if type(candidate) is str and candidate in DIAGNOSTIC_CODES:
+            code = candidate
+    reason = 'COMMAND_FAILED' if code == 'FAST_CUT_COMMAND_FAILED' else 'GUARD_REFUSED' if code else 'UNKNOWN'
+    if isinstance(error, (subprocess.TimeoutExpired, TimeoutError)):
+        reason = 'TIMEOUT'
+    elif isinstance(error, PermissionError):
+        reason = 'PERMISSION'
+    elif isinstance(error, FileNotFoundError):
+        reason = 'MISSING_FILE'
+    elif isinstance(error, json.JSONDecodeError):
+        reason = 'INVALID_JSON'
+    elif isinstance(error, sqlite3.Error):
+        reason = 'SQLITE'
+    report = {'state': 'FAST_CUT_HOLD', 'operation': operation,
+              'stage': DIAGNOSTIC_STAGE, 'reason': reason,
+              'elapsedMs': max(0, round((time.monotonic() - started) * 1000)),
+              'observedAt': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}
+    if code is not None:
+        report['code'] = code
+    return report
+
+
 def require(value, code):
-    if not value: raise ValueError(code)
+    if not value: raise GuardRefusal(code)
 
 
 def run(args, timeout=180):
@@ -152,6 +238,7 @@ def assert_payment_environment(env, role, profile):
 
 
 def prepare():
+    mark_stage('prepare')
     require(os.geteuid()==0 and not INPUT.exists(), 'FAST_CUT_INPUT_EXISTS_OR_NOT_ROOT')
     token = private(Path('/root/flexperiment-v2-owner/coolify-api.token')).decode().strip()
     class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -234,7 +321,9 @@ def inspect(role):
 def check():
     result={'sourceCommit':release()['commerce']['sourceCommit'],'roles':{}}
     for role in ['commerce','platform','admin']:
+        mark_stage(role+'_identity')
         name,result['roles'][role]=inspect(role)
+        mark_stage(role+'_readiness')
         if role=='commerce':
             ready=json.loads(run(['docker','exec',name,'curl','-fsS','--max-time','10','http://127.0.0.1:3002/readyz']))
             require(ready['ok'] and ready['foundationMode'] is False and ready['capabilities']['erasure']=='qualified'
@@ -254,21 +343,27 @@ def check():
             # proxies Commerce, so this response identifies the upstream role.
             require(ready['sourceCommit']==release()['commerce']['sourceCommit'] and ready.get('service')=='commerce-v2'
                     and ready['ok'],'FAST_CUT_ADMIN_NOT_READY')
+    mark_stage('database')
     db=sqlite3.connect(DATABASE.as_uri()+'?mode=ro',uri=True);db.row_factory=sqlite3.Row
     rows=[dict(v) for v in db.execute("select type,name,tbl_name,sql from sqlite_master where name not like 'sqlite_%' order by type,name")]
     require(hashlib.sha256(json.dumps(rows,separators=(',',':'),ensure_ascii=False).encode()).hexdigest()==SCHEMA
             and db.execute('select count(*) from schema_migrations').fetchone()[0]==27
             and db.execute('pragma integrity_check').fetchone()[0]=='ok' and not db.execute('pragma foreign_key_check').fetchall(),'FAST_CUT_SCHEMA')
-    db.close();fence=sqlite3.connect((ERASURE/'fence'/'erasure-fence.sqlite').as_uri()+'?mode=ro',uri=True)
+    db.close()
+    mark_stage('fence')
+    fence=sqlite3.connect((ERASURE/'fence'/'erasure-fence.sqlite').as_uri()+'?mode=ro',uri=True)
     state=fence.execute('select scope,state,sequence,owner from fence_state where id=1').fetchone()
     require(state[0:2]==('canary','OPEN') and state[3] is None and fence.execute('select count(*) from fence_leases').fetchone()[0]==0,'FAST_CUT_FENCE')
-    fence.close();remote=json.loads(run(['/usr/local/bin/flexperiment-erasure','read']))
+    fence.close()
+    mark_stage('remote_ledger')
+    remote=json.loads(run(['/usr/local/bin/flexperiment-erasure','read']))
     require(remote['scope']=='canary' and remote['state']=='REMOTE_VERIFIED' and remote['sequence']==state[2],'FAST_CUT_REMOTE_LEDGER')
     result.update(schemaFingerprint=SCHEMA,fence='OPEN',ledgerSequence=state[2],leases=0,state='RUNTIME_CHECK_PASS_NOT_FINAL_ACCEPTANCE')
     return result
 
 
 def smoke():
+    mark_stage('smoke')
     values=dict(line.split('=',1) for line in private(INPUT/'commerce.env').decode().splitlines())
     inputs={'password':private(INPUT/'admin-password').decode(),'serviceToken':values['PLATFORM_SERVICE_TOKEN']}
     code=Path(__file__).with_name('fast-cut-smoke.mjs').read_text()
@@ -285,20 +380,31 @@ def transport():
 
 
 def backup():
-    check();name,_=inspect('commerce');proof=json.loads(run(['docker','exec',name,'node','--import','tsx','commerce-v2/src/backup-cli.ts'],timeout=900))
+    check()
+    mark_stage('commerce_identity')
+    name,_=inspect('commerce')
+    mark_stage('snapshot')
+    proof=json.loads(run(['docker','exec',name,'node','--import','tsx','commerce-v2/src/backup-cli.ts'],timeout=900))
+    mark_stage('snapshot_identity')
     source=release()['commerce']['sourceCommit']
     require(re.fullmatch('canary-'+source+r'-[a-f0-9-]{36}\.sqlite\.age',proof.get('filename','')),'FAST_CUT_BACKUP_IDENTITY')
     BACKUPS.mkdir(mode=0o700,parents=True,exist_ok=True)
     filename='fast-cut-'+time.strftime('%Y%m%dT%H%M%SZ',time.gmtime())+'-'+str(uuid.uuid4())+'.sqlite.age';archive=BACKUPS/filename
+    mark_stage('archive_copy')
     run(['docker','cp',name+':/var/lib/flexperiment-v2-backups/'+proof['filename'],str(archive)])
+    mark_stage('local_archive')
     os.chown(archive,0,0);archive.chmod(0o600);raw=private(archive);sha=hashlib.sha256(raw).hexdigest()
     require(sha==proof['sha256'] and len(raw)==proof['size'],'FAST_CUT_LOCAL_BACKUP_HASH')
     with archive.open('rb') as handle: os.fsync(handle.fileno())
+    mark_stage('transport_configuration')
     remote='cloud:art-backups/flexperiment/commerce-v2/canary/fast-cut/'+filename;b=transport()
     # Unique ciphertext object. Errors never retry the same PUT; retain archive.
+    mark_stage('remote_upload')
     b.s3(BACKUPS,'rclone copyto "/backup/'+filename+'" "'+remote+'"')
+    mark_stage('remote_readback')
     require(b.s3(BACKUPS,'rclone cat "'+remote+'" | sha256sum').decode().split()[0]==sha,'FAST_CUT_REMOTE_BACKUP_HASH')
     status={'status':'SUCCESS','sourceCommit':source,'verifiedAt':int(time.time()),'filename':filename,'object':remote,'sha256':sha,'size':len(raw)}
+    mark_stage('status_publish')
     temporary=BACKUPS/('.status-'+str(uuid.uuid4()));write(temporary,(json.dumps(status)+'\n').encode());os.replace(temporary,BACKUPS/'status.json')
     descriptor=os.open(BACKUPS,os.O_DIRECTORY)
     try: os.fsync(descriptor)
@@ -307,17 +413,26 @@ def backup():
 
 
 def check_backup():
+    mark_stage('freshness_status')
     status=json.loads(private(BACKUPS/'status.json'))
     require(status['status']=='SUCCESS' and status['sourceCommit']==release()['commerce']['sourceCommit'] and 0<=time.time()-status['verifiedAt']<=8*3600
             and re.fullmatch(r'fast-cut-\d{8}T\d{6}Z-[a-f0-9-]{36}\.sqlite\.age',status['filename']),'FAST_CUT_BACKUP_STALE')
+    mark_stage('freshness_archive')
     raw=private(BACKUPS/status['filename']);require(hashlib.sha256(raw).hexdigest()==status['sha256'] and len(raw)==status['size'],'FAST_CUT_BACKUP_CHANGED')
     return {'status':'FRESH','verifiedAt':status['verifiedAt']}
 
 
-if __name__=='__main__':
-    parser=argparse.ArgumentParser();parser.add_argument('operation',choices=['prepare','check','smoke','backup','check-backup']);args=parser.parse_args()
+def main(argv=None):
+    parser=argparse.ArgumentParser();parser.add_argument('operation',choices=['prepare','check','smoke','backup','check-backup']);args=parser.parse_args(argv)
+    mark_stage('startup');started=time.monotonic()
     try:
         print(json.dumps({'prepare':prepare,'check':check,'smoke':smoke,'backup':backup,'check-backup':check_backup}[args.operation]()))
-    except Exception:
-        # Exceptions may contain private API responses/env. Never emit their text.
-        print(json.dumps({'state':'FAST_CUT_HOLD','operation':args.operation}));raise SystemExit(1)
+        return 0
+    except Exception as error:
+        # Never stringify errors/commands/provider output, including nested causes.
+        print(json.dumps(failure_report(args.operation,error,started)))
+        return 1
+
+
+if __name__=='__main__':
+    raise SystemExit(main())

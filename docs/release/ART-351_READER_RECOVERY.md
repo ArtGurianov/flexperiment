@@ -1,9 +1,19 @@
 # ART-351 — reader diagnostics and bounded recovery
 
-**Prepared, not executed.** Independent review and a new explicit owner GO are
-required before installation/restart. ART337 infrastructure remains Done. ART351
-is now an immediate availability blocker for live ART338 and a mandatory F9 gate.
-Production/V1/Refref/provider/public registration/payments/marketing/F9 stay closed.
+**Current scope, 16 October 2026.** The PR228 reader/fence repairs were installed
+and retained through application source `80a11bde55c38973bcde99b4a92ee9e09c5dc6ad`.
+ART338, ART39/83 and ART224 are complete within their closed acceptance scopes.
+ART351 remains a separate pre-F9 availability/recovery gate. Historical cause
+is unproven; finite healthy observations are not production qualification.
+The original installation procedure below is historical guidance for a future
+explicitly admitted runtime change, not a requirement to reinstall completed
+work. Current canary schema is0027; older schema0026 references below describe
+the original repair. New paid-profile checks must use the current approved
+release vector, legal version and preserved financial history.
+
+The owner resumed ART351 diagnostics; no new money operation or public opening
+is authorized. Preserve current containers, signed authority, leases and data.
+Do not repeat the withdrawn Mac-disconnect/restart experiment.
 
 ## What this patch does (and does not establish)
 
@@ -106,3 +116,25 @@ all recovered errors; do not claim multi-day production resilience from a short
 canary run. Before F9, prove the intended outage/recovery/alert behavior with the
 actual provider and a separately approved scope. This PR's synthetic transport
 and local recovery tests are not provider qualification or execution authority.
+
+## Backup refusal diagnostics
+
+The candidate host helper preserves `FAST_CUT_HOLD` and exit1, adding a fixed
+`stage`, `reason`, optional exact guard `code`, `elapsedMs` and UTC `observedAt`.
+No exception message, command, provider response or unknown code is included.
+Success/status payloads and backup/recovery gates are unchanged. The controller
+must be independently qualified and installed; source merge alone is not a
+host-install receipt.
+
+Use the stage to distinguish readiness/fence/remote-ledger refusal before
+snapshot creation from snapshot/copy/local-hash/upload/remote-readback failure.
+An upload failure is not permission to repeat a PUT blindly or replace prior
+SUCCESS. Retain the existing ciphertext and reconcile its state. A current
+remote S3 read never reopens CLOSED admission.
+
+When investigating transport, compare the same hostname/SNI, IPs, trust and TLS
+versions from the Mac and VPS independently. A pre-certificate EOF is not proof
+of an expired/untrusted certificate. Never disable hostname/trust verification,
+change global TLS settings or conflate workstation failure with VPS authority
+failure. Inspect current backup service failure as well as age and source of
+its retained last SUCCESS.
