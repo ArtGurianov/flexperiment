@@ -57,7 +57,9 @@
     ],
     "rewardValue": 0,
     "bankOrIdentityReprovisioning": false,
-    "keyCreated": false
+    "keyCreated": false,
+    "servingRefrefEvidencePolicyMapRequired": true,
+    "servingRefrefConfigApplied": false
   },
   "validation": {
     "platformTests": {

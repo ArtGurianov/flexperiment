@@ -20,4 +20,6 @@ Actual UI order is course → signed handoff → preview(price/documents/contact
 
 A private production manifest review candidate now binds the real Business/OWNER, independent saved owner-identity manifest, exact platform seed, only /checkout/return and checkout/refund/fulfillment scopes. Strict parsers pass; read-only live comparison under refref_runtime confirms registry/owner/platform identity, zero merchant keys/offers. No bank/bootstrap writes or key issuance occurred. It is a review candidate, not an admitted or executed manifest. The zero-reward terms and signed-regulation hash reference are technical proposals requiring exact manifest review before immutable publication.
 
+Consumer tracing also requires an admitted Refref runtime map entry from the returned evidencePolicyVersionId; provisioning alone does not reload the process-start UNATTRIBUTED_EVIDENCE_POLICIES map. That shared production config application stays under installation HOLD.
+
 See the [bounded installation packet](../../release/ART-39_INSTALL_PACKET.md) for custody, exact role vector, backup and remaining HOLDs. ART-338 stays Done; ART-39/83/224 stay open.
