@@ -4,6 +4,11 @@ The owner selected `refunds@flexperiment.ru` → Admin registration → separate
 decision → separate execution. The closed course payment/refund has already
 completed; this product change does not authorize another financial operation.
 
+The subsequent [ART-224 release packet](ART224_EMAIL_REFUND_RELEASE.md) and
+[preparation evidence](../evidence/2026-10-16-art224-email-refund-preparation/README.md)
+record the exact source, isolated course/LAB acceptance and remaining real-mail
+and legal admission. They do not assert an installed common flow.
+
 ## Prepared implementation
 
 Courses account and LAB V2 use one static `RefundContact` component. It requests
