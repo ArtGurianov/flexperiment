@@ -13,16 +13,17 @@ PR239 merged docs only as `6e48e22a7a6c958ca7deb77d665726b522a382ee`.
 | Host controller | reviewed a548774 source, helper SHA256 `c4d5eb6516a147a7536c466b559f156349aafe2c0bcf8e41bca399a0c0b7160d` | No helper/workflow repair in this change; retain separately pinned controller |
 | Commerce/Platform candidates | a548774 images in [old packet](ART-39_INSTALL_PACKET.md) | Merged3222845 owns green CI and new independently verified digest pair; old a548 artifacts cannot satisfy this gate |
 | Admin | retained source08523bd…/existing immutable image | Retain unchanged, no rebuild |
-| Refref operator | source4f533ec…; digest10645410… | Retained one-off artifact; admitted exact manifest executed to DNS_CHALLENGE_PENDING, no key issued |
-| Shared serving Refref | observed202c0fb…; observed policy map `{}` | After actual READY only, add selected Business→returned `evidencePolicyVersionId`, preserving all existing entries; source/runtime upgrade not implied |
-| Legal | active free Stage A, paid draft unactivated | [review.3](../legal/closed-paid-test/2026-10-16-review-3/README.md) is not approved; require approved exact bytes + HTTPS read-back + actual qualified policy |
+| Refref operator | source4f533ec…; digest10645410… | Retained one-off artifact; admitted unchanged manifest replayed to READY; one key with independent escrow/recovery |
+| Shared serving Refref | observed202c0fb…; old map `{}` | Actual READY policy entry applied after config/key escrow recovery, controlled same-source restart healthy; other entries/config preserved |
+| Legal | review.3 Stage B active, exact owner-approved bytes | [review.3](../legal/closed-paid-test/2026-10-16-review-3/README.md) is approved and HTTPS/hash verified; actual qualified policy remains required |
 | Closed profile | payments disabled, sole offer CLOSED | Only separately admitted matching Commerce/Platform runtime may use scoped refref/ACCEPTANCE_ONLY; price stays100kopecks |
 
 The private merchant candidate remains SHA256
 `ab8d370280650f6f898b0bb938251cf0be97bdf485813a71141601605ad64f91`.
-It was technically admitted under delegated owner authority; execution returned
-**DNS_CHALLENGE_PENDING**, not READY. Independent DB read-back matched the actual
-offer/campaign/terms/evidence IDs and pending challenge; API keys0. Return origin is canary-platform, only `/checkout/return`;
+It was technically admitted under delegated owner authority; DNS confirmation and
+same-manifest replay returned **READY**. Exactly one key is independently
+recoverable with the actual OWNER/policy in the offhost-restored database.
+Return origin is canary-platform, only `/checkout/return`;
 scopes checkout/refund/fulfillment; single unattributed zero-reward campaign.
 No policy UUID, merchant key or final legal hash may be invented to complete it.
 
@@ -47,7 +48,8 @@ privately before the separately admitted config-only restart.
 
 Common proposed inputs retain profile `art39-test-course-rub1-v1`, staging,
 marketing=false, production Refref API/checkout/readiness and separately pinned
-serving source. Approved final legal version/hash remain unresolved. Commerce
+serving source. Approved legal version is2026-10-16.closed-paid-test.review.3 and manifest hash
+1e8a8a145a4ce6ba2263b11972a151996187041a172c06cace5a57869d4be95b. Commerce
 alone receives private buyer hash, API/handoff/refund keys and protected/erasure
 inputs; Platform never receives them. A qualified current account action and
 separate purchase acceptance are required before payment creation. Read-back and
@@ -64,6 +66,9 @@ admission, custody and the actual buyer→documents→handoff→preview proof re
 prerequisites. No new installation/restore/provider proof is claimed by source
 CI or this delta. ART-338 stays Done; no new tracker issues are required.
 
-Owner decision16October2026: `REFUND_RECEIPT_FEE_RISK_ACCEPTED`; planning assumption up to10₽ for two receipts plus acquiring, not a bank-confirmed refund tariff or guaranteed total cost cap. Separate bank confirmation of refund-receipt pricing is no longer a blocker. Execution permission is now present; actual DNS/READY, custody/recovery, legal/fiscal admission and financial GO remain separate.
+Owner decision16October2026: `REFUND_RECEIPT_FEE_RISK_ACCEPTED`; planning assumption up to10₽ for two receipts plus acquiring, not a bank-confirmed refund tariff or guaranteed total cost cap. Separate bank confirmation of refund-receipt pricing is no longer a blocker. Execution permission is now present; actual DNS/READY, custody/recovery and legal publication are now verified; fiscal admission and financial GO remain separate.
 
-Current unresolved facts: DNS confirmation for the admitted unchanged manifest; true fiscal legal basis/counselRef under the existing gate; final exact-byte legal approval/publication; actual merchant key escrow/recovery and final live profile admission. No new per-step technical GO is required.
+Current unresolved fact: genuine ART-234 framing/counselRef under the existing
+fiscal qualification gate. Final live paid-profile admission and actual buyer
+preflight depend on it. DNS, key escrow, shared map, owner exact-byte approval
+and closed legal publication are complete. No new per-step technical GO is required.

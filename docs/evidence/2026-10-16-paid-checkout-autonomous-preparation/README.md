@@ -31,41 +31,54 @@ Retain Admin source08523bd/image85eadc71…; controller a548774/helper
 `c4d5eb6516a147a7536c466b559f156349aafe2c0bcf8e41bca399a0c0b7160d` remains separately
 pinned. Refref operator4f533ec/image10645410… is distinct from serving202c0fb… .
 
-## Actual merchant enablement, pending DNS
+## Actual merchant READY, custody and shared config
 
 Exact unchanged private manifest SHA256
 `ab8d370280650f6f898b0bb938251cf0be97bdf485813a71141601605ad64f91`
-was reviewed/admitted under delegated technical authority. Existing signed OWNER
-custody manifestbe10c7c6… matched the protected registry, original artifact/
-signature/certificate bindings and one ACTIVE OWNER/Business under a read-only
-runtime-role transaction. This reused the prior genuine signed-identity bootstrap;
+was admitted under delegated technical authority. Existing signed OWNER custody
+manifestbe10c7c6… matched protected registry/artifact/signature/certificate and
+one ACTIVE OWNER/Business. This reused the prior genuine signed bootstrap;
 GOST signature verification was not rerun or invented in this execution.
 
-Before the mutation: fresh encrypted production backup
-`refref-production-20261016T054413Z`, provider GET and equal transport hashes,
-owner-Mac decryption/isolated PostgreSQL restore PASS. Snapshot00000005-00049957-1,
+Before mutation: encrypted `refref-production-20261016T054413Z`, provider GET,
+offhost decryption and isolated PostgreSQL restore PASS; snapshot00000005-00049957-1,
 157tables/82rows,26migrations/head000025,8roles/8grants/253definers.
-Recovery image81bd698b… had all11 RootFS layers equal the actual VPS database image.
-No recovery key left the Mac. Scratch restore container was removed.
+Recovery image81bd698b… matched all11 RootFS layers of the VPS PostgreSQL image.
 
-The exact operator ran with existing runtime DSN only, no DB-owner role,
-no new bank connection and no migrations. It returned **DNS_CHALLENGE_PENDING**,
-exit3: one actual offer/campaign/terms/evidence policy and a PENDING domain.
-Independent DB read-back matched returned IDs/challenge and confirmed API keys0.
-No API key file exists. This outcome is committed partial enablement, not a
-rollback and not READY. Replay must use the same manifest and key target;
-never adopt a new identity, synthetic policy or fresh run to hide uncertainty.
+The pinned4f533ec operator first committed DNS_PENDING with keys0. After the owner
+added TXT, authoritative DNS and Google DoH returned the exact token. VPN-local
+DNS was unavailable and the application resolver retained NX; only the one-off
+operator used8.8.8.8, without changing host/application resolvers. Exact manifest
+replay returned **READY**, produced exactly one ACTIVE PROD key in root0600 custody
+before COMMIT, and independent DB read-back matched its hash/scopes/domain/policy.
+No new Business, acquiring connection, bank credential or migration was created.
 
-TXT name `_refref-challenge.canary-platform.flexperiment.ru`; exact value is
-retained in private report and given to the owner. REG.RU UI was unreachable;
-owner is configuring DNS and will report readiness. A subsequent product request
-adds DNS TXT/HTTPS challenge choice in successor Refref code; current ART-39
-continues with the existing DNS manifest/operator, independently of that work.
+The merchant key plus handoff/refund-envelope secrets were encrypted to the
+existing owner-Mac age recipient and uploaded to the dedicated S3 escrow object.
+Provider GET, offhost decrypt and full plaintext hash/key-ring checks passed;
+private recovery key never left the Mac and no plaintext merchant key was saved
+there. A new encrypted database backup `refref-production-20261016T061342Z`
+was provider-retrieved and restored offhost: snapshot00000005-00049BBC-1,
+157tables/94rows, same26migrations/8roles/8grants/253definers. Both generic facts
+and **RESTORED_MERCHANT_KEY_POLICY_OWNER=PASS** verified the restored actual key,
+OWNER, policy and domain against the independent encrypted secret recovery.
 
-Shared `UNATTRIBUTED_EVIDENCE_POLICIES` has not changed; serving Refref has not
-restarted. Only after READY + independent key escrow/recovery may the one-entry
-map delta and restart proceed. Existing bank JWT/API/webhooks remain configured,
-with credentials in Coolify; no bank-portal setup or credential replacement.
+The complete old Refref config also received encrypted S3 escrow, provider GET,
+offhost decrypt/hash proof. A compare-and-set changed only the production
+`UNATTRIBUTED_EVIDENCE_POLICIES` row and durable env file, adding the actual READY
+Business→policy mapping. Preview/other env rows and existing map entries were
+preserved. Compose command/entrypoint nulls were checked against image defaults;
+mounts, networks, image tag/ID and full environment were checked before restart.
+A controlled no-build/no-pull Compose recreation retained serving source
+**202c0fb3c63b53cc7d1fdb3f1ee07235319dd13c**, image, native identity, credentials,
+callbacks, workers and keyrings; health and all post-restart deltas matched.
+Payment/refund-execution/initiation counts remained zero. New merchant credentials
+are recoverable in custody, not yet installed into Flexperiment.
+
+The separate [Refref78](https://github.com/ArtGurianov/refref/pull/78) adds selectable
+DNS TXT/HTTPS challenge in the merchant/operator manifest; omitted method keeps
+DNS compatibility. Its code is not deployed by this ART-39 execution. Existing
+bank JWT/API/webhooks remain untouched; no bank portal setup was performed.
 
 ## Legal/fiscal, money and current canary
 
@@ -79,16 +92,37 @@ not a bank-confirmed tariff/cost cap. Charge/refund remain100kopecks each.
 [review.3](../../legal/closed-paid-test/2026-10-16-review-3/README.md), package
 `48736a07be4b9820fbdfde32fc5a905fe0fef80a539d6c1c375e4a3331bc3282`,
 provides concrete customer text candidates and a processing matrix, with CIB/OFD,
-separate PD action and minimal retention. Exact-byte approval/publication not
-performed. Actual external account/CDN/retention facts are not fabricated.
+separate PD action and minimal retention. The owner explicitly approved this exact
+package and retention start (1January after last tax-use year). All eight documents
+were published to their proposed private HTTPS URLs with exact hash/TLS/method/host
+checks; four older Stage A URLs remain unchanged. The private nginx config adds only
+the bounded versioned legal location; the same tester container/image/loopback port
+was retained. Two newly created public-text directories initially inherited0700
+from the private process umask; only those directories were corrected to0755,
+then all read-backs passed. Actual external account/CDN/retention facts are not fabricated.
+
+Before legal activation, a fresh encrypted Flex canary backup
+`fast-cut-20261016T063453Z-99de0104-5030-474a-9fa4-9dacafdd0bf7.sqlite.age`
+received independent provider GET, offhost decrypt and immutable SQLite restore:
+integrity/foreign keys PASS, exact schema c99f9ed0… and26migrations, prior active
+release2026-10-15.closed-e2e. Temporary plaintext was removed. Fresh normal
+controller admission confirmed OPEN/drained fence and matching remote ledger.
+The existing authenticated fenced internal API activated COURSES Stage B
+`2026-10-16.closed-paid-test.review.3`, manifest SHA256
+`1e8a8a145a4ce6ba2263b11972a151996187041a172c06cace5a57869d4be95b`.
+API current-release plus independent DB/audit read-backs matched. Activation
+created no buyer consent, order, fiscal qualification or sales activation.
 Existing fiscal gate requires real ART-234 framing/counselRef and evidence hash;
 owner SERVICE/FULL_PAYMENT/USN_INCOME/NONE confirmations are retained as such.
-No specialist reference was supplied. No DRAFT was marked QUALIFIED.
+No specialist reference was supplied. Fresh Linear ART-234 read-back is Backlog, with no attachment/document; available canonical source provides no genuine conclusion. No DRAFT was marked QUALIFIED.
 
 Canary remains the healthy prior Commerce0d7dee0…/Platform2cb47c4…/retained Admin;
 payments disabled, course LISTED and offer CLOSED. Fresh Flex-specific install
-backup/restore, runtime installation and actual buyer PD/handoff/preview are
-not yet performed: key/READY and legal/fiscal dependencies are pending.
+copied-fence restore admission, runtime installation and actual buyer
+PD/handoff/preview are not yet performed. READY/custody/map and legal publication
+are complete; the specific blocker is the genuine ART-234 legal framing/counselRef
+required to qualify the offer. New immutable images remain prepared, uninstalled.
+The prelegal restore proves that exact snapshot, not future installation admission.
 No payment operation, charge or refund was created. Public guards/data/volumes/
 erasure/timers remain under the preserved baseline, not a newly claimed install.
 

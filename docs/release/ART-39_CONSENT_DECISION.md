@@ -1,29 +1,29 @@
 # ART-39 — separate consent and purchase acceptance
 
-**SERVER GUARD PREPARED / FINAL LEGAL APPROVAL, INSTALLATION AND PAYMENT HOLD.**
+**SERVER GUARD PREPARED / LEGAL REVIEW.3 APPROVED AND ACTIVE / FISCAL BASIS PENDING / MONEY HOLD.**
 16October2026. PR239 merged documentation as
 `6e48e22a7a6c958ca7deb77d665726b522a382ee`, without deployment.
 The new guard is a source change; it is absent from the previously published
 Commerce/Platform artifacts built from `a548774…`.
 
-## Approved principles; final bytes pending
+## Approved principles and exact review.3
 
 The owner approved the separate Cheki data-transfer consent principle, seller-paid
 fees, unchanged1₽ charge/full refund, five-year minimum tax evidence retention and
-at least one year for that consent evidence on16October2026. Exact recipients,
-retention start dates, final bytes and financial/install permissions remain pending.
+at least one year for that consent evidence on16October2026. The owner subsequently approved the exact review.3 package and retention start.
+Conditional autonomous installation authority is present; money remains on HOLD.
 
 Retain an explicit `personal_data` action, separate from account terms and
 purchase/refund acceptance. The owner confirmed Tochka's «Чеки». Its published
 contract requires buyer consent for transmitting data to the processor, so
 purely relying on contractual/statutory processing for all payment transfers
 would not cover that service requirement. The
-[new review package](../legal/closed-paid-test/2026-10-16-review-2/README.md)
-names the processor and proposes the consent scope/retention. Actual connection,
-OFD and remaining legal facts/bytes still require approval. Marketing is optional
+[new review package](../legal/closed-paid-test/2026-10-16-review-3/README.md)
+names the processor/OFD and approved consent scope/retention, distinguishing
+historical receipt evidence from a new payment receipt. Marketing is optional
 and stays false for this test. Do not fabricate consent or copy Stage A choices.
 
-After separately admitted final Stage B publication/activation, the buyer opens
+Review.3 Stage B is now active after exact HTTPS/hash read-back. The buyer opens
 `/account`, reviews the final documents and marks separate personal-data/account
 choices. Session-derived `POST /v1/me/consents` records action and document
 version/hash evidence; no service/operator insertion replaces the buyer's action.
@@ -56,4 +56,9 @@ marketing=false, foreign/stale evidence, replay and asynchronous changes, HTTP
 session identity/forged fields and the UI account link. These are synthetic local
 checks, not actual buyer acceptance or installed-runtime qualification.
 
-Latest authority is AUTONOMOUS INSTALLATION GO / MONEY HOLD. The [review.3 candidate](../legal/closed-paid-test/2026-10-16-review-3/README.md) incorporates historical CIB/OFD evidence and the processing matrix; no final bytes or customer PD action is inferred approved. Server guard is merged in3222845 and built into the new independently verified image pair; the pair is not installed yet.
+Latest authority is AUTONOMOUS INSTALLATION GO / MONEY HOLD. The owner approved
+[review.3](../legal/closed-paid-test/2026-10-16-review-3/README.md), which is now
+published in the private HTTPS contour and active through the normal fenced API.
+No customer PD action was manufactured. The server guard is merged in3222845
+and present in the independently verified image pair; the pair is not installed.
+The genuine ART-234 fiscal legal-basis reference remains outstanding.

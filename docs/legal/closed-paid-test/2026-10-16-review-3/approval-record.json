@@ -1,11 +1,11 @@
 {
-  "status": "PRINCIPLES_APPROVED_FINAL_BYTES_PENDING",
+  "status": "OWNER_APPROVED_EXACT_BYTES_MONEY_HOLD",
   "candidateVersion": "2026-10-16.closed-paid-test.review.3",
-  "approvedFinalVersion": null,
-  "approvedPackageSha256": null,
-  "approvedBy": null,
-  "approvedAt": null,
-  "ownerDecisionReference": null,
+  "approvedFinalVersion": "2026-10-16.closed-paid-test.review.3",
+  "approvedPackageSha256": "48736a07be4b9820fbdfde32fc5a905fe0fef80a539d6c1c375e4a3331bc3282",
+  "approvedBy": "ИП Гурьянов Арт Артурович / direct owner in this chat",
+  "approvedAt": "2026-10-16",
+  "ownerDecisionReference": "direct owner reply to review.3 exact-package approval request: Утверждаю комплект review.3",
   "taxStatusEvidenceReference": null,
   "ownerFiscalDecision": {
     "source": "direct owner statements in this chat on 2026-10-16",
@@ -15,12 +15,12 @@
     "paymentObject": "SERVICE",
     "ipAddressReconfirmed": true,
     "independentCounselOpinionProvided": false,
-    "exactDocumentBytesApproved": false
+    "exactDocumentBytesApproved": true
   },
   "counselEvidenceReference": null,
   "counselEvidenceSha256": null,
   "paymentDataRecipientsEvidenceReference": "internal-evidence:ART39-HISTORICAL-CHEKI-RECEIPT-2026-08-30",
-  "publishedDocumentReadbackReference": null,
+  "publishedDocumentReadbackReference": "internal-evidence:ART39-REVIEW3-CLOSED-HTTPS-HASH-READBACK-2026-10-16",
   "scope": {
     "courseRef": "test-course",
     "amountKopecks": 100,
@@ -28,7 +28,7 @@
     "fullRefund": true,
     "publicActivation": false
   },
-  "note": "Owner principles, refund-receipt fee risk and conditional autonomous installation authority are recorded separately. Final customer legal bytes and specialist framing are not inferred. Existing bank setup is retained; historical receipt identifies the CIB agent/OFD model without proving a new Test Course receipt.",
+  "note": "The owner approved the exact review.3 package and retention start in this chat. Hash-covered files remain unchanged, including historical REVIEW_NOT_EXECUTABLE proposal metadata. This approval record is the subsequent authority; HTTPS publication, activation and fiscal qualification are separate facts. No specialist opinion is supplied by the approval.",
   "ownerServiceConfirmation": "Tochka Cheki; direct owner statement 2026-10-16",
   "proposedRetentionApproved": true,
   "merchantManifestApproved": false,
@@ -86,5 +86,30 @@
     "receiptModelReference": "internal-evidence:ART39-HISTORICAL-CHEKI-RECEIPT-2026-08-30",
     "historicalOfd": "ООО «Эвотор ОФД» / Платформа ОФД, ИНН 9715260691",
     "historicalReceiptIsNewTestQualification": false
+  },
+  "finalPackageApproval": {
+    "status": "OWNER_APPROVED",
+    "source": "direct owner reply in this chat on 2026-10-16: Утверждаю комплект review.3",
+    "packageSha256": "48736a07be4b9820fbdfde32fc5a905fe0fef80a539d6c1c375e4a3331bc3282",
+    "exactRetentionStartDateApproved": true,
+    "minimumTaxRetentionStarts": "1 January following the year of last use for tax accounting",
+    "exactRecipientsAsDescribedApproved": true,
+    "independentCounselOpinionProvided": false,
+    "fiscalGateBypassAuthorized": false,
+    "paymentAuthorized": false
+  },
+  "publication": {
+    "state": "APPROVED_REVIEW3_CLOSED_HTTPS_HASH_READBACK_PASS",
+    "tlsVerificationEnabled": true,
+    "documentCount": 8,
+    "publicLaunch": false
+  },
+  "runtimeActivation": {
+    "state": "OWNER_APPROVED_REVIEW3_STAGE_B_ACTIVATED_FENCED_API_DB_READBACK_PASS",
+    "version": "2026-10-16.closed-paid-test.review.3",
+    "manifestSha256": "1e8a8a145a4ce6ba2263b11972a151996187041a172c06cace5a57869d4be95b",
+    "customerConsentsCreated": false,
+    "fiscalQualificationCreated": false,
+    "paymentAuthorized": false
   }
 }

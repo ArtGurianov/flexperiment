@@ -1,6 +1,6 @@
 # ART-39 — one controlled real course payment and full refund
 
-State: **AUTONOMOUS INSTALLATION GO / MONEY HOLD; DNS/FISCAL DEPENDENCIES PENDING**.
+State: **AUTONOMOUS INSTALLATION GO / MONEY HOLD; FISCAL LEGAL BASIS PENDING**.
 See [current evidence](../evidence/2026-10-16-paid-checkout-autonomous-preparation/README.md)
 for merged240, new images and partial production merchant enablement. Historical
 preparation-only observations below are superseded only where that evidence says so. Owner-selected course `test-course`, quantity1, currencyRUB, total100kopecks, one privately selected existing customer, full refund. This packet does not activate public sales or claim ART-240 production acceptance. ART-338 remains finally closed.
@@ -28,7 +28,7 @@ The [minimal closed paid-test package](../legal/closed-paid-test/2026-10-16-draf
 Still absent from runtime/execution authority:
 
 - Approval of exact final paid document bytes, real served HTTPS URLs and independent response hash read-back for Stage B. Draft bytes and hashes exist; proposed URLs are explicitly unserved. The Stage A account/free-access release cannot be relabeled as paid purchase terms.
-- Reviewed legal-basis references/hash needed by `qualifyFiscalPolicy`; no actual `counselRef` has been supplied. Do not manufacture a counsel conclusion or mark a DRAFT qualified just to pass the gate. The confirmed fiscal values do not establish acceptance of exact document bytes. Resolve the remaining bank/fiscal-partner/OFD and retention details against existing actual agreements; Refref and Flexperiment already have the same IP operator and an existing private signed internal regulation, not a missing two-party contract.
+- Reviewed legal-basis references/hash needed by `qualifyFiscalPolicy`; no actual `counselRef` has been supplied. Do not manufacture a counsel conclusion or mark a DRAFT qualified just to pass the gate. The confirmed fiscal values are distinct from the subsequently approved exact review.3 bytes. Historical CIB/Platforma OFD evidence and approved retention are recorded in that package; Refref and Flexperiment already have the same IP operator and an existing private signed internal regulation, not a missing two-party contract.
 - A reviewed production merchant-enablement packet for the existing signed OWNER identity, narrow private-storefront return paths, unattributed offer/terms/evidence policy and necessary API scopes. Existing bank credentials/client/callback are retained; no provider re-provisioning.
 
 Financial values never come from a browser-supplied price. Freeze the live offer and qualified fiscal policy into the quote, then the immutable V2 shared-checkout snapshot. A final price other than100kopecks or unexpected discount is HOLD; do not silently increase the charge or reuse a different offer.
@@ -61,4 +61,6 @@ Record every boundary separately: preparation, configuration/install, customer p
 
 ART-39 / ART-224 stay open until this real chain passes. ART-83/88/89 and ART-92/12 keep their owning evidence; use existing issues only. ART-240/242, ART-36/351 and F9 remain separate public-launch gates. No LAB/bundle/Mikluha/V1 sales or bank changes belong to this experiment.
 
-Latest owner receipt identifies the historical CIB/Platforma OFD agent model; no separate owner OFD login or bank refund-fee confirmation is needed. Final candidate [review.3](../legal/closed-paid-test/2026-10-16-review-3/README.md) remains unapproved/unpublished; owner tax values are not relabeled as a specialist opinion. Merchant DNS/HTTPS choice was separately requested after the current DNS-only operator run; do not retarget the current manifest, operator or serving runtime to unfinished successor code.
+Latest owner receipt identifies the historical CIB/Platforma OFD agent model; no separate owner OFD login or bank refund-fee confirmation is needed. Exact [review.3](../legal/closed-paid-test/2026-10-16-review-3/README.md) is owner approved, closed-HTTPS/hash verified and active Stage B; owner tax values are not relabeled as a specialist opinion. Genuine ART-234 remains Backlog with no document/attachment in the tracker; no actual counselRef was found in the available source or owner evidence. Merchant DNS/HTTPS choice was separately requested after the current DNS-only operator run; do not retarget the current manifest, operator or serving runtime to unfinished successor code.
+
+Current execution supersedes earlier preparation: exact manifest replay READY; one key with provider/offhost recovery and restored database read-back; minimal shared policy map applied with same-source healthy restart. See [current evidence](../evidence/2026-10-16-paid-checkout-autonomous-preparation/README.md). New Flex image pair remains uninstalled, PAYMENT_MODE=disabled and offer CLOSED; fiscal qualification blocks the paid runtime and buyer preview. No payment operation was created.
