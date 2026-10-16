@@ -25,6 +25,12 @@ Do not merely set PAYMENT_MODE. The profile refuses another environment, origin,
 
 The buyer sees the exact paid document links and receipt email. One explicit checkbox records acceptance with the order; account consent or a legal-release row alone cannot substitute. If conditions/contact change, the confirm refuses. No acceptance, grant or provider status may be hand-minted.
 
+That checkout action is purchase acceptance, not independent PD consent. The
+[proposed separate account-consent procedure](ART-39_CONSENT_DECISION.md) requires
+its own final-document action and pre-payment read-back. The current checkout
+does not automatically enforce that account-consent gate; final legal approval
+must resolve the model before money.
+
 The course description must be LISTED, without free preview: an unentitled buyer cannot reach CourseCheckout on an UNLISTED course. Keep CLOSED during preparation; only eventual accepted runtime admits ACCEPTANCE_ONLY. Follow the [concrete preparation/install packet](ART-39_INSTALL_PACKET.md).
 
 ## Host observer and backup compatibility

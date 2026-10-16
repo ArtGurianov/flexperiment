@@ -2,6 +2,51 @@
 
 **REVIEW PACKET / INSTALLATION HOLD / MONEY HOLD.**16October2026. This updates the current closed canary; it does not reopen ART-338, run the old ART-338 qualification matrix or authorize production/public sales. The owner-approved engineering scope includes preparing these artifacts. Final legal approval, admitted exact runtime and a separate owner1₽ GO remain necessary.
 
+## Merged source and immutable candidate artifacts
+
+The owner authorized merge **without deployment**. Flexperiment238 merged as
+`a548774692fa8a9b50fe8da02890e913857537d3`; its own merged-main
+[CI38843890923](https://github.com/ArtGurianov/flexperiment/actions/runs/38843890923)
+passed test/docker-build. Refref77 merged as
+`4f533ec65688c29f6732ec32c799d4dd4fc05c37`; its own full merged-source CI passed
+22/22 and attested `local-ci/required=SUCCESS` (status56492505630). The one-off
+operator artifact and complete evidence are recorded in the
+[final preparation receipt](../evidence/2026-10-16-paid-checkout-install-review/README.md).
+Both merges retain exactly their reviewed head trees. Head CI is not transferred
+to a merge SHA.
+
+| Candidate role | Source | Private GHCR immutable reference |
+| --- | --- | --- |
+| Commerce | `a548774692fa8a9b50fe8da02890e913857537d3` | `ghcr.io/artgurianov/flexperiment-commerce-v2@sha256:62133f4fdcd5777c77b984cc9c9a17cc239ac2630451fe94d0205d64cdc5b7d1` |
+| Platform | `a548774692fa8a9b50fe8da02890e913857537d3` | `ghcr.io/artgurianov/flexperiment-platform-v2@sha256:062e4528a269aa0fecb899302eae0db9393dca601d64dd7af867b89d62aee474` |
+| Admin retained | `08523bdf38eeddf5e745ce04d05e1f980a7ced93` | existing digest below; no rebuild/replacement |
+
+The two candidates were built from a clean committed source archive for
+linux/amd64. Private registry GET verified manifest bytes/digest and config bytes;
+VPS digest pull, RootFS and native identity matched. Commerce config digest is
+`sha256:aab495dd447aaa8265d78f9c05382ea9d6a2cfd572693eb57289646aeffa4609`;
+Platform config digest is
+`sha256:01e175b7342a461008850826d8c95fae6fc8cab3f075eb2c52740a2d6ebb9607`.
+The VPS containerd image IDs equal their manifest digests; these are not the Mac
+Docker/config IDs. Exact RootFS/native descriptors and encrypted image archives
+are retained in private `art39-checkout-preflight-20261016/install-review-a548774`.
+The owner registry credential stayed on its existing host. Only artifact
+load/publication/identity reads occurred; neither candidate application started
+on the VPS and neither live container was replaced.
+
+Host controller source is independently pinned to `a548774…`,
+`scripts/v2/fast-cut.py` SHA256
+`c4d5eb6516a147a7536c466b559f156349aafe2c0bcf8e41bca399a0c0b7160d`.
+It has not been installed. The serving Refref source remains `202c0fb…`, separate
+from the operator source. Merchant enablement/key issuance, shared Refref
+configuration/restart, Flexperiment refref-mode installation and money are all
+explicitly **HOLD**. No executable paid profile is issued while legal/key pins
+are missing.
+
+[Separate PD consent versus purchase acceptance](ART-39_CONSENT_DECISION.md) is a
+proposed legal/procedure decision. The checkout event does not prove separate PD
+consent; final approval and actual buyer evidence remain required before money.
+
 ## Current concrete inputs
 
 Host `flexperiment-vps`, existing stack `/opt/flexperiment-fast-cut-canary`, existing private input directory `/etc/flexperiment-fast-cut-canary`. Existing Commerce SQLite volume, WAL/data lineage, five erasure mounts, private gateway, network and timer units are retained. Do not run initial `prepare` or a generic deployment workflow to repurpose this stack.
@@ -14,7 +59,15 @@ Host `flexperiment-vps`, existing stack `/opt/flexperiment-fast-cut-canary`, exi
 
 This is a fresh inspect/config observation, not new native-image qualification. All three containers were healthy. Fence was canary/OPEN/sequence1/no owner/zero leases. Payments disabled. Current database description is LISTED/projection2, no free preview; offer PAID/CLOSED/100kopecks/empty allowlist, zero orders/entitlements/fiscal policies for test-course. No new app install was performed.
 
-Most recent existing backup status read SUCCESS, source0d7dee0…, SHA256 `14bc5697a7d55a81a5a8bf442006ea8902d4ec11f40ae3b95b0f9dc235a340e5`, size864664, status-file mtime18:15UTC15October. Both backup/freshness timers were active/waiting. That older archive is **not** proof of the subsequently corrected LISTED state or the future candidate; require a fresh verified backup before installation. No timer, transport, retention or historical ART-351 incident was changed by this packet.
+Existing backup status read SUCCESS, source0d7dee0…, verified00:15:08UTC16October,
+SHA256 `ae42531db5757107af196e119387d9c9aee6586a3698c2a76921554b92f12e9d`,
+size876952. Both backup/freshness timers were active/waiting. Reading that status
+is not a new independent restore or proof of the future candidate; require a
+fresh verified backup before installation. A fresh read-only fence observation
+was OPEN/sequence1/no owner/zero leases and the signed remote read was
+REMOTE_VERIFIED. This is a point-in-time preparation receipt, not candidate boot
+admission. No timer, transport, retention or historical ART-351 incident was
+changed by this packet.
 
 ## Merchant manifest and custody
 
@@ -29,7 +82,7 @@ The candidate binds existing PRODUCTION Business/typed OWNER/database and indepe
 
 Strict manifest parsers pass. A READ ONLY transaction under `refref_runtime` compared independent custody pins with the protected registry, one ACTIVE OWNER/Business and exact platform seed; all matched, no merchant keys/offers exist. This is no write or live provider permission proof. Existing production runtime source202c0fb…/schema25 and bank connection/profile/client/callback remain independent of the operator/controller source in Refref77.
 
-Use only the reviewed exact operator build after its full CI and concrete-manifest admission. Key target is a new file in a canonical private UID-owned0700 custody directory, for example the prepared packet's proposed `/root/flexperiment-v2-owner/art39-checkout/merchant.key`; do not populate it by shell expansion or print it. The reviewed CLI exclusively creates0600/no-follow, fsyncs before COMMIT and verifies the existing key hash on READY replay. DNS_CHALLENGE_PENDING creates no key; publish only its actual returned TXT through the normal authorized DNS process, then replay identical manifest bytes. An uncertain capture/COMMIT answer is RECONCILE_REQUIRED, never a fresh-file retry. The [Refref77 runbook](https://github.com/ArtGurianov/refref/blob/2f9d13a9bf410d2c8ed1f0eda04f75658dc163f9/ops/runbooks/owner-commerce-enablement.md) defines the exact CLI and exit semantics.
+Use only the reviewed exact operator build after its full CI and concrete-manifest admission. Key target is a new file in a canonical private UID-owned0700 custody directory, for example the prepared packet's proposed `/root/flexperiment-v2-owner/art39-checkout/merchant.key`; do not populate it by shell expansion or print it. The reviewed CLI exclusively creates0600/no-follow, fsyncs before COMMIT and verifies the existing key hash on READY replay. DNS_CHALLENGE_PENDING creates no key; publish only its actual returned TXT through the normal authorized DNS process, then replay identical manifest bytes. An uncertain capture/COMMIT answer is RECONCILE_REQUIRED, never a fresh-file retry. The [merged Refref77 runbook](https://github.com/ArtGurianov/refref/blob/4f533ec65688c29f6732ec32c799d4dd4fc05c37/ops/runbooks/owner-commerce-enablement.md) defines the exact CLI and exit semantics.
 
 Before runtime use, encrypt and escrow merchant key, handoff secret and refund-envelope keyring to actual independently retained owner recovery recipients. Independent off-host GET/decrypt/hash proof must cover the issued key and necessary refund recovery keys. Stage these only in Commerce owner custody; Platform gets no private buyer digest or secrets. No key/secret was generated or installed by this packet. A plan is not custody PASS.
 
@@ -41,9 +94,22 @@ After verified enablement, merge only this Business entry into the actual existi
 
 ## Complete the exact role vector before execution
 
-The Flexperiment238 final source must include the buyer-route/Suspense repair and pass its own test/docker-build. A prior green head does not qualify this new source. Build/publish only Commerce and Platform from the admitted source, retain Admin above, and independently read registry manifest/config digest, architecture, native identity and RootFS on the actual VPS. CI's local test image tags are not immutable published artifacts. Never use the old ART-338 target or an inferred main image.
+The merged Flexperiment238 source includes the buyer-route/Suspense repair and
+passed its own test/docker-build. Only Commerce/Platform were built/published;
+Admin is retained. The immutable candidate identities are above, independently
+read back on the actual VPS. CI's local test image tags are not publication
+receipts. Never substitute the old ART-338 target or infer an installed image
+from main.
 
-Freeze separately: reviewed host-controller SHA/helper hash; per-role application source/image/native descriptors; exact final paid legal version and `legalManifestHash`; actual production Refref runtime source; sole buyer digest; private merchant/custody receipt. The candidate target digests and final legal version/hash are currently unresolved, so no executable `release.json`/`paid-test.json` is issued. Missing values are HOLD, not placeholders to install. The [profile contract](ART-39_PRIVATE_CHECKOUT_PROFILE.md) lists exact required fields and per-role separation.
+Freeze separately: reviewed host-controller SHA/helper hash; per-role application
+source/image/native descriptors; exact final paid legal version and
+`legalManifestHash`; actual production Refref runtime source; sole buyer digest;
+private merchant/custody receipt. Candidate target digests are resolved above;
+final legal approval/version/hash, merchant execution/custody and installation
+admission remain unresolved. No executable `release.json`/`paid-test.json` is
+issued. Missing values are HOLD, not placeholders to install. The
+[profile contract](ART-39_PRIVATE_CHECKOUT_PROFILE.md) lists exact required fields
+and per-role separation.
 
 ## Bounded sequence after installation admission
 
