@@ -75,3 +75,10 @@ with automatic activation and retained payment/material/activation evidence.
 The previously sealed specialist brief is superseded as a mandatory dependency;
 it remains historical evidence. Approved review.3 customer bytes are unchanged.
 AUTONOMOUS INSTALLATION GO remains; MONEY HOLD remains.
+
+
+The owner further clarified that the purchased object is access to the evolving
+course. Course-scoped entitlement follows its current published contents;
+historical initial-content evidence never narrows that entitlement. Proposed
+[review.4](closed-paid-test/2026-10-16-review-4/README.md) aligns the wording and
+receipt label. Review.3's approved covered bytes are retained.

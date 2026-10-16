@@ -1,3 +1,4 @@
+import { resolvePlaybackAccess } from "../src/playback-access";
 import { applyCourseManifest, withManifestHash } from "../src/manifest";
 import { qualifyTestFiscalPolicy } from "./fixtures/sales";
 import Database from "better-sqlite3";
@@ -63,7 +64,7 @@ beforeEach(() => {
   db.prepare("INSERT INTO video_upload_sessions(id,lesson_ref,video_id,status,uploader_endpoint) VALUES ('upload','lesson','synthetic-ready-video','READY','https://example.test/upload')").run();
   db.prepare("INSERT INTO lesson_video_bindings(lesson_ref,active_video_id,duration_seconds,bound_at,updated_at) VALUES ('lesson','synthetic-ready-video',150,?,?)")
     .run(new Date().toISOString(), new Date().toISOString());
-  const policy = draftFiscalPolicy(db, { offerRef: "course:test-course", kind: "ONLINE_COURSE", itemName: "Доступ к видеоматериалу «Test Course»",
+  const policy = draftFiscalPolicy(db, { offerRef: "course:test-course", kind: "ONLINE_COURSE", itemName: "Доступ к курсу «Test Course»",
     taxSystem: "USN_INCOME", vatCode: "NONE", paymentMethod: "FULL_PAYMENT", paymentObject: "SERVICE", actor: "fixture" });
   qualifyTestFiscalPolicy(db, policy.policyId, "fixture", new Date().toISOString());
 });
@@ -277,15 +278,30 @@ describe("FULL_PAYMENT ready recorded access", () => {
     expect(resolve).not.toHaveBeenCalled(); expect(create).not.toHaveBeenCalled();
     expect(db.prepare("SELECT count(*) n FROM orders").get()).toEqual({ n: 0 });
   });
-  it("refuses material drift after preview before a payment session exists", async () => {
+  it("permits ready content updates between preview and purchase, recording the actual initial course state", async () => {
     accountConsent(); const q = await preview();
     if (q.state !== "PRICE_REVIEW_REQUIRED") throw new Error("expected review");
     db.exec("UPDATE lesson_video_bindings SET duration_seconds=151");
-    const create = vi.spyOn(rail, "create");
     await expect(confirmCheckout(db, rail, config, { ...input, quoteId: q.quoteId, idempotencyKey: "pay", legalAcceptance: accept }))
-      .rejects.toThrow("CHECKOUT_QUOTE_STALE");
-    expect(create).not.toHaveBeenCalled();
-    expect(db.prepare("SELECT count(*) n FROM orders").get()).toEqual({ n: 0 });
+      .resolves.toMatchObject({ state: "PAID" });
+    const row = db.prepare("SELECT immediate_access_json FROM order_lines").get() as { immediate_access_json: string };
+    expect(JSON.parse(row.immediate_access_json).materials[0].durationSeconds).toBe(151);
+  });
+  it("includes later course additions under the same entitlement without changing historical initial evidence", async () => {
+    accountConsent(); await confirm(accept);
+    const evidence = db.prepare("SELECT immediate_access_json FROM order_lines").get();
+    applyCourseManifest(db, withManifestHash({ courseRef: "test-course", version: 2, visibility: "LISTED",
+      sections: [{ sectionRef: "section", visibility: "LISTED" }], lessons: [
+        { lessonRef: "lesson", sectionRef: "section", everPublished: true, visibility: "LISTED", freePreview: false },
+        { lessonRef: "added", sectionRef: "section", everPublished: true, visibility: "LISTED", freePreview: false },
+      ], operations: [] }));
+    db.exec("INSERT INTO video_upload_sessions(id,lesson_ref,video_id,status,uploader_endpoint) VALUES ('added-upload','added','added-ready-video','READY','https://example.test/upload')");
+    db.prepare("INSERT INTO lesson_video_bindings(lesson_ref,active_video_id,duration_seconds,bound_at,updated_at) VALUES ('added','added-ready-video',200,?,?)")
+      .run(new Date().toISOString(),new Date().toISOString());
+    expect(resolvePlaybackAccess(db, { customerId: "buyer", lessonRef: "added", now: new Date(), leaseMs: 60_000 }))
+      .toMatchObject({ decision: "ALLOW", paidEntitled: true, binding: { videoId: "added-ready-video" } });
+    expect(db.prepare("SELECT count(*) n FROM course_entitlements").get()).toEqual({ n: 1 });
+    expect(db.prepare("SELECT immediate_access_json FROM order_lines").get()).toEqual(evidence);
   });
   it("rolls back payment acceptance and activation audit if the grant transaction fails", async () => {
     accountConsent();

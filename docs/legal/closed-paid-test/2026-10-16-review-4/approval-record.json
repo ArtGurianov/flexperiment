@@ -1,0 +1,9 @@
+{
+  "schema": "flexperiment.exact-legal-approval/1",
+  "releaseVersion": "2026-10-16.closed-paid-test.review.4",
+  "status": "PENDING_OWNER_EXACT_BYTES",
+  "packageSha256": "f67033443312a368b42d2d114e6b775d0e96035e2bc4bdd5587e859a035bb86b",
+  "exactBytesApproved": false,
+  "paymentAuthorized": false,
+  "priorApprovedPackageSha256": "48736a07be4b9820fbdfde32fc5a905fe0fef80a539d6c1c375e4a3331bc3282"
+}

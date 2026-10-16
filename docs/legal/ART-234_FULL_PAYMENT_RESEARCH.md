@@ -87,12 +87,14 @@ extension of the cash-basis exception to an unverified intermediary scenario.
 
 Execution conditions for the owner-backed FULL_PAYMENT online-course path:
 
-- An actual published projection, all non-withdrawn promised lessons previously
-  published, active bindings to provider-confirmed READY videos of positive
+- An actual published projection, currently published non-withdrawn lessons with active bindings to provider-confirmed READY videos of positive
   duration. No sale of a future course/video through this path.
-- Freeze the material set/version/content hash on the quote and order line,
-  separately from Refref's commercial snapshot. Drift makes a quote stale;
-  recheck inside order creation before a payment session exists.
+- Retain an observation of initial materials/version/content hash on the order
+  line, separately from Refref's commercial snapshot. This is historical evidence,
+  not the purchased scope. The entitlement is to the course and includes later
+  published additions/updates. Ready content changes do not invalidate a price
+  quote; recheck initial availability inside order creation before a payment
+  session exists. A wholly unpublished/future course remains ineligible.
 - Verified matching PAID, FULFILLED state, entitlement and first activation audit
   are committed together; replay does not duplicate access or audit. The event
   records the application's observation/activation time, not an invented bank
@@ -102,13 +104,22 @@ Execution conditions for the owner-backed FULL_PAYMENT online-course path:
   read-back/refund evidence still has to be collected during the authorized
   money run. Watching lessons is not a prerequisite for initial performance.
 
-Approved review.3 already states activation after payment is accepted by
-Commerce and continuing personal access until lawful termination. Its price,
-receipt name, refund and exact published bytes are preserved. No replacement
-with a different course name from the illustrative owner explanation occurs.
+Approved review.3 is preserved unchanged. Proposed review.4 clarifies access
+  to the evolving course (initially one recorded150-second lesson), includes
+  subsequent course additions/updates without another course purchase, and
+  names the receipt item “Доступ к курсу «Test Course»”. Price/full refund remain
+  1 ₽. Exact review.4 approval/publication/hash read-back are pending separately;
+  the owner's general model confirmation is not fabricated exact-byte approval.
 
 The new owner decision/evidence can support a real qualification after exact
 source CI, images, fresh backup/restore, migration and ready-content read-back.
 No actual production decision or qualification is claimed by this source PR.
 A second closing receipt remains outside the owner's chosen scope. Separate
 financial GO is still required; installation authority remains autonomous.
+
+
+The owner further clarified that the purchased object is access to the evolving
+course. Course-scoped entitlement follows its current published contents;
+historical initial-content evidence never narrows that entitlement. Proposed
+[review.4](closed-paid-test/2026-10-16-review-4/README.md) aligns the wording and
+receipt label. Review.3's approved covered bytes are retained.

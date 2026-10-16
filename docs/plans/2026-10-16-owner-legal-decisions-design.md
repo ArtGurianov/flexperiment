@@ -69,3 +69,10 @@ published material/video readiness before a payment session; freeze the provided
 material set outside Refref's commercial snapshot and retain activation/payment
 observations. Future/unpublished content must not enter this immediate-access
 path. This adds no second receipt and changes no approved customer document bytes.
+
+
+The owner's further clarification fixes dynamic course access as the purchased
+scope. Initial material evidence is an observation only, never a version-limited
+entitlement; ready updates between preview and purchase are allowed. Test a
+subsequent course addition under the same entitlement. Proposed review.4 aligns
+the exact customer terms; its separate actual owner byte approval is required.

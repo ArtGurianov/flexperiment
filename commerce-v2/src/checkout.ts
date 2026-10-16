@@ -1,4 +1,4 @@
-import { readyImmediateCourseAccess, type ImmediateCourseAccess } from "./immediate-course-access";
+import { readyImmediateCourseAccess } from "./immediate-course-access";
 import { createHash, randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import { buildCheckoutSnapshot, canonicalCheckoutSnapshotJson, type CheckoutSnapshotConfig, type SharedCheckoutSnapshot } from "./checkout-snapshot";
@@ -263,7 +263,7 @@ type FrozenLineSnapshot = {
   readonly paymentPurpose: string;
   /** The offer's qualified fiscal policy when the quote was made; a different one makes the quote stale. */
   readonly fiscal: FrozenFiscalPolicy;
-  readonly immediateAccess?: ImmediateCourseAccess;
+  readonly requiresImmediateAccess?: true;
   readonly unitRef?: string;
   readonly serviceStartsAt?: string;
   readonly serviceEndsAt?: string;
@@ -286,9 +286,13 @@ const refrefInstant = (value: string) => {
 const freezeLine = (db: Database.Database, offer: OfferRow): FrozenLineSnapshot => {
   if (!validPaymentPurpose(offer.payment_purpose)) throw new Error("PAYMENT_PURPOSE_REQUIRED");
   const fiscal = qualifiedFiscalPolicy(db, offer.offer_ref, offer.kind);
-  if (offer.kind !== "LAB") return { fiscal, paymentPurpose: offer.payment_purpose,
-    ...(offer.kind === "ONLINE_COURSE" && fiscal.paymentMethod === "FULL_PAYMENT"
-      ? { immediateAccess: readyImmediateCourseAccess(db, offer.course_ref!) } : {}) };
+  if (offer.kind !== "LAB") {
+    if (offer.kind === "ONLINE_COURSE" && fiscal.paymentMethod === "FULL_PAYMENT") {
+      readyImmediateCourseAccess(db, offer.course_ref!);
+      return { fiscal, paymentPurpose: offer.payment_purpose, requiresImmediateAccess: true };
+    }
+    return { fiscal, paymentPurpose: offer.payment_purpose };
+  }
   if (!offer.occurrence_ref || !offer.occurrence_title || !offer.occurrence_starts_at || !offer.occurrence_ends_at
     || !offer.occurrence_timezone || !offer.occurrence_city_id) throw new Error("LAB_OCCURRENCE_NOT_FOUND");
   const startsAt = refrefInstant(offer.occurrence_starts_at);
@@ -472,9 +476,7 @@ export async function prepareCheckout(
     checkoutCode: codeResolution.refrefCheckoutCode,
   });
   assertClosedPaidTestAccountConsents(db, config, input.customerId);
-  if (lineSnapshot.immediateAccess && JSON.stringify(readyImmediateCourseAccess(db, offer.course_ref!)) !== JSON.stringify(lineSnapshot.immediateAccess)) {
-    throw new Error("CHECKOUT_QUOTE_STALE");
-  }
+  if (lineSnapshot.requiresImmediateAccess) readyImmediateCourseAccess(db, offer.course_ref!);
   if (resolved.state === "CUSTOMER_ACTION_REQUIRED") return { ...resolved, orderPublicId };
   assertClosedPaidTestPrice(config, resolved.quote, merchantDiscountKopecks);
   if (resolved.quote.baseAmountKopecks !== merchantOfferAmountKopecks
@@ -611,11 +613,9 @@ export async function confirmCheckout(
   };
   const create = db.transaction(() => {
     assertClosedPaidTestAccountConsents(db, config, input.customerId);
-    if (frozenLine.immediateAccess && JSON.stringify(readyImmediateCourseAccess(db, offer.course_ref!)) !== JSON.stringify(frozenLine.immediateAccess)) {
-      throw new Error("CHECKOUT_QUOTE_STALE");
-    }
+    // This is historical delivery evidence, not an entitlement limited to this content version.
+    const initialAccessEvidence = frozenLine.requiresImmediateAccess ? readyImmediateCourseAccess(db, offer.course_ref!) : undefined;
     assertNoOtherPaidTestOrder(db, config, offer.offer_ref);
-  if (config.closedPaidTest) readyImmediateCourseAccess(db, offer.course_ref!);
     if (review) {
       // Re-read under the same write transaction as order creation; no backfilled UI event.
       const current = paidTestReview(db, config, input.customerEmail)!;
@@ -636,7 +636,7 @@ export async function confirmCheckout(
       pending.catalog_amount_kopecks, pending.merchant_discount_kopecks, pending.base_amount_kopecks,
       pending.merchant_promotion_snapshot_json, JSON.stringify(fiscalItem), pending.legal_version, legalReleaseHash,
       frozenLine.occurrence ? JSON.stringify(frozenLine.occurrence) : null, frozenLine.fiscal.policyId,
-      frozenLine.immediateAccess ? JSON.stringify(frozenLine.immediateAccess) : null,
+      initialAccessEvidence ? JSON.stringify(initialAccessEvidence) : null,
     );
     db.prepare(`INSERT INTO checkout_attempts(id,order_id,idempotency_key,request_payload_json,state,created_at,updated_at)
       VALUES (?,?,?,?,'CREATING',?,?)`).run(attemptId, orderId, input.idempotencyKey, JSON.stringify(railInput), now, now);
