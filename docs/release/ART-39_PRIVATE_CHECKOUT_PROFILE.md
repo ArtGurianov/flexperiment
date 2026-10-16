@@ -25,6 +25,8 @@ Do not merely set PAYMENT_MODE. The profile refuses another environment, origin,
 
 The buyer sees the exact paid document links and receipt email. One explicit checkbox records acceptance with the order; account consent or a legal-release row alone cannot substitute. If conditions/contact change, the confirm refuses. No acceptance, grant or provider status may be hand-minted.
 
+The course description must be LISTED, without free preview: an unentitled buyer cannot reach CourseCheckout on an UNLISTED course. Keep CLOSED during preparation; only eventual accepted runtime admits ACCEPTANCE_ONLY. Follow the [concrete preparation/install packet](ART-39_INSTALL_PACKET.md).
+
 ## Host observer and backup compatibility
 
 The reviewed root-owned0600 `/etc/flexperiment-fast-cut-canary/paid-test.json` has exactly these fields: `schema`=`flexperiment.closed-paid-test/1`, `profile`, `courseRef`=`test-course`, `offerRef`=`course:test-course`, `amountKopecks`=100, `buyerEmailSha256`, `refrefSourceCommit`, `legalVersion`, `legalManifestSha256`. Values must match the common/private runtime inputs above. Unknown/duplicate keys, symlink/hardlink/wrong ownership/mode, wrong amount/identity and drift refuse. The file is an observation contract and belongs to the concrete controlled-install packet; it is not created by this PR. Without it, fast-cut readback/backup still requires disabled payments. Original `prepare` remains disabled-only and does not import Refref secrets.

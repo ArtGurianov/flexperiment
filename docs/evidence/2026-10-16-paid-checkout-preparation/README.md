@@ -28,3 +28,7 @@ A local linux/amd64 Commerce image at source `218034a796705d4a2a91804fd5122b50b2
 ## What still precedes money
 
 Review/CI the code candidates and the concrete enablement/install packet; provision the one API key into verified private custody/escrow and the actual private return path. Finalize/approve one legal package, actual fiscal recipients/retention and genuine qualification references; serve final documents and independently verify response hashes. Only then qualify the policy, admit the exact runtime and sole acceptance offer, obtain the separately required1₽ money authorization and let the owner perform card/SBP interaction. No new Linear issue is needed. ART-39/83/224 stay open, ART-338 stays Done, public F9 stays closed.
+
+## Subsequent buyer-route correction
+
+The original UNLISTED receipt above is historical. [The follow-up](../2026-10-16-paid-checkout-buyer-route/README.md) records LISTED/projection2 with sales still CLOSED and payments disabled, the Next Suspense repair, isolated browser preview and concrete private manifest review candidate. It does not claim an installed genuine-buyer/provider E2E.
