@@ -1,0 +1,31 @@
+[Unit]
+Description=Flexperiment static LAB V1 retirement boundary
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=true
+ExecStart=/usr/bin/python3 -I /opt/flexperiment-lab-v1-retired/retired_server.py --bind 10.0.1.1 --port 18139
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectControlGroups=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+RestrictAddressFamilies=AF_INET
+IPAddressDeny=any
+IPAddressAllow=10.0.1.0/24
+CapabilityBoundingSet=
+LockPersonality=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

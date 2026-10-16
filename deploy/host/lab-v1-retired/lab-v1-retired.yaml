@@ -1,0 +1,27 @@
+{
+  "http": {
+    "routers": {
+      "lab-v1-retired-http": {
+        "rule": "Host(`flexperiment.ru`) || Host(`www.flexperiment.ru`) || Host(`api.flexperiment.ru`) || Host(`www.api.flexperiment.ru`) || Host(`admin.flexperiment.ru`) || Host(`www.admin.flexperiment.ru`) || Host(`lab.flexperiment.ru`) || Host(`partner.flexperiment.ru`)",
+        "entryPoints": ["http"],
+        "priority": 100000,
+        "service": "lab-v1-retired"
+      },
+      "lab-v1-retired-https": {
+        "rule": "Host(`flexperiment.ru`) || Host(`www.flexperiment.ru`) || Host(`api.flexperiment.ru`) || Host(`www.api.flexperiment.ru`) || Host(`admin.flexperiment.ru`) || Host(`www.admin.flexperiment.ru`) || Host(`lab.flexperiment.ru`) || Host(`partner.flexperiment.ru`)",
+        "entryPoints": ["https"],
+        "priority": 100000,
+        "service": "lab-v1-retired",
+        "tls": {}
+      }
+    },
+    "services": {
+      "lab-v1-retired": {
+        "loadBalancer": {
+          "passHostHeader": false,
+          "servers": [{"url": "http://10.0.1.1:18139"}]
+        }
+      }
+    }
+  }
+}
