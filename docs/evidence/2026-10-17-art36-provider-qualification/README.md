@@ -55,11 +55,11 @@ reference connects each license test to the provider-origin callback. See
 | Fixture case | Actual provider result | Playback |
 | --- | --- | --- |
 | Allowed origin; callback200 | Two license200 responses; two matched callback200 events | Four seconds ended;100 decoded frames |
-| Callback403 | License403; matched callback403 | Zero decoded frames/time0 |
-| Callback401 | License403; matched callback401 | Zero decoded frames/time0 |
-| Callback500 | License403; matched callback500 | Zero decoded frames/time0 |
-| Callback delayed7seconds | License403 after5302ms; handler saw closed response at7002ms | Zero decoded frames/time0 |
-| Handler closes its socket | License403; matched disconnect event | Zero decoded frames/time0 |
+| Callback403 | License403; matched callback403 | DRM error; no video element |
+| Callback401 | License403; matched callback401 | DRM error; no video element |
+| Callback500 | License403; matched callback500 | DRM error; no video element |
+| Callback delayed7seconds | License403 after5302ms; handler saw closed response at7002ms | DRM error; no video element |
+| Handler closes its socket | License403; matched disconnect event | DRM error; no video element |
 | Different origin (`canary-lab`) | Embed403/privacy error before license/callback | No video element |
 | Allowed origin with `no-referrer` | Embed403/privacy error; absent HTTP Referer captured | No video element/license/callback |
 
