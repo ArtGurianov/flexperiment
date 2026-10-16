@@ -1,3 +1,7 @@
+import { testOwnerLegalDecision } from "./fixtures/sales";
+import { draftFiscalPolicy } from "../src/fiscal-policy";
+import { activateLegalRelease } from "../src/legal-control";
+import { stageBLegalManifest } from "./fixtures/legal";
 import Database from "better-sqlite3";
 import { beforeEach, afterEach, describe, it, expect } from "vitest";
 import { migrateV2 } from "../src/db";
@@ -93,8 +97,16 @@ describe("explicit category retention in offline SQLite, no runtime/default poli
     expect(db.prepare("SELECT id FROM customers").all()).toEqual([{ id: "verified" }]);
     expect(count("email_suppressions")).toBe(1); expect(count("authenticated_consent_events")).toBe(3);
   });
-  it.each(["recent-intent", "user", "link", "outbox", "hold", "history", "audit", "progress"])("preserves an unbound profile with %s authority or fresh evidence", reason => {
+  it.each(["recent-intent", "user", "link", "outbox", "hold", "history", "audit", "progress", "owner-evidence"])("preserves an unbound profile with %s authority or fresh evidence", reason => {
     const pending = intent(reason === "recent-intent" ? recent : old);
+    if (reason === "owner-evidence") {
+      activateLegalRelease(db, { storefront: "COURSES", version: "synthetic-legal", manifest: stageBLegalManifest, actor: "owner" }, old);
+      db.exec("INSERT INTO products(id,product_ref,kind,access_model,course_ref) VALUES ('p','course:evidence','ONLINE_COURSE','PAID','evidence'); INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode) VALUES ('o','course:evidence','p',100,'CLOSED')");
+      const { policyId } = draftFiscalPolicy(db, { actor: "owner", offerRef: "course:evidence", kind: "ONLINE_COURSE", itemName: "Synthetic",
+        taxSystem: "USN_INCOME", vatCode: "NONE", paymentMethod: "FULL_PREPAYMENT", paymentObject: "SERVICE" }, old);
+      testOwnerLegalDecision(db, policyId, "pending@example.test", old);
+      db.prepare("DELETE FROM audit_log WHERE subject_type IN ('FISCAL_POLICY','OWNER_LEGAL_DECISION')").run();
+    }
     if (reason === "user") db.prepare('INSERT INTO "user"(id,name,email,email_verified) VALUES (?,\'Synthetic\',?,0)').run("unbound-user", "pending@example.test");
     if (reason === "link") verification("pending-link", "2026-10-12T00:00:00Z", "pending@example.test");
     if (reason === "outbox") outbox("pending-outbox", recent, recent, "pending@example.test");

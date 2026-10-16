@@ -1,6 +1,8 @@
 import type Database from "better-sqlite3";
 import { activateSales, salesActivationEvidenceIssue, type ProductCommand } from "../../src/catalog-control";
 import { draftFiscalPolicy, qualifyFiscalPolicy } from "../../src/fiscal-policy";
+import { legalManifestHash } from "../../src/legal-control";
+import { recordOwnerLegalDecision } from "../../src/owner-legal-decision";
 import { loadCommerceRuntimeConfig } from "../../src/payment-mode";
 
 /** Local/test runtime: the scripted mock rail, with the same live sale-mode gate production uses. */
@@ -31,7 +33,28 @@ export function qualifyTestFiscalPolicies(db: Database.Database) {
       offerRef: offer.offer_ref, kind: offer.kind, itemName: `Услуга ${offer.product_ref}`,
       taxSystem: "USN_INCOME", vatCode: "NONE", paymentMethod: "FULL_PREPAYMENT", paymentObject: "SERVICE", actor: "owner",
     }, "2026-09-29T00:00:00Z");
-    qualifyFiscalPolicy(db, { policyId, actor: "owner", legalBasis: { offerTermsRef: "test-offer-terms", counselRef: "test-counsel", evidenceSha256: "c".repeat(64) } },
-      "2026-09-29T00:00:00Z");
+    qualifyTestFiscalPolicy(db, policyId, "owner", "2026-09-29T00:00:00Z");
   }
+}
+
+/** Explicitly synthetic approvals: fixtures never run in a seed, migration or live operator. */
+export function testOwnerLegalDecision(db: Database.Database, policyId: string, actor = "owner", now = "2026-09-30T10:00:00Z") {
+  const policy = db.prepare("SELECT product_kind FROM fiscal_policy_versions WHERE id=?").get(policyId) as { product_kind: string };
+  const release = db.prepare("SELECT id,manifest_json FROM legal_releases WHERE active=1 AND storefront=?")
+    .get(policy?.product_kind === "LAB" ? "LAB" : "COURSES") as { id: string; manifest_json: string } | undefined;
+  const documents = release ? JSON.parse(release.manifest_json).documents as { kind: string; url: string; sha256: string }[] : [];
+  const terms = documents.find(d => d.kind === "course_offer");
+  const refund = documents.find(d => d.kind === "refund_terms");
+  return recordOwnerLegalDecision(db, { policyId, legalReleaseId: release?.id ?? "missing",
+    legalManifestSha256: release ? legalManifestHash(JSON.parse(release.manifest_json)) : "0".repeat(64), actor, decidedBy: actor, decidedAt: now,
+    offerTermsRef: terms?.url ?? "synthetic:offer", offerTermsSha256: terms?.sha256 ?? "a".repeat(64),
+    refundTermsRef: refund?.url ?? "synthetic:refund", refundTermsSha256: refund?.sha256 ?? "b".repeat(64),
+    norms: [{ reference: "SYNTHETIC TEST LAW", url: "https://example.test/law" }],
+    facts: "Synthetic test facts", reasoning: "Synthetic test fiscal rationale", riskAssessment: "Synthetic test risks",
+    approvalRef: "synthetic:owner-approval", evidenceSha256: "c".repeat(64),
+  }, now);
+}
+export function qualifyTestFiscalPolicy(db: Database.Database, policyId: string, actor = "owner", now = "2026-09-30T10:00:00Z") {
+  const decision = testOwnerLegalDecision(db, policyId, actor, now);
+  return qualifyFiscalPolicy(db, { policyId, actor, ownerLegalDecisionId: decision.ownerLegalDecisionId }, now);
 }

@@ -1,0 +1,21 @@
+{
+  "schema": "flexperiment.exact-legal-approval/1",
+  "releaseVersion": "2026-10-16.closed-paid-test.review.4",
+  "status": "OWNER_APPROVED_EXACT_BYTES",
+  "packageSha256": "f67033443312a368b42d2d114e6b775d0e96035e2bc4bdd5587e859a035bb86b",
+  "exactBytesApproved": true,
+  "paymentAuthorized": false,
+  "priorApprovedPackageSha256": "48736a07be4b9820fbdfde32fc5a905fe0fef80a539d6c1c375e4a3331bc3282",
+  "approvedPackageSha256": "f67033443312a368b42d2d114e6b775d0e96035e2bc4bdd5587e859a035bb86b",
+  "ownerApproval": {
+    "source": "Direct owner message in the current conversation: GO — APPROVE EXACT LEGAL REVIEW.4",
+    "recordedAt": "2026-10-16T08:47:38.253304+00:00",
+    "exactReleaseVersion": "2026-10-16.closed-paid-test.review.4",
+    "ownerReportsIndependentTwelveFileVerification": true,
+    "scope": "Evolving Test Course access including subsequent published updates/additions, no promised update frequency, no calendar expiry, 1 RUB price/full refund",
+    "fiscalQualificationSeparate": true,
+    "freshBuyerConsentRequired": true,
+    "moneyAuthorized": false,
+    "autonomousInstallationAuthorityRetained": true
+  }
+}

@@ -49,29 +49,29 @@ export function draftFiscalPolicy(
   return { policyId: id, version: write.immediate() };
 }
 
-/**
- * Qualification needs its legal basis: the offer and refund terms (ART-231) and the counsel's framing
- * (ART-234), each named, with the sha256 of the evidence the owner reviewed. Any QUALIFIED policy of
- * the same offer is retired in the same transaction, so there is never a moment with two or none.
- */
+/** New qualifications require immutable owner-approved evidence (ART-234). Legacy counsel
+ * evidence remains readable and immutable; it is not an alternative path for new approvals. */
 export function qualifyFiscalPolicy(
   db: Database.Database,
-  command: { policyId: string; actor: string; legalBasis: { offerTermsRef: string; counselRef: string; evidenceSha256: string } },
+  command: { policyId: string; actor: string; ownerLegalDecisionId: string },
   now = new Date().toISOString(),
 ) {
-  const basis = command.legalBasis;
-  if (!command.actor?.trim() || !basis?.offerTermsRef?.trim() || !basis?.counselRef?.trim()
-    || !/^[a-f0-9]{64}$/.test(basis.evidenceSha256 ?? "")) throw new Error("FISCAL_POLICY_LEGAL_BASIS_REQUIRED");
+  if (!command.actor?.trim() || !command.ownerLegalDecisionId?.trim()) throw new Error("FISCAL_POLICY_LEGAL_BASIS_REQUIRED");
   const apply = db.transaction(() => {
     const policy = db.prepare("SELECT offer_ref,status FROM fiscal_policy_versions WHERE id=?").get(command.policyId) as
       { offer_ref: string; status: string } | undefined;
     if (!policy) throw new Error("FISCAL_POLICY_NOT_FOUND");
     if (policy.status !== "DRAFT") throw new Error("FISCAL_POLICY_TRANSITION_INVALID");
+    const decision = db.prepare(`SELECT offer_terms_ref,evidence_sha256 FROM owner_legal_decisions
+      WHERE id=? AND fiscal_policy_id=? AND decided_by=?`).get(command.ownerLegalDecisionId, command.policyId, command.actor) as
+      { offer_terms_ref: string; evidence_sha256: string } | undefined;
+    if (!decision) throw new Error("FISCAL_POLICY_LEGAL_BASIS_REQUIRED");
+    const basis = { type: "OWNER_LEGAL_DECISION", ownerLegalDecisionId: command.ownerLegalDecisionId,
+      offerTermsRef: decision.offer_terms_ref, evidenceSha256: decision.evidence_sha256 };
     db.prepare("UPDATE fiscal_policy_versions SET status='RETIRED',retired_at=? WHERE offer_ref=? AND status='QUALIFIED'")
       .run(now, policy.offer_ref);
     db.prepare(`UPDATE fiscal_policy_versions SET status='QUALIFIED',legal_basis_json=?,qualified_by=?,qualified_at=? WHERE id=?`)
-      .run(JSON.stringify({ offerTermsRef: basis.offerTermsRef.trim(), counselRef: basis.counselRef.trim(), evidenceSha256: basis.evidenceSha256 }),
-        command.actor, now, command.policyId);
+      .run(JSON.stringify(basis), command.actor, now, command.policyId);
     audit(db, command.actor, "FISCAL_POLICY_QUALIFIED", command.policyId, basis, now);
   });
   apply.immediate();
@@ -94,7 +94,12 @@ export function retireFiscalPolicy(db: Database.Database, command: { policyId: s
  */
 export function qualifiedFiscalPolicy(db: Database.Database, offerRef: string, kind: FiscalPolicyKind): FrozenFiscalPolicy {
   const row = db.prepare(`SELECT id,version,item_name,tax_system,vat_code,payment_method,payment_object
-    FROM fiscal_policy_versions WHERE offer_ref=? AND product_kind=? AND status='QUALIFIED'`).get(offerRef, kind) as PolicyRow | undefined;
+    FROM fiscal_policy_versions f WHERE offer_ref=? AND product_kind=? AND status='QUALIFIED'
+      AND (json_extract(f.legal_basis_json,'$.type') IS NOT 'OWNER_LEGAL_DECISION' OR EXISTS (
+        SELECT 1 FROM owner_legal_decisions d JOIN legal_releases l ON l.id=d.legal_release_id
+          JOIN offers o ON o.offer_ref=d.offer_ref JOIN products p ON p.id=o.product_id
+        WHERE d.id=json_extract(f.legal_basis_json,'$.ownerLegalDecisionId') AND d.fiscal_policy_id=f.id AND p.product_ref=d.product_ref AND p.kind=f.product_kind
+          AND l.active=1 AND l.version=d.legal_release_version AND l.manifest_json=d.legal_manifest_json))`).get(offerRef, kind) as PolicyRow | undefined;
   if (!row) throw new Error("FISCAL_POLICY_NOT_QUALIFIED");
   return {
     policyId: row.id, version: row.version, itemName: row.item_name,

@@ -1,3 +1,6 @@
+import { resolvePlaybackAccess } from "../src/playback-access";
+import { applyCourseManifest, withManifestHash } from "../src/manifest";
+import { qualifyTestFiscalPolicy } from "./fixtures/sales";
 import Database from "better-sqlite3";
 import { execFileSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -5,7 +8,7 @@ import { migrateV2 } from "../src/db";
 import { configureProduct } from "../src/catalog-control";
 import { buyerEmailSha256 } from "../src/closed-paid-test";
 import { confirmCheckout, MockPaymentRail, prepareCheckout } from "../src/checkout";
-import { draftFiscalPolicy, qualifyFiscalPolicy } from "../src/fiscal-policy";
+import { draftFiscalPolicy } from "../src/fiscal-policy";
 import { activateLegalRelease, legalManifestHash } from "../src/legal-control";
 import { authenticatedConsentStatus, recordAuthenticatedConsents } from "../src/authenticated-consents";
 import { loadCommerceRuntimeConfig } from "../src/payment-mode";
@@ -55,9 +58,15 @@ beforeEach(() => {
   configureProduct(db, config, { productRef: "course:test-course", offerRef: "course:test-course", courseRef: "test-course",
     kind: "ONLINE_COURSE", accessModel: "PAID", saleMode: "ACCEPTANCE_ONLY", priceKopecks: 100, acceptanceAllowlist: [email],
     paymentPurpose: "Synthetic test purchase", actor: "fixture", expectedVersion: 0 });
-  const policy = draftFiscalPolicy(db, { offerRef: "course:test-course", kind: "ONLINE_COURSE", itemName: "Доступ к видеоматериалу «Test Course»",
+  applyCourseManifest(db, withManifestHash({ courseRef: "test-course", version: 1, visibility: "LISTED",
+    sections: [{ sectionRef: "section", visibility: "LISTED" }],
+    lessons: [{ lessonRef: "lesson", sectionRef: "section", everPublished: true, visibility: "LISTED", freePreview: false }], operations: [] }));
+  db.prepare("INSERT INTO video_upload_sessions(id,lesson_ref,video_id,status,uploader_endpoint) VALUES ('upload','lesson','synthetic-ready-video','READY','https://example.test/upload')").run();
+  db.prepare("INSERT INTO lesson_video_bindings(lesson_ref,active_video_id,duration_seconds,bound_at,updated_at) VALUES ('lesson','synthetic-ready-video',150,?,?)")
+    .run(new Date().toISOString(), new Date().toISOString());
+  const policy = draftFiscalPolicy(db, { offerRef: "course:test-course", kind: "ONLINE_COURSE", itemName: "Доступ к курсу «Test Course»",
     taxSystem: "USN_INCOME", vatCode: "NONE", paymentMethod: "FULL_PAYMENT", paymentObject: "SERVICE", actor: "fixture" });
-  qualifyFiscalPolicy(db, { ...policy, actor: "fixture", legalBasis: { offerTermsRef: "fixture:terms", counselRef: "fixture:counsel", evidenceSha256: "c".repeat(64) } });
+  qualifyTestFiscalPolicy(db, policy.policyId, "fixture", new Date().toISOString());
 });
 afterEach(() => db.close());
 
@@ -116,7 +125,7 @@ describe("closed paid test admission", () => {
   it("rejects a differently qualified fiscal item before resolving upstream", async () => {
     const policy = draftFiscalPolicy(db, { offerRef: input.offerRef, kind: "ONLINE_COURSE", itemName: "Other item",
       taxSystem: "USN_INCOME", vatCode: "NONE", paymentMethod: "FULL_PREPAYMENT", paymentObject: "SERVICE", actor: "fixture" });
-    qualifyFiscalPolicy(db, { ...policy, actor: "fixture", legalBasis: { offerTermsRef: "fixture:other", counselRef: "fixture:counsel", evidenceSha256: "d".repeat(64) } });
+    qualifyTestFiscalPolicy(db, policy.policyId, "fixture", new Date().toISOString());
     const resolve = vi.spyOn(rail, "resolve"); await expect(preview()).rejects.toThrow("CLOSED_PAID_TEST_FISCAL_POLICY_REFUSED");
     expect(resolve).not.toHaveBeenCalled();
   });
@@ -252,5 +261,68 @@ describe("closed paid account consent gate", () => {
     }
     expect(resolve).not.toHaveBeenCalled(); expect(create).not.toHaveBeenCalled();
     expect(db.prepare("SELECT customer_id FROM authenticated_consent_actions").all()).toEqual([{ customer_id: "other" }]);
+  });
+});
+
+
+describe("FULL_PAYMENT ready recorded access", () => {
+  it.each(["missing-course", "unpublished", "missing-video", "processing", "empty-video"])("refuses %s before creating a quote/payment", async reason => {
+    accountConsent();
+    if (reason === "missing-course") db.exec("DELETE FROM catalog_course_projection");
+    if (reason === "unpublished") db.exec("UPDATE catalog_lesson_projection SET ever_published=0");
+    if (reason === "missing-video") db.exec("DELETE FROM lesson_video_bindings");
+    if (reason === "processing") db.exec("UPDATE video_upload_sessions SET status='PROCESSING'");
+    if (reason === "empty-video") db.exec("UPDATE lesson_video_bindings SET duration_seconds=0");
+    const resolve = vi.spyOn(rail, "resolve"), create = vi.spyOn(rail, "create");
+    await expect(preview()).rejects.toThrow("IMMEDIATE_COURSE_ACCESS_NOT_READY");
+    expect(resolve).not.toHaveBeenCalled(); expect(create).not.toHaveBeenCalled();
+    expect(db.prepare("SELECT count(*) n FROM orders").get()).toEqual({ n: 0 });
+  });
+  it("permits ready content updates between preview and purchase, recording the actual initial course state", async () => {
+    accountConsent(); const q = await preview();
+    if (q.state !== "PRICE_REVIEW_REQUIRED") throw new Error("expected review");
+    db.exec("UPDATE lesson_video_bindings SET duration_seconds=151");
+    await expect(confirmCheckout(db, rail, config, { ...input, quoteId: q.quoteId, idempotencyKey: "pay", legalAcceptance: accept }))
+      .resolves.toMatchObject({ state: "PAID" });
+    const row = db.prepare("SELECT immediate_access_json FROM order_lines").get() as { immediate_access_json: string };
+    expect(JSON.parse(row.immediate_access_json).materials[0].durationSeconds).toBe(151);
+  });
+  it("includes later course additions under the same entitlement without changing historical initial evidence", async () => {
+    accountConsent(); await confirm(accept);
+    const evidence = db.prepare("SELECT immediate_access_json FROM order_lines").get();
+    applyCourseManifest(db, withManifestHash({ courseRef: "test-course", version: 2, visibility: "LISTED",
+      sections: [{ sectionRef: "section", visibility: "LISTED" }], lessons: [
+        { lessonRef: "lesson", sectionRef: "section", everPublished: true, visibility: "LISTED", freePreview: false },
+        { lessonRef: "added", sectionRef: "section", everPublished: true, visibility: "LISTED", freePreview: false },
+      ], operations: [] }));
+    db.exec("INSERT INTO video_upload_sessions(id,lesson_ref,video_id,status,uploader_endpoint) VALUES ('added-upload','added','added-ready-video','READY','https://example.test/upload')");
+    db.prepare("INSERT INTO lesson_video_bindings(lesson_ref,active_video_id,duration_seconds,bound_at,updated_at) VALUES ('added','added-ready-video',200,?,?)")
+      .run(new Date().toISOString(),new Date().toISOString());
+    expect(resolvePlaybackAccess(db, { customerId: "buyer", lessonRef: "added", now: new Date(), leaseMs: 60_000 }))
+      .toMatchObject({ decision: "ALLOW", paidEntitled: true, binding: { videoId: "added-ready-video" } });
+    expect(db.prepare("SELECT count(*) n FROM course_entitlements").get()).toEqual({ n: 1 });
+    expect(db.prepare("SELECT immediate_access_json FROM order_lines").get()).toEqual(evidence);
+  });
+  it("rolls back payment acceptance and activation audit if the grant transaction fails", async () => {
+    accountConsent();
+    db.exec("CREATE TRIGGER synthetic_grant_failure BEFORE INSERT ON course_entitlements BEGIN SELECT RAISE(ABORT,'SYNTHETIC_GRANT_FAILURE'); END");
+    await expect(confirm(accept)).rejects.toThrow("SYNTHETIC_GRANT_FAILURE");
+    expect(db.prepare("SELECT state FROM orders").get()).toEqual({ state: "PAYMENT_PENDING" });
+    expect(db.prepare("SELECT count(*) n FROM course_entitlements").get()).toEqual({ n: 0 });
+    expect(db.prepare("SELECT count(*) n FROM audit_log WHERE action='IMMEDIATE_ACCESS_ACTIVATED'").get()).toEqual({ n: 0 });
+  });
+  it("freezes the provided materials and atomically records access with accepted payment, once on replay", async () => {
+    accountConsent();
+    const result = await confirm(accept);
+    expect(result.state).toBe("PAID");
+    const line = db.prepare("SELECT immediate_access_json FROM order_lines").get() as { immediate_access_json: string };
+    const frozen = JSON.parse(line.immediate_access_json);
+    expect(frozen).toMatchObject({ courseRef: "test-course", materials: [{ lessonRef: "lesson", videoId: "synthetic-ready-video", durationSeconds: 150 }] });
+    const event = db.prepare("SELECT evidence_json FROM audit_log WHERE action='IMMEDIATE_ACCESS_ACTIVATED'").get() as { evidence_json: string };
+    expect(JSON.parse(event.evidence_json)).toMatchObject({ paymentState: "PAID", paymentAmountKopecks: 100, materialSet: frozen });
+    expect(db.prepare("SELECT count(*) n FROM course_entitlements WHERE revoked_at IS NULL").get()).toEqual({ n: 1 });
+    await confirm(accept);
+    expect(db.prepare("SELECT count(*) n FROM audit_log WHERE action='IMMEDIATE_ACCESS_ACTIVATED'").get()).toEqual({ n: 1 });
+    expect(db.prepare("SELECT count(*) n FROM orders").get()).toEqual({ n: 1 });
   });
 });

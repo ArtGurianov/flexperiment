@@ -243,7 +243,7 @@ describe("library current custody read, real SDK/SQLite/age; no Cloud.ru admissi
       expect(await recovered!.ready()).toBe(true); expect(recovered!.status()).toEqual({state: "OPEN", leases: 0, unknown: 0});
       expect(db.prepare('SELECT id FROM "user"').all()).toEqual([]);
       expect(db.prepare('SELECT id,status FROM video_upload_sessions').all()).toEqual([{id: "upload-survives", status: "PROCESSING"}]);
-      expect(db.prepare("SELECT COUNT(*) AS n FROM schema_migrations").get()).toEqual({n: 26});
+      expect(db.prepare("SELECT COUNT(*) AS n FROM schema_migrations").get()).toEqual({n: 27});
       // A fresh post-recovery backup of current data restores independently.
       const backupPath = join(root, "current-recovery.sqlite"); await db.backup(backupPath);
       const cipher = join(root, "current-recovery.sqlite.age"); const readback = join(root, "independent-get.sqlite.age");

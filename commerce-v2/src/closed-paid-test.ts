@@ -23,7 +23,7 @@ export function assertClosedPaidTestAccountConsents(db: Database.Database,
 
 export const buyerEmailSha256 = (email: string) => createHash("sha256").update(email.trim().toLowerCase()).digest("hex");
 export function assertClosedPaidTestFiscal(config: Pick<CommerceRuntimeConfig, "closedPaidTest">, fiscal: FrozenFiscalPolicy) {
-  if (config.closedPaidTest && (fiscal.itemName !== "Доступ к видеоматериалу «Test Course»" || fiscal.taxSystem !== "USN_INCOME"
+  if (config.closedPaidTest && (fiscal.itemName !== "Доступ к курсу «Test Course»" || fiscal.taxSystem !== "USN_INCOME"
     || fiscal.vatCode !== "NONE" || fiscal.paymentMethod !== "FULL_PAYMENT" || fiscal.paymentObject !== "SERVICE")) {
     throw new Error("CLOSED_PAID_TEST_FISCAL_POLICY_REFUSED");
   }

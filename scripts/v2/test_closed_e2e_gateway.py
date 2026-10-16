@@ -36,6 +36,7 @@ class ClosedGateway(unittest.TestCase):
         docker('run','--rm','-v',str(p)+':/source:ro','-v',cls.volume+':/tls','--entrypoint','sh',IMAGE,'-c','cp /source/*.pem /tls/; chmod 600 /tls/privkey.pem; chmod 644 /tls/fullchain.pem')
         shutil.copytree(ROOT/'docs/legal/stage-a/2026-10-11-draft',p/'legal')
         shutil.copytree(ROOT/'docs/legal/closed-paid-test/2026-10-16-review-3',p/'legal/paid-test/2026-10-16-review-3')
+        shutil.copytree(ROOT/'docs/legal/closed-paid-test/2026-10-16-review-4',p/'legal/paid-test/2026-10-16-review-4')
         upstream=cls.prefix+'-upstream';cls.containers.append(upstream)
         docker('run','-d','--name',upstream,'--network',cls.network,'--network-alias','flexperiment-fast-cut-canary-commerce','--network-alias','flexperiment-fast-cut-canary-platform','--network-alias','flexperiment-fast-cut-canary-admin','node:22-alpine','node','-e',FIXTURE)
         cls.urls={}
@@ -116,6 +117,20 @@ class ClosedGateway(unittest.TestCase):
         proposal=json.loads((root/'release-proposal.json').read_bytes())
         for document in proposal['candidateDocuments']:
             path='/__closed_legal/paid-test/2026-10-16-review-3/'+document['kind']+'.md'
+            status,headers,raw=self.request('tester',path,HOSTS[1])
+            self.assertEqual(status,200);self.assertEqual(headers['cache-control'],'no-store')
+            self.assertEqual(hashlib.sha256(raw).hexdigest(),document['sha256'])
+            self.assertEqual(self.request('tester',path,HOSTS[1],'POST',b'{}')[0],403)
+            for host in [HOSTS[0],HOSTS[2],HOSTS[3]]:
+                self.assertIn(self.request('tester',path,host)[0],[403,404])
+
+    def test_paid_review4_candidate_bytes_keep_host_and_method_boundary(self):
+        root=ROOT/'docs/legal/closed-paid-test/2026-10-16-review-4'
+        approval=json.loads((root/'approval-record.json').read_bytes())
+        self.assertEqual(hashlib.sha256((root/'SHA256SUMS').read_bytes()).hexdigest(),approval['packageSha256'])
+        proposal=json.loads((root/'release-proposal.json').read_bytes())
+        for document in proposal['candidateDocuments']:
+            path='/__closed_legal/paid-test/2026-10-16-review-4/'+document['kind']+'.md'
             status,headers,raw=self.request('tester',path,HOSTS[1])
             self.assertEqual(status,200);self.assertEqual(headers['cache-control'],'no-store')
             self.assertEqual(hashlib.sha256(raw).hexdigest(),document['sha256'])
