@@ -9,8 +9,9 @@ import { activatePublicSales, qualifyTestFiscalPolicies } from "./fixtures/sales
 import { loadCommerceRuntimeConfig } from "../src/payment-mode";
 import { applyCourseManifest, withManifestHash } from "../src/manifest";
 import { startVideoUpload } from "../src/kinescope";
-import { MockPaymentRail } from "../src/checkout";
+import { checkout, MockPaymentRail } from "../src/checkout";
 import { controlRoomEntitlements } from "../src/control-room";
+import { testCheckoutConfig } from "./fixtures/sales";
 import type { CatalogueResponse, ControlRoomIntegrationSummary, CustomersResponse, EntitlementsResponse, OrdersResponse } from "@flexperiment/control-room-contracts";
 
 let db: Database.Database;
@@ -396,6 +397,49 @@ describe("commerce v2 boundaries", () => {
     const paymentState = successUrl.searchParams.get("state")!;
     expect(await (await server.request(`/v1/checkout/handoff/return?state=${encodeURIComponent(paymentState)}`, { headers })).json())
       .toEqual({ phase: "PAYMENT_RETURN", returnPath: "/courses/one", orderPublicId, storefront: "COURSES" });
+  });
+
+  it("registers received email only through an Admin session, atomically with the true operator audit", async () => {
+    db.prepare("INSERT INTO customers(id,email_normalized) VALUES ('customer','student@example.com')").run();
+    db.prepare(`INSERT INTO legal_releases(id,storefront,version,manifest_json,effective_at,active)
+      VALUES ('legal','COURSES','stage-b-v1',?,'2026-09-30T00:00:00Z',1)`).run(stageBLegalManifestJson);
+    db.prepare(`INSERT INTO products(id,product_ref,kind,access_model,course_ref)
+      VALUES ('product','course:one','ONLINE_COURSE','PAID','course-one')`).run();
+    db.prepare(`INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode)
+      VALUES ('offer','course:one','product',10000,'PUBLIC')`).run();
+    qualifyTestFiscalPolicies(db); activatePublicSales(db);
+    const rail = new MockPaymentRail();
+    const order = await checkout(db, rail, testCheckoutConfig, { customerId: "customer", customerEmail: "student@example.com",
+      offerRef: "course:one", idempotencyKey: "mail-intake-paid-order" }, "2026-09-30T10:00:00Z");
+    const server = app("mock", { paymentRail: rail });
+    const body = { orderPublicId: order.orderPublicId, senderEmail: "student@example.com", evidenceRef: "mail/message-1",
+      receivedAt: "2026-09-30T11:59:00.000Z", idempotencyKey: "mail-1", actor: "forged", customerId: "another-customer", outcome: "APPROVE" };
+    const path = "/v1/admin/v2/refunds";
+    const write = (headers: Record<string, string>) => server.request(path, { method: "POST",
+      headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(body) });
+    expect((await write({})).status).toBe(401);
+    expect((await write({ authorization: "Session customer" })).status).toBe(401);
+    expect((await write({ authorization: `Bearer ${token}` })).status).toBe(401);
+    const login = await server.request("/v1/admin/login", { method: "POST",
+      headers: { origin: "https://admin.flexperiment.ru", "content-type": "application/json" }, body: JSON.stringify({ password: adminPassword }) });
+    const cookie = login.headers.get("set-cookie")!;
+    expect((await write({ cookie, origin: "https://attacker.invalid" })).status).toBe(403);
+    // An audit failure must not leave an unaudited request/evidence row.
+    db.exec("CREATE TRIGGER reject_intake_audit BEFORE INSERT ON control_room_audit_log WHEN NEW.action='REFUND_EMAIL_REGISTERED' BEGIN SELECT RAISE(ABORT,'AUDIT_UNAVAILABLE'); END");
+    expect((await write({ cookie })).status).toBe(409);
+    expect(db.prepare("SELECT COUNT(*) n FROM refund_requests").get()).toEqual({ n: 0 });
+    db.exec("DROP TRIGGER reject_intake_audit");
+    const result = await write({ cookie }); expect(result.status).toBe(201);
+    const registered = await result.json() as { requestPublicId: string };
+    expect(await (await write({ cookie })).json()).toMatchObject({ requestPublicId: registered.requestPublicId, state: "REQUESTED", created: false });
+    const list = await (await server.request(path, { headers: { cookie } })).json() as { refunds: Array<{ policyFacts: { emailIntake: { registeredBy: string } } }> };
+    expect(list.refunds[0].policyFacts.emailIntake.registeredBy).toBe("singleton-admin");
+    expect(db.prepare("SELECT customer_id FROM refund_requests").get()).toEqual({ customer_id: "customer" });
+    expect(db.prepare("SELECT admin_id FROM control_room_audit_log WHERE action='REFUND_EMAIL_REGISTERED'").all()).toEqual([{ admin_id: "singleton-admin" }]);
+    expect(db.prepare("SELECT COUNT(*) n FROM refund_decisions").get()).toEqual({ n: 0 });
+    expect(db.prepare("SELECT COUNT(*) n FROM refund_executions").get()).toEqual({ n: 0 });
+    expect(db.prepare("SELECT state FROM orders").get()).toEqual({ state: "FULFILLED" });
+    expect(db.prepare("SELECT revoked_at FROM course_entitlements").get()).toEqual({ revoked_at: null });
   });
 
   it("requires a customer request and explicit operator decision before refund execution", async () => {

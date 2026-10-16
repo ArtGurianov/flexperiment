@@ -25,6 +25,7 @@ import type {
   ProductWithdrawalCommand,
   RefundCasesResponse,
   RefundDecisionCommand,
+  RefundEmailRegistrationCommand,
 } from "../../lib/control-room-contracts";
 import { Badge } from "../ui/Badge";
 import { Loading } from "../ui/Loading";
@@ -419,12 +420,60 @@ function RefundDecision({ item }: { item: ControlRoomRefundCase }) {
   </form>;
 }
 
+function RegisterEmailRefund({ onRegistered }: { onRegistered: (requestPublicId: string) => void }) {
+  const client = useQueryClient();
+  const [orderPublicId, setOrder] = useState("");
+  const [senderEmail, setSender] = useState("");
+  const [evidenceRef, setEvidence] = useState("");
+  const [receivedAt, setReceived] = useState("");
+  const [customerNote, setNote] = useState("");
+  const [command, setCommand] = useState<RefundEmailRegistrationCommand | null>(null);
+  const registration = useMutation({
+    mutationFn: (body: RefundEmailRegistrationCommand) => api<{ requestPublicId: string }>("/v2/refunds", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+    }),
+    retry: false,
+    onSuccess: (result) => {
+      setCommand(null); setOrder(""); setSender(""); setEvidence(""); setReceived(""); setNote("");
+      onRegistered(result.requestPublicId);
+      return client.invalidateQueries({ queryKey: ["control-room-v2", "refunds"] });
+    },
+    onError: (error: AdminApiError) => {
+      // Only explicit input refusals allow editing. A lost/5xx response retains the exact command.
+      if (["REFUND_ORDER_REQUIRED", "REFUND_EMAIL_EVIDENCE_REQUIRED", "REFUND_EMAIL_SENDER_REQUIRED",
+        "REFUND_EMAIL_SENDER_INVALID", "REFUND_EMAIL_SENDER_MISMATCH", "REFUND_EMAIL_RECEIVED_AT_INVALID",
+        "REFUND_NOTE_TOO_LONG", "REFUND_NOTE_INVALID", "REFUND_REQUEST_NOT_AVAILABLE"].includes(error.code)) setCommand(null);
+    },
+  });
+  return <Panel title="Зарегистрировать обращение из почты">
+    <p>Проверьте письмо на refunds@flexperiment.ru и покупку. Регистрация создаёт только заявку; решение и исполнение выполняются отдельно.</p>
+    <form className="refund-decision" onSubmit={(event) => {
+      event.preventDefault();
+      const body = command ?? { orderPublicId, senderEmail, evidenceRef, receivedAt: new Date(receivedAt).toISOString(),
+        customerNote, idempotencyKey: idempotencyKey() };
+      setCommand(body);
+      registration.mutate(body);
+    }}>
+      <label>Номер заказа<input required maxLength={200} disabled={Boolean(command)} value={orderPublicId} onChange={(event) => setOrder(event.target.value)} /></label>
+      <label>Почта отправителя<input required type="email" maxLength={320} disabled={Boolean(command)} value={senderEmail} onChange={(event) => setSender(event.target.value)} /></label>
+      <label>Ссылка или ID письма<input required maxLength={1000} disabled={Boolean(command)} value={evidenceRef} onChange={(event) => setEvidence(event.target.value)} /></label>
+      <label>Письмо получено (ваше местное время)<input required type="datetime-local" disabled={Boolean(command)} value={receivedAt} onChange={(event) => setReceived(event.target.value)} /></label>
+      <label>Суть обращения<textarea maxLength={2000} disabled={Boolean(command)} value={customerNote} onChange={(event) => setNote(event.target.value)} /></label>
+      {registration.error ? <Notice error={registration.error.code} /> : null}
+      {command && !registration.isPending ? <p role="status">Сверьте очередь заявок. Повтор отправит те же данные с прежним ключом.</p> : null}
+      <button className="primary" disabled={registration.isPending}>{registration.isPending ? "Регистрируем…" : command ? "Повторить регистрацию" : "Зарегистрировать заявку"}</button>
+      {registration.isSuccess ? <p role="status">Заявка зарегистрирована. Выберите её для отдельного решения.</p> : null}
+    </form>
+  </Panel>;
+}
+
 export function RefundsView() {
   const query = useControlRoomQuery<RefundCasesResponse>("refunds", "/refunds");
   const [selected, setSelected] = useState<string | null>(null);
   const item = query.data?.refunds.find((refund) => refund.requestPublicId === selected) ?? null;
   return <>
     <PageTitle eyebrow="ПРОДАЖИ / ВОЗВРАТЫ" title={<>Решение здесь.<br /><i>Деньги — в Refref.</i></>} text="Запрос, решение и внешний эффект разделены. Сетевой таймаут не превращается во второй возврат." />
+    <RegisterEmailRefund onRegistered={setSelected} />
     <section className="refund-workbench">
       <Panel title="Очередь решений">
         {query.error ? readError(query.error) : !query.data ? <Loading /> : <QueryState error={null} empty={!query.data.refunds.length}>
@@ -438,6 +487,11 @@ export function RefundsView() {
       <Panel title="Досье возврата">
         {!item ? <p className="empty">Выберите запрос слева.</p> : <div className="refund-dossier">
           <div className="dossier-grid"><div><small>Доступ начат</small><strong>{dateTime(item.policyFacts.courseAccessStartedAt)}</strong></div><div><small>Запрошен</small><strong>{dateTime(item.requestedAt)}</strong></div><div><small>Policy</small><strong>{item.policyBasis ?? "решение не принято"}</strong></div><div><small>Refref support</small><strong>{item.supportReference ?? "—"}</strong></div></div>
+          {item.policyFacts.emailIntake ? <section aria-label="Доказательство email-обращения">
+            <p>Письмо: {item.policyFacts.emailIntake.evidenceRef}</p>
+            <p>Получено: {dateTime(item.policyFacts.emailIntake.receivedAt)} · Зарегистрировал: {item.policyFacts.emailIntake.registeredBy}</p>
+          </section> : null}
+          {item.customerNote ? <p>Обращение покупателя: {item.customerNote}</p> : null}
           {item.rationale ? <blockquote>{item.rationale}</blockquote> : null}
           <RefundDecision item={item} />
         </div>}

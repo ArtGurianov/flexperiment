@@ -15,12 +15,12 @@ import { activateLegalRelease, currentLegalRelease, type LegalReleaseManifest } 
 import { issueCheckoutHandoffState, issueCheckoutPaymentReturnState, verifyCheckoutHandoffState, verifyCheckoutNavigationState } from "./checkout-handoff";
 import { listMerchantPromotions, saveMerchantPromotion, type MerchantPromotionInput } from "./promotions";
 import type { RefundEnvelopeKeyring } from "./refund-envelope";
-import { decideRefund, executeApprovedRefund, listCustomerRefunds, listRefundCases, recordCourseAccessStart, requestRefund, type RefundDecisionInput, type RefundReason } from "./refunds";
+import { decideRefund, executeApprovedRefund, listCustomerRefunds, listRefundCases, recordCourseAccessStart, registerEmailRefund, requestRefund, type RefundDecisionInput, type RefundReason } from "./refunds";
 import { grantManualEntitlement, revokeManualEntitlement } from "./entitlements";
 import { listCustomerLibrary, listCustomerOrderHistory } from "./library";
 import { controlRoomAttention, controlRoomAudit, controlRoomCatalogue, controlRoomCities, controlRoomCustomers, controlRoomEmailOperations, controlRoomEntitlements, controlRoomIncidents, controlRoomIntegrationSummary, controlRoomLabOccurrences, controlRoomOrders } from "./control-room";
 import { auditControlRoom, consumeControlRoomLoginLimit, CONTROL_ROOM_SESSION_TTL_MS, controlRoomSessionCookie, issueControlRoomSession, parseControlRoomSession, verifyControlRoomPassword, type ControlRoomAuthConfig } from "./control-room-auth";
-import type { MerchantPromotionCommand, ProductConfigurationCommand, ProductWithdrawalCommand } from "@flexperiment/control-room-contracts";
+import type { MerchantPromotionCommand, ProductConfigurationCommand, ProductWithdrawalCommand, RefundEmailRegistrationCommand } from "@flexperiment/control-room-contracts";
 import { resolvePlaybackAccess } from "./playback-access";
 import { issuePlaybackToken, verifyPlaybackToken, type PlaybackKeyring } from "./playback-auth";
 import { recordPlaybackAccessEvent } from "./playback-telemetry";
@@ -360,6 +360,26 @@ export function createCommerceV2App(deps: Dependencies) {
   app.get("/v1/admin/v2/cities", (context) => context.json(controlRoomCities(deps.db, now().toISOString()), 200, noStore));
   app.get("/v1/admin/v2/lab", (context) => context.json(controlRoomLabOccurrences(deps.db, now().toISOString()), 200, noStore));
   app.get("/v1/admin/v2/refunds", (context) => context.json(listRefundCases(deps.db, now().toISOString()), 200, noStore));
+  app.post("/v1/admin/v2/refunds", async (context) => {
+    try {
+      const input = await context.req.json<RefundEmailRegistrationCommand>();
+      const actor = context.get("controlRoomAdminId")!;
+      const registeredAt = now().toISOString();
+      const result = deps.db.transaction(() => {
+        const result = registerEmailRefund(deps.db, {
+          orderPublicId: input.orderPublicId, senderEmail: input.senderEmail, evidenceRef: input.evidenceRef,
+          receivedAt: input.receivedAt, customerNote: input.customerNote, idempotencyKey: input.idempotencyKey, actor,
+        }, registeredAt);
+        if (result.created) auditControlRoom(deps.db, { adminId: actor, action: "REFUND_EMAIL_REGISTERED",
+          entityType: "refund_request", entityId: result.requestPublicId,
+          details: { orderPublicId: input.orderPublicId, evidenceRef: input.evidenceRef, receivedAt: input.receivedAt } }, registeredAt);
+        return result;
+      }).immediate();
+      return context.json(result, result.created ? 201 : 200, noStore);
+    } catch (error) {
+      return context.json({ error: { code: error instanceof Error ? error.message : "REFUND_EMAIL_REGISTRATION_FAILED" } }, 409, noStore);
+    }
+  });
   app.get("/v1/admin/v2/attention", (context) => {
     flagOrphanedOverrides(deps.db, now().toISOString());
     return context.json(controlRoomAttention(deps.db, now().toISOString()), 200, noStore);

@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import AuthenticatedConsentGate from "./AuthenticatedConsentGate";
+import { RefundContact } from "../../../../packages/customer-support/RefundContact";
 
 type Me = {
   customer: { id: string; email_normalized: string; display_name?: string | null } | null;
@@ -151,7 +152,7 @@ export default function AccountClient({ nextPath, captchaSiteKey }: { nextPath: 
       {message && <p role="status">{message}</p>}
     </section>
     <AuthenticatedConsentGate key={me.customer.id}><AccountLibrary /></AuthenticatedConsentGate>
-    <AccountHistory key={me.customer.id} /></section>;
+    <AccountHistory key={me.customer.id} /><RefundContact /></section>;
 
   const legalByKind = new Map(legalRelease?.manifest.documents.map((item) => [item.kind, item]));
   const privacy = legalByKind.get("privacy");

@@ -14,6 +14,8 @@ describe("separate LAB V2 entrypoint", () => {
     render(<LabV2Client />);await screen.findByText("Опубликованных встреч пока нет.");
     expect(fetcher.mock.calls.map(([path]) => path).sort()).toEqual(["/v1/lab/catalogue", "/v1/me"]);
     expect(screen.queryByRole("button", { name: /Получить ссылку/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "refunds@flexperiment.ru" })).toHaveAttribute("href", "mailto:refunds@flexperiment.ru");
+    expect(screen.queryByRole("button", { name: /возврат/i })).not.toBeInTheDocument();
     for (const [, init] of fetcher.mock.calls as unknown as [string, RequestInit][]) expect(init).toMatchObject({ credentials: "same-origin", cache: "no-store" });
   });
   it("refuses a legacy/malformed response without silently falling back", async () => {

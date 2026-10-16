@@ -147,12 +147,20 @@ export type RefundPolicyFacts = {
   courseAccessStartedAt: string | null;
   requestedAt: string;
   automatedEligibility: "NOT_EVALUATED";
+  emailIntake?: {
+    channel: "EMAIL";
+    evidenceRef: string;
+    receivedAt: string;
+    registeredBy: string;
+    senderEmailSha256: string;
+  };
 };
 
 export type ControlRoomRefundCase = {
   requestPublicId: string;
   orderPublicId: string;
   reasonCode: "CUSTOMER_REQUEST" | "PRODUCT_WITHDRAWN" | "OCCURRENCE_CHANGED" | "OTHER";
+  customerNote?: string | null;
   state: "REQUESTED" | "APPROVED" | "REJECTED" | "EXECUTING" | "REFUNDED" | "REVIEW_REQUIRED";
   policyFacts: RefundPolicyFacts;
   requestedAt: string;
@@ -265,4 +273,13 @@ export type RefundDecisionCommand = {
   policyBasis: string;
   rationale: string;
   actor: string;
+};
+
+export type RefundEmailRegistrationCommand = {
+  orderPublicId: string;
+  senderEmail: string;
+  evidenceRef: string;
+  receivedAt: string;
+  customerNote?: string;
+  idempotencyKey: string;
 };
