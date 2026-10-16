@@ -1,0 +1,39 @@
+{
+  "sourceCommit": "80a11bde55c38973bcde99b4a92ee9e09c5dc6ad",
+  "schemaFingerprint": "b71a08d5f785b98516d4c2fbde8184d25bb91ce1b880d614d637be76876dd84f",
+  "fence": "OPEN",
+  "ledgerSequence": 1,
+  "leases": 0,
+  "state": "RUNTIME_CHECK_PASS_NOT_FINAL_ACCEPTANCE",
+  "roles": {
+    "commerce": {
+      "imageReference": "ghcr.io/artgurianov/flexperiment-commerce-v2@sha256:c928ef2a9e33e2e2bcb7e646e89fe8b239489395539d9eb9094350a683433e4c",
+      "imageId": "sha256:c928ef2a9e33e2e2bcb7e646e89fe8b239489395539d9eb9094350a683433e4c",
+      "identity": {
+        "schema": "flexperiment.build-identity/1",
+        "service": "commerce-v2",
+        "sourceCommit": "80a11bde55c38973bcde99b4a92ee9e09c5dc6ad"
+      },
+      "rootfsListSha256": "7a28524b3715a38cbb4e99c2bc4b6991e6376bb3eb738923cf41c23d56e1dabd"
+    },
+    "platform": {
+      "imageReference": "ghcr.io/artgurianov/flexperiment-platform-v2@sha256:9c7fee07994457e7b9dd4ac8345e54addd39c91c45e45f49a05bba546e972655",
+      "imageId": "sha256:9c7fee07994457e7b9dd4ac8345e54addd39c91c45e45f49a05bba546e972655",
+      "identity": {
+        "schema": "flexperiment.build-identity/1",
+        "service": "platform",
+        "sourceCommit": "80a11bde55c38973bcde99b4a92ee9e09c5dc6ad"
+      },
+      "rootfsListSha256": "56b9abf35db10b09484b2fe4b8895997397f082e90e87df4d49131355365cbaa"
+    },
+    "admin": {
+      "imageReference": "ghcr.io/artgurianov/flexperiment-admin-v2@sha256:b5c1fe054a736628a9496eaef30d7ee56708bfa57f0d51c8243de7d763945b5e",
+      "imageId": "sha256:b5c1fe054a736628a9496eaef30d7ee56708bfa57f0d51c8243de7d763945b5e",
+      "identity": {
+        "source_commit": "80a11bde55c38973bcde99b4a92ee9e09c5dc6ad",
+        "admin_contract_version": "sales-availability-v1"
+      },
+      "rootfsListSha256": "1916ff465a25b477ba90a16820ff3673f0fff92e244690096de76d38f86b5d84"
+    }
+  }
+}

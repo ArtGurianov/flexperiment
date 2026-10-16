@@ -1,0 +1,93 @@
+{
+  "state": "READ_ONLY_STREAM_CDM_BOUNDARY_PROBE",
+  "observedAt": "2026-10-16T16:58:19.498715+00:00",
+  "fixture": "existing owner-derived four-second clip",
+  "videoIdSha256": "9f2fb5c297cba2eda4c2ba7367961a6ded360ad0834c8e1638e02b4f3a13df13",
+  "requests": [
+    {
+      "kind": "HLS_MASTER",
+      "case": "no-token-no-referrer",
+      "httpStatus": 200,
+      "size": 724,
+      "sha256": "1fa2f203ab001d39929bf5edb8df4e9269d15c3ff24d69f46bd915c51a4d7a93",
+      "drmTagCount": 0,
+      "keyFormats": [],
+      "urlOrTokenRecorded": false
+    },
+    {
+      "kind": "HLS_MASTER",
+      "case": "allowed-site-referrer",
+      "httpStatus": 200,
+      "size": 724,
+      "sha256": "1fa2f203ab001d39929bf5edb8df4e9269d15c3ff24d69f46bd915c51a4d7a93",
+      "drmTagCount": 0,
+      "keyFormats": [],
+      "urlOrTokenRecorded": false
+    },
+    {
+      "kind": "HLS_MASTER",
+      "case": "different-origin-referrer",
+      "httpStatus": 200,
+      "size": 724,
+      "sha256": "1fa2f203ab001d39929bf5edb8df4e9269d15c3ff24d69f46bd915c51a4d7a93",
+      "drmTagCount": 0,
+      "keyFormats": [],
+      "urlOrTokenRecorded": false
+    },
+    {
+      "kind": "HLS_VARIANT",
+      "case": "no-token-no-referrer",
+      "httpStatus": 200,
+      "size": 1027,
+      "sha256": "e9fb3814279047890636b3f9aa0ea42ce02661de80cb28467b959111f32de80b",
+      "drmTagCount": 2,
+      "keyFormats": [
+        "com.apple.streamingkeydelivery",
+        "urn:uuid:edef8ba9-79d6-4ace-a3c8-27dcd51d21ed"
+      ]
+    },
+    {
+      "kind": "ONE_ADVERTISED_MEDIA_SEGMENT",
+      "case": "no-token-no-referrer",
+      "httpStatus": 200,
+      "size": 879107,
+      "sha256": "d35f233eb1c1ee5919aa530ecbd41fb99a0a73ab0206784bf3d7c5cc04d730c5",
+      "boxMarkers": [
+        "ftyp",
+        "encv",
+        "cbcs",
+        "sinf",
+        "tenc",
+        "moof",
+        "mdat"
+      ],
+      "notADecryptedPlaybackClaim": true
+    },
+    {
+      "kind": "MP4_TRANSCODE",
+      "case": "provider-signed-url",
+      "httpStatus": 200,
+      "declaredApiSize": 1330494,
+      "actualSize": 1329794,
+      "sha256": "2395244c9ba2c2df08a58e6e6d7adbb6ec2a220be183bb67532ad24d9fee213d",
+      "boxMarkers": [
+        "ftyp",
+        "mdat"
+      ],
+      "notADecryptedPlaybackClaim": true
+    },
+    {
+      "kind": "MP4_TRANSCODE",
+      "case": "signature-and-ttl-removed",
+      "httpStatus": 403,
+      "declaredApiSize": 1330494,
+      "actualSize": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "boxMarkers": [],
+      "notADecryptedPlaybackClaim": true
+    }
+  ],
+  "runtimeOrProviderSettingsChanged": false,
+  "mediaBytesPersisted": false,
+  "interpretation": "HTTP availability of manifests/encrypted bytes is separate from CDM license authorization; this does not prove per-segment Commerce checks or instant cached-license revocation."
+}

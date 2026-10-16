@@ -1,0 +1,26 @@
+{
+  "state": "INDEPENDENT_FINAL_READBACK_PASS",
+  "observedAt": "2026-10-16T17:32:57.629774+00:00",
+  "temporaryContainerAbsent": true,
+  "temporaryRouteAbsent": true,
+  "temporaryVideoGet": 404,
+  "temporaryProjectGet": 404,
+  "ephemeralCredentialsRemoved": true,
+  "remainingProviderProjects": 1,
+  "sharedProjectItems": 6,
+  "sharedDrmAndPrivacyUnchanged": true,
+  "originalNativeContainerIdentitiesUnchanged": true,
+  "originalProxyFilesUnchanged": true,
+  "nativeAdmissionPassed": true,
+  "nativeReadbackTopLevelFields": [
+    "fence",
+    "leases",
+    "ledgerSequence",
+    "roles",
+    "schemaFingerprint",
+    "sourceCommit",
+    "state"
+  ],
+  "sourceCommit": "80a11bde55c38973bcde99b4a92ee9e09c5dc6ad",
+  "deliveryMode": "protected"
+}

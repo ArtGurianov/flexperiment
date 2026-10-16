@@ -1,0 +1,92 @@
+{
+  "state": "ISOLATED_PROVIDER_FIXTURE_REMOVED_BASELINE_VERIFIED",
+  "scope": "fe3694dca7384aafb3e35d347884fd1f",
+  "startedAt": "2026-10-16T17:31:07.154205+00:00",
+  "steps": [
+    {
+      "step": "preservedRedactedCallbackEvents",
+      "sha256": "4e67d40407625543c7bf4ce8bffad61d0888f43072d567ffe534d688131bb268"
+    },
+    {
+      "step": "removedExactTemporaryRoute"
+    },
+    {
+      "step": "readBackClosedIngress",
+      "statuses": {
+        "canary-api.flexperiment.ru": 403,
+        "canary-platform.flexperiment.ru": 403,
+        "canary-admin.flexperiment.ru": 403,
+        "canary-lab.flexperiment.ru": 403,
+        "removedFixturePost": 403,
+        "nativeCallbackNoBasic": 401
+      }
+    },
+    {
+      "step": "removedExactTemporaryRoute"
+    },
+    {
+      "step": "readBackClosedIngress",
+      "statuses": {
+        "canary-api.flexperiment.ru": 403,
+        "canary-platform.flexperiment.ru": 403,
+        "canary-admin.flexperiment.ru": 403,
+        "canary-lab.flexperiment.ru": 403,
+        "removedFixturePost": 403,
+        "nativeCallbackNoBasic": 401
+      }
+    },
+    {
+      "step": "removedOnlyOwnContainer",
+      "sharedNetworkNotRemoved": true
+    },
+    {
+      "step": "deletedOwnVideo",
+      "independentGetStatus": 404
+    },
+    {
+      "step": "deletedOwnProject",
+      "independentGetStatus": 404
+    },
+    {
+      "step": "providerBaselineVerified",
+      "projectCount": 1,
+      "sharedDrmConfigUnchanged": true,
+      "sharedPrivacyUnchanged": true,
+      "sourceVideoStillPresentInOriginalProject": true,
+      "sharedProjectItems": 6
+    },
+    {
+      "step": "nativeAdmissionPassed",
+      "originalContainerIdentitiesUnchanged": true,
+      "originalProxyFilesUnchanged": true
+    },
+    {
+      "step": "removedEphemeralCredentials",
+      "files": [
+        "fixture.json",
+        "isolated-drm-config-response.private.json"
+      ],
+      "existingCustodyUntouched": true
+    }
+  ],
+  "completedAt": "2026-10-16T17:32:02.081031+00:00",
+  "projectId": "04fd8bb5-0945-487b-bfbf-4107c0ce8e1e",
+  "originalProvider": {
+    "sharedDrmConfigUnchanged": true,
+    "sharedPrivacyUnchanged": true,
+    "sourceVideoStillPresentInOriginalProject": true,
+    "sharedProjectItems": 6
+  },
+  "projectCount": 1,
+  "ingressReadback": {
+    "canary-api.flexperiment.ru": 403,
+    "canary-platform.flexperiment.ru": 403,
+    "canary-admin.flexperiment.ru": 403,
+    "canary-lab.flexperiment.ru": 403,
+    "removedFixturePost": 403,
+    "nativeCallbackNoBasic": 401
+  },
+  "nativeAdmissionPassed": true,
+  "noApplicationRestart": true,
+  "noFinancialOperations": true
+}

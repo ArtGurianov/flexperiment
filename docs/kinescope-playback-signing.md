@@ -2,7 +2,8 @@
 
 Protected playback (`KINESCOPE_DELIVERY_MODE=protected`) hands the player a short-lived token (2 minutes,
 at most 10) that Kinescope's DRM license request presents back to commerce (`POST /v1/kinescope/drm/authorize`), where
-it is verified against the customer and the video. The key that signs it is the boundary.
+it is verified against the signed customer, video and current access policy. The token is a bearer:
+the callback does not authenticate the browser holding it. The key that signs it is the boundary.
 
 ## Custody
 
@@ -30,39 +31,47 @@ Tokens name their key (`kid`). Any key in the ring verifies its own tokens; only
 3. After at least 10 minutes (the longest token lifetime), remove the old key. Deploy. A token naming it is
    refused (`PLAYBACK_TOKEN_KEY_UNKNOWN`).
 
-Suspected exposure: skip the wait — remove the old key in step 1's deploy. Playback in progress
-re-requests a token on its next license request.
+Suspected exposure: skip the wait — remove the old key in step 1's deploy. This refuses subsequent
+authorization with that key. It does not revoke decryption capability already issued by a CDM.
 
-## What is proven, and what is not yet
+## Current qualification and limits
 
-Proven in commerce-v2's tests: a token is bound to its customer and video, expires, survives rotation only
-while its key is in the ring, and cannot be relabelled to another key.
+Commerce tests prove signed subject/video claims, expiry and rotation. The
+[closed LMS evidence](evidence/2026-10-15-closed-lms/kinescope-decision.md) also
+contains actual Kinescope callbacks, license/playback positives, missing/expired
+token and wrong-video/signature negatives, and revocation. An intact valid bearer
+copied to another profile played successfully; the owner accepted that limit for
+the closed MVP and explicitly extended that acceptance to production in ART-36.
+Its 120-second lifetime constrains a new authorization, not the
+lifetime of an already issued DRM license. The measured roughly65-second stop is
+the stock first-party player's refresh behavior, not a guarantee against a
+custom player. Authenticated playback necessarily reveals the video identifier.
 
-**Capability preflight (ART-342, 2026-10-13):** after the owner enabled project
-encryption, both project and workspace `GET /v1/drm/auth` still returned
-`404 / 400404`. The project-scoped `PUT /v1/drm/auth/6964ab60-0ba1-4738-82d2-eada67792e0b`
-then returned HTTP 200. An independent project GET returned HTTP 200, callback
-host `canary-api.flexperiment.ru`, and `strict=true`; workspace GET remained
-`404 / 400404`. Decision: `AUTH_BACKEND_CAPABILITY_CONFIRMED` for the project.
+The [ART-36 provider qualification](evidence/2026-10-17-art36-provider-qualification/README.md)
+adds real Chrome/CDM proof on a separate temporary encrypted project: callback
+200 allowed decoded playback; 401/403/500, a response delayed7seconds and an
+upstream disconnect all denied new licenses. A custom domain allowlist admitted
+the allowed origin and rejected a different origin or absent Referer before a
+license request. Keep `strict=true` and provider Basic Auth on the exact callback.
 Kinescope's [Authorization Backend guide](https://docs.kinescope.com/developer-guides/authorization-backend/)
-documents the callback POST body (`id`, `type`, `token`) and Basic Auth. A
-configured callback must use `strict=true`: with `strict=false` Kinescope may
-grant a license on non-403 responses, while this endpoint returns `401` for bad
-Basic Auth and `400` for malformed input. The actual provider-origin POST and
-license enforcement remain unproven; ART-336 tracks ingress and ART-36 tracks
-provider security qualification.
+describes this per-license callback, rather than a Commerce check on every segment.
 
-**Not yet proven (ART-36):** how Kinescope itself enforces the
-license — whether every segment is checked, what the browser sees as the video identifier, referrer and
-domain restrictions, and what revoking access does to a session already playing. ART-36's decision record
-states those from a working prototype against the real account; until then protected playback is not
-qualified for sale (ART-240).
+Manifest/encrypted-segment HTTP200 is not proof of decrypted playback: sampled
+HLS media contained `encv/cbcs/sinf/tenc` encryption markers, while the real
+player required license authorization. No standalone DASH, Safari/FairPlay,
+custom-player cached-license lifetime or universal screenshot prevention is
+claimed. After removal of the isolated fixture, the live project default and
+four lesson bindings were restricted to `canary-platform.flexperiment.ru` and
+read back through API and actual Chrome embeds. Two unbound intro/background
+videos retained their original policy. Before ART-240/F9 adds another origin,
+verify its exact project/video allowlist; inspect privacy on every new/replaced/
+copied binding. The owner-accepted bearer limit does not authorize public sales.
 
 ## Video upload/binding and webhook authority (ART-217)
 
 The Control Room upload API requires an administrator session and a published Commerce editorial lesson. The legacy service-token `POST /v1/internal/video-uploads` and `GET /v1/internal/video-uploads/:id` routes are retired in the ART-337 source candidate; that candidate must not be installed while the old Payload author is active. Commerce alone holds the Kinescope Bearer API token, and calls `POST https://uploader.kinescope.io/v2/init` using `type: video`, lesson-folder `parent_id`, `title`, `filename` and `filesize`. Return only an opaque upload-session ID and `data.endpoint`; the browser sends file bytes directly to that Tus endpoint with `tus-js-client`, never receiving the provider API token or video ID.
 
-The status moves `UPLOADING → PROCESSING → READY | FAILED`. `POST /v1/webhooks/kinescope` receives `media.update.status` events authenticated with dedicated **Basic auth only**: there is no event signature, delivery ID or ordering guarantee. Validate the event, dedupe by `videoId + status`, **always re-read authoritative video status from Kinescope**, and apply monotonic transitions; polling recovers missing webhooks. Atomic replacement keeps the previous lesson binding live until the new video reaches READY, and failed or abandoned replacements leave the old binding unchanged. The provider video ID and secret bindings remain private in Commerce.
+The status moves `UPLOADING → PROCESSING → READY | FAILED`. `POST /v1/webhooks/kinescope` receives `media.update.status` events authenticated with dedicated **Basic auth only**: there is no event signature, delivery ID or ordering guarantee. Validate the event, dedupe by `videoId + status`, **always re-read authoritative video status from Kinescope**, and apply monotonic transitions; polling recovers missing webhooks. Atomic replacement keeps the previous lesson binding live until the new video reaches READY, and failed or abandoned replacements leave the old binding unchanged. Internal bindings and provider API credentials remain private in Commerce; authorized playback returns the video ID needed by the player.
 
 ## Exact lesson playback authorization (ART-218)
 

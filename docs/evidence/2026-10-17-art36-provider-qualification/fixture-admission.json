@@ -1,0 +1,82 @@
+{
+  "offlineRuntime": {
+    "state": "ISOLATED_FIXTURE_TESTS_PASS_IN_ACTUAL_QUALIFIED_IMAGE",
+    "observedAt": "2026-10-16T16:57:03.274105+00:00",
+    "image": "ghcr.io/artgurianov/flexperiment-commerce-v2@sha256:c928ef2a9e33e2e2bcb7e646e89fe8b239489395539d9eb9094350a683433e4c",
+    "rootfsSha256": "7a28524b3715a38cbb4e99c2bc4b6991e6376bb3eb738923cf41c23d56e1dabd",
+    "sourceSha256": "8b71a7802863df324891e1ad4d08fcb508de2af589afdea1564032320c16f675",
+    "testSha256": "a2a6e8cf8dcb2fc922a44bfcf7e7e270791d4529fd3a968edccd6d5404ed22a9",
+    "testReturnCode": 0,
+    "network": "none; loopback-only HTTP tests",
+    "noPublishedPortsOrCredentialsOrDatabase": true,
+    "proxyFilesBefore": [
+      {
+        "name": "Caddyfile",
+        "sha256": "bf4028895ff3970d5fb2adf7493fbee3c4030021185550fe0702b456ae5b570c"
+      },
+      {
+        "name": "coolify.yaml",
+        "sha256": "acde73b9aa3de817b919cf7ae1850c1b3166ad448e14113e4c1285feaee6f5e2"
+      },
+      {
+        "name": "default_redirect_503.yaml",
+        "sha256": "88c2a2923a7939139e5448c65bd25d4df434d4b6f0c6bc6ad8f40b7c29065dfb"
+      },
+      {
+        "name": "flex-v2-canary-closed.yaml",
+        "sha256": "2af21f0754922986de39a1bca7a272ca606e13fdd5a53c41c2afbd33ce8d0653"
+      },
+      {
+        "name": "flex-v2-canary-drm-authorize.yaml",
+        "sha256": "450c6a85c00163549f6f3a9068e769bda041cf92cd9a26beb5b00a8f6efbb2a3"
+      },
+      {
+        "name": "lab-v1-retired.yaml",
+        "sha256": "d2999c82ec232bf47d43a7c28f5f2669c288f1c4e9f5446ba18e12c4ea7e7bb7"
+      },
+      {
+        "name": "r9-callback-prepared.yaml",
+        "sha256": "945a2286df596224680917f31a05a93ce765267d5646769fa248d4eb881072e2"
+      },
+      {
+        "name": "tls12-only.yaml",
+        "sha256": "b1ed040db7a6ddd6429be89ec2b04deb89ca85c261b8d1e6eb848cda2272f3a0"
+      }
+    ]
+  },
+  "installation": {
+    "state": "ISOLATED_PROVIDER_FIXTURE_INSTALLED_EXACT_ROUTE_ADMITTED",
+    "observedAt": "2026-10-16T17:11:55.380378+00:00",
+    "controllerCommit": "4a09bc992e509ac52a16cecd3d46f255eb708d25",
+    "ciRun": 38936311926,
+    "exactHeadCi": "success",
+    "sourceSha256": "8b71a7802863df324891e1ad4d08fcb508de2af589afdea1564032320c16f675",
+    "image": "ghcr.io/artgurianov/flexperiment-commerce-v2@sha256:c928ef2a9e33e2e2bcb7e646e89fe8b239489395539d9eb9094350a683433e4c",
+    "fixtureName": "art36-fixture-fe3694dca738",
+    "callbackPath": "/__art36/fe3694dca7384aafb3e35d347884fd1f/authorize",
+    "routeFile": "/data/coolify/proxy/dynamic/art36-fixture-fe3694dca738.yaml",
+    "routeSha256": "766ca7fa739a06962506bd760f4acfb661fc089023ac965ca8b44769a1cc8a0c",
+    "noPortsOrCustomerDatabaseOrProviderApiFinancialCredentials": true,
+    "readOnlyCodeAndConfig": true,
+    "restartPolicy": "no",
+    "originalProxyFilesUnchanged": true,
+    "originalNativeRoleIdentitiesUnchanged": true,
+    "ingressReadback": {
+      "canary-api.flexperiment.ru": 403,
+      "canary-platform.flexperiment.ru": 403,
+      "canary-lab.flexperiment.ru": 403,
+      "canary-admin.flexperiment.ru": 403,
+      "fixturePostNoBasic": 401,
+      "fixtureGet": 403,
+      "fixtureWrongHost": 403,
+      "fixtureNearPath": 403,
+      "originalCallbackNoBasic": 401
+    },
+    "actualProviderBehaviorNotYetClaimed": true
+  },
+  "controllerMergedCommit": "c2a8d4d4037580e218efc991518d7c9258fc373c",
+  "mergedSourceCi": {
+    "run": 38937760997,
+    "conclusion": "success"
+  }
+}
