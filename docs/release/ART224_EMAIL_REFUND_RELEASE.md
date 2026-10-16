@@ -30,6 +30,10 @@ Existing consents and fiscal decisions are historical evidence, not automatic
 approval of a new legal hash. This closed-course revision does not publish
 conditions for LAB or the full catalogue.
 
+The owner has confirmed that `refunds@flexperiment.ru` was created. Actual
+receipt/reply and the final provider/forwarding route remain separate facts;
+mailbox creation is not treated as a completed delivery test.
+
 The test mail must explicitly state that this is an ART-224 verification and
 does not request another bank refund. Preserve its actual Message-ID/received
 time, authenticated mailbox evidence and reply privately. A sender string or
