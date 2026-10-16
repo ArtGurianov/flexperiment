@@ -1,0 +1,62 @@
+{
+  "state": "ART351_HOST_DIAGNOSTIC_HELPER_INSTALLED_NO_RUNTIME_CHANGE",
+  "observedAt": "2026-10-16T16:25:30.664446+00:00",
+  "controllerCommit": "be4d8e8243f0b03e9696f565853c0cd48a2fca2d",
+  "mergedCiRun": 38930349685,
+  "mergedCiConclusion": "success",
+  "applicationSourceCommit": "80a11bde55c38973bcde99b4a92ee9e09c5dc6ad",
+  "oldHelperSha256": "cd58ad2589332606302616fbd272eab8cd5ddea1bcaea885301640632e970c85",
+  "newHelperSha256": "8121ac1678288976dc947c79e3a6165a38d6232847238258d8489cfeaaa9b5ae",
+  "previousHelperRetainedRootOnly": true,
+  "atomicReplacement": true,
+  "runtimeCheckBeforeAndAfterEqual": true,
+  "backupFreshnessBeforeAndAfterEqual": true,
+  "isolatedRefusalDiagnostic": {
+    "state": "FAST_CUT_HOLD",
+    "operation": "check-backup",
+    "stage": "freshness_status",
+    "reason": "MISSING_FILE",
+    "elapsedMs": 0,
+    "observedAt": "2026-10-16T16:25:30Z"
+  },
+  "runtimeDbFenceHistoryConfigurationAndTimersBeforeAfterEqual": true,
+  "historicalTableCount": 10,
+  "roles": {
+    "flexperiment-fast-cut-canary-commerce": {
+      "id": "cbd9185c2acc8acf34c6d8373e2eadaed79bc92c11e321b7bf063acfb3c29e07",
+      "imageReference": "ghcr.io/artgurianov/flexperiment-commerce-v2@sha256:c928ef2a9e33e2e2bcb7e646e89fe8b239489395539d9eb9094350a683433e4c",
+      "imageId": "sha256:c928ef2a9e33e2e2bcb7e646e89fe8b239489395539d9eb9094350a683433e4c",
+      "startedAt": "2026-10-16T14:54:42.053996652Z",
+      "restartCount": 0,
+      "healthy": "healthy",
+      "rootfsSha256": "7a28524b3715a38cbb4e99c2bc4b6991e6376bb3eb738923cf41c23d56e1dabd"
+    },
+    "flexperiment-fast-cut-canary-platform": {
+      "id": "43304c79e64ecedd5c392d264e9cc3765e3a4fd3b6b692aa5438ad85f7dfd2b2",
+      "imageReference": "ghcr.io/artgurianov/flexperiment-platform-v2@sha256:9c7fee07994457e7b9dd4ac8345e54addd39c91c45e45f49a05bba546e972655",
+      "imageId": "sha256:9c7fee07994457e7b9dd4ac8345e54addd39c91c45e45f49a05bba546e972655",
+      "startedAt": "2026-10-16T14:54:47.684020415Z",
+      "restartCount": 0,
+      "healthy": "healthy",
+      "rootfsSha256": "56b9abf35db10b09484b2fe4b8895997397f082e90e87df4d49131355365cbaa"
+    },
+    "flexperiment-fast-cut-canary-admin": {
+      "id": "0f9312d7b6edf0344db3aa57d391ccb684ad33847dfc966ce7abd1f8aafd4502",
+      "imageReference": "ghcr.io/artgurianov/flexperiment-admin-v2@sha256:b5c1fe054a736628a9496eaef30d7ee56708bfa57f0d51c8243de7d763945b5e",
+      "imageId": "sha256:b5c1fe054a736628a9496eaef30d7ee56708bfa57f0d51c8243de7d763945b5e",
+      "startedAt": "2026-10-16T14:58:22.612314209Z",
+      "restartCount": 0,
+      "healthy": "healthy",
+      "rootfsSha256": "1916ff465a25b477ba90a16820ff3673f0fff92e244690096de76d38f86b5d84"
+    }
+  },
+  "migrations": 27,
+  "integrity": "ok",
+  "foreignKeyViolations": 0,
+  "fence": "OPEN",
+  "sequence": 1,
+  "owner": null,
+  "leases": 0,
+  "noNewFinancialOperations": true,
+  "noRuntimeRestartOrBackupForTest": true
+}

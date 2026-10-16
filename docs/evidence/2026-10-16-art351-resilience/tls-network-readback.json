@@ -1,0 +1,232 @@
+{
+  "state": "MAC_S3_TLS_RESTORED_AFTER_OWNER_NETWORK_SWITCH",
+  "endpoint": "s3.cloud.ru",
+  "verification": "standard hostname and CA validation throughout; no proxy, no credentials",
+  "protocolPinning": "diagnostic only, no runtime configuration change",
+  "macBefore": {
+    "observedAt": "2026-10-16T15:52:30.258683+00:00",
+    "results": [
+      {
+        "address": "176.109.98.30",
+        "requestedTLS": "default",
+        "sni": "s3.cloud.ru",
+        "hostnameVerification": true,
+        "verified": false,
+        "elapsedMs": 5345,
+        "errorType": "SSLEOFError",
+        "sslReason": "UNEXPECTED_EOF_WHILE_READING",
+        "verifyCode": null
+      },
+      {
+        "address": "176.109.98.30",
+        "requestedTLS": "1.2",
+        "sni": "s3.cloud.ru",
+        "hostnameVerification": true,
+        "verified": false,
+        "elapsedMs": 6359,
+        "errorType": "SSLEOFError",
+        "sslReason": "UNEXPECTED_EOF_WHILE_READING",
+        "verifyCode": null
+      },
+      {
+        "address": "176.109.98.30",
+        "requestedTLS": "1.3",
+        "sni": "s3.cloud.ru",
+        "hostnameVerification": true,
+        "verified": false,
+        "elapsedMs": 6362,
+        "errorType": "SSLEOFError",
+        "sslReason": "UNEXPECTED_EOF_WHILE_READING",
+        "verifyCode": null
+      },
+      {
+        "address": "176.109.98.31",
+        "requestedTLS": "default",
+        "sni": "s3.cloud.ru",
+        "hostnameVerification": true,
+        "verified": false,
+        "elapsedMs": 5348,
+        "errorType": "SSLEOFError",
+        "sslReason": "UNEXPECTED_EOF_WHILE_READING",
+        "verifyCode": null
+      },
+      {
+        "address": "176.109.98.31",
+        "requestedTLS": "1.2",
+        "sni": "s3.cloud.ru",
+        "hostnameVerification": true,
+        "verified": false,
+        "elapsedMs": 5337,
+        "errorType": "SSLEOFError",
+        "sslReason": "UNEXPECTED_EOF_WHILE_READING",
+        "verifyCode": null
+      },
+      {
+        "address": "176.109.98.31",
+        "requestedTLS": "1.3",
+        "sni": "s3.cloud.ru",
+        "hostnameVerification": true,
+        "verified": false,
+        "elapsedMs": 5340,
+        "errorType": "SSLEOFError",
+        "sslReason": "UNEXPECTED_EOF_WHILE_READING",
+        "verifyCode": null
+      }
+    ]
+  },
+  "macAfter": {
+    "observedAt": "2026-10-16T15:59:50.167418+00:00",
+    "results": [
+      {
+        "address": "176.109.98.30",
+        "requestedTLS": "default",
+        "sni": "s3.cloud.ru",
+        "hostnameVerification": true,
+        "verified": true,
+        "negotiatedTLS": "TLSv1.3",
+        "certificateSha256": "16292157dce5496d28e135a4f2e96d7ca2c411be299588e0a31359c1a7bb13fa",
+        "notAfter": "Dec 20 17:21:08 2026 GMT",
+        "httpStatusLine": "HTTP/1.1 400 Bad Request",
+        "elapsedMs": 735
+      },
+      {
+        "address": "176.109.98.30",
+        "requestedTLS": "1.2",
+        "sni": "s3.cloud.ru",
+        "hostnameVerification": true,
+        "verified": true,
+        "negotiatedTLS": "TLSv1.2",
+        "certificateSha256": "16292157dce5496d28e135a4f2e96d7ca2c411be299588e0a31359c1a7bb13fa",
+        "notAfter": "Dec 20 17:21:08 2026 GMT",
+        "httpStatusLine": "HTTP/1.1 400 Bad Request",
+        "elapsedMs": 942
+      },
+      {
+        "address": "176.109.98.30",
+        "requestedTLS": "1.3",
+        "sni": "s3.cloud.ru",
+        "hostnameVerification": true,
+        "verified": true,
+        "negotiatedTLS": "TLSv1.3",
+        "certificateSha256": "16292157dce5496d28e135a4f2e96d7ca2c411be299588e0a31359c1a7bb13fa",
+        "notAfter": "Dec 20 17:21:08 2026 GMT",
+        "httpStatusLine": "HTTP/1.1 400 Bad Request",
+        "elapsedMs": 693
+      },
+      {
+        "address": "176.109.98.31",
+        "requestedTLS": "default",
+        "sni": "s3.cloud.ru",
+        "hostnameVerification": true,
+        "verified": true,
+        "negotiatedTLS": "TLSv1.3",
+        "certificateSha256": "16292157dce5496d28e135a4f2e96d7ca2c411be299588e0a31359c1a7bb13fa",
+        "notAfter": "Dec 20 17:21:08 2026 GMT",
+        "httpStatusLine": "HTTP/1.1 400 Bad Request",
+        "elapsedMs": 2028
+      },
+      {
+        "address": "176.109.98.31",
+        "requestedTLS": "1.2",
+        "sni": "s3.cloud.ru",
+        "hostnameVerification": true,
+        "verified": true,
+        "negotiatedTLS": "TLSv1.2",
+        "certificateSha256": "16292157dce5496d28e135a4f2e96d7ca2c411be299588e0a31359c1a7bb13fa",
+        "notAfter": "Dec 20 17:21:08 2026 GMT",
+        "httpStatusLine": "HTTP/1.1 400 Bad Request",
+        "elapsedMs": 1200
+      },
+      {
+        "address": "176.109.98.31",
+        "requestedTLS": "1.3",
+        "sni": "s3.cloud.ru",
+        "hostnameVerification": true,
+        "verified": true,
+        "negotiatedTLS": "TLSv1.3",
+        "certificateSha256": "16292157dce5496d28e135a4f2e96d7ca2c411be299588e0a31359c1a7bb13fa",
+        "notAfter": "Dec 20 17:21:08 2026 GMT",
+        "httpStatusLine": "HTTP/1.1 400 Bad Request",
+        "elapsedMs": 1000
+      }
+    ]
+  },
+  "vps": {
+    "observedAt": "2026-10-16T15:52:29.721211+00:00",
+    "results": [
+      {
+        "address": "176.109.98.30",
+        "requestedTLS": "default",
+        "sni": "s3.cloud.ru",
+        "hostnameVerification": true,
+        "verified": true,
+        "negotiatedTLS": "TLSv1.3",
+        "certificateSha256": "16292157dce5496d28e135a4f2e96d7ca2c411be299588e0a31359c1a7bb13fa",
+        "notAfter": "Dec 20 17:21:08 2026 GMT",
+        "httpStatusLine": "HTTP/1.1 400 Bad Request",
+        "elapsedMs": 204
+      },
+      {
+        "address": "176.109.98.30",
+        "requestedTLS": "1.2",
+        "sni": "s3.cloud.ru",
+        "hostnameVerification": true,
+        "verified": true,
+        "negotiatedTLS": "TLSv1.2",
+        "certificateSha256": "16292157dce5496d28e135a4f2e96d7ca2c411be299588e0a31359c1a7bb13fa",
+        "notAfter": "Dec 20 17:21:08 2026 GMT",
+        "httpStatusLine": "HTTP/1.1 400 Bad Request",
+        "elapsedMs": 201
+      },
+      {
+        "address": "176.109.98.30",
+        "requestedTLS": "1.3",
+        "sni": "s3.cloud.ru",
+        "hostnameVerification": true,
+        "verified": true,
+        "negotiatedTLS": "TLSv1.3",
+        "certificateSha256": "16292157dce5496d28e135a4f2e96d7ca2c411be299588e0a31359c1a7bb13fa",
+        "notAfter": "Dec 20 17:21:08 2026 GMT",
+        "httpStatusLine": "HTTP/1.1 400 Bad Request",
+        "elapsedMs": 198
+      },
+      {
+        "address": "176.109.98.31",
+        "requestedTLS": "default",
+        "sni": "s3.cloud.ru",
+        "hostnameVerification": true,
+        "verified": true,
+        "negotiatedTLS": "TLSv1.3",
+        "certificateSha256": "16292157dce5496d28e135a4f2e96d7ca2c411be299588e0a31359c1a7bb13fa",
+        "notAfter": "Dec 20 17:21:08 2026 GMT",
+        "httpStatusLine": "HTTP/1.1 400 Bad Request",
+        "elapsedMs": 207
+      },
+      {
+        "address": "176.109.98.31",
+        "requestedTLS": "1.2",
+        "sni": "s3.cloud.ru",
+        "hostnameVerification": true,
+        "verified": true,
+        "negotiatedTLS": "TLSv1.2",
+        "certificateSha256": "16292157dce5496d28e135a4f2e96d7ca2c411be299588e0a31359c1a7bb13fa",
+        "notAfter": "Dec 20 17:21:08 2026 GMT",
+        "httpStatusLine": "HTTP/1.1 400 Bad Request",
+        "elapsedMs": 204
+      },
+      {
+        "address": "176.109.98.31",
+        "requestedTLS": "1.3",
+        "sni": "s3.cloud.ru",
+        "hostnameVerification": true,
+        "verified": true,
+        "negotiatedTLS": "TLSv1.3",
+        "certificateSha256": "16292157dce5496d28e135a4f2e96d7ca2c411be299588e0a31359c1a7bb13fa",
+        "notAfter": "Dec 20 17:21:08 2026 GMT",
+        "httpStatusLine": "HTTP/1.1 400 Bad Request",
+        "elapsedMs": 234
+      }
+    ]
+  },
+  "historicalVpsCauseEstablished": false
+}
