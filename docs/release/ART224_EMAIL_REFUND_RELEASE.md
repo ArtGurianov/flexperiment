@@ -1,8 +1,16 @@
 # ART-224: common V2 refund release
 
-Status: **PREPARED, NOT INSTALLED**. LAB V1 retirement is complete and is not
+Status: **INSTALLED / ACCEPTED NONFINANCIAL FLOW PASS**. LAB V1 retirement is complete and is not
 part of this release. Public F9 stays closed. No additional financial operation
 is authorized.
+
+[Executed release and recovery evidence](../evidence/2026-10-16-art224-email-refund-release/README.md)
+records the actual four roles, approved/active review.5, owner-attested mail,
+accepted live/isolated split and final independently recovered custody. The
+application source remains80a11bde; LAB's separate controller input is cac23ae.
+All paid offers and public F9 remain closed. No further payment was performed.
+
+The sections below record the admission and sequence used for this installation.
 
 ## Exact application source
 
@@ -22,10 +30,10 @@ backup schedules and Refref are retained.
 
 ## Legal and mail admission
 
-The subsequent [review.5 contact draft](../legal/closed-paid-test/2026-10-16-review-5/README.md)
+The subsequent [approved review.5](../legal/closed-paid-test/2026-10-16-review-5/README.md)
 does not alter the accepted review.4 files or accepted historical purchase.
-It needs real mailbox routing/provider facts, receipt and reply evidence, and
-genuine owner approval of final exact bytes before publication/activation.
+The owner confirmed two-way delivery/REG.RU and approved the final exact bytes;
+publication and fenced activation are verified in the executed evidence.
 Existing consents and fiscal decisions are historical evidence, not automatic
 approval of a new legal hash. This closed-course revision does not publish
 conditions for LAB or the full catalogue.
@@ -61,8 +69,8 @@ The isolated positive path is labelled synthetic; it is not a second paid E2E.
 ## Controlled installation order
 
 1. Complete immutable four-role verification and inspect exact existing LAB V2
-   ingress/upstream configuration. Its current Coolify health reports unhealthy;
-   preserve that baseline and verify the replacement against the actual canary.
+   ingress/upstream configuration. Its preinstall Coolify health was unhealthy;
+   the replacement is independently verified healthy on the private network.
 2. Complete mail and exact legal admission. Preserve every historical legal URL.
 3. Take fresh encrypted data/config custody, provider GET/hash and independent
    restore; verify copied-fence admission with the proposed Commerce image.
@@ -74,6 +82,5 @@ The isolated positive path is labelled synthetic; it is not a second paid E2E.
 6. Perform the accepted nonfinancial split and verify private evidence, then
    take/restore the final backup and record the installed state in ART-224.
 
-Pending mail or legal approval blocks the affected publication/installation;
-independent builds, custody and isolated preparation may proceed. Keep ART-224
-In Progress until the actual agreed acceptance is complete.
+The mail/owner/legal/recovery admissions and the agreed acceptance are complete;
+use the executed evidence for closure. This is not permission to repeat a payment.
