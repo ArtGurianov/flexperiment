@@ -1,0 +1,74 @@
+{
+  "state": "EXACT_CANARY_DOMAIN_POLICY_APPLIED_READ_BACK",
+  "observedAt": "2026-10-16T17:38:47.293697+00:00",
+  "projectPrivacy": "custom",
+  "domains": [
+    "canary-platform.flexperiment.ru"
+  ],
+  "applyToAllExistingVideos": false,
+  "encryptedUnchanged": true,
+  "strictDrmCallbackUnchanged": true,
+  "fourActiveBindingsVerified": true,
+  "unboundIntroBackgroundUntouched": true,
+  "videos": [
+    {
+      "videoIdSha256": "b7e82c8c7af27197b80ef4c6c7f0988f9593af27ebe68869d53299f7141701f0",
+      "lessonRef": "test-course-lesson",
+      "boundVideo": true,
+      "privacy_type": "custom",
+      "privacy_domains": [
+        "canary-platform.flexperiment.ru"
+      ],
+      "unchangedNonLmsVideo": false
+    },
+    {
+      "videoIdSha256": "22c233bf5da1539d4ba937193e529657c66a5bad222612390ec9d3ace3f399e0",
+      "lessonRef": "art338-long-lesson",
+      "boundVideo": true,
+      "privacy_type": "custom",
+      "privacy_domains": [
+        "canary-platform.flexperiment.ru"
+      ],
+      "unchangedNonLmsVideo": false
+    },
+    {
+      "videoIdSha256": "9f2fb5c297cba2eda4c2ba7367961a6ded360ad0834c8e1638e02b4f3a13df13",
+      "lessonRef": "art338-revoke-lesson",
+      "boundVideo": true,
+      "privacy_type": "custom",
+      "privacy_domains": [
+        "canary-platform.flexperiment.ru"
+      ],
+      "unchangedNonLmsVideo": false
+    },
+    {
+      "videoIdSha256": "b1511e9aac9ec1ef6f307890e0df4303297a47785cddae892ff683828bbb34a9",
+      "lessonRef": "lesson-25975445-b756-49f6-9079-c32f6ce90038",
+      "boundVideo": true,
+      "privacy_type": "custom",
+      "privacy_domains": [
+        "canary-platform.flexperiment.ru"
+      ],
+      "unchangedNonLmsVideo": false
+    },
+    {
+      "videoIdSha256": "18751a84e38db99c9ccf588676177116ede9a9a0186d6de2530755a54f99f800",
+      "lessonRef": null,
+      "boundVideo": false,
+      "privacy_type": "anywhere",
+      "privacy_domains": [],
+      "unchangedNonLmsVideo": true
+    },
+    {
+      "videoIdSha256": "2178d0beee224400277084715ba3fd24e9554d4f1048a2c4b46775877f06681d",
+      "lessonRef": null,
+      "boundVideo": false,
+      "privacy_type": "anywhere",
+      "privacy_domains": [],
+      "unchangedNonLmsVideo": true
+    }
+  ],
+  "nativeContainerIdentitiesUnchanged": true,
+  "noDatabaseOrFinancialMutation": true,
+  "browserPrivacyReadbackNotYetClaimed": true
+}

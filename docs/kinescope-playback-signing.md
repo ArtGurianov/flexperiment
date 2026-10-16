@@ -41,7 +41,8 @@ Commerce tests prove signed subject/video claims, expiry and rotation. The
 contains actual Kinescope callbacks, license/playback positives, missing/expired
 token and wrong-video/signature negatives, and revocation. An intact valid bearer
 copied to another profile played successfully; the owner accepted that limit for
-the closed MVP. Its 120-second lifetime constrains a new authorization, not the
+the closed MVP and explicitly extended that acceptance to production in ART-36.
+Its 120-second lifetime constrains a new authorization, not the
 lifetime of an already issued DRM license. The measured roughly65-second stop is
 the stock first-party player's refresh behavior, not a guarantee against a
 custom player. Authenticated playback necessarily reveals the video identifier.
@@ -59,9 +60,12 @@ Manifest/encrypted-segment HTTP200 is not proof of decrypted playback: sampled
 HLS media contained `encv/cbcs/sinf/tenc` encryption markers, while the real
 player required license authorization. No standalone DASH, Safari/FairPlay,
 custom-player cached-license lifetime or universal screenshot prevention is
-claimed. The live shared project's domain policy remains `anywhere`; the
-successful isolated allowlist test did not change it. Production domain rollout
-and a decision on bearer transfer remain ART-36/ART-240 launch requirements.
+claimed. After removal of the isolated fixture, the live project default and
+four lesson bindings were restricted to `canary-platform.flexperiment.ru` and
+read back through API and actual Chrome embeds. Two unbound intro/background
+videos retained their original policy. Before ART-240/F9 adds another origin,
+verify its exact project/video allowlist; inspect privacy on every new/replaced/
+copied binding. The owner-accepted bearer limit does not authorize public sales.
 
 ## Video upload/binding and webhook authority (ART-217)
 

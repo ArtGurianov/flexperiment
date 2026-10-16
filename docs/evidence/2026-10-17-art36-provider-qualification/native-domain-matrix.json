@@ -1,0 +1,685 @@
+{
+  "state": "LIVE_CANARY_EMBEDDING_PRIVACY_PASS",
+  "privacyOnly": true,
+  "noNewLicenseOrEntitledPlaybackClaim": true,
+  "cases": [
+    {
+      "case": "native-domain",
+      "lessonRef": "art338-long-lesson",
+      "originCase": "allowed",
+      "reference": "ad56cc12-04ea-42aa-8980-fcd8d7cac8a2",
+      "startedAt": "2026-10-16T17:39:34.544Z",
+      "privacyOnly": true,
+      "noPlaybackAuthorizationAttempted": true,
+      "freshPage": true,
+      "ordinaryTls": true,
+      "page": {
+        "origin": "https://canary-platform.flexperiment.ru",
+        "secure": true,
+        "eme": true,
+        "title": ""
+      },
+      "init": {
+        "created": true
+      },
+      "parent": {
+        "time": 0,
+        "events": []
+      },
+      "frames": [
+        {
+          "hasVideo": true,
+          "time": 0,
+          "paused": true,
+          "ended": false,
+          "readyState": 0,
+          "decodedFrames": 0,
+          "drmError": false,
+          "privacyError": false,
+          "documentReferrerOrigin": "https://canary-platform.flexperiment.ru"
+        }
+      ],
+      "embedRequests": [
+        {
+          "referrerHeaderPresent": true,
+          "referrerOrigin": "https://canary-platform.flexperiment.ru",
+          "referrerPolicy": "strict-origin-when-cross-origin"
+        }
+      ],
+      "licenseResponses": [],
+      "providerResponseSummary": [
+        {
+          "host": "player.kinescope.io",
+          "status": 200,
+          "suffix": null,
+          "signedCdnQuery": false
+        },
+        {
+          "host": "kinescope.io",
+          "status": 200,
+          "suffix": null,
+          "signedCdnQuery": false
+        },
+        {
+          "host": "player.kinescope.io",
+          "status": 200,
+          "suffix": null,
+          "signedCdnQuery": false
+        },
+        {
+          "host": "player.kinescope.io",
+          "status": 200,
+          "suffix": null,
+          "signedCdnQuery": false
+        },
+        {
+          "host": "player.kinescope.io",
+          "status": 200,
+          "suffix": null,
+          "signedCdnQuery": false
+        },
+        {
+          "host": "player.kinescope.io",
+          "status": 200,
+          "suffix": null,
+          "signedCdnQuery": false
+        },
+        {
+          "host": "player.kinescope.io",
+          "status": 200,
+          "suffix": null,
+          "signedCdnQuery": false
+        },
+        {
+          "host": "player.kinescope.io",
+          "status": 200,
+          "suffix": null,
+          "signedCdnQuery": false
+        },
+        {
+          "host": "edge-ams-1.kinescopecdn.net",
+          "status": 200,
+          "suffix": null,
+          "signedCdnQuery": false
+        },
+        {
+          "host": "player-metrics.kinescope.io",
+          "status": 200,
+          "suffix": null,
+          "signedCdnQuery": false
+        },
+        {
+          "host": "player.kinescope.io",
+          "status": 200,
+          "suffix": null,
+          "signedCdnQuery": false
+        },
+        {
+          "host": "kinescope.io",
+          "status": 200,
+          "suffix": "m3u8",
+          "signedCdnQuery": false
+        },
+        {
+          "host": "kinescope.io",
+          "status": 200,
+          "suffix": "m3u8",
+          "signedCdnQuery": false
+        },
+        {
+          "host": "edge-ams-1.kinescopecdn.net",
+          "status": 206,
+          "suffix": "mp4",
+          "signedCdnQuery": false
+        },
+        {
+          "host": "edge-ams-1.kinescopecdn.net",
+          "status": 206,
+          "suffix": "mp4",
+          "signedCdnQuery": false
+        }
+      ],
+      "completedAt": "2026-10-16T17:39:43.939Z"
+    },
+    {
+      "case": "native-domain",
+      "lessonRef": "art338-revoke-lesson",
+      "originCase": "allowed",
+      "reference": "71f10dee-e24e-4eed-af54-65294f91c3d8",
+      "startedAt": "2026-10-16T17:39:44.008Z",
+      "privacyOnly": true,
+      "noPlaybackAuthorizationAttempted": true,
+      "freshPage": true,
+      "ordinaryTls": true,
+      "page": {
+        "origin": "https://canary-platform.flexperiment.ru",
+        "secure": true,
+        "eme": true,
+        "title": ""
+      },
+      "init": {
+        "created": true
+      },
+      "parent": {
+        "time": 0,
+        "events": []
+      },
+      "frames": [
+        {
+          "hasVideo": true,
+          "time": 0,
+          "paused": true,
+          "ended": false,
+          "readyState": 0,
+          "decodedFrames": 0,
+          "drmError": false,
+          "privacyError": false,
+          "documentReferrerOrigin": "https://canary-platform.flexperiment.ru"
+        }
+      ],
+      "embedRequests": [
+        {
+          "referrerHeaderPresent": true,
+          "referrerOrigin": "https://canary-platform.flexperiment.ru",
+          "referrerPolicy": "strict-origin-when-cross-origin"
+        }
+      ],
+      "licenseResponses": [],
+      "providerResponseSummary": [
+        {
+          "host": "player.kinescope.io",
+          "status": 200,
+          "suffix": null,
+          "signedCdnQuery": false
+        },
+        {
+          "host": "kinescope.io",
+          "status": 200,
+          "suffix": null,
+          "signedCdnQuery": false
+        },
+        {
+          "host": "player.kinescope.io",
+          "status": 200,
+          "suffix": null,
+          "signedCdnQuery": false
+        },
+        {
+          "host": "player.kinescope.io",
+          "status": 200,
+          "suffix": null,
+          "signedCdnQuery": false
+        },
+        {
+          "host": "player.kinescope.io",
+          "status": 200,
+          "suffix": null,
+          "signedCdnQuery": false
+        },
+        {
+          "host": "player.kinescope.io",
+          "status": 200,
+          "suffix": null,
+          "signedCdnQuery": false
+        },
+        {
+          "host": "player.kinescope.io",
+          "status": 200,
+          "suffix": null,
+          "signedCdnQuery": false
+        },
+        {
+          "host": "player.kinescope.io",
+          "status": 200,
+          "suffix": null,
+          "signedCdnQuery": false
+        },
+        {
+          "host": "player-metrics.kinescope.io",
+          "status": 200,
+          "suffix": null,
+          "signedCdnQuery": false
+        },
+        {
+          "host": "player.kinescope.io",
+          "status": 200,
+          "suffix": null,
+          "signedCdnQuery": false
+        },
+        {
+          "host": "edge-ams-1.kinescopecdn.net",
+          "status": 200,
+          "suffix": null,
+          "signedCdnQuery": false
+        },
+        {
+          "host": "static.kinescopecdn.net",
+          "status": 200,
+          "suffix": null,
+          "signedCdnQuery": false
+        },
+        {
+          "host": "kinescope.io",
+          "status": 200,
+          "suffix": "m3u8",
+          "signedCdnQuery": false
+        },
+        {
+          "host": "kinescope.io",
+          "status": 200,
+          "suffix": "m3u8",
+          "signedCdnQuery": false
+        },
+        {
+          "host": "edge-ams-1.kinescopecdn.net",
+          "status": 206,
+          "suffix": "mp4",
+          "signedCdnQuery": false
+        }
+      ],
+      "completedAt": "2026-10-16T17:39:52.394Z"
+    },
+    {
+      "case": "native-domain",
+      "lessonRef": "art338-revoke-lesson",
+      "originCase": "denied",
+      "reference": "e98ad48c-f0d3-4901-846d-b3b66a43c80d",
+      "startedAt": "2026-10-16T17:40:04.023Z",
+      "privacyOnly": true,
+      "noPlaybackAuthorizationAttempted": true,
+      "freshPage": true,
+      "ordinaryTls": true,
+      "page": {
+        "origin": "https://canary-lab.flexperiment.ru",
+        "secure": true,
+        "eme": true,
+        "title": ""
+      },
+      "init": {
+        "created": false,
+        "stage": "PLAYER_INIT_HOLD"
+      },
+      "parent": {
+        "events": []
+      },
+      "frames": [
+        {
+          "hasVideo": false,
+          "drmError": false,
+          "privacyError": true,
+          "documentReferrerOrigin": "https://canary-lab.flexperiment.ru"
+        }
+      ],
+      "embedRequests": [
+        {
+          "referrerHeaderPresent": true,
+          "referrerOrigin": "https://canary-lab.flexperiment.ru",
+          "referrerPolicy": "strict-origin-when-cross-origin"
+        },
+        {
+          "referrerHeaderPresent": true,
+          "referrerOrigin": "https://canary-lab.flexperiment.ru",
+          "referrerPolicy": "strict-origin-when-cross-origin"
+        }
+      ],
+      "licenseResponses": [],
+      "providerResponseSummary": [
+        {
+          "host": "player.kinescope.io",
+          "status": 200,
+          "suffix": null,
+          "signedCdnQuery": false
+        },
+        {
+          "host": "kinescope.io",
+          "status": 403,
+          "suffix": null,
+          "signedCdnQuery": false
+        },
+        {
+          "host": "kinescope.io",
+          "status": 403,
+          "suffix": null,
+          "signedCdnQuery": false
+        }
+      ],
+      "completedAt": "2026-10-16T17:40:27.431Z"
+    },
+    {
+      "case": "native-domain",
+      "lessonRef": "art338-revoke-lesson",
+      "originCase": "no-referrer",
+      "reference": "a2b2a4ae-633f-4a17-83fd-1ec91b3a2da1",
+      "startedAt": "2026-10-16T17:40:27.500Z",
+      "privacyOnly": true,
+      "noPlaybackAuthorizationAttempted": true,
+      "freshPage": true,
+      "ordinaryTls": true,
+      "page": {
+        "origin": "https://canary-platform.flexperiment.ru",
+        "secure": true,
+        "eme": true,
+        "title": ""
+      },
+      "init": {
+        "created": false,
+        "stage": "PLAYER_INIT_HOLD"
+      },
+      "parent": {
+        "events": []
+      },
+      "frames": [
+        {
+          "hasVideo": false,
+          "drmError": false,
+          "privacyError": true,
+          "documentReferrerOrigin": null
+        }
+      ],
+      "embedRequests": [
+        {
+          "referrerHeaderPresent": false,
+          "referrerOrigin": null,
+          "referrerPolicy": "no-referrer"
+        },
+        {
+          "referrerHeaderPresent": false,
+          "referrerOrigin": null,
+          "referrerPolicy": "no-referrer"
+        }
+      ],
+      "licenseResponses": [],
+      "providerResponseSummary": [
+        {
+          "host": "player.kinescope.io",
+          "status": 200,
+          "suffix": null,
+          "signedCdnQuery": false
+        },
+        {
+          "host": "kinescope.io",
+          "status": 403,
+          "suffix": null,
+          "signedCdnQuery": false
+        },
+        {
+          "host": "kinescope.io",
+          "status": 200,
+          "suffix": null,
+          "signedCdnQuery": false
+        }
+      ],
+      "completedAt": "2026-10-16T17:40:51.218Z"
+    },
+    {
+      "case": "native-domain",
+      "lessonRef": "lesson-25975445-b756-49f6-9079-c32f6ce90038",
+      "originCase": "allowed",
+      "reference": "7f1f17b2-c067-43b9-a484-055e41aa36ac",
+      "startedAt": "2026-10-16T17:39:52.454Z",
+      "privacyOnly": true,
+      "noPlaybackAuthorizationAttempted": true,
+      "freshPage": true,
+      "ordinaryTls": true,
+      "page": {
+        "origin": "https://canary-platform.flexperiment.ru",
+        "secure": true,
+        "eme": true,
+        "title": ""
+      },
+      "init": {
+        "created": true
+      },
+      "parent": {
+        "time": 0,
+        "events": []
+      },
+      "frames": [
+        {
+          "hasVideo": true,
+          "time": 0,
+          "paused": true,
+          "ended": false,
+          "readyState": 0,
+          "decodedFrames": 0,
+          "drmError": false,
+          "privacyError": false,
+          "documentReferrerOrigin": "https://canary-platform.flexperiment.ru"
+        }
+      ],
+      "embedRequests": [
+        {
+          "referrerHeaderPresent": true,
+          "referrerOrigin": "https://canary-platform.flexperiment.ru",
+          "referrerPolicy": "strict-origin-when-cross-origin"
+        }
+      ],
+      "licenseResponses": [],
+      "providerResponseSummary": [
+        {
+          "host": "player.kinescope.io",
+          "status": 200,
+          "suffix": null,
+          "signedCdnQuery": false
+        },
+        {
+          "host": "kinescope.io",
+          "status": 200,
+          "suffix": null,
+          "signedCdnQuery": false
+        },
+        {
+          "host": "player.kinescope.io",
+          "status": 200,
+          "suffix": null,
+          "signedCdnQuery": false
+        },
+        {
+          "host": "player.kinescope.io",
+          "status": 200,
+          "suffix": null,
+          "signedCdnQuery": false
+        },
+        {
+          "host": "player.kinescope.io",
+          "status": 200,
+          "suffix": null,
+          "signedCdnQuery": false
+        },
+        {
+          "host": "player.kinescope.io",
+          "status": 200,
+          "suffix": null,
+          "signedCdnQuery": false
+        },
+        {
+          "host": "player.kinescope.io",
+          "status": 200,
+          "suffix": null,
+          "signedCdnQuery": false
+        },
+        {
+          "host": "player.kinescope.io",
+          "status": 200,
+          "suffix": null,
+          "signedCdnQuery": false
+        },
+        {
+          "host": "edge-ams-1.kinescopecdn.net",
+          "status": 200,
+          "suffix": null,
+          "signedCdnQuery": false
+        },
+        {
+          "host": "player-metrics.kinescope.io",
+          "status": 200,
+          "suffix": null,
+          "signedCdnQuery": false
+        },
+        {
+          "host": "player.kinescope.io",
+          "status": 200,
+          "suffix": null,
+          "signedCdnQuery": false
+        },
+        {
+          "host": "static.kinescopecdn.net",
+          "status": 200,
+          "suffix": null,
+          "signedCdnQuery": false
+        },
+        {
+          "host": "kinescope.io",
+          "status": 200,
+          "suffix": "m3u8",
+          "signedCdnQuery": false
+        },
+        {
+          "host": "kinescope.io",
+          "status": 200,
+          "suffix": "m3u8",
+          "signedCdnQuery": false
+        },
+        {
+          "host": "edge-ams-1.kinescopecdn.net",
+          "status": 206,
+          "suffix": "mp4",
+          "signedCdnQuery": false
+        }
+      ],
+      "completedAt": "2026-10-16T17:40:03.963Z"
+    },
+    {
+      "case": "native-domain",
+      "lessonRef": "test-course-lesson",
+      "originCase": "allowed",
+      "reference": "4376f0e3-4fb5-4065-9dcf-06ddd0912313",
+      "startedAt": "2026-10-16T17:38:56.663Z",
+      "privacyOnly": true,
+      "noPlaybackAuthorizationAttempted": true,
+      "freshPage": true,
+      "ordinaryTls": true,
+      "page": {
+        "origin": "https://canary-platform.flexperiment.ru",
+        "secure": true,
+        "eme": true,
+        "title": ""
+      },
+      "init": {
+        "created": true
+      },
+      "parent": {
+        "time": 0,
+        "events": []
+      },
+      "frames": [
+        {
+          "hasVideo": true,
+          "time": 0,
+          "paused": true,
+          "ended": false,
+          "readyState": 0,
+          "decodedFrames": 0,
+          "drmError": false,
+          "privacyError": false,
+          "documentReferrerOrigin": "https://canary-platform.flexperiment.ru"
+        }
+      ],
+      "embedRequests": [
+        {
+          "referrerHeaderPresent": true,
+          "referrerOrigin": "https://canary-platform.flexperiment.ru",
+          "referrerPolicy": "strict-origin-when-cross-origin"
+        }
+      ],
+      "licenseResponses": [],
+      "providerResponseSummary": [
+        {
+          "host": "player.kinescope.io",
+          "status": 200,
+          "suffix": null,
+          "signedCdnQuery": false
+        },
+        {
+          "host": "kinescope.io",
+          "status": 200,
+          "suffix": null,
+          "signedCdnQuery": false
+        },
+        {
+          "host": "player.kinescope.io",
+          "status": 200,
+          "suffix": null,
+          "signedCdnQuery": false
+        },
+        {
+          "host": "player.kinescope.io",
+          "status": 200,
+          "suffix": null,
+          "signedCdnQuery": false
+        },
+        {
+          "host": "player.kinescope.io",
+          "status": 200,
+          "suffix": null,
+          "signedCdnQuery": false
+        },
+        {
+          "host": "player.kinescope.io",
+          "status": 200,
+          "suffix": null,
+          "signedCdnQuery": false
+        },
+        {
+          "host": "player.kinescope.io",
+          "status": 200,
+          "suffix": null,
+          "signedCdnQuery": false
+        },
+        {
+          "host": "player.kinescope.io",
+          "status": 200,
+          "suffix": null,
+          "signedCdnQuery": false
+        },
+        {
+          "host": "edge-ams-1.kinescopecdn.net",
+          "status": 200,
+          "suffix": null,
+          "signedCdnQuery": false
+        },
+        {
+          "host": "player-metrics.kinescope.io",
+          "status": 200,
+          "suffix": null,
+          "signedCdnQuery": false
+        },
+        {
+          "host": "player.kinescope.io",
+          "status": 200,
+          "suffix": null,
+          "signedCdnQuery": false
+        },
+        {
+          "host": "kinescope.io",
+          "status": 200,
+          "suffix": "m3u8",
+          "signedCdnQuery": false
+        },
+        {
+          "host": "static.kinescopecdn.net",
+          "status": 200,
+          "suffix": null,
+          "signedCdnQuery": false
+        },
+        {
+          "host": "kinescope.io",
+          "status": 200,
+          "suffix": "m3u8",
+          "signedCdnQuery": false
+        }
+      ],
+      "completedAt": "2026-10-16T17:39:08.528Z"
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "decision": "PRODUCTION_BEARER_LIMIT_ACCEPTED",
+  "recordedAt": "2026-10-16T17:41:26.655742+00:00",
+  "authority": "Direct owner response in this chat, not inferred from prior MVP acceptance",
+  "questionItemId": "[\"request_user_input_async\",\"call_2177e445099e40afa1a7f199b850c1e8\",0]",
+  "question": "В [PR #253](https://github.com/ArtGurianov/flexperiment/pull/253) собраны реальные проверки ART-36 и удаление тестового контура. Осталось определить требование для production: скопированный целиком действующий bearer-grant работает в другом браузере; его 120 секунд ограничивают новую авторизацию, уже выданная DRM-лицензия может действовать дольше. Принимаем этот предел и для запуска или сохраняем требование защиты от переноса? Ранее вы приняли его только для MVP. Настройка доменов остаётся отдельной технической работой; публичный запуск этим решением не разрешается.",
+  "answer": "Принять измеренный предел для production",
+  "publicLaunchAuthorized": false,
+  "browserBindingImplemented": false,
+  "newPaymentAuthorized": false
+}

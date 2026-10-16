@@ -1,8 +1,9 @@
-# ART-36: actual provider qualification and remaining production decisions
+# ART-36: actual provider qualification with accepted limits
 
-Status: `PROVIDER_FAULT_AND_DOMAIN_PROTOTYPE_PASS / PRODUCTION_DECISION_OPEN`.
-Recorded17October2026 local time; receipts use16October UTC. ART-36 remains In
-Progress. ART-338/39/83/351 are not reopened; ART-240 and public F9 are separate.
+Status: `ART36_QUALIFIED_WITH_OWNER_ACCEPTED_LIMITS`.
+Recorded17October2026 local time; receipts use16October UTC. The provider
+qualification is complete with the owner's explicit production bearer decision.
+ART-338/39/83/351 are not reopened; ART-240 and public F9 are separate.
 
 ## Decision
 
@@ -14,9 +15,11 @@ work as an additional embedding restriction when configured on the video.
 They do not establish the identity of the browser presenting a valid bearer.
 
 This completes the previously missing real-provider fault/domain experiment,
-without faulting the shared project. It does not supply browser/device binding
-or accept production bearer-transfer risk on the owner's behalf. The shared
-project and all four active bindings still use `privacy_type=anywhere`.
+without faulting the shared project. The owner subsequently explicitly accepted
+the measured bearer-transfer limit for production; no browser/device binding
+was invented. A separate follow-up set the live project's default and four
+active lesson bindings to the exact canary domain. The two unbound intro/
+background videos retained their original policy. The phases are distinct.
 
 ## Exact execution boundary
 
@@ -41,8 +44,9 @@ fixture, separate Basic/HMAC credentials, one disposable container and one
 exact POST-only route were created. The handler had no customer DB, first-party
 session, native signing key, provider API/payment/mail credential, published
 port or application entrypoint. Signed fixture capabilities were deliberately
-separate from genuine Commerce grants. Existing project settings, services,
-database, erasure fence, recovery custody and proxy files were preserved.
+separate from genuine Commerce grants. During this fault experiment existing
+project settings, services, database, erasure fence, recovery custody and proxy
+files were preserved.
 
 ## Actual Chrome/provider matrix
 
@@ -138,23 +142,42 @@ absent-object diagnostic was lowercase. A separate read confirmed absence;
 case-insensitive diagnostic handling resumed the remaining provider deletion.
 No container start or financial/provider-create operation was retried.
 
-## Remaining production decision
+## Owner decision and live canary domains
 
-The owner previously accepted intact-bearer transfer only for the closed MVP,
-and explicitly retained further protection in ART-36. Choose a production
-requirement before marking this gate Done:
+The owner answered **«Принять измеренный предел для production»** to the exact
+question describing intact-bearer replay,120second new-authorization lifetime
+and potentially longer already-issued DRM-license use. [Decision record](owner-decision.json)
+retains the question and answer. This replaces the former MVP-only risk scope;
+it is neither cryptographic binding nor a public-launch authorization.
 
-1. Explicitly accept the measured bearer model for launch, including transfer
-   while authorization is valid and potentially longer already-issued license
-   use. Then qualify the exact live project/video domain configuration for the
-   chosen launch origins; do not infer it from this deleted prototype.
-2. Require non-transferability. That needs a separately designed trusted player/
-   license-broker flow with actual session or proof-of-possession enforcement
-   and real browser/CDM evidence. A body customerId, masked IP, UA or allowlist
-   alone cannot meet that requirement.
+At17:38:47UTC the exact domain delta was applied and independently read back:
+
+- Project default: `privacy_type=custom`, only
+  `canary-platform.flexperiment.ru`, explicitly `apply_to_videos=false`.
+- Four current lesson bindings: explicit per-video PATCH to that same allowlist.
+- Two unbound intro/background videos: original `anywhere` policy preserved.
+- Encryption, strict native callback/credentials, native images/containers,
+  DB/fence, proxy/403 guards and temporary-resource removal preserved.
+
+[Applied delta](live-domain-policy.json) and a separate
+[post-change read-back](post-domain-readback.json) prove the API configuration.
+[Real Chrome privacy checks](native-domain-matrix.json) admitted the four actual
+lesson embeds on the allowed origin and rejected another origin and absent
+Referer on the short revoke clip. These follow-up tests deliberately made no
+play request and no license request: they prove the actual live embedding
+policy, not another entitled-user/CDM or payment E2E. The real decrypted
+positive/fault controls and genuine earlier grant tests are recorded separately.
+
+Before ART-240/F9 opens another hostname, add the exact supported origin and
+verify the resulting project/video policies there. Never replace the allowlist
+with `anywhere` for convenience. Inspect every newly bound/replaced/copied video;
+the observed copy preserved its previous policy. No automatic per-binding
+privacy guard is claimed by this configuration-only change.
 
 Safari/FairPlay joins acceptance only if included in supported launch browsers.
-ART-240/F9/public sales remain closed. No new issue, broader infrastructure
+Stronger non-transferability would require a new trusted player/license design
+and actual browser/CDM proof; customerId/IP/UA/allowlists alone cannot provide
+it. ART-240/F9/public sales remain closed. No new issue, broader infrastructure
 audit, repeat payment or ART-351 qualification was introduced.
 
 ## Primary provider references
