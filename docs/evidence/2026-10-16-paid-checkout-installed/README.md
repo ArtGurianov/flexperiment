@@ -125,9 +125,12 @@ hostname mapping through a loopback SSH tunnel. HTTPS certificate verification
 remains enabled; no OS DNS/proxy change or certificate bypass was used. A direct
 TLS/readiness check through that tunnel passed. Native UI control currently
 selects the personal Chrome process rather than the separate canary process.
-The owner was asked to complete normal login and fresh review.4 consent in the
-test window. Genuine handoff → return → preview with1₽, current documents and
-receipt email remains pending; infrastructure and fixture checks do not prove it.
+The owner completed normal login. Independent server read-back confirms fresh
+review.4 authenticated consent at10:01:29UTC: personal_data=true,
+account_terms=true, marketing_consent=false. No consent was copied from review.3.
+The owner is operating the real handoff in the test profile without a promo code.
+Return → preview with1₽, current documents and receipt email remains pending;
+infrastructure and fixture checks do not prove it.
 
 Do not report `ART39_INSTALLED_READY_FOR_MONEY_GO` until that real preflight is
 observed. Stop before `POST /v1/checkout` and **«Подтвердить и оплатить»**. Payment,
