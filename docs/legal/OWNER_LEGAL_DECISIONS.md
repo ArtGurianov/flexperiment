@@ -15,7 +15,9 @@ It binds an actual product/offer to an immutable fiscal-policy ID (including
 item name, kind, tax system, VAT, payment method and payment object), an exact
 legal-release ID/version/manifest, offer/refund references and SHA-256s, norms
 and primary-source URLs, facts, reasoning, risk assessment, owner identity,
-actual approval reference/date and evidence SHA-256.
+actual approval reference/date and evidence SHA-256. The approving owner and
+the importing operator have separate identities; recording evidence does not
+assert that the operator authored the owner decision.
 
 Use `recordOwnerLegalDecision` only after independently checking the evidence
 bytes and real owner instruction. It records an assertion by the trusted

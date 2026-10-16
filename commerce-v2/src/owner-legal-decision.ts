@@ -20,7 +20,7 @@ export function recordOwnerLegalDecision(db: Database.Database, input: OwnerLega
   const parsed = commandSchema.safeParse(input);
   if (!parsed.success || !Number.isFinite(Date.parse(now))) throw new Error("OWNER_LEGAL_DECISION_INVALID");
   const c = parsed.data;
-  if (c.actor !== c.decidedBy || Date.parse(c.decidedAt) > Date.parse(now)) throw new Error("OWNER_LEGAL_DECISION_INVALID");
+  if (Date.parse(c.decidedAt) > Date.parse(now)) throw new Error("OWNER_LEGAL_DECISION_INVALID");
   const apply = db.transaction(() => {
     const binding = db.prepare(`SELECT f.offer_ref,p.product_ref,l.id AS legal_release_id,l.version AS legal_release_version,l.manifest_json
       FROM fiscal_policy_versions f JOIN offers o ON o.offer_ref=f.offer_ref JOIN products p ON p.id=o.product_id

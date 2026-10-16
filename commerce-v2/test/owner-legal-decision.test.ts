@@ -35,7 +35,9 @@ const qualify = (policyId: string, ownerLegalDecisionId: string, actor = "owner"
 describe("OwnerLegalDecision authority without an external counsel dependency", () => {
   it("records immutable versioned evidence without qualifying or enabling a sale", () => {
     const policyId = draft();
-    const first = recordOwnerLegalDecision(db, command(policyId), now);
+    const first = recordOwnerLegalDecision(db, { ...command(policyId), actor: "trusted-import-operator" }, now);
+    expect(db.prepare("SELECT decided_by,recorded_by FROM owner_legal_decisions WHERE id=?").get(first.ownerLegalDecisionId))
+      .toEqual({ decided_by: "owner", recorded_by: "trusted-import-operator" });
     const second = recordOwnerLegalDecision(db, command(policyId), now);
     expect([first.version, second.version]).toEqual([1, 2]);
     expect(() => qualifiedFiscalPolicy(db, "course:one", "ONLINE_COURSE")).toThrow("FISCAL_POLICY_NOT_QUALIFIED");
@@ -48,10 +50,10 @@ describe("OwnerLegalDecision authority without an external counsel dependency", 
     expect(db.prepare("SELECT count(*) n FROM audit_log WHERE action='OWNER_LEGAL_DECISION_RECORDED'").get()).toEqual({ n: 2 });
     expect(db.prepare("SELECT count(*) n FROM orders").get()).toEqual({ n: 0 });
   });
-  it("refuses missing norms, invalid evidence, fake/future authority and mismatched approved terms", () => {
+  it("refuses missing norms, invalid evidence, missing/future authority and mismatched approved terms", () => {
     const c = command(draft());
     for (const change of [{ norms: [] }, { norms: [{ reference: " ", url: "https://example.test" }] },
-      { evidenceSha256: "bad" }, { approvalRef: " " }, { riskAssessment: " " }, { actor: "other" }, { decidedAt: "2027-01-01T00:00:00Z" }]) {
+      { evidenceSha256: "bad" }, { approvalRef: " " }, { riskAssessment: " " }, { decidedBy: " " }, { decidedAt: "2027-01-01T00:00:00Z" }]) {
       expect(() => recordOwnerLegalDecision(db, { ...c, ...change }, now)).toThrow("OWNER_LEGAL_DECISION_INVALID");
     }
     for (const change of [{ offerTermsSha256: "b".repeat(64) }, { refundTermsRef: "https://example.test/wrong" }, { legalManifestSha256: "f".repeat(64) }]) {
@@ -127,6 +129,6 @@ describe("OwnerLegalDecision authority without an external counsel dependency", 
     expect((db.prepare("SELECT legal_basis_json FROM fiscal_policy_versions WHERE id=?").get(policyId) as { legal_basis_json: string }).legal_basis_json).toBe(raw);
     expect(db.prepare("SELECT count(*) n FROM schema_migrations").get()).toEqual({ n: 27 });
     const hash = createHash("sha256").update(JSON.stringify(db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").all())).digest("hex");
-    expect(hash).toBe("8549f2c8d41eb72153d06e6cd5d6d320bb8c9a735b88ec44b2feee3a940cb0d6");
+    expect(hash).toBe("23023f46b86d75b7ed04225ea3b16917671f3abb56de114c3fe1a468e9043c44");
   });
 });

@@ -45,7 +45,7 @@ WHEN NOT EXISTS (
     OR coalesce(length(trim(json_extract(n.value,'$.reference'))),0)=0
     OR json_type(n.value,'$.url') IS NOT 'text'
     OR coalesce(json_extract(n.value,'$.url') LIKE 'https://_%',0)=0
-) OR NEW.recorded_by<>NEW.decided_by
+)
 BEGIN SELECT RAISE(ABORT,'OWNER_LEGAL_DECISION_INVALID'); END;
 CREATE TRIGGER owner_legal_decision_no_update BEFORE UPDATE ON owner_legal_decisions
 BEGIN SELECT RAISE(ABORT,'OWNER_LEGAL_DECISION_IMMUTABLE'); END;

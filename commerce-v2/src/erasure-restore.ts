@@ -13,7 +13,7 @@ import { DrainedErasureRuntime } from "./erasure-fence";
 const REVIEWED_SCHEMA_SHA256 = new Set([
   "158654c61bd97be4dbcab4348651722fe105587f6ff202ad4db821512774e030",
   "c99f9ed0db449a2c13f2e51fa3b28a1ba44e367dd263185c99eddfec8c2d3b39",
-  "8549f2c8d41eb72153d06e6cd5d6d320bb8c9a735b88ec44b2feee3a940cb0d6",
+  "23023f46b86d75b7ed04225ea3b16917671f3abb56de114c3fe1a468e9043c44",
 ]);
 function assertReviewedSchema(db: Database.Database) {
   const schema = db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").all();
