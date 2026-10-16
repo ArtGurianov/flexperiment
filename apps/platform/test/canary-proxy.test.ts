@@ -37,6 +37,50 @@ describe("closed Platform canary configuration", () => {
 });
 
 describe("Platform same-origin proxy", () => {
+  it.each(["GET", "POST"])("forwards customer refund %s with the session and idempotency key", async method => {
+    const body = JSON.stringify({ orderPublicId: "synthetic-order", reasonCode: "CUSTOMER_REQUEST" });
+    const upstream = vi.spyOn(transport, "canaryCommerceRequest").mockResolvedValue(Response.json(
+      method === "POST" ? { requestPublicId: "synthetic-refund", state: "REQUESTED" } : { refunds: [] },
+      { status: method === "POST" ? 201 : 200 },
+    ));
+    const response = await proxyCommerce(new Request(`${canaryOrigins.PLATFORM_ORIGIN}/v1/refunds`, {
+      method,
+      headers: { host: "canary-platform.flexperiment.ru", origin: canaryOrigins.PLATFORM_ORIGIN,
+        cookie: "session=synthetic", "content-type": "application/json", "idempotency-key": "synthetic-refund-request" },
+      body: method === "POST" ? body : undefined,
+    }), ["refunds"]);
+    expect(upstream).toHaveBeenCalledOnce();
+    const [url, options] = upstream.mock.calls[0];
+    expect(String(url)).toBe(new URL("/v1/refunds", env.COMMERCE_INTERNAL_ORIGIN).toString());
+    expect(options).toMatchObject({ method, redirect: "manual", cache: "no-store" });
+    const headers = new Headers(options?.headers);
+    expect(headers.get("cookie")).toBe("session=synthetic");
+    expect(headers.get("origin")).toBe(canaryOrigins.PLATFORM_ORIGIN);
+    expect(headers.get("idempotency-key")).toBe("synthetic-refund-request");
+    if (method === "POST") expect(await new Response(options?.body).text()).toBe(body);
+    expect(response.status).toBe(method === "POST" ? 201 : 200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+  });
+  it.each([
+    { path: ["refunds", "synthetic-refund", "execute"], method: "POST" },
+    { path: ["refunds", "synthetic-refund", "decision"], method: "POST" },
+    { path: ["refunds"], method: "DELETE" },
+    { path: ["refunds"], method: "PATCH" },
+  ])("does not expose refund decisions, execution or unsupported methods: %j", async ({ path, method }) => {
+    const upstream = vi.spyOn(transport, "canaryCommerceRequest");
+    expect((await proxyCommerce(new Request(`${canaryOrigins.PLATFORM_ORIGIN}/v1/${path.join("/")}`, {
+      method, headers: { host: "canary-platform.flexperiment.ru", origin: canaryOrigins.PLATFORM_ORIGIN },
+    }), path)).status).toBe(404);
+    expect(upstream).not.toHaveBeenCalled();
+  });
+  it("preserves the customer refund authentication refusal", async () => {
+    vi.spyOn(transport, "canaryCommerceRequest").mockResolvedValue(Response.json({ code: "SIGN_IN_REQUIRED" }, { status: 401 }));
+    const response = await proxyCommerce(new Request(`${canaryOrigins.PLATFORM_ORIGIN}/v1/refunds`, {
+      headers: { host: "canary-platform.flexperiment.ru" },
+    }), ["refunds"]);
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ code: "SIGN_IN_REQUIRED" });
+  });
   it.each(["foreign.example", "flexperiment.ru", "canary-lab.flexperiment.ru", "canary-platform.flexperiment.ru:443"])("foreign host %s refuses", async host => {
     const fetch = vi.spyOn(globalThis, "fetch");
     expect((await proxyCommerce(request({ host }), ["auth"])).status).toBe(403);

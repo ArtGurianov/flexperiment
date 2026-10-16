@@ -1,7 +1,7 @@
 import { canaryOrigins, validatePlatformCanary } from "./canary-config";
 import { canaryCommerceRequest } from "./canary-http";
 
-const allowedRoots = new Set(["auth", "me", "lessons", "checkout", "email", "legal"]);
+const allowedRoots = new Set(["auth", "me", "lessons", "checkout", "email", "legal", "refunds"]);
 const refuse = (code: string, status: number) => Response.json({ code }, {
   status, headers: { "Cache-Control": "no-store" },
 });
@@ -14,6 +14,7 @@ export async function proxyCommerce(request: Request, path: string[]) {
   if (!origin) return refuse("COMMERCE_NOT_CONFIGURED", 503);
   if (!path[0] || !allowedRoots.has(path[0])
     || path.some((part) => !part || /[\\/\x00-\x1f\x7f]/.test(part) || part === "." || part === "..")) return refuse("NOT_FOUND", 404);
+  if (path[0] === "refunds" && (path.length !== 1 || !["GET", "POST"].includes(request.method))) return refuse("NOT_FOUND", 404);
   const source = new URL(request.url);
   const host = canary ? new URL(canaryOrigins.PLATFORM_ORIGIN).host : source.host;
   if (canary && (request.headers.get("host") !== host
