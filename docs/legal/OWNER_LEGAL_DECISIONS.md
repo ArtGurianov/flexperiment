@@ -23,7 +23,8 @@ Use `recordOwnerLegalDecision` only after independently checking the evidence
 bytes and real owner instruction. It records an assertion by the trusted
 operator, not a signature verification, substantive automated legal review or
 AI approval. No public endpoint, seed, migration, or automatic fallback records
-owner approval. No production approval or qualification is created by this PR.
+owner approval. The implementation itself creates no approval. The separately authorized live
+qualification is recorded in [installed evidence](../evidence/2026-10-16-paid-checkout-installed/README.md).
 
 `qualifyFiscalPolicy` accepts `ownerLegalDecisionId` for new qualifications.
 The SQL trigger also requires the matching policy, offer/product, owner and
@@ -48,10 +49,10 @@ profiles for review. Restore/retention admit the exact reviewed 0027 fingerprint
 alongside the unchanged 0025/0026 fingerprints; arbitrary DDL remains refused.
 The independent erasure ledger/fence schema and authority do not change.
 
-The installed fast-cut controller remains pinned to its 0026 source. This source
-contains a separately reviewed 0027 controller; a future install needs exact
-controller/source/image admission, fresh encrypted
-backup and isolated migration/restore proof; a green test is not that proof.
+The installed fast-cut controller and Commerce/Platform are pinned to merged
+1f27cbd2, with exact schema27 admission and independent backup/restore and
+copied-fence migration proof. See the separate installed receipts; source tests
+alone are not installation or recovery proof.
 
 ## Owner decisions already supplied
 
@@ -79,6 +80,8 @@ AUTONOMOUS INSTALLATION GO remains; MONEY HOLD remains.
 
 The owner further clarified that the purchased object is access to the evolving
 course. Course-scoped entitlement follows its current published contents;
-historical initial-content evidence never narrows that entitlement. Proposed
+historical initial-content evidence never narrows that entitlement. Approved
 [review.4](closed-paid-test/2026-10-16-review-4/README.md) aligns the wording and
-receipt label. Review.3's approved covered bytes are retained.
+receipt label. Review.4 is published and active; its genuine owner-backed fiscal
+policy is qualified. Fresh buyer consent is required. Review.3's approved covered
+bytes are retained. MONEY HOLD continues.

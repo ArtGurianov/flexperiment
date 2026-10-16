@@ -1,5 +1,13 @@
 # ART-39 — bounded installation preparation
 
+**Current, 16 October 2026: INSTALLED / BUYER PREFLIGHT PENDING / MONEY HOLD.**
+See [installed evidence](../evidence/2026-10-16-paid-checkout-installed/README.md) for actual merged sources/images, review.4 publication, owner-backed
+fiscal qualification and independent recovery. The preparation statements below
+are historical; they do not describe the installed runtime. Separate financial
+GO remains mandatory.
+
+## Historical preparation record
+
 **HISTORICAL a548774 PACKET; superseded by [autonomous preparation](../evidence/2026-10-16-paid-checkout-autonomous-preparation/README.md).**
 Current owner authority: AUTONOMOUS INSTALLATION GO / MONEY HOLD. Dependencies remain
 mandatory; the old no-execution statements below describe that historical packet.

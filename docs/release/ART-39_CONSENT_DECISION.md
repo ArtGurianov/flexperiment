@@ -1,5 +1,13 @@
 # ART-39 — separate consent and purchase acceptance
 
+**Current, 16 October 2026: INSTALLED / BUYER PREFLIGHT PENDING / MONEY HOLD.**
+See [installed evidence](../evidence/2026-10-16-paid-checkout-installed/README.md) for actual merged sources/images, review.4 publication, owner-backed
+fiscal qualification and independent recovery. The preparation statements below
+are historical; they do not describe the installed runtime. Separate financial
+GO remains mandatory.
+
+## Historical preparation record
+
 **SERVER GUARD PREPARED / LEGAL REVIEW.3 APPROVED AND ACTIVE / FISCAL BASIS PENDING / MONEY HOLD.**
 16October2026. PR239 merged documentation as
 `6e48e22a7a6c958ca7deb77d665726b522a382ee`, without deployment.

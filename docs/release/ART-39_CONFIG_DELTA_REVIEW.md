@@ -1,5 +1,13 @@
 # ART-39 / ART-83 — successor install/config review
 
+**Current, 16 October 2026: INSTALLED / BUYER PREFLIGHT PENDING / MONEY HOLD.**
+See [installed evidence](../evidence/2026-10-16-paid-checkout-installed/README.md) for actual merged sources/images, review.4 publication, owner-backed
+fiscal qualification and independent recovery. The preparation statements below
+are historical; they do not describe the installed runtime. Separate financial
+GO remains mandatory.
+
+## Historical preparation record
+
 **AUTONOMOUS INSTALLATION GO / MONEY HOLD; DEPENDENCIES PENDING.**16October2026.
 Latest execution facts: [autonomous preparation](../evidence/2026-10-16-paid-checkout-autonomous-preparation/README.md).
 This supersedes the manual-only consent procedure of the sealed
