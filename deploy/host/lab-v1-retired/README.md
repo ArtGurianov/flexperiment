@@ -22,10 +22,13 @@ deployment or a move of `production-deploy`.
    private bridge gateway10.0.1.1, backend18139. Refuse a different topology;
    do not substitute a public bind. Run the Python tests and verify the exact
    source/CI and file hashes before installing root-owned files.
-3. Install `retired_server.py` at
+3. Create `/opt/flexperiment-lab-v1-retired` root-owned with explicit0755 mode
+   (`install -d -m 0755`; a restrictive umask must not leave it0700). Install `retired_server.py` at
    `/opt/flexperiment-lab-v1-retired/retired_server.py`, mode0644; install the
    service unit root-owned0644, daemon-reload and enable/start it. Prove local
-   HTTP410 from the private bridge and the confined service's actual binding.
+   HTTP410 from the actual proxy container/network and the confined service's
+   private binding. A host-local direct probe may be unreachable; do not widen
+   the network policy to make that stand-in succeed.
 4. Atomically install the reviewed JSON-compatible YAML as
    `/data/coolify/proxy/dynamic/lab-v1-retired.yaml`. The file-provider routes
    have explicit legacy hosts, higher priority than old catchalls, and retain
