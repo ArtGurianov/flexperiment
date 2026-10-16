@@ -6,7 +6,12 @@
 The new guard is a source change; it is absent from the previously published
 Commerce/Platform artifacts built from `a548774…`.
 
-## Model proposed for final approval
+## Approved principles; final bytes pending
+
+The owner approved the separate Cheki data-transfer consent principle, seller-paid
+fees, unchanged1₽ charge/full refund, five-year minimum tax evidence retention and
+at least one year for that consent evidence on16October2026. Exact recipients,
+retention start dates, final bytes and financial/install permissions remain pending.
 
 Retain an explicit `personal_data` action, separate from account terms and
 purchase/refund acceptance. The owner confirmed Tochka's «Чеки». Its published

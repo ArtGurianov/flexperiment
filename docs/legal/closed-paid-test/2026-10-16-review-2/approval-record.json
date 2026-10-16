@@ -1,5 +1,5 @@
 {
-  "status": "PENDING_NOT_APPROVED",
+  "status": "PRINCIPLES_APPROVED_FINAL_BYTES_PENDING",
   "candidateVersion": "2026-10-16.closed-paid-test.review.2",
   "approvedFinalVersion": null,
   "approvedPackageSha256": null,
@@ -30,6 +30,24 @@
   },
   "note": "This blank form is not owner approval, counsel evidence, a legal release, or authority to qualify a policy. Do not fill from inferred acceptance of a PR.",
   "ownerServiceConfirmation": "Tochka Cheki; direct owner statement 2026-10-16",
-  "proposedRetentionApproved": false,
-  "merchantManifestApproved": false
+  "proposedRetentionApproved": true,
+  "merchantManifestApproved": false,
+  "principlesApproval": {
+    "status": "OWNER_APPROVED",
+    "source": "direct owner reply in this chat on 2026-10-16: Утвердить принципы",
+    "service": "Tochka Cheki",
+    "customerChargeKopecks": 100,
+    "customerFullRefundKopecks": 100,
+    "sellerPaysFees": true,
+    "separateConsentForChekiTransfer": true,
+    "minimumTaxEvidenceRetentionYears": 5,
+    "minimumChekiConsentEvidenceRetentionYears": 1,
+    "exactRetentionStartDateApproved": false,
+    "exactRecipientsApproved": false,
+    "exactDocumentBytesApproved": false,
+    "expenseBudgetAmountApproved": false,
+    "merchantManifestApproved": false,
+    "installationAuthorized": false,
+    "paymentAuthorized": false
+  }
 }
