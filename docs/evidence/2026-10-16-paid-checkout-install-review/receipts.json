@@ -1,0 +1,132 @@
+{
+  "schema": "flexperiment.art39.install-review/1",
+  "status": "PREPARATION_ONLY_INSTALL_AND_MONEY_HOLD",
+  "applicationSource": "a548774692fa8a9b50fe8da02890e913857537d3",
+  "controllerSource": "a548774692fa8a9b50fe8da02890e913857537d3",
+  "hostHelperSha256": "c4d5eb6516a147a7536c466b559f156349aafe2c0bcf8e41bca399a0c0b7160d",
+  "flexMergedCI": {
+    "run": 38843890923,
+    "jobs": {
+      "test": "SUCCESS",
+      "docker-build": "SUCCESS"
+    }
+  },
+  "refrefOperatorSource": "4f533ec65688c29f6732ec32c799d4dd4fc05c37",
+  "refrefMergedCI": {
+    "status": "SUCCESS",
+    "context": "local-ci/required",
+    "passed": 22,
+    "total": 22,
+    "githubStatusId": 56492505630,
+    "updatedAt": "2026-10-16T03:41:37Z"
+  },
+  "imageVector": [
+    {
+      "role": "commerce",
+      "sourceCommit": "a548774692fa8a9b50fe8da02890e913857537d3",
+      "reference": "ghcr.io/artgurianov/flexperiment-commerce-v2@sha256:62133f4fdcd5777c77b984cc9c9a17cc239ac2630451fe94d0205d64cdc5b7d1",
+      "manifestDigest": "sha256:62133f4fdcd5777c77b984cc9c9a17cc239ac2630451fe94d0205d64cdc5b7d1",
+      "registryConfigDigest": "sha256:aab495dd447aaa8265d78f9c05382ea9d6a2cfd572693eb57289646aeffa4609",
+      "targetImageId": "sha256:62133f4fdcd5777c77b984cc9c9a17cc239ac2630451fe94d0205d64cdc5b7d1",
+      "nativeIdentity": {
+        "schema": "flexperiment.build-identity/1",
+        "service": "commerce-v2",
+        "sourceCommit": "a548774692fa8a9b50fe8da02890e913857537d3"
+      },
+      "registryReadback": true,
+      "targetPullReadback": true,
+      "visibility": "private",
+      "os": "linux",
+      "architecture": "amd64",
+      "rootfsSha256": "3affe93be5f041ac82e5ecd9d58c5330a249c9569d53253c5887e79723d7e6fb",
+      "applicationInstalled": false
+    },
+    {
+      "role": "platform",
+      "sourceCommit": "a548774692fa8a9b50fe8da02890e913857537d3",
+      "reference": "ghcr.io/artgurianov/flexperiment-platform-v2@sha256:062e4528a269aa0fecb899302eae0db9393dca601d64dd7af867b89d62aee474",
+      "manifestDigest": "sha256:062e4528a269aa0fecb899302eae0db9393dca601d64dd7af867b89d62aee474",
+      "registryConfigDigest": "sha256:01e175b7342a461008850826d8c95fae6fc8cab3f075eb2c52740a2d6ebb9607",
+      "targetImageId": "sha256:062e4528a269aa0fecb899302eae0db9393dca601d64dd7af867b89d62aee474",
+      "nativeIdentity": {
+        "schema": "flexperiment.build-identity/1",
+        "service": "platform",
+        "sourceCommit": "a548774692fa8a9b50fe8da02890e913857537d3"
+      },
+      "registryReadback": true,
+      "targetPullReadback": true,
+      "visibility": "private",
+      "os": "linux",
+      "architecture": "amd64",
+      "rootfsSha256": "26f2f1cebb10fd9fc610e761ace4e8c2d787a76256b0b7a1fc48cde82f22d0f4",
+      "applicationInstalled": false
+    },
+    {
+      "role": "admin",
+      "reference": "ghcr.io/artgurianov/flexperiment-admin-v2@sha256:85eadc71e50fdab0bc4d154a242a46188bd85bbe7f0edfed516f8863eb14dc77",
+      "nativeIdentity": {
+        "source_commit": "08523bdf38eeddf5e745ce04d05e1f980a7ced93",
+        "admin_contract_version": "sales-availability-v1"
+      },
+      "retained": true,
+      "rebuilt": false,
+      "replaced": false
+    }
+  ],
+  "refrefServingSource": "202c0fb3c63b53cc7d1fdb3f1ee07235319dd13c",
+  "servingPolicyEntryPresent": false,
+  "effects": {
+    "artifactPublication": true,
+    "merchantEnablement": false,
+    "keyIssuance": false,
+    "sharedRefrefConfigApplied": false,
+    "servingRestart": false,
+    "flexInstallation": false,
+    "paidLegalActivation": false,
+    "fiscalQualification": false,
+    "payment": false,
+    "refund": false,
+    "publicSales": false
+  },
+  "consentModel": {
+    "status": "PROPOSED_NOT_APPROVED",
+    "checkoutEventIsIndependentPDConsent": false,
+    "automaticCheckoutPDGuard": false,
+    "separatePrePaymentReadbackRequired": true
+  },
+  "refrefOperatorArtifact": {
+    "sourceCommit": "4f533ec65688c29f6732ec32c799d4dd4fc05c37",
+    "reference": "ghcr.io/artgurianov/refref-owner-commerce-operator@sha256:10645410d2e3b08e4ea46195b33f6293011c76659b5bd63f7625aedb9b6c0131",
+    "manifestDigest": "sha256:10645410d2e3b08e4ea46195b33f6293011c76659b5bd63f7625aedb9b6c0131",
+    "registryConfigDigest": "sha256:d3028b0208bed9cd113103d306d49a090b70d48680a452ff65fc29a9c9d858ff",
+    "targetImageId": "sha256:10645410d2e3b08e4ea46195b33f6293011c76659b5bd63f7625aedb9b6c0131",
+    "nativeIdentity": {
+      "sourceCommit": "4f533ec65688c29f6732ec32c799d4dd4fc05c37"
+    },
+    "registryReadback": true,
+    "targetPullReadback": true,
+    "visibility": "private",
+    "packagedCliMissingInputsRefused": true,
+    "merchantEnablementExecuted": false,
+    "os": "linux",
+    "architecture": "amd64",
+    "strictConcreteManifestParsedWithoutDB": true,
+    "rootfsSha256": "22d902371b907e5a83b0c70c2374177e01bc13431ba3e79d4ef1caaf8e8de8f5"
+  },
+  "finalRuntimeReadback": {
+    "observedAt": "2026-10-16T03:47:00.168379+00:00",
+    "installedRoleVectorUnchanged": true,
+    "mountSetsUnchanged": true,
+    "inputHashesUnchanged": true,
+    "paymentsRemainDisabled": true,
+    "refrefServingSourceAndPolicyMapUnchanged": true,
+    "allObservedHealth": "healthy"
+  },
+  "merchantReadback": {
+    "apiKeys": 0,
+    "checkoutAttempts": 0,
+    "payments": 0,
+    "refundExecutions": 0,
+    "merchantOrders": 0
+  }
+}
