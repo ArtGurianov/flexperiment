@@ -1,6 +1,6 @@
 # ART-39 — private paid-checkout profile
 
-**ENGINEERING PREPARATION. Not installed or enabled.** This profile supports one accepted experiment; it is not public sales admission, legal qualification, permission to charge or ART-338 requalification. The actual course can be prepared with a CLOSED offer under existing disabled runtime.
+**ART39_INSTALLED_READY_FOR_MONEY_GO / MONEY HOLD.** See [installed evidence](../evidence/2026-10-16-paid-checkout-installed/README.md). The existing canary has the exact review.4 profile, qualified owner-backed policy and only the selected ACCEPTANCE_ONLY offer. This is not public sales admission or permission to charge; ART-338 stays Done.
 
 ## Exact configuration to review before installation
 
@@ -21,18 +21,18 @@ Common Commerce/Platform values:
 
 Commerce additionally needs `CLOSED_PAID_TEST_BUYER_SHA256` = SHA-256 of the selected existing customer's normalized lowercase trimmed email, `KINESCOPE_DELIVERY_MODE=protected`, `COMMERCE_V2_ENVIRONMENT=canary`, `ERASURE_SCOPE=canary`, `ERASURE_FENCING_ENABLED=true`. Derive the digest from private owner custody and compare it with the actual verified account; do not put buyer email/digest in Git or logs. Keep the actual merchant ID/slug/key, handoff secret and refund-envelope keyring in runtime-only owner custody. Provider bank credentials remain only in Refref. Platform gets common non-secret identity inputs, not the buyer digest/API key/handoff secret/refund keys.
 
-Do not merely set PAYMENT_MODE. The profile refuses another environment, origin, unprotected video, missing buyer/legal pin or disabled erasure. At checkout it requires exactly `ONLINE_COURSE`, PAID, `test-course`, `course:test-course`,100kopecks, ACCEPTANCE_ONLY and one matching allowlisted buyer. Current qualified policy must say `Доступ к видеоматериалу «Test Course»`, USN_INCOME/NONE/FULL_PAYMENT/SERVICE. Other paid offers remain CLOSED. No PUBLIC activation, LAB or bundle sale. Price/promotion changes refuse. One existing order for this offer prevents a second experiment; preserve its retries/reconciliation instead of creating another.
+Do not merely set PAYMENT_MODE. The profile refuses another environment, origin, unprotected video, missing buyer/legal pin or disabled erasure. At checkout it requires exactly `ONLINE_COURSE`, PAID, `test-course`, `course:test-course`,100kopecks, ACCEPTANCE_ONLY and one matching allowlisted buyer. Current qualified policy must say `Доступ к курсу «Test Course»`, USN_INCOME/NONE/FULL_PAYMENT/SERVICE. Other paid offers remain CLOSED. No PUBLIC activation, LAB or bundle sale. Price/promotion changes refuse. One existing order for this offer prevents a second experiment; preserve its retries/reconciliation instead of creating another.
 
 The buyer sees the exact paid document links and receipt email. One explicit checkbox records acceptance with the order; account consent or a legal-release row alone cannot substitute. If conditions/contact change, the confirm refuses. No acceptance, grant or provider status may be hand-minted.
 
 That checkout action is purchase acceptance, not independent PD consent. The
-[proposed separate account-consent procedure](ART-39_CONSENT_DECISION.md) requires
-its own final-document action and pre-payment read-back. The prepared server guard now enforces current, verified account choices before
+[separate account-consent procedure](ART-39_CONSENT_DECISION.md) requires
+its own final-document action and pre-payment read-back. The installed server guard enforces current, verified account choices before
 handoff, preview and confirm/replay, with a transactional check before order creation.
 It requires the exact legal pins and does not record consent on the buyer's behalf.
-It is not installed and is absent from the earlier a548774 image pair; use the
-[superseding config review](ART-39_CONFIG_DELTA_REVIEW.md). Final legal approval
-and real buyer evidence remain required before money.
+It is installed from1f27cbd2; the earlier a548774 image pair is superseded. Exact
+review.4 is approved and active; genuine owner-operated buyer preflight and independent server read-back passed.
+Financial GO remains required.
 
 The course description must be LISTED, without free preview: an unentitled buyer cannot reach CourseCheckout on an UNLISTED course. Keep CLOSED during preparation; only eventual accepted runtime admits ACCEPTANCE_ONLY. Follow the [concrete preparation/install packet](ART-39_INSTALL_PACKET.md).
 
@@ -44,6 +44,6 @@ Install the exact reviewed helper alongside a per-role `release.json`, immutable
 
 ## Remaining gates
 
-Refref's [owner-commerce engineering PR77](https://github.com/ArtGurianov/refref/pull/77) supplies a provider-neutral enablement path for the existing signed OWNER. It has not been installed/executed on production. Review its actual manifest, DNS/return paths, key scopes, private capture/escrow and current connection/readiness first. No fake Alfa manifest, duplicate Business or bank reprovisioning.
+Refref's [owner-commerce engineering PR77](https://github.com/ArtGurianov/refref/pull/77) supplies a provider-neutral enablement path for the existing signed OWNER. Enablement is READY and the one key, actual policy mapping and independent recovery are confirmed in [installed evidence](../evidence/2026-10-16-paid-checkout-installed/README.md). Preserve that existing manifest and key. No fake Alfa manifest, duplicate Business or bank reprovisioning.
 
-Final document bytes, real HTTPS response hash read-back, actual fiscal legal-basis references and remaining fiscal-recipient/retention facts precede qualification/activation. An operator must not turn the draft's null commands into execution by inventing counsel evidence. Only after final approval and separately authorized money action may the owner perform card/SBP interaction. No card/OTP data is handled by the agent. [ART-39 execution steps](ART-39_CONTROLLED_CHECKOUT.md) remain authoritative for payment, receipt, entitlement, playback, full refund, refund receipt and access revocation.
+Review.4 publication and owner-backed qualification are complete. Fresh buyer PD/account consent and genuine handoff/return/preview passed with independent server quote read-back. Only after separately authorized money action may the owner perform card/SBP interaction. No card/OTP data is handled by the agent. [ART-39 execution steps](ART-39_CONTROLLED_CHECKOUT.md) remain authoritative for payment, receipt, entitlement, playback, full refund, refund receipt and access revocation.

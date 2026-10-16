@@ -1,5 +1,13 @@
 # ART-39 — one controlled real course payment and full refund
 
+**Current, 16 October 2026: ART39_INSTALLED_READY_FOR_MONEY_GO / MONEY HOLD.**
+See [installed evidence](../evidence/2026-10-16-paid-checkout-installed/README.md) for actual merged sources/images, review.4 publication, owner-backed
+fiscal qualification and independent recovery. The preparation statements below
+are historical; they do not describe the installed runtime. Separate financial
+GO remains mandatory.
+
+## Historical preparation record
+
 State: **AUTONOMOUS INSTALLATION GO / MONEY HOLD; FISCAL LEGAL BASIS PENDING**.
 See [current evidence](../evidence/2026-10-16-paid-checkout-autonomous-preparation/README.md)
 for merged240, new images and partial production merchant enablement. Historical
