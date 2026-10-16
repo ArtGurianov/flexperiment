@@ -51,6 +51,7 @@ export default function CourseCheckout({ courseRef, offerRef, saleMode, priceKop
   const [busy, setBusy] = useState(false);
   const [quote, setQuote] = useState<CheckoutQuote | null>(null);
   const [termsAccepted, setTermsAccepted] = useState(false);
+  const [consentRequired, setConsentRequired] = useState(false);
   const [checkoutCode, setCheckoutCode] = useState("");
   const previewIdempotencyKey = useRef<string | null>(null);
   const paymentIdempotencyKey = useRef<string | null>(null);
@@ -131,7 +132,10 @@ export default function CourseCheckout({ courseRef, offerRef, saleMode, priceKop
         : "Проверьте итоговую цену и подтвердите оплату."}`);
     } catch (error) {
       const code = error instanceof Error ? error.message : "CHECKOUT_PREVIEW_FAILED";
-      setStatus(code === "PAYMENTS_DISABLED" || code === "OFFER_CLOSED" ? "Продажи скоро." : "Не удалось начать оплату. Попробуйте ещё раз.");
+      if (code === "CONSENT_REQUIRED") {
+        setConsentRequired(true);
+        setStatus("Перед покупкой подтвердите актуальные документы аккаунта.");
+      } else setStatus(code === "PAYMENTS_DISABLED" || code === "OFFER_CLOSED" ? "Продажи скоро." : "Не удалось начать оплату. Попробуйте ещё раз.");
     } finally {
       setBusy(false);
     }
@@ -157,7 +161,11 @@ export default function CourseCheckout({ courseRef, offerRef, saleMode, priceKop
       setStatus(result.state === "DECLINED" ? "Платёж отклонён." : result.state === "EXPIRED" ? "Время оплаты истекло." : "Статус платежа уточняется. Попробуйте снова через минуту.");
     } catch (error) {
       const code = error instanceof Error ? error.message : "CHECKOUT_FAILED";
-      if (["CHECKOUT_QUOTE_EXPIRED", "CHECKOUT_QUOTE_STALE", "CHECKOUT_QUOTE_UNAVAILABLE"].includes(code)) {
+      if (code === "CONSENT_REQUIRED") {
+        setConsentRequired(true);
+        setTermsAccepted(false);
+        setStatus("Перед покупкой подтвердите актуальные документы аккаунта.");
+      } else if (["CHECKOUT_QUOTE_EXPIRED", "CHECKOUT_QUOTE_STALE", "CHECKOUT_QUOTE_UNAVAILABLE"].includes(code)) {
         setQuote(null); previewIdempotencyKey.current = null; paymentIdempotencyKey.current = null;
         setStatus("Цена изменилась или время подтверждения истекло. Проверьте её ещё раз.");
       } else setStatus(code === "PAYMENTS_DISABLED" || code === "OFFER_CLOSED" ? "Продажи скоро." : "Не удалось начать оплату. Попробуйте ещё раз.");
@@ -184,7 +192,8 @@ export default function CourseCheckout({ courseRef, offerRef, saleMode, priceKop
         Принимаю условия покупки и возврата, ознакомился с обработкой данных и направлением чека.
       </label>
     </div>}
-    <button className="primary" disabled={busy || session === "loading" || Boolean(quote?.legalAcceptance && !termsAccepted)} type="button" onClick={() => void (quote ? confirmCheckout() : previewCheckout())}>
+    {consentRequired && <Link href={`/account?next=${encodeURIComponent(pathname)}`}>Проверить документы аккаунта →</Link>}
+    <button className="primary" disabled={busy || consentRequired || session === "loading" || Boolean(quote?.legalAcceptance && !termsAccepted)} type="button" onClick={() => void (quote ? confirmCheckout() : previewCheckout())}>
       {busy ? "Проверяем…" : quote ? "Подтвердить и оплатить →" : "Купить курс →"}
     </button>
     {quote && quote.discountKopecks > 0 && <p>

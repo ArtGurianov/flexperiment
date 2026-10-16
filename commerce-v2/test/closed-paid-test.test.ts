@@ -6,7 +6,8 @@ import { configureProduct } from "../src/catalog-control";
 import { buyerEmailSha256 } from "../src/closed-paid-test";
 import { confirmCheckout, MockPaymentRail, prepareCheckout } from "../src/checkout";
 import { draftFiscalPolicy, qualifyFiscalPolicy } from "../src/fiscal-policy";
-import { legalManifestHash } from "../src/legal-control";
+import { activateLegalRelease, legalManifestHash } from "../src/legal-control";
+import { authenticatedConsentStatus, recordAuthenticatedConsents } from "../src/authenticated-consents";
 import { loadCommerceRuntimeConfig } from "../src/payment-mode";
 import { createRefrefReadinessProbe } from "../src/readiness";
 import { stageBLegalManifest, stageBLegalManifestJson } from "./fixtures/legal";
@@ -39,9 +40,16 @@ const confirm = async (accepted: unknown, key = "pay") => {
     legalAcceptance: accepted as Parameters<typeof confirmCheckout>[3]["legalAcceptance"] });
 };
 const accept = { accepted: true, releaseVersion: env.CLOSED_PAID_TEST_LEGAL_VERSION, manifestSha256: env.CLOSED_PAID_TEST_LEGAL_SHA256, receiptEmail: email };
+const accountConsent = (customerId = "buyer", storefront: "COURSES" | "LAB" = "COURSES") => {
+  const current = authenticatedConsentStatus(db, customerId, storefront);
+  return recordAuthenticatedConsents(db, customerId, { storefront, releaseVersion: current.releaseVersion!, manifestSha256: current.manifestSha256!,
+    actionKey: "synthetic-account-choice", personalDataConsent: true, accountTermsAccepted: true, marketingConsent: false });
+};
 beforeEach(() => {
   db = new Database(":memory:"); migrateV2(db); rail = new MockPaymentRail();
   db.prepare("INSERT INTO customers(id,email_normalized) VALUES ('buyer',?),('other','other@example.test')").run(email);
+  db.prepare('INSERT INTO "user"(id,name,email,email_verified) VALUES (\'buyer-user\',\'Synthetic\',?,1),(\'other-user\',\'Other\',\'other@example.test\',1)').run(email);
+  db.exec("UPDATE customers SET auth_user_id=id || '-user'");
   db.prepare("INSERT INTO legal_releases(id,storefront,version,manifest_json,effective_at,active) VALUES ('legal','COURSES',?,?,'2026-10-16',1)")
     .run(env.CLOSED_PAID_TEST_LEGAL_VERSION, stageBLegalManifestJson);
   configureProduct(db, config, { productRef: "course:test-course", offerRef: "course:test-course", courseRef: "test-course",
@@ -54,6 +62,7 @@ beforeEach(() => {
 afterEach(() => db.close());
 
 describe("closed paid test admission", () => {
+  beforeEach(() => { accountConsent(); accountConsent("other"); });
   it("preserves disabled defaults; a bare canary env flip cannot enable Refref", () => {
     expect(loadCommerceRuntimeConfig({ DEPLOY_ENV: "production", MERCHANT_PROMOTION_PREFIX: "FX-" }).paymentMode).toBe("disabled");
     expect(() => loadCommerceRuntimeConfig({ ...env, CLOSED_PAID_TEST_PROFILE: undefined })).toThrow("CLOSED_PAID_TEST_PROFILE_REQUIRED");
@@ -162,5 +171,86 @@ try:m.assert_payment_environment(env,'commerce',None);raise RuntimeError('bare f
 except ValueError:pass
 print('PASS')`;
     expect(execFileSync("python3", ["-c", code], { input: JSON.stringify({ ...env, REFUND_ENVELOPE_KEYS: "synthetic", REFUND_ENVELOPE_CURRENT_KEY: "key" }), encoding: "utf8" }).trim()).toBe("PASS");
+  });
+});
+
+describe("closed paid account consent gate", () => {
+  it("refuses missing choices without resolving upstream, and never manufactures consent", async () => {
+    const resolve = vi.spyOn(rail, "resolve");
+    await expect(preview()).rejects.toThrow("CONSENT_REQUIRED");
+    expect(resolve).not.toHaveBeenCalled();
+    for (const table of ["checkout_quotes", "orders", "checkout_attempts", "authenticated_consent_actions"]) {
+      expect(db.prepare(`SELECT count(*) n FROM ${table}`).get()).toEqual({ n: 0 });
+    }
+    accountConsent();
+    expect(await preview()).toMatchObject({ finalAmountKopecks: 100 });
+    expect(authenticatedConsentStatus(db, "buyer", "COURSES").choices.marketing_consent).toBe(false);
+  });
+  it.each(["foreign-customer", "foreign-storefront", "previous-release"])("rejects %s evidence", async condition => {
+    let currentConfig = config;
+    if (condition === "foreign-customer") accountConsent("other");
+    if (condition === "foreign-storefront") {
+      activateLegalRelease(db, { storefront: "LAB", version: "synthetic-lab", manifest: stageBLegalManifest, actor: "fixture" });
+      accountConsent("buyer", "LAB");
+    }
+    if (condition === "previous-release") {
+      accountConsent();
+      activateLegalRelease(db, { storefront: "COURSES", version: "synthetic-final-v2", manifest: stageBLegalManifest, actor: "fixture" });
+      currentConfig = { ...config, closedPaidTest: { ...config.closedPaidTest!, legalVersion: "synthetic-final-v2" } };
+    }
+    const resolve = vi.spyOn(rail, "resolve");
+    await expect(prepareCheckout(db, rail, currentConfig, input)).rejects.toThrow("CONSENT_REQUIRED"); expect(resolve).not.toHaveBeenCalled();
+  });
+  it.each(["preview-replay", "confirm", "confirm-replay"])("rechecks account verification at %s", async phase => {
+    accountConsent(); const quote = await preview();
+    if (quote.state !== "PRICE_REVIEW_REQUIRED") throw new Error("expected review");
+    if (phase === "confirm-replay") await confirm(accept);
+    db.exec('UPDATE "user" SET email_verified=0 WHERE id=\'buyer-user\'');
+    const resolve = vi.spyOn(rail, "resolve"), create = vi.spyOn(rail, "create"), reconcile = vi.spyOn(rail, "reconcile");
+    await expect(phase === "preview-replay" ? preview() : confirmCheckout(db, rail, config, {
+      ...input, quoteId: quote.quoteId, idempotencyKey: "pay", legalAcceptance: accept,
+    })).rejects.toThrow("CONSENT_REQUIRED");
+    expect(resolve).not.toHaveBeenCalled(); expect(create).not.toHaveBeenCalled(); expect(reconcile).not.toHaveBeenCalled();
+    expect(db.prepare("SELECT count(*) n FROM orders").get()).toEqual({ n: phase === "confirm-replay" ? 1 : 0 });
+  });
+  it("rejects legal drift even after consenting to the changed release", async () => {
+    activateLegalRelease(db, { storefront: "COURSES", version: "changed-final", manifest: stageBLegalManifest, actor: "fixture" });
+    accountConsent(); const resolve = vi.spyOn(rail, "resolve");
+    await expect(preview()).rejects.toThrow("CLOSED_PAID_TEST_LEGAL_RELEASE_REFUSED"); expect(resolve).not.toHaveBeenCalled();
+  });
+  it("requires fresh consent when final document bytes change, even if the release version is reused", async () => {
+    accountConsent();
+    const changed = { ...stageBLegalManifest, documents: stageBLegalManifest.documents.map(document => document.kind === "personal_data"
+      ? { ...document, sha256: "d".repeat(64) } : document) };
+    db.prepare("UPDATE legal_releases SET manifest_json=? WHERE active=1").run(JSON.stringify(changed));
+    const currentConfig = { ...config, closedPaidTest: { ...config.closedPaidTest!, legalManifestSha256: legalManifestHash(changed) } };
+    const resolve = vi.spyOn(rail, "resolve");
+    await expect(prepareCheckout(db, rail, currentConfig, input)).rejects.toThrow("CONSENT_REQUIRED");
+    expect(resolve).not.toHaveBeenCalled();
+  });
+  it("rechecks choices after an asynchronous quote resolution", async () => {
+    accountConsent(); const original = rail.resolve.bind(rail);
+    vi.spyOn(rail, "resolve").mockImplementation(async request => {
+      const result = await original(request); db.exec('UPDATE "user" SET email_verified=0'); return result;
+    });
+    await expect(preview()).rejects.toThrow("CONSENT_REQUIRED");
+    expect(db.prepare("SELECT count(*) n FROM checkout_quotes").get()).toEqual({ n: 0 });
+  });
+  it("returns 403/no-store at handoff, preview and confirm using session identity, ignoring forged choices", async () => {
+    accountConsent("other");
+    const app = createCommerceV2App({ db, config, serviceToken: "synthetic", sourceCommit: "a".repeat(40), paymentRail: rail,
+      authenticateCustomer: async () => "buyer" });
+    const state = issueCheckoutHandoffState(env.REFREF_HANDOFF_STATE_SECRET,
+      { customerId: "buyer", returnPath: "/courses/test-course", storefront: "COURSES" }).token;
+    const resolve = vi.spyOn(rail, "resolve"), create = vi.spyOn(rail, "create");
+    for (const path of ["/v1/checkout/handoff", "/v1/checkout/preview", "/v1/checkout"]) {
+      const result = await app.request(path, { method: "POST", headers: { "content-type": "application/json", "idempotency-key": "synthetic-request" },
+        body: JSON.stringify({ storefront: "COURSES", returnPath: "/courses/test-course", offerRef: input.offerRef, quoteId: "synthetic-quote", state,
+          customerId: "other", personalDataConsent: true, accountTermsAccepted: true, legalAcceptance: accept }) });
+      expect(result.status).toBe(403); expect(result.headers.get("cache-control")).toBe("no-store");
+      expect(await result.json()).toEqual({ code: "CONSENT_REQUIRED" });
+    }
+    expect(resolve).not.toHaveBeenCalled(); expect(create).not.toHaveBeenCalled();
+    expect(db.prepare("SELECT customer_id FROM authenticated_consent_actions").all()).toEqual([{ customer_id: "other" }]);
   });
 });

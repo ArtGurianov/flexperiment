@@ -10,7 +10,7 @@ import type { RefundEnvelope } from "./refund-envelope";
 import { assertMerchantPromotionStillApplicable, resolveCheckoutCode, type MerchantPromotionSnapshot } from "./promotions";
 import { assertLiveOfferSaleMode } from "./catalog-control";
 import type { CommerceRuntimeConfig } from "./payment-mode";
-import { assertClosedPaidTestFiscal, assertClosedPaidTestOffer, assertClosedPaidTestPrice, buyerEmailSha256 } from "./closed-paid-test";
+import { assertClosedPaidTestAccountConsents, assertClosedPaidTestFiscal, assertClosedPaidTestOffer, assertClosedPaidTestPrice, buyerEmailSha256 } from "./closed-paid-test";
 
 /** The runtime facts checkout re-evaluates on every preview and confirm. */
 export type CheckoutPolicyConfig = Pick<CommerceRuntimeConfig, "deployEnvironment" | "paymentMode" | "merchantPromotionPrefix" | "closedPaidTest">;
@@ -406,6 +406,7 @@ export async function prepareCheckout(
   if (config.closedPaidTest && input.checkoutCode?.trim()) throw new Error("CLOSED_PAID_TEST_PRICE_REFUSED");
   // This is review data, not an acceptance event. A later explicit confirm writes the event.
   const review = paidTestReview(db, config, input.customerEmail);
+  assertClosedPaidTestAccountConsents(db, config, input.customerId);
   const respond = (...args: Parameters<typeof quoteResponse>) => ({ ...quoteResponse(...args), ...(review ? { legalAcceptance: review } : {}) });
   const checkoutCodeInput = input.checkoutCode?.trim() || null;
   const existing = db.prepare(`SELECT id,customer_id,offer_id,expires_at,rail_quote_json,catalog_amount_kopecks,
@@ -464,6 +465,7 @@ export async function prepareCheckout(
     handoffToken: input.handoffToken,
     checkoutCode: codeResolution.refrefCheckoutCode,
   });
+  assertClosedPaidTestAccountConsents(db, config, input.customerId);
   if (resolved.state === "CUSTOMER_ACTION_REQUIRED") return { ...resolved, orderPublicId };
   assertClosedPaidTestPrice(config, resolved.quote, merchantDiscountKopecks);
   if (resolved.quote.baseAmountKopecks !== merchantOfferAmountKopecks
@@ -505,6 +507,7 @@ export async function confirmCheckout(
   now = new Date().toISOString(),
 ) {
   if (!input.idempotencyKey.trim()) throw new Error("IDEMPOTENCY_KEY_REQUIRED");
+  assertClosedPaidTestAccountConsents(db, config, input.customerId);
   const existing = db.prepare(`SELECT attempt.idempotency_key,orders.public_id,orders.customer_id FROM checkout_attempts attempt
     JOIN orders ON orders.id=attempt.order_id WHERE attempt.idempotency_key=?`).get(input.idempotencyKey) as { idempotency_key: string; public_id: string; customer_id: string } | undefined;
   if (existing) {
@@ -598,6 +601,7 @@ export async function confirmCheckout(
     successUrl: input.successUrl,
   };
   const create = db.transaction(() => {
+    assertClosedPaidTestAccountConsents(db, config, input.customerId);
     assertNoOtherPaidTestOrder(db, config, offer.offer_ref);
     if (review) {
       // Re-read under the same write transaction as order creation; no backfilled UI event.

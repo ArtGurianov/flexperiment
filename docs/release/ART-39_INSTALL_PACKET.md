@@ -2,6 +2,17 @@
 
 **REVIEW PACKET / INSTALLATION HOLD / MONEY HOLD.**16October2026. This updates the current closed canary; it does not reopen ART-338, run the old ART-338 qualification matrix or authorize production/public sales. The owner-approved engineering scope includes preparing these artifacts. Final legal approval, admitted exact runtime and a separate owner1₽ GO remain necessary.
 
+## Superseding consent-guard preparation
+
+PR239 documentation merged as `6e48e22a7a6c958ca7deb77d665726b522a382ee`,
+without deployment. The [config delta review](ART-39_CONFIG_DELTA_REVIEW.md)
+and [new legal review package](../legal/closed-paid-test/2026-10-16-review-2/README.md)
+supersede the consent/manual-only proposal for a future installation. The image
+pair below remains a historical prepared baseline: **neither image contains the
+new server guard or its UI recovery link**. New exact-source CI and role digests
+are required before installing that repair. Do not edit the sealed a548774 receipt
+or call its old image vector guard-qualified. All installation/money HOLDs remain.
+
 ## Merged source and immutable candidate artifacts
 
 The owner authorized merge **without deployment**. Flexperiment238 merged as
