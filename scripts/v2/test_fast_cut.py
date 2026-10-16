@@ -1,4 +1,6 @@
 import copy
+import contextlib
+import io
 import importlib.util
 import json
 from pathlib import Path
@@ -297,5 +299,64 @@ class FastCut(unittest.TestCase):
                 proof['filename']='canary-'+f.SOURCE+'-'+str(uuid.uuid4())+'.sqlite.age'
                 with self.assertRaisesRegex(ValueError,'BACKUP_IDENTITY'):f.backup()
                 self.assertEqual(transport.s3.call_count,2)
+
+    def test_cli_failure_report_never_reflects_error_commands_or_unknown_codes(self):
+        secret='synthetic-private-value@example.invalid/token'
+        class HostileError(Exception):
+            def __str__(self):raise AssertionError('ERROR_MUST_NOT_BE_STRINGIFIED')
+        errors=[(f.GuardRefusal('FAST_CUT_FENCE'),'GUARD_REFUSED','FAST_CUT_FENCE'),
+                (f.GuardRefusal('FAST_CUT_'+secret),'UNKNOWN',None),
+                (ValueError('FAST_CUT_FENCE '+secret),'UNKNOWN',None),
+                (subprocess.TimeoutExpired(['curl',secret],9,output=secret.encode()),'TIMEOUT',None),
+                (PermissionError(secret),'PERMISSION',None),(FileNotFoundError(secret),'MISSING_FILE',None),
+                (json.JSONDecodeError(secret,secret,0),'INVALID_JSON',None),(HostileError(),'UNKNOWN',None)]
+        for error,reason,code in errors:
+            with self.subTest(reason=reason,code=code):
+                def refuse():
+                    f.mark_stage('remote_ledger')
+                    raise error
+                output=io.StringIO()
+                with patch.object(f,'check',side_effect=refuse),contextlib.redirect_stdout(output):
+                    self.assertEqual(f.main(['check']),1)
+                raw=output.getvalue();self.assertNotIn(secret,raw)
+                result=json.loads(raw)
+                self.assertEqual(result['state'],'FAST_CUT_HOLD');self.assertEqual(result['operation'],'check')
+                self.assertEqual(result['stage'],'remote_ledger');self.assertEqual(result['reason'],reason)
+                self.assertEqual(result.get('code'),code);self.assertGreaterEqual(result['elapsedMs'],0)
+                self.assertRegex(result['observedAt'],r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$')
+
+    def test_failed_backup_stage_is_kept_without_retries_or_success_overwrite(self):
+        vector=f.validate_release(self.commerce_candidate());target=vector['commerce']['sourceCommit']
+        body=b'encrypted archive fixture';import hashlib
+        proof={'filename':'canary-'+target+'-'+str(uuid.uuid4())+'.sqlite.age',
+               'sha256':hashlib.sha256(body).hexdigest(),'size':len(body)}
+        for stage in ['fence','snapshot','remote_upload','remote_readback']:
+            with self.subTest(stage=stage),tempfile.TemporaryDirectory() as d:
+                backups=Path(d);previous=b'{"status":"SUCCESS","historic":"keep exact bytes"}'
+                (backups/'status.json').write_bytes(previous);transport=Mock();commands=[]
+                def admission():
+                    if stage=='fence':
+                        f.mark_stage('fence');raise f.GuardRefusal('FAST_CUT_FENCE')
+                def command(args,**kwargs):
+                    commands.append(args[1])
+                    if args[1]=='exec':
+                        if stage=='snapshot':raise subprocess.TimeoutExpired(['SECRET'],900)
+                        return json.dumps(proof).encode()
+                    Path(args[-1]).write_bytes(body);return b''
+                if stage=='remote_upload':transport.s3.side_effect=ValueError('SECRET_PROVIDER_BODY')
+                else:transport.s3.side_effect=[b'',b'0'*64+b' archive']
+                output=io.StringIO()
+                with patch.object(f,'release',return_value=vector),patch.object(f,'check',side_effect=admission), \
+                     patch.object(f,'inspect',return_value=('commerce',{})),patch.object(f,'run',side_effect=command), \
+                     patch.object(f,'BACKUPS',backups),patch.object(f,'transport',return_value=transport), \
+                     patch.object(f.os,'chown'),patch.object(f,'private',side_effect=lambda p:p.read_bytes()), \
+                     contextlib.redirect_stdout(output):
+                    self.assertEqual(f.main(['backup']),1)
+                raw=output.getvalue();self.assertNotIn('SECRET',raw);report=json.loads(raw)
+                self.assertEqual(report['stage'],stage)
+                self.assertEqual((backups/'status.json').read_bytes(),previous)
+                self.assertEqual(transport.s3.call_count,0 if stage in ['fence','snapshot'] else 1 if stage=='remote_upload' else 2)
+                self.assertEqual(commands,[] if stage=='fence' else ['exec'] if stage=='snapshot' else ['exec','cp'])
+                if stage=='remote_readback':self.assertEqual(report['code'],'FAST_CUT_REMOTE_BACKUP_HASH')
 
 if __name__=='__main__':unittest.main()
