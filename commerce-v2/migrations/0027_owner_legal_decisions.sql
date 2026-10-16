@@ -71,3 +71,8 @@ WHEN NEW.status='QUALIFIED' AND NOT EXISTS (
 )
 BEGIN SELECT RAISE(ABORT,'FISCAL_POLICY_LEGAL_BASIS_REQUIRED'); END;
 
+
+-- Ready-content delivery evidence is separate from the commercial Refref hash.
+-- Existing order rows stay NULL; no invented historical delivery or backfill.
+ALTER TABLE order_lines ADD COLUMN immediate_access_json TEXT
+  CHECK (immediate_access_json IS NULL OR json_valid(immediate_access_json));

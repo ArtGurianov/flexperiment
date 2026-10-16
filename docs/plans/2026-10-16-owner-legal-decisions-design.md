@@ -58,3 +58,14 @@ cross-policy decisions, changed legal releases, immutability and audit writes.
 Run fiscal, checkout, closed-paid-profile, retention/restore tests and applicable
 CI. Bind any images/install receipts to the new exact merged source; previous
 source/image CI does not prove this change.
+
+## Owner's final clarification: ready-material full payment
+
+The subsequent owner decision fixes the main basis to initial access to already
+recorded, published materials, automatically activated after accepted payment;
+continuing availability and refund rights remain. Use one FULL_PAYMENT receipt,
+not a cash-basis exception for an unverified intermediary scenario. Recheck
+published material/video readiness before a payment session; freeze the provided
+material set outside Refref's commercial snapshot and retain activation/payment
+observations. Future/unpublished content must not enter this immediate-access
+path. This adds no second receipt and changes no approved customer document bytes.

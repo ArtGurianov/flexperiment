@@ -35,7 +35,7 @@ const refuse = (code: string): never => { throw new RetentionRefusal(code); };
 const supportedSchemaSha256 = new Set([
   "158654c61bd97be4dbcab4348651722fe105587f6ff202ad4db821512774e030",
   "c99f9ed0db449a2c13f2e51fa3b28a1ba44e367dd263185c99eddfec8c2d3b39",
-  "23023f46b86d75b7ed04225ea3b16917671f3abb56de114c3fe1a468e9043c44",
+  "b71a08d5f785b98516d4c2fbde8184d25bb91ce1b880d614d637be76876dd84f",
 ]);
 const parse = <T>(schema: z.ZodType<T>, value: unknown): T => {
   const result = schema.safeParse(value); return result.success ? result.data : refuse("RETENTION_POLICY_OR_HOLD_INVALID");

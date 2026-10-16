@@ -1,3 +1,4 @@
+import { readyImmediateCourseAccess, type ImmediateCourseAccess } from "./immediate-course-access";
 import { createHash, randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import { buildCheckoutSnapshot, canonicalCheckoutSnapshotJson, type CheckoutSnapshotConfig, type SharedCheckoutSnapshot } from "./checkout-snapshot";
@@ -262,6 +263,7 @@ type FrozenLineSnapshot = {
   readonly paymentPurpose: string;
   /** The offer's qualified fiscal policy when the quote was made; a different one makes the quote stale. */
   readonly fiscal: FrozenFiscalPolicy;
+  readonly immediateAccess?: ImmediateCourseAccess;
   readonly unitRef?: string;
   readonly serviceStartsAt?: string;
   readonly serviceEndsAt?: string;
@@ -284,7 +286,9 @@ const refrefInstant = (value: string) => {
 const freezeLine = (db: Database.Database, offer: OfferRow): FrozenLineSnapshot => {
   if (!validPaymentPurpose(offer.payment_purpose)) throw new Error("PAYMENT_PURPOSE_REQUIRED");
   const fiscal = qualifiedFiscalPolicy(db, offer.offer_ref, offer.kind);
-  if (offer.kind !== "LAB") return { fiscal, paymentPurpose: offer.payment_purpose };
+  if (offer.kind !== "LAB") return { fiscal, paymentPurpose: offer.payment_purpose,
+    ...(offer.kind === "ONLINE_COURSE" && fiscal.paymentMethod === "FULL_PAYMENT"
+      ? { immediateAccess: readyImmediateCourseAccess(db, offer.course_ref!) } : {}) };
   if (!offer.occurrence_ref || !offer.occurrence_title || !offer.occurrence_starts_at || !offer.occurrence_ends_at
     || !offer.occurrence_timezone || !offer.occurrence_city_id) throw new Error("LAB_OCCURRENCE_NOT_FOUND");
   const startsAt = refrefInstant(offer.occurrence_starts_at);
@@ -407,6 +411,7 @@ export async function prepareCheckout(
   // This is review data, not an acceptance event. A later explicit confirm writes the event.
   const review = paidTestReview(db, config, input.customerEmail);
   assertClosedPaidTestAccountConsents(db, config, input.customerId);
+  if (config.closedPaidTest) readyImmediateCourseAccess(db, offer.course_ref!);
   const respond = (...args: Parameters<typeof quoteResponse>) => ({ ...quoteResponse(...args), ...(review ? { legalAcceptance: review } : {}) });
   const checkoutCodeInput = input.checkoutCode?.trim() || null;
   const existing = db.prepare(`SELECT id,customer_id,offer_id,expires_at,rail_quote_json,catalog_amount_kopecks,
@@ -466,6 +471,9 @@ export async function prepareCheckout(
     checkoutCode: codeResolution.refrefCheckoutCode,
   });
   assertClosedPaidTestAccountConsents(db, config, input.customerId);
+  if (lineSnapshot.immediateAccess && JSON.stringify(readyImmediateCourseAccess(db, offer.course_ref!)) !== JSON.stringify(lineSnapshot.immediateAccess)) {
+    throw new Error("CHECKOUT_QUOTE_STALE");
+  }
   if (resolved.state === "CUSTOMER_ACTION_REQUIRED") return { ...resolved, orderPublicId };
   assertClosedPaidTestPrice(config, resolved.quote, merchantDiscountKopecks);
   if (resolved.quote.baseAmountKopecks !== merchantOfferAmountKopecks
@@ -602,6 +610,9 @@ export async function confirmCheckout(
   };
   const create = db.transaction(() => {
     assertClosedPaidTestAccountConsents(db, config, input.customerId);
+    if (frozenLine.immediateAccess && JSON.stringify(readyImmediateCourseAccess(db, offer.course_ref!)) !== JSON.stringify(frozenLine.immediateAccess)) {
+      throw new Error("CHECKOUT_QUOTE_STALE");
+    }
     assertNoOtherPaidTestOrder(db, config, offer.offer_ref);
     if (review) {
       // Re-read under the same write transaction as order creation; no backfilled UI event.
@@ -617,12 +628,13 @@ export async function confirmCheckout(
       VALUES (?,?,?,'PAYMENT_PENDING',?,?,?,?,?,?)`).run(orderId, publicId, input.customerId, pending.final_amount_kopecks, snapshotJson, snapshotHashHex, pending.legal_release_id, now, now);
     db.prepare(`INSERT INTO order_lines(id,order_id,product_id,offer_ref_snapshot,title_snapshot,unit_amount_kopecks,legal_terms_ref,created_at,
       catalog_amount_kopecks,merchant_discount_kopecks,merchant_amount_kopecks,merchant_promotion_snapshot_json,fiscal_item_json,
-      legal_release_ref,legal_release_hash,occurrence_snapshot_json,fiscal_policy_id)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      legal_release_ref,legal_release_hash,occurrence_snapshot_json,fiscal_policy_id,immediate_access_json)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
       pending.line_ref, orderId, offer.product_id, offer.offer_ref, offer.product_ref, pending.final_amount_kopecks, pending.legal_version, now,
       pending.catalog_amount_kopecks, pending.merchant_discount_kopecks, pending.base_amount_kopecks,
       pending.merchant_promotion_snapshot_json, JSON.stringify(fiscalItem), pending.legal_version, legalReleaseHash,
       frozenLine.occurrence ? JSON.stringify(frozenLine.occurrence) : null, frozenLine.fiscal.policyId,
+      frozenLine.immediateAccess ? JSON.stringify(frozenLine.immediateAccess) : null,
     );
     db.prepare(`INSERT INTO checkout_attempts(id,order_id,idempotency_key,request_payload_json,state,created_at,updated_at)
       VALUES (?,?,?,?,'CREATING',?,?)`).run(attemptId, orderId, input.idempotencyKey, JSON.stringify(railInput), now, now);
@@ -681,11 +693,11 @@ async function applyRailProjection(db: Database.Database, rail: PaymentRail, ord
   let projection = observed;
   const context = db.prepare(`SELECT orders.id AS order_id,orders.customer_id,line.id AS line_id,product.kind,product.course_ref,
     orders.snapshot_hash,orders.total_kopecks,json_extract(orders.checkout_snapshot_json,'$.schema') AS snapshot_schema,
-    attempt.id AS attempt_id,attempt.idempotency_key,attempt.fulfillment_acknowledged_at FROM orders JOIN order_lines line ON line.order_id=orders.id JOIN products product ON product.id=line.product_id
+    attempt.id AS attempt_id,attempt.idempotency_key,attempt.fulfillment_acknowledged_at,line.immediate_access_json FROM orders JOIN order_lines line ON line.order_id=orders.id JOIN products product ON product.id=line.product_id
     JOIN checkout_attempts attempt ON attempt.order_id=orders.id WHERE orders.public_id=?`).get(orderPublicId) as {
       order_id: string; customer_id: string; line_id: string; kind: "ONLINE_COURSE" | "COURSE_BUNDLE" | "LAB";
       course_ref: string | null; snapshot_hash: string; total_kopecks: number; snapshot_schema: string | null;
-      attempt_id: string; idempotency_key: string; fulfillment_acknowledged_at: string | null;
+      attempt_id: string; idempotency_key: string; fulfillment_acknowledged_at: string | null; immediate_access_json: string | null;
     } | undefined;
   if (!context) throw new Error("ORDER_NOT_FOUND");
   if ((context.snapshot_schema === "refref.shared-checkout-snapshot/1" || context.snapshot_schema === "refref.shared-checkout-snapshot/2")
@@ -701,9 +713,15 @@ async function applyRailProjection(db: Database.Database, rail: PaymentRail, ord
       .run(attemptState(projection.state), projection.attemptId, projection.resolutionId ?? null, projection.snapshotHash ?? null,
         projection.checkoutUrl ?? null, JSON.stringify(projection), now, now, context.attempt_id);
     if (projection.state === "PAID") {
+      const alreadyActivated = db.prepare("SELECT 1 FROM course_entitlements WHERE source_order_line_id=?").get(context.line_id);
+      const activationAt = context.immediate_access_json ? new Date().toISOString() : now;
       db.prepare("UPDATE orders SET state='FULFILLED',updated_at=? WHERE id=?").run(now, context.order_id);
-      if (context.kind === "ONLINE_COURSE") grantEntitlement(db, { customerId: context.customer_id, scope: "COURSE", courseRef: context.course_ref!, sourceOrderLineId: context.line_id }, now);
-      if (context.kind === "COURSE_BUNDLE") grantEntitlement(db, { customerId: context.customer_id, scope: "ALL_COURSES", sourceOrderLineId: context.line_id }, now);
+      if (context.kind === "ONLINE_COURSE") grantEntitlement(db, { customerId: context.customer_id, scope: "COURSE", courseRef: context.course_ref!, sourceOrderLineId: context.line_id }, activationAt);
+      if (context.kind === "COURSE_BUNDLE") grantEntitlement(db, { customerId: context.customer_id, scope: "ALL_COURSES", sourceOrderLineId: context.line_id }, activationAt);
+      if (context.immediate_access_json && !alreadyActivated) db.prepare(`INSERT INTO audit_log(id,actor,action,subject_type,subject_ref,evidence_json,created_at)
+        VALUES (?, 'PAYMENT_RECONCILIATION','IMMEDIATE_ACCESS_ACTIVATED','ORDER',?,?,?)`).run(randomUUID(), orderPublicId,
+          JSON.stringify({ paymentState: projection.state, paymentAmountKopecks: projection.paymentAmountKopecks,
+            paymentObservedAt: activationAt, accessActivatedAt: activationAt, materialSet: JSON.parse(context.immediate_access_json) }), activationAt);
     } else if (projection.state === "EXPIRED") db.prepare("UPDATE orders SET state='EXPIRED',updated_at=? WHERE id=?").run(now, context.order_id);
     else if (projection.state === "DECLINED") db.prepare("UPDATE orders SET state='CANCELLED',updated_at=? WHERE id=?").run(now, context.order_id);
     else if (projection.state === "REFUND_PENDING") {

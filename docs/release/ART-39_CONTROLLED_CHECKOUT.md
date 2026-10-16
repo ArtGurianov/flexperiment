@@ -69,10 +69,10 @@ Current execution supersedes earlier preparation: exact manifest replay READY; o
 
 Mandatory external counsel/counselRef is superseded by
 [versioned owner legal evidence](../legal/OWNER_LEGAL_DECISIONS.md). Existing
-qualified history and exact review.3 bytes remain intact. The remaining
-[fiscal issue](../legal/ART-234_FULL_PAYMENT_RESEARCH.md) is the applicability of
-one FULL_PAYMENT receipt for platform access in the actual CIB arrangement,
-not absence of an external specialist. The owner explicitly authorizes one
+qualified history and exact review.3 bytes remain intact. The final
+[owner fiscal position](../legal/ART-234_FULL_PAYMENT_RESEARCH.md) selects one
+FULL_PAYMENT receipt for ready recorded access, automatically activated after
+accepted payment. Ready-content and exact-source installation admission remain. The owner explicitly authorizes one
 receipt only. No new live decision, qualification, install or payment is implied
 by this source change; existing autonomous installation authority remains and
 MONEY HOLD continues. Earlier gaps/receipts above retain their historical dates.

@@ -1,6 +1,6 @@
 # ART-234 — one FULL_PAYMENT receipt: evidence and remaining fact
 
-Research date: 16 October 2026. **Not a fiscal qualification or payment GO.**
+Research date: 16 October 2026. **OWNER MODEL APPROVED / TECHNICAL ADMISSION PENDING / MONEY HOLD.**
 The owner approves the informational-access model and explicitly requires a
 single FULL_PAYMENT receipt for platform access. No second closing-receipt
 implementation is authorized. Mandatory external counsel approval is abolished;
@@ -29,8 +29,10 @@ back; Commerce validates amount and snapshot hash; a SQLite transaction marks
 the order FULFILLED and grants entitlement; Refref fulfillment acknowledgment
 follows. Payment and grant are not one atomic operation. An acknowledgment is
 not itself a closing fiscal receipt. Network failure, erasure fence or a stopped
-Commerce process can defer the grant. There is no source-level proof that
-access is provided before the provider's initial receipt.
+Commerce process can defer the grant. This is not proof that access always precedes receipt emission. The owner's
+subsequent decision treats initial automatic activation after accepted payment
+as the initial provision of a ready-access service; it does not require an
+impossible distributed database/bank transaction or claim immunity from outages.
 
 ## Actual provider evidence
 
@@ -67,24 +69,46 @@ or applicability to this informational-access service. The Cheki user-guide PDF
 was also found on docs.tochka.com, but direct retrieval failed TLS chain
 verification; verification was not disabled and its contents are not evidence.
 
-## Decision boundary and next executable step
+## Subsequent final owner decision and admission
 
-**ONE_RECEIPT_FULL_PAYMENT_APPLICABILITY_NOT_ESTABLISHED.** This is not a claim
-that all Cheki digital-access sales are unlawful. The present evidence does not
-establish why the one-cheque rule covers CIB's own KKT and the documented delayed
-entitlement sequence. Owner confirmation of the desired value is real, but is
-not replaced with a fabricated normative exception or a fabricated provider fact.
+The owner supplied a final dated position: initial access to already recorded
+informational materials is the service; activate it automatically after accepted
+payment and retain continuing availability/refund obligations. This supersedes
+the earlier proposed provider-fact HOLD as the main qualification path. No
+external specialist opinion is required. It is a real owner legal position,
+not an independent opinion or a statement made by the bank.
 
-The narrow missing fact is a documented account of CIB's settlement role and the
-basis/timing of its single full-payment receipt for platform access granted
-after PAID. A public applicable provider document or an existing written provider
-explanation can supply facts; no external legal opinion is mandatory. The owner
-then approves a versioned decision tied to the actual model and exact documents.
-No repeated fee approval, new OFD login or per-video specialist review is needed.
+The additional [FNS letter 06.10.2023 AB-4-20/12817@](https://www.consultant.ru/document/cons_doc_LAW_460674/)
+was independently read: its final paragraphs explain cash-basis treatment of
+full prepayment. The document's subject is restaurant KKT checks; it is not an
+individual ruling for Flexperiment or a verified exception for this CIB agency
+arrangement. The selected primary basis is actual initial ready access, not
+extension of the cash-basis exception to an unverified intermediary scenario.
 
-If the only available supported scheme requires a second receipt, it conflicts
-with the owner's current scope: keep this operation closed and report that
-capability conflict. Do not implement it, invent a right already delivered,
-relabel another sale, switch fiscalization providers or collect money to test it.
-The prepared software and CI can proceed independently. The new runtime,
-qualified live fiscal policy, real buyer preview and payment are not claimed.
+Execution conditions for the owner-backed FULL_PAYMENT online-course path:
+
+- An actual published projection, all non-withdrawn promised lessons previously
+  published, active bindings to provider-confirmed READY videos of positive
+  duration. No sale of a future course/video through this path.
+- Freeze the material set/version/content hash on the quote and order line,
+  separately from Refref's commercial snapshot. Drift makes a quote stale;
+  recheck inside order creation before a payment session exists.
+- Verified matching PAID, FULFILLED state, entitlement and first activation audit
+  are committed together; replay does not duplicate access or audit. The event
+  records the application's observation/activation time, not an invented bank
+  settlement timestamp. The original provider projection is retained as well.
+- An interruption or failed grant remains a reconciliation/support/refund case;
+  do not claim fictitious access or manufacture fiscal success. Existing receipt
+  read-back/refund evidence still has to be collected during the authorized
+  money run. Watching lessons is not a prerequisite for initial performance.
+
+Approved review.3 already states activation after payment is accepted by
+Commerce and continuing personal access until lawful termination. Its price,
+receipt name, refund and exact published bytes are preserved. No replacement
+with a different course name from the illustrative owner explanation occurs.
+
+The new owner decision/evidence can support a real qualification after exact
+source CI, images, fresh backup/restore, migration and ready-content read-back.
+No actual production decision or qualification is claimed by this source PR.
+A second closing receipt remains outside the owner's chosen scope. Separate
+financial GO is still required; installation authority remains autonomous.

@@ -122,13 +122,13 @@ describe("OwnerLegalDecision authority without an external counsel dependency", 
     migrateV2(db);
     expect(db.prepare("SELECT * FROM fiscal_policy_versions").all()).toEqual(before);
     expect(db.prepare("SELECT * FROM orders").all()).toEqual(frozenOrder);
-    expect(db.prepare("SELECT * FROM order_lines").all()).toEqual(frozenLine);
+    expect(db.prepare("SELECT * FROM order_lines").all()).toEqual(frozenLine.map(row => ({ ...(row as Record<string, unknown>), immediate_access_json: null })));
     expect(qualifiedFiscalPolicy(db, "course:one", "ONLINE_COURSE").policyId).toBe(policyId);
     expect(db.prepare("SELECT count(*) n FROM owner_legal_decisions").get()).toEqual({ n: 0 });
     retireFiscalPolicy(db, { policyId, actor: "owner" }, now);
     expect((db.prepare("SELECT legal_basis_json FROM fiscal_policy_versions WHERE id=?").get(policyId) as { legal_basis_json: string }).legal_basis_json).toBe(raw);
     expect(db.prepare("SELECT count(*) n FROM schema_migrations").get()).toEqual({ n: 27 });
     const hash = createHash("sha256").update(JSON.stringify(db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").all())).digest("hex");
-    expect(hash).toBe("23023f46b86d75b7ed04225ea3b16917671f3abb56de114c3fe1a468e9043c44");
+    expect(hash).toBe("b71a08d5f785b98516d4c2fbde8184d25bb91ce1b880d614d637be76876dd84f");
   });
 });

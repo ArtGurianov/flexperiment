@@ -40,15 +40,17 @@ mandatory. Publication/consent, scoped sales, provider and fiscal gates remain.
 
 ## Privacy and recovery
 
-New evidence is retained merchant/legal data, with no customer FK or runtime
-credential. Avoid customer data, secrets or receipt coordinates in narratives.
+New decisions are retained merchant/legal data, with no customer FK or runtime
+credential. The added order-line material snapshot is retained financial evidence;
+legacy order lines remain NULL, with no fabricated delivery history. Avoid customer data, secrets or receipt coordinates in narratives.
 Possible subject mentions still block automatic erasure and preserve unbound
 profiles for review. Restore/retention admit the exact reviewed 0027 fingerprint
 alongside the unchanged 0025/0026 fingerprints; arbitrary DDL remains refused.
 The independent erasure ledger/fence schema and authority do not change.
 
-The installed fast-cut controller remains pinned to its 0026 source. A future
-0027 install needs its own controller/source/image admission, fresh encrypted
+The installed fast-cut controller remains pinned to its 0026 source. This source
+contains a separately reviewed 0027 controller; a future install needs exact
+controller/source/image admission, fresh encrypted
 backup and isolated migration/restore proof; a green test is not that proof.
 
 ## Owner decisions already supplied
@@ -67,7 +69,9 @@ closing receipt. Do not replace these facts with an invented specialist opinion,
 change the payment amount or silently qualify an unsupported fiscal flow.
 
 [Settlement investigation](ART-234_FULL_PAYMENT_RESEARCH.md) separates this
-owner choice from the unresolved applicability of the actual CIB arrangement.
+owner choice from the approved ready-access model from the unclaimed cash-basis exception for intermediaries.
+The final owner clarification approves FULL_PAYMENT for ready recorded access
+with automatic activation and retained payment/material/activation evidence.
 The previously sealed specialist brief is superseded as a mandatory dependency;
 it remains historical evidence. Approved review.3 customer bytes are unchanged.
 AUTONOMOUS INSTALLATION GO remains; MONEY HOLD remains.
