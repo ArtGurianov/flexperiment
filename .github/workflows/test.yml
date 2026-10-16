@@ -24,6 +24,8 @@ jobs:
           ref: ${{ env.CI_SOURCE_SHA }}
       - name: Assert exact CI source checkout
         run: test "$(git rev-parse HEAD)" = "$CI_SOURCE_SHA"
+      - name: Static LAB V1 retirement boundary and route isolation
+        run: python3 -B -m unittest discover -s deploy/host/lab-v1-retired -p 'test_*.py'
       - uses: pnpm/action-setup@v4
         with:
           version: 10.29.3

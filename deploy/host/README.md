@@ -2,7 +2,11 @@
 
 ## `flexperiment-recovery-backup`
 
-Installed as `/usr/local/sbin/flexperiment-recovery-backup` (root, 0750). `flexperiment-recovery-backup.timer` runs it daily at 21:15 UTC.
+Historical V1-only tool, installed as `/usr/local/sbin/flexperiment-recovery-backup`
+(root,0750). Its timer was disabled on16October2026 after verified final archive
+custody and LAB V1 shutdown. It requires a running old Commerce container; do
+not restart V1 to make this retired job pass. Existing archives/configuration
+are preserved. See [the retirement boundary](lab-v1-retired/README.md).
 
 What it does:
 - Reads the running Commerce container's recovery variables (`COMMERCE_*`, `TOCHKA_*`, `UNISENDER_*`, `YANDEX_*`, `SOURCE_COMMIT`).
@@ -19,7 +23,8 @@ Test, with no cloud.ru (S3 is replaced by a local directory through the same rcl
 bash deploy/test-recovery-backup.sh
 ```
 
-Install or update, as root on the host, keeping the previous version for rollback:
+Historical installation procedure, retained for forensic reference. It is not
+current activation authority:
 
 ```bash
 cp -p /usr/local/sbin/flexperiment-recovery-backup /usr/local/sbin/flexperiment-recovery-backup.prev

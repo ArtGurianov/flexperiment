@@ -20,6 +20,15 @@ stay true for that lineage and keep binding v1 while it runs frozen, until the
 cutover removes it. Flexperiment v2 does not continue that lineage; see
 [v1 is retired by replacement, not by reset](#v1-is-retired-by-replacement-not-by-reset).
 
+**Current operational state, 16 October 2026:** LAB V1 is physically stopped;
+legacy public ingress returns static410. The old release mechanisms below are
+historical lineage constraints, not permission to restart it. Original data,
+keys and financial evidence have independently restored encrypted custody.
+[Retirement evidence](../evidence/2026-10-16-lab-v1-retirement/README.md) and the
+[host runbook](../../deploy/host/lab-v1-retired/README.md) govern that boundary.
+Any V1 reactivation or new historical financial operation requires fresh owner
+authority. This shutdown does not publish V2 or open F9.
+
 ## Authority and observation are different things
 
 The single distinction everything else rests on:
