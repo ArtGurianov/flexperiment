@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { admitRelease, deployFoundation, deployNormalCanary, normalCanaryOrigins, validateApp, validateCheckout, verifyRuntime,
+import { admitRelease, deployFoundation, deployNormalCanary, deployRequalifiedCanary, normalCanaryOrigins, validateApp, validateCheckout, validateRequalificationController, verifyRuntime,
   erasureCanaryEnvironment, erasureCanaryMounts } from "../../scripts/v2/deployment.mjs";
 import { readFileSync } from "node:fs";
 import { parse } from "yaml";
@@ -92,6 +92,78 @@ function erasureFixture() {
   return {...f, io: {...f.io, erasureAdmission: vi.fn(async () => ({qualified: true, sourceCommit: sha})),
     stopCanary: vi.fn(async () => {}), assertNoWriters: vi.fn(async () => ({exclusive: true}))}};
 }
+
+describe("ART-337 stopped requalified canary resume", () => {
+  const target = "08523bdf38eeddf5e745ce04d05e1f980a7ced93";
+  const predecessor = "84b1a6abcb43e9abf8f781e830f84822207c0dca";
+  it("requires a separately pinned clean controller checkout without changing target authority", () => {
+    const controller = "d".repeat(40);
+    const origin = "git@github.com:ArtGurianov/flexperiment.git";
+    expect(() => validateRequalificationController(target, controller, controller, "", origin)).not.toThrow();
+    expect(() => validateRequalificationController(target, target, target, "", origin)).toThrow("V2_REQUALIFIED_CONTROLLER_SOURCE_REFUSED");
+    expect(() => validateRequalificationController(target, controller, controller, "modified", origin)).toThrow("V2_CONTROLLER_CHECKOUT_DIFFERS");
+  });
+  function preparedFixture() {
+    const f = erasureFixture();
+    f.apps.canary.git_commit_sha = predecessor;
+    f.env.canary.find(row => row.key === "SOURCE_COMMIT")!.value = predecessor;
+    f.checks.forEach(check => { check.head_sha = target; });
+    f.io.github.mockImplementation(async path => path === "/commits/main" ? { sha: target } : { check_runs: f.checks });
+    const original = f.io.waitRuntime.getMockImplementation()!;
+    f.io.waitRuntime.mockImplementation(async name => {
+      const result = await original(name);
+      result.identity.sourceCommit = target; result.baked.sourceCommit = target; result.ready.sourceCommit = target;
+      return result;
+    });
+    return { ...f, io: { ...f.io, requalifiedAdmission: vi.fn(async () => ({ qualified: true, sourceCommit: target,
+      predecessorSourceCommit: predecessor, stoppedReplacement: true,
+      backup: { sha256: "c".repeat(64), size: 100, evidenceSha256: "d".repeat(64) } })) } };
+  }
+  it("starts only the exact stopped target using preserved read-back backup evidence", async () => {
+    const { io } = preparedFixture();
+    expect((await deployRequalifiedCanary(target, io)).canary).toMatchObject({ mode: "requalified-canary", erasure: "QUALIFIED" });
+    expect(io.backupRuntime).not.toHaveBeenCalled(); expect(io.archiveBackup).not.toHaveBeenCalled();
+    expect(io.stopCanary).not.toHaveBeenCalled(); expect(io.restart).not.toHaveBeenCalled();
+    expect(io.deploy).toHaveBeenCalledExactlyOnceWith("canary", target);
+    expect(io.requalifiedAdmission).toHaveBeenLastCalledWith("canary", target, target);
+  });
+  it("refuses missing offline backup qualification before pin or deploy", async () => {
+    const { io } = preparedFixture();
+    io.requalifiedAdmission.mockResolvedValue({ qualified: true } as never);
+    await expect(deployRequalifiedCanary(target, io)).rejects.toThrow("V2_REQUALIFIED_HOST_NOT_ADMITTED");
+    expect(io.casRef).not.toHaveBeenCalled(); expect(io.deploy).not.toHaveBeenCalled();
+  });
+  it("refuses new live-state drift at the consuming seam", async () => {
+    const { io } = preparedFixture();
+    io.requalifiedAdmission.mockRejectedValueOnce(new Error("LIVE_COMMERCE_INVENTORY_DRIFT"));
+    await expect(deployRequalifiedCanary(target, io)).rejects.toThrow("LIVE_COMMERCE_INVENTORY_DRIFT");
+    expect(io.casRef).not.toHaveBeenCalled(); expect(io.deploy).not.toHaveBeenCalled();
+  });
+  it("refuses final host drift after source pinning and before the queue request", async () => {
+    const { io } = preparedFixture();
+    const evidence = await io.requalifiedAdmission.getMockImplementation()!();
+    io.requalifiedAdmission.mockResolvedValueOnce(evidence).mockResolvedValueOnce(evidence)
+      .mockRejectedValueOnce(new Error("PAYLOAD_SERVICE_TOKEN_CONTAINER_ACTIVE"));
+    await expect(deployRequalifiedCanary(target, io)).rejects.toThrow("PAYLOAD_SERVICE_TOKEN_CONTAINER_ACTIVE");
+    expect(io.deploy).not.toHaveBeenCalled(); expect(io.record).not.toHaveBeenCalled();
+  });
+  it("holds after an ambiguous source-pin operation without replaying a deploy", async () => {
+    const { io } = preparedFixture();
+    const original = io.api.getMockImplementation()!;
+    io.api.mockImplementation(async (method, path, body) => {
+      const result = await original(method, path, body);
+      if (method === "PATCH") throw new Error("UNCERTAIN_PIN_RESULT");
+      return result;
+    });
+    await expect(deployRequalifiedCanary(target, io)).rejects.toThrow("UNCERTAIN_PIN_RESULT");
+    expect(io.deploy).not.toHaveBeenCalled(); expect(io.record).not.toHaveBeenCalled();
+  });
+  it("refuses a different source before any host call", async () => {
+    const { io } = preparedFixture();
+    await expect(deployRequalifiedCanary(sha, io)).rejects.toThrow("V2_REQUALIFIED_SOURCE_REFUSED");
+    expect(io.github).not.toHaveBeenCalled(); expect(io.api).not.toHaveBeenCalled();
+  });
+});
 
 describe("canary-only erasure host installation consumption", () => {
   function nativeFixture() {

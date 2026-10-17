@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 
 const operations = new Set(["config", "api", "runtime", "snapshot", "backup-runtime", "deploy",
-  "deployment", "restart", "storage", "archive", "record", "erasure-admission", "stop-canary", "exclusive-canary"]);
+  "deployment", "restart", "storage", "archive", "record", "erasure-admission", "stop-canary", "exclusive-canary", "requalified-start-check"]);
 const reasons = new Set(["VALIDATION_REFUSED", "HTTP_FAILURE", "CONTROL_TRANSPORT_FAILED",
   "SUBPROCESS_FAILED", "SUBPROCESS_TIMEOUT", "INVALID_RESPONSE", "OWNER_INTERNAL_ERROR"]);
 

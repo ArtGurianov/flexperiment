@@ -37,7 +37,7 @@ jobs:
       - name: Exact checkout and baked CI identity regression
         run: python3 scripts/v2/test_ci_source_identity.py -v
       - name: Foundation encrypted SQLite restore prerequisites
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends age
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends age php-cli
       - name: Isolated editorial online backup and encrypted independent restore contract
         run: python3 scripts/v2/test_platform_backup.py -v
       - name: Isolated Platform canary scheduled transport and recovery admission
@@ -54,6 +54,24 @@ jobs:
         run: python3 -B scripts/v2/test_closed_e2e_gateway.py -v
       - name: Independent V2 owner control contract
         run: python3 scripts/v2/test_owner_rpc.py
+      - name: ART-337 erasure admission requalification contract
+        run: python3 scripts/v2/test_art337_erasure_requalification.py
+      - name: ART-337 immutable schema26 continuation and uncertain delivery contracts
+        run: python3 -B -m unittest scripts/v2/test_art337_immutable_recovery.py scripts/v2/test_art337_recovery_repair.py scripts/v2/test_art337_canary_timers.py scripts/v2/test_coolify446_pipeline.py -v
+      - name: ART-337 real systemd isolation and restoration on disposable CI VM
+        run: sudo env ART337_ISOLATED_SYSTEMD=1 python3 -B scripts/v2/test_art337_isolated_systemd.py -v
+      - name: Install Python 3.10 for the installed owner interpreter contract
+        uses: actions/setup-python@v5
+        id: art337-python310
+        with:
+          python-version: '3.10'
+          update-environment: false
+      - name: ART-337 owner and requalification contracts on real Python 3.10
+        env:
+          ART337_PYTHON: ${{ steps.art337-python310.outputs.python-path }}
+        run: |
+          "$ART337_PYTHON" -c 'import sys, sqlite3; assert sys.version_info[:2] == (3, 10); print(sys.version); print("SQLite", sqlite3.sqlite_version)'
+          "$ART337_PYTHON" -m unittest scripts/v2/test_art337_erasure_requalification.py scripts/v2/test_owner_rpc.py scripts/v2/test_art337_immutable_recovery.py scripts/v2/test_art337_recovery_repair.py scripts/v2/test_art337_canary_timers.py scripts/v2/test_coolify446_pipeline.py -v
       - name: Kinescope DRM owner provisioning and project PUT contracts
         run: python3 -m unittest scripts/v2/test_provision_canary_drm_credentials.py scripts/v2/test_configure_kinescope_drm_auth.py -v
       - name: Isolated V2 canary same-origin proxy contract (real nginx)
@@ -293,3 +311,31 @@ jobs:
         env:
           SOURCE_COMMIT: ${{ env.CI_SOURCE_SHA }}
           PLATFORM_CANARY_TEST_IMAGE: flexperiment-platform-v2:test
+
+      - name: Checkout immutable ART-337 deployment source separately from controller
+        uses: actions/checkout@v4
+        with:
+          ref: '08523bdf38eeddf5e745ce04d05e1f980a7ced93'
+          path: art337-deployment-source
+      - name: Build the isolated immutable ART-337 deployment artifact once
+        uses: docker/build-push-action@v6
+        with:
+          context: ./art337-deployment-source
+          file: ./art337-deployment-source/Dockerfile.commerce-v2
+          platforms: linux/amd64
+          provenance: false
+          push: false
+          load: true
+          tags: flex-art337-immutable:test
+          build-args: SOURCE_COMMIT=08523bdf38eeddf5e745ce04d05e1f980a7ced93
+          cache-from: type=gha,scope=commerce-v2
+      - name: PHP CLI for the installed Coolify 4.4.6 source pipeline replay
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends php-cli
+      - name: Real immutable registry transport and independent installed artifact readback
+        run: python3 -B scripts/v2/test_art337_immutable_transport.py --image flex-art337-immutable:test --output /tmp/art337-immutable-transport.json
+      - name: Preserve isolated ART-337 artifact evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: art337-immutable-transport-${{ env.CI_SOURCE_SHA }}
+          path: /tmp/art337-immutable-transport.json
+          if-no-files-found: error
