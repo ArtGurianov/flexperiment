@@ -18,6 +18,10 @@ const retired = [
   ['POST', '/v1/internal/catalog/products'], ['POST', '/v1/internal/catalog/products/course:retired/withdraw'],
   ['POST', '/v1/internal/catalog/courses/retired/commercial'], ['POST', '/v1/internal/catalog/payment-purpose/retired'],
   ['POST', '/v1/internal/video-uploads'], ['GET', '/v1/internal/video-uploads/retired-session'],
+  // ART-31: service-token writes and Control Room read duplicates.
+  ['POST', '/v1/internal/sales-activations'], ['POST', '/v1/internal/legal-releases'],
+  ['POST', '/v1/internal/merchant-promotions'], ['POST', '/v1/internal/campaigns'],
+  ['POST', '/v1/internal/refunds/smoke/execute'], ['GET', '/v1/internal/control-room/customers'],
 ];
 const check = (condition, code) => { if (!condition) throw new Error(code); };
 try {
@@ -31,23 +35,16 @@ try {
   }
   let r = await request(base + '/v1/admin/v2/catalogue', { headers });
   await r.body?.cancel(); check(r.status === 401, 'SMOKE_ADMIN_ANONYMOUS');
+  // With TOTP (ART-31) the password alone opens nothing; the second factor exists only on the
+  // owner's device, so an authenticated read is the owner's own check after enrollment.
   r = await request(base + '/v1/admin/login', { method: 'POST', headers, body: JSON.stringify({ password: input.password }) });
-  const cookie = r.headers.get('set-cookie')?.split(';')[0];
-  await r.body?.cancel(); check(r.status === 200 && cookie, 'SMOKE_ADMIN_LOGIN');
-  for (const path of ['/v1/admin/session', '/v1/admin/v2/catalogue']) {
-    r = await request(base + path, { headers: { ...headers, cookie } });
-    await r.body?.cancel(); check(r.status === 200, 'SMOKE_ADMIN_READ');
-  }
+  await r.body?.cancel(); check(r.status === 401 && !r.headers.get('set-cookie'), 'SMOKE_ADMIN_PASSWORD_ONLY');
   for (const path of ['/login', '/courses', '/release.json']) {
     r = await request(base + path, { headers }); await r.body?.cancel(); check(r.status === 200, 'SMOKE_ADMIN_STATIC');
   }
   r = await request(base + '/partner', { headers }); await r.body?.cancel(); check(r.status === 404, 'SMOKE_PARTNER_CLOSED');
-  r = await request(base + '/v1/admin/logout', { method: 'POST', headers: { ...headers, cookie }, body: '{}' });
-  await r.body?.cancel(); check(r.status === 200, 'SMOKE_ADMIN_LOGOUT');
-  r = await request(base + '/v1/admin/session', { headers: { ...headers, cookie } });
-  await r.body?.cancel(); check(r.status === 401, 'SMOKE_ADMIN_REVOCATION');
-  console.log(JSON.stringify({ state: 'INTERNAL_SMOKE_PASS', retiredRoutes404: 10,
-    adminAnonymous401: true, adminLoginReadLogout: true, revokedSession401: true, staticPages200: true, partner404: true }));
+  console.log(JSON.stringify({ state: 'INTERNAL_SMOKE_PASS', retiredRoutes404: retired.length,
+    adminAnonymous401: true, passwordOnlyLogin401: true, staticPages200: true, partner404: true }));
 } catch (error) {
   // Never dump responses, cookies, passwords or arbitrary error messages.
   console.log(JSON.stringify({ state: 'INTERNAL_SMOKE_HOLD', code: error instanceof Error && /^SMOKE_[A-Z0-9_]+$/.test(error.message) ? error.message : 'SMOKE_TRANSPORT' }));

@@ -9,11 +9,13 @@ import { DrainedErasureRuntime } from "./erasure-fence";
 // Control Room authored course content/history, with no customer FK or subject
 // identity column; erasure still refuses financial/audit uncertainty. Keep the
 // previous hashes for isolated old-backup restore. Migration 0027 adds retained
-// owner legal evidence; possible subject mentions require audit review. Unknown DDL remains refused.
+// owner legal evidence; possible subject mentions require audit review. Migration 0028 adds only
+// the Control Room owner's encrypted TOTP seed, no subject data. Unknown DDL remains refused.
 const REVIEWED_SCHEMA_SHA256 = new Set([
   "158654c61bd97be4dbcab4348651722fe105587f6ff202ad4db821512774e030",
   "c99f9ed0db449a2c13f2e51fa3b28a1ba44e367dd263185c99eddfec8c2d3b39",
   "b71a08d5f785b98516d4c2fbde8184d25bb91ce1b880d614d637be76876dd84f",
+  "40ede1d98e15b510c920418cd525e039346890560e7e9dc2fe90aecd760b86a1",
 ]);
 function assertReviewedSchema(db: Database.Database) {
   const schema = db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").all();

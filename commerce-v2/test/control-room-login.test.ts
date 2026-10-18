@@ -11,13 +11,14 @@ import { canonicalIp, controlRoomClientIp, controlRoomTrustedProxyIps } from "..
 import { consumeControlRoomLoginLimits, CONTROL_ROOM_ACCOUNT_MAX_DELAY_MS } from "../src/control-room-auth";
 import { migrateV2 } from "../src/db";
 import { loadCommerceRuntimeConfig } from "../src/payment-mode";
+import { enrolledTotp, testTotpKey } from "./fixtures/control-room-totp";
 
 let db: Database.Database;
 const password = "synthetic-owner-password";
 const salt = Buffer.alloc(16, 1);
 const passwordScrypt = ["scrypt", "v1", "16384", "8", "1", salt.toString("base64url"),
   scryptSync(password, salt, 64, { N: 16384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 }).toString("base64url")].join(":");
-const auth = { origin: "https://admin.flexperiment.ru", passwordScrypt, sessionSecret: "synthetic-login-secret", trustedProxyIps: ["127.0.0.1"] };
+const auth = { origin: "https://admin.flexperiment.ru", passwordScrypt, sessionSecret: "synthetic-login-secret", trustedProxyIps: ["127.0.0.1"], totpKey: testTotpKey };
 const epoch = new Date("2026-10-18T00:00:00Z");
 const makeApp = (peer: string | undefined = "127.0.0.1", realSocket = false, trustedProxyIps: readonly string[] = auth.trustedProxyIps,
   wait: ((milliseconds: number) => Promise<void>) | null = async () => {}) => createCommerceV2App({
@@ -28,10 +29,11 @@ const makeApp = (peer: string | undefined = "127.0.0.1", realSocket = false, tru
 });
 const login = async (app: ReturnType<typeof makeApp>, ip: string, extra: Record<string, string> = {}, suppliedPassword = "wrong") =>
   app.request("/v1/admin/login", { method: "POST", headers: { origin: auth.origin, "content-type": "application/json", "x-real-ip": ip, ...extra },
-    body: JSON.stringify({ password: suppliedPassword }) });
+    body: JSON.stringify({ password: suppliedPassword, code: suppliedPassword === password ? totpCode() : "000000" }) });
 const consume = (source: string, now = epoch) => consumeControlRoomLoginLimits(db, { source, now, secret: auth.sessionSecret });
 
-beforeEach(() => { db = new Database(":memory:"); migrateV2(db); });
+let totpCode: () => string;
+beforeEach(() => { db = new Database(":memory:"); migrateV2(db); totpCode = enrolledTotp(db, epoch).next; });
 afterEach(() => db.close());
 
 describe("Control Room trusted login source", () => {
@@ -124,7 +126,7 @@ describe("Control Room trusted login source", () => {
     const pending = makeApp("127.0.0.1", false, auth.trustedProxyIps, null).request("/v1/admin/login", {
       method: "POST", signal: controller.signal,
       headers: { origin: auth.origin, "content-type": "application/json", "x-real-ip": "198.51.100.1" },
-      body: JSON.stringify({ password }),
+      body: JSON.stringify({ password, code: totpCode() }),
     });
     await vi.waitFor(() => expect(db.prepare("SELECT attempt_count FROM control_room_login_rate_limits WHERE rate_key LIKE 'account:delay:%'").get())
       .toEqual({ attempt_count: 6 }));
@@ -151,7 +153,7 @@ describe("Control Room trusted login source", () => {
     try {
       const response = await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}/v1/admin/login`, {
         method: "POST", headers: { origin: auth.origin, "content-type": "application/json", "x-real-ip": "203.0.113.8", "cf-connecting-ip": "spoofed" },
-        body: JSON.stringify({ password }),
+        body: JSON.stringify({ password, code: totpCode() }),
       });
       expect(response.status).toBe(200);
       expect(response.headers.get("set-cookie")).toContain("HttpOnly");

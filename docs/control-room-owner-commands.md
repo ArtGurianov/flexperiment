@@ -16,6 +16,30 @@ cli campaign confirm <campaign-id> --actor art           # only with MARKETING_B
 cli campaign retry <campaign-id> --actor art             # only with MARKETING_BROADCASTS_ENABLED=true
 ```
 
+## Second factor (TOTP, RFC 6238)
+
+The Control Room login takes the password and a 6-digit code together. Without
+`CONTROL_ROOM_TOTP_KEY` or a confirmed enrollment no login is possible. There are no recovery
+codes: recovery is these commands, over SSH.
+
+```bash
+cli totp enroll --actor art                          # prints the secret and an otpauth:// URI, once
+echo '{"code":"123456"}' | cli totp confirm --actor art   # binds it; revokes every older session
+cli totp reset --actor art                           # lost device: removes the factor, revokes sessions
+cli session revoke-all --actor art
+```
+
+- Scan the URI (for example `qrencode -t ANSIUTF8 '<uri>'` on your own machine) or type the
+  secret into the authenticator. The secret is never written to the audit log.
+- Each code is accepted once. The code used to confirm can't be reused, so wait for the next one
+  before the first login.
+- A known password can check at most three codes per 30-second step; the per-IP limits and the
+  account delay apply as before, counted per login request.
+- Losing `CONTROL_ROOM_TOTP_KEY` makes the stored seed unreadable: set a new key, then `totp reset`
+  and enroll again. No other data depends on it.
+
+## Behaviour
+
 - Each write commits together with a Control Room audit row by `owner-cli:<actor>`; if the audit
   row cannot be written, nothing is written.
 - The command opens only the existing database and never migrates it; the server owns migrations.

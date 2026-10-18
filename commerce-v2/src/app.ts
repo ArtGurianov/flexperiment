@@ -21,7 +21,8 @@ import { decideRefund, executeApprovedRefund, listCustomerRefunds, listRefundCas
 import { grantManualEntitlement, revokeManualEntitlement } from "./entitlements";
 import { listCustomerLibrary, listCustomerOrderHistory } from "./library";
 import { controlRoomAttention, controlRoomAudit, controlRoomCatalogue, controlRoomCities, controlRoomCustomers, controlRoomEmailOperations, controlRoomEntitlements, controlRoomIncidents, controlRoomIntegrationSummary, controlRoomLabOccurrences, controlRoomOrders } from "./control-room";
-import { auditControlRoom, consumeControlRoomLoginLimits, CONTROL_ROOM_SESSION_TTL_MS, controlRoomSessionCookie, issueControlRoomSession, parseControlRoomSession, verifyControlRoomPassword, type ControlRoomAuthConfig } from "./control-room-auth";
+import { acceptControlRoomTotp, CONTROL_ROOM_ADMIN_ID, TOTP_CHECKS_PER_STEP, TOTP_STEP_SECONDS } from "./control-room-totp";
+import { auditControlRoom, consumeControlRoomLoginLimit, consumeControlRoomLoginLimits, CONTROL_ROOM_SESSION_TTL_MS, controlRoomSessionCookie, issueControlRoomSession, parseControlRoomSession, verifyControlRoomPassword, type ControlRoomAuthConfig } from "./control-room-auth";
 import { controlRoomClientIp } from "./control-room-client-ip";
 import type { MerchantPromotionCommand, ProductConfigurationCommand, ProductWithdrawalCommand, RefundEmailRegistrationCommand } from "@flexperiment/control-room-contracts";
 import { resolvePlaybackAccess } from "./playback-access";
@@ -164,6 +165,7 @@ export function createCommerceV2App(deps: Dependencies) {
     const origin = context.req.header("origin");
     if (origin && origin !== auth.origin) return context.json({ error: { code: "ORIGIN_FORBIDDEN" } }, 403, noStore);
     if (!auth.trustedProxyIps?.length) return context.json({ error: { code: "CONTROL_ROOM_PROXY_NOT_CONFIGURED" } }, 503, noStore);
+    if (!auth.totpKey) return context.json({ error: { code: "CONTROL_ROOM_TOTP_NOT_CONFIGURED" } }, 503, noStore);
     let peerAddress: string | undefined;
     try { peerAddress = deps.controlRoomPeerAddress ? deps.controlRoomPeerAddress(context) : getConnInfo(context).remote.address; }
     catch { /* Missing transport metadata is never replaced by a client header. */ }
@@ -175,24 +177,30 @@ export function createCommerceV2App(deps: Dependencies) {
         if (deps.controlRoomLoginWait) await deps.controlRoomLoginWait(delayMs);
         else await loginDelay(delayMs, undefined, { signal: context.req.raw.signal });
       }
-      const body = await context.req.json<{ password?: string }>();
+      const body = await context.req.json<{ password?: string; code?: unknown }>();
       if (!body.password || !verifyControlRoomPassword(body.password, auth.passwordScrypt)) {
         return context.json({ error: { code: "INVALID_CREDENTIALS" } }, 401, noStore);
       }
-      const issued = issueControlRoomSession(auth.sessionSecret, "singleton-admin", now().getTime());
+      // A known password still cannot brute-force codes: a few checks per 30-second step.
+      consumeControlRoomLoginLimit(deps.db, { source: CONTROL_ROOM_ADMIN_ID, secret: auth.sessionSecret, now: now(),
+        windowMs: TOTP_STEP_SECONDS * 1000, limit: TOTP_CHECKS_PER_STEP, label: "totp-step" });
+      const issued = issueControlRoomSession(auth.sessionSecret, CONTROL_ROOM_ADMIN_ID, now().getTime());
       const login = deps.db.transaction(() => {
+        // The code is spent only together with the session it opens.
+        if (!acceptControlRoomTotp(deps.db, auth.totpKey!, body.code, now())) return false;
         deps.db.prepare("DELETE FROM control_room_admin_sessions WHERE expires_at<=? OR (revoked_at IS NOT NULL AND revoked_at<?)")
           .run(now().toISOString(), new Date(now().getTime() - 7 * 24 * 60 * 60_000).toISOString());
         deps.db.prepare(`INSERT INTO control_room_admin_sessions(id,admin_id,expires_at,created_at) VALUES (?,?,?,?)`)
           .run(issued.session.sid, issued.session.sub, new Date(issued.session.exp).toISOString(), now().toISOString());
         auditControlRoom(deps.db, { adminId: issued.session.sub, action: "SESSION_CREATED", entityType: "admin_session", entityId: issued.session.sid }, now().toISOString());
+        return true;
       });
-      login.immediate();
+      if (!login.immediate()) return context.json({ error: { code: "INVALID_CREDENTIALS" } }, 401, noStore);
       context.header("Set-Cookie", controlRoomSessionCookie(issued.token, CONTROL_ROOM_SESSION_SECONDS));
       return context.json({ ok: true }, 200, noStore);
     } catch (error) {
       const code = error instanceof Error ? error.message : "LOGIN_FAILED";
-      return context.json({ error: { code } }, code === "RATE_LIMITED" ? 429 : 400, noStore);
+      return context.json({ error: { code } }, code === "RATE_LIMITED" ? 429 : code === "CONTROL_ROOM_TOTP_NOT_ENROLLED" ? 403 : 400, noStore);
     }
   });
 

@@ -272,7 +272,7 @@ class FastCut(unittest.TestCase):
                 elif 'fence_state' in query:result.fetchone.return_value=('canary','OPEN',1,None)
                 elif 'fence_leases' in query:result.fetchone.return_value=(0,)
                 elif 'integrity_check' in query:result.fetchone.return_value=('ok',)
-                else:result.fetchone.return_value=(27,)
+                else:result.fetchone.return_value=(28,)
                 return result
             db.execute.side_effect=execute;return db
         def check(admin_source,platform_source=vector['platform']['sourceCommit']):

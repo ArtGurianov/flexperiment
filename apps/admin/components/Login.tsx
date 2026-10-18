@@ -8,17 +8,17 @@ import { Notice } from "./ui/Notice";
 
 export function Login() {
   const router = useRouter();
-  const { register, handleSubmit } = useForm<{ password: string }>({ defaultValues: { password: "" } });
+  const { register, handleSubmit } = useForm<{ password: string; code: string }>({ defaultValues: { password: "", code: "" } });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const submit = handleSubmit(async ({ password }) => {
+  const submit = handleSubmit(async ({ password, code }) => {
     setBusy(true); setError(null);
     try {
       await api<{ ok: true }>("/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password }),
+        body: JSON.stringify({ password, code: code.trim() }),
       });
       router.replace("/");
     } catch (failure) {
@@ -38,6 +38,11 @@ export function Login() {
           <label>
             Пароль администратора
             <input autoFocus autoComplete="current-password" type="password" {...register("password", { required: true })} />
+          </label>
+          <label>
+            Код из приложения-аутентификатора
+            <input autoComplete="one-time-code" inputMode="numeric" pattern="[0-9]{6}" maxLength={6}
+              {...register("code", { required: true, pattern: /^[0-9]{6}$/ })} />
           </label>
           <Notice error={error} />
           <button className="primary" disabled={busy}>{busy ? "Проверяем…" : "Войти"}</button>

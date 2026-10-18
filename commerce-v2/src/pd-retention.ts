@@ -31,11 +31,13 @@ const refuse = (code: string): never => { throw new RetentionRefusal(code); };
 // Exact reviewed 0001–0025, 0001–0026 and 0001–0027 DDL. Migration 0026 adds Control Room
 // authored course content/history, no customer FK or subject identity column.
 // Migration 0027 retains merchant legal evidence and requires subject-mention review.
-// Retention targets remain the same; unknown columns/tables/triggers still stop.
+// Migration 0028 adds the Control Room owner's encrypted TOTP seed: an admin secret, no customer
+// FK or subject identity column. Retention targets remain the same; unknown DDL still stops.
 const supportedSchemaSha256 = new Set([
   "158654c61bd97be4dbcab4348651722fe105587f6ff202ad4db821512774e030",
   "c99f9ed0db449a2c13f2e51fa3b28a1ba44e367dd263185c99eddfec8c2d3b39",
   "b71a08d5f785b98516d4c2fbde8184d25bb91ce1b880d614d637be76876dd84f",
+  "40ede1d98e15b510c920418cd525e039346890560e7e9dc2fe90aecd760b86a1",
 ]);
 const parse = <T>(schema: z.ZodType<T>, value: unknown): T => {
   const result = schema.safeParse(value); return result.success ? result.data : refuse("RETENTION_POLICY_OR_HOLD_INVALID");

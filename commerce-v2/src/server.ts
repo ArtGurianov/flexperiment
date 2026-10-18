@@ -14,6 +14,7 @@ import { refundEnvelopeKeyringFromEnvironment } from "./refund-envelope";
 import { reconcilePendingRefunds } from "./refunds";
 import { loadCommerceOrigins } from "./origins";
 import { controlRoomTrustedProxyIps } from "./control-room-client-ip";
+import { controlRoomTotpKey } from "./control-room-totp";
 import { dispatchPendingCampaigns, type CampaignEmail } from "./campaigns";
 import { createMagicLinkEmailDelivery } from "./auth-email-delivery";
 import { dirname } from "node:path";
@@ -51,7 +52,8 @@ if (marketingBroadcastsEnabled && (!campaignUnsubscribeSecret || !emailDeliveryE
 const controlRoomSessionSecret = process.env.COMMERCE_SESSION_SECRET;
 const controlRoomPasswordScrypt = process.env.COMMERCE_ADMIN_PASSWORD_SCRYPT;
 const controlRoomOrigin = origins.admin;
-if (config.deployEnvironment === "production" && (!controlRoomSessionSecret || !controlRoomPasswordScrypt || !controlRoomOrigin)) {
+const controlRoomTotp = controlRoomTotpKey(process.env.CONTROL_ROOM_TOTP_KEY);
+if (config.deployEnvironment === "production" && (!controlRoomSessionSecret || !controlRoomPasswordScrypt || !controlRoomOrigin || !controlRoomTotp)) {
   throw new Error("CONTROL_ROOM_AUTH_CONFIGURATION_REQUIRED");
 }
 
@@ -138,6 +140,7 @@ const app = createCommerceV2App({
     passwordScrypt: controlRoomPasswordScrypt,
     origin: controlRoomOrigin,
     trustedProxyIps: controlRoomTrustedProxyIps(process.env.CONTROL_ROOM_TRUSTED_PROXY_IPS),
+    totpKey: controlRoomTotp,
   } : undefined,
   erasureFence,
 });
