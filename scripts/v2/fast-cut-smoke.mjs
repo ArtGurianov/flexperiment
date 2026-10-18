@@ -38,7 +38,8 @@ try {
   // With TOTP (ART-31) the password alone opens nothing; the second factor exists only on the
   // owner's device, so an authenticated read is the owner's own check after enrollment.
   r = await request(base + '/v1/admin/login', { method: 'POST', headers, body: JSON.stringify({ password: input.password }) });
-  await r.body?.cancel(); check(r.status === 401 && !r.headers.get('set-cookie'), 'SMOKE_ADMIN_PASSWORD_ONLY');
+  // 401 once a factor is enrolled, 403 CONTROL_ROOM_TOTP_NOT_ENROLLED before: never a session.
+  await r.body?.cancel(); check([401, 403].includes(r.status) && !r.headers.get('set-cookie'), 'SMOKE_ADMIN_PASSWORD_ONLY');
   for (const path of ['/login', '/courses', '/release.json']) {
     r = await request(base + path, { headers }); await r.body?.cancel(); check(r.status === 200, 'SMOKE_ADMIN_STATIC');
   }
