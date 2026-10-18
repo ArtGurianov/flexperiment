@@ -250,7 +250,10 @@ class FastCut(unittest.TestCase):
             try:
                 docker('network','create','--internal',network)
                 code="require('node:http').createServer((q,r)=>{r.setHeader('content-type','application/json');r.end(JSON.stringify({ok:true,service:'commerce-v2',sourceCommit:process.argv[1]}))}).listen(3002,'0.0.0.0')"
-                docker('run','-d','--name',upstream,'--network',network,'--network-alias',f.ORIGINAL,'node:22-bookworm-slim','node','-e',code,target)
+                # Only this readiness fixture doubles as the resolvable synthetic proxy peer.
+                # The dedicated frontend suite exercises an actual Traefik chain.
+                docker('run','-d','--name',upstream,'--network',network,'--network-alias',f.ORIGINAL,
+                       '--network-alias','coolify-proxy','node:22-bookworm-slim','node','-e',code,target)
                 docker('run','-d','--name',admin,'--network',network,'--read-only','--tmpfs','/var/cache/nginx','--tmpfs','/var/run','--tmpfs','/tmp',
                        '-v',str(ROOT/'deploy/v2/fast-cut/admin.conf')+':/etc/nginx/conf.d/default.conf:ro',
                        '-v',str(ROOT/'deploy/v2/fast-cut/admin-common.conf')+':/etc/nginx/fast-cut/admin-common.conf:ro',

@@ -1,8 +1,10 @@
 import type Database from "better-sqlite3";
 import { assertRegistrationChoices } from "./registration-choices";
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
+import { getConnInfo } from "@hono/node-server/conninfo";
 import { bodyLimit } from "hono/body-limit";
 import { timingSafeEqual } from "node:crypto";
+import { setTimeout as loginDelay } from "node:timers/promises";
 import { flagOrphanedOverrides } from "./access-overrides";
 import { getEditorialDraft, getEditorialPublished, publishEditorialDraft, relistEditorialCourse, restrictEditorialCourse, saveEditorialDraft, type EditorialDocument } from "./course-editorial";
 import { assertPaymentCreationEnabled, type CommerceRuntimeConfig } from "./payment-mode";
@@ -19,7 +21,8 @@ import { decideRefund, executeApprovedRefund, listCustomerRefunds, listRefundCas
 import { grantManualEntitlement, revokeManualEntitlement } from "./entitlements";
 import { listCustomerLibrary, listCustomerOrderHistory } from "./library";
 import { controlRoomAttention, controlRoomAudit, controlRoomCatalogue, controlRoomCities, controlRoomCustomers, controlRoomEmailOperations, controlRoomEntitlements, controlRoomIncidents, controlRoomIntegrationSummary, controlRoomLabOccurrences, controlRoomOrders } from "./control-room";
-import { auditControlRoom, consumeControlRoomLoginLimit, CONTROL_ROOM_SESSION_TTL_MS, controlRoomSessionCookie, issueControlRoomSession, parseControlRoomSession, verifyControlRoomPassword, type ControlRoomAuthConfig } from "./control-room-auth";
+import { auditControlRoom, consumeControlRoomLoginLimits, CONTROL_ROOM_SESSION_TTL_MS, controlRoomSessionCookie, issueControlRoomSession, parseControlRoomSession, verifyControlRoomPassword, type ControlRoomAuthConfig } from "./control-room-auth";
+import { controlRoomClientIp } from "./control-room-client-ip";
 import type { MerchantPromotionCommand, ProductConfigurationCommand, ProductWithdrawalCommand, RefundEmailRegistrationCommand } from "@flexperiment/control-room-contracts";
 import { resolvePlaybackAccess } from "./playback-access";
 import { issuePlaybackToken, verifyPlaybackToken, type PlaybackKeyring } from "./playback-auth";
@@ -68,6 +71,10 @@ type Dependencies = {
   readonly origins?: CommerceOrigins;
   readonly sendCampaignEmail?: (message: CampaignEmail) => Promise<void>;
   readonly controlRoomAuth?: ControlRoomAuthConfig;
+  /** In-process transport adapter for tests; production uses Node's socket metadata. */
+  readonly controlRoomPeerAddress?: (context: Context) => string | undefined;
+  /** Test clock for the bounded wait; production waits before verifying any password. */
+  readonly controlRoomLoginWait?: (milliseconds: number) => Promise<void>;
   readonly erasureFence?: ErasureRuntimeFence;
 };
 
@@ -156,10 +163,18 @@ export function createCommerceV2App(deps: Dependencies) {
     if (!auth) return context.json({ error: { code: "CONTROL_ROOM_AUTH_NOT_CONFIGURED" } }, 503, noStore);
     const origin = context.req.header("origin");
     if (origin && origin !== auth.origin) return context.json({ error: { code: "ORIGIN_FORBIDDEN" } }, 403, noStore);
-    const source = context.req.header("cf-connecting-ip") ?? context.req.header("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
+    if (!auth.trustedProxyIps?.length) return context.json({ error: { code: "CONTROL_ROOM_PROXY_NOT_CONFIGURED" } }, 503, noStore);
+    let peerAddress: string | undefined;
+    try { peerAddress = deps.controlRoomPeerAddress ? deps.controlRoomPeerAddress(context) : getConnInfo(context).remote.address; }
+    catch { /* Missing transport metadata is never replaced by a client header. */ }
+    const source = controlRoomClientIp(context.req.raw.headers, peerAddress, auth.trustedProxyIps);
+    if (!source) return context.json({ error: { code: "CONTROL_ROOM_SOURCE_NOT_TRUSTED" } }, 403, noStore);
     try {
-      consumeControlRoomLoginLimit(deps.db, { source, secret: auth.sessionSecret, now: now(), windowMs: 15 * 60_000, limit: 5, label: "15m" });
-      consumeControlRoomLoginLimit(deps.db, { source, secret: auth.sessionSecret, now: now(), windowMs: 24 * 60 * 60_000, limit: 20, label: "day" });
+      const delayMs = consumeControlRoomLoginLimits(deps.db, { source, secret: auth.sessionSecret, now: now() });
+      if (delayMs) {
+        if (deps.controlRoomLoginWait) await deps.controlRoomLoginWait(delayMs);
+        else await loginDelay(delayMs, undefined, { signal: context.req.raw.signal });
+      }
       const body = await context.req.json<{ password?: string }>();
       if (!body.password || !verifyControlRoomPassword(body.password, auth.passwordScrypt)) {
         return context.json({ error: { code: "INVALID_CREDENTIALS" } }, 401, noStore);

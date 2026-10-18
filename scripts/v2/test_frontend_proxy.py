@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[2]
 CANARY = "xzuy7pk5y6ywjr9kh6nsk5ap"
 COMMIT = os.environ.get("SOURCE_COMMIT", "1" * 40)
 SYNTHETIC = "synthetic-magic-link-token-for-proxy-test"
+TRAEFIK_IMAGE = "traefik:v3.6@sha256:31267173a15b4944e797a76ffd9c419707c8d8b32fe5b610f80cd0cfa05f372d"
 FIXTURE = r"""
 const http = require('node:http');
 http.createServer((req, res) => {
@@ -104,13 +105,15 @@ console.log('ACTUAL_LAB_CLIENT_SAME_ORIGIN_PASS helpers=' + checked);
 """
 
 
-def docker(*args, check=True, input=None):
-    return subprocess.run(["docker", *args], check=check, capture_output=True, text=True, timeout=45, input=input)
+def docker(*args, check=True, input=None, timeout=45):
+    return subprocess.run(["docker", *args], check=check, capture_output=True, text=True, timeout=timeout, input=input)
 
 
 class FrontendProxy(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        if docker("image", "inspect", TRAEFIK_IMAGE, check=False).returncode:
+            docker("pull", TRAEFIK_IMAGE, timeout=180)
         cls.prefix = "v2-proxy-test-" + uuid.uuid4().hex[:12]
         cls.network = cls.prefix + "-net"
         cls.containers = []
@@ -122,6 +125,20 @@ class FrontendProxy(unittest.TestCase):
         docker("run", "--detach", "--name", upstream, "--network", cls.network,
                "--network-alias", CANARY, "node:22-bookworm-slim", "node", "-e", FIXTURE)
         cls.containers.append(upstream)
+        # A real Traefik entrypoint: the client cannot nominate its own XFF/X-Real-IP.
+        # Start before nginx so its exact trusted hostname resolves at nginx startup.
+        cls.edge = cls.prefix + "-traefik"
+        # JSON is valid YAML; the .yaml extension selects Traefik's YAML decoder.
+        routes = Path(cls.tmp.name) / "routes.yaml"
+        routes.write_text(json.dumps({"http": {
+            "routers": {"admin": {"rule": "Host(`canary-admin.flexperiment.ru`)", "service": "admin"}},
+            "services": {"admin": {"loadBalancer": {"servers": [{"url": "http://" + cls.prefix + "-admin-v2:80"}]}}},
+        }}))
+        cls.containers.append(cls.edge)
+        docker("run", "--detach", "--name", cls.edge, "--network", cls.network,
+               "--network-alias", "coolify-proxy", "--volume", f"{routes}:/config/routes.yaml:ro",
+               TRAEFIK_IMAGE, "--entrypoints.web.address=:80", "--entrypoints.web.forwardedheaders.insecure=false",
+               "--providers.file.filename=/config/routes.yaml")
         for service in ("lab-v2", "admin-v2"):
             name = cls.prefix + "-" + service
             cls.containers.append(name)
@@ -270,7 +287,8 @@ class FrontendProxy(unittest.TestCase):
             status, headers, body = self.request(service, path + "?token=" + SYNTHETIC,
                 body=b'{"synthetic":true}', headers={"Cookie": "test.session=synthetic",
                 "Origin": origin, "Content-Type": "application/json", "X-Forwarded-Host": "production.invalid",
-                "X-Forwarded-Proto": "http", "X-Forwarded-For": "spoofed"})
+                "X-Forwarded-Proto": "http", "X-Forwarded-For": "spoofed",
+                "CF-Connecting-IP": "192.0.2.77", "Forwarded": "for=192.0.2.88"})
             echoed = json.loads(body)
             self.assertEqual(status, 200)
             self.assertEqual(echoed["method"], "POST")
@@ -281,10 +299,31 @@ class FrontendProxy(unittest.TestCase):
             self.assertEqual(echoed["headers"]["x-forwarded-host"], origin.removeprefix("https://"))
             self.assertEqual(echoed["headers"]["x-forwarded-proto"], "https")
             self.assertNotEqual(echoed["headers"]["x-forwarded-for"], "spoofed")
+            self.assertNotIn("cf-connecting-ip", echoed["headers"])
+            self.assertNotIn("forwarded", echoed["headers"])
             self.assertEqual(headers["Set-Cookie"], "test.session=synthetic; Path=/; Secure; HttpOnly; SameSite=Lax")
             self.assertEqual(headers["Location"], origin + "/account?from=magic-link")
             self.assertEqual(headers["Cache-Control"], "no-store")
             self.assertIsNone(headers.get("Access-Control-Allow-Origin"))
+
+    def test_real_traefik_and_nginx_keep_client_ip_despite_forged_address_headers(self):
+        client = self.prefix + "-upstream"
+        address = json.loads(docker("inspect", client).stdout)[0]["NetworkSettings"]["Networks"][self.network]["IPAddress"]
+        for forged in ("192.0.2.123", "198.51.100.1, 192.0.2.124"):
+            status, _, body = self.request("admin-v2", "/v1/admin/login", container=self.edge,
+                body=b'{"password":"synthetic"}', headers={"X-Forwarded-For": forged,
+                "X-Real-IP": "192.0.2.125", "CF-Connecting-IP": "192.0.2.126", "Forwarded": "for=192.0.2.127"})
+            self.assertEqual(status, 200)
+            headers = json.loads(body)["headers"]
+            self.assertEqual(headers["x-real-ip"], address)
+            self.assertEqual(headers["x-forwarded-for"], address)
+            self.assertNotIn("cf-connecting-ip", headers)
+            self.assertNotIn("forwarded", headers)
+        # Direct access from an unrelated container cannot invoke nginx's realip trust.
+        status, _, body = self.request("admin-v2", "/v1/admin/login", body=b'{}',
+            headers={"X-Forwarded-For": "192.0.2.128", "X-Real-IP": "192.0.2.129"})
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["headers"]["x-real-ip"], address)
 
     def test_readiness_propagates_upstream_unavailable(self):
         for service in self.services:

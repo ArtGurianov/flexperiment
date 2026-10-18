@@ -13,6 +13,7 @@ import { createRefrefReadinessProbe } from "./readiness";
 import { refundEnvelopeKeyringFromEnvironment } from "./refund-envelope";
 import { reconcilePendingRefunds } from "./refunds";
 import { loadCommerceOrigins } from "./origins";
+import { controlRoomTrustedProxyIps } from "./control-room-client-ip";
 import { dispatchPendingCampaigns, type CampaignEmail } from "./campaigns";
 import { createMagicLinkEmailDelivery } from "./auth-email-delivery";
 import { dirname } from "node:path";
@@ -136,6 +137,7 @@ const app = createCommerceV2App({
     sessionSecret: controlRoomSessionSecret,
     passwordScrypt: controlRoomPasswordScrypt,
     origin: controlRoomOrigin,
+    trustedProxyIps: controlRoomTrustedProxyIps(process.env.CONTROL_ROOM_TRUSTED_PROXY_IPS),
   } : undefined,
   erasureFence,
 });

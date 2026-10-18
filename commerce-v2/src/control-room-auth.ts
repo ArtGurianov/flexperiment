@@ -2,11 +2,14 @@ import { createHash, createHmac, randomUUID, scryptSync, timingSafeEqual } from 
 import type Database from "better-sqlite3";
 
 export const CONTROL_ROOM_SESSION_TTL_MS = 12 * 60 * 60_000;
+export const CONTROL_ROOM_ACCOUNT_MAX_DELAY_MS = 5_000;
 
 export type ControlRoomAuthConfig = {
   origin: string;
   passwordScrypt: string;
   sessionSecret: string;
+  /** Exact Admin nginx socket peers, configured separately from public request headers. */
+  trustedProxyIps?: readonly string[];
 };
 
 export type ControlRoomSession = { sub: string; sid: string; exp: number };
@@ -55,9 +58,9 @@ export function parseControlRoomSession(cookie: string | undefined, secret: stri
 export const controlRoomSessionCookie = (value: string, maxAgeSeconds: number) =>
   `fx_admin_session=${value}; Path=/; Max-Age=${maxAgeSeconds}; HttpOnly; Secure; SameSite=Strict`;
 
-export function consumeControlRoomLoginLimit(
+function recordControlRoomLoginAttempt(
   db: Database.Database,
-  input: { source: string; secret: string; now: Date; windowMs: number; limit: number; label: string },
+  input: { source: string; secret: string; now: Date; windowMs: number; label: string },
 ) {
   const window = Math.floor(input.now.getTime() / input.windowMs) * input.windowMs;
   const windowStart = new Date(window).toISOString();
@@ -66,7 +69,31 @@ export function consumeControlRoomLoginLimit(
   const row = db.prepare(`INSERT INTO control_room_login_rate_limits(rate_key,window_start,attempt_count) VALUES (?,?,1)
     ON CONFLICT(rate_key,window_start) DO UPDATE SET attempt_count=attempt_count+1 RETURNING attempt_count`)
     .get(key, windowStart) as { attempt_count: number };
-  if (row.attempt_count > input.limit) throw new Error("RATE_LIMITED");
+  return row.attempt_count;
+}
+
+export function consumeControlRoomLoginLimit(
+  db: Database.Database,
+  input: { source: string; secret: string; now: Date; windowMs: number; limit: number; label: string },
+) {
+  if (recordControlRoomLoginAttempt(db, input) > input.limit) throw new Error("RATE_LIMITED");
+}
+
+export function consumeControlRoomLoginLimits(
+  db: Database.Database, input: { source: string; secret: string; now: Date },
+) {
+  // Only IP exhaustion refuses admission. Reserve the account attempt before yielding so
+  // concurrent requests/processes cannot all observe a fresh account and skip their delay.
+  return db.transaction(() => {
+    consumeControlRoomLoginLimit(db, { ...input, windowMs: 15 * 60_000, limit: 5, label: "15m" });
+    consumeControlRoomLoginLimit(db, { ...input, windowMs: 24 * 60 * 60_000, limit: 20, label: "day" });
+    const count = recordControlRoomLoginAttempt(db, {
+      ...input, source: "singleton-admin", windowMs: 15 * 60_000, label: "account:delay",
+    });
+    // First five are immediate; then 1, 2, 4, 5 seconds. No account lockout or
+    // growing queue: later attempts cannot postpone this request's fixed wait.
+    return count <= 5 ? 0 : Math.min(CONTROL_ROOM_ACCOUNT_MAX_DELAY_MS, 1_000 * 2 ** Math.min(count - 6, 3));
+  }).immediate();
 }
 
 export function auditControlRoom(
