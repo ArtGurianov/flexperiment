@@ -25,7 +25,11 @@ Decision:
    opens it; the runtime cannot reopen it even with code execution. It replaces
    the `sales_activation` table and the `/v1/internal/sales-activations` route
    (the table stays read-only as history). It is both the first-sale gate and
-   the emergency stop.
+   the emergency stop. The evidence issue is a reference, not a proof: the
+   open command itself refuses unless the storefront's preconditions hold when
+   it runs (an active legal release, a qualified fiscal policy for every
+   `PUBLIC` paid offer, `PAYMENT_MODE=refref`), and Commerce re-checks them on
+   every admission.
 2. **Per offer: `offers.sale_mode`** `CLOSED` / `PUBLIC` is the only
    commercial switch, changed in Control Room. `ACCEPTANCE_ONLY` with its
    allowlist stays for closed tests and is removed after launch.
@@ -38,13 +42,13 @@ Decision:
 5. `PAYMENT_MODE` stays environment configuration. Visibility
    (`LISTED`/`UNLISTED`/`WITHDRAWN`) stays separate; `WITHDRAWN` implies CLOSED.
 
-**One admission function, inside the order transaction.** Checkout today checks
+**One admission function, run in two transactions.** Checkout today checks
 only the offer (`assertOfferOpenToCustomer`, `checkout.ts:318`). For LAB it
 does not check the occurrence lifecycle, its end or capacity, so a direct
-`offerRef` bypasses the catalogue filter (`lab-catalogue.ts:14`). Admission
-becomes one function run inside `create.immediate()`: storefront switch open,
-offer `PUBLIC` (or allowlisted), not withdrawn, and for LAB: occurrence
-`SCHEDULED`, not started, and held + sold seats below capacity.
+`offerRef` bypasses the catalogue filter (`lab-catalogue.ts:14`). The admission
+function checks: storefront switch open, offer `PUBLIC` (or allowlisted), not
+withdrawn, and for LAB: occurrence `SCHEDULED`, not started, and held + sold
+seats below capacity. It runs inside each of the two write transactions of §2.
 
 ## 2. Quote guarantee (LMS and LAB)
 
@@ -61,8 +65,16 @@ Matches Refref `docs/29` §5 and ART-373/379.
   new quotes; an issued quote may still be confirmed within its validity.
 - The guarantee is stated in the purchase terms (ART-231, LAB terms), not
   inferred from the word "quote".
-- **LAB:** creating a quote takes the seat hold (ART-200); confirming converts
-  it. A replaced intent carries the hold over, never a second hold.
+- **Two atomic operations, each one `BEGIN IMMEDIATE` transaction:**
+  1. *Quote (+ LAB seat hold):* run admission, take the seat hold (LAB) and
+     write the quote with its frozen price and expiry. LMS has no hold.
+  2. *Confirm:* check the quote and the hold have not expired and no
+     cancellation, withdrawal or storefront close applies, convert the hold into
+     the order and write the attempt. Only after this commit is Refref called.
+
+  The live price may change between them; the quote's price does not. A
+  repeated quote request for the same intent returns the existing quote and
+  hold, never a second hold; a replaced intent carries the hold over.
 - **Late payment:** the attempt carries Refref `latePaymentPolicy`. Courses:
   `HONOR`. LAB: `HONOR` while the occurrence is deliverable, `AUTO_REFUND` once
   it is cancelled (ART-201).
@@ -93,7 +105,7 @@ occurrence is an editable offer:
 | Date, time, duration | none | free |
 | Date, time, duration | yes | locked; only the move/cancel workflow (ART-203) |
 | Teacher, venue, programme, cancellation terms | none | free |
-| Teacher, venue, programme, cancellation terms | yes | classified execution change: `EQUIVALENT` → saved, one e-mail per affected order with delivery evidence; `MATERIAL` → move/cancel workflow with refund (ART-203, ART-206) |
+| Teacher, venue, programme, cancellation terms | yes | classified execution change: `EQUIVALENT` → saved, one e-mail per affected order via an idempotent, retried notification record (provider acceptance is not delivery); `MATERIAL` → move/cancel workflow with refund (ART-203, ART-206) |
 
 No EIS duties apply to LAB.
 
@@ -112,15 +124,19 @@ Rules:
 - Entitlements stay on `courseRef`; the current edition is free for every owner
   of the course. A paid expansion is sold as a separate course.
 - The previous edition is readable as an archive by everyone who had access
-  before the release, for **30 days** from `released_at`. Owners get an e-mail
+  before the release, for **30 days** from `released_at`. Access is checked
+  against `archive_until` on every read, whether or not cleanup has run, so the
+  limit holds even if no further edition is ever released. Owners get an e-mail
   with that date.
+- A released edition is sealed: it keeps its own references to specific
+  Kinescope assets. Edits after the release change only the current edition.
 - The publish dialog offers "Обновить текущую версию" or "Выпустить новую
   версию" with a summary of the changes. A draft that removes or replaces
   lessons or videos defaults to a new edition.
 - A Kinescope asset is never replaced in place; a changed video is a new asset.
-- Cleanup runs when the next edition is released (no scheduler): archives past
-  `archive_until` lose access, and a Kinescope asset is deleted only when neither
-  the current edition nor a live archive references it. Revision text and audit
+- Physical cleanup runs when the next edition is released (no scheduler): a
+  Kinescope asset is deleted only when neither the current edition nor an
+  unexpired archive references it. Revision text and audit
   are never deleted.
 - The 30-day rule goes into the course offer (ART-231) before F10. Nobody has
   bought yet, so no existing contract is affected.
@@ -167,7 +183,9 @@ The fast-cut canary (commerce, platform, admin, lab-v2, drm-bridge, tester)
 runs on the VPS outside Coolify, so Coolify shows none of it. It moves to
 Coolify Docker Image applications pinned by digest: `PATCH
 /api/v1/applications/{uuid}` with `docker_registry_image_tag = sha256-…`, `POST
-/api/v1/deploy`, follow to a terminal state, read `/identity` back. The whole
+/api/v1/deploy`, follow to a terminal state, then check that `/identity` reports
+the chosen commit and that the running container's digest (Docker metadata on
+the host) equals the chosen digest. The whole
 sequence runs in one workflow concurrency group per application.
 
 ## 10. Execution map
@@ -193,8 +211,14 @@ sequence runs in one workflow concurrency group per application.
    the order at the quoted price; a new quote uses the new price.
 4. Offer closed at 14:05 against a 14:00 quote: confirmation before expiry
    succeeds; a new quote is refused. A storefront close refuses both.
-5. LAB date edit with a sold seat is refused; an `EQUIVALENT` venue change sends
-   one e-mail per affected order and records delivery.
-6. New edition: owners read the old edition until `archive_until`; cleanup at
+4a. Two concurrent LAB quotes for the last seat: exactly one gets a hold. An
+   expired hold frees the seat and its quote cannot be confirmed. A lost Refref
+   response after confirm is recovered by readback with the same order and
+   attempt, never a new hold or attempt (ART-200, ART-373, ART-379).
+5. LAB date edit with a sold seat is refused; an `EQUIVALENT` venue change
+   creates one notification per affected order (idempotent, retried, status in
+   Control Room); provider acceptance is not recorded as delivery.
+6. New edition: owners read the old edition until `archive_until` and not after,
+   even with no later release; cleanup at
    the next release keeps every asset the current edition references.
 7. A TOTP code reused within its step is refused.
