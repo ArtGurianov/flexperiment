@@ -71,7 +71,9 @@ Matches Refref `docs/29` §5 and ART-373/379.
 
 - A quote is payment-admissible until the earliest of: 15 minutes, the LAB seat
   hold, the occurrence start, the end of an applied promotion, a storefront
-  close, offer withdrawal and occurrence cancellation.
+  close, offer withdrawal and occurrence cancellation. "Storefront close"
+  always means the operator host-file switch of §1 (emergency stop), never an
+  ordinary offer `PUBLIC → CLOSED`.
 - **A price change does not invalidate an issued quote.** Today
   `confirmCheckout` compares more than the price: it rebuilds the line with
   `freezeLine(db, offer)` from the live offer and compares the whole line
@@ -122,8 +124,10 @@ Matches Refref `docs/29` §5 and ART-373/379.
 
   A final Refref outcome is trusted; an unexpected divergence from bank truth is
   reconciled, never ignored. Fulfilment or refund of a confirmed payment follows
-  the merchant workflow (ART-206). Courses hold no seat; a confirmed payment is
-  always fulfilled.
+  the merchant workflow (ART-206). Courses hold no seat. A confirmed course
+  payment always creates a recorded obligation, which is fulfilled by granting
+  access or, if access cannot be provided, resolved through the contract refund
+  path; it is never left unaccounted for.
 - The final admission and quote checks move inside `create.immediate()`. In one
   process there is no race today (no `await` between check and write), but a
   second process writing the database (CLI) could create one.
@@ -242,7 +246,7 @@ sequence runs in one workflow concurrency group per application.
 - ART-203 / ART-206: move/cancel workflow; cancellation waits for open attempts (§2, invariant 3).
 - ART-373 / ART-379 / ART-384: quote guarantee (§2), checks inside the transaction.
 - ART-231: quote guarantee and 30-day edition archive in the offer.
-- ART-333: publish dialog with editions (§5).
+- ART-328: course editions increment (§5): table, sealed asset references, 30-day archive, publish dialog. Moved from Done ART-333.
 - ART-339: reduced (§6).
 - ART-166 / ART-164: canary into Coolify by digest (§9).
 - ART-243 / ART-310 / ART-240 / ART-242: acceptance includes the admission negative tests below.
