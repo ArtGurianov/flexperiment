@@ -24,8 +24,12 @@ Decision:
    issue. Missing, unreadable or invalid means CLOSED. Only the owner over SSH
    may change the host-controlled file to OPEN. The read-only mount prevents a
    normal Commerce process from rewriting that file, **but cannot stop
-   arbitrary code executing inside Commerce from bypassing an in-process check**;
-   Refref's independently authorized operator payment stop remains essential.
+   arbitrary code executing inside Commerce from bypassing an in-process check**.
+   The control outside Commerce for that case is Refref's operator payment stop,
+   ART-303, which is **not implemented yet** (Backlog; Refref's current
+   `ops/runbooks/stop-sales.md` stops sales through the merchant's own switch).
+   Until it exists this residual risk is part of the owner's accepted
+   same-process risk for Commerce.
    It replaces
    the `sales_activation` table and the `/v1/internal/sales-activations` route
    (the table stays read-only as history). It is both the first-sale gate and
@@ -220,8 +224,9 @@ sequence runs in one workflow concurrency group per application.
    or full is refused, even with the offer `PUBLIC`.
 2. Storefront host file missing, unreadable or CLOSED: new quotes and
    confirmation/payment initiation fail closed. A normal Commerce process
-   cannot modify its read-only mounted file; compromised Commerce code might
-   bypass its check, so Refref's independent operator stop is retained.
+   cannot modify its read-only mounted file. Compromised Commerce code might
+   bypass its check; that case is covered only once Refref's operator payment
+   stop (ART-303) exists.
 3. Price change at 14:10 against a 14:00 quote: confirmation at 14:14 creates
    the order at the quoted price; a new quote uses the new price.
 4. Offer closed at 14:05 against a 14:00 quote: new-quote admission refuses a
