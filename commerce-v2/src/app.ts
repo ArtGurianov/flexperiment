@@ -10,12 +10,12 @@ import { getEditorialDraft, getEditorialPublished, publishEditorialDraft, relist
 import { assertPaymentCreationEnabled, type CommerceRuntimeConfig } from "./payment-mode";
 import { saveResumePosition } from "./resume";
 import { confirmCheckout, prepareCheckout, reconcileCheckout, type PaidCheckoutAcceptance, type PaymentRail } from "./checkout";
-import { activateSales, configureProduct, withdrawProduct } from "./catalog-control";
-import { campaignStatus, confirmCampaign, createCampaign, dispatchCampaign, retryCampaign, unsubscribeCustomer, type CampaignEmail } from "./campaigns";
+import { configureProduct, withdrawProduct } from "./catalog-control";
+import { unsubscribeCustomer, type CampaignEmail } from "./campaigns";
 import { assertVideoUploadInput, observeKinescopeStatus, pollKinescopeUpload, startVideoUpload, type KinescopeClient, type KinescopeStatus } from "./kinescope";
-import { activateLegalRelease, currentLegalRelease, type LegalReleaseManifest } from "./legal-control";
+import { currentLegalRelease } from "./legal-control";
 import { issueCheckoutHandoffState, issueCheckoutPaymentReturnState, verifyCheckoutHandoffState, verifyCheckoutNavigationState } from "./checkout-handoff";
-import { listMerchantPromotions, saveMerchantPromotion, type MerchantPromotionInput } from "./promotions";
+import { listMerchantPromotions, saveMerchantPromotion } from "./promotions";
 import type { RefundEnvelopeKeyring } from "./refund-envelope";
 import { decideRefund, executeApprovedRefund, listCustomerRefunds, listRefundCases, recordCourseAccessStart, registerEmailRefund, requestRefund, type RefundDecisionInput, type RefundReason } from "./refunds";
 import { grantManualEntitlement, revokeManualEntitlement } from "./entitlements";
@@ -511,120 +511,10 @@ export function createCommerceV2App(deps: Dependencies) {
     return context.json({ courses }, 200, noStore);
   });
 
-  app.get("/v1/internal/control-room/catalogue", (context) =>
-    context.json(controlRoomCatalogue(deps.db, now().toISOString()), 200, noStore));
-  app.get("/v1/internal/control-room/orders", (context) =>
-    context.json(controlRoomOrders(deps.db, now().toISOString()), 200, noStore));
-  app.get("/v1/internal/control-room/customers", (context) =>
-    context.json(controlRoomCustomers(deps.db, now().toISOString()), 200, noStore));
-  app.get("/v1/internal/control-room/entitlements", (context) =>
-    context.json(controlRoomEntitlements(deps.db, now().toISOString()), 200, noStore));
-  app.get("/v1/internal/control-room/cities", (context) =>
-    context.json(controlRoomCities(deps.db, now().toISOString()), 200, noStore));
-  app.get("/v1/internal/control-room/lab", (context) =>
-    context.json(controlRoomLabOccurrences(deps.db, now().toISOString()), 200, noStore));
-  app.get("/v1/internal/control-room/attention", (context) => {
-    flagOrphanedOverrides(deps.db, now().toISOString());
-    return context.json(controlRoomAttention(deps.db, now().toISOString()), 200, noStore);
-  });
-  app.get("/v1/internal/control-room/integration", (context) =>
-    context.json(controlRoomIntegrationSummary(deps.db, deps.config, now(), Number(process.env.CATALOG_LEASE_MS ?? 24 * 60 * 60 * 1000)), 200, noStore));
-  app.get("/v1/internal/control-room/email", (context) => context.json(controlRoomEmailOperations(deps.db, now().toISOString()), 200, noStore));
-  app.get("/v1/internal/control-room/incidents", (context) => context.json(controlRoomIncidents(deps.db, now().toISOString()), 200, noStore));
-  app.get("/v1/internal/control-room/audit", (context) => context.json(controlRoomAudit(deps.db, now().toISOString()), 200, noStore));
-
-  app.post("/v1/internal/sales-activations", async (context) => {
-    try {
-      return context.json(activateSales(deps.db, await context.req.json<Parameters<typeof activateSales>[1]>(), now().toISOString()), 201, noStore);
-    } catch (error) {
-      return context.json({ code: error instanceof Error ? error.message : "SALES_ACTIVATION_FAILED" }, 409, noStore);
-    }
-  });
-
-  app.post("/v1/internal/legal-releases", async (context) => {
-    try {
-      return context.json(activateLegalRelease(deps.db, await context.req.json<{
-        storefront: "COURSES" | "LAB"; version: string; manifest: LegalReleaseManifest; actor: string;
-      }>(), now().toISOString()), 201, noStore);
-    } catch (error) {
-      return context.json({ code: error instanceof Error ? error.message : "LEGAL_RELEASE_FAILED" }, 409, noStore);
-    }
-  });
-
-  app.get("/v1/internal/merchant-promotions", (context) => context.json({
-    reservedPrefix: deps.config.merchantPromotionPrefix,
-    promotions: listMerchantPromotions(deps.db),
-  }, 200, noStore));
-
-  app.post("/v1/internal/merchant-promotions", async (context) => {
-    try {
-      const result = saveMerchantPromotion(
-        deps.db,
-        await context.req.json<MerchantPromotionInput>(),
-        deps.config.merchantPromotionPrefix,
-        now().toISOString(),
-      );
-      return context.json(result, 200, noStore);
-    } catch (error) {
-      return context.json({ code: error instanceof Error ? error.message : "MERCHANT_PROMOTION_REJECTED" }, 409, noStore);
-    }
-  });
-
   app.get("/v1/legal/current", (context) => {
     const storefront = context.req.query("storefront") === "LAB" ? "LAB" : "COURSES";
     const release = currentLegalRelease(deps.db, storefront);
     return release ? context.json(release, 200, noStore) : context.json({ code: "LEGAL_RELEASE_NOT_FOUND" }, 404, noStore);
-  });
-
-  app.post("/v1/internal/campaigns", async (context) => {
-    try {
-      const input = await context.req.json<{ courseRef: string; payload: Record<string, unknown> }>();
-      return context.json(createCampaign(deps.db, {
-        ...input,
-        idempotencyKey: context.req.header("idempotency-key") ?? "",
-      }), 201, noStore);
-    } catch (error) {
-      return context.json({ code: error instanceof Error ? error.message : "CAMPAIGN_CREATE_FAILED" }, 409, noStore);
-    }
-  });
-
-  app.post("/v1/internal/campaigns/:id/confirm", async (context) => {
-    if (!deps.marketingBroadcastsEnabled) return context.json({ code: "MARKETING_BROADCASTS_DISABLED" }, 503, noStore);
-    try {
-      const body = await context.req.json<{ actor: string }>();
-      return context.json(confirmCampaign(deps.db, context.req.param("id"), body.actor, now().toISOString()), 200, noStore);
-    } catch (error) {
-      return context.json({ code: error instanceof Error ? error.message : "CAMPAIGN_CONFIRM_FAILED" }, 409, noStore);
-    }
-  });
-
-  app.post("/v1/internal/campaigns/:id/dispatch", async (context) => {
-    if (!deps.marketingBroadcastsEnabled) return context.json({ code: "MARKETING_BROADCASTS_DISABLED" }, 503, noStore);
-    if (!deps.campaignUnsubscribeSecret || !deps.sendCampaignEmail) return context.json({ code: "CAMPAIGN_DELIVERY_NOT_CONFIGURED" }, 503, noStore);
-    try {
-      return context.json(await dispatchCampaign(deps.db, context.req.param("id"), {
-        secret: deps.campaignUnsubscribeSecret, publicOrigin: origins.platform, send: deps.sendCampaignEmail,
-      }, now().toISOString()), 200, noStore);
-    } catch (error) {
-      return context.json({ code: error instanceof Error ? error.message : "CAMPAIGN_DISPATCH_FAILED" }, 409, noStore);
-    }
-  });
-
-  app.get("/v1/internal/campaigns/:id/status", (context) => {
-    try {
-      return context.json(campaignStatus(deps.db, context.req.param("id")), 200, noStore);
-    } catch (error) {
-      return context.json({ code: error instanceof Error ? error.message : "CAMPAIGN_STATUS_FAILED" }, 404, noStore);
-    }
-  });
-
-  app.post("/v1/internal/campaigns/:id/retry", (context) => {
-    if (!deps.marketingBroadcastsEnabled) return context.json({ code: "MARKETING_BROADCASTS_DISABLED" }, 503, noStore);
-    try {
-      return context.json(retryCampaign(deps.db, context.req.param("id"), now().toISOString()), 200, noStore);
-    } catch (error) {
-      return context.json({ code: error instanceof Error ? error.message : "CAMPAIGN_RETRY_FAILED" }, 409, noStore);
-    }
   });
 
   app.post("/v1/email/unsubscribe", (context) => {
@@ -765,26 +655,6 @@ export function createCommerceV2App(deps: Dependencies) {
       }, now().toISOString()), 201, noStore);
     } catch (error) {
       return context.json({ code: error instanceof Error ? error.message : "REFUND_REQUEST_FAILED" }, 409, noStore);
-    }
-  });
-
-  app.get("/v1/internal/refunds", (context) => context.json(listRefundCases(deps.db, now().toISOString()), 200, noStore));
-
-  app.post("/v1/internal/refunds/:requestPublicId/decision", async (context) => {
-    try {
-      return context.json(decideRefund(deps.db, context.req.param("requestPublicId"), await context.req.json<RefundDecisionInput>(), now().toISOString()), 200, noStore);
-    } catch (error) {
-      return context.json({ code: error instanceof Error ? error.message : "REFUND_DECISION_FAILED" }, 409, noStore);
-    }
-  });
-
-  app.post("/v1/internal/refunds/:requestPublicId/execute", async (context) => {
-    if (!deps.paymentRail) return context.json({ code: "PAYMENT_RAIL_UNAVAILABLE" }, 503, noStore);
-    if (!deps.refundEnvelopeKeys) return context.json({ code: "REFUND_ENVELOPE_KEYS_UNAVAILABLE" }, 503, noStore);
-    try {
-      return context.json(await executeApprovedRefund(deps.db, deps.paymentRail, deps.refundEnvelopeKeys, context.req.param("requestPublicId"), now().toISOString()), 200, noStore);
-    } catch (error) {
-      return context.json({ code: error instanceof Error ? error.message : "REFUND_EXECUTION_FAILED" }, 409, noStore);
     }
   });
 

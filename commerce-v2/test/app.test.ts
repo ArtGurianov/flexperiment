@@ -39,6 +39,20 @@ const app = (paymentMode: "disabled" | "mock" = "disabled", overrides: Partial<A
   ...overrides,
 });
 
+const adminSession = async (server: ReturnType<typeof app>) => {
+  const login = await server.request("/v1/admin/login", { method: "POST",
+    headers: { origin: "https://admin.flexperiment.ru", "content-type": "application/json", "x-real-ip": "203.0.113.10" },
+    body: JSON.stringify({ password: adminPassword }) });
+  expect(login.status).toBe(200);
+  return login.headers.get("set-cookie")!;
+};
+
+const adminPost = (cookie: string, body: unknown) => ({
+  method: "POST",
+  headers: { cookie, origin: "https://admin.flexperiment.ru", "content-type": "application/json" },
+  body: JSON.stringify(body),
+});
+
 const internal = (body: unknown) => ({
   method: "POST",
   headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
@@ -84,17 +98,6 @@ describe("commerce v2 boundaries", () => {
     expect(prepareMagicLinkInitiation).not.toHaveBeenCalled();
     expect(authHandler).not.toHaveBeenCalled();
     expect(db.prepare("SELECT COUNT(*) AS n FROM customers").get()).toEqual({ n: 0 });
-  });
-
-  it("keeps marketing broadcast confirmation disabled until the legal gate is enabled", async () => {
-    const disabled = await app().request("/v1/internal/campaigns/campaign/confirm", internal({ actor: "author" }));
-    expect(disabled.status).toBe(503);
-    expect(await disabled.json()).toEqual({ code: "MARKETING_BROADCASTS_DISABLED" });
-
-    const enabled = await app("disabled", { marketingBroadcastsEnabled: true })
-      .request("/v1/internal/campaigns/campaign/confirm", internal({ actor: "author" }));
-    expect(enabled.status).toBe(409);
-    expect(await enabled.json()).toEqual({ code: "CAMPAIGN_NOT_CONFIRMABLE" });
   });
 
   it("exposes the immutable build identity contract", async () => {
@@ -471,12 +474,13 @@ describe("commerce v2 boundaries", () => {
     });
     expect(requested.status).toBe(201);
     const refund = await requested.json() as { requestPublicId: string };
-    expect((await server.request(`/v1/internal/refunds/${refund.requestPublicId}/execute`, internal({}))).status).toBe(409);
-    const decision = await server.request(`/v1/internal/refunds/${refund.requestPublicId}/decision`, internal({
-      outcome: "APPROVE", amountKopecks: 10000, policyBasis: "course-offer-v1", rationale: "approved", actor: "operator",
+    const cookie = await adminSession(server);
+    expect((await server.request(`/v1/admin/v2/refunds/${refund.requestPublicId}/execute`, adminPost(cookie, {}))).status).toBe(409);
+    const decision = await server.request(`/v1/admin/v2/refunds/${refund.requestPublicId}/decision`, adminPost(cookie, {
+      outcome: "APPROVE", amountKopecks: 10000, policyBasis: "course-offer-v1", rationale: "approved",
     }));
     expect(decision.status).toBe(200);
-    const executed = await server.request(`/v1/internal/refunds/${refund.requestPublicId}/execute`, internal({}));
+    const executed = await server.request(`/v1/admin/v2/refunds/${refund.requestPublicId}/execute`, adminPost(cookie, {}));
     expect(await executed.json()).toMatchObject({ state: "SUCCEEDED" });
   });
 
@@ -493,6 +497,22 @@ describe("commerce v2 boundaries", () => {
       ["POST", "/v1/internal/catalog/payment-purpose/retired"],
       ["POST", "/v1/internal/video-uploads"],
       ["GET", "/v1/internal/video-uploads/retired-session"],
+      // ART-31: service-token mutations and Control Room read duplicates. Writes are Control Room
+      // actions behind the login, or owner-cli.ts over SSH; reads are /v1/admin/v2/*.
+      ["POST", "/v1/internal/sales-activations"],
+      ["POST", "/v1/internal/legal-releases"],
+      ["GET", "/v1/internal/merchant-promotions"],
+      ["POST", "/v1/internal/merchant-promotions"],
+      ["POST", "/v1/internal/campaigns"],
+      ["POST", "/v1/internal/campaigns/campaign/confirm"],
+      ["POST", "/v1/internal/campaigns/campaign/dispatch"],
+      ["GET", "/v1/internal/campaigns/campaign/status"],
+      ["POST", "/v1/internal/campaigns/campaign/retry"],
+      ["GET", "/v1/internal/refunds"],
+      ["POST", "/v1/internal/refunds/refund/decision"],
+      ["POST", "/v1/internal/refunds/refund/execute"],
+      ...["catalogue", "orders", "customers", "entitlements", "cities", "lab", "attention", "integration", "email", "incidents", "audit"]
+        .map((view) => ["GET", `/v1/internal/control-room/${view}`] as const),
     ] as const;
     for (const [method, path] of retired) {
       const response = await server.request(path, {
@@ -501,14 +521,16 @@ describe("commerce v2 boundaries", () => {
       });
       expect(response.status, `${method} ${path}`).toBe(404);
     }
-    for (const table of ["catalog_course_projection", "products", "access_overrides", "audit_log"]) {
+    for (const table of ["catalog_course_projection", "products", "access_overrides", "audit_log", "legal_releases",
+      "sales_activation", "merchant_promotion", "notification_campaigns", "refund_decisions"]) {
       expect(db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get(), table).toEqual({ count: 0 });
     }
   });
 
-  it("serves typed Control Room read models only through the internal boundary", async () => {
+  it("serves typed Control Room read models only behind the Control Room login", async () => {
     const server = app("mock");
-    expect((await server.request("/v1/internal/control-room/catalogue")).status).toBe(401);
+    expect((await server.request("/v1/admin/v2/catalogue")).status).toBe(401);
+    expect((await server.request("/v1/admin/v2/catalogue", { headers: { authorization: `Bearer ${token}` } })).status).toBe(401);
     db.prepare("INSERT INTO customers(id,email_normalized) VALUES ('customer','student@example.com')").run();
     db.prepare(`INSERT INTO legal_releases(id,storefront,version,manifest_json,effective_at,active)
       VALUES ('legal','COURSES','stage-b-v1',?,'2026-09-30T00:00:00Z',1)`).run(stageBLegalManifestJson);
@@ -527,12 +549,12 @@ describe("commerce v2 boundaries", () => {
     await server.request("/v1/checkout", {
       method: "POST", headers: { ...headers, "idempotency-key": "cr-payment" }, body: JSON.stringify({ quoteId: quote.quoteId }),
     });
-    const auth = { headers: { authorization: `Bearer ${token}` } };
-    const catalogue = await (await server.request("/v1/internal/control-room/catalogue", auth)).json() as CatalogueResponse;
-    const orders = await (await server.request("/v1/internal/control-room/orders", auth)).json() as OrdersResponse;
-    const customers = await (await server.request("/v1/internal/control-room/customers", auth)).json() as CustomersResponse;
-    const entitlements = await (await server.request("/v1/internal/control-room/entitlements", auth)).json() as EntitlementsResponse;
-    const integration = await (await server.request("/v1/internal/control-room/integration", auth)).json() as ControlRoomIntegrationSummary;
+    const auth = { headers: { cookie: await adminSession(server) } };
+    const catalogue = await (await server.request("/v1/admin/v2/catalogue", auth)).json() as CatalogueResponse;
+    const orders = await (await server.request("/v1/admin/v2/orders", auth)).json() as OrdersResponse;
+    const customers = await (await server.request("/v1/admin/v2/customers", auth)).json() as CustomersResponse;
+    const entitlements = await (await server.request("/v1/admin/v2/entitlements", auth)).json() as EntitlementsResponse;
+    const integration = await (await server.request("/v1/admin/v2/integration", auth)).json() as ControlRoomIntegrationSummary;
     expect(catalogue.courses[0]).toMatchObject({ courseRef: "course-one", accessModel: "PAID", withdrawn: false, offer: { priceKopecks: 10000 } });
     expect(orders.orders[0]).toMatchObject({ customerEmail: "student@example.com", state: "FULFILLED", productKind: "ONLINE_COURSE" });
     expect(customers.customers[0]).toMatchObject({ authBound: false, orderCount: 1, activeEntitlementCount: 1 });
@@ -540,17 +562,18 @@ describe("commerce v2 boundaries", () => {
     expect(integration).toMatchObject({ paymentMode: "mock", outstandingCheckoutCount: 0, processingRefundCount: 0 });
   });
 
-  it("keeps merchant promotion administration behind the internal boundary", async () => {
-    expect((await app().request("/v1/internal/merchant-promotions")).status).toBe(401);
-    const created = await app().request("/v1/internal/merchant-promotions", internal({
+  it("keeps merchant promotion administration behind the Control Room login", async () => {
+    const server = app();
+    expect((await server.request("/v1/admin/v2/promotions", { headers: { authorization: `Bearer ${token}` } })).status).toBe(401);
+    const cookie = await adminSession(server);
+    const created = await server.request("/v1/admin/v2/promotions", adminPost(cookie, {
       code: "FX-LAUNCH",
       discountKind: "PERCENT_BPS",
       discountValue: 1000,
-      actor: "operator",
       expectedVersion: 0,
     }));
     expect(created.status).toBe(200);
-    const listed = await app().request("/v1/internal/merchant-promotions", { headers: { authorization: `Bearer ${token}` } });
+    const listed = await server.request("/v1/admin/v2/promotions", { headers: { cookie } });
     expect(await listed.json()).toMatchObject({ reservedPrefix: "FX-", promotions: [{ code: "FX-LAUNCH", discountValue: 1000 }] });
   });
 
