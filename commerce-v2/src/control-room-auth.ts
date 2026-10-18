@@ -10,6 +10,8 @@ export type ControlRoomAuthConfig = {
   sessionSecret: string;
   /** Exact Admin nginx socket peers, configured separately from public request headers. */
   trustedProxyIps?: readonly string[];
+  /** AES-256-GCM key for the stored TOTP seed; without it no login is possible. */
+  totpKey?: Buffer;
 };
 
 export type ControlRoomSession = { sub: string; sid: string; exp: number };

@@ -51,6 +51,12 @@ const PRESENTATIONS: Readonly<Record<string, AdminErrorPresentation>> = {
   VALIDATION_ERROR: { message: "Проверьте заполнение полей." },
   RATE_LIMITED: { message: "Слишком много запросов. Подождите и повторите." },
   ADMIN_AUTH_REQUIRED: { message: "Сессия закончилась. Войдите снова." },
+  INVALID_CREDENTIALS: { message: "Неверный пароль или код." },
+  CONTROL_ROOM_TOTP_NOT_ENROLLED: {
+    message: "Второй фактор не подключён.",
+    hint: "Подключите его на сервере: owner-cli totp enroll и totp confirm.",
+  },
+  CONTROL_ROOM_TOTP_NOT_CONFIGURED: { message: "Вход закрыт: на сервере не задан ключ второго фактора." },
   ADMIN_REAUTH_REQUIRED: { message: "Для этой команды требуется повторный ввод пароля." },
   EDITORIAL_DOCUMENT_INVALID: { message: "Заполните название курса, раздела и урока; проверьте refs, slug и порядок." },
   EDITORIAL_DOCUMENT_TOO_LARGE: { message: "Черновик превышает допустимый размер." },

@@ -64,7 +64,8 @@ beforeEach(() => {
     BETTER_AUTH_SECRET: "synthetic-better-auth-secret-only-for-isolated-tests",
     AUTH_EMAIL_OUTBOX_KEY: outboxKey.toString("base64"),
     SMARTCAPTCHA_SERVER_KEY: "synthetic-captcha-key", COMMERCE_SESSION_SECRET: "synthetic-admin-key",
-    COMMERCE_ADMIN_PASSWORD_SCRYPT: "synthetic-unused-admin-hash", CAMPAIGN_UNSUBSCRIBE_SECRET: "synthetic-unsubscribe-key",
+    COMMERCE_ADMIN_PASSWORD_SCRYPT: "synthetic-unused-admin-hash", CONTROL_ROOM_TOTP_KEY: Buffer.alloc(32, 3).toString("base64url"),
+    CAMPAIGN_UNSUBSCRIBE_SECRET: "synthetic-unsubscribe-key",
     MARKETING_BROADCASTS_ENABLED: "false", KINESCOPE_DELIVERY_MODE: "open", KINESCOPE_API_TOKEN: undefined,
     KINESCOPE_DRM_USERNAME: undefined, KINESCOPE_DRM_PASSWORD: undefined,
     KINESCOPE_DRM_TOKEN_CURRENT_KEY: undefined, KINESCOPE_DRM_TOKEN_KEYS: undefined, KINESCOPE_DRM_TOKEN_SECRET: undefined,
@@ -132,10 +133,10 @@ describe("ART-162 / ART-179 normal production server, payment disabled", () => {
     expect(runtime.serve).not.toHaveBeenCalled(); expect(fetcher).not.toHaveBeenCalled();
   });
 
-  it.each(["BETTER_AUTH_SECRET", "AUTH_EMAIL_OUTBOX_KEY", "COMMERCE_SESSION_SECRET"])("does not start a normal production server without %s", async (name) => {
+  it.each(["BETTER_AUTH_SECRET", "AUTH_EMAIL_OUTBOX_KEY", "COMMERCE_SESSION_SECRET", "CONTROL_ROOM_TOTP_KEY"])("does not start a normal production server without %s", async (name) => {
     vi.stubEnv(name, undefined);
     const { serverStartup } = await import("../src/server");
-    await expect(serverStartup).rejects.toThrow(name === "COMMERCE_SESSION_SECRET" ? "CONTROL_ROOM_AUTH_CONFIGURATION_REQUIRED" : `${name}_REQUIRED`);
+    await expect(serverStartup).rejects.toThrow(["COMMERCE_SESSION_SECRET", "CONTROL_ROOM_TOTP_KEY"].includes(name) ? "CONTROL_ROOM_AUTH_CONFIGURATION_REQUIRED" : `${name}_REQUIRED`);
     expect(process.exitCode).toBe(1);
     expect(runtime.serve).not.toHaveBeenCalled(); expect(fetcher).not.toHaveBeenCalled();
   });

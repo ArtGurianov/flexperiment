@@ -12,6 +12,7 @@ import { startVideoUpload } from "../src/kinescope";
 import { checkout, MockPaymentRail } from "../src/checkout";
 import { controlRoomEntitlements } from "../src/control-room";
 import { testCheckoutConfig } from "./fixtures/sales";
+import { enrolledTotp, testTotpKey } from "./fixtures/control-room-totp";
 import type { CatalogueResponse, ControlRoomIntegrationSummary, CustomersResponse, EntitlementsResponse, OrdersResponse } from "@flexperiment/control-room-contracts";
 
 let db: Database.Database;
@@ -21,7 +22,11 @@ const adminSalt = Buffer.alloc(16, 7);
 const adminPasswordScrypt = ["scrypt", "v1", "16384", "8", "1", adminSalt.toString("base64url"),
   scryptSync(adminPassword, adminSalt, 64, { N: 16_384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 }).toString("base64url")].join(":");
 
-beforeEach(() => { db = new Database(":memory:"); db.pragma("foreign_keys = ON"); migrateV2(db); });
+let totpCode: () => string;
+beforeEach(() => {
+  db = new Database(":memory:"); db.pragma("foreign_keys = ON"); migrateV2(db);
+  totpCode = enrolledTotp(db, new Date("2026-09-30T12:00:00.000Z")).next;
+});
 
 type AppDependencies = Parameters<typeof createCommerceV2App>[0];
 
@@ -34,7 +39,7 @@ const app = (paymentMode: "disabled" | "mock" = "disabled", overrides: Partial<A
   refundEnvelopeKeys: { currentKeyId: "test", keys: { test: Buffer.alloc(32, 5) } },
   authenticateCustomer: async (headers) => headers.get("authorization") === "Session customer" ? "customer" : null,
   now: () => new Date("2026-09-30T12:00:00.000Z"),
-  controlRoomAuth: { origin: "https://admin.flexperiment.ru", sessionSecret: "test-control-room-secret", passwordScrypt: adminPasswordScrypt, trustedProxyIps: ["127.0.0.1"] },
+  controlRoomAuth: { origin: "https://admin.flexperiment.ru", sessionSecret: "test-control-room-secret", passwordScrypt: adminPasswordScrypt, trustedProxyIps: ["127.0.0.1"], totpKey: testTotpKey },
   controlRoomPeerAddress: () => "127.0.0.1",
   ...overrides,
 });
@@ -42,7 +47,7 @@ const app = (paymentMode: "disabled" | "mock" = "disabled", overrides: Partial<A
 const adminSession = async (server: ReturnType<typeof app>) => {
   const login = await server.request("/v1/admin/login", { method: "POST",
     headers: { origin: "https://admin.flexperiment.ru", "content-type": "application/json", "x-real-ip": "203.0.113.10" },
-    body: JSON.stringify({ password: adminPassword }) });
+    body: JSON.stringify({ password: adminPassword, code: totpCode() }) });
   expect(login.status).toBe(200);
   return login.headers.get("set-cookie")!;
 };
@@ -116,11 +121,11 @@ describe("commerce v2 boundaries", () => {
     expect((await server.request("/v1/admin/session")).status).toBe(401);
     expect((await server.request("/v1/admin/login", {
       method: "POST", headers: { origin: "https://attacker.invalid", "content-type": "application/json" },
-      body: JSON.stringify({ password: adminPassword }),
+      body: JSON.stringify({ password: adminPassword, code: totpCode() }),
     })).status).toBe(403);
     const login = await server.request("/v1/admin/login", {
       method: "POST", headers: { origin: "https://admin.flexperiment.ru", "content-type": "application/json", "x-real-ip": "203.0.113.10" },
-      body: JSON.stringify({ password: adminPassword }),
+      body: JSON.stringify({ password: adminPassword, code: totpCode() }),
     });
     expect(login.status).toBe(200);
     const cookie = login.headers.get("set-cookie")!;
@@ -148,7 +153,7 @@ describe("commerce v2 boundaries", () => {
     expect((await server.request(draftPath)).status).toBe(401);
     const login = await server.request("/v1/admin/login", { method: "POST",
       headers: { origin: "https://admin.flexperiment.ru", "content-type": "application/json", "x-real-ip": "203.0.113.10" },
-      body: JSON.stringify({ password: adminPassword }) });
+      body: JSON.stringify({ password: adminPassword, code: totpCode() }) });
     const cookie = login.headers.get("set-cookie")!;
     expect((await write({ cookie, origin: "https://attacker.invalid" })).status).toBe(403);
     expect((await write({ cookie, origin: "https://admin.flexperiment.ru" })).status).toBe(200);
@@ -169,7 +174,7 @@ describe("commerce v2 boundaries", () => {
     const server = app();
     const login = await server.request("/v1/admin/login", {
       method: "POST", headers: { origin: "https://admin.flexperiment.ru", "content-type": "application/json", "x-real-ip": "203.0.113.10" },
-      body: JSON.stringify({ password: adminPassword }),
+      body: JSON.stringify({ password: adminPassword, code: totpCode() }),
     });
     const cookie = login.headers.get("set-cookie")!;
     const command = { productRef: "course:admin", offerRef: "course:admin", kind: "ONLINE_COURSE", courseRef: "admin",
@@ -194,7 +199,7 @@ describe("commerce v2 boundaries", () => {
     const server = app("disabled", { invalidatePlatformCache });
     const login = await server.request("/v1/admin/login", {
       method: "POST", headers: { origin: "https://admin.flexperiment.ru", "content-type": "application/json", "x-real-ip": "203.0.113.10" },
-      body: JSON.stringify({ password: adminPassword }),
+      body: JSON.stringify({ password: adminPassword, code: totpCode() }),
     });
     const headers = { cookie: login.headers.get("set-cookie")!, origin: "https://admin.flexperiment.ru", "content-type": "application/json" };
     expect((await server.request("/v1/admin/v2/catalogue/products", { method: "POST", headers, body: JSON.stringify({
@@ -219,7 +224,7 @@ describe("commerce v2 boundaries", () => {
     const server = app();
     const login = await server.request("/v1/admin/login", {
       method: "POST", headers: { origin: "https://admin.flexperiment.ru", "content-type": "application/json", "x-real-ip": "203.0.113.10" },
-      body: JSON.stringify({ password: adminPassword }),
+      body: JSON.stringify({ password: adminPassword, code: totpCode() }),
     });
     const cookie = login.headers.get("set-cookie")!;
     const command = {
@@ -425,7 +430,7 @@ describe("commerce v2 boundaries", () => {
     expect((await write({ authorization: "Session customer" })).status).toBe(401);
     expect((await write({ authorization: `Bearer ${token}` })).status).toBe(401);
     const login = await server.request("/v1/admin/login", { method: "POST",
-      headers: { origin: "https://admin.flexperiment.ru", "content-type": "application/json", "x-real-ip": "203.0.113.10" }, body: JSON.stringify({ password: adminPassword }) });
+      headers: { origin: "https://admin.flexperiment.ru", "content-type": "application/json", "x-real-ip": "203.0.113.10" }, body: JSON.stringify({ password: adminPassword, code: totpCode() }) });
     const cookie = login.headers.get("set-cookie")!;
     expect((await write({ cookie, origin: "https://attacker.invalid" })).status).toBe(403);
     // An audit failure must not leave an unaudited request/evidence row.
@@ -678,7 +683,7 @@ describe("commerce v2 boundaries", () => {
     });
     const login = await server.request("/v1/admin/login", {
       method: "POST", headers: { origin: "https://admin.flexperiment.ru", "content-type": "application/json", "x-real-ip": "203.0.113.10" },
-      body: JSON.stringify({ password: adminPassword }),
+      body: JSON.stringify({ password: adminPassword, code: totpCode() }),
     });
     const upload = { method: "POST", headers: {
       cookie: login.headers.get("set-cookie")!, origin: "https://admin.flexperiment.ru", "content-type": "application/json",
@@ -758,7 +763,7 @@ describe("commerce v2 boundaries", () => {
     const server = app("disabled", { kinescopeClient, kinescopeLessonsFolderId: "lessons-folder" });
     const login = await server.request("/v1/admin/login", {
       method: "POST", headers: { origin: "https://admin.flexperiment.ru", "content-type": "application/json", "x-real-ip": "203.0.113.10" },
-      body: JSON.stringify({ password: adminPassword }),
+      body: JSON.stringify({ password: adminPassword, code: totpCode() }),
     });
     const cookie = login.headers.get("set-cookie")!;
     const upload = (lessonRef: string, headers: Record<string, string> = {}) => server.request("/v1/admin/v2/video-uploads", {

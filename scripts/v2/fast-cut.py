@@ -30,7 +30,7 @@ INPUT = Path('/etc/flexperiment-fast-cut-canary')
 BACKUPS = Path('/var/backups/flexperiment-fast-cut-canary')
 STACK = Path('/opt/flexperiment-fast-cut-canary/deploy/v2/fast-cut/compose.json')
 ERASURE = Path('/var/lib/flexperiment-erasure-canary')
-SCHEMA = 'b71a08d5f785b98516d4c2fbde8184d25bb91ce1b880d614d637be76876dd84f'
+SCHEMA = '40ede1d98e15b510c920418cd525e039346890560e7e9dc2fe90aecd760b86a1'
 DATABASE = Path('/var/lib/docker/volumes/'+ORIGINAL+'-'+ORIGINAL+'-commerce-v2-data/_data/commerce.sqlite')
 ORIGINS = {key:'https://canary-'+name+'.flexperiment.ru' for key,name in
            [('PLATFORM_ORIGIN','platform'),('LAB_ORIGIN','lab'),('ADMIN_ORIGIN','admin'),('API_ORIGIN','api')]}
@@ -385,7 +385,7 @@ def check():
     db=sqlite3.connect(DATABASE.as_uri()+'?mode=ro',uri=True);db.row_factory=sqlite3.Row
     rows=[dict(v) for v in db.execute("select type,name,tbl_name,sql from sqlite_master where name not like 'sqlite_%' order by type,name")]
     require(hashlib.sha256(json.dumps(rows,separators=(',',':'),ensure_ascii=False).encode()).hexdigest()==SCHEMA
-            and db.execute('select count(*) from schema_migrations').fetchone()[0]==27
+            and db.execute('select count(*) from schema_migrations').fetchone()[0]==28
             and db.execute('pragma integrity_check').fetchone()[0]=='ok' and not db.execute('pragma foreign_key_check').fetchall(),'FAST_CUT_SCHEMA')
     db.close()
     mark_stage('fence')
