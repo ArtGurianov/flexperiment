@@ -29,19 +29,32 @@ reviewable at the cost of explicit read-back/configuration during installation.
 
 ## Rate limits
 
-Keep IP budgets5/15min and20/day. Add singleton-admin budgets20/15min and100/day
-across all admitted source IPs. Consume all four counters in one SQLite
-`BEGIN IMMEDIATE`; refusal rolls back partial charges. The existing table and
-hashed keys suffice, so no merchant DDL or migration is added. Failed and
-successful admitted login attempts consume budget; rejected proxy metadata does
-not. Fixed windows do not extend when a blocked caller retries. A distributed
-attacker can still exhaust the deliberate account budget; it bounds guessing
-and does not promise DoS immunity or recovery bypass.
+Keep hard IP budgets of 5/15min and 20/day. The singleton account has **no
+attempt cap or lockout**. In each 15-minute account window the first five
+admitted attempts have no extra wait, then the waits are 1, 2, 4 and at most
+5 seconds. The short cap leaves headroom under the existing 15-second nginx
+read timeout; a 30-second wait would require a separate timeout change.
+
+Consume both IP counters and reserve the account attempt number in one SQLite
+`BEGIN IMMEDIATE`. An exhausted IP rolls back every partial charge; the
+account counter never refuses admission. The existing table and hashed keys
+suffice, without merchant DDL or migrations. Reopening the database or using a
+second connection cannot reset the shared account history.
+
+Each admitted request commits its own delay before yielding, then awaits it
+**before password verification**. Concurrent requests receive their own
+committed delays instead of racing to read zero failures. New traffic cannot
+postpone a pending request, and there is no unbounded global queue. This is a
+bounded per-request penalty, not an aggregate account throughput cap. Even
+under distributed failures, a correct password from an IP with remaining
+budget can succeed after its bounded wait. Account history is not reset by
+successful or aborted requests; cancellation only stops that request's wait.
 
 ## Validation and future installation
 
 Unit/HTTP tests cover forged CF/XFF, per-IP isolation, rotation across real
-source IPs hitting the account cap, both time windows, persistence, rollback,
+source IPs retaining correct login, bounded concurrent waits, both IP windows,
+persistence across connections/reopening, rollback,
 missing/untrusted metadata and normal login/logout. The existing Docker proxy
 suite exercises real nginx and Traefik on an isolated network, including
 attacker-supplied forwarded-header chains and direct nginx access.

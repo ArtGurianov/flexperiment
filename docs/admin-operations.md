@@ -27,14 +27,23 @@ untrusted/missing socket peer or invalid/missing X-Real-IP gives403
 CF and XFF never substitute for missing transport evidence. Existing authenticated
 sessions remain subject to their normal expiry/revocation/Origin checks.
 
-Admitted attempts consume all four persisted SQLite counters atomically:
-per-IP5/15min and20/day; singleton account20/15min and100/day across all IPs.
-429 is `RATE_LIMITED`; failed and successful logins count. Rejected attempts
-do not partially charge other budgets or extend fixed windows. A distributed
-attacker may exhaust the deliberate account cap; there is no web bypass/reset
-in this slice. Keys hash the canonical source with the session secret; raw IPs
-and credentials are not stored in the counter table. Existing retention remains
-in force. No schema migration is needed.
+Admitted attempts atomically consume the persisted IP counters (5/15min,
+20/day) and reserve an account attempt number. Only IP exhaustion returns
+429 `RATE_LIMITED`; an exhausted IP does not partially charge account history.
+The singleton account has no hard cap or lockout. In each 15-minute account
+window the first five attempts are immediate, then each waits 1, 2, 4 and at
+most **5 seconds before password verification**. This remains below nginx's
+15-second read timeout. A correct password from an IP with remaining budget
+still succeeds after the bounded wait, including after distributed failures.
+
+Concurrent attempts reserve their delays in SQLite before waiting; restarting
+an app or rotating source IPs cannot bypass the history. Each pending request
+has its own fixed wait: later traffic cannot postpone it or create an unbounded
+queue. This is a per-request delay, not a global account throughput limit.
+Aborted requests stop waiting without refunding counters; successful requests
+do not erase shared history. Keys hash the canonical source with the session
+secret; raw IPs and credentials are not stored in the counter table. No schema
+migration is needed. TOTP remains a separate security slice.
 
 The local proxy fixture verifies real Traefik/nginx forwarding on an isolated
 network. It does not qualify external reachability through the restricted

@@ -4,6 +4,7 @@ import { Hono, type Context } from "hono";
 import { getConnInfo } from "@hono/node-server/conninfo";
 import { bodyLimit } from "hono/body-limit";
 import { timingSafeEqual } from "node:crypto";
+import { setTimeout as loginDelay } from "node:timers/promises";
 import { flagOrphanedOverrides } from "./access-overrides";
 import { getEditorialDraft, getEditorialPublished, publishEditorialDraft, relistEditorialCourse, restrictEditorialCourse, saveEditorialDraft, type EditorialDocument } from "./course-editorial";
 import { assertPaymentCreationEnabled, type CommerceRuntimeConfig } from "./payment-mode";
@@ -72,6 +73,8 @@ type Dependencies = {
   readonly controlRoomAuth?: ControlRoomAuthConfig;
   /** In-process transport adapter for tests; production uses Node's socket metadata. */
   readonly controlRoomPeerAddress?: (context: Context) => string | undefined;
+  /** Test clock for the bounded wait; production waits before verifying any password. */
+  readonly controlRoomLoginWait?: (milliseconds: number) => Promise<void>;
   readonly erasureFence?: ErasureRuntimeFence;
 };
 
@@ -167,7 +170,11 @@ export function createCommerceV2App(deps: Dependencies) {
     const source = controlRoomClientIp(context.req.raw.headers, peerAddress, auth.trustedProxyIps);
     if (!source) return context.json({ error: { code: "CONTROL_ROOM_SOURCE_NOT_TRUSTED" } }, 403, noStore);
     try {
-      consumeControlRoomLoginLimits(deps.db, { source, secret: auth.sessionSecret, now: now() });
+      const delayMs = consumeControlRoomLoginLimits(deps.db, { source, secret: auth.sessionSecret, now: now() });
+      if (delayMs) {
+        if (deps.controlRoomLoginWait) await deps.controlRoomLoginWait(delayMs);
+        else await loginDelay(delayMs, undefined, { signal: context.req.raw.signal });
+      }
       const body = await context.req.json<{ password?: string }>();
       if (!body.password || !verifyControlRoomPassword(body.password, auth.passwordScrypt)) {
         return context.json({ error: { code: "INVALID_CREDENTIALS" } }, 401, noStore);
