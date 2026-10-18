@@ -17,6 +17,51 @@ spec=importlib.util.spec_from_file_location('fast_cut',ROOT/'scripts/v2/fast-cut
 f=importlib.util.module_from_spec(spec);spec.loader.exec_module(f)
 
 class FastCut(unittest.TestCase):
+    def test_control_room_ingress_requires_exact_private_receipt_and_requalification(self):
+        canary = 'flexperiment-fast-cut-canary'
+        ingress = 'flexperiment-control-room-ingress'
+        admin = {'Id': 'admin-id', 'NetworkSettings': {'Networks': {
+            canary: {'IPAddress': '10.0.5.3'}, ingress: {'IPAddress': '10.0.6.3'}}}}
+        commerce = {'Id': 'commerce-id', 'NetworkSettings': {'Networks': {canary: {'IPAddress': '10.0.5.2'}}},
+                    'Config': {'Env': ['CONTROL_ROOM_TRUSTED_PROXY_IPS=10.0.5.3']}}
+        proxy = {'Id': 'proxy-id', 'NetworkSettings': {'Networks': {ingress: {'IPAddress': '10.0.6.2'}}}}
+        network = {'Id': 'network-id', 'Containers': {'admin-id': {}, 'proxy-id': {}}}
+        receipt = {'schema': 'flexperiment.control-room-network/1', 'networkId': 'network-id',
+                   'adminContainerId': 'admin-id', 'commerceContainerId': 'commerce-id',
+                   'traefikContainerId': 'proxy-id', 'adminCanaryIp': '10.0.5.3',
+                   'adminIngressIp': '10.0.6.3', 'traefikIngressIp': '10.0.6.2'}
+        with tempfile.TemporaryDirectory() as directory, patch.object(f, 'INPUT', Path(directory)):
+            with self.assertRaisesRegex(ValueError, 'RUNTIME_SCOPE'):
+                f.assert_runtime_networks('admin', admin)
+            (Path(directory)/'control-room-network.json').write_text('private fixture')
+            def check(a=admin, c=commerce, p=proxy, n=network, r=receipt):
+                with patch.object(f, 'private', return_value=json.dumps(r).encode()), \
+                     patch.object(f, 'run', side_effect=[json.dumps([n]).encode(), json.dumps([c, p]).encode()]):
+                    f.assert_runtime_networks('admin', a)
+            check()
+            mutations = [
+                {'a': {**admin, 'Id': 'recreated-admin'}},
+                {'c': {**commerce, 'Id': 'recreated-commerce'}},
+                {'p': {**proxy, 'Id': 'recreated-proxy'}},
+                {'n': {**network, 'Id': 'recreated-network'}},
+                {'n': {**network, 'Containers': {**network['Containers'], 'intruder': {}}}},
+                {'c': {**commerce, 'Config': {'Env': ['CONTROL_ROOM_TRUSTED_PROXY_IPS=10.0.5.0/24']}}},
+                {'c': {**commerce, 'NetworkSettings': {'Networks': {canary: {}, ingress: {}}}}},
+                {'p': {**proxy, 'NetworkSettings': {'Networks': {**proxy['NetworkSettings']['Networks'], canary: {}}}}},
+                {'r': {**receipt, 'adminCanaryIp': '10.0.5.99'}},
+                {'r': {**receipt, 'adminIngressIp': '10.0.6.99'}},
+                {'r': {**receipt, 'traefikIngressIp': '10.0.6.99'}},
+                {'r': {**receipt, 'unreviewed': True}},
+            ]
+            for mutation in mutations:
+                with self.subTest(mutation=mutation), self.assertRaises(ValueError): check(**mutation)
+            with patch.object(f, 'private', side_effect=ValueError('PRIVATE_CUSTODY')), \
+                 self.assertRaisesRegex(ValueError, 'PRIVATE_CUSTODY'):
+                f.assert_runtime_networks('admin', admin)
+            for role in ['commerce', 'platform']:
+                with self.subTest(role=role), self.assertRaisesRegex(ValueError, 'RUNTIME_SCOPE'):
+                    f.assert_runtime_networks(role, admin)
+
     def setUp(self):
         f.release.cache_clear()
         f.paid_test.cache_clear()
