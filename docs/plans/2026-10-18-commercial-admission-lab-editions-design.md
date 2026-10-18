@@ -22,7 +22,11 @@ Decision:
    ART-319: an operator-controlled host file mounted **read-only** into the
    Commerce container, with a monotonic generation, `by`, `reason` and evidence
    issue. Missing, unreadable or invalid means CLOSED. Only the owner over SSH
-   opens it; the runtime cannot reopen it even with code execution. It replaces
+   may change the host-controlled file to OPEN. The read-only mount prevents a
+   normal Commerce process from rewriting that file, **but cannot stop
+   arbitrary code executing inside Commerce from bypassing an in-process check**;
+   Refref's independently authorized operator payment stop remains essential.
+   It replaces
    the `sales_activation` table and the `/v1/internal/sales-activations` route
    (the table stays read-only as history). It is both the first-sale gate and
    the emergency stop. The evidence issue is a reference, not a proof: the
@@ -42,13 +46,20 @@ Decision:
 5. `PAYMENT_MODE` stays environment configuration. Visibility
    (`LISTED`/`UNLISTED`/`WITHDRAWN`) stays separate; `WITHDRAWN` implies CLOSED.
 
-**One admission function, run in two transactions.** Checkout today checks
-only the offer (`assertOfferOpenToCustomer`, `checkout.ts:318`). For LAB it
-does not check the occurrence lifecycle, its end or capacity, so a direct
-`offerRef` bypasses the catalogue filter (`lab-catalogue.ts:14`). The admission
-function checks: storefront switch open, offer `PUBLIC` (or allowlisted), not
-withdrawn, and for LAB: occurrence `SCHEDULED`, not started, and held + sold
-seats below capacity. It runs inside each of the two write transactions of §2.
+**Two different admission checks, each inside its own write transaction.**
+Checkout today checks only the offer (`assertOfferOpenToCustomer`,
+`checkout.ts:318`). For LAB it does not check the occurrence lifecycle, start/end
+or capacity, so a direct `offerRef` bypasses the catalogue filter
+(`lab-catalogue.ts:14`). **Issue quote + LAB hold:** require the storefront
+operator switch OPEN, offer `PUBLIC` (or authorized closed test), not withdrawn,
+LAB occurrence `SCHEDULED`/not started, and available capacity. **Confirm an
+existing issued quote:** require the storefront operator switch still OPEN,
+the identical non-expired quote and legal acceptance, its valid associated LAB
+hold, no cancellation or withdrawal, and a payment-safe frozen intent.
+Critically, **do not require live `offer.sale_mode=PUBLIC` here**: an ordinary
+offer-level `PUBLIC→CLOSED` prevents *new* quotes but allows an already issued
+quote to finish within its original deadlines. Confirmation does not create a
+new hold or recalculate a changed catalog price.
 
 ## 2. Quote guarantee (LMS and LAB)
 
@@ -68,9 +79,11 @@ Matches Refref `docs/29` §5 and ART-373/379.
 - **Two atomic operations, each one `BEGIN IMMEDIATE` transaction:**
   1. *Quote (+ LAB seat hold):* run admission, take the seat hold (LAB) and
      write the quote with its frozen price and expiry. LMS has no hold.
-  2. *Confirm:* check the quote and the hold have not expired and no
-     cancellation, withdrawal or storefront close applies, convert the hold into
-     the order and write the attempt. Only after this commit is Refref called.
+  2. *Confirm:* run **existing-quote confirmation admission**, not new-quote
+     admission. Verify frozen quote/legal/promo facts, deadlines and the original
+     LAB hold despite any intervening ordinary offer close. Reject storefront
+     emergency close, withdrawal or cancellation. Atomically convert the hold
+     into an order and record the attempt, then call Refref after commit.
 
   The live price may change between them; the quote's price does not. A
   repeated quote request for the same intent returns the existing quote and
@@ -205,12 +218,16 @@ sequence runs in one workflow concurrency group per application.
 
 1. Direct checkout of a LAB `offerRef` whose occurrence is cancelled, started
    or full is refused, even with the offer `PUBLIC`.
-2. Storefront host file missing, unreadable or CLOSED: every new quote is
-   refused; a runtime-privileged process cannot change the file.
+2. Storefront host file missing, unreadable or CLOSED: new quotes and
+   confirmation/payment initiation fail closed. A normal Commerce process
+   cannot modify its read-only mounted file; compromised Commerce code might
+   bypass its check, so Refref's independent operator stop is retained.
 3. Price change at 14:10 against a 14:00 quote: confirmation at 14:14 creates
    the order at the quoted price; a new quote uses the new price.
-4. Offer closed at 14:05 against a 14:00 quote: confirmation before expiry
-   succeeds; a new quote is refused. A storefront close refuses both.
+4. Offer closed at 14:05 against a 14:00 quote: new-quote admission refuses a
+   new quote; existing-quote confirmation succeeds until its own deadlines,
+   despite `offer.sale_mode=CLOSED`. Emergency storefront close refuses both.
+   Test both code paths against the same SQLite hold/order transaction.
 4a. Two concurrent LAB quotes for the last seat: exactly one gets a hold. An
    expired hold frees the seat and its quote cannot be confirmed. A lost Refref
    response after confirm is recovered by readback with the same order and
