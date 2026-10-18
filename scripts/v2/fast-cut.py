@@ -53,6 +53,7 @@ DIAGNOSTIC_CODES = frozenset({
     'FAST_CUT_COMMAND_FAILED',
     'FAST_CUT_COMMERCE_GUARD',
     'FAST_CUT_COMMERCE_NOT_READY',
+    'FAST_CUT_CONTROL_ROOM_NETWORK',
     'FAST_CUT_DATA_MOUNT',
     'FAST_CUT_ENV_INVALID',
     'FAST_CUT_ERASURE_MOUNT',
@@ -275,6 +276,42 @@ def prepare():
     return {'state':'PRIVATE_INPUTS_PREPARED','canaryAdminPasswordChanged':True,'originalInputsUnchanged':True}
 
 
+def assert_runtime_networks(role, container):
+    """Only a private, exact installation receipt admits Admin's second network.
+
+    Container replacement or address drift requires qualification and a new
+    receipt. Commerce/Platform never gain ingress access through this rule.
+    """
+    canary = 'flexperiment-fast-cut-canary'
+    ingress = 'flexperiment-control-room-ingress'
+    marker = INPUT/'control-room-network.json'
+    networks = container['NetworkSettings']['Networks']
+    if role != 'admin' or not marker.exists():
+        require(set(networks) == {canary}, 'FAST_CUT_RUNTIME_SCOPE')
+        return
+    code = 'FAST_CUT_CONTROL_ROOM_NETWORK'
+    receipt = json.loads(private(marker))
+    fields = {'schema', 'networkId', 'adminContainerId', 'commerceContainerId',
+              'traefikContainerId', 'adminCanaryIp', 'adminIngressIp', 'traefikIngressIp'}
+    require(set(receipt) == fields and receipt['schema'] == 'flexperiment.control-room-network/1'
+            and set(networks) == {canary, ingress}, code)
+    network = json.loads(run(['docker', 'network', 'inspect', ingress]))[0]
+    peers = json.loads(run(['docker', 'inspect', 'flexperiment-fast-cut-canary-commerce', 'coolify-proxy']))
+    commerce, traefik = peers
+    require(network['Id'] == receipt['networkId']
+            and container['Id'] == receipt['adminContainerId']
+            and commerce['Id'] == receipt['commerceContainerId']
+            and traefik['Id'] == receipt['traefikContainerId']
+            and set(network['Containers']) == {container['Id'], traefik['Id']}, code)
+    require(networks[canary]['IPAddress'] == receipt['adminCanaryIp']
+            and networks[ingress]['IPAddress'] == receipt['adminIngressIp']
+            and traefik['NetworkSettings']['Networks'][ingress]['IPAddress'] == receipt['traefikIngressIp']
+            and set(commerce['NetworkSettings']['Networks']) == {canary}
+            and canary not in traefik['NetworkSettings']['Networks'], code)
+    env = dict(v.split('=', 1) for v in commerce['Config']['Env'] if '=' in v)
+    require(env.get('CONTROL_ROOM_TRUSTED_PROXY_IPS') == receipt['adminCanaryIp'], code)
+
+
 def inspect(role):
     manifest=json.loads(STACK.read_bytes());expected=manifest['services'][role]
     expected_release=release()[role]
@@ -285,8 +322,9 @@ def inspect(role):
     require(container['Config']['Image']==expected['image'] and container['Image']==image['Id']==qualified['imageId']
             and image['RootFS']['Layers']==qualified['rootfs'] and (image['Os'],image['Architecture'])==('linux','amd64'), 'FAST_CUT_IMAGE_DRIFT')
     require(container['State']['Running'] and not container['HostConfig'].get('PortBindings')
-            and container['HostConfig']['ReadonlyRootfs'] and set(container['NetworkSettings']['Networks'])=={'flexperiment-fast-cut-canary'}
+            and container['HostConfig']['ReadonlyRootfs']
             and container['Config']['Labels'].get('com.flexperiment.scope')=='canary-fast-cut', 'FAST_CUT_RUNTIME_SCOPE')
+    assert_runtime_networks(role, container)
     for field in ['User','Entrypoint','Cmd','WorkingDir']:
         actual, original = container['Config'].get(field), image['Config'].get(field)
         # Docker canonicalizes an unspecified native nginx user from null to
