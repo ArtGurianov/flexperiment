@@ -7,6 +7,8 @@ export type ControlRoomAuthConfig = {
   origin: string;
   passwordScrypt: string;
   sessionSecret: string;
+  /** Exact Admin nginx socket peers, configured separately from public request headers. */
+  trustedProxyIps?: readonly string[];
 };
 
 export type ControlRoomSession = { sub: string; sid: string; exp: number };
@@ -67,6 +69,19 @@ export function consumeControlRoomLoginLimit(
     ON CONFLICT(rate_key,window_start) DO UPDATE SET attempt_count=attempt_count+1 RETURNING attempt_count`)
     .get(key, windowStart) as { attempt_count: number };
   if (row.attempt_count > input.limit) throw new Error("RATE_LIMITED");
+}
+
+export function consumeControlRoomLoginLimits(
+  db: Database.Database, input: { source: string; secret: string; now: Date },
+) {
+  // Admission of all four budgets is atomic, including across processes sharing this database.
+  db.transaction(() => {
+    consumeControlRoomLoginLimit(db, { ...input, windowMs: 15 * 60_000, limit: 5, label: "15m" });
+    consumeControlRoomLoginLimit(db, { ...input, windowMs: 24 * 60 * 60_000, limit: 20, label: "day" });
+    const account = { ...input, source: "singleton-admin" };
+    consumeControlRoomLoginLimit(db, { ...account, windowMs: 15 * 60_000, limit: 20, label: "account:15m" });
+    consumeControlRoomLoginLimit(db, { ...account, windowMs: 24 * 60 * 60_000, limit: 100, label: "account:day" });
+  }).immediate();
 }
 
 export function auditControlRoom(

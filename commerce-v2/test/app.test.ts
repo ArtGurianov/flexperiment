@@ -34,7 +34,8 @@ const app = (paymentMode: "disabled" | "mock" = "disabled", overrides: Partial<A
   refundEnvelopeKeys: { currentKeyId: "test", keys: { test: Buffer.alloc(32, 5) } },
   authenticateCustomer: async (headers) => headers.get("authorization") === "Session customer" ? "customer" : null,
   now: () => new Date("2026-09-30T12:00:00.000Z"),
-  controlRoomAuth: { origin: "https://admin.flexperiment.ru", sessionSecret: "test-control-room-secret", passwordScrypt: adminPasswordScrypt },
+  controlRoomAuth: { origin: "https://admin.flexperiment.ru", sessionSecret: "test-control-room-secret", passwordScrypt: adminPasswordScrypt, trustedProxyIps: ["127.0.0.1"] },
+  controlRoomPeerAddress: () => "127.0.0.1",
   ...overrides,
 });
 
@@ -115,7 +116,7 @@ describe("commerce v2 boundaries", () => {
       body: JSON.stringify({ password: adminPassword }),
     })).status).toBe(403);
     const login = await server.request("/v1/admin/login", {
-      method: "POST", headers: { origin: "https://admin.flexperiment.ru", "content-type": "application/json" },
+      method: "POST", headers: { origin: "https://admin.flexperiment.ru", "content-type": "application/json", "x-real-ip": "203.0.113.10" },
       body: JSON.stringify({ password: adminPassword }),
     });
     expect(login.status).toBe(200);
@@ -143,7 +144,7 @@ describe("commerce v2 boundaries", () => {
     expect((await write({})).status).toBe(401);
     expect((await server.request(draftPath)).status).toBe(401);
     const login = await server.request("/v1/admin/login", { method: "POST",
-      headers: { origin: "https://admin.flexperiment.ru", "content-type": "application/json" },
+      headers: { origin: "https://admin.flexperiment.ru", "content-type": "application/json", "x-real-ip": "203.0.113.10" },
       body: JSON.stringify({ password: adminPassword }) });
     const cookie = login.headers.get("set-cookie")!;
     expect((await write({ cookie, origin: "https://attacker.invalid" })).status).toBe(403);
@@ -164,7 +165,7 @@ describe("commerce v2 boundaries", () => {
   it("derives catalogue actors from the Control Room session and rejects stale versions", async () => {
     const server = app();
     const login = await server.request("/v1/admin/login", {
-      method: "POST", headers: { origin: "https://admin.flexperiment.ru", "content-type": "application/json" },
+      method: "POST", headers: { origin: "https://admin.flexperiment.ru", "content-type": "application/json", "x-real-ip": "203.0.113.10" },
       body: JSON.stringify({ password: adminPassword }),
     });
     const cookie = login.headers.get("set-cookie")!;
@@ -189,7 +190,7 @@ describe("commerce v2 boundaries", () => {
     const invalidatePlatformCache = vi.fn(async () => {});
     const server = app("disabled", { invalidatePlatformCache });
     const login = await server.request("/v1/admin/login", {
-      method: "POST", headers: { origin: "https://admin.flexperiment.ru", "content-type": "application/json" },
+      method: "POST", headers: { origin: "https://admin.flexperiment.ru", "content-type": "application/json", "x-real-ip": "203.0.113.10" },
       body: JSON.stringify({ password: adminPassword }),
     });
     const headers = { cookie: login.headers.get("set-cookie")!, origin: "https://admin.flexperiment.ru", "content-type": "application/json" };
@@ -214,7 +215,7 @@ describe("commerce v2 boundaries", () => {
       VALUES ('manual-product','course:manual','ONLINE_COURSE','PAID','manual-course')`).run();
     const server = app();
     const login = await server.request("/v1/admin/login", {
-      method: "POST", headers: { origin: "https://admin.flexperiment.ru", "content-type": "application/json" },
+      method: "POST", headers: { origin: "https://admin.flexperiment.ru", "content-type": "application/json", "x-real-ip": "203.0.113.10" },
       body: JSON.stringify({ password: adminPassword }),
     });
     const cookie = login.headers.get("set-cookie")!;
@@ -421,7 +422,7 @@ describe("commerce v2 boundaries", () => {
     expect((await write({ authorization: "Session customer" })).status).toBe(401);
     expect((await write({ authorization: `Bearer ${token}` })).status).toBe(401);
     const login = await server.request("/v1/admin/login", { method: "POST",
-      headers: { origin: "https://admin.flexperiment.ru", "content-type": "application/json" }, body: JSON.stringify({ password: adminPassword }) });
+      headers: { origin: "https://admin.flexperiment.ru", "content-type": "application/json", "x-real-ip": "203.0.113.10" }, body: JSON.stringify({ password: adminPassword }) });
     const cookie = login.headers.get("set-cookie")!;
     expect((await write({ cookie, origin: "https://attacker.invalid" })).status).toBe(403);
     // An audit failure must not leave an unaudited request/evidence row.
@@ -653,7 +654,7 @@ describe("commerce v2 boundaries", () => {
       kinescopeWebhookCredentials: { username: "webhook", password: "secret" },
     });
     const login = await server.request("/v1/admin/login", {
-      method: "POST", headers: { origin: "https://admin.flexperiment.ru", "content-type": "application/json" },
+      method: "POST", headers: { origin: "https://admin.flexperiment.ru", "content-type": "application/json", "x-real-ip": "203.0.113.10" },
       body: JSON.stringify({ password: adminPassword }),
     });
     const upload = { method: "POST", headers: {
@@ -733,7 +734,7 @@ describe("commerce v2 boundaries", () => {
     };
     const server = app("disabled", { kinescopeClient, kinescopeLessonsFolderId: "lessons-folder" });
     const login = await server.request("/v1/admin/login", {
-      method: "POST", headers: { origin: "https://admin.flexperiment.ru", "content-type": "application/json" },
+      method: "POST", headers: { origin: "https://admin.flexperiment.ru", "content-type": "application/json", "x-real-ip": "203.0.113.10" },
       body: JSON.stringify({ password: adminPassword }),
     });
     const cookie = login.headers.get("set-cookie")!;
