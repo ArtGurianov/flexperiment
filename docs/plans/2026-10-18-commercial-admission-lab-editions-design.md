@@ -72,10 +72,20 @@ Matches Refref `docs/29` §5 and ART-373/379.
 - A quote is payment-admissible until the earliest of: 15 minutes, the LAB seat
   hold, the occurrence start, the end of an applied promotion, a storefront
   close, offer withdrawal and occurrence cancellation.
-- **A price change does not invalidate an issued quote.** `confirmCheckout`
-  stops comparing the live price with the quote (`checkout.ts:559-561`); the
-  order is created at the quoted price. A legal release change still makes the
-  quote stale: the buyer must accept the documents in force.
+- **A price change does not invalidate an issued quote.** Today
+  `confirmCheckout` compares more than the price: it rebuilds the line with
+  `freezeLine(db, offer)` from the live offer and compares the whole line
+  (`checkout.ts:561`), which includes the fiscal policy, `paymentPurpose` and,
+  for LAB, the occurrence title, start, end and city. So an allowed title edit
+  would also make a quote stale. Confirmation instead takes price, commercial
+  terms and the line from the quote's frozen snapshot and never rebuilds them
+  from the catalogue. Only these end a quote: its own deadlines, a legal release
+  change (the buyer must accept the documents in force), offer withdrawal,
+  occurrence cancellation and a storefront close. Separately, confirmation fails
+  closed when lawful execution became impossible, for example the fiscal policy
+  of the frozen line is no longer qualified; it never silently pays under a
+  revoked policy. Tests that pin the old comparison (`fiscal-policy.test.ts`,
+  `payment-purpose.test.ts`, `promotions.test.ts`) are rewritten deliberately.
 - **An ordinary offer close** (`PUBLIC → CLOSED`, including "Pause all") stops
   new quotes; an issued quote may still be confirmed within its validity.
 - The guarantee is stated in the purchase terms (ART-231, LAB terms), not
@@ -92,9 +102,28 @@ Matches Refref `docs/29` §5 and ART-373/379.
   The live price may change between them; the quote's price does not. A
   repeated quote request for the same intent returns the existing quote and
   hold, never a second hold; a replaced intent carries the hold over.
-- **Late payment:** the attempt carries Refref `latePaymentPolicy`. Courses:
-  `HONOR`. LAB: `HONOR` while the occurrence is deliverable, `AUTO_REFUND` once
-  it is cancelled (ART-201).
+- **Merchant-held seats (owner decision I-1, 2026-10-18; Refref `docs/29`
+  §5).** Flexperiment declares no `inventoryReservation` in the Refref attempt
+  and sends no `latePaymentPolicy` (the API carries it only inside a
+  reservation), so Refref's `RESERVATION_TOO_SHORT` margin does not apply. For
+  LAB the merchant owns the seat:
+  1. Before confirmation the seat is held until the quote or hold expires; an
+     expired, unconfirmed quote is released only after checking that no
+     operation for it is unfinished.
+  2. Once payment has started, no TTL releases a pending, held or uncertain
+     attempt; retries reuse the same order, line and attempt identifiers and
+     read-back.
+  3. An occurrence cancellation first closes new sales, then cancels the open
+     attempts through Refref and reconciles them; it is not completed while a
+     started payment can still settle, and an attempt that cannot be safely
+     cancelled keeps its seat. This is a required condition of ART-203.
+  4. A storefront (emergency) close refuses new quotes and payment initiations
+     but never stops reconciliation, refunds or fulfilment of accepted orders.
+
+  A final Refref outcome is trusted; an unexpected divergence from bank truth is
+  reconciled, never ignored. Fulfilment or refund of a confirmed payment follows
+  the merchant workflow (ART-206). Courses hold no seat; a confirmed payment is
+  always fulfilled.
 - The final admission and quote checks move inside `create.immediate()`. In one
   process there is no race today (no `await` between check and write), but a
   second process writing the database (CLI) could create one.
@@ -209,8 +238,8 @@ sequence runs in one workflow concurrency group per application.
 
 - ART-319: storefront switch (§1), replacing `sales_activation`.
 - ART-341 / ART-199: one occurrence lifecycle, no second sales status; edit rules (§4).
-- ART-200 / ART-201: seat hold taken by the quote; late-payment policy.
-- ART-203 / ART-206: move/cancel workflow.
+- ART-200 / ART-201: seat hold taken by the quote; merchant-held seat invariants (§2), no Refref reservation.
+- ART-203 / ART-206: move/cancel workflow; cancellation waits for open attempts (§2, invariant 3).
 - ART-373 / ART-379 / ART-384: quote guarantee (§2), checks inside the transaction.
 - ART-231: quote guarantee and 30-day edition archive in the offer.
 - ART-333: publish dialog with editions (§5).
