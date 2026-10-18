@@ -146,10 +146,11 @@ describe("ART-162 / ART-179 normal production server, payment disabled", () => {
     const first = applyV2Seed(db(), catalogue); const replay = applyV2Seed(db(), catalogue);
     expect(first.kind).toBe("APPLIED");
     expect(replay).toEqual({ kind: "ALREADY_APPLIED", digest: first.digest });
-    expect((await request("/v1/internal/control-room/catalogue")).status).toBe(401);
+    // The service token reaches no Control Room view (ART-31); those are behind the login.
+    expect((await request("/v1/admin/v2/catalogue", { headers: { authorization: `Bearer ${serviceToken}` } })).status).toBe(401);
     for (const path of ["/v1/internal/control-room/catalogue", "/v1/internal/control-room/orders"]) {
       const response = await request(path, { headers: { authorization: `Bearer ${serviceToken}` } });
-      expect(response.status).toBe(200); expect(response.headers.get("cache-control")).toContain("no-store");
+      expect(response.status).toBe(404);
     }
     for (const path of ["/v1/checkout/preview", "/v1/checkout"]) {
       const response = await request(path, post({ offerRef: "bundle:all-courses" }));
