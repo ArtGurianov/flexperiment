@@ -54,4 +54,21 @@ describe("closed paid purchase review", () => {
     await waitFor(() => expect(calls.find(call => call.url === "/v1/checkout")).toMatchObject({ body: { quoteId: "quote", legalAcceptance: {
       accepted: true, receiptEmail: legalAcceptance.receiptEmail, manifestSha256: legalAcceptance.manifestSha256, releaseVersion: legalAcceptance.releaseVersion } } }));
   });
+  it("sends the displayed price and warns when the quote differs from it (ART-341)", async () => {
+    const calls: Array<{ url: string; body?: unknown }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: string, options?: RequestInit) => {
+      calls.push({ url: input, body: options?.body ? JSON.parse(String(options.body)) : undefined });
+      if (input === "/v1/me") return Response.json({ customer: { id: "fixture" }, entitlements: [] });
+      if (input === "/v1/checkout/handoff") return Response.json({ required: false });
+      return Response.json({ quoteId: "quote", state: "PRICE_REVIEW_REQUIRED", finalAmountKopecks: 150_000,
+        baseAmountKopecks: 150_000, discountKopecks: 0, merchantDiscountKopecks: 0, referralDiscountKopecks: 0, checkoutCodeOutcome: "NONE",
+        priceNotice: { code: "PRICE_CHANGED_SINCE_DISPLAY", quotedAmountKopecks: 150_000, displayedAmountKopecks: 100_000 } });
+    }));
+    render(<CourseCheckout courseRef="test-course" offerRef="course:test-course" saleMode="PUBLIC" priceKopecks={100_000} />);
+    const buy = screen.getByRole("button", { name: "Купить курс →" });
+    await waitFor(() => expect(buy).toBeEnabled()); fireEvent.click(buy);
+    expect(await screen.findByText(/Цена изменилась: было 1\s000\s₽, сейчас 1\s500\s₽\./)).toBeInTheDocument();
+    expect(calls.find(call => call.url === "/v1/checkout/preview")).toMatchObject({ body: { displayedAmountKopecks: 100_000 } });
+    expect(calls.filter(call => call.url === "/v1/checkout")).toHaveLength(0);
+  });
 });

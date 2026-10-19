@@ -24,6 +24,10 @@ type CheckoutQuote = {
   merchantPromotionCode: string | null;
   checkoutCodeOutcome: CheckoutCodeOutcome;
   expiresAt: string;
+  /** The quote keeps its price; this only says the buyer saw, or the catalogue now shows, another one. */
+  priceNotice?: null
+    | { code: "CATALOG_PRICE_CHANGED_AFTER_QUOTE"; quotedAmountKopecks: number; currentAmountKopecks: number }
+    | { code: "PRICE_CHANGED_SINCE_DISPLAY"; quotedAmountKopecks: number; displayedAmountKopecks: number };
   legalAcceptance?: { releaseVersion: string; manifestSha256: string; receiptEmail: string;
     documents: Array<{ kind: string; version: string; sha256: string; url: string }> };
 };
@@ -118,6 +122,7 @@ export default function CourseCheckout({ courseRef, offerRef, saleMode, priceKop
           handoffToken,
           state: handoffState,
           checkoutCode: checkoutCode.trim() || query.get("checkoutCode") || undefined,
+          displayedAmountKopecks: priceKopecks ?? undefined,
         }),
       });
       const result = await response.json() as CheckoutQuote & CheckoutResult;
@@ -127,7 +132,12 @@ export default function CourseCheckout({ courseRef, offerRef, saleMode, priceKop
       setQuote(result);
       setTermsAccepted(false);
       const codeMessage = checkoutCodeMessage(result.merchantPromotionCode, result.checkoutCodeOutcome);
-      setStatus(`${codeMessage}${codeMessage ? " " : ""}${result.discountKopecks > 0
+      const priceMessage = result.priceNotice?.code === "PRICE_CHANGED_SINCE_DISPLAY"
+        ? `Цена изменилась: было ${price(result.priceNotice.displayedAmountKopecks)}, сейчас ${price(result.priceNotice.quotedAmountKopecks)}.`
+        : result.priceNotice?.code === "CATALOG_PRICE_CHANGED_AFTER_QUOTE"
+          ? `Цена в каталоге изменилась на ${price(result.priceNotice.currentAmountKopecks)}; для этого расчёта сохраняется ${price(result.priceNotice.quotedAmountKopecks)}.`
+          : "";
+      setStatus(`${priceMessage}${priceMessage ? " " : ""}${codeMessage}${codeMessage ? " " : ""}${result.discountKopecks > 0
         ? `Скидка ${price(result.discountKopecks)}. Проверьте итог и подтвердите оплату.`
         : "Проверьте итоговую цену и подтвердите оплату."}`);
     } catch (error) {

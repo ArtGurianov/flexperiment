@@ -1,5 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import LabV2Client from "./LabV2Client";
 
@@ -35,6 +37,30 @@ describe("separate LAB V2 entrypoint", () => {
     vi.stubGlobal("fetch", vi.fn(async (path: string) => response(path === "/v1/me" ? { customer: null } : { ...catalogue, occurrences: [event] })));
     render(<LabV2Client />);await screen.findByText(event.title);
     expect(screen.getByText("Площадку объявим за неделю")).toBeInTheDocument();expect(screen.getByRole("button", { name: "Мест нет" })).toBeDisabled();
+  });
+  it("renders the price and Offer JSON-LD from the same live Commerce response (ART-341)", async () => {
+    const event = { occurrenceRef: "lab:november", offerRef: "lab:november", cityId: "nsk", title: "LAB в ноябре", startsAt: "2026-11-01T09:00:00Z", endsAt: "2026-11-01T17:00:00Z", timezone: "Asia/Novosibirsk", amountKopecks: 250000, currency: "RUB", venue: { status: "CONFIRMED", name: "Студия", address: "Красный проспект, 1" }, soldOut: false };
+    const live = (amountKopecks: number, soldOut = false) => vi.stubGlobal("fetch", vi.fn(async (path: string) => response(path === "/v1/me" ? { customer: null }
+      : { ...catalogue, cities: [{ cityId: "nsk", slug: "nsk", title: "Новосибирск" }], occurrences: [{ ...event, amountKopecks, soldOut }] })));
+    const offer = () => JSON.parse(document.querySelector('script[type="application/ld+json"]')!.textContent!)[0].offers;
+    live(250000);
+    const first = render(<LabV2Client />);await screen.findByText(event.title);
+    expect(screen.getByText(/2\s*500,00\s*₽/)).toBeInTheDocument();
+    expect(offer()).toEqual({ "@type": "Offer", price: "2500.00", priceCurrency: "RUB" });
+    first.unmount();vi.unstubAllGlobals();
+
+    // A Control Room price change reaches the next page load, visible price and JSON-LD together.
+    live(300000, true);
+    render(<LabV2Client />);await screen.findByText(event.title);
+    expect(screen.getByText(/3\s*000,00\s*₽/)).toBeInTheDocument();
+    expect(offer()).toEqual({ "@type": "Offer", price: "3000.00", priceCurrency: "RUB", availability: "https://schema.org/SoldOut" });
+  });
+  it("keeps the V2 entrypoint free of build-time occurrence or price data", () => {
+    const root = join(process.cwd(), "apps", "lab-v2");
+    const sources = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap((entry) =>
+      entry.isDirectory() ? (["node_modules", ".next", "out"].includes(entry.name) ? [] : sources(join(dir, entry.name)))
+        : /\.(tsx?|json)$/.test(entry.name) && !entry.name.includes(".test.") ? [join(dir, entry.name)] : []);
+    for (const file of sources(root)) expect(readFileSync(file, "utf8")).not.toMatch(/occurrences\.v1|data\/seo|amountKopecks:\s*\d/);
   });
   it("loads only owned LAB order history and clears it after confirmed sign-out", async () => {
     const order = { orderPublicId: "fixture-order", title: "Owned LAB fixture", offerRef: "lab:fixture", productKind: "LAB", state: "FULFILLED", amountKopecks: 12345, currency: "RUB", createdAt: "2026-10-11T00:00:00Z" };

@@ -4,6 +4,7 @@ import { RefundContact } from "../../../packages/customer-support/RefundContact"
 import { useEffect, useState } from "react";
 import { commerceApiUrl } from "../../../lib/commerce-api";
 import { labCatalogueSchema, labHistorySchema, labMeSchema, type LabCatalogue } from "../../../lib/lab-v2-contract";
+import { labEventsJsonLd } from "./lab-json-ld";
 
 type Order = ReturnType<typeof labHistorySchema.parse>["orders"][number];
 const money = (value: number) => new Intl.NumberFormat("ru-RU", { style: "currency", currency: "RUB" }).format(value / 100);
@@ -48,12 +49,14 @@ export default function LabV2Client() {
     <section className="intro"><p className="eyebrow">Практика в движении</p><h1>Встречаемся.<br /><span>Двигаемся.</span></h1><p className="notice">Платежи, продажи и регистрация закрыты. Здесь отображаются только опубликованные данные Commerce V2.</p></section>
     {error ? <p role="alert">Не удалось проверить данные V2. Повторите загрузку. Устаревший API не используется.</p> : null}
     <section id="catalogue" aria-labelledby="catalogue-title"><div className="sectionHeading"><span>01 /</span><h2 id="catalogue-title">Расписание LAB</h2></div>
-      {!catalogue ? <p role="status">Проверяем каталог…</p> : catalogue.occurrences.length === 0 ? <p className="empty">Опубликованных встреч пока нет.</p> : <div className="events">{catalogue.occurrences.map((event) => <article key={event.offerRef}>
+      {!catalogue ? <p role="status">Проверяем каталог…</p> : catalogue.occurrences.length === 0 ? <p className="empty">Опубликованных встреч пока нет.</p> : <div className="events">{catalogue.occurrences.map((event) => <article key={event.offerRef} id={event.offerRef}>
         <p>{catalogue.cities.find((city) => city.cityId === event.cityId)?.title ?? "Город не указан"}</p><h3>{event.title}</h3>
         <time dateTime={event.startsAt}>{new Intl.DateTimeFormat("ru-RU", { dateStyle: "long", timeStyle: "short", timeZone: event.timezone }).format(new Date(event.startsAt))}</time>
         <p>{event.venue.status === "CONFIRMED" ? [event.venue.name, event.venue.address].filter(Boolean).join(", ") || "Адрес сообщим участникам" : event.venue.disclosureText}</p>
         <p>{money(event.amountKopecks)}</p><button disabled>{event.soldOut ? "Мест нет" : "Покупка закрыта"}</button>
       </article>)}</div>}
+      {catalogue?.occurrences.length ? <script type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(labEventsJsonLd(catalogue)).replace(/</g, "\\u003c") }} /> : null}
     </section>
     <section aria-labelledby="account-title"><div className="sectionHeading"><span>02 /</span><h2 id="account-title">Ваш аккаунт</h2></div>
       {email ? <><p>{email}</p><button onClick={logout} disabled={busy}>{busy ? "Выходим…" : "Выйти из аккаунта"}</button><h3>Заказы LAB</h3>{orders.length ? <ol>{orders.map((order) => <li key={order.orderPublicId + order.offerRef}><strong>{order.title}</strong><span>{order.state} · {money(order.amountKopecks)}</span></li>)}</ol> : <p className="empty">Заказов LAB пока нет.</p>}</>

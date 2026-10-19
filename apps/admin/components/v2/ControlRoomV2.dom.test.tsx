@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTestQueryClient, QueryClientWrapper } from "../../lib/test-query-client";
-import { CourseCatalogue, EntitlementsView, IntegrationView, RefundsView } from "./ControlRoomV2";
+import { CourseCatalogue, EntitlementsView, IntegrationView, LabCatalogue, RefundsView } from "./ControlRoomV2";
 
 const generatedAt = "2026-09-30T10:00:00.000Z";
 
@@ -211,4 +211,51 @@ describe("Control Room v2", () => {
     expect(screen.getByText("Rate limited").parentElement).toHaveTextContent("1");
     expect(screen.getByText("Invalid token").parentElement).toHaveTextContent("2");
   });
+  it("edits a LAB occurrence and its one offer through separate versioned commands without identity or actor", async () => {
+    const occurrence = {
+      occurrenceRef: "lab:november", cityId: "city-1", cityTitle: "Новосибирск", citySlug: "nsk", title: "LAB в ноябре",
+      startsAt: "2026-11-01T09:00:00Z", endsAt: "2026-11-01T17:00:00Z", timezone: "Asia/Novosibirsk", phase: "SCHEDULED",
+      visibility: "UNLISTED", capacity: 12, adminReservedSeats: 0, soldSeats: 1, pendingSeats: 0, availableSeats: 11,
+      customerCommittedSeats: 1, venue: { status: "CONFIRMED", name: "Студия", address: "Красный проспект, 1", public: false },
+      version: 4, materialRevision: 2, cancelledAt: null, cancellationReason: null, offerRef: "lab:november", saleMode: "CLOSED",
+      offer: { productRef: "lab:november", productVersion: 6, offerRef: "lab:november", priceKopecks: 250_000, saleMode: "CLOSED",
+        paymentPurpose: "Участие в LAB", acceptanceAllowlist: [], withdrawn: false },
+    };
+    const writes: Array<{ url: string; method: string; body: Record<string, unknown> }> = [];
+    global.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (init?.method && init.method !== "GET") {
+        writes.push({ url, method: init.method, body: JSON.parse(String(init.body)) });
+        return response({ occurrenceRef: "lab:november", version: 5, changed: true });
+      }
+      return url.endsWith("/v2/cities")
+        ? response({ generatedAt, cities: [{ cityId: "city-1", slug: "nsk", title: "Новосибирск", occurrenceCount: 1 }] })
+        : response({ generatedAt, occurrences: [occurrence] });
+    });
+    const user = userEvent.setup(); const client = createTestQueryClient();
+    render(<LabCatalogue />, { wrapper: (props) => <QueryClientWrapper client={client}>{props.children}</QueryClientWrapper> });
+    expect(await screen.findByText(/2\s*500\s*₽/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Изменить" }));
+
+    // A sold seat: the form leaves schedule and venue to the move/cancel workflow.
+    expect(await screen.findByLabelText("Начало (ISO, UTC)")).toBeDisabled();
+    await user.selectOptions(screen.getByLabelText("Публикация"), "LISTED");
+    await user.type(screen.getByLabelText("Причина изменения"), "Публикуем");
+    await user.click(screen.getByRole("button", { name: "Сохранить v5" }));
+    await waitFor(() => expect(writes).toHaveLength(1));
+    expect(writes[0]).toEqual({ url: "/v1/admin/v2/lab/occurrences/lab%3Anovember", method: "PATCH",
+      body: { expectedVersion: 4, patch: { visibility: "LISTED" }, reason: "Публикуем" } });
+
+    const price = screen.getByLabelText("Цена, коп.");
+    await user.clear(price);
+    await user.type(price, "300000");
+    await user.click(screen.getByRole("button", { name: "Сохранить оффер v7" }));
+    await waitFor(() => expect(writes).toHaveLength(2));
+    expect(writes[1]).toEqual({ url: "/v1/admin/v2/lab/occurrences/lab%3Anovember/offer", method: "PUT",
+      body: { priceKopecks: 300_000, saleMode: "CLOSED", paymentPurpose: "Участие в LAB", acceptanceAllowlist: [], expectedProductVersion: 6 } });
+    for (const write of writes) {
+      for (const field of ["actor", "productRef", "offerRef", "occurrenceRef", "kind"]) expect(write.body).not.toHaveProperty(field);
+    }
+  });
 });
+

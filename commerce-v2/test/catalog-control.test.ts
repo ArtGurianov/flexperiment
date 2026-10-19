@@ -136,7 +136,7 @@ describe("catalog control room commands", () => {
     expect(() => configureProduct(db, config, {
       productRef: "lab:duplicate", offerRef: "lab:duplicate", kind: "LAB", occurrenceRef: "lab:2026-11-01",
       accessModel: "PAID", priceKopecks: 200, saleMode: "CLOSED", actor: "author", expectedVersion: 0,
-    })).toThrow(/UNIQUE/);
+    })).toThrow("LAB_OCCURRENCE_OFFER_EXISTS");
   });
 });
 

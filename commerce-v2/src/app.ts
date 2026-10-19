@@ -10,7 +10,8 @@ import { getEditorialDraft, getEditorialPublished, publishEditorialDraft, relist
 import { assertPaymentCreationEnabled, CommerceConfigurationError, type CommerceRuntimeConfig } from "./payment-mode";
 import { saveResumePosition } from "./resume";
 import { CheckoutConflictError, confirmCheckout, prepareCheckout, reconcileCheckout, type PaidCheckoutAcceptance, type PaymentRail } from "./checkout";
-import { configureProduct, withdrawProduct } from "./catalog-control";
+import { configureLabOffer, configureProduct, withdrawProduct } from "./catalog-control";
+import { cancelLabOccurrence, createCity, createLabOccurrence, editLabOccurrence, renameCity } from "./lab-occurrences";
 import { unsubscribeCustomer, type CampaignEmail } from "./campaigns";
 import { assertVideoUploadInput, observeKinescopeStatus, pollKinescopeUpload, startVideoUpload, type KinescopeClient, type KinescopeStatus } from "./kinescope";
 import { currentLegalRelease } from "./legal-control";
@@ -24,7 +25,8 @@ import { controlRoomAttention, controlRoomAudit, controlRoomCatalogue, controlRo
 import { acceptControlRoomTotp, CONTROL_ROOM_ADMIN_ID, TOTP_CHECKS_PER_STEP, TOTP_STEP_SECONDS } from "./control-room-totp";
 import { auditControlRoom, consumeControlRoomLoginLimit, consumeControlRoomLoginLimits, CONTROL_ROOM_SESSION_TTL_MS, controlRoomSessionCookie, issueControlRoomSession, parseControlRoomSession, verifyControlRoomPassword, type ControlRoomAuthConfig } from "./control-room-auth";
 import { controlRoomClientIp } from "./control-room-client-ip";
-import type { MerchantPromotionCommand, ProductConfigurationCommand, ProductWithdrawalCommand, RefundEmailRegistrationCommand } from "@flexperiment/control-room-contracts";
+import type { CityCreateCommand, CityRenameCommand, LabOccurrenceCancelCommand, LabOccurrenceCreateCommand, LabOccurrenceEditCommand, LabOfferCommand,
+  MerchantPromotionCommand, ProductConfigurationCommand, ProductWithdrawalCommand, RefundEmailRegistrationCommand } from "@flexperiment/control-room-contracts";
 import { resolvePlaybackAccess } from "./playback-access";
 import { issuePlaybackToken, verifyPlaybackToken, type PlaybackKeyring } from "./playback-auth";
 import { recordPlaybackAccessEvent } from "./playback-telemetry";
@@ -108,6 +110,26 @@ const checkoutError = (context: Context, error: unknown, fallback: string) => {
   return context.json({ code, ...(orderPublicId ? { orderPublicId } : {}) }, consent ? 403 : conflict ? 409 : 503, noStore);
 };
 const CONTROL_ROOM_SESSION_SECONDS = CONTROL_ROOM_SESSION_TTL_MS / 1000;
+
+/**
+ * LAB Control Room refusals (ART-341). Only authored codes leave the process; a database or parser
+ * message becomes the route's fallback. Malformed input is 422, a missing subject 404, anything that
+ * conflicts with the current state (stale version, sold seats, cancellation, identity) 409.
+ */
+const labCommandError = (context: Context, error: unknown, fallback: string) => {
+  const message = error instanceof CommerceConfigurationError ? error.code : error instanceof Error ? error.message : "";
+  const code = /^[A-Z][A-Z0-9_]*$/.test(message) ? message : fallback;
+  const status = code === fallback ? 409 : /_NOT_FOUND$/.test(code) ? 404
+    : /(_INVALID|_REQUIRED|_INCOMPLETE|_TOO_LATE|_IN_PAST)$/.test(code) && !/^(SALES_ACTIVATION|PAYMENT_PURPOSE)_/.test(code) ? 422 : 409;
+  return context.json({ error: { code } }, status, noStore);
+};
+const labCommandBody = async <T,>(context: Context) => {
+  try {
+    const body = await context.req.json<T>();
+    if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error();
+    return body;
+  } catch { throw new Error("LAB_COMMAND_INVALID"); }
+};
 
 export function createCommerceV2App(deps: Dependencies) {
   const app = new Hono<AppBindings>();
@@ -401,6 +423,97 @@ export function createCommerceV2App(deps: Dependencies) {
   });
   app.get("/v1/admin/v2/cities", (context) => context.json(controlRoomCities(deps.db, now().toISOString()), 200, noStore));
   app.get("/v1/admin/v2/lab", (context) => context.json(controlRoomLabOccurrences(deps.db, now().toISOString()), 200, noStore));
+
+  // LAB occurrence CRUD (ART-341). The actor is always the session's admin; a body never names one.
+  app.post("/v1/admin/v2/cities", async (context) => {
+    try {
+      const input = await labCommandBody<CityCreateCommand>(context);
+      const actor = context.get("controlRoomAdminId")!;
+      const at = now().toISOString();
+      const result = deps.db.transaction(() => {
+        const result = createCity(deps.db, { slug: input.slug, title: input.title, actor }, at);
+        auditControlRoom(deps.db, { adminId: actor, action: "CITY_CREATED", entityType: "city", entityId: result.slug }, at);
+        return result;
+      }).immediate();
+      return context.json(result, 201, noStore);
+    } catch (error) { return labCommandError(context, error, "CITY_COMMAND_FAILED"); }
+  });
+  app.patch("/v1/admin/v2/cities/:slug", async (context) => {
+    try {
+      const input = await labCommandBody<CityRenameCommand>(context);
+      const actor = context.get("controlRoomAdminId")!;
+      const at = now().toISOString();
+      const result = deps.db.transaction(() => {
+        const result = renameCity(deps.db, { slug: context.req.param("slug"), title: input.title, actor }, at);
+        auditControlRoom(deps.db, { adminId: actor, action: "CITY_RENAMED", entityType: "city", entityId: result.slug }, at);
+        return result;
+      }).immediate();
+      return context.json(result, 200, noStore);
+    } catch (error) { return labCommandError(context, error, "CITY_COMMAND_FAILED"); }
+  });
+  app.post("/v1/admin/v2/lab/occurrences", async (context) => {
+    try {
+      const input = await labCommandBody<LabOccurrenceCreateCommand>(context);
+      const actor = context.get("controlRoomAdminId")!;
+      const at = now().toISOString();
+      const result = deps.db.transaction(() => {
+        const result = createLabOccurrence(deps.db, { occurrenceRef: input.occurrenceRef, citySlug: input.citySlug, title: input.title,
+          startsAt: input.startsAt, endsAt: input.endsAt, timezone: input.timezone, capacity: input.capacity,
+          adminReservedSeats: input.adminReservedSeats, venue: input.venue, reason: input.reason, actor }, at);
+        auditControlRoom(deps.db, { adminId: actor, action: "LAB_OCCURRENCE_CREATED", entityType: "lab_occurrence",
+          entityId: result.occurrenceRef, details: { version: result.version } }, at);
+        return result;
+      }).immediate();
+      return context.json(result, 201, noStore);
+    } catch (error) { return labCommandError(context, error, "LAB_OCCURRENCE_COMMAND_FAILED"); }
+  });
+  app.patch("/v1/admin/v2/lab/occurrences/:occurrenceRef", async (context) => {
+    try {
+      const input = await labCommandBody<LabOccurrenceEditCommand>(context);
+      const actor = context.get("controlRoomAdminId")!;
+      const at = now().toISOString();
+      const result = deps.db.transaction(() => {
+        const result = editLabOccurrence(deps.db, { occurrenceRef: context.req.param("occurrenceRef"),
+          expectedVersion: input.expectedVersion, patch: input.patch, reason: input.reason, actor }, at);
+        if (result.changed) auditControlRoom(deps.db, { adminId: actor, action: "LAB_OCCURRENCE_EDITED", entityType: "lab_occurrence",
+          entityId: result.occurrenceRef, details: { version: result.version } }, at);
+        return result;
+      }).immediate();
+      return context.json(result, 200, noStore);
+    } catch (error) { return labCommandError(context, error, "LAB_OCCURRENCE_COMMAND_FAILED"); }
+  });
+  app.post("/v1/admin/v2/lab/occurrences/:occurrenceRef/cancel", async (context) => {
+    try {
+      const input = await labCommandBody<LabOccurrenceCancelCommand>(context);
+      const actor = context.get("controlRoomAdminId")!;
+      const at = now().toISOString();
+      const result = deps.db.transaction(() => {
+        const result = cancelLabOccurrence(deps.db, { occurrenceRef: context.req.param("occurrenceRef"),
+          expectedVersion: input.expectedVersion, reason: input.reason, actor }, at);
+        auditControlRoom(deps.db, { adminId: actor, action: "LAB_OCCURRENCE_CANCELLED", entityType: "lab_occurrence",
+          entityId: result.occurrenceRef, details: { version: result.version } }, at);
+        return result;
+      }).immediate();
+      return context.json(result, 200, noStore);
+    } catch (error) { return labCommandError(context, error, "LAB_OCCURRENCE_COMMAND_FAILED"); }
+  });
+  app.put("/v1/admin/v2/lab/occurrences/:occurrenceRef/offer", async (context) => {
+    try {
+      const input = await labCommandBody<LabOfferCommand>(context);
+      const actor = context.get("controlRoomAdminId")!;
+      const at = now().toISOString();
+      // Only commercial terms are read from the body: product and offer identity follow the occurrence.
+      const result = deps.db.transaction(() => {
+        const result = configureLabOffer(deps.db, deps.config, { occurrenceRef: context.req.param("occurrenceRef"),
+          priceKopecks: input.priceKopecks, saleMode: input.saleMode, acceptanceAllowlist: input.acceptanceAllowlist,
+          paymentPurpose: input.paymentPurpose, expectedProductVersion: input.expectedProductVersion, actor }, at);
+        auditControlRoom(deps.db, { adminId: actor, action: "LAB_OFFER_CONFIGURED", entityType: "product", entityId: result.productRef,
+          details: { version: result.version, priceKopecks: input.priceKopecks, saleMode: input.saleMode } }, at);
+        return result;
+      }).immediate();
+      return context.json(result, 200, noStore);
+    } catch (error) { return labCommandError(context, error, "LAB_OFFER_COMMAND_FAILED"); }
+  });
   app.get("/v1/admin/v2/refunds", (context) => context.json(listRefundCases(deps.db, now().toISOString()), 200, noStore));
   app.post("/v1/admin/v2/refunds", async (context) => {
     try {
@@ -562,7 +675,8 @@ export function createCommerceV2App(deps: Dependencies) {
       if (!deps.paymentRail) return context.json({ code: "PAYMENT_RAIL_UNAVAILABLE" }, 503, noStore);
       const customer = deps.db.prepare("SELECT email_normalized FROM customers WHERE id=?").get(customerId) as { email_normalized: string } | undefined;
       if (!customer) return context.json({ code: "CUSTOMER_NOT_FOUND" }, 409, noStore);
-      const body = await context.req.json<{ offerRef?: string; mockScenario?: string; handoffToken?: string; checkoutCode?: string; state?: string }>();
+      const body = await context.req.json<{ offerRef?: string; mockScenario?: string; handoffToken?: string; checkoutCode?: string; state?: string;
+        displayedAmountKopecks?: number }>();
       if (!body.offerRef) throw new Error("OFFER_REF_REQUIRED");
       const handoff = deps.config.paymentMode === "refref"
         ? verifyCheckoutHandoffState(deps.config.refref!.handoffStateSecret, body.state ?? "", customerId, now().getTime())
@@ -573,6 +687,7 @@ export function createCommerceV2App(deps: Dependencies) {
         scenario: deps.config.paymentMode === "mock" ? body.mockScenario : undefined,
         handoffToken: body.handoffToken,
         checkoutCode: body.checkoutCode,
+        displayedAmountKopecks: body.displayedAmountKopecks,
         orderPublicId: handoff?.orderPublicId,
         storefront: handoff?.storefront,
         // Server-side, from the storefront the signed handoff names; never a buyer-supplied value.
