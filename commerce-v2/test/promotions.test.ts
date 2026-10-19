@@ -20,9 +20,9 @@ class CapturingRail implements PaymentRail {
     return { state: "PRICE_REVIEW_REQUIRED", quote: {
       resolutionId: "resolution",
       termsVersionId: null,
-      baseAmountKopecks: input.amountKopecks,
+      baseAmountKopecks: input.request.lines[0].merchantOfferAmountKopecks,
       discountKopecks: 0,
-      finalAmountKopecks: input.amountKopecks,
+      finalAmountKopecks: input.request.lines[0].merchantOfferAmountKopecks,
       checkoutCodeOutcome: this.outcome,
     } };
   }
@@ -83,7 +83,8 @@ describe("merchant promotion namespace", () => {
     }, "FX-", now);
 
     const quote = await preview(" FX-LAUNCH ");
-    expect(rail.resolveInput).toMatchObject({ amountKopecks: 8_500, checkoutCode: undefined });
+    expect(rail.resolveInput?.request.lines[0].merchantOfferAmountKopecks).toBe(8_500);
+    expect(rail.resolveInput?.request).not.toHaveProperty("checkoutCode");
     expect(quote).toMatchObject({
       baseAmountKopecks: 10_000,
       merchantDiscountKopecks: 1_500,
@@ -118,7 +119,7 @@ describe("merchant promotion namespace", () => {
   it("passes a code outside the merchant namespace to Refref and exposes its outcome", async () => {
     rail.outcome = "NOT_RECOGNIZED";
     const quote = await preview("REF-CODE");
-    expect(rail.resolveInput).toMatchObject({ amountKopecks: 10_000, checkoutCode: "REF-CODE" });
+    expect(rail.resolveInput?.request).toMatchObject({ lines: [{ merchantOfferAmountKopecks: 10_000 }], checkoutCode: "REF-CODE" });
     expect(quote).toMatchObject({ checkoutCodeOutcome: "NOT_RECOGNIZED", discountKopecks: 0, finalAmountKopecks: 10_000 });
   });
 

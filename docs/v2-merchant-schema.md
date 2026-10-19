@@ -124,13 +124,35 @@ does.
   either resolved locally or rejected locally and is never forwarded to
   Refref; codes outside the namespace are passed to Refref as `checkoutCode`.
   Promotion edits use the same expected-version rule.
-- `checkout_quotes` durably holds the customer-bound referral resolution while
-  the customer reviews catalogue price, merchant discount, Refref discount,
-  checkout-code outcome and final price. The Refref line amount is the amount
-  after the merchant discount. No order or
-  immutable checkout snapshot exists at this stage. Confirmation revalidates
-  the live offer, merchant promotion and active legal release, consumes the quote once, and only
-  then creates `orders`, `order_lines` and `checkout_attempts`.
+- `checkout_quotes` is the durable purchase intent (ART-373, migration 0030;
+  the table keeps its name). Before Refref is first called it records the
+  order and line ids (`order_public_id` = `merchantOrderRef`, immutable
+  `line_ref`), the exact resolution request (`resolution_request_json`: the
+  vNext `BrowserContextResolutionRequest` body — `merchantOrderRef`,
+  `storefrontOrigin`, `browserContextId`, `currency`, `lines`, `checkoutCode`,
+  `deliveryDegraded` — with no buyer identity; the RC.2 handoff token is a
+  per-send credential and is not stored), a request fingerprint, the frozen
+  line, pricing, promotion and legal release. Lifecycle: `DRAFT → RESOLVING →
+  (CUSTOMER_ACTION_REQUIRED →) REVIEW → PAYMENT_CREATING → PENDING | UNCERTAIN
+  → PAID | DECLINED | EXPIRED | REVIEW_REQUIRED`, and `REFUSED`/`EXPIRED`
+  before any payment. A lost resolution answer is recovered by sending the
+  identical frozen request again; a different request under the same key or
+  order is 409. The customer reviews catalogue price, merchant discount,
+  Refref discount, checkout-code outcome and final price; the Refref line
+  amount is the amount after the merchant discount. The quote is valid until
+  the earliest of 15 minutes from the intent, the LAB start, the end of an
+  applied promotion and Refref's own deadline. Confirmation takes price, terms
+  and line from the intent and never rebuilds them from the catalogue: a price
+  change or an ordinary offer close does not end it; offer withdrawal, a legal
+  release change, a storefront close (activation revoked or payments off) and a
+  frozen fiscal policy that is no longer qualified do. Final admission runs
+  inside the same `BEGIN IMMEDIATE` transaction that creates `orders`,
+  `order_lines` and `checkout_attempts` and consumes the intent once. Before
+  any new intent or payment, open payments of the same customer and offer are
+  read back by order; one still open refuses with
+  `CHECKOUT_PAYMENT_IN_PROGRESS`, and a quote opened beside one that was paid
+  meanwhile refuses with `CHECKOUT_ALREADY_PAID`. Triggers keep the frozen
+  facts immutable and the lifecycle forward-only.
 - `orders` and `order_lines` freeze the confirmed live offer, legal release and
   checkout snapshot used for a purchase. The order JSON is the exact closed
   `refref.shared-checkout-snapshot/1` structure produced by the merchant-side
@@ -428,3 +450,10 @@ bytes and production are not changed by adding this library.
 ## Manual entitlement operations (ART-181)
 
 A manual course-access grant is modeled as a **zero-cost order** with its own audited provenance, and requires an active legal release when granted; it must not masquerade as a paid provider payment or bypass offer/legal authority. A manual revocation is permitted **only** for an access grant originally issued manually. Accepted purchased entitlements are managed through the payment/refund and withdrawal authorities instead. An ALL_COURSES grant includes future courses; delisting a course alone does not revoke an established entitlement.
+
+Issued buyer quotes include the frozen LAB occurrence and venue for review, while the public catalogue
+hides a non-public venue. Confirm rechecks cancellation, start and seat capacity under the order write
+lock without rebuilding title or price. A definitive resolution refusal is replayed as HTTP 409.
+RC.2 retries must carry the same handoff token (its digest participates in request identity; the raw
+token is not persisted). An attempt-create 409/422 releases the intent only after Refref read-back
+confirms no attempt; session refusals and inconclusive reads keep the payment fence.

@@ -81,7 +81,7 @@ describe("scripted mock checkout orchestration", () => {
     }, "2026-09-30T10:01:00Z");
     expect(confirmed.state).toBe("PAID");
     expect(db.prepare("SELECT state,total_kopecks FROM orders").get()).toEqual({ state: "FULFILLED", total_kopecks: 10000 });
-    expect(db.prepare("SELECT state FROM checkout_quotes").get()).toEqual({ state: "CONSUMED" });
+    expect(db.prepare("SELECT state FROM checkout_quotes").get()).toEqual({ state: "PAID" });
   });
 
   it("refuses a handoff storefront that does not own the offer", async () => {
@@ -220,7 +220,9 @@ describe("scripted mock checkout orchestration", () => {
       scenario: "resolution_action",
     });
     expect(resolved).toMatchObject({ state: "CUSTOMER_ACTION_REQUIRED", checkoutUrl: expect.stringContaining("/referral/") });
-    expect(db.prepare("SELECT COUNT(*) AS count FROM checkout_quotes").get()).toEqual({ count: 0 });
+    // The intent was written before the call and waits for the buyer; it holds no quote.
+    expect(db.prepare("SELECT state,rail_quote_json FROM checkout_quotes").all())
+      .toEqual([{ state: "CUSTOMER_ACTION_REQUIRED", rail_quote_json: null }]);
     expect(db.prepare("SELECT COUNT(*) AS count FROM orders").get()).toEqual({ count: 0 });
   });
 

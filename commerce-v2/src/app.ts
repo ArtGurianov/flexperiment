@@ -7,9 +7,9 @@ import { timingSafeEqual } from "node:crypto";
 import { setTimeout as loginDelay } from "node:timers/promises";
 import { flagOrphanedOverrides } from "./access-overrides";
 import { getEditorialDraft, getEditorialPublished, publishEditorialDraft, relistEditorialCourse, restrictEditorialCourse, saveEditorialDraft, type EditorialDocument } from "./course-editorial";
-import { assertPaymentCreationEnabled, type CommerceRuntimeConfig } from "./payment-mode";
+import { assertPaymentCreationEnabled, CommerceConfigurationError, type CommerceRuntimeConfig } from "./payment-mode";
 import { saveResumePosition } from "./resume";
-import { confirmCheckout, prepareCheckout, reconcileCheckout, type PaidCheckoutAcceptance, type PaymentRail } from "./checkout";
+import { CheckoutConflictError, confirmCheckout, prepareCheckout, reconcileCheckout, type PaidCheckoutAcceptance, type PaymentRail } from "./checkout";
 import { configureProduct, withdrawProduct } from "./catalog-control";
 import { unsubscribeCustomer, type CampaignEmail } from "./campaigns";
 import { assertVideoUploadInput, observeKinescopeStatus, pollKinescopeUpload, startVideoUpload, type KinescopeClient, type KinescopeStatus } from "./kinescope";
@@ -88,6 +88,25 @@ const secureEqual = (left: string, right: string) => {
 };
 
 const noStore = { "Cache-Control": "no-store" };
+
+/** Checkout refusals that a retry with the same request cannot change (ART-373): answered 409. */
+const CHECKOUT_CONFLICTS = new Set(["IDEMPOTENCY_KEY_REUSED", "CHECKOUT_HANDOFF_REUSED", "CHECKOUT_PAYMENT_IN_PROGRESS",
+  "CHECKOUT_ALREADY_PAID", "REFREF_RESOLUTION_REQUEST_MISMATCH"]);
+const checkoutError = (context: Context, error: unknown, fallback: string) => {
+  const message = error instanceof Error ? error.message : undefined;
+  const conflict = error instanceof CheckoutConflictError || (message !== undefined && CHECKOUT_CONFLICTS.has(message));
+  const consent = message === "CONSENT_REQUIRED";
+  // Configuration codes are authored locally; never publish dynamic config details or unknown messages.
+  const configurationCode = error instanceof CommerceConfigurationError && /^[A-Z][A-Z0-9_]*$/.test(error.code) ? error.code : undefined;
+  const code = conflict || consent ? message! : configurationCode ?? fallback;
+  const orderPublicId = error instanceof CheckoutConflictError ? error.orderPublicId : undefined;
+  if (!conflict && !consent && !configurationCode) {
+    // Redacted operational signal only: no SQL, upstream body, token, stack, cause or customer data.
+    try { console.error(JSON.stringify({ event: "CHECKOUT_FAILURE", code: fallback, errorKind: error instanceof Error ? "ERROR" : "NON_ERROR" })); }
+    catch { /* Diagnostic transport must not replace the sanitized checkout response. */ }
+  }
+  return context.json({ code, ...(orderPublicId ? { orderPublicId } : {}) }, consent ? 403 : conflict ? 409 : 503, noStore);
+};
 const CONTROL_ROOM_SESSION_SECONDS = CONTROL_ROOM_SESSION_TTL_MS / 1000;
 
 export function createCommerceV2App(deps: Dependencies) {
@@ -556,11 +575,12 @@ export function createCommerceV2App(deps: Dependencies) {
         checkoutCode: body.checkoutCode,
         orderPublicId: handoff?.orderPublicId,
         storefront: handoff?.storefront,
+        // Server-side, from the storefront the signed handoff names; never a buyer-supplied value.
+        storefrontOrigin: handoff ? storefrontOrigin(origins, handoff.storefront) : undefined,
       }, now().toISOString());
-      return context.json(result, 200, noStore);
+      return context.json(result, result.state === "RESOLUTION_PENDING" ? 202 : 200, noStore);
     } catch (error) {
-      const code = error instanceof Error ? error.message : "CHECKOUT_PREVIEW_UNAVAILABLE";
-      return context.json({ code }, code === "CONSENT_REQUIRED" ? 403 : 503, noStore);
+      return checkoutError(context, error, "CHECKOUT_PREVIEW_UNAVAILABLE");
     }
   });
 
@@ -594,8 +614,7 @@ export function createCommerceV2App(deps: Dependencies) {
       }, now().toISOString());
       return context.json(result, result.state === "CREATE_UNKNOWN" ? 202 : 201, noStore);
     } catch (error) {
-      const code = error instanceof Error ? error.message : "CHECKOUT_UNAVAILABLE";
-      return context.json({ code }, code === "CONSENT_REQUIRED" ? 403 : 503, noStore);
+      return checkoutError(context, error, "CHECKOUT_UNAVAILABLE");
     }
   });
 

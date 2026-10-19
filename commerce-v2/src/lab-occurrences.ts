@@ -1,3 +1,4 @@
+import { CheckoutConflictError } from "./checkout-conflict";
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 
@@ -130,13 +131,13 @@ const assertInventoryTarget = (inventory: LabSeatInventory, capacity: number, ad
  */
 export function assertLabOccurrenceAdmissible(db: Database.Database, occurrenceRef: string | null, now: string) {
   const row = occurrenceRef ? occurrenceRow(db, occurrenceRef) : undefined;
-  if (!row) throw new Error("LAB_OCCURRENCE_NOT_FOUND");
+  if (!row) throw new CheckoutConflictError("LAB_OCCURRENCE_NOT_FOUND");
   const phase = occurrencePhase(row, now);
-  if (phase === "CANCELLED") throw new Error("LAB_OCCURRENCE_CANCELLED");
-  if (phase !== "SCHEDULED") throw new Error("LAB_OCCURRENCE_STARTED");
+  if (phase === "CANCELLED") throw new CheckoutConflictError("LAB_OCCURRENCE_CANCELLED");
+  if (phase !== "SCHEDULED") throw new CheckoutConflictError("LAB_OCCURRENCE_STARTED");
   const venue = venueDisclosure(row);
-  if (!venue) throw new Error("LAB_VENUE_UNDECLARED");
-  if (labSeatInventory(db, row).available < 1) throw new Error("LAB_OCCURRENCE_SOLD_OUT");
+  if (!venue) throw new CheckoutConflictError("LAB_VENUE_UNDECLARED");
+  if (labSeatInventory(db, row).available < 1) throw new CheckoutConflictError("LAB_OCCURRENCE_SOLD_OUT");
   const buyerVenue: BuyerVenueDisclosure = venue.status === "CONFIRMED"
     ? { status: venue.status, name: venue.name, address: venue.address } : venue;
   return { row, venue: buyerVenue };

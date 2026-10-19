@@ -106,7 +106,11 @@ describe("closed paid test admission", () => {
       return result;
     });
     await expect(preview()).rejects.toThrow("CLOSED_PAID_TEST_PRICE_REFUSED");
-    expect(db.prepare("SELECT count(*) n FROM checkout_quotes").get()).toEqual({ n: 0 });
+    // The intent was durable before the call; the refused quote never becomes payable.
+    expect(db.prepare("SELECT state,failure_code,rail_quote_json FROM checkout_quotes").all())
+      .toEqual([{ state: "REFUSED", failure_code: "CLOSED_PAID_TEST_PRICE_REFUSED", rail_quote_json: null }]);
+    await expect(preview()).rejects.toThrow("CLOSED_PAID_TEST_PRICE_REFUSED");
+    expect(db.prepare("SELECT count(*) n FROM orders").get()).toEqual({ n: 0 });
   });
   it("returns exact paid release/contact for review; review itself records no acceptance", async () => {
     expect(await preview()).toMatchObject({ state: "PRICE_REVIEW_REQUIRED", finalAmountKopecks: 100,
@@ -152,7 +156,9 @@ describe("closed paid test admission", () => {
     expect(event.evidence_json).not.toContain(email);
     const quote = db.prepare("SELECT id FROM checkout_quotes").get() as { id: string };
     await confirmCheckout(db, rail, config, { ...input, quoteId: quote.id, idempotencyKey: "pay" });
-    await expect(confirmCheckout(db, rail, config, { ...input, quoteId: quote.id, idempotencyKey: "second", legalAcceptance: accept })).rejects.toThrow();
+    // A second confirmation of the same quote (another tab, a new key) only reads the first order back.
+    await expect(confirmCheckout(db, rail, config, { ...input, quoteId: quote.id, idempotencyKey: "second", legalAcceptance: accept }))
+      .resolves.toMatchObject({ orderPublicId: result.orderPublicId });
     // Even when access has ended, the same bounded experiment cannot create a second charge.
     const line = db.prepare("SELECT id FROM order_lines").get() as { id: string };
     revokeEntitlementForOrderLine(db, line.id, "synthetic access ended");
@@ -243,7 +249,12 @@ describe("closed paid account consent gate", () => {
       const result = await original(request); db.exec('UPDATE "user" SET email_verified=0'); return result;
     });
     await expect(preview()).rejects.toThrow("CONSENT_REQUIRED");
-    expect(db.prepare("SELECT count(*) n FROM checkout_quotes").get()).toEqual({ n: 0 });
+    // The quote may stand, but nothing is payable without the choices: confirmation checks them again.
+    expect(db.prepare("SELECT consumed_at FROM checkout_quotes").all()).toEqual([{ consumed_at: null }]);
+    const quote = db.prepare("SELECT id FROM checkout_quotes").get() as { id: string };
+    await expect(confirmCheckout(db, rail, config, { ...input, quoteId: quote.id, idempotencyKey: "pay", legalAcceptance: accept }))
+      .rejects.toThrow("CONSENT_REQUIRED");
+    expect(db.prepare("SELECT count(*) n FROM orders").get()).toEqual({ n: 0 });
   });
   it("returns 403/no-store at handoff, preview and confirm using session identity, ignoring forged choices", async () => {
     accountConsent("other");
@@ -321,7 +332,10 @@ describe("FULL_PAYMENT ready recorded access", () => {
     const event = db.prepare("SELECT evidence_json FROM audit_log WHERE action='IMMEDIATE_ACCESS_ACTIVATED'").get() as { evidence_json: string };
     expect(JSON.parse(event.evidence_json)).toMatchObject({ paymentState: "PAID", paymentAmountKopecks: 100, materialSet: frozen });
     expect(db.prepare("SELECT count(*) n FROM course_entitlements WHERE revoked_at IS NULL").get()).toEqual({ n: 1 });
-    await confirm(accept);
+    // A reload replays the preview: it reads the paid order back instead of offering the quote again.
+    expect(await preview()).toMatchObject({ orderPublicId: result.orderPublicId, state: "PAID" });
+    const quote = db.prepare("SELECT id FROM checkout_quotes").get() as { id: string };
+    await confirmCheckout(db, rail, config, { ...input, quoteId: quote.id, idempotencyKey: "pay", legalAcceptance: accept });
     expect(db.prepare("SELECT count(*) n FROM audit_log WHERE action='IMMEDIATE_ACCESS_ACTIVATED'").get()).toEqual({ n: 1 });
     expect(db.prepare("SELECT count(*) n FROM orders").get()).toEqual({ n: 1 });
   });

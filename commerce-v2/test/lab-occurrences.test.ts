@@ -1,10 +1,11 @@
+import { CheckoutConflictError } from "../src/checkout-conflict";
 import Database from "better-sqlite3";
 import { beforeEach, describe, expect, it } from "vitest";
 import { checkout, prepareCheckout, confirmCheckout, MockPaymentRail } from "../src/checkout";
 import { configureProduct } from "../src/catalog-control";
 import { controlRoomLabOccurrences } from "../src/control-room";
 import { applyV2Migration, migrateV2 } from "../src/db";
-import { cancelLabOccurrence, createCity, createLabOccurrence, editLabOccurrence, labSeatInventory, renameCity,
+import { assertLabOccurrenceAdmissible, cancelLabOccurrence, createCity, createLabOccurrence, editLabOccurrence, labSeatInventory, renameCity,
   type LabOccurrenceCreateCommand } from "../src/lab-occurrences";
 import { publicLabCatalogue } from "../src/lab-catalogue";
 import { stageALegalManifestJson } from "./fixtures/legal";
@@ -52,6 +53,11 @@ const buy = (scenario?: string, now = NOW) => {
 };
 
 describe("LAB occurrence schema (migration 0029)", () => {
+  it.each([null, "lab:missing"])("a missing occurrence is a checkout admission conflict (%s)", ref => {
+    expect(() => assertLabOccurrenceAdmissible(db, ref, NOW)).toThrow(CheckoutConflictError);
+    expect(() => assertLabOccurrenceAdmissible(db, ref, NOW)).toThrow("LAB_OCCURRENCE_NOT_FOUND");
+  });
+
   it("drops the second sales status and keeps a legacy row unlisted until it declares a venue", () => {
     const legacy = new Database(":memory:");
     legacy.pragma("foreign_keys = ON");
@@ -69,6 +75,8 @@ describe("LAB occurrence schema (migration 0029)", () => {
     expect(legacy.prepare("SELECT lifecycle,visibility,venue_status,version FROM lab_occurrences").get())
       .toEqual({ lifecycle: "SCHEDULED", visibility: "UNLISTED", venue_status: null, version: 1 });
     expect(() => legacy.prepare("UPDATE lab_occurrences SET visibility='LISTED'").run()).toThrow("LAB_OCCURRENCE_CONTRACT_INVALID");
+    expect(() => assertLabOccurrenceAdmissible(legacy, "lab:legacy", NOW)).toThrow(CheckoutConflictError);
+    expect(() => assertLabOccurrenceAdmissible(legacy, "lab:legacy", NOW)).toThrow("LAB_VENUE_UNDECLARED");
     expect(editLabOccurrence(legacy, { occurrenceRef: "lab:legacy", expectedVersion: 1, actor: "operator", reason: "Площадка",
       patch: { venue: { status: "CONFIRMED", name: "Зал", address: "Тверская, 1", public: true }, visibility: "LISTED" } }, NOW))
       .toMatchObject({ version: 2, changed: true });
@@ -197,6 +205,15 @@ describe("occurrence cancellation", () => {
     expect(db.prepare("SELECT sale_mode FROM offers").get()).toEqual({ sale_mode: "CLOSED" });
     expect(() => edit({ title: "Вернули" })).toThrow("LAB_OCCURRENCE_CANCELLED");
     expect(() => cancel()).toThrow("LAB_OCCURRENCE_CANCELLED");
+    for (const command of [() => edit({ title: "Вернули" }), () => cancel()]) {
+      try { command(); throw new Error("EXPECTED_ADMIN_REFUSAL"); }
+      catch (error) {
+        expect(error).toBeInstanceOf(Error);
+        expect(error).not.toBeInstanceOf(CheckoutConflictError);
+        expect(error).toMatchObject({ message: "LAB_OCCURRENCE_CANCELLED" });
+      }
+    }
+
     expect(() => db.prepare("UPDATE lab_occurrences SET lifecycle='SCHEDULED',cancelled_at=NULL,cancellation_reason=NULL").run())
       .toThrow("LAB_OCCURRENCE_CONTRACT_INVALID");
     const product = db.prepare("SELECT version FROM products").get() as { version: number };

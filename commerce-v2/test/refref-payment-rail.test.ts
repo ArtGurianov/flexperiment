@@ -6,10 +6,15 @@ import { AmbiguousRailCreateError, type PaymentCreateInput, type PaymentResolveI
 /** What an offer's qualified fiscal policy contributes to the snapshot (fiscal-policy.ts); the rail no longer does. */
 const POLICY_FISCAL = { taxSystem: "USN_INCOME", vatCode: "NONE", paymentMethod: "FULL_PREPAYMENT", paymentObject: "SERVICE" } as const;
 
-const input: PaymentResolveInput = {
+const input = {
   idempotencyKey: "idem", orderPublicId: "order", amountKopecks: 10_000,
   customerEmail: "student@example.com", offerRef: "course:one", productRef: "course:one", lineRef: "line",
   legalReleaseRef: "stage-b-v1", legalReleaseHash: "a".repeat(64), handoffToken: "h".repeat(32),
+};
+const resolveInput: PaymentResolveInput = {
+  idempotencyKey: "idem", handoffToken: input.handoffToken,
+  request: { merchantOrderRef: input.orderPublicId, currency: "RUB", deliveryDegraded: { degraded: false },
+    lines: [{ lineRef: input.lineRef, offerRef: input.offerRef, quantity: 1, merchantOfferAmountKopecks: input.amountKopecks }] },
 };
 
 const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -78,7 +83,7 @@ describe("RefrefPaymentRail", () => {
         lines: [{ lineRef: "line", referralDiscountAmountKopecks: 500 }] }, 201));
     const rail = new RefrefPaymentRail({ apiBaseUrl: "https://api.refref.ru/v1-rc/", apiKey: "key",
       merchantId: "00000000-0000-4000-8000-000000000001", fetch: request });
-    const resolution = await rail.resolve(input);
+    const resolution = await rail.resolve(resolveInput);
     expect(resolution).toMatchObject({ state: "PRICE_REVIEW_REQUIRED", quote: { discountKopecks: 500, finalAmountKopecks: 9500, checkoutCodeOutcome: "NONE" } });
     if (resolution.state !== "PRICE_REVIEW_REQUIRED") throw new Error("expected quote");
     const frozen = buildCheckoutSnapshot({
@@ -124,7 +129,7 @@ describe("RefrefPaymentRail", () => {
       referralResolutionId: "10000000-0000-4000-8000-000000000001", customerActionUrl: "https://checkout.refref.ru/conflict" }));
     const rail = new RefrefPaymentRail({ apiBaseUrl: "https://api.refref.ru/v1-rc/", apiKey: "key",
       merchantId: "00000000-0000-4000-8000-000000000001", fetch: request });
-    expect(await rail.resolve(input)).toMatchObject({ state: "CUSTOMER_ACTION_REQUIRED", checkoutUrl: "https://checkout.refref.ru/conflict" });
+    expect(await rail.resolve(resolveInput)).toMatchObject({ state: "CUSTOMER_ACTION_REQUIRED", checkoutUrl: "https://checkout.refref.ru/conflict" });
     expect(request).toHaveBeenCalledOnce();
   });
 
@@ -186,7 +191,7 @@ describe("RefrefPaymentRail", () => {
     }, 422));
     const rail = new RefrefPaymentRail({ apiBaseUrl: "https://api.refref.ru/v1-rc/", apiKey: "key",
       merchantId: "00000000-0000-4000-8000-000000000001", fetch: request });
-    await expect(rail.resolve(input)).rejects.toThrow("REFREF_HANDOFF_TOKEN_INVALID");
+    await expect(rail.resolve(resolveInput)).rejects.toThrow("REFREF_HANDOFF_TOKEN_INVALID");
   });
 
   const settled = (paymentPatch: Record<string, unknown> = {}, refundableAmountKopecks = 10_000) => response({
@@ -255,4 +260,14 @@ describe("RefrefPaymentRail", () => {
     await expect(rail.readRefund("refund")).resolves.toEqual({ id: "refund", paymentId: "payment", amountKopecks: 10_000, status: "SUCCEEDED" });
     await expect(rail.readRefund("gone")).resolves.toBeNull();
   });
+});
+
+it("never classifies a payment-session refusal as an absent attempt", async () => {
+  const http = vi.fn<typeof fetch>();
+  const rail = new RefrefPaymentRail({ apiBaseUrl: "https://synthetic.test", apiKey: "test", merchantId: "test", fetch: http });
+  const input = createInput(rail);
+  http.mockResolvedValueOnce(response({ checkoutAttemptId: "created", snapshotHash: input.snapshotHash, obligations: [] }))
+    .mockResolvedValueOnce(response({ error: { code: "PAYMENT_SESSION_REFUSED" } }, 422));
+  await expect(rail.create(input)).rejects.toThrow("REFREF_PAYMENT_SESSION_REFUSED");
+  expect(http).toHaveBeenCalledTimes(2);
 });

@@ -18,6 +18,10 @@ const REVIEWED_SCHEMA_SHA256 = new Set([
   "40ede1d98e15b510c920418cd525e039346890560e7e9dc2fe90aecd760b86a1",
   // 0029: operator-authored LAB lifecycle/revisions, no new customer identity columns.
   "3250c233a22b6b2f77ed827fbfabacae604f9c30420788b2b0556116a56d8eab",
+  // 0030: durable intent in the already-classified checkout_quotes store; customer FK retained.
+  "18b7318e43e12f2835afcf9b87d0958de4c8e186aa3670f5a448e7f3d8389b4d",
+  // 0031: trigger expires only unconsumed LAB intents on material edits; no new identity store.
+  "9c464ba0199cd18fa0eb3d5598d3bc0131fd68bd9fad2064676e8801c498eb2b",
 ]);
 function assertReviewedSchema(db: Database.Database) {
   const schema = db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").all();

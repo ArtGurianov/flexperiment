@@ -130,22 +130,19 @@ export function resolveCheckoutCode(
   } };
 }
 
+/**
+ * An issued quote keeps the discount it was priced with (design 2026-10-18 §2): a later edit of the
+ * promotion's rule or of the offer's price does not reprice it. What ends the quote is the end of the
+ * promotion itself — its window closed, it was switched off or removed.
+ */
 export function assertMerchantPromotionStillApplicable(
   db: Database.Database,
   snapshot: MerchantPromotionSnapshot | null,
-  offerRef: string,
-  catalogAmountKopecks: number,
   now: string,
 ) {
   if (!snapshot) return;
   const row = db.prepare("SELECT * FROM merchant_promotion WHERE id=?").get(snapshot.id) as PromotionRow | undefined;
-  if (!row || row.code_normalized !== snapshot.code) throw new Error("CHECKOUT_QUOTE_STALE");
-  try {
-    assertApplicable(row, offerRef, now);
-    if (calculateDiscount(row, catalogAmountKopecks) !== snapshot.merchantDiscountKopecks) throw new Error("CHECKOUT_QUOTE_STALE");
-  } catch {
-    throw new Error("CHECKOUT_QUOTE_STALE");
-  }
+  if (!row || row.code_normalized !== snapshot.code || !row.active || (row.ends_at && row.ends_at <= now)) throw new Error("CHECKOUT_QUOTE_STALE");
 }
 
 export function listMerchantPromotions(db: Database.Database) {
