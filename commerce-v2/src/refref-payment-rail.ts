@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { AmbiguousRailCreateError, type AcceptedRefund, type CheckoutCodeOutcome, type PaymentCreateInput, type PaymentRail, type PaymentRefundInput, type PaymentResolveInput, type RailProjection, type RailResolution, type RefundSubmission } from "./checkout";
+import { AmbiguousRailCreateError, RailAttemptRefusalError, RailRefusalError, type AcceptedRefund, type CheckoutCodeOutcome, type PaymentCreateInput, type PaymentRail, type PaymentRefundInput, type PaymentResolveInput, type RailProjection, type RailResolution, type RefundSubmission } from "./checkout";
 import type { RefundEnvelope } from "./refund-envelope";
 import { checkoutSnapshotHash, type SharedCheckoutSnapshot } from "./checkout-snapshot";
 
@@ -46,6 +46,7 @@ const resolutionSchema = z.discriminatedUnion("status", [
     status: z.literal("RESOLVED"),
     referralResolutionId: z.string(),
     termsVersionId: z.string().nullable(),
+    expiresAt: z.string().datetime({ offset: true }).optional(),
     checkoutCodeOutcome: checkoutCodeOutcomeSchema,
     lines: z.array(z.object({
       lineRef: z.string(),
@@ -162,41 +163,40 @@ export class RefrefPaymentRail implements PaymentRail {
 
   async resolve(input: PaymentResolveInput): Promise<RailResolution> {
     if (!input.handoffToken) throw new Error("REFREF_HANDOFF_TOKEN_REQUIRED");
-    const line = {
-      lineRef: input.lineRef,
-      offerRef: input.offerRef,
-      ...(input.unitRef === undefined ? {} : { unitRef: input.unitRef }),
-      quantity: 1,
-      merchantOfferAmountKopecks: input.amountKopecks,
-      ...(input.serviceStartsAt === undefined ? {} : { serviceStartsAt: input.serviceStartsAt }),
-      ...(input.serviceEndsAt === undefined ? {} : { serviceEndsAt: input.serviceEndsAt }),
-    };
+    // RC.2 takes the frozen line unchanged; the vNext-only fields (origin, context, degradation) stay in
+    // the intent until the vNext rail sends the whole frozen body (ART-373, C3).
+    const { request } = input;
+    const line = request.lines[0];
     let resolution: z.infer<typeof resolutionSchema>;
     try {
       resolution = await this.call("POST", "/integrations/referral-resolutions", resolutionSchema, {
-        handoffToken: input.handoffToken, merchantOrderRef: input.orderPublicId, currency: "RUB", lines: [line],
-        ...(input.checkoutCode ? { checkoutCode: input.checkoutCode } : {}),
+        handoffToken: input.handoffToken, merchantOrderRef: request.merchantOrderRef, currency: request.currency, lines: request.lines,
+        ...(request.checkoutCode ? { checkoutCode: request.checkoutCode } : {}),
       });
     } catch (error) {
       if (isAmbiguousSideEffect(error)) throw new AmbiguousRailCreateError();
+      // A refusal of this exact request (another request bound to the order, an invalid token or line set)
+      // is final for the intent; a repeat would be refused the same way.
+      if (error instanceof RefrefHttpError && (error.status === 409 || error.status === 422)) throw new RailRefusalError(error.message);
       throw error;
     }
     if (resolution.status === "CUSTOMER_ACTION_REQUIRED") {
       return { resolutionId: String(resolution.referralResolutionId), state: "CUSTOMER_ACTION_REQUIRED", checkoutUrl: String(resolution.customerActionUrl) };
     }
-    const resolvedLine = resolution.lines.filter((item) => item.lineRef === input.lineRef)[0];
+    const resolvedLine = resolution.lines.filter((item) => item.lineRef === line.lineRef)[0];
     const discount = Number(resolvedLine?.referralDiscountAmountKopecks);
-    if (!Number.isSafeInteger(discount) || discount < 0 || discount > input.amountKopecks) throw new Error("REFREF_RESOLUTION_LINE_INVALID");
-    const finalAmount = input.amountKopecks - discount;
+    if (!Number.isSafeInteger(discount) || discount < 0 || discount > line.merchantOfferAmountKopecks) throw new Error("REFREF_RESOLUTION_LINE_INVALID");
+    const finalAmount = line.merchantOfferAmountKopecks - discount;
     if (finalAmount <= 0) throw new Error("REFREF_ZERO_PAYMENT_UNSUPPORTED");
     const checkoutCodeOutcome: CheckoutCodeOutcome = resolution.checkoutCodeOutcome;
     return { state: "PRICE_REVIEW_REQUIRED", quote: {
       resolutionId: String(resolution.referralResolutionId),
       termsVersionId: resolution.termsVersionId,
-      baseAmountKopecks: input.amountKopecks,
+      baseAmountKopecks: line.merchantOfferAmountKopecks,
       discountKopecks: discount,
       finalAmountKopecks: finalAmount,
       checkoutCodeOutcome,
+      ...(resolution.expiresAt ? { expiresAt: resolution.expiresAt } : {}),
     } };
   }
 
@@ -213,6 +213,20 @@ export class RefrefPaymentRail implements PaymentRail {
       }, input.idempotencyKey);
     } catch (error) {
       if (isAmbiguousSideEffect(error)) throw new AmbiguousRailCreateError();
+      if (error instanceof RefrefHttpError && [409, 422].includes(error.status)) {
+        // A conflict could refer to an existing attempt. Release only after an authoritative empty
+        // merchant-order read, and never for a failure in createPaymentSession below.
+        let absent = false;
+        try {
+          const order = await this.call("GET", `/integrations/merchant-orders/${encodeURIComponent(input.orderPublicId)}`, merchantOrderSchema);
+          absent = order.checkoutAttempts.length === 0;
+        } catch (readError) {
+          if (readError instanceof RefrefHttpError && readError.status === 404) absent = true;
+          else throw new AmbiguousRailCreateError();
+        }
+        if (absent) throw new RailAttemptRefusalError(error.message, input.orderPublicId);
+        throw new AmbiguousRailCreateError();
+      }
       throw error;
     }
     const attemptId = created.checkoutAttemptId;

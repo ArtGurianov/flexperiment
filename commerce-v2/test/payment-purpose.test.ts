@@ -53,13 +53,15 @@ describe("catalog-owned payment purpose",()=>{
     expect(()=>db.prepare("UPDATE orders SET snapshot_hash=?").run("f".repeat(64))).toThrow("ORDER_CANONICAL_SNAPSHOT_IMMUTABLE");
     expect(()=>db.prepare("DELETE FROM order_lines").run()).toThrow("ORDER_LINE_CANONICAL_SNAPSHOT_IMMUTABLE");
   });
-  it("purpose changes make a pending quote stale before provider creation",async()=>{
+  it("an issued quote pays under the purpose it froze; a later purpose edit applies to new quotes (ART-373)",async()=>{
     const quote=await prepareCheckout(db,rail,testCheckoutConfig,{...input,previewIdempotencyKey:"preview"});
     if (!("quoteId" in quote)) throw new Error("EXPECTED_QUOTE");
     setCoursePaymentPurpose(db,{courseRef:"one",paymentPurpose:"Changed explicitly",expectedVersion:1,actor:"owner"});
     const create=vi.spyOn(rail,"create");
-    await expect(confirmCheckout(db,rail,testCheckoutConfig,{...input,quoteId:quote.quoteId})).rejects.toThrow("CHECKOUT_QUOTE_STALE");
-    expect(create).not.toHaveBeenCalled();
+    await expect(confirmCheckout(db,rail,testCheckoutConfig,{...input,quoteId:quote.quoteId})).resolves.toMatchObject({state:"PAID"});
+    expect(create).toHaveBeenCalledTimes(1);
+    const snapshot=JSON.parse((db.prepare("SELECT checkout_snapshot_json FROM orders").get() as {checkout_snapshot_json:string}).checkout_snapshot_json);
+    expect(snapshot.paymentPurpose).toBe("Оплата онлайн-курса «Глайдинг»");
   });
   it("opening a paid offer requires explicit text, without title/fiscal defaults",()=>{
     const command={productRef:"course:two",offerRef:"course:two",kind:"ONLINE_COURSE" as const,courseRef:"two",

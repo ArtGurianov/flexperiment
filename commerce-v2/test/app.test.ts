@@ -325,7 +325,7 @@ describe("commerce v2 boundaries", () => {
     const unactivated = await server.request("/v1/checkout/preview", {
       method: "POST", headers: { ...headers, "idempotency-key": "unactivated" }, body: JSON.stringify({ offerRef: "course:one" }),
     });
-    expect(unactivated.status).toBe(503);
+    expect(unactivated.status).toBe(409);
     expect(await unactivated.json()).toEqual({ code: "SALES_ACTIVATION_REQUIRED" });
     qualifyTestFiscalPolicies(db);
     activatePublicSales(db);

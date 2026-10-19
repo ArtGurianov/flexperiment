@@ -73,7 +73,7 @@ describe("product-specific fiscal authority (ART-233)", () => {
     expect(line.legal_release_hash).toBe(legalManifestHash(JSON.parse(stageALegalManifestJson)));
   });
 
-  it("a policy changed after the quote makes it stale; an order already made keeps the receipt it froze", async () => {
+  it("a quote whose frozen policy is no longer qualified cannot be paid; an order already made keeps the receipt it froze", async () => {
     const v1 = draft("course:one", "ONLINE_COURSE", "Курс v1");
     qualify(v1);
     const first = await preview("first");
@@ -89,7 +89,7 @@ describe("product-specific fiscal authority (ART-233)", () => {
     const v2 = draft("course:one", "ONLINE_COURSE", "Курс v2", "ADVANCE");
     qualify(v2);
     await expect(confirmCheckout(db, rail, testCheckoutConfig, { ...second, quoteId: pending.quoteId, idempotencyKey: "checkout-two" },
-      "2026-09-30T10:01:00Z")).rejects.toThrow("CHECKOUT_QUOTE_STALE");
+      "2026-09-30T10:01:00Z")).rejects.toThrow("FISCAL_POLICY_NOT_QUALIFIED");
     expect(db.prepare("SELECT fiscal_item_json AS f FROM order_lines").all()).toEqual([{ f: frozen }]);
     expect(db.prepare("SELECT status FROM fiscal_policy_versions ORDER BY version").all()).toEqual([{ status: "RETIRED" }, { status: "QUALIFIED" }]);
   });
