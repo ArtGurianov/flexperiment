@@ -571,6 +571,17 @@ describe("HTTP", () => {
     } finally { diagnostic.mockRestore(); }
   });
 
+  it("keeps the sanitized 503 when the diagnostic transport fails", async () => {
+    const diagnostic = vi.spyOn(console, "error").mockImplementation(() => { throw new Error("diagnostic transport failed"); });
+    try {
+      vi.spyOn(rail, "resolve").mockRejectedValue(new Error("private upstream detail"));
+      const response = await post("/v1/checkout/preview", "diagnostic-fault", { offerRef: "course:one" });
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({ code: "CHECKOUT_PREVIEW_UNAVAILABLE" });
+      expect(response.headers.get("cache-control")).toBe("no-store");
+    } finally { diagnostic.mockRestore(); }
+  });
+
   it("answers a lost resolution with 202, a changed repeat with 409, and an open payment with 409 naming the order", async () => {
     expect((await post("/v1/checkout/preview", "http", { offerRef: "course:one", mockScenario: "ambiguous_resolve" })).status).toBe(202);
     expect((await post("/v1/checkout/preview", "http", { offerRef: "course:one", mockScenario: "ambiguous_resolve" })).status).toBe(200);

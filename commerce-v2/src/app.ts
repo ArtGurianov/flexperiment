@@ -102,7 +102,8 @@ const checkoutError = (context: Context, error: unknown, fallback: string) => {
   const orderPublicId = error instanceof CheckoutConflictError ? error.orderPublicId : undefined;
   if (!conflict && !consent && !configurationCode) {
     // Redacted operational signal only: no SQL, upstream body, token, stack, cause or customer data.
-    console.error(JSON.stringify({ event: "CHECKOUT_FAILURE", code: fallback, errorKind: error instanceof Error ? "ERROR" : "NON_ERROR" }));
+    try { console.error(JSON.stringify({ event: "CHECKOUT_FAILURE", code: fallback, errorKind: error instanceof Error ? "ERROR" : "NON_ERROR" })); }
+    catch { /* Diagnostic transport must not replace the sanitized checkout response. */ }
   }
   return context.json({ code, ...(orderPublicId ? { orderPublicId } : {}) }, consent ? 403 : conflict ? 409 : 503, noStore);
 };
