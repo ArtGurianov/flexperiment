@@ -60,3 +60,46 @@ customer details and payments. Ticket recovery, one-use check-in and proxy
 provenance regressions ran in the automated suite. Live provider payment,
 production recovery/check-in, Safari, V1 export builds and hosted CI are not
 qualified by these results. No merge, deployment or sales activation performed.
+
+## Hosted CI follow-up: minified bundle probe
+
+The Test workflow at reviewed HEAD `376c1ba125393c97946a2c86cd0b54638247a0bd`
+([run 39272872379](https://github.com/ArtGurianov/flexperiment/actions/runs/39272872379))
+passed the complete `test` job but failed `docker-build` at
+`test_actual_lab_browser_bundle_uses_same_origin`.
+
+Reproduction against a fresh same-origin production LAB export showed
+`SyntaxError: Unexpected token '}'`. The probe searched the whole webpack chunk
+for an arrow declaration ending in `};`. The minifier emitted the isolated
+API-helper module without that semicolon, so the match included the following
+React module. This was a probe extraction defect; the actual helper still
+returned same-origin paths.
+
+The probe now captures webpack factories without executing their bodies, limits
+helper extraction to its own factory and accepts a declaration terminator, a
+comma or the module's closing brace. It still executes the compiled helper in
+an empty VM, refuses external dependencies and ambiguity, checks exact same-origin
+path equality and rejects malformed paths. No application, build environment,
+proxy configuration, workflow, URL fallback or production state is changed.
+Failed actual-bundle probes now expose captured stderr in the unittest assertion.
+
+Local validation of this follow-up:
+
+- The original probe from `376c1ba1` reproduces the SyntaxError against the fresh
+  actual exported chunks; the repaired probe passes both matching chunks.
+- `NEXT_PUBLIC_COMMERCE_API_URL= pnpm --filter @flexperiment/lab-v2 build`: passed.
+- Both LAB and admin images built with the repository's `Dockerfile.frontends-v2`.
+  They retain source identity `376c1ba1`; application code is unchanged by this
+  test-harness-only follow-up. No image was pushed to a registry.
+- `python3 scripts/v2/test_frontend_proxy.py -v`: 19 tests, 18 passed and the
+  actual-image case skipped in the default config-mount mode.
+- The same suite with `V2_FRONTEND_LAB_IMAGE` and `V2_FRONTEND_ADMIN_IMAGE` set
+  to those freshly built images: all 19 tests passed, no skips.
+- The regression matrix covers semicolon omission, comma declarations, template
+  interpolation, unrelated following modules and concatenated helpers with
+  imports. Empty API base passes; production and foreign bases fail. Missing
+  helpers, external dependencies and ambiguous helpers still fail.
+- Python compilation and `git diff --check`: passed.
+
+These local checks do not substitute for hosted CI on the follow-up commit.
+The existing workflow will independently rebuild and check its exact new SHA.
