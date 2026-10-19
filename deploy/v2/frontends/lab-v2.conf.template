@@ -17,7 +17,7 @@ server {
 server {
     listen 80;
     server_name canary-lab.flexperiment.ru;
-    include /etc/nginx/v2/trusted-client-ip.conf;
+    include /etc/nginx/conf.d/lab-realip.inc;
     root /usr/share/nginx/html;
     set $commerce_upstream ${V2_COMMERCE_UPSTREAM};
     include /etc/nginx/v2/common.conf;
@@ -26,7 +26,12 @@ server {
         include /etc/nginx/v2/proxy.conf;
         proxy_pass http://$commerce_upstream;
     }
-    location ~ ^/v1/lab/guest/(start|ticket|recover(/confirm)?|reissue|refunds)$ {
+    location ~ ^/v1/lab/guest/(start|recover)$ {
+        include /etc/nginx/v2/lab-guest-source-gate.conf;
+        include /etc/nginx/v2/proxy.conf;
+        proxy_pass http://$commerce_upstream;
+    }
+    location ~ ^/v1/lab/guest/(ticket|recover/confirm|reissue|refunds)$ {
         include /etc/nginx/v2/proxy.conf;
         proxy_pass http://$commerce_upstream;
     }

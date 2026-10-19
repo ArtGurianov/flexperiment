@@ -23,9 +23,16 @@ SYNTHETIC = "synthetic-magic-link-token-for-proxy-test"
 TRAEFIK_IMAGE = "traefik:v3.6@sha256:31267173a15b4944e797a76ffd9c419707c8d8b32fe5b610f80cd0cfa05f372d"
 FIXTURE = r"""
 const http = require('node:http');
+const guestCounts = {};
 http.createServer((req, res) => {
  let body = ''; req.on('data', c => body += c);
  req.on('end', () => {
+  if (req.url === '/v1/lab/catalogue?guest-counts=1') {
+   res.writeHead(200, {'Content-Type':'application/json'});
+   return res.end(JSON.stringify(guestCounts));
+  }
+  if (/^\/v1\/lab\/guest\/(start|recover)(\?|$)/.test(req.url))
+   guestCounts[req.url.split('?')[0]] = (guestCounts[req.url.split('?')[0]] || 0) + 1;
   if (req.url.startsWith('/readyz')) {
    res.writeHead(req.url.includes('unavailable=1') ? 503 : 200, {'Content-Type':'application/json'});
    return res.end(JSON.stringify({ok: !req.url.includes('unavailable=1')}));
@@ -184,7 +191,7 @@ class FrontendProxy(unittest.TestCase):
         raise AssertionError("isolated frontend did not become ready")
 
     @classmethod
-    def request(cls, service, path, *, host=None, body=None, headers=None, container=None):
+    def request(cls, service, path, *, host=None, body=None, headers=None, container=None, peer=None):
         host = host or "canary-" + service.split('-')[0] + ".flexperiment.ru"
         request_headers = {"Host": host, **(headers or {})}
         if body is not None:
@@ -192,8 +199,12 @@ class FrontendProxy(unittest.TestCase):
         payload = {"container": container or cls.services[service], "path": path,
                    "headers": request_headers,
                    "body": None if body is None else base64.b64encode(body).decode()}
-        result = json.loads(docker("exec", "-i", cls.prefix + "-upstream", "node", "-e", REQUEST,
-                                   input=json.dumps(payload)).stdout)
+        # A synthetic sender in the real Traefik network namespace isolates
+        # malformed/missing XFF from Traefik's normal header replacement.
+        command = ("run", "--rm", "-i", "--network", "container:" + peer,
+                   "node:22-bookworm-slim", "node", "-e", REQUEST) if peer else (
+                   "exec", "-i", cls.prefix + "-upstream", "node", "-e", REQUEST)
+        result = json.loads(docker(*command, input=json.dumps(payload)).stdout)
         response_headers = Message()
         for key, values in result["headers"].items():
             for value in values if isinstance(values, list) else [values]:
@@ -279,7 +290,7 @@ class FrontendProxy(unittest.TestCase):
 
     def test_v2_allowlists(self):
         for root in ("auth/get-session", "me", "lessons/access", "checkout/preview", "email/unsubscribe", "legal/current", "lab/catalogue", "lab/guest/start", "lab/guest/ticket", "lab/guest/recover", "lab/guest/recover/confirm", "lab/guest/reissue", "lab/guest/refunds"):
-            self.assertEqual(self.request("lab-v2", "/v1/" + root)[0], 200)
+            self.assertEqual(self.request("lab-v2", "/v1/" + root, container=self.edge)[0], 200)
         for path in ("login", "session", "logout", "v2/catalog", "v2/orders"):
             self.assertEqual(self.request("admin-v2", "/v1/admin/" + path)[0], 200)
 
@@ -326,8 +337,93 @@ class FrontendProxy(unittest.TestCase):
             # Direct access from an unrelated container cannot invoke nginx's realip trust.
             status, _, body = self.request(service, path, body=b'{}',
                 headers={"X-Forwarded-For": "192.0.2.128", "X-Real-IP": "192.0.2.129"})
-            self.assertEqual(status, 200)
-            self.assertEqual(json.loads(body)["headers"]["x-real-ip"], address)
+            self.assertEqual(status, 503 if service == "lab-v2" else 200)
+            if service == "admin-v2":
+                self.assertEqual(json.loads(body)["headers"]["x-real-ip"], address)
+            else:
+                self.assertEqual(json.loads(body), {"code": "LAB_SOURCE_UNAVAILABLE"})
+
+    def guest_counts(self):
+        return json.loads(self.request("lab-v2", "/v1/lab/catalogue?guest-counts=1")[2])
+
+    def test_lab_requires_trusted_peer_and_successful_realip_replacement(self):
+        before = self.guest_counts()
+        edge_address = json.loads(docker("inspect", self.edge).stdout)[0]["NetworkSettings"]["Networks"][self.network]["IPAddress"]
+        for path in ("/v1/lab/guest/start", "/v1/lab/guest/recover"):
+            # Same approved transport peer; missing/invalid XFF and a proxy IP
+            # still fail. Merely testing nonempty realip_remote_addr is unsafe.
+            for value in (None, "", "invalid", "192.0.2.123, invalid", edge_address):
+                status, headers, body = self.request("lab-v2", path + "?synthetic=1", peer=self.edge,
+                    body=b'{}', headers={} if value is None else {"X-Forwarded-For": value})
+                self.assertEqual(status, 503, (path, value))
+                self.assertEqual(json.loads(body), {"code": "LAB_SOURCE_UNAVAILABLE"})
+                self.assertEqual(headers["Cache-Control"], "no-store")
+        self.assertEqual(self.guest_counts(), before, "failed provenance must not reach Commerce or charge quotas")
+        # Capability/confirmation routes remain available during source failure.
+        for path in ("ticket", "recover/confirm", "reissue", "refunds"):
+            self.assertEqual(self.request("lab-v2", "/v1/lab/guest/" + path)[0], 200)
+
+    def test_lab_source_gate_has_a_causal_negative_control(self):
+        config = Path(self.tmp.name) / "mutated-source-gate"
+        shutil.copytree(ROOT / "deploy/v2/frontends", config)
+        (config / "lab-guest-source-gate.conf").write_text("# Deliberately broken disposable fixture.\n")
+        name = self.prefix + "-mutated-source-gate"
+        self.containers.append(name)
+        self.start(name, "lab-v2", config)
+        self.assertEqual(self.request("lab-v2", "/v1/lab/guest/start", container=name, body=b'{}')[0], 200,
+                         "negative control must expose the untrusted-source regression")
+
+    def test_lab_missing_proxy_identity_refuses_startup(self):
+        name = self.prefix + "-no-approved-proxy"
+        self.containers.append(name)
+        result = docker("run", "--name", name, "--network", "none",
+                        "--env", f"V2_COMMERCE_UPSTREAM={CANARY}:3002", *self.arguments("lab-v2"), check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("V2_LAB_CLIENT_SOURCE_CONFIGURATION_INVALID", result.stderr)
+
+    def test_traefik_replacement_closes_guest_routes_until_nginx_restarts(self):
+        old_edge = self.edge
+        new_edge = self.prefix + "-replacement-traefik"
+        self.containers.append(new_edge)
+        old_address = json.loads(docker("inspect", old_edge).stdout)[0]["NetworkSettings"]["Networks"][self.network]["IPAddress"]
+        try:
+            # Start-first guarantees a different address on engines that either
+            # retain or release a stopped endpoint's allocation. nginx already
+            # holds only the old peer snapshot; it is deliberately not reloaded.
+            docker("run", "--detach", "--name", new_edge, "--network", self.network,
+                   "--network-alias", "coolify-proxy", "--volume", f"{self.tmp.name}/routes.yaml:/config/routes.yaml:ro",
+                   TRAEFIK_IMAGE, "--entrypoints.web.address=:80", "--entrypoints.web.forwardedheaders.insecure=false",
+                   "--providers.file.filename=/config/routes.yaml")
+            new_address = json.loads(docker("inspect", new_edge).stdout)[0]["NetworkSettings"]["Networks"][self.network]["IPAddress"]
+            self.assertNotEqual(old_address, new_address)
+            docker("stop", old_edge)
+            for _ in range(30):
+                try:
+                    if self.request("lab-v2", "/readyz", container=new_edge)[0] == 200:
+                        break
+                except subprocess.CalledProcessError:
+                    pass
+                time.sleep(0.1)
+            before = self.guest_counts()
+            for path in ("start", "recover"):
+                status, _, body = self.request("lab-v2", "/v1/lab/guest/" + path, container=new_edge, body=b'{}')
+                self.assertEqual(status, 503)
+                self.assertEqual(json.loads(body), {"code": "LAB_SOURCE_UNAVAILABLE"})
+            self.assertEqual(self.guest_counts(), before)
+            name = self.services["lab-v2"]
+            docker("rm", "--force", name)
+            self.start(name, "lab-v2")
+            client_address = json.loads(docker("inspect", self.prefix + "-upstream").stdout)[0]["NetworkSettings"]["Networks"][self.network]["IPAddress"]
+            for path in ("start", "recover"):
+                status, _, body = self.request("lab-v2", "/v1/lab/guest/" + path, container=new_edge, body=b'{}')
+                self.assertEqual(status, 200)
+                self.assertEqual(json.loads(body)["headers"]["x-real-ip"], client_address)
+        finally:
+            docker("rm", "--force", new_edge, check=False)
+            docker("start", old_edge)
+            name = self.services["lab-v2"]
+            docker("rm", "--force", name)
+            self.start(name, "lab-v2")
 
     def test_readiness_propagates_upstream_unavailable(self):
         for service in self.services:
