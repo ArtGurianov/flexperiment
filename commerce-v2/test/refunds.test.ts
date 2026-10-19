@@ -131,8 +131,8 @@ describe("email refund intake", () => {
     db.prepare(`INSERT INTO legal_releases(id,storefront,version,manifest_json,effective_at,active)
       VALUES ('lab-legal','LAB','lab-fixture-v1',?,'2026-09-30T00:00:00Z',1)`).run(stageALegalManifestJson);
     db.prepare("INSERT INTO cities(id,slug,title) VALUES ('city','fixture-city','Fixture city')").run();
-    db.prepare(`INSERT INTO lab_occurrences(id,occurrence_ref,city_id,title,starts_at,ends_at,timezone,capacity,sales_status)
-      VALUES ('occurrence','lab:fixture','city','Fixture LAB','2026-11-01T09:00:00Z','2026-11-01T17:00:00Z','Asia/Novosibirsk',20,'PUBLIC')`).run();
+    db.prepare(`INSERT INTO lab_occurrences(id,occurrence_ref,city_id,title,starts_at,ends_at,timezone,capacity,venue_status,venue_name,venue_address)
+      VALUES ('occurrence','lab:fixture','city','Fixture LAB','2026-11-01T09:00:00Z','2026-11-01T17:00:00Z','Asia/Novosibirsk',20,'CONFIRMED','Студия','ул. Фикстурная, 1')`).run();
     db.prepare(`INSERT INTO products(id,product_ref,kind,access_model,occurrence_ref)
       VALUES ('lab-product','lab:fixture','LAB','PAID','lab:fixture')`).run();
     db.prepare(`INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode)

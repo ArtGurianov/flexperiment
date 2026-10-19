@@ -24,9 +24,17 @@ describe("separate LAB V2 entrypoint", () => {
     expect(fetcher.mock.calls).toHaveLength(2);expect(fetcher.mock.calls.every(([path]) => !path.includes("/public/"))).toBe(true);
   });
   it("renders published facts but never creates a payment or exposes a buy action", async () => {
-    const event = { occurrenceRef: "fixture-event", offerRef: "lab:fixture", cityId: "fixture", title: "Isolated published fixture", startsAt: "2026-11-01T10:00:00Z", endsAt: "2026-11-01T12:00:00Z", timezone: "Europe/Moscow", amountKopecks: 12345, currency: "RUB" };
+    const event = { occurrenceRef: "fixture-event", offerRef: "lab:fixture", cityId: "fixture", title: "Isolated published fixture", startsAt: "2026-11-01T10:00:00Z", endsAt: "2026-11-01T12:00:00Z", timezone: "Europe/Moscow", amountKopecks: 12345, currency: "RUB", venue: { status: "CONFIRMED", name: null, address: null }, soldOut: false };
     vi.stubGlobal("fetch", vi.fn(async (path: string) => response(path === "/v1/me" ? { customer: null } : { ...catalogue, occurrences: [event] })));
     render(<LabV2Client />);await screen.findByText(event.title);expect(screen.getByRole("button", { name: "Покупка закрыта" })).toBeDisabled();
+    expect(screen.getByText("Адрес сообщим участникам")).toBeInTheDocument();
+  });
+  it("shows a TBA disclosure and a sold-out occurrence without a buy action", async () => {
+    const event = { occurrenceRef: "fixture-event", offerRef: "lab:fixture", cityId: "fixture", title: "Isolated sold-out fixture", startsAt: "2026-11-01T10:00:00Z", endsAt: "2026-11-01T12:00:00Z", timezone: "Europe/Moscow", amountKopecks: 12345, currency: "RUB",
+      venue: { status: "TO_BE_ANNOUNCED", disclosureText: "Площадку объявим за неделю", announceBy: "2026-10-25T10:00:00Z" }, soldOut: true };
+    vi.stubGlobal("fetch", vi.fn(async (path: string) => response(path === "/v1/me" ? { customer: null } : { ...catalogue, occurrences: [event] })));
+    render(<LabV2Client />);await screen.findByText(event.title);
+    expect(screen.getByText("Площадку объявим за неделю")).toBeInTheDocument();expect(screen.getByRole("button", { name: "Мест нет" })).toBeDisabled();
   });
   it("loads only owned LAB order history and clears it after confirmed sign-out", async () => {
     const order = { orderPublicId: "fixture-order", title: "Owned LAB fixture", offerRef: "lab:fixture", productKind: "LAB", state: "FULFILLED", amountKopecks: 12345, currency: "RUB", createdAt: "2026-10-11T00:00:00Z" };

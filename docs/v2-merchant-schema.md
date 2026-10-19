@@ -99,6 +99,24 @@ does.
   preview and confirmation. An activation must cite the acceptance evidence
   for its kind — ART-240 for ONLINE_COURSE only, ART-243 for LAB; COURSE_BUNDLE requires its own explicitly qualified bundle evidence and must not reuse ART-240 — which
   the command and a schema trigger both enforce.
+- `lab_occurrences` (migration 0029, ART-199) has a lifecycle, not a sales
+  status: `SCHEDULED` or terminal `CANCELLED`; in progress and finished are
+  derived from `starts_at`/`ends_at`. Selling is the offer's `sale_mode` alone.
+  Visibility (`LISTED`/`UNLISTED`) only controls the public catalogue. Each
+  occurrence declares its venue as `CONFIRMED` (name, address, and whether the
+  catalogue may show them) or `TO_BE_ANNOUNCED` (disclosure text and an
+  announcement deadline before the start); a legacy row without a venue is
+  never listed or sold. `capacity` and `admin_reserved_seats` bound customer
+  seats: a seat stays committed until its order reaches a final outcome
+  (expired, declined, refunded), so no clock frees an uncertain payment.
+  Checkout admits a LAB offer only while its occurrence is scheduled, not
+  started, has a declared venue and a free seat, and re-reads the seat count in
+  the transaction that creates the order. Once a seat is committed, schedule
+  and venue changes and cancellation are refused here and belong to the
+  move/cancel workflow (ART-203). Every change advances `version` and writes an
+  immutable `lab_occurrence_revisions` row; customer-facing changes also
+  advance `material_revision`. City slugs and an occurrence's ref and city are
+  immutable.
 - `merchant_promotion` contains only merchant promotion authority: a normalized
   reserved-prefix code, discount rule, optional eligible offer and active
   window. It has no partner, referral, attribution or reward fields. The
@@ -120,8 +138,8 @@ does.
   `refref-jcs-1:<hex>` digest sent unchanged with that structure to Refref.
   Each paid line separately preserves catalogue price, merchant discount,
   post-promotion merchant amount, final amount, promotion evidence, fiscal
-  item, legal release ref/hash and (for LAB) the occurrence ref and service
-  times. Refref's accepted projection must return the same namespaced digest
+  item, legal release ref/hash and (for LAB) the occurrence ref, service
+  times and the venue disclosure promised to the buyer. Refref's accepted projection must return the same namespaced digest
   before it may advance the local order. `checkout_attempts` projects that
   protocol without becoming payment authority.
 - `course_entitlements` is append-only grant evidence per order line. Revoking

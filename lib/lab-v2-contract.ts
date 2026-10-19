@@ -12,6 +12,12 @@ export const labCatalogueSchema = z.object({
       try { new Intl.DateTimeFormat("ru-RU", { timeZone: value });return true; }
       catch { return false; }
     }), amountKopecks: z.number().int().nonnegative(), currency: z.literal("RUB"),
+    /** A confirmed venue the organizer keeps private is announced to buyers only. */
+    venue: z.discriminatedUnion("status", [
+      z.object({ status: z.literal("CONFIRMED"), name: z.string().nullable(), address: z.string().nullable() }),
+      z.object({ status: z.literal("TO_BE_ANNOUNCED"), disclosureText: z.string(), announceBy: z.iso.datetime({ offset: true }) }),
+    ]),
+    soldOut: z.boolean(),
   })),
 });
 export type LabCatalogue = z.infer<typeof labCatalogueSchema>;

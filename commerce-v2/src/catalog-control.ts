@@ -50,8 +50,12 @@ export function configureProduct(db: Database.Database, config: CommerceRuntimeC
   if (command.kind === "COURSE_BUNDLE" && command.productRef !== "bundle:all-courses") throw new Error("ALL_COURSES_BUNDLE_REF_INVALID");
   if (command.kind === "LAB" && !command.occurrenceRef) throw new Error("OCCURRENCE_REF_REQUIRED");
   if (command.kind !== "LAB" && command.occurrenceRef) throw new Error("OCCURRENCE_REF_FORBIDDEN");
-  if (command.occurrenceRef && !db.prepare("SELECT 1 FROM lab_occurrences WHERE occurrence_ref=?").get(command.occurrenceRef)) {
-    throw new Error("LAB_OCCURRENCE_NOT_FOUND");
+  if (command.occurrenceRef) {
+    const occurrence = db.prepare("SELECT lifecycle FROM lab_occurrences WHERE occurrence_ref=?").get(command.occurrenceRef) as
+      { lifecycle: "SCHEDULED" | "CANCELLED" } | undefined;
+    if (!occurrence) throw new Error("LAB_OCCURRENCE_NOT_FOUND");
+    // A cancelled occurrence never sells again; its offer stays CLOSED.
+    if (occurrence.lifecycle === "CANCELLED" && command.saleMode !== "CLOSED") throw new Error("LAB_OCCURRENCE_CANCELLED");
   }
   assertLiveOfferSaleMode(db, config, command);
   if (command.saleMode !== "CLOSED" && command.accessModel === "PAID") {

@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type Database from "better-sqlite3";
 import { classifyV2Database } from "./db";
+import type { VenueDisclosure } from "./lab-occurrences";
 
 type Catalogue = {
   readonly cities: ReadonlyArray<{ readonly slug: string; readonly title: string }>;
@@ -24,6 +25,7 @@ type Catalogue = {
     readonly endsAt: string;
     readonly timezone: string;
     readonly capacity: number;
+    readonly venue: VenueDisclosure;
   }>;
 };
 
@@ -55,14 +57,21 @@ export function applyV2Seed(db: Database.Database, catalogue: Catalogue) {
       cityBySlug.set(city.slug, id);
     }
 
+    // Seeded occurrences start UNLISTED; the schema triggers refuse an incomplete venue.
     const insertOccurrence = db.prepare(`INSERT INTO lab_occurrences
-      (id, occurrence_ref, city_id, title, starts_at, ends_at, timezone, capacity)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
+      (id, occurrence_ref, city_id, title, starts_at, ends_at, timezone, capacity,
+       venue_status, venue_name, venue_address, venue_public, venue_disclosure_text, venue_announce_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
     for (const occurrence of catalogue.labOccurrences) {
       const cityId = cityBySlug.get(occurrence.citySlug);
       if (!cityId) throw new V2SeedError("V2_SEED_UNKNOWN_CITY");
+      const { venue } = occurrence;
+      const confirmed = venue?.status === "CONFIRMED" ? venue : null;
+      const announced = venue?.status === "TO_BE_ANNOUNCED" ? venue : null;
       insertOccurrence.run(randomUUID(), occurrence.occurrenceRef, cityId, occurrence.title,
-        occurrence.startsAt, occurrence.endsAt, occurrence.timezone, occurrence.capacity);
+        occurrence.startsAt, occurrence.endsAt, occurrence.timezone, occurrence.capacity, venue?.status ?? null,
+        confirmed?.name ?? null, confirmed?.address ?? null, confirmed?.public ? 1 : 0,
+        announced?.disclosureText ?? null, announced?.announceBy ?? null);
     }
 
     const insertProduct = db.prepare(`INSERT INTO products

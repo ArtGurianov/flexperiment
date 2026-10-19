@@ -34,8 +34,8 @@ describe("customer identity", () => {
   it("keeps a guest LAB purchase on the one customer after verified registration", () => {
     const guest = getOrCreateCustomer(db, " Guest@Example.COM ");
     db.prepare("INSERT INTO cities(id,slug,title) VALUES ('city','moscow','Москва')").run();
-    db.prepare(`INSERT INTO lab_occurrences(id,occurrence_ref,city_id,title,starts_at,ends_at,timezone,capacity)
-      VALUES ('occurrence','lab:moscow:2026-10-10','city','Практикум','2026-10-10T07:00:00Z','2026-10-10T10:00:00Z','Europe/Moscow',12)`).run();
+    db.prepare(`INSERT INTO lab_occurrences(id,occurrence_ref,city_id,title,starts_at,ends_at,timezone,capacity,venue_status,venue_name,venue_address)
+      VALUES ('occurrence','lab:moscow:2026-10-10','city','Практикум','2026-10-10T07:00:00Z','2026-10-10T10:00:00Z','Europe/Moscow',12,'CONFIRMED','Студия','ул. Фикстурная, 1')`).run();
     db.prepare(`INSERT INTO products(id,product_ref,kind,access_model,occurrence_ref)
       VALUES ('lab-product','lab:moscow:2026-10-10','LAB','PAID','lab:moscow:2026-10-10')`).run();
     db.prepare(`INSERT INTO legal_releases(id,storefront,version,manifest_json,effective_at,active)
