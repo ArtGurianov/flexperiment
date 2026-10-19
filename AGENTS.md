@@ -41,3 +41,24 @@ operations, and no new participations. Allowed: only what the hard cut needs -
 the evidence audit, separately authorized historical-case recovery and closing
 external tails. Do not restore a public V1 service for compatibility. Referral capability
 moves to Refref; it is not rebuilt here.
+
+## Infrastructure custody (shared Adman VPS)
+
+This project runs on the shared Adman VPS. Host baseline, encrypted custody and
+recovery are owned by `ArtGurianov/adman-vps-infrastructure`; its
+[`AGENTS.md`](https://github.com/ArtGurianov/adman-vps-infrastructure/blob/main/AGENTS.md)
+is the canonical contract.
+
+Every PR that deploys or changes host state states `CUSTODY_IMPACT: YES|NO`
+with a one-line reason. YES covers new or changed credentials and encryption
+keys, env files on the host, Docker networks, proxy routes, systemd units,
+installers, backup paths, and persistent state that needs a key to restore.
+Code that is not yet deployed is NO.
+
+For YES, list each changed resource and its authority (Coolify env, SOPS host
+credential, encrypted external bundle, or this project's backup tool) and open
+or link an issue in the infrastructure project. Until that repository's drift
+check is clean and a fresh capture exists, report `CUSTODY_PENDING`. A
+successful deployment is not custody evidence. Never put plaintext secrets in
+Git, PRs, Linear or logs, and never rotate keys or change the host without
+explicit owner authorization.
