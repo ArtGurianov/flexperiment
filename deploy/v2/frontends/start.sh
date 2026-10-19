@@ -16,6 +16,10 @@ case "$service" in
     lab-v2|admin-v2) ;;
     *) echo V2_FRONTEND_CONFIGURATION_INVALID >&2; exit 1 ;;
 esac
+# LAB start/recovery must never silently use a proxy's address as a client key.
+if [ "$service" = lab-v2 ]; then
+    /bin/sh /etc/nginx/v2/lab-client-ip.sh
+fi
 # Explicit envsubst allowlist leaves nginx variables intact. No secret is read.
 envsubst '$V2_COMMERCE_UPSTREAM' < "/etc/nginx/v2/$service.conf.template" > /etc/nginx/conf.d/default.conf
 exec nginx -g 'daemon off;'
