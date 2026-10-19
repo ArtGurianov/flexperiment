@@ -1,3 +1,4 @@
+import { labAccess, startLabGuest, prepareLabRecovery } from "../src/lab-tickets";
 import { testOwnerLegalDecision } from "./fixtures/sales";
 import { draftFiscalPolicy } from "../src/fiscal-policy";
 import Database from "better-sqlite3";
@@ -87,11 +88,23 @@ describe("real isolated old SQLite backup + independent latest erasure journal",
         .get() as { document_json: string; content_hash: string };
       expect(createHash("sha256").update(version.document_json).digest("hex")).toBe(version.content_hash);
       expect(restored.pragma("integrity_check", { simple: true })).toBe("ok"); expect(restored.pragma("foreign_key_check")).toEqual([]);
-      const count = rowCount(restored, "schema_migrations"); expect(count).toBe(31);
+      const count = rowCount(restored, "schema_migrations"); expect(count).toBe(32);
       expect(applyIsolatedRestoreErasure(restored, await verified(), keys, "canary", now).erasedAccounts).toBe(0);
       // Original source has not been erased by the isolated proof.
       expect(rowCount(db, "customers")).toBe(2); expect(rowCount(db, '"session"')).toBe(2);
     } finally { restored.close(); }
+  });
+  it("erases unpurchased guest credentials and revokes unrelated guest/recovery links on isolated restore", async () => {
+    const deletedToken = randomBytes(32).toString("base64url"), otherToken = randomBytes(32).toString("base64url");
+    startLabGuest(db, { email: "deleted-customer@example.test", accessToken: deletedToken }, now.toISOString());
+    const other = startLabGuest(db, { email: "other-customer@example.test", accessToken: otherToken }, now.toISOString());
+    prepareLabRecovery(db, "other-customer@example.test", other.orderPublicId, "https://lab.example.test", now.toISOString());
+    tombstone();
+    applyIsolatedRestoreErasure(db, await verified(), keys, "canary", now);
+    expect(() => labAccess(db, deletedToken)).toThrow("LAB_ACCESS_INVALID");
+    expect(() => labAccess(db, otherToken)).toThrow("LAB_ACCESS_INVALID");
+    expect(rowCount(db, "lab_guest_access")).toBe(1);
+    expect(rowCount(db, "lab_ticket_recoveries")).toBe(0);
   });
   it("keeps a genuinely new same-email identity, but cannot revive old marketing authority", async () => {
     tombstone(); db.exec(`DELETE FROM free_course_enrollments;

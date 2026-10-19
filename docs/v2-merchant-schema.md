@@ -478,3 +478,30 @@ lock without rebuilding title or price. A definitive resolution refusal is repla
 RC.2 retries must carry the same handoff token (its digest participates in request identity; the raw
 token is not persisted). An attempt-create 409/422 releases the intent only after Refref read-back
 confirms no attempt; session refusals and inconclusive reads keep the payment fence.
+
+## LAB guest tickets (ART-384; migration 0032)
+
+`lab_guest_access` binds a SHA-256 capability digest to one prospective order and
+customer, including order-scoped unverified-email consent evidence. Email reuse
+never grants access to the customer's other orders. Existing verified-email
+account binding retains the same customer and its LAB history.
+
+`lab_tickets` has one row per accepted-paid LAB line. `qr_sha256` is distinct from
+the order capability. `used_at`/`used_by` are committed together by a Control Room
+operator for the matching occurrence; triggers reject rewriting the use record
+or deleting a used row. Recovery/reissue only rotates credentials. A full refund
+voids admission without deleting use evidence; a stale PAID readback cannot
+resurrect an accepted refund.
+
+`lab_ticket_recoveries` stores only single-use token digests, deadlines and replay
+proof of the replacement order capability. Email requests do not rotate an active
+QR. `lab_guest_rate_limits` holds hashed, short-lived abuse-limit buckets per trusted
+source and (source, email); no anonymous caller can consume a global hard quota.
+Guest payment admission/readback is also order-scoped: sharing an unverified
+email does not block independent orders or signed-in purchases. Replay retains
+one line/order/attempt, and seat capacity remains authoritative.
+Isolated restore revokes all of these access credentials while retaining ticket
+identity/use. Financial erasure holds and offline retention remain explicit.
+
+The guest flow, API authority and qualification boundaries are described in
+[the ART-384 design](plans/2026-10-19-lab-guest-checkout-design.md).

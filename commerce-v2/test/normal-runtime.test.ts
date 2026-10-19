@@ -66,6 +66,7 @@ beforeEach(() => {
     SMARTCAPTCHA_SERVER_KEY: "synthetic-captcha-key", COMMERCE_SESSION_SECRET: "synthetic-admin-key",
     COMMERCE_ADMIN_PASSWORD_SCRYPT: "synthetic-unused-admin-hash", CONTROL_ROOM_TOTP_KEY: Buffer.alloc(32, 3).toString("base64url"),
     CAMPAIGN_UNSUBSCRIBE_SECRET: "synthetic-unsubscribe-key",
+    LAB_GUEST_TRUSTED_PROXY_IPS: undefined,
     MARKETING_BROADCASTS_ENABLED: "false", KINESCOPE_DELIVERY_MODE: "open", KINESCOPE_API_TOKEN: undefined,
     KINESCOPE_DRM_USERNAME: undefined, KINESCOPE_DRM_PASSWORD: undefined,
     KINESCOPE_DRM_TOKEN_CURRENT_KEY: undefined, KINESCOPE_DRM_TOKEN_KEYS: undefined, KINESCOPE_DRM_TOKEN_SECRET: undefined,
@@ -90,6 +91,22 @@ afterEach(() => {
 });
 
 describe("ART-162 / ART-179 normal production server, payment disabled", () => {
+  it("keeps anonymous LAB creation/mail closed when the real server has no trusted socket metadata", async () => {
+    await boot();
+    for (const path of ["/v1/lab/guest/start", "/v1/lab/guest/recover"]) {
+      const response = await request(path, post({ email: "guest@example.test", accessToken: "a".repeat(43) },
+        { origin: "https://lab.synthetic.invalid", "x-real-ip": "192.0.2.1", "x-forwarded-for": "192.0.2.2" }));
+      expect(response.status).toBe(503); expect(await response.json()).toEqual({ code: "LAB_SOURCE_UNAVAILABLE" });
+    }
+    expect(db().prepare("SELECT COUNT(*) AS n FROM lab_guest_access").get()).toEqual({ n: 0 });
+  });
+  it("rejects a broad LAB proxy configuration in the real server composition", async () => {
+    vi.stubEnv("LAB_GUEST_TRUSTED_PROXY_IPS", "10.0.0.0/8");
+    const { serverStartup } = await import("../src/server");
+    await expect(serverStartup).rejects.toThrow("LAB_GUEST_TRUSTED_PROXY_IPS_INVALID");
+    expect(runtime.serve).not.toHaveBeenCalled();
+  });
+
   it.each([undefined, "false"])("rejects previously installed fencing=%s before database/migrations/auth/server", async enabled => {
     runtime.installationState = "REQUIRED"; vi.stubEnv("ERASURE_FENCING_ENABLED", enabled);
     const { serverStartup } = await import("../src/server");
