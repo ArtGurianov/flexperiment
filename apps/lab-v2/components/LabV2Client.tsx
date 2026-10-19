@@ -59,7 +59,7 @@ export default function LabV2Client() {
         <time dateTime={event.startsAt}>{new Intl.DateTimeFormat("ru-RU", { dateStyle: "long", timeStyle: "short", timeZone: event.timezone }).format(new Date(event.startsAt))}</time>
         <p>{event.venue.status === "CONFIRMED" ? [event.venue.name, event.venue.address].filter(Boolean).join(", ") || "Адрес сообщим участникам" : event.venue.disclosureText}</p>
         <p>{money(event.amountKopecks)}</p>{event.soldOut || catalogue.paymentMode === "disabled" ? <button disabled>{event.soldOut ? "Мест нет" : "Покупка закрыта"}</button>
-          : <LabGuestCheckout offerRef={event.offerRef} />}
+          : <LabGuestCheckout offerRef={event.offerRef} displayedAmountKopecks={event.amountKopecks} />}
       </article>)}</div>}
       {catalogue?.occurrences.length ? <script type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(labEventsJsonLd(catalogue)).replace(/</g, "\\u003c") }} /> : null}

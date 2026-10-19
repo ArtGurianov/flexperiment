@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import { randomBytes } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { configureLabOffer } from "../src/catalog-control";
 import { createCommerceV2App } from "../src/app";
 import { MockPaymentRail, reconcileCheckout } from "../src/checkout";
 import { migrateV2 } from "../src/db";
@@ -70,6 +71,30 @@ describe("LAB guest purchase and scopes", () => {
     expect(JSON.stringify(db.prepare("SELECT * FROM lab_guest_access").get())).not.toContain(guest.token);
     const again = await pay(guest.token, guest.prepared.quoteId);
     expect(again.orderPublicId).toBe(guest.orderPublicId); expect(create).toHaveBeenCalledOnce(); expect(send).toHaveBeenCalledOnce();
+    expect(count("lab_tickets")).toBe(1);
+  });
+  it("warns on a guest's stale displayed price and on quote replay, preserving payment and ticket amounts", async () => {
+    const setPrice = (priceKopecks: number, expectedProductVersion: number) => configureLabOffer(db, testCheckoutConfig, {
+      occurrenceRef: "lab:one", priceKopecks, expectedProductVersion, saleMode: "PUBLIC", paymentPurpose: "Участие в LAB", actor: "operator",
+    }, now);
+    const guest = await start();
+    setPrice(250_000, 1);
+    const first = await json(await request("/v1/checkout/preview", { offerRef: "lab:one", displayedAmountKopecks: 250_000 }, guest.token, "price-preview"));
+    expect(first).toMatchObject({ finalAmountKopecks: 250_000, priceNotice: null });
+    setPrice(300_000, 2);
+    const replay = await json(await request("/v1/checkout/preview", { offerRef: "lab:one", displayedAmountKopecks: 250_000 }, guest.token, "price-preview"));
+    expect(replay).toMatchObject({ quoteId: first.quoteId, finalAmountKopecks: 250_000,
+      priceNotice: { code: "CATALOG_PRICE_CHANGED_AFTER_QUOTE", quotedAmountKopecks: 250_000, currentAmountKopecks: 300_000 } });
+    const lateGuest = await start(capability(), "late@example.com");
+    const late = await json(await request("/v1/checkout/preview", { offerRef: "lab:one", displayedAmountKopecks: 250_000 }, lateGuest.token));
+    expect(late).toMatchObject({ finalAmountKopecks: 300_000,
+      priceNotice: { code: "PRICE_CHANGED_SINCE_DISPLAY", quotedAmountKopecks: 300_000, displayedAmountKopecks: 250_000 } });
+    expect(count("orders")).toBe(0);
+    const paid = await pay(guest.token, first.quoteId);
+    expect(paid).toMatchObject({ orderPublicId: guest.orderPublicId, state: "PAID" });
+    expect(db.prepare("SELECT unit_amount_kopecks FROM order_lines").get()).toEqual({ unit_amount_kopecks: 250_000 });
+    const ticket = await json(await request("/v1/lab/guest/ticket", undefined, guest.token));
+    expect(ticket).toMatchObject({ status: "VALID", qrImage: expect.stringMatching(/^data:image/), occurrence: { title: "LAB" } });
     expect(count("lab_tickets")).toBe(1);
   });
   it("requires current LAB order consent before any payment, and does not manufacture account/marketing consent", async () => {

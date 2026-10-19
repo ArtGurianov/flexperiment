@@ -119,17 +119,35 @@ const checkoutError = (context: Context, error: unknown, fallback: string) => {
 };
 const CONTROL_ROOM_SESSION_SECONDS = CONTROL_ROOM_SESSION_TTL_MS / 1000;
 
-/**
- * LAB Control Room refusals (ART-341). Only authored codes leave the process; a database or parser
- * message becomes the route's fallback. Malformed input is 422, a missing subject 404, anything that
- * conflicts with the current state (stale version, sold seats, cancellation, identity) 409.
- */
+/** Authored LAB command refusals only; unknown failures are redacted server errors. */
+const LAB_COMMAND_VALIDATION = new Set([
+  "LAB_COMMAND_INVALID", "CITY_SLUG_INVALID", "CITY_TITLE_INVALID", "LAB_OCCURRENCE_REF_INVALID",
+  "LAB_OCCURRENCE_TITLE_INVALID", "LAB_OCCURRENCE_TIME_INVALID", "LAB_OCCURRENCE_STARTS_IN_PAST",
+  "LAB_OCCURRENCE_TIMEZONE_INVALID", "LAB_CAPACITY_INVALID", "LAB_RESERVE_INVALID", "LAB_VENUE_INVALID",
+  "LAB_VENUE_CONFIRMATION_INCOMPLETE", "LAB_VENUE_TBA_INCOMPLETE", "LAB_VENUE_ANNOUNCEMENT_TOO_LATE",
+  "LAB_CHANGE_REASON_REQUIRED", "LAB_VISIBILITY_INVALID", "PRODUCT_COMMAND_INVALID", "PRICE_INVALID",
+  "COURSE_REF_REQUIRED", "COURSE_REF_FORBIDDEN", "ALL_COURSES_BUNDLE_REF_INVALID", "OCCURRENCE_REF_REQUIRED",
+  "OCCURRENCE_REF_FORBIDDEN", "PAYMENT_PURPOSE_REQUIRED", "SALE_MODE_INVALID", "ACCEPTANCE_ALLOWLIST_INVALID",
+]);
+const LAB_COMMAND_NOT_FOUND = new Set(["CITY_NOT_FOUND", "LAB_OCCURRENCE_NOT_FOUND"]);
+const LAB_COMMAND_CONFLICT = new Set([
+  "CITY_SLUG_TAKEN", "LAB_OCCURRENCE_REF_TAKEN", "LAB_OCCURRENCE_VERSION_CONFLICT", "LAB_OCCURRENCE_CANCELLED",
+  "LAB_OCCURRENCE_FINISHED", "LAB_OCCURRENCE_STARTED", "LAB_OCCURRENCE_SCHEDULE_LOCKED",
+  "LAB_VENUE_CHANGE_REQUIRES_WORKFLOW", "LAB_VENUE_UNDECLARED", "LAB_CAPACITY_BELOW_COMMITTED_SEATS",
+  "LAB_RESERVE_EXCEEDS_AVAILABLE_CAPACITY", "LAB_OCCURRENCE_HAS_COMMITTED_SEATS", "WITHDRAWN_PRODUCT_IMMUTABLE",
+  "CATALOG_VERSION_CONFLICT", "PRODUCT_IDENTITY_IMMUTABLE", "LAB_OCCURRENCE_OFFER_EXISTS",
+  "FREE_ACCESS_HISTORY_REQUIRES_RECONCILIATION", "CLOSED_PAID_TEST_SCOPE_REFUSED", "PAYMENTS_DISABLED",
+  "MOCK_FORBIDDEN_IN_PRODUCTION", "SALES_ACTIVATION_REQUIRED", "ACCEPTANCE_OFFER_REQUIRES_REFREF",
+]);
 const labCommandError = (context: Context, error: unknown, fallback: string) => {
-  const message = error instanceof CommerceConfigurationError ? error.code : error instanceof Error ? error.message : "";
-  const code = /^[A-Z][A-Z0-9_]*$/.test(message) ? message : fallback;
-  const status = code === fallback ? 409 : /_NOT_FOUND$/.test(code) ? 404
-    : /(_INVALID|_REQUIRED|_INCOMPLETE|_TOO_LATE|_IN_PAST)$/.test(code) && !/^(SALES_ACTIVATION|PAYMENT_PURPOSE)_/.test(code) ? 422 : 409;
-  return context.json({ error: { code } }, status, noStore);
+  const code = error instanceof CommerceConfigurationError ? error.code : error instanceof Error ? error.message : "";
+  if (LAB_COMMAND_VALIDATION.has(code)) return context.json({ error: { code } }, 422, noStore);
+  if (LAB_COMMAND_NOT_FOUND.has(code)) return context.json({ error: { code } }, 404, noStore);
+  if (LAB_COMMAND_CONFLICT.has(code)) return context.json({ error: { code } }, 409, noStore);
+  // Never log SQL, request bodies, exception messages, stacks, tokens or customer data.
+  try { console.error(JSON.stringify({ event: "LAB_COMMAND_FAILURE", code: fallback, errorKind: error instanceof Error ? "ERROR" : "NON_ERROR" })); }
+  catch { /* A diagnostic failure must not replace the sanitized response. */ }
+  return context.json({ error: { code: fallback } }, 500, noStore);
 };
 const labCommandBody = async <T,>(context: Context) => {
   try {

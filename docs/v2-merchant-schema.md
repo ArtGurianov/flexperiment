@@ -129,7 +129,8 @@ does.
   `configureProduct`, so the LAB activation gate keeps LAB sales `CLOSED`
   until ART-243. Malformed input answers 422, a missing subject 404, a stale
   version, sold seats, cancellation or identity 409; unrecognised errors are
-  reported only as the route's fallback code.
+  reported as HTTP 500 with the route's fallback code and a redacted
+  operational signal.
 - `offers.price_kopecks` is the only current price. The public LAB catalogue
   (and so the V2 page and its Offer JSON-LD, rendered client-side from that
   response) and every new quote read it live; an issued quote and an order
@@ -137,7 +138,10 @@ does.
   `CATALOG_PRICE_CHANGED_AFTER_QUOTE` when the live price moved after the quote,
   `PRICE_CHANGED_SINCE_DISPLAY` when the price the buyer's page sent as
   `displayedAmountKopecks` differs from the quote. The notice never changes the
-  quote. The frozen V1 SEO snapshot is not touched (F9).
+  quote. Guest LAB checkout sends the displayed catalogue price and shows both
+  notices before explicit payment confirmation, including on quote replay.
+  Cancellation freezes even CLOSED offer terms in the shared product writer.
+  The frozen V1 SEO snapshot is not touched (F9).
 - `merchant_promotion` contains only merchant promotion authority: a normalized
   reserved-prefix code, discount rule, optional eligible offer and active
   window. It has no partner, referral, attribution or reward fields. The

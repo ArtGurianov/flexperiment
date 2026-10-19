@@ -2,13 +2,14 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import "@testing-library/jest-dom/vitest";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import LabV2Client from "./LabV2Client";
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 vi.mock("../../../lib/commerce-api", () => ({ commerceApiUrl: (path: string) => path }));
 const catalogue = { schema: "flexperiment.lab-catalogue/1", paymentMode: "disabled", cities: [], occurrences: [] };
 const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
+beforeEach(() => sessionStorage.clear());
 afterEach(() => { cleanup();vi.unstubAllGlobals(); });
 
 describe("separate LAB V2 entrypoint", () => {
@@ -55,6 +56,28 @@ describe("separate LAB V2 entrypoint", () => {
     render(<LabV2Client />);await screen.findByText(event.title);
     expect(screen.getByText(/3\s*000,00\s*₽/)).toBeInTheDocument();
     expect(offer()).toEqual({ "@type": "Offer", price: "3000.00", priceCurrency: "RUB", availability: "https://schema.org/SoldOut" });
+  });
+  it("passes the live card price into guest preview and shows a stale-price notice before confirmation", async () => {
+    const event = { occurrenceRef: "lab:november", offerRef: "lab:november", cityId: "nsk", title: "LAB в ноябре",
+      startsAt: "2026-11-01T09:00:00Z", endsAt: "2026-11-01T17:00:00Z", timezone: "Asia/Novosibirsk",
+      amountKopecks: 250_000, currency: "RUB", venue: { status: "CONFIRMED", name: "Студия", address: "Адрес" }, soldOut: false };
+    const fetcher = vi.fn(async (path: string, options?: RequestInit) => {
+      if (path === "/v1/me") return response({ customer: null });
+      if (path === "/v1/lab/catalogue") return response({ ...catalogue, paymentMode: "mock", occurrences: [event] });
+      if (path === "/v1/lab/guest/start") return response({ orderPublicId: "order" });
+      expect(path).toBe("/v1/checkout/preview");
+      expect(JSON.parse(String(options?.body))).toEqual({ offerRef: event.offerRef, displayedAmountKopecks: 250_000 });
+      return response({ state: "PRICE_REVIEW_REQUIRED", quoteId: "quote", finalAmountKopecks: 300_000, expiresAt: "2026-10-19T23:00:00Z",
+        occurrence: event, priceNotice: { code: "PRICE_CHANGED_SINCE_DISPLAY", quotedAmountKopecks: 300_000, displayedAmountKopecks: 250_000 },
+        labLegal: { releaseVersion: "lab-b", manifestSha256: "a".repeat(64), documents: [] } });
+    });
+    vi.stubGlobal("fetch", fetcher);
+    render(<LabV2Client />);
+    fireEvent.change(await screen.findByLabelText("Email для билета и чека"), { target: { value: "guest@example.com" } });
+    fireEvent.click(screen.getByRole("button", { name: "Проверить условия" }));
+    expect(await screen.findByRole("status")).toHaveTextContent(/Цена изменилась: было 2\s500 ₽, сейчас 3\s000 ₽/);
+    expect(screen.getByRole("button", { name: "Подтвердить и оплатить" })).toBeDisabled();
+    expect(fetcher.mock.calls.some(([path]) => path === "/v1/checkout")).toBe(false);
   });
   it("keeps the V2 entrypoint free of build-time occurrence or price data", () => {
     const root = join(process.cwd(), "apps", "lab-v2");

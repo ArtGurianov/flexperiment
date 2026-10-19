@@ -3,7 +3,7 @@ import type { LabCatalogue } from "../../../lib/lab-v2-contract";
 /**
  * Event/Offer JSON-LD for the LAB V2 page (ART-341), built from the same live Commerce response as the
  * visible price, never from a build-time snapshot (the frozen V1 SEO snapshot stays V1's until F9).
- * The page sells nothing, so an offer claims no availability except a sold-out one.
+ * Payment admission stays in Commerce; an offer claims no availability except a sold-out one.
  */
 export function labEventsJsonLd(catalogue: LabCatalogue) {
   return catalogue.occurrences.map((event) => {

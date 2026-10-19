@@ -1,7 +1,8 @@
 import Database from "better-sqlite3";
 import { scryptSync } from "node:crypto";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LabOccurrencesResponse } from "@flexperiment/control-room-contracts";
+import { configureProduct } from "../src/catalog-control";
 import { createCommerceV2App } from "../src/app";
 import { checkout, confirmCheckout, MockPaymentRail, prepareCheckout } from "../src/checkout";
 import { CONTROL_ROOM_ADMIN_ID } from "../src/control-room-totp";
@@ -39,7 +40,7 @@ const send = (method: string, path: string, body?: unknown, headers: Record<stri
 const json = async (response: Response) => ({ status: response.status, body: await response.json() as Record<string, unknown> });
 const list = async () => (await (await send("GET", "/v1/admin/v2/lab")).json() as LabOccurrencesResponse).occurrences;
 const current = async () => (await list()).find((item) => item.occurrenceRef === REF)!;
-const edit = async (patch: Record<string, unknown>, expectedVersion?: number) =>
+const edit = async (patch: Record<string, unknown> | unknown[], expectedVersion?: number) =>
   json(await send("PATCH", PATH, { expectedVersion: expectedVersion ?? (await current()).version, patch, reason: "Правка" }));
 const setOffer = async (terms: Record<string, unknown>, expectedProductVersion?: number) => json(await send("PUT", `${PATH}/offer`, {
   priceKopecks: 250_000, saleMode: "CLOSED", paymentPurpose: "Участие в мастер-классе LAB",
@@ -86,6 +87,8 @@ beforeEach(async () => {
   cookie = login.headers.get("set-cookie")!;
   expect((await send("POST", "/v1/admin/v2/cities", { slug: "nsk", title: "Новосибирск" })).status).toBe(201);
 });
+
+afterEach(() => { vi.restoreAllMocks(); db.close(); });
 
 describe("Control Room LAB authorization", () => {
   const writes: Array<[string, string, unknown]> = [
@@ -219,7 +222,16 @@ describe("Control Room LAB occurrence CRUD", () => {
       idempotencyKey: "cancel-confirm" }, NOW)).rejects.toThrow("LAB_OCCURRENCE_CANCELLED");
 
     expect((await edit({ title: "Воскрешение" })).body).toEqual({ error: { code: "LAB_OCCURRENCE_CANCELLED" } });
-    expect((await setOffer({ saleMode: "PUBLIC" })).body).toEqual({ error: { code: "LAB_OCCURRENCE_CANCELLED" } });
+    const frozen = await current();
+    const audits = db.prepare("SELECT COUNT(*) AS n FROM audit_log").get();
+    for (const terms of [{ saleMode: "PUBLIC" }, { saleMode: "CLOSED", priceKopecks: 300_000, paymentPurpose: "Иные условия" }]) {
+      expect(await setOffer(terms)).toEqual({ status: 409, body: { error: { code: "LAB_OCCURRENCE_CANCELLED" } } });
+    }
+    expect(() => configureProduct(db, testCheckoutConfig, { productRef: REF, offerRef: REF, kind: "LAB", accessModel: "PAID",
+      occurrenceRef: REF, priceKopecks: 300_000, saleMode: "CLOSED", actor: "direct-writer", expectedVersion: frozen.offer!.productVersion }, NOW))
+      .toThrow("LAB_OCCURRENCE_CANCELLED");
+    expect(await current()).toEqual(frozen);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM audit_log").get()).toEqual(audits);
     expect((await json(await send("POST", `${PATH}/cancel`, { expectedVersion: (await current()).version, reason: "Ещё раз" }))).body)
       .toEqual({ error: { code: "LAB_OCCURRENCE_CANCELLED" } });
   });
@@ -252,5 +264,47 @@ describe("one live LAB price (offers.price_kopecks)", () => {
       priceNotice: { code: "PRICE_CHANGED_SINCE_DISPLAY", quotedAmountKopecks: 300_000, displayedAmountKopecks: 250_000 } });
     await expect(prepareCheckout(db, rail, testCheckoutConfig, { ...customer(), offerRef: REF, previewIdempotencyKey: "price-3",
       displayedAmountKopecks: -1 }, NOW)).rejects.toThrow("DISPLAYED_AMOUNT_INVALID");
+  });
+});
+
+describe("LAB command error classification", () => {
+  it.each([
+    { paymentPurpose: "" }, { paymentPurpose: 42 }, { acceptanceAllowlist: "buyer@example.com" },
+    { acceptanceAllowlist: [42] }, { acceptanceAllowlist: null }, { saleMode: "INVALID" },
+  ])("answers malformed commercial terms with 422 and no writes: %j", async (terms) => {
+    await send("POST", "/v1/admin/v2/lab/occurrences", occurrence);
+    const before = db.prepare("SELECT COUNT(*) AS n FROM audit_log").get();
+    const result = await setOffer(terms);
+    expect(result.status).toBe(422);
+    expect(result.body).toEqual({ error: { code: "paymentPurpose" in terms ? "PAYMENT_PURPOSE_REQUIRED"
+      : "saleMode" in terms ? "SALE_MODE_INVALID" : "ACCEPTANCE_ALLOWLIST_INVALID" } });
+    expect((await current()).offer).toBeNull();
+    expect(db.prepare("SELECT COUNT(*) AS n FROM audit_log").get()).toEqual(before);
+  });
+
+  it("answers a missing required purpose with 422 after sales admission succeeds", async () => {
+    await openForSale();
+    expect(await setOffer({ saleMode: "PUBLIC", paymentPurpose: null }))
+      .toEqual({ status: 422, body: { error: { code: "PAYMENT_PURPOSE_REQUIRED" } } });
+  });
+
+  it("rejects malformed occurrence and cancellation commands as input errors", async () => {
+    expect((await send("POST", "/v1/admin/v2/lab/occurrences", { ...occurrence, citySlug: {} })).status).toBe(422);
+    await send("POST", "/v1/admin/v2/lab/occurrences", occurrence);
+    expect(await json(await send("POST", `${PATH}/cancel`, { reason: "missing version" })))
+      .toEqual({ status: 422, body: { error: { code: "LAB_COMMAND_INVALID" } } });
+    expect(await edit([])).toEqual({ status: 422, body: { error: { code: "LAB_COMMAND_INVALID" } } });
+  });
+
+  it.each(["SQLITE_BUSY", "private SQL details: buyer@example.com capability=secret"])("sanitizes unknown DB failures as 500 and logs no sensitive details: %s", async (failure) => {
+    await send("POST", "/v1/admin/v2/lab/occurrences", occurrence);
+    const before = db.prepare("SELECT COUNT(*) AS n FROM audit_log").get();
+    db.exec(`CREATE TRIGGER fail_offer BEFORE INSERT ON offers BEGIN SELECT RAISE(ABORT, '${failure}'); END`);
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(await setOffer({})).toEqual({ status: 500, body: { error: { code: "LAB_OFFER_COMMAND_FAILED" } } });
+    expect(log).toHaveBeenCalledExactlyOnceWith(JSON.stringify({ event: "LAB_COMMAND_FAILURE", code: "LAB_OFFER_COMMAND_FAILED", errorKind: "ERROR" }));
+    expect((await current()).offer).toBeNull();
+    expect(db.prepare("SELECT COUNT(*) AS n FROM products").get()).toEqual({ n: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM audit_log").get()).toEqual(before);
   });
 });
