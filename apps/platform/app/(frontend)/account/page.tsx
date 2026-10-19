@@ -1,6 +1,9 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 import AccountClient from "@/components/auth/AccountClient";
 import { Suspense } from "react";
+
+export const metadata: Metadata = { title: "Мои курсы", robots: { index: false, follow: false } };
 
 async function AccountContent({ searchParams }: { searchParams: Promise<{ next?: string }> }) {
   const requested = (await searchParams).next;

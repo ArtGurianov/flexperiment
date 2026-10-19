@@ -169,3 +169,15 @@ describe("Commerce storefront read boundary", () => {
     expect((await server.request(path, { headers })).status).toBe(404);
   });
 });
+
+it("keeps stored lesson text private for both free preview modes", async () => {
+  publish();
+  const server = app();
+  for (const freePreview of [false, true]) {
+    db.prepare("UPDATE catalog_lesson_projection SET free_preview=?").run(freePreview ? 1 : 0);
+    const response = await server.request("/v1/courses/demo/lessons/lesson");
+    expect(response.status).toBe(200);
+    const detail = await response.json();
+    expect(detail.lesson.description).toBeNull();
+  }
+});

@@ -10,7 +10,7 @@ import { publicLesson } from "@/lib/content/public";
 import { viewerLesson } from "@/lib/content/entitled";
 import { lessonAccessLabel } from "@/lib/course-access-labels";
 import LexicalReadOnly from "@/components/courses/LexicalReadOnly";
-import { breadcrumbJsonLd, lessonIsAccessibleForFree } from "@/lib/seo";
+import { jsonLdScript, lessonJsonLd, lessonMetadata } from "@/lib/seo";
 import { platformOrigin } from "@/lib/origins";
 
 type Props = { params: Promise<{ slug: string; lessonSlug: string }> };
@@ -21,16 +21,7 @@ export function generateStaticParams() { return [{ slug: buildShellSlug, lessonS
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { slug, lessonSlug } = await params;
   if (slug === buildShellSlug || lessonSlug === buildShellSlug) return { robots: { index: false, follow: false } };
-  const result = await publicLesson(slug, lessonSlug);
-  if (!result) return { robots: { index: false, follow: false } };
-  const description = result.lesson.seo?.description || `${result.lesson.title} — урок курса «${result.course.title}».`;
-  return {
-    title: result.lesson.seo?.title || result.lesson.title,
-    description,
-    robots: result.lesson.description ? undefined : { index: false, follow: true },
-    alternates: { canonical: `/courses/${slug}/lessons/${lessonSlug}` },
-    openGraph: { title: result.lesson.title, description, type: "video.other", url: `/courses/${slug}/lessons/${lessonSlug}`, locale: "ru_RU" },
-  };
+  return lessonMetadata(await publicLesson(slug, lessonSlug));
 }
 
 async function LessonContent({ params }: Props) {
@@ -41,19 +32,8 @@ async function LessonContent({ params }: Props) {
   if (!result) notFound();
   const { commercial } = result;
   const lessonDescription = result.lesson.description;
-  const origin = platformOrigin();
-  const jsonLd = {
-    "@context": "https://schema.org", "@type": "LearningResource",
-    name: result.lesson.title, isPartOf: { "@type": "Course", name: result.course.title },
-    isAccessibleForFree: lessonIsAccessibleForFree(commercial, result.lesson.freePreview),
-  };
-  const breadcrumbs = breadcrumbJsonLd(origin, [
-    { name: "Главная", path: "/" },
-    { name: "Курсы", path: "/courses" },
-    { name: result.course.title, path: `/courses/${slug}` },
-    { name: result.lesson.title, path: `/courses/${slug}/lessons/${lessonSlug}` },
-  ]);
-  return <main className="lessonPage"><nav className="nav"><Link className="wordmark" href="/">FLEXPERIMENT<span>®</span></Link><Link href={`/courses/${slug}`}>← {result.course.title}</Link></nav><header className="lessonHeader"><p className="eyebrow">{result.section.title}</p><h1>{result.lesson.title}</h1><p className="lessonAccess">{lessonAccessLabel(commercial, result.lesson.freePreview)}</p></header>{lessonDescription != null && <section className="richCopy lessonDescription" aria-label="Об уроке"><LexicalReadOnly data={lessonDescription} /></section>}<section className="playerSection"><LessonPlayer lessonRef={result.lesson.lessonRef} title={result.lesson.title} /></section><LessonNavigation courseSlug={slug} currentLessonRef={result.lesson.lessonRef} lessons={result.outline.lessons} /><script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd).replace(/</g, "\\u003c") }} /><script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbs).replace(/</g, "\\u003c") }} /></main>;
+  const jsonLd = lessonJsonLd(platformOrigin(), result);
+  return <main className="lessonPage"><nav className="nav"><Link className="wordmark" href="/">FLEXPERIMENT<span>®</span></Link><Link href={`/courses/${slug}`}>← {result.course.title}</Link></nav><header className="lessonHeader"><p className="eyebrow">{result.section.title}</p><h1>{result.lesson.title}</h1><p className="lessonAccess">{lessonAccessLabel(commercial, result.lesson.freePreview)}</p></header>{lessonDescription != null && <section className="richCopy lessonDescription" aria-label="Об уроке"><LexicalReadOnly data={lessonDescription} /></section>}<section className="playerSection"><LessonPlayer lessonRef={result.lesson.lessonRef} title={result.lesson.title} /></section><LessonNavigation courseSlug={slug} currentLessonRef={result.lesson.lessonRef} lessons={result.outline.lessons} />{jsonLd.map((value, index) => <script key={index} type="application/ld+json" dangerouslySetInnerHTML={{ __html: jsonLdScript(value) }} />)}</main>;
 }
 
 export default function LessonPage(props: Props) {

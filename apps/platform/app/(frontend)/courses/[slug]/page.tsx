@@ -9,7 +9,7 @@ import { viewerCourse } from "@/lib/content/entitled";
 import CourseCheckout from "@/components/checkout/CourseCheckout";
 import LexicalReadOnly from "@/components/courses/LexicalReadOnly";
 import { lessonAccessLabel } from "@/lib/course-access-labels";
-import { breadcrumbJsonLd, courseOfferJsonLd } from "@/lib/seo";
+import { courseJsonLd, courseMetadata, jsonLdScript } from "@/lib/seo";
 import { platformOrigin } from "@/lib/origins";
 
 type Props = { params: Promise<{ slug: string }> };
@@ -21,16 +21,7 @@ export function generateStaticParams() { return [{ slug: buildShellSlug }]; }
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { slug } = await params;
   if (slug === buildShellSlug) return { robots: { index: false, follow: false } };
-  const result = await publicCourse(slug);
-  if (!result) return { robots: { index: false, follow: false } };
-  const title = result.course.seo?.title || result.course.title;
-  const description = result.course.seo?.description || result.course.summary;
-  return {
-    title,
-    description,
-    alternates: { canonical: `/courses/${result.course.slug}` },
-    openGraph: { title, description, type: "website", url: `/courses/${result.course.slug}`, locale: "ru_RU" },
-  };
+  return courseMetadata(await publicCourse(slug));
 }
 
 async function CourseContent({ params }: Props) {
@@ -47,18 +38,7 @@ async function CourseContent({ params }: Props) {
     lessonsBySection.set(key, [...(lessonsBySection.get(key) ?? []), lesson]);
   }
   const state = commercial.accessModel === "FREE" ? "Бесплатный курс" : commercial.saleMode === "CLOSED" ? "Продажи закрыты" : "Доступен";
-  const origin = platformOrigin();
-  const jsonLd = {
-    "@context": "https://schema.org", "@type": "Course",
-    name: result.course.title, description: result.course.summary,
-    provider: { "@type": "Organization", name: "Flexperiment" },
-    offers: courseOfferJsonLd(commercial),
-  };
-  const breadcrumbs = breadcrumbJsonLd(origin, [
-    { name: "Главная", path: "/" },
-    { name: "Курсы", path: "/courses" },
-    { name: result.course.title, path: `/courses/${result.course.slug}` },
-  ]);
+  const jsonLd = courseJsonLd(platformOrigin(), result);
   return (
     <main className="courseDetail">
       <nav className="nav" aria-label="Основная навигация"><Link className="wordmark" href="/">FLEXPERIMENT<span>®</span></Link><Link href="/courses">← Все курсы</Link></nav>
@@ -74,8 +54,7 @@ async function CourseContent({ params }: Props) {
           </article>
         ))}
       </section>
-      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd).replace(/</g, "\\u003c") }} />
-      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbs).replace(/</g, "\\u003c") }} />
+      {jsonLd.map((value, index) => <script key={index} type="application/ld+json" dangerouslySetInnerHTML={{ __html: jsonLdScript(value) }} />)}
     </main>
   );
 }

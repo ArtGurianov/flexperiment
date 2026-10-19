@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { robotsTxt } from "../lib/seo";
 
 const platform = resolve(import.meta.dirname, "..");
 const source = (path: string) => readFile(resolve(platform, path), "utf8");
@@ -31,13 +32,13 @@ describe("static-first storefront rendering", () => {
   });
 
   it("keeps runtime environment and baked identity routes out of the build-time cache", async () => {
-    for (const path of ["app/identity/route.ts", "app/robots.txt/route.ts", "app/indexnow-key.txt/route.ts"]) {
+    for (const path of ["app/identity/route.ts", "app/robots.txt/route.ts", "app/indexnow-key.txt/route.ts", "app/sitemap.ts"]) {
       expect(await source(path)).toContain("await connection()");
     }
   });
 
   it("keeps Yandex clean parameters scoped to non-content campaign keys", async () => {
-    const robots = await source("app/robots.txt/route.ts");
+    const robots = robotsTxt("https://flexperiment.ru", "production");
     expect(robots).toContain("Clean-param: utm_source&utm_medium&utm_campaign&utm_content&utm_term&yclid&gclid /courses");
     expect(robots).not.toMatch(/Clean-param:[^\n]*(?:rt|state|auth|return)/);
   });
