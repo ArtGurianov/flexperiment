@@ -17,11 +17,16 @@ server {
 server {
     listen 80;
     server_name canary-lab.flexperiment.ru;
+    include /etc/nginx/v2/trusted-client-ip.conf;
     root /usr/share/nginx/html;
     set $commerce_upstream ${V2_COMMERCE_UPSTREAM};
     include /etc/nginx/v2/common.conf;
     # V1 /v1/public/* and admin/partner paths deliberately do not pass.
     location = /v1/lab/catalogue {
+        include /etc/nginx/v2/proxy.conf;
+        proxy_pass http://$commerce_upstream;
+    }
+    location ~ ^/v1/lab/guest/(start|ticket|recover(/confirm)?|reissue|refunds)$ {
         include /etc/nginx/v2/proxy.conf;
         proxy_pass http://$commerce_upstream;
     }

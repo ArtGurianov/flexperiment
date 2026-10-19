@@ -1,3 +1,4 @@
+import { acceptLabPurchase, issueLabTicket, type LabAcceptance } from "./lab-tickets";
 import { CheckoutConflictError } from "./checkout-conflict";
 export { CheckoutConflictError } from "./checkout-conflict";
 import { readyImmediateCourseAccess } from "./immediate-course-access";
@@ -510,20 +511,39 @@ function assertDeliveryDegraded(value: DeliveryDegraded) {
 /** What the caller may have of the browser context, frozen into the intent. */
 export type ResolutionContext = { storefrontOrigin?: string; browserContextId?: string; deliveryDegraded?: DeliveryDegraded };
 
-/** Payments started for this customer and offer whose outcome is not yet known (or needs a person). */
-const openPayments = (db: Database.Database, customerId: string, offerId: string) => db.prepare(`SELECT order_public_id FROM checkout_quotes
-  WHERE customer_id=? AND offer_id=? AND state IN ('PAYMENT_CREATING','PENDING','UNCERTAIN','REVIEW_REQUIRED') ORDER BY consumed_at`)
-  .all(customerId, offerId) as Array<{ order_public_id: string }>;
+/** Customer-wide dedupe requires a verified caller; a guest email supplies no such authority.
+ * Derive the narrower scope from the durable LAB access row, never a browser flag.
+ * Customer-scoped checkouts also exclude guest rows so an anonymous attempt cannot
+ * block the mailbox owner after sign-in. Guest credentials retain their scope after binding.
+ */
+function paymentAdmissionScope(db: Database.Database, customerId: string, offerId: string, orderPublicId: string) {
+  const guest = db.prepare(`SELECT 1 FROM lab_guest_access access
+    JOIN offers offer ON offer.id=? JOIN products product ON product.id=offer.product_id
+    WHERE access.order_public_id=? AND access.customer_id=? AND product.kind='LAB'`)
+    .get(offerId, orderPublicId, customerId);
+  return { customerId, offerId, guestOrderPublicId: guest ? orderPublicId : null };
+}
+// Used by both open-payment and paid-parallel checks; neither may cross a guest order.
+const PAYMENT_ADMISSION_SCOPE = `intent.customer_id=@customerId AND intent.offer_id=@offerId AND (
+  (@guestOrderPublicId IS NOT NULL AND intent.order_public_id=@guestOrderPublicId)
+  OR (@guestOrderPublicId IS NULL AND NOT EXISTS
+    (SELECT 1 FROM lab_guest_access access WHERE access.order_public_id=intent.order_public_id)))`;
+type PaymentAdmissionScope = ReturnType<typeof paymentAdmissionScope>;
 
-/** Reads every open payment of this customer and offer back from Refref before anything new may start. */
-async function readBackOpenPayments(db: Database.Database, rail: PaymentRail, customerId: string, offerId: string, now: string) {
-  for (const { order_public_id } of openPayments(db, customerId, offerId)) {
+/** Payments within this admission scope whose outcome is not yet known (or needs a person). */
+const openPayments = (db: Database.Database, scope: PaymentAdmissionScope) => db.prepare(`SELECT order_public_id FROM checkout_quotes intent
+  WHERE ${PAYMENT_ADMISSION_SCOPE} AND state IN ('PAYMENT_CREATING','PENDING','UNCERTAIN','REVIEW_REQUIRED') ORDER BY consumed_at`)
+  .all(scope) as Array<{ order_public_id: string }>;
+
+/** Read back only this scope before a new provider initiation; unrelated guest payments are untouched. */
+async function readBackOpenPayments(db: Database.Database, rail: PaymentRail, scope: PaymentAdmissionScope, now: string) {
+  for (const { order_public_id } of openPayments(db, scope)) {
     try { await reconcileCheckout(db, rail, order_public_id, now); } catch { /* still open: refused below */ }
   }
 }
 
-function assertNoOpenPayment(db: Database.Database, customerId: string, offerId: string) {
-  const open = openPayments(db, customerId, offerId)[0];
+function assertNoOpenPayment(db: Database.Database, scope: PaymentAdmissionScope) {
+  const open = openPayments(db, scope)[0];
   if (open) throw new CheckoutConflictError("CHECKOUT_PAYMENT_IN_PROGRESS", open.order_public_id);
 }
 
@@ -722,10 +742,10 @@ export async function prepareCheckout(
     return advanceIntent(db, rail, resumed, context, now);
   }
 
-  const candidate = offerByRef(db, input.offerRef);
-  if (candidate) await readBackOpenPayments(db, rail, input.customerId, candidate.offer_id, now);
-  const intentId = randomUUID();
   const orderPublicId = input.orderPublicId ?? randomUUID();
+  const candidate = offerByRef(db, input.offerRef);
+  if (candidate) await readBackOpenPayments(db, rail, paymentAdmissionScope(db, input.customerId, candidate.offer_id, orderPublicId), now);
+  const intentId = randomUUID();
   const lineRef = randomUUID();
   // New-quote admission and the intent's frozen facts, in one write transaction (design §2).
   const draft = db.transaction(() => {
@@ -736,7 +756,7 @@ export async function prepareCheckout(
     if (input.storefront && input.storefront !== storefront) throw new Error("CHECKOUT_STOREFRONT_MISMATCH");
     const legal = legalRelease(db, storefront);
     if (!legal) throw new Error("LEGAL_RELEASE_REQUIRED");
-    assertNoOpenPayment(db, input.customerId, offer.offer_id);
+    assertNoOpenPayment(db, paymentAdmissionScope(db, input.customerId, offer.offer_id, orderPublicId));
     const lineSnapshot = freezeLine(db, offer, offer.venue);
     assertClosedPaidTestFiscal(config, lineSnapshot.fiscal);
     const codeResolution = resolveCheckoutCode(db, input.checkoutCode, offer.offer_ref, offer.price_kopecks, config.merchantPromotionPrefix, now);
@@ -789,6 +809,7 @@ export async function confirmCheckout(
     storefront?: Storefront;
     successUrl?: string;
     legalAcceptance?: PaidCheckoutAcceptance;
+    labAcceptance?: LabAcceptance;
   },
   now = new Date().toISOString(),
 ) {
@@ -819,9 +840,9 @@ export async function confirmCheckout(
     || input.legalAcceptance.manifestSha256 !== review.manifestSha256 || input.legalAcceptance.receiptEmail !== review.receiptEmail)) {
     throw new Error("PAID_CHECKOUT_TERMS_ACCEPTANCE_REQUIRED");
   }
-  // Payment by-order read-back before any new provider initiation: another tab's payment for the same
-  // offer is settled or still open, and an open one refuses this confirmation.
-  await readBackOpenPayments(db, rail, input.customerId, pending.offer_id, now);
+  // By-order read-back stays within the persisted identity's admission scope.
+  const admissionScope = paymentAdmissionScope(db, input.customerId, pending.offer_id, pending.order_public_id);
+  await readBackOpenPayments(db, rail, admissionScope, now);
 
   const { offer, frozenLine } = assertIssuedIntentAdmissible(db, config, pending, input.customerEmail, now);
   const quote = JSON.parse(pending.rail_quote_json!) as RailQuote;
@@ -874,10 +895,10 @@ export async function confirmCheckout(
     assertIssuedIntentAdmissible(db, config, current, input.customerEmail, now);
     if (offer.kind === "ONLINE_COURSE" && offer.course_ref && customerCanAccessCourse(db, input.customerId, offer.course_ref)) throw new CheckoutConflictError("ALREADY_OWNED");
     if (offer.kind === "COURSE_BUNDLE" && customerCanAccessCourse(db, input.customerId, "__any_future_course__")) throw new CheckoutConflictError("ALREADY_OWNED");
-    assertNoOpenPayment(db, input.customerId, pending.offer_id);
+    assertNoOpenPayment(db, admissionScope);
     // Two tabs: a payment for the same offer confirmed while this quote was open already went through.
-    const parallel = db.prepare(`SELECT order_public_id FROM checkout_quotes WHERE customer_id=? AND offer_id=? AND id<>?
-      AND state='PAID' AND consumed_at>=?`).get(input.customerId, pending.offer_id, pending.id, pending.created_at) as { order_public_id: string } | undefined;
+    const parallel = db.prepare(`SELECT order_public_id FROM checkout_quotes intent WHERE ${PAYMENT_ADMISSION_SCOPE} AND id<>@intentId
+      AND state='PAID' AND consumed_at>=@createdAt`).get({ ...admissionScope, intentId: pending.id, createdAt: pending.created_at }) as { order_public_id: string } | undefined;
     if (parallel) throw new CheckoutConflictError("CHECKOUT_ALREADY_PAID", parallel.order_public_id);
     assertClosedPaidTestAccountConsents(db, config, input.customerId);
     assertClosedPaidTestFiscal(config, frozenLine.fiscal);
@@ -898,6 +919,9 @@ export async function confirmCheckout(
         VALUES (?,?, 'PAID_CHECKOUT_TERMS_ACCEPTED','ORDER',?,?,?)`).run(randomUUID(), `customer:${input.customerId}`, publicId,
         JSON.stringify({ quoteId: pending.id, legalReleaseVersion: current.releaseVersion, legalManifestSha256: current.manifestSha256,
           receiptEmailSha256: buyerEmailSha256(current.receiptEmail), source: "AUTHENTICATED_CHECKOUT_CONFIRM" }), now);
+    }
+    if (offer.kind === "LAB" && db.prepare("SELECT 1 FROM lab_guest_access WHERE order_public_id=?").get(publicId)) {
+      acceptLabPurchase(db, publicId, input.customerId, input.labAcceptance, now);
     }
     db.prepare(`INSERT INTO orders(id,public_id,customer_id,state,total_kopecks,checkout_snapshot_json,snapshot_hash,legal_release_id,created_at,updated_at)
       VALUES (?,?,?,'PAYMENT_PENDING',?,?,?,?,?,?)`).run(orderId, publicId, input.customerId, pending.final_amount_kopecks, snapshotJson, snapshotHashHex, pending.legal_release_id, now, now);
@@ -999,6 +1023,8 @@ async function applyRailProjection(db: Database.Database, rail: PaymentRail, ord
     projection = { ...projection, state: "REVIEW_REQUIRED" };
   }
   const apply = db.transaction(() => {
+    const terminalRefund = db.prepare("SELECT 1 FROM orders WHERE id=? AND state='REFUNDED'").get(context.order_id);
+    if (terminalRefund) return;
     db.prepare(`UPDATE checkout_attempts SET state=?,refref_attempt_id=?,refref_resolution_id=COALESCE(?,refref_resolution_id),
       refref_snapshot_hash=COALESCE(?,refref_snapshot_hash),checkout_url=?,observed_payment_projection_json=?,last_reconciled_at=?,updated_at=? WHERE id=?`)
       .run(attemptState(projection.state), projection.attemptId, projection.resolutionId ?? null, projection.snapshotHash ?? null,
@@ -1009,6 +1035,7 @@ async function applyRailProjection(db: Database.Database, rail: PaymentRail, ord
       const alreadyActivated = db.prepare("SELECT 1 FROM course_entitlements WHERE source_order_line_id=?").get(context.line_id);
       const activationAt = context.immediate_access_json ? new Date().toISOString() : now;
       db.prepare("UPDATE orders SET state='FULFILLED',updated_at=? WHERE id=?").run(now, context.order_id);
+      if (context.kind === "LAB") issueLabTicket(db, context.line_id, now);
       if (context.kind === "ONLINE_COURSE") grantEntitlement(db, { customerId: context.customer_id, scope: "COURSE", courseRef: context.course_ref!, sourceOrderLineId: context.line_id }, activationAt);
       if (context.kind === "COURSE_BUNDLE") grantEntitlement(db, { customerId: context.customer_id, scope: "ALL_COURSES", sourceOrderLineId: context.line_id }, activationAt);
       if (context.immediate_access_json && !alreadyActivated) db.prepare(`INSERT INTO audit_log(id,actor,action,subject_type,subject_ref,evidence_json,created_at)

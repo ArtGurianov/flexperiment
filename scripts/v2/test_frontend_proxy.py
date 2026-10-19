@@ -131,8 +131,8 @@ class FrontendProxy(unittest.TestCase):
         # JSON is valid YAML; the .yaml extension selects Traefik's YAML decoder.
         routes = Path(cls.tmp.name) / "routes.yaml"
         routes.write_text(json.dumps({"http": {
-            "routers": {"admin": {"rule": "Host(`canary-admin.flexperiment.ru`)", "service": "admin"}},
-            "services": {"admin": {"loadBalancer": {"servers": [{"url": "http://" + cls.prefix + "-admin-v2:80"}]}}},
+            "routers": {surface: {"rule": f"Host(`canary-{surface}.flexperiment.ru`)", "service": surface} for surface in ("admin", "lab")},
+            "services": {surface: {"loadBalancer": {"servers": [{"url": "http://" + cls.prefix + f"-{surface}-v2:80"}]}} for surface in ("admin", "lab")},
         }}))
         cls.containers.append(cls.edge)
         docker("run", "--detach", "--name", cls.edge, "--network", cls.network,
@@ -274,9 +274,11 @@ class FrontendProxy(unittest.TestCase):
         self.assertEqual(self.request("admin-v2", "/v1/auth/get-session")[0], 404)
         self.assertEqual(self.request("lab-v2", "/v1/auth-other")[0], 404)
         self.assertEqual(self.request("lab-v2", "/v1/lab/internal")[0], 404)
+        self.assertEqual(self.request("lab-v2", "/v1/lab/guest/internal")[0], 404)
+        self.assertEqual(self.request("lab-v2", "/v1/lab/guest/ticket/extra")[0], 404)
 
     def test_v2_allowlists(self):
-        for root in ("auth/get-session", "me", "lessons/access", "checkout/preview", "email/unsubscribe", "legal/current", "lab/catalogue"):
+        for root in ("auth/get-session", "me", "lessons/access", "checkout/preview", "email/unsubscribe", "legal/current", "lab/catalogue", "lab/guest/start", "lab/guest/ticket", "lab/guest/recover", "lab/guest/recover/confirm", "lab/guest/reissue", "lab/guest/refunds"):
             self.assertEqual(self.request("lab-v2", "/v1/" + root)[0], 200)
         for path in ("login", "session", "logout", "v2/catalog", "v2/orders"):
             self.assertEqual(self.request("admin-v2", "/v1/admin/" + path)[0], 200)
@@ -309,21 +311,23 @@ class FrontendProxy(unittest.TestCase):
     def test_real_traefik_and_nginx_keep_client_ip_despite_forged_address_headers(self):
         client = self.prefix + "-upstream"
         address = json.loads(docker("inspect", client).stdout)[0]["NetworkSettings"]["Networks"][self.network]["IPAddress"]
-        for forged in ("192.0.2.123", "198.51.100.1, 192.0.2.124"):
-            status, _, body = self.request("admin-v2", "/v1/admin/login", container=self.edge,
-                body=b'{"password":"synthetic"}', headers={"X-Forwarded-For": forged,
-                "X-Real-IP": "192.0.2.125", "CF-Connecting-IP": "192.0.2.126", "Forwarded": "for=192.0.2.127"})
+        for service, path in (("admin-v2", "/v1/admin/login"), ("lab-v2", "/v1/lab/guest/start"),
+                              ("lab-v2", "/v1/lab/guest/recover")):
+            for forged in ("192.0.2.123", "198.51.100.1, 192.0.2.124"):
+                status, _, body = self.request(service, path, container=self.edge,
+                    body=b'{"synthetic":true}', headers={"X-Forwarded-For": forged,
+                    "X-Real-IP": "192.0.2.125", "CF-Connecting-IP": "192.0.2.126", "Forwarded": "for=192.0.2.127"})
+                self.assertEqual(status, 200)
+                headers = json.loads(body)["headers"]
+                self.assertEqual(headers["x-real-ip"], address)
+                self.assertEqual(headers["x-forwarded-for"], address)
+                self.assertNotIn("cf-connecting-ip", headers)
+                self.assertNotIn("forwarded", headers)
+            # Direct access from an unrelated container cannot invoke nginx's realip trust.
+            status, _, body = self.request(service, path, body=b'{}',
+                headers={"X-Forwarded-For": "192.0.2.128", "X-Real-IP": "192.0.2.129"})
             self.assertEqual(status, 200)
-            headers = json.loads(body)["headers"]
-            self.assertEqual(headers["x-real-ip"], address)
-            self.assertEqual(headers["x-forwarded-for"], address)
-            self.assertNotIn("cf-connecting-ip", headers)
-            self.assertNotIn("forwarded", headers)
-        # Direct access from an unrelated container cannot invoke nginx's realip trust.
-        status, _, body = self.request("admin-v2", "/v1/admin/login", body=b'{}',
-            headers={"X-Forwarded-For": "192.0.2.128", "X-Real-IP": "192.0.2.129"})
-        self.assertEqual(status, 200)
-        self.assertEqual(json.loads(body)["headers"]["x-real-ip"], address)
+            self.assertEqual(json.loads(body)["headers"]["x-real-ip"], address)
 
     def test_readiness_propagates_upstream_unavailable(self):
         for service in self.services:

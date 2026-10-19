@@ -44,6 +44,8 @@ const supportedSchemaSha256 = new Set([
   "18b7318e43e12f2835afcf9b87d0958de4c8e186aa3670f5a448e7f3d8389b4d",
   // 0031: trigger expires only unconsumed LAB intents on material edits; no new identity store.
   "9c464ba0199cd18fa0eb3d5598d3bc0131fd68bd9fad2064676e8801c498eb2b",
+  // 0032: order-scoped guest credentials, recovery links and durable admission records.
+  "354508649dd6ec29f477b118711913b2fb9b00c979e3f7c2bb895aae2c87f01a",
 ]);
 const parse = <T>(schema: z.ZodType<T>, value: unknown): T => {
   const result = schema.safeParse(value); return result.success ? result.data : refuse("RETENTION_POLICY_OR_HOLD_INVALID");
@@ -168,6 +170,8 @@ export function cleanupOfflinePersonalData(db: Database.Database, input: {
         "authenticated_consent_actions", "notification_campaign_recipients", "lesson_resume_positions",
         "course_access_starts", "playback_grant_rate_limits", "playback_access_events"]
         .some(table => !!db.prepare(`SELECT 1 FROM ${table} WHERE customer_id=? LIMIT 1`).get(customer.id))) continue;
+      if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='lab_guest_access'").get()
+        && db.prepare("SELECT 1 FROM lab_guest_access WHERE customer_id=?").get(customer.id)) continue;
       if (db.prepare("SELECT 1 FROM audit_log WHERE actor=? OR subject_ref=? OR instr(evidence_json,?)>0 OR instr(evidence_json,?)>0 LIMIT 1")
         .get(customer.id, customer.id, customer.id, customer.email_normalized)) continue;
       if (db.prepare("SELECT 1 FROM control_room_audit_log WHERE entity_id=? OR instr(details_json,?)>0 OR instr(details_json,?)>0 LIMIT 1")

@@ -13,10 +13,11 @@ import { createRefrefReadinessProbe } from "./readiness";
 import { refundEnvelopeKeyringFromEnvironment } from "./refund-envelope";
 import { reconcilePendingRefunds } from "./refunds";
 import { loadCommerceOrigins } from "./origins";
+import { labGuestTrustedProxyIps } from "./lab-guest-client-ip";
 import { controlRoomTrustedProxyIps } from "./control-room-client-ip";
 import { controlRoomTotpKey } from "./control-room-totp";
 import { dispatchPendingCampaigns, type CampaignEmail } from "./campaigns";
-import { createMagicLinkEmailDelivery } from "./auth-email-delivery";
+import { createLabTicketEmailDelivery, createMagicLinkEmailDelivery } from "./auth-email-delivery";
 import { dirname } from "node:path";
 import { prepareErasureRuntime } from "./erasure-runtime";
 import { ErasureInstallationEvidence, readErasureInstallation } from "./erasure-installation";
@@ -43,6 +44,7 @@ const serviceToken = process.env.PLATFORM_SERVICE_TOKEN;
 if (!serviceToken && config.deployEnvironment === "production") throw new Error("PLATFORM_SERVICE_TOKEN_REQUIRED");
 const emailDeliveryEndpoint = process.env.AUTH_EMAIL_DELIVERY_ENDPOINT;
 const magicLinkDelivery = createMagicLinkEmailDelivery();
+const labTicketDelivery = createLabTicketEmailDelivery();
 const campaignUnsubscribeSecret = process.env.CAMPAIGN_UNSUBSCRIBE_SECRET;
 if (!campaignUnsubscribeSecret && config.deployEnvironment === "production") throw new Error("CAMPAIGN_UNSUBSCRIBE_SECRET_REQUIRED");
 const marketingBroadcastsEnabled = process.env.MARKETING_BROADCASTS_ENABLED === "true";
@@ -135,6 +137,11 @@ const app = createCommerceV2App({
   marketingBroadcastsEnabled,
   origins,
   sendCampaignEmail,
+  labGuestTrustedProxyIps: labGuestTrustedProxyIps(process.env.LAB_GUEST_TRUSTED_PROXY_IPS),
+  sendLabTicketEmail: labTicketDelivery.configured ? async message => {
+    if (erasureFence) await erasureFence.send(message.email, () => labTicketDelivery.send(message), "AUTH_MAIL");
+    else await labTicketDelivery.send(message);
+  } : undefined,
   controlRoomAuth: controlRoomSessionSecret && controlRoomPasswordScrypt && controlRoomOrigin ? {
     sessionSecret: controlRoomSessionSecret,
     passwordScrypt: controlRoomPasswordScrypt,

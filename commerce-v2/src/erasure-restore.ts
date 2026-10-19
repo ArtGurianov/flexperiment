@@ -1,6 +1,6 @@
 import { ownerLegalEvidenceMentions } from "./owner-legal-decision";
 import type Database from "better-sqlite3";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { classifyV2Database } from "./db";
 import { assertErasureSubjectKey, erasurePseudonym, ErasureLedgerError, VerifiedErasureLedger, type ErasureKeys } from "./erasure-ledger";
 import { DrainedErasureRuntime } from "./erasure-fence";
@@ -22,6 +22,8 @@ const REVIEWED_SCHEMA_SHA256 = new Set([
   "18b7318e43e12f2835afcf9b87d0958de4c8e186aa3670f5a448e7f3d8389b4d",
   // 0031: trigger expires only unconsumed LAB intents on material edits; no new identity store.
   "9c464ba0199cd18fa0eb3d5598d3bc0131fd68bd9fad2064676e8801c498eb2b",
+  // 0032: order-scoped guest credentials, recovery links and durable admission records.
+  "354508649dd6ec29f477b118711913b2fb9b00c979e3f7c2bb895aae2c87f01a",
 ]);
 function assertReviewedSchema(db: Database.Database) {
   const schema = db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").all();
@@ -125,8 +127,10 @@ function applyErasure(db: Database.Database, ledger: VerifiedErasureLedger, keys
           if (audit || adminAudit || ownerLegalEvidenceMentions(db, [customer.id, customer.email_normalized])) throw new ErasureLedgerError("ERASURE_AUDIT_REVIEW_REQUIRED");
           for (const table of ["authenticated_consent_actions", "account_consents", "marketing_consents",
             "notification_campaign_recipients", "free_course_enrollments", "checkout_quotes", "course_access_starts",
-            "lesson_resume_positions", "playback_grant_rate_limits", "playback_access_events"]) {
-            db.prepare(`DELETE FROM ${table} WHERE customer_id=?`).run(customer.id);
+            "lesson_resume_positions", "playback_grant_rate_limits", "playback_access_events", "lab_guest_access"]) {
+            if (table !== "lab_guest_access" || db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table)) {
+              db.prepare(`DELETE FROM ${table} WHERE customer_id=?`).run(customer.id);
+            }
           }
           db.prepare("DELETE FROM customers WHERE id=?").run(customer.id);
           erasedAccounts++; deletedCustomers.add(customer.id);
@@ -151,7 +155,15 @@ function applyErasure(db: Database.Database, ledger: VerifiedErasureLedger, keys
       // Every restore invalidates ALL previously issued links and sessions. This
       // also handles orphaned magic-link JSON and avoids guessing identifier format.
       // Better Auth 1.7.6 stores hashed token identifiers + JSON {email,name} value.
-      if(resetAllCredentials) db.exec('DELETE FROM "session"; DELETE FROM verification;');
+      if(resetAllCredentials) {
+        db.exec('DELETE FROM "session"; DELETE FROM verification;');
+        if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='lab_guest_access'").get()) {
+          db.exec("DELETE FROM lab_ticket_recoveries; UPDATE lab_tickets SET qr_sha256=NULL;");
+          for (const row of db.prepare("SELECT order_public_id FROM lab_guest_access").all() as Array<{order_public_id:string}>) {
+            db.prepare("UPDATE lab_guest_access SET token_sha256=? WHERE order_public_id=?").run(randomBytes(32).toString("hex"), row.order_public_id);
+          }
+        }
+      }
       assertDrain?.();
       if ((db.pragma("foreign_key_check") as unknown[]).length) throw new ErasureLedgerError("ERASURE_RESTORE_INTEGRITY_FAILED");
       return { erasedAccounts, suppressedEmails, sequence: ledger.bundle.entries.length,

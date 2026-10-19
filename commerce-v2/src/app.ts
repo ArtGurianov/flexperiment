@@ -1,3 +1,6 @@
+import { labGuestClientIp } from "./lab-guest-client-ip";
+import { registerLabGuestRoutes, labBearer } from "./lab-guest-routes";
+import { checkInLabTicket, prepareLabRecovery, labAccess, labLegalReview, LabTicketError, type LabAcceptance, type LabTicketEmail } from "./lab-tickets";
 import type Database from "better-sqlite3";
 import { assertRegistrationChoices } from "./registration-choices";
 import { Hono, type Context } from "hono";
@@ -70,6 +73,11 @@ type Dependencies = {
   readonly campaignUnsubscribeSecret?: string;
   readonly marketingBroadcastsEnabled?: boolean;
   readonly origins?: CommerceOrigins;
+  /** Exact LAB nginx peers; missing/untrusted transport keeps anonymous creation/mail closed. */
+  readonly labGuestTrustedProxyIps?: readonly string[];
+  /** In-process transport metadata for tests only; production reads the Node socket. */
+  readonly labGuestPeerAddress?: (context: Context) => string | undefined;
+  readonly sendLabTicketEmail?: (message: LabTicketEmail) => Promise<void>;
   readonly sendCampaignEmail?: (message: CampaignEmail) => Promise<void>;
   readonly controlRoomAuth?: ControlRoomAuthConfig;
   /** In-process transport adapter for tests; production uses Node's socket metadata. */
@@ -95,11 +103,11 @@ const CHECKOUT_CONFLICTS = new Set(["IDEMPOTENCY_KEY_REUSED", "CHECKOUT_HANDOFF_
 const checkoutError = (context: Context, error: unknown, fallback: string) => {
   const message = error instanceof Error ? error.message : undefined;
   const conflict = error instanceof CheckoutConflictError || (message !== undefined && CHECKOUT_CONFLICTS.has(message));
-  const consent = message === "CONSENT_REQUIRED";
+  const consent = message === "CONSENT_REQUIRED" || message === "LAB_CONSENT_REQUIRED";
   // Configuration codes are authored locally; never publish dynamic config details or unknown messages.
   const configurationCode = error instanceof CommerceConfigurationError && /^[A-Z][A-Z0-9_]*$/.test(error.code) ? error.code : undefined;
-  const code = conflict || consent ? message! : configurationCode ?? fallback;
-  const orderPublicId = error instanceof CheckoutConflictError ? error.orderPublicId : undefined;
+  const code = conflict || consent || error instanceof LabTicketError ? message! : configurationCode ?? fallback;
+  const orderPublicId = !labBearer(context) && error instanceof CheckoutConflictError ? error.orderPublicId : undefined;
   if (!conflict && !consent && !configurationCode) {
     // Redacted operational signal only: no SQL, upstream body, token, stack, cause or customer data.
     try { console.error(JSON.stringify({ event: "CHECKOUT_FAILURE", code: fallback, errorKind: error instanceof Error ? "ERROR" : "NON_ERROR" })); }
@@ -554,31 +562,59 @@ export function createCommerceV2App(deps: Dependencies) {
     }
   });
 
+  registerLabGuestRoutes(app as unknown as Hono, { db: deps.db, origin: origins.lab, now,
+    authenticateCustomer: deps.authenticateCustomer, sendLabTicketEmail: deps.sendLabTicketEmail, erasureFence: deps.erasureFence,
+    requestSource: context => {
+      let peer: string | undefined;
+      try { peer = deps.labGuestPeerAddress ? deps.labGuestPeerAddress(context) : getConnInfo(context).remote.address; }
+      catch { /* Missing transport is never replaced by request headers. */ }
+      return labGuestClientIp(context.req.raw.headers, peer, deps.labGuestTrustedProxyIps ?? []);
+    },
+  });
+  app.post("/v1/admin/v2/lab/check-in", async context => {
+    try {
+      const body = await context.req.json<{ qrToken: string; occurrenceRef: string }>();
+      return context.json(checkInLabTicket(deps.db, { ...body, actor: context.get("controlRoomAdminId")! }, now().toISOString()), 200, noStore);
+    } catch (error) {
+      return context.json({ error: { code: error instanceof LabTicketError ? error.message : "LAB_CHECK_IN_UNAVAILABLE" } }, 409, noStore);
+    }
+  });
+
   app.post("/v1/checkout/preview", async (context) => {
     try {
       assertPaymentCreationEnabled(deps.config);
-      const customerId = await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;
+      const guest = labBearer(context) ? labAccess(deps.db, labBearer(context)) : undefined;
+      if (guest && context.req.header("origin") !== origins.lab) return context.json({ code: "ORIGIN_FORBIDDEN" }, 403, noStore);
+      const customerId = guest?.customer_id ?? await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;
       if (!customerId) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
       if (!deps.paymentRail) return context.json({ code: "PAYMENT_RAIL_UNAVAILABLE" }, 503, noStore);
       const customer = deps.db.prepare("SELECT email_normalized FROM customers WHERE id=?").get(customerId) as { email_normalized: string } | undefined;
       if (!customer) return context.json({ code: "CUSTOMER_NOT_FOUND" }, 409, noStore);
+      if (guest) {
+        deps.erasureFence?.assertIdentity({ email: customer.email_normalized, customerId }, "AUTH_MAIL");
+        if (!context.req.header("idempotency-key")?.trim()) throw new LabTicketError("IDEMPOTENCY_KEY_REQUIRED");
+      }
       const body = await context.req.json<{ offerRef?: string; mockScenario?: string; handoffToken?: string; checkoutCode?: string; state?: string }>();
       if (!body.offerRef) throw new Error("OFFER_REF_REQUIRED");
-      const handoff = deps.config.paymentMode === "refref"
+      if (guest && !deps.db.prepare("SELECT 1 FROM offers offer JOIN products product ON product.id=offer.product_id WHERE offer.offer_ref=? AND product.kind='LAB'").get(body.offerRef)) {
+        return context.json({ code: "OFFER_NOT_AVAILABLE" }, 404, noStore);
+      }
+      const handoff = !guest && deps.config.paymentMode === "refref"
         ? verifyCheckoutHandoffState(deps.config.refref!.handoffStateSecret, body.state ?? "", customerId, now().getTime())
         : undefined;
+      if (guest) labLegalReview(deps.db);
       const result = await prepareCheckout(deps.db, deps.paymentRail, deps.config, {
         customerId, customerEmail: customer.email_normalized, offerRef: body.offerRef,
-        previewIdempotencyKey: context.req.header("idempotency-key") ?? "",
+        previewIdempotencyKey: guest ? `${guest.order_public_id}:preview:${context.req.header("idempotency-key") ?? ""}` : context.req.header("idempotency-key") ?? "",
         scenario: deps.config.paymentMode === "mock" ? body.mockScenario : undefined,
         handoffToken: body.handoffToken,
         checkoutCode: body.checkoutCode,
-        orderPublicId: handoff?.orderPublicId,
-        storefront: handoff?.storefront,
+        orderPublicId: guest?.order_public_id ?? handoff?.orderPublicId,
+        storefront: guest ? "LAB" : handoff?.storefront,
         // Server-side, from the storefront the signed handoff names; never a buyer-supplied value.
-        storefrontOrigin: handoff ? storefrontOrigin(origins, handoff.storefront) : undefined,
+        storefrontOrigin: guest ? origins.lab : handoff ? storefrontOrigin(origins, handoff.storefront) : undefined,
       }, now().toISOString());
-      return context.json(result, result.state === "RESOLUTION_PENDING" ? 202 : 200, noStore);
+      return context.json({ ...result, ...(guest ? { labLegal: labLegalReview(deps.db) } : {}) }, result.state === "RESOLUTION_PENDING" ? 202 : 200, noStore);
     } catch (error) {
       return checkoutError(context, error, "CHECKOUT_PREVIEW_UNAVAILABLE");
     }
@@ -587,14 +623,20 @@ export function createCommerceV2App(deps: Dependencies) {
   app.post("/v1/checkout", async (context) => {
     try {
       assertPaymentCreationEnabled(deps.config);
-      const customerId = await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;
+      const guest = labBearer(context) ? labAccess(deps.db, labBearer(context)) : undefined;
+      if (guest && context.req.header("origin") !== origins.lab) return context.json({ code: "ORIGIN_FORBIDDEN" }, 403, noStore);
+      const customerId = guest?.customer_id ?? await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;
       if (!customerId) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
       if (!deps.paymentRail) return context.json({ code: "PAYMENT_RAIL_UNAVAILABLE" }, 503, noStore);
       const customer = deps.db.prepare("SELECT email_normalized FROM customers WHERE id=?").get(customerId) as { email_normalized: string } | undefined;
       if (!customer) return context.json({ code: "CUSTOMER_NOT_FOUND" }, 409, noStore);
-      const body = await context.req.json<{ quoteId?: string; state?: string; legalAcceptance?: PaidCheckoutAcceptance }>();
+      if (guest) {
+        deps.erasureFence?.assertIdentity({ email: customer.email_normalized, customerId }, "AUTH_MAIL");
+        if (!context.req.header("idempotency-key")?.trim()) throw new LabTicketError("IDEMPOTENCY_KEY_REQUIRED");
+      }
+      const body = await context.req.json<{ quoteId?: string; state?: string; legalAcceptance?: PaidCheckoutAcceptance; labAcceptance?: LabAcceptance }>();
       if (!body.quoteId) throw new Error("CHECKOUT_QUOTE_REQUIRED");
-      const handoff = deps.config.paymentMode === "refref"
+      const handoff = !guest && deps.config.paymentMode === "refref"
         ? verifyCheckoutHandoffState(deps.config.refref!.handoffStateSecret, body.state ?? "", customerId, now().getTime())
         : undefined;
       const paymentReturn = handoff
@@ -602,16 +644,31 @@ export function createCommerceV2App(deps: Dependencies) {
         : undefined;
       const successUrl = paymentReturn ? new URL("/checkout/return", storefrontOrigin(origins, paymentReturn.state.storefront)) : undefined;
       successUrl?.searchParams.set("state", paymentReturn!.token);
+      if (guest && !deps.db.prepare("SELECT 1 FROM checkout_quotes WHERE id=? AND order_public_id=? AND storefront='LAB'").get(body.quoteId, guest.order_public_id)) {
+        return context.json({ code: "CHECKOUT_QUOTE_NOT_FOUND" }, 404, noStore);
+      }
       const result = await confirmCheckout(deps.db, deps.paymentRail, deps.config, {
         customerId,
         customerEmail: customer.email_normalized,
         quoteId: body.quoteId,
-        idempotencyKey: context.req.header("idempotency-key") ?? "",
-        expectedOrderPublicId: handoff?.orderPublicId,
-        storefront: handoff?.storefront,
-        successUrl: successUrl?.toString(),
+        idempotencyKey: guest ? `${guest.order_public_id}:pay:${context.req.header("idempotency-key") ?? ""}` : context.req.header("idempotency-key") ?? "",
+        expectedOrderPublicId: guest?.order_public_id ?? handoff?.orderPublicId,
+        storefront: guest ? "LAB" : handoff?.storefront,
+        successUrl: guest ? `${origins.lab}/ticket` : successUrl?.toString(),
         legalAcceptance: body.legalAcceptance,
+        labAcceptance: body.labAcceptance,
       }, now().toISOString());
+      if (guest && result.state === "PAID" && deps.sendLabTicketEmail) {
+        const claimed = deps.db.prepare("UPDATE lab_guest_access SET initial_email_attempted_at=? WHERE order_public_id=? AND initial_email_attempted_at IS NULL")
+          .run(now().toISOString(), guest.order_public_id);
+        if (claimed.changes === 1) {
+          try {
+            const suppressed = deps.db.prepare("SELECT 1 FROM email_suppressions WHERE email_normalized=? AND removed_at IS NULL").get(customer.email_normalized);
+            const message = !suppressed && prepareLabRecovery(deps.db, customer.email_normalized, guest.order_public_id, origins.lab, now().toISOString());
+            if (message) await deps.sendLabTicketEmail(message);
+          } catch { /* An unknown send is never retried; explicit email recovery remains available. */ }
+        }
+      }
       return context.json(result, result.state === "CREATE_UNKNOWN" ? 202 : 201, noStore);
     } catch (error) {
       return checkoutError(context, error, "CHECKOUT_UNAVAILABLE");
@@ -652,9 +709,17 @@ export function createCommerceV2App(deps: Dependencies) {
   });
 
   app.get("/v1/checkout/:orderPublicId", async (context) => {
-    const customerId = await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;
+    let guest;
+    try { guest = labBearer(context) ? labAccess(deps.db, labBearer(context)) : undefined; }
+    catch { return context.json({ code: "ORDER_NOT_FOUND" }, 404, noStore); }
+    if (guest && guest.order_public_id !== context.req.param("orderPublicId")) return context.json({ code: "ORDER_NOT_FOUND" }, 404, noStore);
+    const customerId = guest?.customer_id ?? await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;
     if (!customerId) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
     if (!deps.paymentRail) return context.json({ code: "PAYMENT_RAIL_UNAVAILABLE" }, 503, noStore);
+    if (guest) {
+      try { deps.erasureFence?.assertIdentity({ customerId: guest.customer_id }, "ACCOUNT"); }
+      catch { return context.json({ code: "ERASURE_RUNTIME_CLOSED" }, 503, noStore); }
+    }
     const owned = deps.db.prepare("SELECT 1 FROM orders WHERE public_id=? AND customer_id=?").get(context.req.param("orderPublicId"), customerId);
     if (!owned) return context.json({ code: "ORDER_NOT_FOUND" }, 404, noStore);
     try {

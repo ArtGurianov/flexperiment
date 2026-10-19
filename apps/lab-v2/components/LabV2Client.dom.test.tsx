@@ -3,6 +3,7 @@ import "@testing-library/jest-dom/vitest";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import LabV2Client from "./LabV2Client";
 
+vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 vi.mock("../../../lib/commerce-api", () => ({ commerceApiUrl: (path: string) => path }));
 const catalogue = { schema: "flexperiment.lab-catalogue/1", paymentMode: "disabled", cities: [], occurrences: [] };
 const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
