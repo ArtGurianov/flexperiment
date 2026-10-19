@@ -51,7 +51,8 @@ export default function LabV2Client() {
       {!catalogue ? <p role="status">Проверяем каталог…</p> : catalogue.occurrences.length === 0 ? <p className="empty">Опубликованных встреч пока нет.</p> : <div className="events">{catalogue.occurrences.map((event) => <article key={event.offerRef}>
         <p>{catalogue.cities.find((city) => city.cityId === event.cityId)?.title ?? "Город не указан"}</p><h3>{event.title}</h3>
         <time dateTime={event.startsAt}>{new Intl.DateTimeFormat("ru-RU", { dateStyle: "long", timeStyle: "short", timeZone: event.timezone }).format(new Date(event.startsAt))}</time>
-        <p>{money(event.amountKopecks)}</p><button disabled>Покупка закрыта</button>
+        <p>{event.venue.status === "CONFIRMED" ? [event.venue.name, event.venue.address].filter(Boolean).join(", ") || "Адрес сообщим участникам" : event.venue.disclosureText}</p>
+        <p>{money(event.amountKopecks)}</p><button disabled>{event.soldOut ? "Мест нет" : "Покупка закрыта"}</button>
       </article>)}</div>}
     </section>
     <section aria-labelledby="account-title"><div className="sectionHeading"><span>02 /</span><h2 id="account-title">Ваш аккаунт</h2></div>

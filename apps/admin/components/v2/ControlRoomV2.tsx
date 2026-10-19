@@ -244,8 +244,8 @@ export function LabCatalogue() {
     <PageTitle eyebrow="КАТАЛОГ / LAB" title={<>LAB переехал.<br /><i>Продажи закрыты.</i></>} text="Stage A сохраняет паузу продаж. Экран показывает перенесённые occurrence-записи, но не даёт обойти PAYMENT_MODE и sales activation." />
     <Panel title="Occurrence">
       {query.error ? readError(query.error) : !query.data ? <Loading /> : <QueryState error={null} empty={!query.data.occurrences.length}>
-        <table><thead><tr><th>Событие</th><th>Город</th><th>Начало</th><th>Вместимость</th><th>Продажи</th></tr></thead><tbody>
-          {query.data.occurrences.map((item) => <tr key={item.occurrenceRef}><td><strong>{item.title}</strong><small>{item.occurrenceRef}</small></td><td>{item.cityTitle}</td><td>{dateTime(item.startsAt)}</td><td>{item.capacity}</td><td><Badge>{item.salesStatus}</Badge></td></tr>)}
+        <table><thead><tr><th>Событие</th><th>Город</th><th>Начало</th><th>Места</th><th>Статус</th><th>Продажи</th></tr></thead><tbody>
+          {query.data.occurrences.map((item) => <tr key={item.occurrenceRef}><td><strong>{item.title}</strong><small>{item.occurrenceRef}</small></td><td>{item.cityTitle}</td><td>{dateTime(item.startsAt)}</td><td>{item.availableSeats} / {item.capacity}<small>продано {item.soldSeats} · в оплате {item.pendingSeats} · резерв {item.adminReservedSeats}</small></td><td><Badge>{item.phase}</Badge><small>{item.visibility}</small></td><td><Badge>{item.saleMode ?? "NO OFFER"}</Badge></td></tr>)}
         </tbody></table>
       </QueryState>}
     </Panel>

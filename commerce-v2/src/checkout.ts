@@ -10,6 +10,7 @@ import type { Storefront } from "./origins";
 import type { RefundEnvelope } from "./refund-envelope";
 import { assertMerchantPromotionStillApplicable, resolveCheckoutCode, type MerchantPromotionSnapshot } from "./promotions";
 import { assertLiveOfferSaleMode } from "./catalog-control";
+import { assertLabOccurrenceAdmissible, occurrenceInstant, type BuyerVenueDisclosure } from "./lab-occurrences";
 import type { CommerceRuntimeConfig } from "./payment-mode";
 import { assertClosedPaidTestAccountConsents, assertClosedPaidTestFiscal, assertClosedPaidTestOffer, assertClosedPaidTestPrice, buyerEmailSha256 } from "./closed-paid-test";
 
@@ -274,16 +275,13 @@ type FrozenLineSnapshot = {
     readonly endsAt: string;
     readonly timezone: string;
     readonly cityId: string;
+    readonly venue: BuyerVenueDisclosure;
   };
 };
 
-const refrefInstant = (value: string) => {
-  const parsed = new Date(value);
-  if (!Number.isFinite(parsed.getTime()) || parsed.getUTCMilliseconds() !== 0) throw new Error("OCCURRENCE_TIME_INVALID");
-  return parsed.toISOString().replace(".000Z", "Z");
-};
+const refrefInstant = (value: string) => occurrenceInstant(value, "OCCURRENCE_TIME_INVALID");
 
-const freezeLine = (db: Database.Database, offer: OfferRow): FrozenLineSnapshot => {
+const freezeLine = (db: Database.Database, offer: OfferRow, venue?: BuyerVenueDisclosure): FrozenLineSnapshot => {
   if (!validPaymentPurpose(offer.payment_purpose)) throw new Error("PAYMENT_PURPOSE_REQUIRED");
   const fiscal = qualifiedFiscalPolicy(db, offer.offer_ref, offer.kind);
   if (offer.kind !== "LAB") {
@@ -294,7 +292,7 @@ const freezeLine = (db: Database.Database, offer: OfferRow): FrozenLineSnapshot 
     return { fiscal, paymentPurpose: offer.payment_purpose };
   }
   if (!offer.occurrence_ref || !offer.occurrence_title || !offer.occurrence_starts_at || !offer.occurrence_ends_at
-    || !offer.occurrence_timezone || !offer.occurrence_city_id) throw new Error("LAB_OCCURRENCE_NOT_FOUND");
+    || !offer.occurrence_timezone || !offer.occurrence_city_id || !venue) throw new Error("LAB_OCCURRENCE_NOT_FOUND");
   const startsAt = refrefInstant(offer.occurrence_starts_at);
   const endsAt = refrefInstant(offer.occurrence_ends_at);
   return {
@@ -310,12 +308,13 @@ const freezeLine = (db: Database.Database, offer: OfferRow): FrozenLineSnapshot 
       endsAt,
       timezone: offer.occurrence_timezone,
       cityId: offer.occurrence_city_id,
+      venue,
     },
   };
 };
 
 /** Live sellability of the offer itself, re-read on every checkout step; a stored quote never stands in for it. */
-function assertOfferOpenToCustomer(db: Database.Database, config: CheckoutPolicyConfig, offer: OfferRow | undefined, customerEmail: string) {
+function assertOfferOpenToCustomer(db: Database.Database, config: CheckoutPolicyConfig, offer: OfferRow | undefined, customerEmail: string, now: string) {
   if (!offer || offer.withdrawn_at) throw new Error("OFFER_NOT_AVAILABLE");
   if (offer.access_model === "FREE") throw new Error("FREE_PRODUCT_CHECKOUT_FORBIDDEN");
   if (offer.sale_mode === "CLOSED") throw new Error("OFFER_CLOSED");
@@ -327,7 +326,9 @@ function assertOfferOpenToCustomer(db: Database.Database, config: CheckoutPolicy
     const allowlist = JSON.parse(offer.acceptance_allowlist_json) as string[];
     if (!allowlist.map((email) => email.trim().toLowerCase()).includes(customerEmail.trim().toLowerCase())) throw new Error("ACCEPTANCE_ONLY");
   }
-  return offer;
+  // A PUBLIC offer does not make its occurrence sellable: a direct offerRef bypasses the catalogue filter.
+  const venue = offer.kind === "LAB" ? assertLabOccurrenceAdmissible(db, offer.occurrence_ref, now).venue : undefined;
+  return { ...offer, venue };
 }
 
 function assertOfferCanBePurchased(
@@ -336,8 +337,9 @@ function assertOfferCanBePurchased(
   candidate: OfferRow | undefined,
   customerId: string,
   customerEmail: string,
+  now: string,
 ) {
-  const offer = assertOfferOpenToCustomer(db, config, candidate, customerEmail);
+  const offer = assertOfferOpenToCustomer(db, config, candidate, customerEmail, now);
   if (offer.kind === "ONLINE_COURSE" && offer.course_ref && customerCanAccessCourse(db, customerId, offer.course_ref)) throw new Error("ALREADY_OWNED");
   if (offer.kind === "COURSE_BUNDLE" && customerCanAccessCourse(db, customerId, "__any_future_course__")) throw new Error("ALREADY_OWNED");
   return offer;
@@ -349,7 +351,7 @@ type CheckoutQuotePricing = {
   merchantPromotion: MerchantPromotionSnapshot | null;
 };
 
-const quoteResponse = (quoteId: string, quote: RailQuote, pricing: CheckoutQuotePricing, expiresAt: string) => ({
+const quoteResponse = (quoteId: string, quote: RailQuote, pricing: CheckoutQuotePricing, expiresAt: string, lineSnapshotJson: string | null) => ({
   quoteId,
   state: "PRICE_REVIEW_REQUIRED" as const,
   baseAmountKopecks: pricing.catalogAmountKopecks,
@@ -360,6 +362,7 @@ const quoteResponse = (quoteId: string, quote: RailQuote, pricing: CheckoutQuote
   merchantPromotionCode: pricing.merchantPromotion?.code ?? null,
   checkoutCodeOutcome: quote.checkoutCodeOutcome ?? "NONE",
   expiresAt,
+  occurrence: lineSnapshotJson ? (JSON.parse(lineSnapshotJson) as FrozenLineSnapshot).occurrence ?? null : null,
 });
 
 function paidTestReview(db: Database.Database, config: CheckoutPolicyConfig, email: string) {
@@ -425,13 +428,13 @@ export async function prepareCheckout(
     if (existing.customer_id !== input.customerId || existing.offer_id !== requestedOffer?.offer_id
       || existing.checkout_code_input !== checkoutCodeInput) throw new Error("IDEMPOTENCY_KEY_REUSED");
     if (existing.expires_at <= now) throw new Error("CHECKOUT_QUOTE_EXPIRED");
-    assertOfferOpenToCustomer(db, config, requestedOffer, input.customerEmail);
+    assertOfferOpenToCustomer(db, config, requestedOffer, input.customerEmail, now);
     if (config.closedPaidTest) readyImmediateCourseAccess(db, requestedOffer?.course_ref ?? "");
     assertClosedPaidTestPrice(config, JSON.parse(existing.rail_quote_json) as RailQuote, existing.merchant_discount_kopecks);
-    return respond(existing.id, JSON.parse(existing.rail_quote_json) as RailQuote, storedPricing(existing), existing.expires_at);
+    return respond(existing.id, JSON.parse(existing.rail_quote_json) as RailQuote, storedPricing(existing), existing.expires_at, existing.line_snapshot_json);
   }
 
-  const offer = assertOfferCanBePurchased(db, config, offerByRef(db, input.offerRef), input.customerId, input.customerEmail);
+  const offer = assertOfferCanBePurchased(db, config, offerByRef(db, input.offerRef), input.customerId, input.customerEmail, now);
   assertNoOtherPaidTestOrder(db, config, offer.offer_ref);
   if (config.closedPaidTest) readyImmediateCourseAccess(db, offer.course_ref!);
   const storefront = storefrontForOffer(offer);
@@ -448,12 +451,12 @@ export async function prepareCheckout(
         || resumed.checkout_code_input !== checkoutCodeInput) throw new Error("CHECKOUT_HANDOFF_REUSED");
       if (resumed.state !== "REVIEW" || resumed.expires_at <= now) throw new Error("CHECKOUT_QUOTE_UNAVAILABLE");
       assertClosedPaidTestPrice(config, JSON.parse(resumed.rail_quote_json) as RailQuote, resumed.merchant_discount_kopecks);
-      return respond(resumed.id, JSON.parse(resumed.rail_quote_json) as RailQuote, storedPricing(resumed), resumed.expires_at);
+      return respond(resumed.id, JSON.parse(resumed.rail_quote_json) as RailQuote, storedPricing(resumed), resumed.expires_at, resumed.line_snapshot_json);
     }
   }
   const quoteId = randomUUID();
   const lineRef = randomUUID();
-  const lineSnapshot = freezeLine(db, offer);
+  const lineSnapshot = freezeLine(db, offer, offer.venue);
   assertClosedPaidTestFiscal(config, lineSnapshot.fiscal);
   const codeResolution = resolveCheckoutCode(db, input.checkoutCode, offer.offer_ref, offer.price_kopecks, config.merchantPromotionPrefix, now);
   const merchantDiscountKopecks = codeResolution.promotion?.merchantDiscountKopecks ?? 0;
@@ -498,7 +501,7 @@ export async function prepareCheckout(
     catalogAmountKopecks: offer.price_kopecks,
     merchantDiscountKopecks,
     merchantPromotion: codeResolution.promotion ?? null,
-  }, expiresAt);
+  }, expiresAt, JSON.stringify(lineSnapshot));
 }
 
 export async function confirmCheckout(
@@ -550,7 +553,7 @@ export async function confirmCheckout(
     throw new Error("CHECKOUT_QUOTE_EXPIRED");
   }
   if (!pending.line_snapshot_json) throw new Error("CHECKOUT_QUOTE_STALE");
-  const offer = assertOfferCanBePurchased(db, config, offerByRef(db, pending.offer_ref), input.customerId, input.customerEmail);
+  const offer = assertOfferCanBePurchased(db, config, offerByRef(db, pending.offer_ref), input.customerId, input.customerEmail, now);
   const storefront = storefrontForOffer(offer);
   if (input.storefront && input.storefront !== storefront) throw new Error("CHECKOUT_STOREFRONT_MISMATCH");
   const activeLegal = legalRelease(db, storefront);
@@ -558,7 +561,7 @@ export async function confirmCheckout(
   assertClosedPaidTestFiscal(config, frozenLine.fiscal);
   if (offer.offer_id !== pending.offer_id || offer.price_kopecks !== pending.catalog_amount_kopecks
     || activeLegal?.id !== pending.legal_release_id
-    || JSON.stringify(freezeLine(db, offer)) !== pending.line_snapshot_json) throw new Error("CHECKOUT_QUOTE_STALE");
+    || JSON.stringify(freezeLine(db, offer, offer.venue)) !== pending.line_snapshot_json) throw new Error("CHECKOUT_QUOTE_STALE");
   const quote = JSON.parse(pending.rail_quote_json) as RailQuote;
   assertClosedPaidTestPrice(config, quote, pending.merchant_discount_kopecks);
   assertClosedPaidTestPrice(config, { baseAmountKopecks: pending.base_amount_kopecks, finalAmountKopecks: pending.final_amount_kopecks,
@@ -616,6 +619,8 @@ export async function confirmCheckout(
     // This is historical delivery evidence, not an entitlement limited to this content version.
     const initialAccessEvidence = frozenLine.requiresImmediateAccess ? readyImmediateCourseAccess(db, offer.course_ref!) : undefined;
     assertNoOtherPaidTestOrder(db, config, offer.offer_ref);
+    // The seat count is re-read under the write lock that creates the order taking it.
+    if (offer.kind === "LAB") assertLabOccurrenceAdmissible(db, offer.occurrence_ref, now);
     if (review) {
       // Re-read under the same write transaction as order creation; no backfilled UI event.
       const current = paidTestReview(db, config, input.customerEmail)!;

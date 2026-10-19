@@ -10,14 +10,15 @@ beforeEach(() => {
   db = new Database(":memory:");migrateV2(db);
   applyV2Seed(db, {
     cities: [{ slug: "fixture-city", title: "Isolated fixture city" }],
-    labOccurrences: [{ occurrenceRef: "fixture-event", citySlug: "fixture-city", title: "Isolated fixture event", startsAt: "2026-11-01T10:00:00Z", endsAt: "2026-11-01T12:00:00Z", timezone: "Europe/Moscow", capacity: 7 }],
+    labOccurrences: [{ occurrenceRef: "fixture-event", citySlug: "fixture-city", title: "Isolated fixture event", startsAt: "2026-11-01T10:00:00Z", endsAt: "2026-11-01T12:00:00Z", timezone: "Europe/Moscow", capacity: 7,
+      venue: { status: "CONFIRMED", name: "Fixture studio", address: "Fixture street 1", public: false } }],
     products: [{ productRef: "lab:fixture-event", occurrenceRef: "fixture-event", kind: "LAB", accessModel: "PAID", offerRef: "lab:fixture-event", priceKopecks: 12345, saleMode: "CLOSED" }],
   });
 });
 afterEach(() => db.close());
 const server = () => createCommerceV2App({ db, config: loadCommerceRuntimeConfig({ DEPLOY_ENV: "test", PAYMENT_MODE: "disabled" }), sourceCommit: "a".repeat(40), serviceToken: "isolated-fixture", now: () => new Date("2026-10-11T00:00:00Z") });
 const publish = () => {
-  db.prepare("UPDATE lab_occurrences SET sales_status='PUBLIC'").run();
+  db.prepare("UPDATE lab_occurrences SET visibility='LISTED'").run();
   db.prepare("UPDATE offers SET sale_mode='PUBLIC', acceptance_allowlist_json='[\"secret-fixture-owner@example.invalid\"]'").run();
 };
 
@@ -30,8 +31,8 @@ describe("LAB V2 public read model", () => {
   it("projects exact published facts without PII, allowlists, internal IDs or guessed availability", async () => {
     publish();const before = db.prepare("SELECT total_changes() AS changes").get();
     const response = await server().request("/v1/lab/catalogue");const body = await response.json();
-    expect(body.occurrences).toEqual([{ occurrenceRef: "fixture-event", offerRef: "lab:fixture-event", cityId: body.cities[0].cityId, title: "Isolated fixture event", startsAt: "2026-11-01T10:00:00Z", endsAt: "2026-11-01T12:00:00Z", timezone: "Europe/Moscow", amountKopecks: 12345, currency: "RUB" }]);
-    expect(JSON.stringify(body)).not.toMatch(/secret-fixture|allowlist|capacity|checkoutEnabled/);
+    expect(body.occurrences).toEqual([{ occurrenceRef: "fixture-event", offerRef: "lab:fixture-event", cityId: body.cities[0].cityId, title: "Isolated fixture event", startsAt: "2026-11-01T10:00:00Z", endsAt: "2026-11-01T12:00:00Z", timezone: "Europe/Moscow", amountKopecks: 12345, currency: "RUB", venue: { status: "CONFIRMED", name: null, address: null }, soldOut: false }]);
+    expect(JSON.stringify(body)).not.toMatch(/secret-fixture|allowlist|capacity|checkoutEnabled|Fixture studio|Fixture street/);
     expect(db.prepare("SELECT total_changes() AS changes").get()).toEqual(before);
     expect((await server().request("/v1/checkout", { method: "POST" })).status).toBe(503);
   });

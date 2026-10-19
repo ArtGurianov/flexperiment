@@ -1,4 +1,6 @@
 import type Database from "better-sqlite3";
+import { labSeatInventory, occurrencePhase, venueDisclosure, type LabOccurrenceRow } from "./lab-occurrences";
+import type { SaleMode } from "./payment-mode";
 import type {
   AttentionResponse,
   AuditResponse,
@@ -118,15 +120,22 @@ export function controlRoomCities(db: Database.Database, now = new Date().toISOS
 }
 
 export function controlRoomLabOccurrences(db: Database.Database, now = new Date().toISOString()): LabOccurrencesResponse {
-  const rows = db.prepare(`SELECT occurrence.occurrence_ref,occurrence.city_id,city.title AS city_title,occurrence.title,
-      occurrence.starts_at,occurrence.ends_at,occurrence.timezone,occurrence.capacity,occurrence.sales_status
-    FROM lab_occurrences occurrence JOIN cities city ON city.id=occurrence.city_id ORDER BY occurrence.starts_at`)
-    .all() as Array<{ occurrence_ref: string; city_id: string; city_title: string; title: string; starts_at: string;
-      ends_at: string; timezone: string; capacity: number; sales_status: "CLOSED" | "ACCEPTANCE_ONLY" | "PUBLIC" }>;
-  return { generatedAt: now, occurrences: rows.map((row) => ({
-    occurrenceRef: row.occurrence_ref, cityId: row.city_id, cityTitle: row.city_title, title: row.title,
-    startsAt: row.starts_at, endsAt: row.ends_at, timezone: row.timezone, capacity: row.capacity, salesStatus: row.sales_status,
-  })) };
+  const rows = db.prepare(`SELECT occurrence.*,city.title AS city_title,offer.offer_ref,offer.sale_mode
+    FROM lab_occurrences occurrence JOIN cities city ON city.id=occurrence.city_id
+    LEFT JOIN products product ON product.occurrence_ref=occurrence.occurrence_ref LEFT JOIN offers offer ON offer.product_id=product.id
+    ORDER BY occurrence.starts_at,occurrence.occurrence_ref`)
+    .all() as Array<LabOccurrenceRow & { city_title: string; offer_ref: string | null; sale_mode: SaleMode | null }>;
+  return { generatedAt: now, occurrences: rows.map((row) => {
+    const inventory = labSeatInventory(db, row);
+    return {
+      occurrenceRef: row.occurrence_ref, cityId: row.city_id, cityTitle: row.city_title, title: row.title,
+      startsAt: row.starts_at, endsAt: row.ends_at, timezone: row.timezone, phase: occurrencePhase(row, now), visibility: row.visibility,
+      capacity: row.capacity, adminReservedSeats: row.admin_reserved_seats, soldSeats: inventory.sold, pendingSeats: inventory.pending,
+      availableSeats: Math.max(0, inventory.available), venue: venueDisclosure(row), version: row.version,
+      materialRevision: row.material_revision, cancelledAt: row.cancelled_at, cancellationReason: row.cancellation_reason,
+      offerRef: row.offer_ref, saleMode: row.sale_mode,
+    };
+  }) };
 }
 
 export function controlRoomAttention(db: Database.Database, now = new Date().toISOString()): AttentionResponse {

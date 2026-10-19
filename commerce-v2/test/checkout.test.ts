@@ -172,8 +172,8 @@ describe("scripted mock checkout orchestration", () => {
     db.prepare(`INSERT INTO legal_releases(id,storefront,version,manifest_json,effective_at,active)
       VALUES ('lab-legal','LAB','lab-stage-a-v1',?,'2026-09-30T00:00:00Z',1)`).run(stageALegalManifestJson);
     db.prepare("INSERT INTO cities(id,slug,title) VALUES ('city','nsk','Новосибирск')").run();
-    db.prepare(`INSERT INTO lab_occurrences(id,occurrence_ref,city_id,title,starts_at,ends_at,timezone,capacity,sales_status)
-      VALUES ('occurrence','lab:november','city','LAB в ноябре','2026-11-01T09:00:00Z','2026-11-01T17:00:00Z','Asia/Novosibirsk',20,'PUBLIC')`).run();
+    db.prepare(`INSERT INTO lab_occurrences(id,occurrence_ref,city_id,title,starts_at,ends_at,timezone,capacity,venue_status,venue_name,venue_address)
+      VALUES ('occurrence','lab:november','city','LAB в ноябре','2026-11-01T09:00:00Z','2026-11-01T17:00:00Z','Asia/Novosibirsk',20,'CONFIRMED','Студия','ул. Фикстурная, 1')`).run();
     db.prepare(`INSERT INTO products(id,product_ref,kind,access_model,occurrence_ref)
       VALUES ('lab-product','lab:november','LAB','PAID','lab:november')`).run();
     db.prepare(`INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode)
@@ -201,6 +201,7 @@ describe("scripted mock checkout orchestration", () => {
       endsAt: "2026-11-01T17:00:00Z",
       timezone: "Asia/Novosibirsk",
       cityId: "city",
+      venue: { status: "CONFIRMED", name: "Студия", address: "ул. Фикстурная, 1" },
     });
     expect(db.prepare("SELECT legal_release_ref FROM order_lines WHERE product_id='lab-product'").get())
       .toEqual({ legal_release_ref: "lab-stage-a-v1" });

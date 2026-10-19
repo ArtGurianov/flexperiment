@@ -13,3 +13,7 @@ explicit policy; it must not be invented as a migration default.
 Follow-up CI review: do not import the Platform/Next type graph into the root Commerce test target.
 Keep the public API privacy regression under commerce-v2 and exercise the metadata HTTP fixture in
 apps/platform/test with its own alias/Next compiler scope. Run both compiler targets and full lint.
+
+LAB buyer preview returns its frozen occurrence, including a private confirmed venue or a TBA
+announcement deadline. The public catalogue continues to hide a private venue. Browser purchase
+UI and E2E remain ART-379/384. Migration 0028 is the existing TOTP migration; LAB is 0029.

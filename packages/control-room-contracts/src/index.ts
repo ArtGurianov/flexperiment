@@ -133,8 +133,24 @@ export type ControlRoomLabOccurrence = {
   startsAt: string;
   endsAt: string;
   timezone: string;
+  /** SCHEDULED / CANCELLED is stored; IN_PROGRESS and FINISHED are derived from the clock. Selling is the offer's sale mode. */
+  phase: "SCHEDULED" | "IN_PROGRESS" | "FINISHED" | "CANCELLED";
+  visibility: "LISTED" | "UNLISTED";
   capacity: number;
-  salesStatus: SaleMode;
+  adminReservedSeats: number;
+  soldSeats: number;
+  pendingSeats: number;
+  availableSeats: number;
+  venue:
+    | { status: "CONFIRMED"; name: string; address: string; public: boolean }
+    | { status: "TO_BE_ANNOUNCED"; disclosureText: string; announceBy: string }
+    | null;
+  version: number;
+  materialRevision: number;
+  cancelledAt: string | null;
+  cancellationReason: string | null;
+  offerRef: string | null;
+  saleMode: SaleMode | null;
 };
 
 export type RefundPolicyFacts = {

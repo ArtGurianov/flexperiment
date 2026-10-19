@@ -13,8 +13,8 @@ beforeEach(() => { db = new Database(":memory:"); db.pragma("foreign_keys = ON")
 describe("catalog control room commands", () => {
   const seedOccurrence = () => {
     db.prepare("INSERT INTO cities(id,slug,title) VALUES ('city','moscow','Moscow')").run();
-    db.prepare(`INSERT INTO lab_occurrences(id,occurrence_ref,city_id,title,starts_at,ends_at,timezone,capacity)
-      VALUES ('occurrence','lab:2026-11-01','city','LAB','2026-11-01T09:00:00Z','2026-11-01T17:00:00Z','Europe/Moscow',12)`).run();
+    db.prepare(`INSERT INTO lab_occurrences(id,occurrence_ref,city_id,title,starts_at,ends_at,timezone,capacity,venue_status,venue_name,venue_address)
+      VALUES ('occurrence','lab:2026-11-01','city','LAB','2026-11-01T09:00:00Z','2026-11-01T17:00:00Z','Europe/Moscow',12,'CONFIRMED','Студия','ул. Фикстурная, 1')`).run();
   };
 
   it("permits a free Stage A product while paid sales stay closed", () => {
