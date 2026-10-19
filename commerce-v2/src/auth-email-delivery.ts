@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { MagicLinkEmail } from "./auth";
 import { loadCommerceOrigins } from "./origins";
 
+type LinkEmail = MagicLinkEmail & { ticketLinks?: readonly string[] };
 type Environment = Readonly<Record<string, string | undefined>>;
 type Refusal = "AUTH_EMAIL_NOT_CONFIGURED" | "AUTH_EMAIL_INPUT_INVALID" | "AUTH_EMAIL_REJECTED" | "AUTH_EMAIL_AMBIGUOUS";
 export class AuthEmailDeliveryError extends Error {
@@ -48,19 +49,22 @@ async function boundedJson(response: Response): Promise<Record<string, unknown>>
  * One attempt, no automatic retry: NotiSend does not supply a durable send dedupe key.
  * Errors are fixed enums; never propagate provider bodies, recipients, URLs or transport exceptions.
  */
-export function createMagicLinkEmailDelivery(environment: Environment = process.env, request: typeof fetch = fetch) {
+function createLinkEmailDelivery(environment: Environment, request: typeof fetch, purpose: "MAGIC_LINK" | "LAB_TICKET") {
   const production = environment.DEPLOY_ENV === "production";
   const provider = environment.AUTH_EMAIL_PROVIDER
     ?? (environment.AUTH_EMAIL_DELIVERY_ENDPOINT ? "http-relay" : "notisend");
   if (provider !== "notisend" && provider !== "http-relay") throw new Error("AUTH_EMAIL_PROVIDER_INVALID");
   const origins = loadCommerceOrigins(environment);
-  const validate = ({ email, url }: MagicLinkEmail) => {
+  const validate = ({ email, url }: LinkEmail) => {
     try {
       const target = new URL(url);
       if (!emailAddress(email) || url.length > 8_192 || /[\u0000-\u001f\u007f-\u009f]/u.test(url)
-        || target.username || target.password || target.hash
-        || ![origins.platform, origins.lab].includes(target.origin)
-        || target.pathname !== "/v1/auth/magic-link/verify" || !target.searchParams.get("token")) throw new Error();
+        || target.username || target.password
+        || (purpose === "MAGIC_LINK"
+          ? target.hash || ![origins.platform, origins.lab].includes(target.origin)
+            || target.pathname !== "/v1/auth/magic-link/verify" || !target.searchParams.get("token")
+          : target.origin !== origins.lab || target.pathname !== "/ticket" || target.search
+            || !/^#recover=[A-Za-z0-9_-]{43}$/.test(target.hash))) throw new Error();
     } catch { throw new AuthEmailDeliveryError("AUTH_EMAIL_INPUT_INVALID"); }
   };
 
@@ -69,14 +73,15 @@ export function createMagicLinkEmailDelivery(environment: Environment = process.
     const parsed = new URL(endpoint);
     if (parsed.username || parsed.password || parsed.hash || (production && parsed.protocol !== "https:")
       || !["http:", "https:"].includes(parsed.protocol)) throw new Error("AUTH_EMAIL_DELIVERY_ENDPOINT_INVALID");
-    return { configured: true, provider, send: async (message: MagicLinkEmail) => {
+    return { configured: true, provider, send: async (message: LinkEmail) => {
       validate(message);
+      if (purpose === "LAB_TICKET") for (const url of message.ticketLinks ?? []) validate({ email: message.email, url });
       try {
         const response = await request(endpoint, {
           method: "POST", redirect: "error", signal: AbortSignal.timeout(10_000),
           headers: { "content-type": "application/json", ...(environment.AUTH_EMAIL_DELIVERY_TOKEN
             ? { authorization: `Bearer ${environment.AUTH_EMAIL_DELIVERY_TOKEN}` } : {}) },
-          body: JSON.stringify({ type: "MAGIC_LINK", recipientEmail: message.email, url: message.url }),
+          body: JSON.stringify({ type: purpose, recipientEmail: message.email, url: message.url, ...(purpose === "LAB_TICKET" && message.ticketLinks ? { ticketLinks: message.ticketLinks } : {}) }),
         });
         await response.body?.cancel();
         if (response.status === 408 || response.status >= 500) throw new AuthEmailDeliveryError("AUTH_EMAIL_AMBIGUOUS");
@@ -97,19 +102,20 @@ export function createMagicLinkEmailDelivery(environment: Environment = process.
   const replyTo = required(environment, "NOTISEND_REPLY_TO");
   if (!emailAddress(fromEmail) || !emailAddress(replyTo)) throw new Error("NOTISEND_SENDER_INVALID");
 
-  return { configured: true, provider, send: async (message: MagicLinkEmail) => {
+  return { configured: true, provider, send: async (message: LinkEmail) => {
     validate(message);
+    if (purpose === "LAB_TICKET") for (const url of message.ticketLinks ?? []) validate({ email: message.email, url });
     // Correlation only, not an idempotency/replay promise. Never send the plaintext token as metadata.
-    const correlationKey = createHash("sha256").update(JSON.stringify(["MAGIC_LINK", message.email, message.url])).digest("hex");
+    const correlationKey = createHash("sha256").update(JSON.stringify([purpose, message.email, message.url])).digest("hex");
     try {
       const response = await request(SEND_URL, {
         method: "POST", redirect: "error", signal: AbortSignal.timeout(10_000),
         headers: { "Content-Type": "application/json", Accept: "application/json", Authorization: `Bearer ${apiKey}` },
         body: JSON.stringify({
           to: message.email, from_email: fromEmail, from_name: fromName,
-          subject: "Вход в Flexperiment",
-          text: `Войдите в Flexperiment по ссылке: ${message.url}\nСсылка действует 10 минут. Если вы не запрашивали вход, проигнорируйте письмо.`,
-          html: `<html><body><p><a href="${htmlEscape(message.url)}">Войти в Flexperiment</a></p><p>Ссылка действует 10 минут. Если вы не запрашивали вход, проигнорируйте письмо.</p></body></html>`,
+          subject: purpose === "MAGIC_LINK" ? "Вход в Flexperiment" : "Ваш билет LAB",
+          text: purpose === "LAB_TICKET" ? `Откройте билеты LAB: ${(message.ticketLinks ?? [message.url]).join("\n")}\nПодтвердите восстановление в течение 15 минут. Старый QR заменится; использованный билет не станет действительным снова.` : `Войдите в Flexperiment по ссылке: ${message.url}\nСсылка действует 10 минут. Если вы не запрашивали вход, проигнорируйте письмо.`,
+          html: purpose === "LAB_TICKET" ? `<html><body>${(message.ticketLinks ?? [message.url]).map(url => `<p><a href="${htmlEscape(url)}">Открыть билет LAB</a></p>`).join("")}<p>Подтвердите восстановление в течение 15 минут. Отметка о проходе сохраняется.</p></body></html>` : `<html><body><p><a href="${htmlEscape(message.url)}">Войти в Flexperiment</a></p><p>Ссылка действует 10 минут. Если вы не запрашивали вход, проигнорируйте письмо.</p></body></html>`,
           smtp_headers: { "Reply-To": replyTo, "X-Flexperiment-Auth-Key": correlationKey },
           // No unsubscribe/suppression bypass, marketing activation, or legacy provider callbacks.
         }),
@@ -137,3 +143,9 @@ export function createMagicLinkEmailDelivery(environment: Environment = process.
     }
   } };
 }
+
+/** Separate URL allowlist and transactional content; no account or marketing consent is created. */
+export const createLabTicketEmailDelivery = (environment: Environment = process.env, request: typeof fetch = fetch) =>
+  createLinkEmailDelivery(environment, request, "LAB_TICKET");
+export const createMagicLinkEmailDelivery = (environment: Environment = process.env, request: typeof fetch = fetch) =>
+  createLinkEmailDelivery(environment, request, "MAGIC_LINK");

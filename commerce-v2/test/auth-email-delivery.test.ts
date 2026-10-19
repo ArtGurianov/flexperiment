@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createAuthRuntime, decryptAuthEmailPayload } from "../src/auth";
-import { createMagicLinkEmailDelivery } from "../src/auth-email-delivery";
+import { createLabTicketEmailDelivery, createMagicLinkEmailDelivery } from "../src/auth-email-delivery";
 import { migrateV2 } from "../src/db";
 
 const environment = {
@@ -157,5 +157,27 @@ describe("real Better Auth callback + encrypted outbox", () => {
       expect([200, 302]).toContain(verified.status);
       expect(db.prepare('SELECT email_verified FROM "user" WHERE email=?').get(email)).toEqual({ email_verified: 1 });
     }
+  });
+});
+
+
+describe("LAB ticket email transport", () => {
+  it("uses LAB-only fragment links, transactional copy and one message for email-only recovery", async () => {
+    const request = requestMock(), delivery = createLabTicketEmailDelivery(environment, request);
+    const first = `https://lab.flexperiment.test/ticket#recover=${"a".repeat(43)}`;
+    const second = `https://lab.flexperiment.test/ticket#recover=${"b".repeat(43)}`;
+    await delivery.send({ email, url: first, ticketLinks: [first, second] });
+    const body = JSON.parse(String(request.mock.calls[0][1]?.body));
+    expect(body.subject).toBe("Ваш билет LAB"); expect(body.text).toContain(first); expect(body.text).toContain(second);
+    expect(body.html).not.toContain("Войти в Flexperiment"); expect(request).toHaveBeenCalledOnce();
+  });
+  it("refuses foreign hosts, query-string tokens and auth links before contacting a provider", async () => {
+    const request = requestMock(), delivery = createLabTicketEmailDelivery(environment, request);
+    for (const url of ["https://foreign.test/ticket#recover=" + "a".repeat(43),
+      "https://lab.flexperiment.test/ticket?recover=" + "a".repeat(43),
+      "https://lab.flexperiment.test/v1/auth/magic-link/verify?token=secret"]) {
+      await expect(delivery.send({ email, url })).rejects.toThrow("AUTH_EMAIL_INPUT_INVALID");
+    }
+    expect(request).not.toHaveBeenCalled();
   });
 });

@@ -274,9 +274,11 @@ class FrontendProxy(unittest.TestCase):
         self.assertEqual(self.request("admin-v2", "/v1/auth/get-session")[0], 404)
         self.assertEqual(self.request("lab-v2", "/v1/auth-other")[0], 404)
         self.assertEqual(self.request("lab-v2", "/v1/lab/internal")[0], 404)
+        self.assertEqual(self.request("lab-v2", "/v1/lab/guest/internal")[0], 404)
+        self.assertEqual(self.request("lab-v2", "/v1/lab/guest/ticket/extra")[0], 404)
 
     def test_v2_allowlists(self):
-        for root in ("auth/get-session", "me", "lessons/access", "checkout/preview", "email/unsubscribe", "legal/current", "lab/catalogue"):
+        for root in ("auth/get-session", "me", "lessons/access", "checkout/preview", "email/unsubscribe", "legal/current", "lab/catalogue", "lab/guest/start", "lab/guest/ticket", "lab/guest/recover", "lab/guest/recover/confirm", "lab/guest/reissue", "lab/guest/refunds"):
             self.assertEqual(self.request("lab-v2", "/v1/" + root)[0], 200)
         for path in ("login", "session", "logout", "v2/catalog", "v2/orders"):
             self.assertEqual(self.request("admin-v2", "/v1/admin/" + path)[0], 200)

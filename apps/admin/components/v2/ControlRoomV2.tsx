@@ -1,5 +1,6 @@
 "use client";
 
+import { LabCheckIn } from "./LabCheckIn";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "next/navigation";
 import { useState } from "react";
@@ -249,6 +250,7 @@ export function LabCatalogue() {
         </tbody></table>
       </QueryState>}
     </Panel>
+    <LabCheckIn />
   </>;
 }
 

@@ -1,3 +1,4 @@
+import { acceptLabPurchase, issueLabTicket, type LabAcceptance } from "./lab-tickets";
 import { CheckoutConflictError } from "./checkout-conflict";
 export { CheckoutConflictError } from "./checkout-conflict";
 import { readyImmediateCourseAccess } from "./immediate-course-access";
@@ -789,6 +790,7 @@ export async function confirmCheckout(
     storefront?: Storefront;
     successUrl?: string;
     legalAcceptance?: PaidCheckoutAcceptance;
+    labAcceptance?: LabAcceptance;
   },
   now = new Date().toISOString(),
 ) {
@@ -899,6 +901,9 @@ export async function confirmCheckout(
         JSON.stringify({ quoteId: pending.id, legalReleaseVersion: current.releaseVersion, legalManifestSha256: current.manifestSha256,
           receiptEmailSha256: buyerEmailSha256(current.receiptEmail), source: "AUTHENTICATED_CHECKOUT_CONFIRM" }), now);
     }
+    if (offer.kind === "LAB" && db.prepare("SELECT 1 FROM lab_guest_access WHERE order_public_id=?").get(publicId)) {
+      acceptLabPurchase(db, publicId, input.customerId, input.labAcceptance, now);
+    }
     db.prepare(`INSERT INTO orders(id,public_id,customer_id,state,total_kopecks,checkout_snapshot_json,snapshot_hash,legal_release_id,created_at,updated_at)
       VALUES (?,?,?,'PAYMENT_PENDING',?,?,?,?,?,?)`).run(orderId, publicId, input.customerId, pending.final_amount_kopecks, snapshotJson, snapshotHashHex, pending.legal_release_id, now, now);
     db.prepare(`INSERT INTO order_lines(id,order_id,product_id,offer_ref_snapshot,title_snapshot,unit_amount_kopecks,legal_terms_ref,created_at,
@@ -999,6 +1004,8 @@ async function applyRailProjection(db: Database.Database, rail: PaymentRail, ord
     projection = { ...projection, state: "REVIEW_REQUIRED" };
   }
   const apply = db.transaction(() => {
+    const terminalRefund = db.prepare("SELECT 1 FROM orders WHERE id=? AND state='REFUNDED'").get(context.order_id);
+    if (terminalRefund) return;
     db.prepare(`UPDATE checkout_attempts SET state=?,refref_attempt_id=?,refref_resolution_id=COALESCE(?,refref_resolution_id),
       refref_snapshot_hash=COALESCE(?,refref_snapshot_hash),checkout_url=?,observed_payment_projection_json=?,last_reconciled_at=?,updated_at=? WHERE id=?`)
       .run(attemptState(projection.state), projection.attemptId, projection.resolutionId ?? null, projection.snapshotHash ?? null,
@@ -1009,6 +1016,7 @@ async function applyRailProjection(db: Database.Database, rail: PaymentRail, ord
       const alreadyActivated = db.prepare("SELECT 1 FROM course_entitlements WHERE source_order_line_id=?").get(context.line_id);
       const activationAt = context.immediate_access_json ? new Date().toISOString() : now;
       db.prepare("UPDATE orders SET state='FULFILLED',updated_at=? WHERE id=?").run(now, context.order_id);
+      if (context.kind === "LAB") issueLabTicket(db, context.line_id, now);
       if (context.kind === "ONLINE_COURSE") grantEntitlement(db, { customerId: context.customer_id, scope: "COURSE", courseRef: context.course_ref!, sourceOrderLineId: context.line_id }, activationAt);
       if (context.kind === "COURSE_BUNDLE") grantEntitlement(db, { customerId: context.customer_id, scope: "ALL_COURSES", sourceOrderLineId: context.line_id }, activationAt);
       if (context.immediate_access_json && !alreadyActivated) db.prepare(`INSERT INTO audit_log(id,actor,action,subject_type,subject_ref,evidence_json,created_at)
