@@ -18,7 +18,13 @@ orders before mailbox verification. The order capability keeps the established
 customer/binding model while limiting the guest's authority.
 
 Preview and explicit confirmation use ART-373's durable intent. Keys are scoped
-to the guest order. Offer kind is checked before any checkout reconciliation;
+to the guest order. Open-payment readback, pending-payment admission and
+paid-parallel guards use the same durable order scope for guests. Customer-wide
+signed-in checks exclude guest intents, so an unverified-email attempt cannot
+block the mailbox owner after account binding. Independent guest orders can buy
+the same offer with the same email while seats remain; replay of one guest order
+still uses its original line and unique payment attempt. Offer kind is checked
+before any checkout reconciliation;
 guests cannot purchase LMS products. Confirmation verifies that the quote names
 this exact order. Existing signed-in LMS authentication is preserved.
 
@@ -45,8 +51,17 @@ travel in Authorization or POST bodies, with no-store responses.
 
 Email recovery accepts email alone (up to 20 most recent purchased orders in one
 message) or an optional exact order number. Absent, mismatched, suppressed,
-throttled and failed-delivery requests receive the same acknowledgement. SQLite
-limits requests to three per email per 15-minute window and 100 globally.
+throttled and failed-delivery requests receive the same acknowledgement.
+SQLite limits each trusted source to 30 start requests and 10 recovery requests
+per 15-minute window, plus 10 starts or three recoveries per (source, email).
+There is no shared anonymous hard budget and no email-only admission lockout.
+A source is accepted only after verifying the LAB nginx socket peer against
+`LAB_GUEST_TRUSTED_PROXY_IPS` and reading its replacement X-Real-IP header;
+missing trust returns `503 LAB_SOURCE_UNAVAILABLE` before charging any quota.
+Rotating email or token does not bypass the source cap. Independent sources
+retain independent budgets, including requests for the same email. Clients
+behind one NAT share that source's budget; this does not promise distributed
+abuse resistance.
 Transactional delivery reuses the configured NotiSend/HTTP transport and the
 shared erasure SEND fence. It does not enable marketing or resend automatically
 after an ambiguous delivery. An immediately paid checkout attempts an initial
@@ -106,3 +121,40 @@ separate from LMS and ART-243 production acceptance.
 
 These are implementation/isolated evidence. No live Refref/bank/NotiSend or
 production acceptance is claimed.
+
+
+## PR #264 review corrections
+
+The original `9a8eb3d` passed CI but the review found P1 (same-email guest orders
+shared customer-wide payment admission) and P2 (100 anonymous requests exhausted
+one global start/recovery budget). Both are corrected within ART-384/PR #264;
+no new issue or schema migration is needed.
+
+P1 regression coverage includes pending and uncertain first payments, independent
+preview/confirm with the same email/offer, concurrently opened and paid orders,
+exact-order replay with new keys, both signed-in/guest directions and the final
+seat boundary. Existing LMS/customer two-tab safety remains covered.
+
+P2 regression coverage exhausts one source with 110 requests and rotating emails,
+then proves another can start/recover even for the same email. It also admits
+110 independent sources, preserves limits across app recreation, resets windows
+and refuses missing/untrusted peers and forged address headers. The real
+Traefik/nginx fixture now covers LAB start/recovery as well as Admin login.
+
+Before any separately authorized installation, read back the exact LAB nginx
+socket IP(s), set `LAB_GUEST_TRUSTED_PROXY_IPS` in Commerce, and verify the approved
+Traefik → LAB nginx path. LAB nginx now uses the existing exact Traefik peer trust
+configuration; startup/reload and address changes require operational admission.
+An absent configuration closes anonymous session creation/mail without weakening
+trust. Existing order/ticket credentials and authenticated reads keep their own
+normal authority. Host/env/proxy installation has not been performed.
+
+CUSTODY_IMPACT: NO — source changes only, no deployed host state or credentials
+changed. A later installation needs its own custody classification and evidence.
+
+
+Review-fix local validation (2026-10-19): `pnpm test` passed 3430 tests with six
+skipped across 272 files. Root TypeScript passes; lint has zero errors and only
+the 51 pre-existing warnings. The real nginx/Traefik proxy suite passes 12 tests
+with the built-image probe skipped locally; exact-head CI runs that probe with
+the actual built images. No installed/runtime qualification is inferred.

@@ -474,7 +474,11 @@ resurrect an accepted refund.
 
 `lab_ticket_recoveries` stores only single-use token digests, deadlines and replay
 proof of the replacement order capability. Email requests do not rotate an active
-QR. `lab_guest_rate_limits` holds hashed, short-lived abuse-limit buckets.
+QR. `lab_guest_rate_limits` holds hashed, short-lived abuse-limit buckets per trusted
+source and (source, email); no anonymous caller can consume a global hard quota.
+Guest payment admission/readback is also order-scoped: sharing an unverified
+email does not block independent orders or signed-in purchases. Replay retains
+one line/order/attempt, and seat capacity remains authoritative.
 Isolated restore revokes all of these access credentials while retaining ticket
 identity/use. Financial erasure holds and offline retention remain explicit.
 

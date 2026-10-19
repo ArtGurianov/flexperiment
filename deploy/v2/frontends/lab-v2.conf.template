@@ -17,6 +17,7 @@ server {
 server {
     listen 80;
     server_name canary-lab.flexperiment.ru;
+    include /etc/nginx/v2/trusted-client-ip.conf;
     root /usr/share/nginx/html;
     set $commerce_upstream ${V2_COMMERCE_UPSTREAM};
     include /etc/nginx/v2/common.conf;

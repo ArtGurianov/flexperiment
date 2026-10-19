@@ -11,6 +11,7 @@ const noStore = { "Cache-Control": "no-store" };
 export const labBearer = (context: Context) => context.req.header("authorization")?.match(/^Bearer\s+(.+)$/i)?.[1] ?? "";
 export function registerLabGuestRoutes(parent: Hono, deps: {
   db: Database.Database; origin: string; now: () => Date;
+  requestSource: (context: Context) => string | undefined;
   authenticateCustomer?: (headers: Headers) => Promise<string | null>;
   sendLabTicketEmail?: (message: LabTicketEmail) => Promise<void>;
   erasureFence?: ErasureRuntimeFence;
@@ -34,7 +35,11 @@ export function registerLabGuestRoutes(parent: Hono, deps: {
     const body = await c.req.json<{ email: unknown; accessToken: unknown }>();
     const email = labEmail(body.email), time = deps.now().toISOString();
     deps.erasureFence?.assertIdentity({ email }, "AUTH_MAIL");
-    if (!consumeLabLimit(deps.db, "start-global", "all", 100, time) || !consumeLabLimit(deps.db, "start", email, 10, time)) {
+    const source = deps.requestSource(c);
+    if (!source) return c.json({ code: "LAB_SOURCE_UNAVAILABLE" }, 503, noStore);
+    // Charge the trusted source first, so rotating email/token cannot allocate unlimited buckets/sessions.
+    if (!consumeLabLimit(deps.db, "start-source", source, 30, time)
+      || !consumeLabLimit(deps.db, "start-source-email", JSON.stringify([source, email]), 10, time)) {
       return c.json({ code: "LAB_RATE_LIMITED" }, 429, noStore);
     }
     return c.json(startLabGuest(deps.db, body, time), 201, noStore);
@@ -50,9 +55,11 @@ export function registerLabGuestRoutes(parent: Hono, deps: {
     const email = labEmail(body.email), time = deps.now().toISOString();
     if (body.orderPublicId !== undefined && (typeof body.orderPublicId !== "string" || body.orderPublicId.length > 128)) throw new LabTicketError("LAB_INPUT_INVALID");
     // Same public acknowledgement for absent, throttled, suppressed and delivery-failed requests.
-    const globalAllowed = consumeLabLimit(deps.db, "recovery-global", "all", 100, time);
-    const allowed = consumeLabLimit(deps.db, "recovery", email, 3, time);
-    if (globalAllowed && allowed) {
+    const source = deps.requestSource(c);
+    if (!source) return c.json({ code: "LAB_SOURCE_UNAVAILABLE" }, 503, noStore);
+    const allowed = consumeLabLimit(deps.db, "recovery-source", source, 10, time)
+      && consumeLabLimit(deps.db, "recovery-source-email", JSON.stringify([source, email]), 3, time);
+    if (allowed) {
       try {
         deps.erasureFence?.assertIdentity({ email }, "AUTH_MAIL");
         const suppressed = deps.db.prepare("SELECT 1 FROM email_suppressions WHERE email_normalized=? AND removed_at IS NULL").get(email);

@@ -20,10 +20,11 @@ const capability = () => randomBytes(32).toString("base64url");
 let app: ReturnType<typeof createCommerceV2App>;
 const emails: LabTicketEmail[] = [];
 let signedIn: string | null = null;
+let clientIp = "203.0.113.1", peerAddress: string | undefined = "10.0.5.4";
 const send = vi.fn(async (message: LabTicketEmail) => { emails.push(message); });
 const auth = { origin: "http://localhost:3001", sessionSecret: "synthetic-session-secret-long-enough", passwordScrypt: "unused" };
 const request = (path: string, body?: unknown, token?: string, key = "test") => app.request(path, {
-  method: body === undefined ? "GET" : "POST", headers: { origin, "Content-Type": "application/json", "Idempotency-Key": key,
+  method: body === undefined ? "GET" : "POST", headers: { origin, "x-real-ip": clientIp, "Content-Type": "application/json", "Idempotency-Key": key,
     ...(token ? { authorization: `Bearer ${token}` } : {}) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
 });
 const json = async (response: Response) => { const body = await response.json(); expect(response.status, JSON.stringify(body)).toBeLessThan(300); return body; };
@@ -38,7 +39,7 @@ const count = (table: string) => (db.prepare(`SELECT COUNT(*) AS n FROM ${table}
 
 beforeEach(() => {
   db = new Database(":memory:"); db.pragma("foreign_keys=ON"); migrateV2(db); rail = new MockPaymentRail(); time = new Date(now);
-  emails.length = 0; send.mockClear(); signedIn = null;
+  emails.length = 0; send.mockClear(); signedIn = null; clientIp = "203.0.113.1"; peerAddress = "10.0.5.4";
   db.prepare("INSERT INTO legal_releases(id,storefront,version,manifest_json,effective_at,active) VALUES ('legal','LAB','lab-b',?,?,1)").run(stageBLegalManifestJson, now);
   db.prepare("INSERT INTO cities(id,slug,title) VALUES ('city','nsk','Новосибирск')").run();
   db.prepare(`INSERT INTO lab_occurrences(id,occurrence_ref,city_id,title,starts_at,ends_at,timezone,capacity,venue_status,venue_name,venue_address)
@@ -48,6 +49,7 @@ beforeEach(() => {
   qualifyTestFiscalPolicies(db); activatePublicSales(db, "LAB");
   app = createCommerceV2App({ db, config: testCheckoutConfig, sourceCommit: "a".repeat(40), serviceToken: "synthetic",
     paymentRail: rail, now: () => time, sendLabTicketEmail: send, controlRoomAuth: auth,
+    labGuestTrustedProxyIps: ["10.0.5.4"], labGuestPeerAddress: () => peerAddress,
     authenticateCustomer: async () => signedIn });
 });
 afterEach(() => db.close());
@@ -112,6 +114,74 @@ describe("LAB guest purchase and scopes", () => {
     await json(await request(`/v1/checkout/${pending.orderPublicId}`, undefined, pending.token));
     expect(count("lab_tickets")).toBe(1);
     await json(await request(`/v1/checkout/${pending.orderPublicId}`, undefined, pending.token)); expect(count("lab_tickets")).toBe(1);
+  });
+});
+
+describe("independent guest payment admission (PR #264 P1)", () => {
+  it.each(["customer_action", "ambiguous_create"])("keeps same-email guest orders independent while the first is %s, with exact-order replay", async scenario => {
+    const first = await start(), firstQuote = await quote(first.token, scenario);
+    const create = vi.spyOn(rail, "create");
+    const firstPayment = await pay(first.token, firstQuote.quoteId);
+    expect(firstPayment.state).toBe(scenario === "customer_action" ? "CUSTOMER_ACTION_REQUIRED" : "CREATE_UNKNOWN");
+    const reconcile = vi.spyOn(rail, "reconcile"), recover = vi.spyOn(rail, "recoverCreate");
+    const second = await start();
+    expect(labAccess(db, second.token).customer_id).toBe(labAccess(db, first.token).customer_id);
+    const secondQuote = await quote(second.token);
+    expect((await pay(second.token, secondQuote.quoteId)).state).toBe("PAID");
+    // No customer-wide readback is allowed to settle somebody else's anonymous attempt.
+    expect(reconcile).not.toHaveBeenCalled(); expect(recover).not.toHaveBeenCalled();
+    expect(db.prepare("SELECT state FROM checkout_quotes WHERE order_public_id=?").get(first.orderPublicId))
+      .toEqual({ state: scenario === "customer_action" ? "PENDING" : "UNCERTAIN" });
+    const lineBefore = db.prepare("SELECT line_ref FROM checkout_quotes WHERE order_public_id=?").get(first.orderPublicId);
+    // A different preview/payment key still resumes the same order, never a second attempt.
+    const firstReplay = await quote(first.token, scenario, "another-preview-key");
+    expect(firstReplay.orderPublicId).toBe(first.orderPublicId);
+    const repeated = await pay(first.token, firstQuote.quoteId, "another-payment-key");
+    expect(repeated.orderPublicId).toBe(first.orderPublicId);
+    expect(create).toHaveBeenCalledTimes(2); expect(count("checkout_attempts")).toBe(2); expect(count("orders")).toBe(2);
+    expect(db.prepare("SELECT line_ref FROM checkout_quotes WHERE order_public_id=?").get(first.orderPublicId)).toEqual(lineBefore);
+  });
+  it("allows two independently opened same-email orders to pay after the first succeeds, while replay stays on its ticket", async () => {
+    const first = await start(), second = await start();
+    const one = await quote(first.token), two = await quote(second.token);
+    expect((await pay(first.token, one.quoteId)).state).toBe("PAID");
+    expect((await pay(second.token, two.quoteId)).state).toBe("PAID");
+    expect((await pay(first.token, one.quoteId, "fresh-key")).orderPublicId).toBe(first.orderPublicId);
+    expect(count("checkout_attempts")).toBe(2); expect(count("lab_tickets")).toBe(2);
+  });
+  it("keeps independent same-email guest confirmations concurrent without permitting a second attempt for either order", async () => {
+    const first = await start(), second = await start();
+    const one = await quote(first.token), two = await quote(second.token);
+    const create = vi.spyOn(rail, "create");
+    const paid = await Promise.all([pay(first.token, one.quoteId), pay(second.token, two.quoteId)]);
+    expect(paid.map(result => result.state)).toEqual(["PAID", "PAID"]);
+    await Promise.all([pay(first.token, one.quoteId, "replay-one"), pay(second.token, two.quoteId, "replay-two")]);
+    expect(create).toHaveBeenCalledTimes(2); expect(count("checkout_attempts")).toBe(2);
+  });
+  it("does not let a guest open payment block the same-email account's LAB checkout", async () => {
+    await purchase("customer_action");
+    db.prepare('INSERT INTO "user"(id,name,email,email_verified) VALUES (?,?,?,1)').run("owner", "Owner", "guest@example.com");
+    signedIn = bindVerifiedAuthUser(db, { id: "owner", email: "guest@example.com" });
+    const prepared = await json(await request("/v1/checkout/preview", { offerRef: "lab:one" }));
+    expect((await json(await request("/v1/checkout", { quoteId: prepared.quoteId }))).state).toBe("PAID");
+    expect(count("checkout_attempts")).toBe(2);
+  });
+  it("does not let a signed-in LAB payment block an independent guest with the same email", async () => {
+    const guest = await start();
+    signedIn = labAccess(db, guest.token).customer_id;
+    const prepared = await json(await request("/v1/checkout/preview", { offerRef: "lab:one", mockScenario: "customer_action" }));
+    await json(await request("/v1/checkout", { quoteId: prepared.quoteId }));
+    const reconcile = vi.spyOn(rail, "reconcile");
+    const guestQuote = await quote(guest.token);
+    expect((await pay(guest.token, guestQuote.quoteId)).state).toBe("PAID");
+    expect(reconcile).not.toHaveBeenCalled(); expect(count("checkout_attempts")).toBe(2);
+  });
+  it("still refuses a second guest when the first unresolved payment occupies the last seat", async () => {
+    db.prepare("UPDATE lab_occurrences SET capacity=1").run();
+    await purchase("customer_action"); const second = await start();
+    const response = await request("/v1/checkout/preview", { offerRef: "lab:one" }, second.token);
+    expect(response.status).toBe(409); expect(await response.json()).toEqual({ code: "LAB_OCCURRENCE_SOLD_OUT" });
+    expect(count("checkout_attempts")).toBe(1);
   });
 });
 
@@ -201,5 +271,52 @@ describe("email recovery, binding and irreversible check-in", () => {
     expect(send).toHaveBeenCalledTimes(4); // initial ticket + three allowed recoveries; no auto retry.
     const foreign = await app.request("/v1/lab/guest/start", { method: "POST", headers: { origin: "https://foreign.test" }, body: JSON.stringify({ email: "a@b.test", accessToken: capability() }) });
     expect(foreign.status).toBe(403);
+  });
+});
+
+
+describe("independent request sources (PR #264 P2)", () => {
+  it("caps mass session creation with rotating email/token without blocking another source, including the same email", async () => {
+    const target = "buyer@example.test";
+    for (let i = 0; i < 10; i++) await start(capability(), target);
+    expect((await request("/v1/lab/guest/start", { email: target, accessToken: capability() })).status).toBe(429);
+    for (let i = 0; i < 19; i++) await start(capability(), `rotate-${i}@example.test`);
+    const before = count("lab_guest_access");
+    for (let i = 0; i < 110; i++) expect((await request("/v1/lab/guest/start", { email: `blocked-${i}@example.test`, accessToken: capability() })).status).toBe(429);
+    expect(count("lab_guest_access")).toBe(before);
+    clientIp = "203.0.113.2"; await start(capability(), target);
+    expect(count("lab_guest_access")).toBe(before + 1);
+  });
+  it("does not share recovery quotas between independent sources even for the same email", async () => {
+    const guest = await purchase();
+    for (let i = 0; i < 110; i++) expect(await json(await request("/v1/lab/guest/recover", { email: "guest@example.com", orderPublicId: guest.orderPublicId }))).toEqual({ accepted: true });
+    expect(send).toHaveBeenCalledTimes(4);
+    clientIp = "203.0.113.2";
+    await json(await request("/v1/lab/guest/recover", { email: "guest@example.com" }));
+    expect(send).toHaveBeenCalledTimes(5);
+  });
+  it("permits more than the former shared budget across independent sources, stores no raw IP/email and survives app recreation", async () => {
+    for (let i = 1; i <= 110; i++) { clientIp = `198.51.100.${i}`; await start(capability(), `load-${i}@example.test`); }
+    expect(count("lab_guest_access")).toBe(110);
+    const buckets = JSON.stringify(db.prepare("SELECT * FROM lab_guest_rate_limits").all());
+    expect(buckets).not.toContain("198.51.100."); expect(buckets).not.toContain("@example.test");
+    clientIp = "192.0.2.1";
+    for (let i = 0; i < 10; i++) await start(capability(), "restart@example.test");
+    const recreated = createCommerceV2App({ db, config: testCheckoutConfig, sourceCommit: "test", serviceToken: "synthetic", now: () => time,
+      labGuestTrustedProxyIps: ["10.0.5.4"], labGuestPeerAddress: () => peerAddress });
+    expect((await recreated.request("/v1/lab/guest/start", { method: "POST", headers: { origin, "x-real-ip": clientIp, "Content-Type": "application/json" },
+      body: JSON.stringify({ email: "restart@example.test", accessToken: capability() }) })).status).toBe(429);
+    time = new Date(Date.parse(now) + 15 * 60_000); await start(capability(), "restart@example.test");
+  });
+  it.each([undefined, "10.0.5.99"])("refuses missing/untrusted transport %s despite plausible forged IP headers", async peer => {
+    peerAddress = peer;
+    const before = count("lab_guest_access");
+    for (const path of ["/v1/lab/guest/start", "/v1/lab/guest/recover"]) {
+      const result = await app.request(path, { method: "POST", headers: { origin, "Content-Type": "application/json", "x-real-ip": "192.0.2.2",
+        "x-forwarded-for": "192.0.2.3", "cf-connecting-ip": "192.0.2.4", forwarded: "for=192.0.2.5" },
+        body: JSON.stringify({ email: "guest@example.com", accessToken: capability() }) });
+      expect(result.status).toBe(503); expect(await result.json()).toEqual({ code: "LAB_SOURCE_UNAVAILABLE" });
+    }
+    expect(count("lab_guest_access")).toBe(before); expect(count("lab_guest_rate_limits")).toBe(0); expect(send).not.toHaveBeenCalled();
   });
 });

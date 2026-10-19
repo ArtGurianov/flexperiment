@@ -1,3 +1,4 @@
+import { labGuestClientIp } from "./lab-guest-client-ip";
 import { registerLabGuestRoutes, labBearer } from "./lab-guest-routes";
 import { checkInLabTicket, prepareLabRecovery, labAccess, labLegalReview, LabTicketError, type LabAcceptance, type LabTicketEmail } from "./lab-tickets";
 import type Database from "better-sqlite3";
@@ -72,6 +73,10 @@ type Dependencies = {
   readonly campaignUnsubscribeSecret?: string;
   readonly marketingBroadcastsEnabled?: boolean;
   readonly origins?: CommerceOrigins;
+  /** Exact LAB nginx peers; missing/untrusted transport keeps anonymous creation/mail closed. */
+  readonly labGuestTrustedProxyIps?: readonly string[];
+  /** In-process transport metadata for tests only; production reads the Node socket. */
+  readonly labGuestPeerAddress?: (context: Context) => string | undefined;
   readonly sendLabTicketEmail?: (message: LabTicketEmail) => Promise<void>;
   readonly sendCampaignEmail?: (message: CampaignEmail) => Promise<void>;
   readonly controlRoomAuth?: ControlRoomAuthConfig;
@@ -558,7 +563,14 @@ export function createCommerceV2App(deps: Dependencies) {
   });
 
   registerLabGuestRoutes(app as unknown as Hono, { db: deps.db, origin: origins.lab, now,
-    authenticateCustomer: deps.authenticateCustomer, sendLabTicketEmail: deps.sendLabTicketEmail, erasureFence: deps.erasureFence });
+    authenticateCustomer: deps.authenticateCustomer, sendLabTicketEmail: deps.sendLabTicketEmail, erasureFence: deps.erasureFence,
+    requestSource: context => {
+      let peer: string | undefined;
+      try { peer = deps.labGuestPeerAddress ? deps.labGuestPeerAddress(context) : getConnInfo(context).remote.address; }
+      catch { /* Missing transport is never replaced by request headers. */ }
+      return labGuestClientIp(context.req.raw.headers, peer, deps.labGuestTrustedProxyIps ?? []);
+    },
+  });
   app.post("/v1/admin/v2/lab/check-in", async context => {
     try {
       const body = await context.req.json<{ qrToken: string; occurrenceRef: string }>();

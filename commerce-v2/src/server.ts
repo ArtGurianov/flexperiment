@@ -13,6 +13,7 @@ import { createRefrefReadinessProbe } from "./readiness";
 import { refundEnvelopeKeyringFromEnvironment } from "./refund-envelope";
 import { reconcilePendingRefunds } from "./refunds";
 import { loadCommerceOrigins } from "./origins";
+import { labGuestTrustedProxyIps } from "./lab-guest-client-ip";
 import { controlRoomTrustedProxyIps } from "./control-room-client-ip";
 import { controlRoomTotpKey } from "./control-room-totp";
 import { dispatchPendingCampaigns, type CampaignEmail } from "./campaigns";
@@ -136,6 +137,7 @@ const app = createCommerceV2App({
   marketingBroadcastsEnabled,
   origins,
   sendCampaignEmail,
+  labGuestTrustedProxyIps: labGuestTrustedProxyIps(process.env.LAB_GUEST_TRUSTED_PROXY_IPS),
   sendLabTicketEmail: labTicketDelivery.configured ? async message => {
     if (erasureFence) await erasureFence.send(message.email, () => labTicketDelivery.send(message), "AUTH_MAIL");
     else await labTicketDelivery.send(message);
