@@ -1,4 +1,3 @@
-import { lessonMetadata } from "../../apps/platform/lib/seo";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createCommerceV2App } from "../src/app";
@@ -171,7 +170,7 @@ describe("Commerce storefront read boundary", () => {
   });
 });
 
-it("keeps public lesson metadata noindex even when stored text and free preview exist", async () => {
+it("keeps stored lesson text private for both free preview modes", async () => {
   publish();
   const server = app();
   for (const freePreview of [false, true]) {
@@ -180,6 +179,5 @@ it("keeps public lesson metadata noindex even when stored text and free preview 
     expect(response.status).toBe(200);
     const detail = await response.json();
     expect(detail.lesson.description).toBeNull();
-    expect(lessonMetadata(detail).robots).toEqual({ index: false, follow: true });
   }
 });

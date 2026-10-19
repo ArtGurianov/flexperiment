@@ -104,6 +104,16 @@ describe("SEO effects rendered from the committed Commerce authority", () => {
     expect(JSON.stringify(lesson)).not.toContain(privateVideoId);
   });
 
+  it.each([false, true])("keeps public HTTP lesson metadata noindex with freePreview=%s", async freePreview => {
+    const detail = lessonDetail("one");
+    detail.lesson.freePreview = freePreview;
+    responses.push(Response.json(detail));
+    const metadata = await lessonMetadata({ params: Promise.resolve({ slug: "one", lessonSlug: "intro" }) });
+    expect(metadata.robots).toEqual({ index: false, follow: true });
+    expect(commercePaths()).toEqual(["/v1/courses/one/lessons/intro"]);
+    expect(fetcher.mock.calls[0]?.[1]).toMatchObject({ cache: "no-store" });
+  });
+
   it("never renders build shells as indexable pages or asks Commerce for them", async () => {
     expect(await courseMetadata({ params: Promise.resolve({ slug: "__build-shell__" }) }))
       .toEqual({ robots: { index: false, follow: false } });
