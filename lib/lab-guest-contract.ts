@@ -2,6 +2,10 @@ import { z } from "zod";
 
 export const labGuestQuoteSchema = z.object({
   state: z.literal("PRICE_REVIEW_REQUIRED"), quoteId: z.string(), finalAmountKopecks: z.number().int().positive(), expiresAt: z.string(),
+  priceNotice: z.discriminatedUnion("code", [
+    z.object({ code: z.literal("CATALOG_PRICE_CHANGED_AFTER_QUOTE"), quotedAmountKopecks: z.number().int().nonnegative(), currentAmountKopecks: z.number().int().nonnegative() }),
+    z.object({ code: z.literal("PRICE_CHANGED_SINCE_DISPLAY"), quotedAmountKopecks: z.number().int().nonnegative(), displayedAmountKopecks: z.number().int().nonnegative() }),
+  ]).nullish(),
   occurrence: z.object({ title: z.string(), startsAt: z.string(), endsAt: z.string(), timezone: z.string(),
     venue: z.discriminatedUnion("status", [z.object({ status: z.literal("CONFIRMED"), name: z.string(), address: z.string() }),
       z.object({ status: z.literal("TO_BE_ANNOUNCED"), disclosureText: z.string(), announceBy: z.string() })]) }),

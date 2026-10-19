@@ -15,7 +15,7 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 describe("guest LAB browser flow", () => {
   it("previews without login and never creates payment before explicit consent and confirmation", async () => {
     const fetcher = vi.fn(async (path: string) => response(path.endsWith("/start") ? { orderPublicId: "order" } : quote)); vi.stubGlobal("fetch", fetcher);
-    render(<LabGuestCheckout offerRef="lab:one" />);
+    render(<LabGuestCheckout offerRef="lab:one" displayedAmountKopecks={10000} />);
     fireEvent.change(screen.getByLabelText("Email для билета и чека"), { target: { value: "guest@example.com" } });
     fireEvent.click(screen.getByRole("button", { name: "Проверить условия" }));
     await screen.findByText("LAB Тест");
@@ -32,14 +32,47 @@ describe("guest LAB browser flow", () => {
       if (path.endsWith("/start")) return response({ orderPublicId: "order" });
       if (!failed) { failed = true; throw new Error("lost ACK"); } return response(quote);
     }); vi.stubGlobal("fetch", fetcher);
-    const { unmount } = render(<LabGuestCheckout offerRef="lab:one" />);
+    const { unmount } = render(<LabGuestCheckout offerRef="lab:one" displayedAmountKopecks={10000} />);
     fireEvent.change(screen.getByLabelText("Email для билета и чека"), { target: { value: "guest@example.com" } });
     fireEvent.click(screen.getByRole("button", { name: "Проверить условия" })); await screen.findByRole("alert");
     const original = sessionStorage.getItem("lab-guest-v1:lab:one"); unmount();
-    render(<LabGuestCheckout offerRef="lab:one" />);
+    render(<LabGuestCheckout offerRef="lab:one" displayedAmountKopecks={10000} />);
     fireEvent.change(screen.getByLabelText("Email для билета и чека"), { target: { value: "guest@example.com" } });
     fireEvent.click(screen.getByRole("button", { name: "Проверить условия" })); await screen.findByText("LAB Тест");
     expect(sessionStorage.getItem("lab-guest-v1:lab:one")).toBe(original);
+  });
+  it.each([
+    { code: "PRICE_CHANGED_SINCE_DISPLAY", quotedAmountKopecks: 300_000, displayedAmountKopecks: 250_000 },
+    { code: "CATALOG_PRICE_CHANGED_AFTER_QUOTE", quotedAmountKopecks: 250_000, currentAmountKopecks: 300_000 },
+  ] as const)("shows $code beside the amount before explicit payment, including a restored session", async (priceNotice) => {
+    const token = "t".repeat(43);
+    sessionStorage.setItem("lab-guest-v1:lab:one", JSON.stringify({ accessToken: token, previewKey: "persisted-preview", paymentKey: "persisted-payment", email: "guest@example.com" }));
+    const fetcher = vi.fn(async (path: string, options?: RequestInit) => {
+      if (path.endsWith("/start")) return response({ orderPublicId: "order" });
+      if (path === "/v1/checkout") return response({ state: "PAID", orderPublicId: "order" });
+      expect(JSON.parse(String(options?.body))).toEqual({ offerRef: "lab:one", displayedAmountKopecks: 250_000 });
+      expect(options?.headers).toMatchObject({ Authorization: `Bearer ${token}`, "Idempotency-Key": "persisted-preview" });
+      return response({ ...quote, finalAmountKopecks: priceNotice.quotedAmountKopecks, priceNotice });
+    });
+    vi.stubGlobal("fetch", fetcher);
+    render(<LabGuestCheckout offerRef="lab:one" displayedAmountKopecks={250_000} />);
+    fireEvent.change(screen.getByLabelText("Email для билета и чека"), { target: { value: "guest@example.com" } });
+    fireEvent.click(screen.getByRole("button", { name: "Проверить условия" }));
+    const notice = await screen.findByRole("status");
+    expect(notice).toHaveTextContent(priceNotice.code === "PRICE_CHANGED_SINCE_DISPLAY"
+      ? /Цена изменилась: было 2\s500 ₽, сейчас 3\s000 ₽/
+      : /Цена в каталоге изменилась на 3\s000 ₽; для этого расчёта сохраняется 2\s500 ₽/);
+    expect(screen.getByText(/^К оплате:/)).toHaveTextContent(priceNotice.code === "PRICE_CHANGED_SINCE_DISPLAY" ? /3\s000 ₽/ : /2\s500 ₽/);
+    expect(fetcher.mock.calls.some(([path]) => path === "/v1/checkout")).toBe(false);
+    const confirm = screen.getByRole("button", { name: "Подтвердить и оплатить" });
+    expect(confirm).toBeDisabled();
+    for (const checkbox of screen.getAllByRole("checkbox")) fireEvent.click(checkbox);
+    expect(confirm).toBeEnabled();
+    expect(fetcher.mock.calls.some(([path]) => path === "/v1/checkout")).toBe(false);
+    fireEvent.click(confirm);
+    await waitFor(() => expect(fetcher).toHaveBeenCalledWith("/v1/checkout", expect.objectContaining({
+      headers: expect.objectContaining({ "Idempotency-Key": "persisted-payment" }),
+    })));
   });
   it("does not redeem a recovery link on GET/page load; sends tokens in POST and retains replay after failure", async () => {
     history.replaceState(null, "", `/ticket#recover=${"r".repeat(43)}`);

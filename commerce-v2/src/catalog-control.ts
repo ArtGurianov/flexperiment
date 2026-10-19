@@ -44,7 +44,10 @@ export function assertLiveOfferSaleMode(
 
 export function configureProduct(db: Database.Database, config: CommerceRuntimeConfig, command: ProductCommand, now = new Date().toISOString()) {
   if (!command.productRef || !command.offerRef || !command.actor || !Number.isInteger(command.expectedVersion) || command.expectedVersion < 0) throw new Error("PRODUCT_COMMAND_INVALID");
-  if (!Number.isInteger(command.priceKopecks) || command.priceKopecks < 0) throw new Error("PRICE_INVALID");
+  if (!Number.isSafeInteger(command.priceKopecks) || command.priceKopecks < 0) throw new Error("PRICE_INVALID");
+  if (!["CLOSED", "ACCEPTANCE_ONLY", "PUBLIC"].includes(command.saleMode)) throw new Error("SALE_MODE_INVALID");
+  if (command.acceptanceAllowlist !== undefined && (!Array.isArray(command.acceptanceAllowlist)
+    || command.acceptanceAllowlist.some((email) => typeof email !== "string"))) throw new Error("ACCEPTANCE_ALLOWLIST_INVALID");
   if (command.kind === "ONLINE_COURSE" && !command.courseRef) throw new Error("COURSE_REF_REQUIRED");
   if (command.kind !== "ONLINE_COURSE" && command.courseRef) throw new Error("COURSE_REF_FORBIDDEN");
   if (command.kind === "COURSE_BUNDLE" && command.productRef !== "bundle:all-courses") throw new Error("ALL_COURSES_BUNDLE_REF_INVALID");
@@ -54,8 +57,8 @@ export function configureProduct(db: Database.Database, config: CommerceRuntimeC
     const occurrence = db.prepare("SELECT lifecycle FROM lab_occurrences WHERE occurrence_ref=?").get(command.occurrenceRef) as
       { lifecycle: "SCHEDULED" | "CANCELLED" } | undefined;
     if (!occurrence) throw new Error("LAB_OCCURRENCE_NOT_FOUND");
-    // A cancelled occurrence never sells again; its offer stays CLOSED.
-    if (occurrence.lifecycle === "CANCELLED" && command.saleMode !== "CLOSED") throw new Error("LAB_OCCURRENCE_CANCELLED");
+    // Cancellation freezes commercial terms for every writer, including CLOSED offers.
+    if (occurrence.lifecycle === "CANCELLED") throw new Error("LAB_OCCURRENCE_CANCELLED");
   }
   assertLiveOfferSaleMode(db, config, command);
   if (command.saleMode !== "CLOSED" && command.accessModel === "PAID") {
@@ -74,6 +77,9 @@ export function configureProduct(db: Database.Database, config: CommerceRuntimeC
     if (existing && (existing.kind !== command.kind || existing.course_ref !== (command.courseRef ?? null)
       || existing.occurrence_ref !== (command.occurrenceRef ?? null)
       || (existing.offer_ref !== null && existing.offer_ref !== command.offerRef))) throw new Error("PRODUCT_IDENTITY_IMMUTABLE");
+    // One price per occurrence: a second product (and so a second offer) for it is refused by name, not by index.
+    if (!existing && command.occurrenceRef
+      && db.prepare("SELECT 1 FROM products WHERE occurrence_ref=?").get(command.occurrenceRef)) throw new Error("LAB_OCCURRENCE_OFFER_EXISTS");
     const productId = existing?.id ?? randomUUID();
     // Apply to every writer (including Control Room), not just the CMS command.
     if (existing?.access_model === "FREE" && command.accessModel === "PAID" && existing.kind === "ONLINE_COURSE"
@@ -114,6 +120,36 @@ export function configureProduct(db: Database.Database, config: CommerceRuntimeC
   apply.immediate();
   const version = (db.prepare("SELECT version FROM products WHERE product_ref=?").get(command.productRef) as { version: number }).version;
   return { productRef: command.productRef, offerRef: command.offerRef, version };
+}
+
+export type LabOfferCommand = {
+  occurrenceRef: string;
+  priceKopecks: number;
+  saleMode: SaleMode;
+  acceptanceAllowlist?: string[];
+  paymentPurpose?: string | null;
+  actor: string;
+  expectedProductVersion: number;
+};
+
+/**
+ * The LAB commercial command (ART-341). Identity comes from the occurrence, never from the caller:
+ * one product and one offer per occurrence, so `offers.price_kopecks` is the only price a LAB page,
+ * quote or order reads. Everything else — version check, sale-mode gate, audit — is configureProduct.
+ */
+export function configureLabOffer(db: Database.Database, config: CommerceRuntimeConfig, command: LabOfferCommand, now = new Date().toISOString()) {
+  if (typeof command.occurrenceRef !== "string" || !command.occurrenceRef) throw new Error("PRODUCT_COMMAND_INVALID");
+  const existing = db.prepare(`SELECT product.product_ref,offer.offer_ref FROM products product
+    LEFT JOIN offers offer ON offer.product_id=product.id WHERE product.occurrence_ref=?`).get(command.occurrenceRef) as
+    { product_ref: string; offer_ref: string | null } | undefined;
+  // Offer refs of LAB are `lab:*` (baseline CHECK); a bare occurrence ref is namespaced once, at creation.
+  const ref = command.occurrenceRef.startsWith("lab:") ? command.occurrenceRef : `lab:${command.occurrenceRef}`;
+  return configureProduct(db, config, {
+    productRef: existing?.product_ref ?? ref, offerRef: existing?.offer_ref ?? ref, kind: "LAB", accessModel: "PAID",
+    occurrenceRef: command.occurrenceRef, priceKopecks: command.priceKopecks, saleMode: command.saleMode,
+    acceptanceAllowlist: command.acceptanceAllowlist, paymentPurpose: command.paymentPurpose, actor: command.actor,
+    expectedVersion: command.expectedProductVersion,
+  }, now);
 }
 
 /** Payload edits only this commerce-owned field, never price/sales/identity through this command. */

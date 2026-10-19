@@ -426,6 +426,23 @@ const quoteResponse = (quoteId: string, quote: RailQuote, pricing: CheckoutQuote
   occurrence: lineSnapshotJson ? (JSON.parse(lineSnapshotJson) as FrozenLineSnapshot).occurrence ?? null : null,
 });
 
+/**
+ * Tells the buyer that the price they are about to pay is not the one they last saw (ART-341). It never
+ * changes the quote: an issued quote keeps its frozen price (design 2026-10-18 §2), a new quote takes
+ * the live `offers.price_kopecks`.
+ */
+export type CheckoutPriceNotice =
+  | { code: "CATALOG_PRICE_CHANGED_AFTER_QUOTE"; quotedAmountKopecks: number; currentAmountKopecks: number }
+  | { code: "PRICE_CHANGED_SINCE_DISPLAY"; quotedAmountKopecks: number; displayedAmountKopecks: number };
+
+const priceNotice = (quotedAmountKopecks: number, currentAmountKopecks: number | undefined,
+  displayedAmountKopecks: number | undefined): CheckoutPriceNotice | null =>
+  currentAmountKopecks !== undefined && currentAmountKopecks !== quotedAmountKopecks
+    ? { code: "CATALOG_PRICE_CHANGED_AFTER_QUOTE", quotedAmountKopecks, currentAmountKopecks }
+    : displayedAmountKopecks !== undefined && displayedAmountKopecks !== quotedAmountKopecks
+      ? { code: "PRICE_CHANGED_SINCE_DISPLAY", quotedAmountKopecks, displayedAmountKopecks }
+      : null;
+
 function paidTestReview(db: Database.Database, config: CheckoutPolicyConfig, email: string) {
   if (!config.closedPaidTest) return undefined;
   const legal = legalRelease(db, "COURSES");
@@ -610,6 +627,8 @@ type IntentContext = {
   customerEmail: string;
   handoffToken?: string;
   review?: ReturnType<typeof paidTestReview>;
+  /** The catalogue price the buyer's page showed; advisory, never part of the intent or its fingerprint. */
+  displayedAmountKopecks?: number;
 };
 
 /**
@@ -620,6 +639,7 @@ async function advanceIntent(db: Database.Database, rail: PaymentRail, intent: I
   const { config } = context;
   const respond = (current: IntentRow) => ({
     ...quoteResponse(current.id, JSON.parse(current.rail_quote_json!) as RailQuote, storedPricing(current), current.expires_at!, current.line_snapshot_json),
+    priceNotice: priceNotice(current.catalog_amount_kopecks, offerById(db, current.offer_id)?.price_kopecks, context.displayedAmountKopecks),
     ...(context.review ? { legalAcceptance: context.review } : {}),
   });
   if (intent.consumed_at) return reconcileCheckout(db, rail, intent.order_public_id, now);
@@ -711,7 +731,7 @@ export async function prepareCheckout(
   config: CheckoutPolicyConfig,
   input: {
     customerId: string; customerEmail: string; offerRef: string; previewIdempotencyKey: string; scenario?: string;
-    handoffToken?: string; checkoutCode?: string; orderPublicId?: string; storefront?: Storefront;
+    handoffToken?: string; checkoutCode?: string; orderPublicId?: string; storefront?: Storefront; displayedAmountKopecks?: number;
   } & ResolutionContext,
   now = new Date().toISOString(),
 ) {
@@ -720,7 +740,10 @@ export async function prepareCheckout(
   // This is review data, not an acceptance event. A later explicit confirm writes the event.
   const review = paidTestReview(db, config, input.customerEmail);
   assertClosedPaidTestAccountConsents(db, config, input.customerId);
-  const context: IntentContext = { config, customerEmail: input.customerEmail, handoffToken: input.handoffToken, review };
+  if (input.displayedAmountKopecks !== undefined
+    && (!Number.isSafeInteger(input.displayedAmountKopecks) || input.displayedAmountKopecks < 0)) throw new Error("DISPLAYED_AMOUNT_INVALID");
+  const context: IntentContext = { config, customerEmail: input.customerEmail, handoffToken: input.handoffToken, review,
+    displayedAmountKopecks: input.displayedAmountKopecks };
   const checkoutCodeInput = input.checkoutCode?.trim() || null;
   const deliveryDegraded = input.deliveryDegraded ?? { degraded: false };
   assertDeliveryDegraded(deliveryDegraded);

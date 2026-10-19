@@ -120,11 +120,15 @@ export function controlRoomCities(db: Database.Database, now = new Date().toISOS
 }
 
 export function controlRoomLabOccurrences(db: Database.Database, now = new Date().toISOString()): LabOccurrencesResponse {
-  const rows = db.prepare(`SELECT occurrence.*,city.title AS city_title,offer.offer_ref,offer.sale_mode
+  const rows = db.prepare(`SELECT occurrence.*,city.slug AS city_slug,city.title AS city_title,product.product_ref,
+      product.version AS product_version,product.withdrawn_at,offer.offer_ref,offer.sale_mode,offer.price_kopecks,
+      offer.payment_purpose,offer.acceptance_allowlist_json
     FROM lab_occurrences occurrence JOIN cities city ON city.id=occurrence.city_id
     LEFT JOIN products product ON product.occurrence_ref=occurrence.occurrence_ref LEFT JOIN offers offer ON offer.product_id=product.id
     ORDER BY occurrence.starts_at,occurrence.occurrence_ref`)
-    .all() as Array<LabOccurrenceRow & { city_title: string; offer_ref: string | null; sale_mode: SaleMode | null }>;
+    .all() as Array<LabOccurrenceRow & { city_slug: string; city_title: string; product_ref: string | null; product_version: number | null;
+      withdrawn_at: string | null; offer_ref: string | null; sale_mode: SaleMode | null; price_kopecks: number | null;
+      payment_purpose: string | null; acceptance_allowlist_json: string | null }>;
   return { generatedAt: now, occurrences: rows.map((row) => {
     const inventory = labSeatInventory(db, row);
     return {
@@ -134,6 +138,13 @@ export function controlRoomLabOccurrences(db: Database.Database, now = new Date(
       availableSeats: Math.max(0, inventory.available), venue: venueDisclosure(row), version: row.version,
       materialRevision: row.material_revision, cancelledAt: row.cancelled_at, cancellationReason: row.cancellation_reason,
       offerRef: row.offer_ref, saleMode: row.sale_mode,
+      citySlug: row.city_slug, customerCommittedSeats: inventory.customerCommitted,
+      // The one current price: offers.price_kopecks, read by the public catalogue and every new quote.
+      offer: row.product_ref && row.product_version !== null && row.offer_ref && row.sale_mode && row.price_kopecks !== null ? {
+        productRef: row.product_ref, productVersion: row.product_version, offerRef: row.offer_ref, priceKopecks: row.price_kopecks,
+        saleMode: row.sale_mode, paymentPurpose: row.payment_purpose, withdrawn: row.withdrawn_at !== null,
+        acceptanceAllowlist: JSON.parse(row.acceptance_allowlist_json ?? "[]") as string[],
+      } : null,
     };
   }) };
 }

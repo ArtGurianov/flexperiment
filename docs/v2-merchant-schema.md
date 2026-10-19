@@ -117,6 +117,31 @@ does.
   immutable `lab_occurrence_revisions` row; customer-facing changes also
   advance `material_revision`. City slugs and an occurrence's ref and city are
   immutable.
+- LAB occurrence CRUD (ART-341) is a Control Room session command set:
+  `POST /v1/admin/v2/cities`, `PATCH /v1/admin/v2/cities/:slug` (title only),
+  `POST /v1/admin/v2/lab/occurrences`, `PATCH .../:occurrenceRef`
+  (`expectedVersion`, patch, reason), `POST .../:occurrenceRef/cancel`
+  (`expectedVersion`, reason) and `PUT .../:occurrenceRef/offer`
+  (price, sale mode, purpose, allowlist, `expectedProductVersion`). The actor
+  is always the session admin. The offer command takes no product or offer
+  ref: identity follows the occurrence (one product and one offer per
+  occurrence, `LAB_OCCURRENCE_OFFER_EXISTS` for a second), and the rest is
+  `configureProduct`, so the LAB activation gate keeps LAB sales `CLOSED`
+  until ART-243. Malformed input answers 422, a missing subject 404, a stale
+  version, sold seats, cancellation or identity 409; unrecognised errors are
+  reported as HTTP 500 with the route's fallback code and a redacted
+  operational signal.
+- `offers.price_kopecks` is the only current price. The public LAB catalogue
+  (and so the V2 page and its Offer JSON-LD, rendered client-side from that
+  response) and every new quote read it live; an issued quote and an order
+  keep their frozen price. A quote response carries `priceNotice`:
+  `CATALOG_PRICE_CHANGED_AFTER_QUOTE` when the live price moved after the quote,
+  `PRICE_CHANGED_SINCE_DISPLAY` when the price the buyer's page sent as
+  `displayedAmountKopecks` differs from the quote. The notice never changes the
+  quote. Guest LAB checkout sends the displayed catalogue price and shows both
+  notices before explicit payment confirmation, including on quote replay.
+  Cancellation freezes even CLOSED offer terms in the shared product writer.
+  The frozen V1 SEO snapshot is not touched (F9).
 - `merchant_promotion` contains only merchant promotion authority: a normalized
   reserved-prefix code, discount rule, optional eligible offer and active
   window. It has no partner, referral, attribution or reward fields. The

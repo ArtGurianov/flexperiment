@@ -203,6 +203,7 @@ export type LabOccurrenceCreateCommand = {
 /** A new occurrence starts UNLISTED and SCHEDULED; its offer is configured separately (configureProduct). */
 export function createLabOccurrence(db: Database.Database, command: LabOccurrenceCreateCommand, now = new Date().toISOString()) {
   if (typeof command.occurrenceRef !== "string" || !REF.test(command.occurrenceRef)) throw new Error("LAB_OCCURRENCE_REF_INVALID");
+  if (typeof command.citySlug !== "string" || !SLUG.test(command.citySlug)) throw new Error("CITY_SLUG_INVALID");
   const title = requiredText(command.title, "LAB_OCCURRENCE_TITLE_INVALID", 200);
   const startsAt = occurrenceInstant(command.startsAt);
   const endsAt = occurrenceInstant(command.endsAt);
@@ -250,7 +251,8 @@ export function editLabOccurrence(db: Database.Database, command: {
 }, now = new Date().toISOString()) {
   const actor = requiredText(command.actor, "LAB_COMMAND_INVALID");
   const reason = requiredText(command.reason, "LAB_CHANGE_REASON_REQUIRED");
-  if (!Number.isInteger(command.expectedVersion) || !command.patch || typeof command.patch !== "object") throw new Error("LAB_COMMAND_INVALID");
+  if (!Number.isInteger(command.expectedVersion) || command.expectedVersion < 1
+    || !command.patch || typeof command.patch !== "object" || Array.isArray(command.patch)) throw new Error("LAB_COMMAND_INVALID");
   const unknown = Object.keys(command.patch).filter((key) => !["title", "startsAt", "endsAt", "timezone", "capacity",
     "adminReservedSeats", "venue", "visibility"].includes(key));
   if (unknown.length) throw new Error("LAB_COMMAND_INVALID");
@@ -319,6 +321,7 @@ export function editLabOccurrence(db: Database.Database, command: {
 export function cancelLabOccurrence(db: Database.Database, command: {
   occurrenceRef: string; expectedVersion: number; actor: string; reason: string;
 }, now = new Date().toISOString()) {
+  if (!Number.isInteger(command.expectedVersion) || command.expectedVersion < 1) throw new Error("LAB_COMMAND_INVALID");
   const actor = requiredText(command.actor, "LAB_COMMAND_INVALID");
   const reason = requiredText(command.reason, "LAB_CHANGE_REASON_REQUIRED");
   return db.transaction(() => {

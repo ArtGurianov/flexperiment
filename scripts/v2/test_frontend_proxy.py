@@ -70,25 +70,28 @@ const marker = "Commerce API paths must begin with '/'.";
 let checked = 0;
 for (const code of files) {
  if (!code.includes(marker)) continue;
- // Webpack may concatenate the helper into the React module. Extract the
- // complete compiled arrow body, not a source stand-in. Unknown shapes or
- // external dependencies fail closed; never execute React/Zod to locate it.
- const concatenated = [...code.matchAll(/(?:let|const|var)\s+[$\w]+=((?:[$\w]+|\([$\w]+\))=>\{[^]*?\});/g)]
-   .map(match => match[1]).filter(body => body.includes(marker));
- if (concatenated.length) {
-   assert.equal(concatenated.length, 1, 'AMBIGUOUS_COMMERCE_URL_HELPER');
-   const helper = vm.runInNewContext('(' + concatenated[0] + ')', {}, {timeout: 1000});
-   for (const path of ['/v1/auth/get-session', '/v1/lab/catalogue', '/v1/me/orders'])
-     assert.equal(helper(path), path, 'V2_BROWSER_API_MUST_BE_SAME_ORIGIN');
-   assert.throws(() => helper('foreign.invalid'), error => error.message === marker);
-   checked++;
-   continue;
- }
+ // Capture factories without executing React, Zod or webpack's runtime callback.
  const self = {webpackChunk_N_E: []};
  vm.runInNewContext(code, {self}, {timeout: 1000});
  for (const [, factories] of self.webpackChunk_N_E) {
   for (const factory of Object.values(factories)) {
-   if (!factory.toString().includes(marker)) continue;
+   const source = factory.toString();
+   if (!source.includes(marker)) continue;
+   // Extract only inside this factory: a minifier can omit the final semicolon
+   // before a module's closing brace. A chunk-wide search for `};` can swallow
+   // the next module. Accept declaration, list and module boundaries; vm still
+   // parses and executes the actual body with no external dependencies.
+   const concatenated = [...source.matchAll(/(?:let|const|var)\s+[$\w]+=((?:[$\w]+|\([$\w]+\))=>\{[^]*?\})(?=[;,}])/g)]
+     .map(match => match[1]).filter(body => body.includes(marker));
+   if (concatenated.length) {
+     assert.equal(concatenated.length, 1, 'AMBIGUOUS_COMMERCE_URL_HELPER');
+     const helper = vm.runInNewContext('(' + concatenated[0] + ')', {}, {timeout: 1000});
+     for (const path of ['/v1/auth/get-session', '/v1/lab/catalogue', '/v1/me/orders', '/v1/checkout/preview'])
+       assert.equal(helper(path), path, 'V2_BROWSER_API_MUST_BE_SAME_ORIGIN');
+     assert.throws(() => helper('foreign.invalid'), error => error.message === marker);
+     checked++;
+     continue;
+   }
    const module = {exports: {}};
    const runtime = () => {throw new Error('UNEXPECTED_HELPER_DEPENDENCY')};
    runtime.d = (exports, getters) => {
@@ -236,7 +239,8 @@ class FrontendProxy(unittest.TestCase):
             if "Commerce API paths must begin with '/'." in code:
                 files.append(code)
         result = docker("exec", "-i", self.prefix + "-upstream", "node", "-e",
-                        CLIENT_BUNDLE_PROBE, input=json.dumps(files))
+                        CLIENT_BUNDLE_PROBE, input=json.dumps(files), check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("ACTUAL_LAB_CLIENT_SAME_ORIGIN_PASS", result.stdout)
 
     def test_browser_bundle_probe_refuses_production_base_and_missing_helper(self):
@@ -268,6 +272,40 @@ class FrontendProxy(unittest.TestCase):
             self.assertEqual(result.returncode == 0, base == "")
             if base:
                 self.assertIn("V2_BROWSER_API_MUST_BE_SAME_ORIGIN", result.stderr)
+
+    def test_minified_helper_module_boundaries_preserve_negative_controls(self):
+        # Actual ART-341 output: no semicolon after the helper at module end,
+        # a template-literal return, and an unrelated React module immediately
+        # following it. Never include that next module in the extracted body.
+        for base in ("", "https://api.flexperiment.ru", "https://untrusted.invalid"):
+            for ending in (";", "", ",other=1"):
+                for dependencies in ("", "runtime(999);"):
+                    with self.subTest(base=base, ending=ending, dependencies=dependencies):
+                        helper = "let url=e=>{if(!e.startsWith('/'))throw Error(\"Commerce API paths must begin with '/'.\");return`${" \
+                            + json.dumps(base) + ".replace(/\\/+$/,'')}${e}`}" + ending
+                        chunk = "self.webpackChunk_N_E.push([[1],{1:(m,e,runtime)=>{" + dependencies + helper \
+                            + "},2:(m,e,runtime)=>{runtime(998);let unrelated=e=>{return e};}}]);"
+                        result = docker("exec", "-i", self.prefix + "-upstream", "node", "-e",
+                                        CLIENT_BUNDLE_PROBE, input=json.dumps([chunk]), check=False)
+                        self.assertEqual(result.returncode == 0, base == "", result.stderr)
+                        if base:
+                            self.assertIn("V2_BROWSER_API_MUST_BE_SAME_ORIGIN", result.stderr)
+                        else:
+                            self.assertIn("helpers=1", result.stdout)
+
+    def test_helper_probe_refuses_external_dependencies_and_ambiguity(self):
+        helper = "let url=e=>{if(!e.startsWith('/'))throw Error(\"Commerce API paths must begin with '/'.\");return external+e}"
+        fixtures = [
+            ("self.webpackChunk_N_E.push([[1],{1:()=>{" + helper + "}}]);", "external is not defined"),
+            ("self.webpackChunk_N_E.push([[1],{1:()=>{" + helper + ";" + helper.replace("let url=", "let other=") + "}}]);",
+             "AMBIGUOUS_COMMERCE_URL_HELPER"),
+        ]
+        for chunk, expected in fixtures:
+            with self.subTest(expected=expected):
+                result = docker("exec", "-i", self.prefix + "-upstream", "node", "-e",
+                                CLIENT_BUNDLE_PROBE, input=json.dumps([chunk]), check=False)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(expected, result.stderr)
 
     def test_foreign_host_and_partner_realm_refuse(self):
         for service in self.services:

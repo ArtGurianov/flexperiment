@@ -35,6 +35,8 @@ import { PageTitle } from "../ui/PageTitle";
 import { Panel } from "../ui/Panel";
 import { LessonVideoUpload } from "./LessonVideoUpload";
 import { EditorialCourseEditor } from "./EditorialCourseEditor";
+import { commercialTermsCommand, commercialTermsDraft, CommercialTermsFields } from "./CommercialTermsFields";
+import { CityEditor, LabOccurrenceEditor } from "./LabOccurrenceEditor";
 
 const useControlRoomQuery = <T,>(key: string, path: string) => useQuery({
   queryKey: ["control-room-v2", key],
@@ -100,10 +102,7 @@ function CourseEditor({ course }: { course: CatalogueResponse["courses"][number]
   const [courseRef, setCourseRef] = useState(course?.courseRef ?? "");
   const [offerRef, setOfferRef] = useState(course?.offer?.offerRef ?? "course:");
   const [accessModel, setAccessModel] = useState<"FREE" | "PAID">(course?.accessModel ?? "FREE");
-  const [price, setPrice] = useState(String(course?.offer?.priceKopecks ?? 0));
-  const [saleMode, setSaleMode] = useState<"CLOSED" | "ACCEPTANCE_ONLY" | "PUBLIC">(course?.offer?.saleMode ?? "CLOSED");
-  const [allowlist, setAllowlist] = useState(course?.offer?.acceptanceAllowlist.join("\n") ?? "");
-  const [paymentPurpose, setPaymentPurpose] = useState(course?.offer?.paymentPurpose ?? "");
+  const [terms, setTerms] = useState(() => commercialTermsDraft(course?.offer));
   const save = useMutation({
     mutationFn: (command: ProductConfigurationCommand) => api("/v2/catalogue/products", {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(command),
@@ -122,20 +121,13 @@ function CourseEditor({ course }: { course: CatalogueResponse["courses"][number]
     <form className="refund-decision" onSubmit={(event) => {
       event.preventDefault();
       save.mutate({ productRef, courseRef, offerRef, kind: "ONLINE_COURSE", accessModel,
-        priceKopecks: Number(price), saleMode, paymentPurpose: paymentPurpose || null,
-        acceptanceAllowlist: allowlist.split(/[\n,]/).map((value) => value.trim()).filter(Boolean),
-        expectedVersion: course?.version ?? 0 });
+        ...commercialTermsCommand(terms), expectedVersion: course?.version ?? 0 });
     }}>
       <label>Product ref<input required disabled={Boolean(course)} value={productRef} onChange={(event) => setProductRef(event.target.value)} /></label>
       <label>Course ref<input required disabled={Boolean(course)} value={courseRef} onChange={(event) => setCourseRef(event.target.value)} /></label>
       <label>Offer ref<input required value={offerRef} onChange={(event) => setOfferRef(event.target.value)} /></label>
       <label>Модель доступа<select value={accessModel} onChange={(event) => setAccessModel(event.target.value as "FREE" | "PAID")}><option value="FREE">FREE</option><option value="PAID">PAID</option></select></label>
-      <label>Цена, коп.<input required inputMode="numeric" value={price} onChange={(event) => setPrice(event.target.value)} /></label>
-      <label>Режим продажи<select value={saleMode} onChange={(event) => setSaleMode(event.target.value as typeof saleMode)}><option value="CLOSED">CLOSED</option><option value="ACCEPTANCE_ONLY">ACCEPTANCE_ONLY</option><option value="PUBLIC">PUBLIC</option></select></label>
-      <label>Назначение платежа<textarea value={paymentPurpose} maxLength={512}
-        required={accessModel === "PAID" && saleMode !== "CLOSED"} onChange={(event) => setPaymentPurpose(event.target.value)} />
-        <small>Назначение заказа, не название позиции чека. Без сокращения; лимит Точки 140 UTF-16 units.</small></label>
-      {saleMode === "ACCEPTANCE_ONLY" ? <label>Allowlist<textarea value={allowlist} onChange={(event) => setAllowlist(event.target.value)} placeholder="buyer@example.ru" /></label> : null}
+      <CommercialTermsFields value={terms} onChange={setTerms} paid={accessModel === "PAID"} />
       {save.error ? <Notice error={(save.error as AdminApiError).code} /> : null}
       <button className="primary" disabled={save.isPending || course?.withdrawn}>{save.isPending ? "Сохраняем…" : `Сохранить v${(course?.version ?? 0) + 1}`}</button>
     </form>
@@ -241,30 +233,44 @@ export function PromotionsView() {
 
 export function LabCatalogue() {
   const query = useControlRoomQuery<LabOccurrencesResponse>("lab", "/lab");
+  const cities = useControlRoomQuery<CitiesResponse>("cities", "/cities");
+  const [selected, setSelected] = useState<string | null>(null);
+  const occurrence = query.data?.occurrences.find((item) => item.occurrenceRef === selected) ?? null;
   return <>
-    <PageTitle eyebrow="КАТАЛОГ / LAB" title={<>LAB переехал.<br /><i>Продажи закрыты.</i></>} text="Stage A сохраняет паузу продаж. Экран показывает перенесённые occurrence-записи, но не даёт обойти PAYMENT_MODE и sales activation." />
+    <PageTitle eyebrow="КАТАЛОГ / LAB" title={<>Встреча отдельно.<br /><i>Продажа отдельно.</i></>} text="Occurrence хранит расписание, площадку и места; цена и режим продажи — один оффер Commerce. Продажи LAB закрыты до отдельной приёмки: PUBLIC требует sales activation." />
     <Panel title="Occurrence">
       {query.error ? readError(query.error) : !query.data ? <Loading /> : <QueryState error={null} empty={!query.data.occurrences.length}>
         <table><thead><tr><th>Событие</th><th>Город</th><th>Начало</th><th>Места</th><th>Статус</th><th>Продажи</th></tr></thead><tbody>
-          {query.data.occurrences.map((item) => <tr key={item.occurrenceRef}><td><strong>{item.title}</strong><small>{item.occurrenceRef}</small></td><td>{item.cityTitle}</td><td>{dateTime(item.startsAt)}</td><td>{item.availableSeats} / {item.capacity}<small>продано {item.soldSeats} · в оплате {item.pendingSeats} · резерв {item.adminReservedSeats}</small></td><td><Badge>{item.phase}</Badge><small>{item.visibility}</small></td><td><Badge>{item.saleMode ?? "NO OFFER"}</Badge></td></tr>)}
+          {query.data.occurrences.map((item) => <tr key={item.occurrenceRef}><td><strong>{item.title}</strong><small>{item.occurrenceRef} · v{item.version}</small></td><td>{item.cityTitle}</td><td>{dateTime(item.startsAt)}</td><td>{item.availableSeats} / {item.capacity}<small>продано {item.soldSeats} · в оплате {item.pendingSeats} · резерв {item.adminReservedSeats}</small></td><td><Badge>{item.phase}</Badge><small>{item.visibility}</small></td><td>{item.offer ? <strong>{money(item.offer.priceKopecks)}</strong> : null}<Badge>{item.saleMode ?? "NO OFFER"}</Badge><button onClick={() => setSelected(item.occurrenceRef)}>Изменить</button></td></tr>)}
         </tbody></table>
       </QueryState>}
+      <button onClick={() => setSelected("__new__")}>Добавить occurrence</button>
     </Panel>
+    {selected && cities.data ? <Panel title={selected === "__new__" ? "Новая occurrence" : "Версионная команда"}>
+      <LabOccurrenceEditor key={selected === "__new__" ? "new" : `${occurrence?.occurrenceRef}:${occurrence?.version}:${occurrence?.offer?.productVersion ?? 0}`}
+        occurrence={occurrence} cities={cities.data.cities} onCreated={setSelected} />
+    </Panel> : null}
     <LabCheckIn />
   </>;
 }
 
 export function CitiesCatalogue() {
   const query = useControlRoomQuery<CitiesResponse>("cities", "/cities");
+  const [selected, setSelected] = useState<string | null>(null);
+  const city = query.data?.cities.find((item) => item.slug === selected) ?? null;
   return <>
-    <PageTitle eyebrow="КАТАЛОГ / ГЕОГРАФИЯ" title={<>Города<br /><i>как справочник.</i></>} text="Стабильные городские идентификаторы и число связанных LAB occurrence." />
+    <PageTitle eyebrow="КАТАЛОГ / ГЕОГРАФИЯ" title={<>Города<br /><i>как справочник.</i></>} text="Стабильные городские идентификаторы и число связанных LAB occurrence. Slug не меняется; меняется только название." />
     <Panel title="Города">
       {query.error ? readError(query.error) : !query.data ? <Loading /> : <QueryState error={null} empty={!query.data.cities.length}>
         <table><thead><tr><th>Название</th><th>Slug</th><th>Occurrence</th></tr></thead><tbody>
-          {query.data.cities.map((city) => <tr key={city.cityId}><td><strong>{city.title}</strong></td><td><code>{city.slug}</code></td><td>{city.occurrenceCount}</td></tr>)}
+          {query.data.cities.map((item) => <tr key={item.cityId}><td><strong>{item.title}</strong></td><td><code>{item.slug}</code></td><td>{item.occurrenceCount}<button onClick={() => setSelected(item.slug)}>Переименовать</button></td></tr>)}
         </tbody></table>
       </QueryState>}
+      <button onClick={() => setSelected("__new__")}>Добавить город</button>
     </Panel>
+    {selected ? <Panel title={selected === "__new__" ? "Новый город" : "Название города"}>
+      <CityEditor key={selected === "__new__" ? "new" : `${city?.slug}:${city?.title}`} city={city} />
+    </Panel> : null}
   </>;
 }
 

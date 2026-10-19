@@ -151,6 +151,64 @@ export type ControlRoomLabOccurrence = {
   cancellationReason: string | null;
   offerRef: string | null;
   saleMode: SaleMode | null;
+  citySlug: string;
+  /** Sold and payment-pending seats: what locks schedule and venue and bounds capacity. */
+  customerCommittedSeats: number;
+  /** The single current price source (`offers.price_kopecks`); null until the offer is configured. */
+  offer: null | {
+    productRef: string;
+    productVersion: number;
+    offerRef: string;
+    priceKopecks: number;
+    saleMode: SaleMode;
+    paymentPurpose: string | null;
+    acceptanceAllowlist: string[];
+    withdrawn: boolean;
+  };
+};
+
+export type LabVenueInput =
+  | { status: "CONFIRMED"; name: string; address: string; public: boolean }
+  | { status: "TO_BE_ANNOUNCED"; disclosureText: string; announceBy: string };
+
+export type CityCreateCommand = { slug: string; title: string };
+export type CityRenameCommand = { title: string };
+
+/** A new occurrence starts SCHEDULED and UNLISTED; its offer is a separate command. */
+export type LabOccurrenceCreateCommand = {
+  occurrenceRef: string;
+  citySlug: string;
+  title: string;
+  startsAt: string;
+  endsAt: string;
+  timezone: string;
+  capacity: number;
+  adminReservedSeats?: number;
+  venue: LabVenueInput;
+  reason: string;
+};
+
+export type LabOccurrencePatch = {
+  title?: string;
+  startsAt?: string;
+  endsAt?: string;
+  timezone?: string;
+  capacity?: number;
+  adminReservedSeats?: number;
+  venue?: LabVenueInput;
+  visibility?: "LISTED" | "UNLISTED";
+};
+
+export type LabOccurrenceEditCommand = { expectedVersion: number; patch: LabOccurrencePatch; reason: string };
+export type LabOccurrenceCancelCommand = { expectedVersion: number; reason: string };
+
+/** Product and offer identity are derived from the occurrence and cannot be sent. */
+export type LabOfferCommand = {
+  priceKopecks: number;
+  saleMode: SaleMode;
+  acceptanceAllowlist?: string[];
+  paymentPurpose?: string | null;
+  expectedProductVersion: number;
 };
 
 export type RefundPolicyFacts = {
