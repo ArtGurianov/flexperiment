@@ -384,22 +384,19 @@ class FrontendProxy(unittest.TestCase):
     def test_traefik_replacement_closes_guest_routes_until_nginx_restarts(self):
         old_edge = self.edge
         new_edge = self.prefix + "-replacement-traefik"
-        holder = self.prefix + "-old-address-holder"
         self.containers.append(new_edge)
-        self.containers.append(holder)
         old_address = json.loads(docker("inspect", old_edge).stdout)[0]["NetworkSettings"]["Networks"][self.network]["IPAddress"]
-        docker("stop", old_edge)
         try:
-            # Docker may immediately reuse a stopped endpoint's address.
-            # Occupy it so this test necessarily exercises a changed peer.
-            docker("run", "--detach", "--name", holder, "--network", self.network,
-                   "--ip", old_address, "node:22-bookworm-slim", "node", "-e", "setInterval(()=>{},1000)")
+            # Start-first guarantees a different address on engines that either
+            # retain or release a stopped endpoint's allocation. nginx already
+            # holds only the old peer snapshot; it is deliberately not reloaded.
             docker("run", "--detach", "--name", new_edge, "--network", self.network,
                    "--network-alias", "coolify-proxy", "--volume", f"{self.tmp.name}/routes.yaml:/config/routes.yaml:ro",
                    TRAEFIK_IMAGE, "--entrypoints.web.address=:80", "--entrypoints.web.forwardedheaders.insecure=false",
                    "--providers.file.filename=/config/routes.yaml")
             new_address = json.loads(docker("inspect", new_edge).stdout)[0]["NetworkSettings"]["Networks"][self.network]["IPAddress"]
             self.assertNotEqual(old_address, new_address)
+            docker("stop", old_edge)
             for _ in range(30):
                 try:
                     if self.request("lab-v2", "/readyz", container=new_edge)[0] == 200:
@@ -423,7 +420,6 @@ class FrontendProxy(unittest.TestCase):
                 self.assertEqual(json.loads(body)["headers"]["x-real-ip"], client_address)
         finally:
             docker("rm", "--force", new_edge, check=False)
-            docker("rm", "--force", holder, check=False)
             docker("start", old_edge)
             name = self.services["lab-v2"]
             docker("rm", "--force", name)
