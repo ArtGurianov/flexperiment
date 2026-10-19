@@ -1,3 +1,4 @@
+import { lessonMetadata } from "../../apps/platform/lib/seo";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createCommerceV2App } from "../src/app";
@@ -168,4 +169,17 @@ describe("Commerce storefront read boundary", () => {
       actor: "author" }, now.toISOString());
     expect((await server.request(path, { headers })).status).toBe(404);
   });
+});
+
+it("keeps public lesson metadata noindex even when stored text and free preview exist", async () => {
+  publish();
+  const server = app();
+  for (const freePreview of [false, true]) {
+    db.prepare("UPDATE catalog_lesson_projection SET free_preview=?").run(freePreview ? 1 : 0);
+    const response = await server.request("/v1/courses/demo/lessons/lesson");
+    expect(response.status).toBe(200);
+    const detail = await response.json();
+    expect(detail.lesson.description).toBeNull();
+    expect(lessonMetadata(detail).robots).toEqual({ index: false, follow: true });
+  }
 });
