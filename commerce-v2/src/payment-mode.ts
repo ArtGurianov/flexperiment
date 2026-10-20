@@ -21,6 +21,8 @@ export type CommerceRuntimeConfig = {
     readonly apiBaseUrl: string;
     readonly checkoutOrigin: string;
     readonly handoffStateSecret: string;
+    /** Refref vNext surface (`/v1-vnext`, docs/openapi-vnext.yaml) for arrival claims and context close; served from the staged cutover. */
+    readonly vnextApiBaseUrl?: string;
   };
 };
 
@@ -71,6 +73,10 @@ export function loadCommerceRuntimeConfig(env: Environment = process.env): Comme
   // Retired (ART-233): a receipt's payment method is its offer's qualified fiscal policy. A value still
   // set here would be believed and ignored, so the runtime refuses to start instead.
   if (env.REFREF_RECEIPT_PAYMENT_METHOD !== undefined) throw new CommerceConfigurationError("REFREF_RECEIPT_PAYMENT_METHOD_RETIRED");
+  const vnextApiBaseUrl = env.REFREF_VNEXT_API_BASE_URL?.trim() || undefined;
+  if (vnextApiBaseUrl) {
+    try { new URL(vnextApiBaseUrl); } catch { throw new CommerceConfigurationError("REFREF_VNEXT_API_BASE_URL_INVALID"); }
+  }
   return {
     deployEnvironment,
     paymentMode,
@@ -86,6 +92,7 @@ export function loadCommerceRuntimeConfig(env: Environment = process.env): Comme
       apiBaseUrl,
       checkoutOrigin,
       handoffStateSecret: required(env, "REFREF_HANDOFF_STATE_SECRET"),
+      ...(vnextApiBaseUrl ? { vnextApiBaseUrl } : {}),
     },
   };
 }

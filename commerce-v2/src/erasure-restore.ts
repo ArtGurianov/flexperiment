@@ -37,6 +37,8 @@ const REVIEWED_SCHEMA_SHA256 = new Set([
   "06215c8121d4a4fd6ae35697e73b2b1b620e2fd416d37ae1bba0eda5191a1790", // 0031 with hashed journal
   "60b856fcbe80f36cb32737d850b6fc75356b365e5806d622912e7ec3bfbd53e9", // 0032 with hashed journal
   "9959d7e84141c7f73f2573bbfa438f0d161c208582d02c6d09e55ef43289f16b", // 0033 with hashed journal
+  // 0034 (ART-378): browser contexts and arrival proofs; an LMS binding cascades on customer erasure.
+  "0628317f8796b1c56bf732f96d8274f2c4eaab48dbaf4013d9c3f695c526db21",
 ]);
 export function assertReviewedRestoreSchema(db: Database.Database) {
   const schema = db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").all();

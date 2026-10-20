@@ -102,6 +102,25 @@ production commerce process refuses to start unless all four are explicit
 HTTPS origins without credentials, paths, queries or fragments. The older
 generic public-origin and provider-return variables are not v2 authorities.
 
+Each storefront origin has its own arrival endpoint (ART-378): platform
+`/arrive` (Next.js route handler) and LAB `/arrive` (nginx location) forward to
+Commerce `GET /v1/browser-context/arrive`, which is not reachable through either
+public `/v1/*` allowlist. Commerce takes the storefront from the forwarding host,
+never from a parameter, captures the `arrival` proof server-side, reuses or
+creates the context, sets its cookie and answers 303 to the `to` path on the
+same origin, with no Refref call before the response. The claim runs after the
+response under the process lifecycle (tracked, drained on SIGTERM), at most
+500 ms per attempt, and again after every later same-context `/v1` request and
+platform page view (Next.js `proxy.ts` → `POST /v1/browser-context/touch`),
+single-flight and at most every 2 s per proof, until the claim window closes.
+Buy (`/v1/checkout/preview`) first refuses an offer of another storefront than the
+forwarding host's (409 `CHECKOUT_STOREFRONT_MISMATCH`), then spends at most 1,500 ms on exchange/readback, then
+freezes `storefrontOrigin`, `browserContextId` and `deliveryDegraded`
+(`TIMEOUT`, `FAILED` or `EXPIRED` when any proof of the context is unconfirmed)
+into the intent; a repeat of the intent sends what it froze. The whole feature
+is off unless `BROWSER_CONTEXT_ENABLED=true`; the claim client needs
+`REFREF_VNEXT_API_BASE_URL`, without which a captured proof is `FAILED`.
+
 Authentication and checkout carry `COURSES` or `LAB` as signed state. That
 storefront selects the active legal release, the public magic-link host and the
 payment return host; it is checked again against the purchased offer before an
@@ -217,6 +236,23 @@ does.
   `CHECKOUT_PAYMENT_IN_PROGRESS`, and a quote opened beside one that was paid
   meanwhile refuses with `CHECKOUT_ALREADY_PAID`. Triggers keep the frozen
   facts immutable and the lifecycle forward-only.
+- `browser_contexts` and `browser_context_arrivals` (ART-378, migration 0034)
+  hold the merchant side of browser-scoped attribution (refref docs/29 §2, §4,
+  §6). A context is one browser on one storefront origin, named by an opaque
+  256-bit ID in a host-scoped `__Host-` cookie (`__Host-flx-ctx-lms` on the
+  platform origin, `__Host-flx-ctx-lab` on the LAB origin; HttpOnly, Secure,
+  SameSite=Lax, Max-Age from `BROWSER_CONTEXT_*_MAX_AGE_SECONDS`). Status is
+  `ACTIVE`, `ROTATED` (LMS account boundary: logout or account switch; its
+  close is retried until Refref acknowledges it) or `CLOSED` (Refref closed it;
+  the browser continues in a re-homed successor). An LMS context is bound to
+  the first account seen in it so the next boundary rotates it; the binding
+  never leaves Flexperiment and cascades on customer erasure. A LAB context has
+  no account boundary. An arrival row keeps the raw proof only while `PENDING`
+  and never past 30 minutes from capture (a merchant-local limit that ends at or after Refref's
+  `issuedAt + 30 min` deadline); settled rows keep its SHA-256,
+  state (`CONFIRMED`, `FAILED`, `EXPIRED`, `ABANDONED`) and the claim receipt.
+  Contexts and their arrivals are deleted once their cookie lifetime has
+  passed and no close is outstanding.
 - `orders` and `order_lines` freeze the confirmed live offer, legal release and
   checkout snapshot used for a purchase. The order JSON is the exact closed
   `refref.shared-checkout-snapshot/1` structure produced by the merchant-side
@@ -442,6 +478,7 @@ Source inventory at #201 merge `180eb165…`, not a claim of live data counts or
 | Customer identity / Better Auth | Merchant `customers`, `user`, `session`, `account`; email/name, session token, IP/UA and possible provider credentials | Account/progress during requested platform use or verified deletion request. Tokens/sessions need separate expiry cleanup, not account-lifetime TTL. Authenticated admission must verify live binding; knowing email is insufficient. |
 | Magic-link initiation | `verification` (Better Auth 1.7.6 hashed identifier, JSON email/name), `auth_email_outbox` (plaintext recipient, encrypted URL/email, status/error) | Link expiry 600s is implemented, deletion after expiry is not. Unverified intents cannot delete an existing verified account. No ambiguous mail replay. Payload/recipient/error retention needs explicit category policy and cleanup. |
 | Consent and communication | `account_consents`, `marketing_consents`, authenticated actions/events, `email_suppressions`, campaign recipients | Immutable historical UPDATE is prohibited; deliberate FK-safe deletion is distinct. Minimal justified evidence/holds need basis and deadline, not a blanket invented duration. Independent suppression must outlive old snapshots. Latest refusal dominates. |
+| Browser contexts (ART-378) | `browser_contexts` (opaque ID, storefront origin, LMS account binding), `browser_context_arrivals` (raw arrival proof while pending, proof hash, claim receipt); the ID alone is sent to Refref, no account | Raw proof ≤ 30 minutes and cleared on settlement; rows deleted after the cookie lifetime; an LMS binding cascades on customer erasure. The frozen `browserContextId` in an intent follows `checkout_quotes`. |
 | FREE access and progress | `free_course_enrollments`, resume positions, grant rate limits, access starts and `playback_access_events` | Delete subject-linked nonfinancial facts on admitted erasure; telemetry has a separately configured age bound, not account duration. Restore must invalidate sessions/links before any serving. |
 | Paid/immutable evidence | Orders/snapshots, quotes/attempts, refunds, paid entitlements | Do not rewrite canonical financial evidence or infer lawful holds. Stage A core refuses erasure admission when financial records exist; bounded classified retention is a separate Stage B requirement. |
 | Generic technical/audit logs | Merchant `audit_log`/Control Room JSON, `last_error`, Node/Payload/Traefik/Docker/journald logs | Arbitrary JSON/errors cannot be assumed nonpersonal; log rotation/access and classified security holds still need runtime inventory. Core refuses subjects referenced in unclassified audit. Historical log deletion/absence of exposure is not claimed. |

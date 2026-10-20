@@ -127,8 +127,8 @@ describe("OwnerLegalDecision authority without an external counsel dependency", 
     expect(db.prepare("SELECT count(*) n FROM owner_legal_decisions").get()).toEqual({ n: 0 });
     retireFiscalPolicy(db, { policyId, actor: "owner" }, now);
     expect((db.prepare("SELECT legal_basis_json FROM fiscal_policy_versions WHERE id=?").get(policyId) as { legal_basis_json: string }).legal_basis_json).toBe(raw);
-    expect(db.prepare("SELECT count(*) n FROM schema_migrations").get()).toEqual({ n: 33 });
+    expect(db.prepare("SELECT count(*) n FROM schema_migrations").get()).toEqual({ n: 34 });
     const hash = createHash("sha256").update(JSON.stringify(db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").all())).digest("hex");
-    expect(hash).toBe("9959d7e84141c7f73f2573bbfa438f0d161c208582d02c6d09e55ef43289f16b");
+    expect(hash).toBe("0628317f8796b1c56bf732f96d8274f2c4eaab48dbaf4013d9c3f695c526db21");
   });
 });

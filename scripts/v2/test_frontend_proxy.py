@@ -332,6 +332,24 @@ class FrontendProxy(unittest.TestCase):
         for path in ("login", "session", "logout", "v2/catalog", "v2/orders"):
             self.assertEqual(self.request("admin-v2", "/v1/admin/" + path)[0], 200)
 
+    def test_lab_arrival_endpoint_reaches_commerce_and_nothing_else(self):
+        proof = "ar1." + "A" * 43
+        status, headers, body = self.request("lab-v2", "/arrive?to=%2F&arrival=" + proof,
+            headers={"Cookie": "__Host-flx-ctx-lab=" + "c" * 43})
+        echoed = json.loads(body)
+        self.assertEqual(status, 200)
+        self.assertEqual(echoed["method"], "GET")
+        self.assertEqual(echoed["url"], "/v1/browser-context/arrive?to=%2F&arrival=" + proof)
+        self.assertEqual(echoed["headers"]["cookie"], "__Host-flx-ctx-lab=" + "c" * 43)
+        self.assertEqual(echoed["headers"]["x-forwarded-host"], "canary-lab.flexperiment.ru")
+        self.assertEqual(headers["Set-Cookie"], "test.session=synthetic; Path=/; Secure; HttpOnly; SameSite=Lax")
+        self.assertEqual(headers["Cache-Control"], "no-store")
+        for path in ("/v1/browser-context/arrive?arrival=" + proof, "/v1/browser-context/touch", "/arrive/x"):
+            self.assertEqual(self.request("lab-v2", path)[0], 404)
+        self.assertEqual(self.request("admin-v2", "/arrive?arrival=" + proof)[0], 404)
+        logs = docker("logs", self.prefix + "-lab-v2").stdout + docker("logs", self.prefix + "-lab-v2").stderr
+        self.assertNotIn(proof, logs)
+
     def test_body_cookie_origin_and_trusted_proxy_headers(self):
         for service, path in (("lab-v2", "/v1/auth/sign-in/magic-link"), ("admin-v2", "/v1/admin/login")):
             origin = "https://canary-" + service.split('-')[0] + ".flexperiment.ru"

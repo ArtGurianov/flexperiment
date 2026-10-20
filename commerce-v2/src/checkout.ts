@@ -320,6 +320,11 @@ const legalRelease = (db: Database.Database, storefront: Storefront) => db.prepa
 ).get(storefront) as LegalRow | undefined;
 
 const storefrontForOffer = (offer: OfferRow): Storefront => offer.kind === "LAB" ? "LAB" : "COURSES";
+/** The storefront that sells an offer, or `undefined` for an unknown one (refused later by admission). */
+export const offerStorefront = (db: Database.Database, offerRef: string): Storefront | undefined => {
+  const offer = offerByRef(db, offerRef);
+  return offer ? storefrontForOffer(offer) : undefined;
+};
 
 type FrozenLineSnapshot = {
   readonly paymentPurpose: string;
@@ -530,6 +535,23 @@ function assertDeliveryDegraded(value: DeliveryDegraded) {
 
 /** What the caller may have of the browser context, frozen into the intent. */
 export type ResolutionContext = { storefrontOrigin?: string; browserContextId?: string; deliveryDegraded?: DeliveryDegraded };
+
+/**
+ * The context an existing intent froze, for a repeat of its preview or the buyer back on its order:
+ * the replay sends exactly that, never a recomputed one, so a late ACK cannot clear a degradation
+ * (refref docs/29 §6). `undefined` when no intent exists yet.
+ */
+export function frozenResolutionContext(db: Database.Database, keys: { previewIdempotencyKey: string; orderPublicId?: string }): ResolutionContext | undefined {
+  const existing = intentBy(db, "preview_idempotency_key", keys.previewIdempotencyKey)
+    ?? (keys.orderPublicId ? intentBy(db, "order_public_id", keys.orderPublicId) : undefined);
+  if (!existing?.resolution_request_json) return existing ? {} : undefined;
+  const { request } = JSON.parse(existing.resolution_request_json) as Omit<PaymentResolveInput, "handoffToken">;
+  return {
+    ...(request.storefrontOrigin === undefined ? {} : { storefrontOrigin: request.storefrontOrigin }),
+    ...(request.browserContextId === undefined ? {} : { browserContextId: request.browserContextId }),
+    deliveryDegraded: request.deliveryDegraded,
+  };
+}
 
 /** Customer-wide dedupe requires a verified caller; a guest email supplies no such authority.
  * Derive the narrower scope from the durable LAB access row, never a browser flag.

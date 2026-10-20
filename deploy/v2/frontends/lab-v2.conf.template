@@ -21,6 +21,12 @@ server {
     root /usr/share/nginx/html;
     set $commerce_upstream ${V2_COMMERCE_UPSTREAM};
     include /etc/nginx/v2/common.conf;
+    # ART-378: the LAB-origin arrival endpoint. Commerce captures the proof, sets the LAB context
+    # cookie and answers with a clean first-party redirect; access_log stays off for the proof query.
+    location = /arrive {
+        include /etc/nginx/v2/proxy.conf;
+        proxy_pass http://$commerce_upstream/v1/browser-context/arrive$is_args$args;
+    }
     # V1 /v1/public/* and admin/partner paths deliberately do not pass.
     location = /v1/lab/catalogue {
         include /etc/nginx/v2/proxy.conf;

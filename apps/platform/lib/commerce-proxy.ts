@@ -6,13 +6,14 @@ const refuse = (code: string, status: number) => Response.json({ code }, {
   status, headers: { "Cache-Control": "no-store" },
 });
 
-export async function proxyCommerce(request: Request, path: string[]) {
+/** `roots`: the first path segments this caller may reach; the public `/v1/*` route uses the default set. */
+export async function proxyCommerce(request: Request, path: string[], roots: ReadonlySet<string> = allowedRoots) {
   let canary: boolean;
   try { canary = validatePlatformCanary(); }
   catch { return refuse("COMMERCE_NOT_CONFIGURED", 503); }
   const origin = process.env.COMMERCE_INTERNAL_ORIGIN;
   if (!origin) return refuse("COMMERCE_NOT_CONFIGURED", 503);
-  if (!path[0] || !allowedRoots.has(path[0])
+  if (!path[0] || !roots.has(path[0])
     || path.some((part) => !part || /[\\/\x00-\x1f\x7f]/.test(part) || part === "." || part === "..")) return refuse("NOT_FOUND", 404);
   if (path[0] === "refunds" && (path.length !== 1 || !["GET", "POST"].includes(request.method))) return refuse("NOT_FOUND", 404);
   const source = new URL(request.url);
