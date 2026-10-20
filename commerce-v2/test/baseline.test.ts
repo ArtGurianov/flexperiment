@@ -1,10 +1,11 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { classifyV2Database, migrateV2, V2SchemaLineageError } from "../src/db";
 import { applyV2Seed, readV2Catalogue, V2SeedError } from "../src/seed";
+import { writeMigrationBundle } from "./fixtures/migrations";
 
 const open: Database.Database[] = [];
 afterEach(() => { while (open.length) open.pop()!.close(); });
@@ -30,8 +31,8 @@ describe("v2 lineage", () => {
   it("rolls back the ledger together with a broken first migration", () => {
     const db = database();
     const dir = mkdtempSync(join(tmpdir(), "v2-migrations-"));
-    writeFileSync(join(dir, "0001_bad.sql"), "CREATE TABLE partial(id TEXT); THIS IS INVALID SQL;");
-    expect(() => migrateV2(db, dir)).toThrow();
+    writeMigrationBundle(dir, { "0001_bad.sql": "CREATE TABLE partial(id TEXT); THIS IS INVALID SQL;" });
+    expect(() => migrateV2(db, dir)).toThrow(/syntax error/);
     expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all()).toEqual([]);
   });
 });

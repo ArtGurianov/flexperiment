@@ -1,4 +1,6 @@
 import Database from "better-sqlite3";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import { checkout, MockPaymentRail, reconcileCheckout, type AcceptedRefund, type RailProjection, type RefundSubmission } from "../src/checkout";
 import { migrateV2 } from "../src/db";
@@ -312,13 +314,14 @@ describe("refund authority", () => {
     const { request } = await approvedRefund();
     rail.submitAnswers.push(async () => ({ status: "UNKNOWN" }));
     await executeApprovedRefund(db, rail, keys, request.requestPublicId);
-    // Model the exact pre-0020 schema and the committed crash-gap row from 0019.
+    // Exercise 0020's data repair on the crash-gap row using current financial
+    // fixtures. Execute the immutable repair SQL explicitly, without forging a
+    // hole in the migration journal to make the runner replay an applied file.
     db.exec(`DROP TRIGGER refund_execution_terminal_refusal_purged_insert;
-      DROP TRIGGER refund_execution_terminal_refusal_purged_update;
-      DELETE FROM schema_migrations WHERE version='0020_refund_terminal_refusal_purge.sql';`);
+      DROP TRIGGER refund_execution_terminal_refusal_purged_update;`);
     db.prepare("UPDATE refund_executions SET state='REVIEW_REQUIRED',last_error_code=?").run(code);
     const before = db.prepare("SELECT request_envelope,envelope_key_id,idempotency_key,refref_payment_id,amount_kopecks FROM refund_executions").get() as Record<string, unknown>;
-    migrateV2(db);
+    db.exec(readFileSync(join(process.cwd(), "commerce-v2/migrations/0020_refund_terminal_refusal_purge.sql"), "utf8"));
     const terminal = code !== "REFUND_FACT_MISMATCH";
     expect(db.prepare("SELECT state,last_error_code,request_envelope,envelope_purged_at IS NOT NULL AS purged FROM refund_executions").get())
       .toEqual({ state: "REVIEW_REQUIRED", last_error_code: code, request_envelope: terminal ? null : before.request_envelope, purged: terminal ? 1 : 0 });
