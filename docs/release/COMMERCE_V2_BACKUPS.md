@@ -67,6 +67,14 @@ For each environment, use `status.json` to identify the exact verified object:
 5. Retain safe evidence and ciphertext, remove only the specific temporary
    decrypted restore. A manual upload without this proof is not recovery PASS.
 
+For a merchant recovery that will serve traffic, the snapshot is only the starting
+point. Follow [ART-313 restore reconciliation](COMMERCE_V2_RESTORE_RECONCILIATION.md)
+to freeze sales, replay current independent erasure/suppression, reconcile the
+Refref payment/refund tail and repair purchase access before owner GO. Refref
+cannot reconstruct missing legal consent, manual grants or editorial/attendance
+events; unresolved merchant-owned tail evidence keeps admission closed. This
+reconciliation is separate from timer admission and RPO reduction (ART-314).
+
 Only after both independent restores pass:
 
 ```sh

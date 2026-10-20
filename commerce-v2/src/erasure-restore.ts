@@ -25,7 +25,7 @@ const REVIEWED_SCHEMA_SHA256 = new Set([
   // 0032: order-scoped guest credentials, recovery links and durable admission records.
   "354508649dd6ec29f477b118711913b2fb9b00c979e3f7c2bb895aae2c87f01a",
 ]);
-function assertReviewedSchema(db: Database.Database) {
+export function assertReviewedRestoreSchema(db: Database.Database) {
   const schema = db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").all();
   if (!REVIEWED_SCHEMA_SHA256.has(createHash("sha256").update(JSON.stringify(schema)).digest("hex"))) {
     throw new ErasureLedgerError("ERASURE_RESTORE_UNCLASSIFIED_SCHEMA");
@@ -73,7 +73,7 @@ function applyErasure(db: Database.Database, ledger: VerifiedErasureLedger, keys
     return db.transaction(() => {
       assertDrain?.();
       VerifiedErasureLedger.prototype.assertFresh.call(ledger,now);
-      assertReviewedSchema(db);
+      assertReviewedRestoreSchema(db);
       // Restore admission is NOT based on a watermark stored in the restored DB.
       // Unknown columns/tables/FKs fail the entire transaction, never disable FKs.
       let erasedAccounts = 0; let suppressedEmails = 0;
