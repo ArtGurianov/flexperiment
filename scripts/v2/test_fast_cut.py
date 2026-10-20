@@ -176,8 +176,12 @@ class FastCut(unittest.TestCase):
             self.assertNotIn('ports',service);self.assertNotIn('build',service)
             self.assertTrue(service['read_only'])
         mounts=v['services']['commerce']['volumes'];authority=[m for m in mounts if isinstance(m,dict)]
-        self.assertEqual(len(authority),5)
+        self.assertEqual(len(authority),7)
         self.assertEqual([m['source'] for m in authority if not m['read_only']],['/var/lib/flexperiment-erasure-canary/fence'])
+        # ART-319: the owner's storefront switch reaches Commerce read-only, never created by Docker.
+        switch=[m for m in authority if m['target'] in ('/etc/flexperiment-sales','/etc/flexperiment-sales-journal')]
+        self.assertEqual([(m['source'],m['read_only']) for m in switch],[('/var/lib/flexperiment-sales-canary/switch',True),
+                                                                         ('/var/lib/flexperiment-sales-canary/journal',True)])
         self.assertTrue(all(not m['bind']['create_host_path'] for m in authority))
         self.assertEqual(v['services']['commerce']['networks']['canary']['aliases'],[f.ORIGINAL])
         self.assertNotIn('volumes',v['services']['platform'])

@@ -30,6 +30,8 @@ INPUT = Path('/etc/flexperiment-fast-cut-canary')
 BACKUPS = Path('/var/backups/flexperiment-fast-cut-canary')
 STACK = Path('/opt/flexperiment-fast-cut-canary/deploy/v2/fast-cut/compose.json')
 ERASURE = Path('/var/lib/flexperiment-erasure-canary')
+# The owner's storefront switch (ART-319): written only by scripts/v2/storefront-switch.py on the host.
+SALES = Path('/var/lib/flexperiment-sales-canary')
 SCHEMA = '40ede1d98e15b510c920418cd525e039346890560e7e9dc2fe90aecd760b86a1'
 DATABASE = Path('/var/lib/docker/volumes/'+ORIGINAL+'-'+ORIGINAL+'-commerce-v2-data/_data/commerce.sqlite')
 ORIGINS = {key:'https://canary-'+name+'.flexperiment.ru' for key,name in
@@ -347,6 +349,9 @@ def inspect(role):
         for folder,target,readonly in [('installation','/etc/flexperiment-erasure',True),('runtime-keys','/etc/flexperiment-erasure-keys',True),
                 ('runtime-read','/etc/flexperiment-erasure-read',True),('mirror','/etc/flexperiment-erasure-mirror',True),('fence',str(ERASURE/'fence'),False)]:
             row=mounts.get(target);require(row and row['Source']==str(ERASURE/folder) and row['RW'] is not readonly,'FAST_CUT_ERASURE_MOUNT')
+        for target,folder in [('/etc/flexperiment-sales','switch'),('/etc/flexperiment-sales-journal','journal')]:
+            row=mounts.get(target)
+            require(row and row['Type']=='bind' and row['Source']==str(SALES/folder) and row['RW'] is False,'FAST_CUT_STOREFRONT_SWITCH_MOUNT')
         for target,suffix in [('/var/lib/flexperiment-v2','commerce-v2-data'),('/var/lib/flexperiment-v2-backups','commerce-v2-backups')]:
             row=mounts.get(target);require(row and row['Name']==ORIGINAL+'-'+ORIGINAL+'-'+suffix and row['RW'],'FAST_CUT_DATA_MOUNT')
     if role=='platform':

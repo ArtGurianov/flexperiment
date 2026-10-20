@@ -6,7 +6,7 @@ describe("PAYMENT_MODE", () => {
     const config = loadCommerceRuntimeConfig({ DEPLOY_ENV: "production", PAYMENT_MODE: "disabled", KINESCOPE_DELIVERY_MODE: "open", MERCHANT_PROMOTION_PREFIX: "FX-" });
     expect(config.paymentMode).toBe("disabled");
     expect(() => assertPaymentCreationEnabled(config)).toThrow(new CommerceConfigurationError("PAYMENTS_DISABLED"));
-    expect(() => assertOfferSaleModeAllowed(config, { kind: "ONLINE_COURSE", accessModel: "PAID", saleMode: "PUBLIC" }, true))
+    expect(() => assertOfferSaleModeAllowed(config, { kind: "ONLINE_COURSE", accessModel: "PAID", saleMode: "PUBLIC" }))
       .toThrow(new CommerceConfigurationError("PAYMENTS_DISABLED"));
   });
 
@@ -33,10 +33,14 @@ describe("PAYMENT_MODE", () => {
       .toThrow(new CommerceConfigurationError("REFREF_RECEIPT_PAYMENT_METHOD_RETIRED"));
   });
 
-  it("requires audited activation only for public sale", () => {
+  it("leaves the storefront switch to admission and keeps the bundle out of public sale", () => {
     const config = loadCommerceRuntimeConfig({ DEPLOY_ENV: "test", PAYMENT_MODE: "mock" });
-    expect(() => assertOfferSaleModeAllowed(config, { kind: "ONLINE_COURSE", accessModel: "PAID", saleMode: "ACCEPTANCE_ONLY" }, false)).not.toThrow();
-    expect(() => assertOfferSaleModeAllowed(config, { kind: "ONLINE_COURSE", accessModel: "PAID", saleMode: "PUBLIC" }, false))
-      .toThrow(new CommerceConfigurationError("SALES_ACTIVATION_REQUIRED"));
+    // The config loader never attaches a switch: only the server does, from the read-only host mount.
+    expect(config.storefrontSwitch).toBeUndefined();
+    expect(() => assertOfferSaleModeAllowed(config, { kind: "ONLINE_COURSE", accessModel: "PAID", saleMode: "ACCEPTANCE_ONLY" })).not.toThrow();
+    expect(() => assertOfferSaleModeAllowed(config, { kind: "ONLINE_COURSE", accessModel: "PAID", saleMode: "PUBLIC" })).not.toThrow();
+    expect(() => assertOfferSaleModeAllowed(config, { kind: "COURSE_BUNDLE", accessModel: "PAID", saleMode: "PUBLIC" }))
+      .toThrow(new CommerceConfigurationError("COURSE_BUNDLE_NOT_QUALIFIED"));
+    expect(() => assertOfferSaleModeAllowed(config, { kind: "COURSE_BUNDLE", accessModel: "PAID", saleMode: "ACCEPTANCE_ONLY" })).not.toThrow();
   });
 });

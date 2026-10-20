@@ -16,7 +16,7 @@ import {
 import { applyV2Migration, migrateV2 } from "../src/db";
 import { saveMerchantPromotion } from "../src/promotions";
 import { stageALegalManifestJson } from "./fixtures/legal";
-import { activatePublicSales, qualifyTestFiscalPolicies, testCheckoutConfig } from "./fixtures/sales";
+import { openTestStorefront, qualifyTestFiscalPolicies, setTestStorefronts, testCheckoutConfig } from "./fixtures/sales";
 
 // ART-373: the durable purchase intent and payment-safe replay (design 2026-10-18 §2).
 
@@ -48,7 +48,7 @@ const addLab = (startsAt = "2026-11-01T09:00:00Z") => {
   db.prepare("INSERT INTO products(id,product_ref,kind,access_model,occurrence_ref) VALUES ('lab-product','lab:november','LAB','PAID','lab:november')").run();
   db.prepare("INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode) VALUES ('lab-offer','lab:november','lab-product',250000,'PUBLIC')").run();
   qualifyTestFiscalPolicies(db);
-  activatePublicSales(db, "LAB");
+  openTestStorefront(db, "LAB");
 };
 
 function setupDatabase(beforeVersion?: string) {
@@ -67,7 +67,7 @@ function setupDatabase(beforeVersion?: string) {
   db.prepare("INSERT INTO products(id,product_ref,kind,access_model,course_ref) VALUES ('product','course:one','ONLINE_COURSE','PAID','course-one')").run();
   db.prepare("INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode) VALUES ('offer','course:one','product',10000,'PUBLIC')").run();
   qualifyTestFiscalPolicies(db);
-  activatePublicSales(db);
+  openTestStorefront(db);
 }
 beforeEach(() => setupDatabase());
 
@@ -191,7 +191,7 @@ describe("lost answers and replay", () => {
     // Still possibly in flight: nothing is sent.
     expect(await reconcileCheckout(db, rail, order, at(1.5))).toMatchObject({ state: "CREATE_UNKNOWN" });
     expect(create).toHaveBeenCalledTimes(1);
-    expect(await reconcilePendingCheckouts(db, rail, at(3))).toEqual({ selected: 1, reconciled: 1, failed: 0 });
+    expect(await reconcilePendingCheckouts(db, rail, at(3), testCheckoutConfig)).toEqual({ selected: 1, reconciled: 1, failed: 0 });
     expect(create).toHaveBeenCalledTimes(2);
     expect(create.mock.calls[1][0]).toEqual(create.mock.calls[0][0]);
     expect(intent()).toMatchObject({ state: "PAID" });
@@ -389,7 +389,8 @@ describe("issued quote guarantee", () => {
       db.prepare(`INSERT INTO legal_releases(id,storefront,version,manifest_json,effective_at,active)
         VALUES ('legal-2','COURSES','stage-a-v2',?,'2026-09-30T00:00:00Z',1)`).run(stageALegalManifestJson);
     }, "CHECKOUT_QUOTE_STALE"],
-    ["a storefront close", () => db.prepare("UPDATE sales_activation SET revoked_at=?,revocation_reason='stop'").run(T0), "SALES_ACTIVATION_REQUIRED"],
+    ["a storefront close", () => setTestStorefronts(db, { COURSES: "CLOSED" }), "SALES_STOPPED"],
+    ["a storefront close and reopen", () => { setTestStorefronts(db, { COURSES: "CLOSED" }); setTestStorefronts(db, { COURSES: "OPEN" }); }, "SALES_STOPPED"],
   ])("is ended by %s", async (_event, change, code) => {
     const quote = await quoted(await preview("ended"));
     change();
@@ -528,11 +529,11 @@ describe("HTTP", () => {
     expect(count("orders")).toBe(0);
   });
 
-  it.each(["withdrawn", "fiscal-retired", "fiscal-replaced", "activation-revoked"])("answers %s admission as HTTP 409 before any payment", async reason => {
+  it.each(["withdrawn", "fiscal-retired", "fiscal-replaced", "sales-stopped"])("answers %s admission as HTTP 409 before any payment", async reason => {
     addLab();
     const quote = await (await post("/v1/checkout/preview", "admitted", { offerRef: "lab:november" })).json() as { quoteId: string };
     if (reason === "withdrawn") db.prepare("UPDATE products SET withdrawn_at=?,withdrawn_reason='withdrawn',withdrawn_terms_ref='terms' WHERE id='lab-product'").run(T0);
-    else if (reason === "activation-revoked") db.prepare("UPDATE sales_activation SET revoked_at=?,revocation_reason='stop' WHERE product_kind='LAB'").run(T0);
+    else if (reason === "sales-stopped") setTestStorefronts(db, { LAB: "CLOSED" });
     else {
       const policy = db.prepare("SELECT id FROM fiscal_policy_versions WHERE offer_ref='lab:november' AND status='QUALIFIED'").get() as { id: string };
       retireFiscalPolicy(db, { policyId: policy.id, actor: "owner" }, T0);
@@ -543,7 +544,7 @@ describe("HTTP", () => {
     expect(response.status).toBe(409);
     expect(response.headers.get("cache-control")).toBe("no-store");
     expect(await response.json()).toEqual({ code: reason === "withdrawn" ? "OFFER_NOT_AVAILABLE"
-      : reason === "activation-revoked" ? "SALES_ACTIVATION_REQUIRED" : "FISCAL_POLICY_NOT_QUALIFIED" });
+      : reason === "sales-stopped" ? "SALES_STOPPED" : "FISCAL_POLICY_NOT_QUALIFIED" });
     expect(create).not.toHaveBeenCalled();
     expect(count("orders")).toBe(0);
   });
@@ -896,7 +897,7 @@ describe("ART-200 merchant-local LAB holds", () => {
       expect(legacy.prepare("SELECT state,failure_code FROM checkout_quotes WHERE id='unconfirmed'").get())
         .toEqual({ state: "EXPIRED", failure_code: "CHECKOUT_QUOTE_EXPIRED" });
       expect(legacy.prepare("SELECT * FROM checkout_quotes WHERE id='started'").get())
-        .toEqual({ ...started as object, seat_hold_ref: null, seat_hold_expires_at: null });
+        .toEqual({ ...started as object, seat_hold_ref: null, seat_hold_expires_at: null, storefront_open_since: null });
       expect(legacy.pragma("foreign_key_check")).toEqual([]);
     } finally { legacy.close(); }
   });

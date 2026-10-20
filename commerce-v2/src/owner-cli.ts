@@ -3,6 +3,9 @@ import { campaignStatus, confirmCampaign, createCampaign, retryCampaign } from "
 import { auditControlRoom } from "./control-room-auth";
 import { acceptControlRoomTotp, CONTROL_ROOM_ADMIN_ID, controlRoomTotpKey, enrollControlRoomTotp, resetControlRoomTotp } from "./control-room-totp";
 import { activateLegalRelease, type LegalReleaseManifest } from "./legal-control";
+import { qualifiedFiscalPolicy } from "./fiscal-policy";
+import { loadCommerceRuntimeConfig, type CommerceRuntimeConfig } from "./payment-mode";
+import { hostStorefrontSwitchSource, readStorefrontSwitch, storefrontSwitchStatus, type StorefrontSwitchSource } from "./storefront-switch";
 
 /**
  * Owner commands that used to sit behind PLATFORM_SERVICE_TOKEN (ART-31). They run over SSH inside
@@ -13,6 +16,12 @@ import { activateLegalRelease, type LegalReleaseManifest } from "./legal-control
  * Campaign delivery stays with the server's own dispatch sweep, behind the erasure fence; this
  * process never sends email. The TOTP commands are the only recovery for the second factor.
  * Every write is audited in the Control Room audit log.
+ *
+ * `storefront-switch status` is the owner's read-back of the storefront switch (ART-319) as this
+ * runtime sees it through its read-only mount, independent of /readyz. `storefront-switch preflight
+ * <COURSES|LAB>` reports whether a storefront may be opened (design 2026-10-18 §1); the host tool
+ * refuses an OPEN without it. There is no command that opens or closes a storefront: only the host
+ * file does (scripts/v2/storefront-switch.py).
  */
 export type OwnerCommandEnvironment = Readonly<Record<string, string | undefined>>;
 
@@ -43,11 +52,31 @@ export const ownerCommandReadsInput = (argv: readonly string[]) => INPUT_COMMAND
 export function runOwnerCommand(
   db: Database.Database, argv: readonly string[], input: unknown,
   environment: OwnerCommandEnvironment, now = new Date().toISOString(),
+  storefrontSwitch: StorefrontSwitchSource = hostStorefrontSwitchSource(),
 ) {
   const { command, id, actor } = parse(argv);
   if (command === "campaign status") {
     if (!id || !CAMPAIGN_ID.test(id)) throw new Error("OWNER_COMMAND_ID_INVALID");
     return campaignStatus(db, id);
+  }
+  if (command === "storefront-switch status") {
+    if (id !== undefined) throw new Error("OWNER_COMMAND_UNKNOWN");
+    const deployEnvironment = environment.DEPLOY_ENV ?? "local";
+    if (!["local", "test", "staging", "production"].includes(deployEnvironment)) throw new Error("DEPLOY_ENV_INVALID");
+    const config = { deployEnvironment: deployEnvironment as CommerceRuntimeConfig["deployEnvironment"], storefrontSwitch };
+    // Records the generation like an admission would, so the read-back proves the runtime holds it.
+    readStorefrontSwitch(db, config, { now });
+    return {
+      ...storefrontSwitchStatus(db, config),
+      scope: deployEnvironment === "production" ? "production" : deployEnvironment === "staging" ? "canary" : "local",
+      observed: db.prepare(`SELECT generation,document_sha256 AS documentSha256,courses_state AS courses,lab_state AS lab,
+        changed_by AS changedBy,evidence_issue AS evidenceIssue,changed_at AS changedAt,first_observed_at AS firstObservedAt
+        FROM storefront_switch_observations ORDER BY generation DESC LIMIT 10`).all(),
+    };
+  }
+  if (command === "storefront-switch preflight") {
+    if (id !== "COURSES" && id !== "LAB") throw new Error("OWNER_COMMAND_ID_INVALID");
+    return storefrontPreflight(db, id, environment);
   }
   if (!actor || !ACTOR.test(actor)) throw new Error("OWNER_COMMAND_ACTOR_REQUIRED");
   const adminId = `owner-cli:${actor}`;
@@ -115,6 +144,27 @@ export function runOwnerCommand(
     default:
       throw new Error("OWNER_COMMAND_UNKNOWN");
   }
+}
+
+/**
+ * What must hold before the owner opens a storefront; Commerce re-checks each on every admission
+ * anyway. Read-only: it changes nothing and opens nothing.
+ */
+function storefrontPreflight(db: Database.Database, storefront: "COURSES" | "LAB", environment: OwnerCommandEnvironment) {
+  const failures: string[] = [];
+  let paymentMode: string;
+  try { paymentMode = loadCommerceRuntimeConfig(environment).paymentMode; } catch { paymentMode = "INVALID"; }
+  if (paymentMode !== "refref") failures.push("PAYMENT_MODE_NOT_REFREF");
+  if (!db.prepare("SELECT 1 FROM legal_releases WHERE storefront=? AND active=1").get(storefront)) failures.push("LEGAL_RELEASE_REQUIRED");
+  const kinds = storefront === "LAB" ? ["LAB"] : ["ONLINE_COURSE", "COURSE_BUNDLE"];
+  const offers = db.prepare(`SELECT offer.offer_ref,product.kind FROM offers offer JOIN products product ON product.id=offer.product_id
+    WHERE product.access_model='PAID' AND product.withdrawn_at IS NULL AND offer.sale_mode<>'CLOSED'
+      AND product.kind IN (${kinds.map(() => "?").join(",")}) ORDER BY offer.offer_ref`).all(...kinds) as { offer_ref: string; kind: "ONLINE_COURSE" | "COURSE_BUNDLE" | "LAB" }[];
+  const unqualified = offers.filter((offer) => {
+    try { qualifiedFiscalPolicy(db, offer.offer_ref, offer.kind); return false; } catch { return true; }
+  }).map((offer) => offer.offer_ref);
+  if (unqualified.length) failures.push("FISCAL_POLICY_NOT_QUALIFIED");
+  return { storefront, ready: failures.length === 0, failures, sellingOffers: offers.length, unqualifiedOffers: unqualified };
 }
 
 const revokeSessions = (db: Database.Database, now: string) => db.prepare(

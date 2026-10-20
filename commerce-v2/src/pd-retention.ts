@@ -61,6 +61,9 @@ const supportedSchemaSha256 = new Set([
   "9959d7e84141c7f73f2573bbfa438f0d161c208582d02c6d09e55ef43289f16b", // 0033 with hashed journal
   // 0034 (ART-378): browser contexts and arrival proofs; an LMS binding cascades on customer erasure.
   "0628317f8796b1c56bf732f96d8274f2c4eaab48dbaf4013d9c3f695c526db21",
+  // 0035: owner storefront-switch observations (no subject data), the quote's opening generation in
+  // checkout_quotes, and sales_activation frozen as history; no new identity store. Hashed journal.
+  "6ef1be23e4d713fa77e81a1cb0391fcb1292d18634b3d2270751bec6ab58a728",
 ]);
 const parse = <T>(schema: z.ZodType<T>, value: unknown): T => {
   const result = schema.safeParse(value); return result.success ? result.data : refuse("RETENTION_POLICY_OR_HOLD_INVALID");

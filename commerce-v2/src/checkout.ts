@@ -12,14 +12,14 @@ import { legalManifestHash, type LegalReleaseManifest } from "./legal-control";
 import type { Storefront } from "./origins";
 import type { RefundEnvelope } from "./refund-envelope";
 import { assertMerchantPromotionStillApplicable, resolveCheckoutCode, type MerchantPromotionSnapshot } from "./promotions";
-import { assertLiveOfferSaleMode } from "./catalog-control";
 import { assertLabOccurrenceAdmissible, occurrenceInstant, type BuyerVenueDisclosure } from "./lab-occurrences";
-import type { CommerceRuntimeConfig } from "./payment-mode";
+import { assertOfferSaleModeAllowed, type CommerceRuntimeConfig } from "./payment-mode";
+import { assertStorefrontOpen, SalesStoppedError, type SalesStopStage, type StorefrontSwitchConfig } from "./storefront-switch";
 import { assertClosedPaidTestAccountConsents, assertClosedPaidTestFiscal, assertClosedPaidTestOffer, assertClosedPaidTestPrice, buyerEmailSha256 } from "./closed-paid-test";
 
 // These shared guards also serve Control Room callers, which retain their ordinary domain errors.
 // Classify only their declared business refusals at the checkout boundary; unknown DB faults escape.
-const admissionRefusals = new Set(["FISCAL_POLICY_NOT_QUALIFIED", "SALES_ACTIVATION_REQUIRED", "CHECKOUT_QUOTE_STALE"]);
+const admissionRefusals = new Set(["FISCAL_POLICY_NOT_QUALIFIED", "CHECKOUT_QUOTE_STALE"]);
 function checkoutAdmission<T>(guard: () => T): T {
   try { return guard(); }
   catch (error) {
@@ -31,7 +31,7 @@ function checkoutAdmission<T>(guard: () => T): T {
 }
 
 /** The runtime facts checkout re-evaluates on every preview and confirm. */
-export type CheckoutPolicyConfig = Pick<CommerceRuntimeConfig, "deployEnvironment" | "paymentMode" | "merchantPromotionPrefix" | "closedPaidTest">;
+export type CheckoutPolicyConfig = Pick<CommerceRuntimeConfig, "deployEnvironment" | "paymentMode" | "merchantPromotionPrefix" | "closedPaidTest" | "storefrontSwitch">;
 export type PaidCheckoutAcceptance = { accepted: boolean; releaseVersion: string; manifestSha256: string; receiptEmail: string };
 
 export type RailState = "PENDING" | "CUSTOMER_ACTION_REQUIRED" | "PAID" | "DECLINED" | "EXPIRED" | "REFUND_PENDING" | "REFUNDED" | "REVIEW_REQUIRED";
@@ -125,11 +125,18 @@ export type AcceptedRefund = { id: string; paymentId: string; amountKopecks: num
  * offer's qualified fiscal policy (fiscal-policy.ts), never the rail's.
  */
 export type RailSnapshotConfig = Pick<CheckoutSnapshotConfig, "merchantId" | "fiscalizationMode">;
+export type PaymentRecoveryOptions = { mayInitiate: () => boolean };
+
 export interface PaymentRail {
   readonly checkoutSnapshotConfig: RailSnapshotConfig;
   resolve(input: PaymentResolveInput): Promise<RailResolution>;
-  create(input: PaymentCreateInput): Promise<RailProjection>;
-  recoverCreate(input: PaymentCreateInput, knownAttemptId?: string): Promise<RailProjection>;
+  create(input: PaymentCreateInput, options?: PaymentRecoveryOptions): Promise<RailProjection>;
+  /**
+   * Reads an unanswered create back by order. Synchronously calls `mayInitiate` immediately before
+   * each new side-effect, including after awaited read-back or attempt creation. Without admission
+   * it only reads back: PaymentInitiationStoppedError preserves uncertainty for the next read-back.
+   */
+  recoverCreate(input: PaymentCreateInput, knownAttemptId?: string, options?: PaymentRecoveryOptions): Promise<RailProjection>;
   reconcile(input: { idempotencyKey: string; orderPublicId: string; attemptId: string }): Promise<RailProjection>;
   acknowledgeFulfillment(input: { idempotencyKey: string; orderPublicId: string; attemptId: string }): Promise<void>;
   /**
@@ -143,6 +150,11 @@ export interface PaymentRail {
   readRefundExecution(refundExecutionId: string): Promise<RefundSubmission>;
   /** null when Refref holds no accepted Refund under that id. */
   readRefund(refundId: string): Promise<AcceptedRefund | null>;
+}
+
+/** Admission refused this new side-effect; any earlier effects stay uncertain until read-back. */
+export class PaymentInitiationStoppedError extends Error {
+  constructor(readonly evidence?: Pick<RailProjection, "attemptId" | "resolutionId" | "snapshotHash">) { super("PAYMENT_INITIATION_STOPPED"); }
 }
 
 export class AmbiguousRailCreateError extends Error {
@@ -217,9 +229,12 @@ export class MockPaymentRail implements PaymentRail {
     return record;
   }
 
-  async recoverCreate(input: PaymentCreateInput): Promise<RailProjection> {
+  async recoverCreate(input: PaymentCreateInput, _knownAttemptId?: string, options: PaymentRecoveryOptions = { mayInitiate: () => false }): Promise<RailProjection> {
     const record = this.records.get(input.idempotencyKey);
-    if (!record) return this.create(input);
+    if (!record) {
+      if (!options.mayInitiate()) throw new PaymentInitiationStoppedError();
+      return this.create(input);
+    }
     return record;
   }
 
@@ -386,7 +401,9 @@ function assertOfferOpenToCustomer(db: Database.Database, config: CheckoutPolicy
   if (!offer || offer.withdrawn_at) throw new CheckoutConflictError("OFFER_NOT_AVAILABLE");
   if (offer.access_model === "FREE") throw new CheckoutConflictError("FREE_PRODUCT_CHECKOUT_FORBIDDEN");
   if (offer.sale_mode === "CLOSED") throw new CheckoutConflictError("OFFER_CLOSED");
-  checkoutAdmission(() => assertLiveOfferSaleMode(db, config, { kind: offer.kind, accessModel: offer.access_model, saleMode: offer.sale_mode }));
+  assertOfferSaleModeAllowed(config, { kind: offer.kind, accessModel: offer.access_model, saleMode: offer.sale_mode });
+  // The owner's switch gates every paid offer, PUBLIC and ACCEPTANCE_ONLY alike (ART-319).
+  const opening = assertStorefrontOpen(db, config, storefrontForOffer(offer), "NEW_QUOTE", { now });
   assertClosedPaidTestOffer(config, { kind: offer.kind, accessModel: offer.access_model, saleMode: offer.sale_mode,
     offerRef: offer.offer_ref, courseRef: offer.course_ref, priceKopecks: offer.price_kopecks,
     acceptanceAllowlist: JSON.parse(offer.acceptance_allowlist_json) }, customerEmail);
@@ -396,7 +413,7 @@ function assertOfferOpenToCustomer(db: Database.Database, config: CheckoutPolicy
   }
   // A PUBLIC offer does not make its occurrence sellable: a direct offerRef bypasses the catalogue filter.
   const venue = offer.kind === "LAB" ? assertLabOccurrenceAdmissible(db, offer.occurrence_ref, now).venue : undefined;
-  return { ...offer, venue };
+  return { ...offer, venue, storefrontOpenSince: opening.openSince };
 }
 
 function assertOfferCanBePurchased(
@@ -501,6 +518,7 @@ type IntentRow = {
   state: IntentState; failure_code: string | null; customer_action_url: string | null; refref_resolution_id: string | null;
   base_amount_kopecks: number | null; discount_kopecks: number | null; final_amount_kopecks: number | null;
   rail_quote_json: string | null; expires_at: string | null; consumed_at: string | null; created_at: string;
+  storefront_open_since: number | null;
 };
 
 const intentBy = (db: Database.Database, column: "id" | "preview_idempotency_key" | "order_public_id", value: string) =>
@@ -508,7 +526,7 @@ const intentBy = (db: Database.Database, column: "id" | "preview_idempotency_key
     request_fingerprint,resolution_request_json,sale_mode_at_quote,catalog_amount_kopecks,merchant_discount_kopecks,
     merchant_promotion_snapshot_json,checkout_code_input,line_snapshot_json,state,failure_code,customer_action_url,
     refref_resolution_id,base_amount_kopecks,discount_kopecks,final_amount_kopecks,rail_quote_json,expires_at,consumed_at,created_at,
-    seat_hold_ref,seat_hold_expires_at FROM checkout_quotes WHERE ${column}=?`).get(value) as IntentRow | undefined;
+    storefront_open_since,seat_hold_ref,seat_hold_expires_at FROM checkout_quotes WHERE ${column}=?`).get(value) as IntentRow | undefined;
 
 const storedPricing = (intent: IntentRow): CheckoutQuotePricing => ({
   catalogAmountKopecks: intent.catalog_amount_kopecks,
@@ -578,9 +596,9 @@ const openPayments = (db: Database.Database, scope: PaymentAdmissionScope) => db
   .all(scope) as Array<{ order_public_id: string }>;
 
 /** Read back only this scope before a new provider initiation; unrelated guest payments are untouched. */
-async function readBackOpenPayments(db: Database.Database, rail: PaymentRail, scope: PaymentAdmissionScope, now: string) {
+async function readBackOpenPayments(db: Database.Database, rail: PaymentRail, config: CheckoutPolicyConfig, scope: PaymentAdmissionScope, now: string) {
   for (const { order_public_id } of openPayments(db, scope)) {
-    try { await reconcileCheckout(db, rail, order_public_id, now); } catch { /* still open: refused below */ }
+    try { await reconcileCheckout(db, rail, order_public_id, now, config); } catch { /* still open: refused below */ }
   }
 }
 
@@ -598,15 +616,17 @@ function assertFrozenFiscalPolicyQualified(db: Database.Database, offer: OfferRo
 /**
  * Admission of an already issued intent (design 2026-10-18 §1–§2). Price, terms and line come from the
  * intent and are never rebuilt from the catalogue, and an ordinary offer close does not end it. Only
- * its deadlines, a legal release change, withdrawal, a storefront close (sales activation revoked or
- * payments off) and — LAB, ART-203 — occurrence cancellation end it; a frozen fiscal policy that is no
- * longer qualified refuses payment.
+ * its deadlines, a legal release change, withdrawal, a storefront close (the owner's switch closed
+ * since the quote, ART-319, or payments off) and — LAB, ART-203 — occurrence cancellation end it; a
+ * frozen fiscal policy that is no longer qualified refuses payment.
  */
-function assertIssuedIntentAdmissible(db: Database.Database, config: CheckoutPolicyConfig, intent: IntentRow, customerEmail: string, now: string) {
+function assertIssuedIntentAdmissible(db: Database.Database, config: CheckoutPolicyConfig, intent: IntentRow, customerEmail: string,
+  now: string, stage: SalesStopStage) {
   const offer = offerById(db, intent.offer_id);
   if (!offer || offer.withdrawn_at) throw new CheckoutConflictError("OFFER_NOT_AVAILABLE");
   if (offer.access_model === "FREE") throw new CheckoutConflictError("FREE_PRODUCT_CHECKOUT_FORBIDDEN");
-  checkoutAdmission(() => assertLiveOfferSaleMode(db, config, { kind: offer.kind, accessModel: offer.access_model, saleMode: intent.sale_mode_at_quote }));
+  assertOfferSaleModeAllowed(config, { kind: offer.kind, accessModel: offer.access_model, saleMode: intent.sale_mode_at_quote });
+  assertStorefrontOpen(db, config, intent.storefront, stage, { issuedOpenSince: intent.storefront_open_since, now });
   assertClosedPaidTestOffer(config, { kind: offer.kind, accessModel: offer.access_model, saleMode: offer.sale_mode,
     offerRef: offer.offer_ref, courseRef: offer.course_ref, priceKopecks: offer.price_kopecks,
     acceptanceAllowlist: JSON.parse(offer.acceptance_allowlist_json) }, customerEmail);
@@ -672,13 +692,13 @@ async function advanceIntent(db: Database.Database, rail: PaymentRail, intent: I
     priceNotice: priceNotice(current.catalog_amount_kopecks, offerById(db, current.offer_id)?.price_kopecks, context.displayedAmountKopecks),
     ...(context.review ? { legalAcceptance: context.review } : {}),
   });
-  if (intent.consumed_at) return reconcileCheckout(db, rail, intent.order_public_id, now);
+  if (intent.consumed_at) return reconcileCheckout(db, rail, intent.order_public_id, now, config);
   if (intent.state === "REFUSED") throw new RailRefusalError(intent.failure_code ?? "CHECKOUT_RESOLUTION_REFUSED");
   if (intent.state === "EXPIRED" || intentDeadline(intent) <= now) {
     expireIntent(db, intent.id, now);
     throw expiredIntentError(intent);
   }
-  assertIssuedIntentAdmissible(db, config, intent, context.customerEmail, now);
+  assertIssuedIntentAdmissible(db, config, intent, context.customerEmail, now, "ISSUED_QUOTE");
   if (intent.state === "REVIEW") {
     if (config.closedPaidTest) readyImmediateCourseAccess(db, offerById(db, intent.offer_id)?.course_ref ?? "");
     assertClosedPaidTestPrice(config, JSON.parse(intent.rail_quote_json!) as RailQuote, intent.merchant_discount_kopecks);
@@ -744,7 +764,7 @@ async function advanceIntent(db: Database.Database, rail: PaymentRail, intent: I
       checkoutUrl: settled.customer_action_url!, orderPublicId: settled.order_public_id };
   }
   if (settled.state !== "REVIEW") {
-    if (settled.consumed_at) return reconcileCheckout(db, rail, settled.order_public_id, now);
+    if (settled.consumed_at) return reconcileCheckout(db, rail, settled.order_public_id, now, config);
     if (settled.state === "EXPIRED") throw expiredIntentError(settled);
     throw new RailRefusalError(settled.failure_code ?? "CHECKOUT_RESOLUTION_REFUSED");
   }
@@ -797,7 +817,7 @@ export async function prepareCheckout(
 
   const orderPublicId = input.orderPublicId ?? randomUUID();
   const candidate = offerByRef(db, input.offerRef);
-  if (candidate) await readBackOpenPayments(db, rail, paymentAdmissionScope(db, input.customerId, candidate.offer_id, orderPublicId), now);
+  if (candidate) await readBackOpenPayments(db, rail, config, paymentAdmissionScope(db, input.customerId, candidate.offer_id, orderPublicId), now);
   const intentId = randomUUID();
   const lineRef = randomUUID();
   // New-quote admission and the intent's frozen facts, in one write transaction (design §2).
@@ -870,12 +890,12 @@ export async function prepareCheckout(
     db.prepare(`INSERT INTO checkout_quotes
       (id,customer_id,offer_id,legal_release_id,storefront,order_public_id,line_ref,preview_idempotency_key,request_fingerprint,
         resolution_request_json,sale_mode_at_quote,catalog_amount_kopecks,merchant_discount_kopecks,merchant_promotion_id,
-        merchant_promotion_snapshot_json,checkout_code_input,line_snapshot_json,seat_hold_ref,seat_hold_expires_at,state,created_at,updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'DRAFT',?,?)`).run(
+        merchant_promotion_snapshot_json,checkout_code_input,line_snapshot_json,seat_hold_ref,seat_hold_expires_at,storefront_open_since,state,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'DRAFT',?,?)`).run(
       intentId, input.customerId, offer.offer_id, legal.id, storefront, orderPublicId, lineRef, input.previewIdempotencyKey, fingerprint,
       JSON.stringify(frozen), offer.sale_mode, offer.price_kopecks, merchantDiscountKopecks,
       codeResolution.promotion?.id ?? null, codeResolution.promotion ? JSON.stringify(codeResolution.promotion) : null,
-      checkoutCodeInput, JSON.stringify(lineSnapshot), seatHold?.ref ?? null, seatHold?.expiresAt ?? null, now, now,
+      checkoutCodeInput, JSON.stringify(lineSnapshot), seatHold?.ref ?? null, seatHold?.expiresAt ?? null, offer.storefrontOpenSince, now, now,
     );
     return intentBy(db, "id", intentId)!;
   });
@@ -906,7 +926,7 @@ export async function confirmCheckout(
   if (existing) {
     if (existing.customer_id !== input.customerId) throw new CheckoutConflictError("IDEMPOTENCY_KEY_REUSED");
     if (input.expectedOrderPublicId && existing.public_id !== input.expectedOrderPublicId) throw new Error("CHECKOUT_STATE_INVALID");
-    return reconcileCheckout(db, rail, existing.public_id, now);
+    return reconcileCheckout(db, rail, existing.public_id, now, config);
   }
 
   const pending = intentBy(db, "id", input.quoteId);
@@ -914,7 +934,7 @@ export async function confirmCheckout(
   if (input.expectedOrderPublicId && pending.order_public_id !== input.expectedOrderPublicId) throw new Error("CHECKOUT_STATE_INVALID");
   if (input.storefront && input.storefront !== pending.storefront) throw new Error("CHECKOUT_STOREFRONT_MISMATCH");
   // Confirmed already (another tab, or a reload with a new key): the order it started, read back.
-  if (pending.consumed_at) return reconcileCheckout(db, rail, pending.order_public_id, now);
+  if (pending.consumed_at) return reconcileCheckout(db, rail, pending.order_public_id, now, config);
   if (pending.state === "EXPIRED") throw expiredIntentError(pending);
   if (pending.state !== "REVIEW") throw new Error("CHECKOUT_QUOTE_UNAVAILABLE");
   if (pending.expires_at! <= now) {
@@ -928,7 +948,7 @@ export async function confirmCheckout(
   }
   // By-order read-back stays within the persisted identity's admission scope.
   const admissionScope = paymentAdmissionScope(db, input.customerId, pending.offer_id, pending.order_public_id);
-  await readBackOpenPayments(db, rail, admissionScope, now);
+  await readBackOpenPayments(db, rail, config, admissionScope, now);
 
   // These immutable facts build the request. Live admission belongs to create.immediate()
   // below; a concurrent confirmation must reuse its committed order, not seek another seat.
@@ -983,7 +1003,7 @@ export async function confirmCheckout(
     if (current.state === "EXPIRED") throw expiredIntentError(current);
     if (current.state !== "REVIEW") throw new Error("CHECKOUT_QUOTE_UNAVAILABLE");
     if (current.expires_at! <= now) throw new CheckoutConflictError("CHECKOUT_QUOTE_EXPIRED");
-    assertIssuedIntentAdmissible(db, config, current, input.customerEmail, now);
+    assertIssuedIntentAdmissible(db, config, current, input.customerEmail, now, "CONFIRM");
     if (offer.kind === "ONLINE_COURSE" && offer.course_ref && customerCanAccessCourse(db, input.customerId, offer.course_ref)) throw new CheckoutConflictError("ALREADY_OWNED");
     if (offer.kind === "COURSE_BUNDLE" && customerCanAccessCourse(db, input.customerId, "__any_future_course__")) throw new CheckoutConflictError("ALREADY_OWNED");
     assertNoOpenPayment(db, admissionScope);
@@ -1033,17 +1053,25 @@ export async function confirmCheckout(
     if (consumed.changes !== 1) throw new Error("CHECKOUT_QUOTE_UNAVAILABLE");
     return true;
   });
-  if (!create.immediate()) return reconcileCheckout(db, rail, publicId, now);
+  if (!create.immediate()) return reconcileCheckout(db, rail, publicId, now, config);
 
+  // The last read before the provider call: a stop that landed after the commit still keeps this
+  // attempt from leaving Commerce. Nothing was sent, so the attempt ends here without uncertainty.
   try {
-    const projection = await rail.create(railInput);
+    assertStorefrontOpen(db, config, pending.storefront, "PAYMENT_INITIATION", { issuedOpenSince: pending.storefront_open_since, now });
+  } catch (error) {
+    if (error instanceof SalesStoppedError) recordAttemptRefusal(db, publicId, error.message, now, "PAYMENT_INITIATION_STOPPED");
+    throw error;
+  }
+  try {
+    const projection = await rail.create(railInput, { mayInitiate: () => recoveryMayInitiate(db, config, publicId, now, "PAYMENT_INITIATION") });
     return applyRailProjection(db, rail, publicId, projection, now);
   } catch (error) {
     if (error instanceof RailAttemptRefusalError) {
       recordAttemptRefusal(db, publicId, error.message, now);
       throw error;
     }
-    if (!(error instanceof AmbiguousRailCreateError)) throw error;
+    if (!(error instanceof AmbiguousRailCreateError) && !(error instanceof PaymentInitiationStoppedError)) throw error;
     const unknown = db.transaction(() => {
       db.prepare(`UPDATE checkout_attempts SET state='CREATE_UNKNOWN',refref_attempt_id=COALESCE(?,refref_attempt_id),
         refref_resolution_id=COALESCE(?,refref_resolution_id),refref_snapshot_hash=COALESCE(?,refref_snapshot_hash),
@@ -1163,21 +1191,29 @@ async function applyRailProjection(db: Database.Database, rail: PaymentRail, ord
   return { orderPublicId, state: projection.state, checkoutUrl: projection.checkoutUrl };
 }
 
-function recordAttemptRefusal(db: Database.Database, orderPublicId: string, code: string, now: string) {
+function recordAttemptRefusal(db: Database.Database, orderPublicId: string, code: string, now: string,
+  stage: "ATTEMPT_CREATE_REFUSED" | "PAYMENT_INITIATION_STOPPED" = "ATTEMPT_CREATE_REFUSED") {
   db.transaction(() => {
     const attempt = db.prepare(`SELECT attempt.id,attempt.order_id,attempt.state,attempt.refref_attempt_id FROM checkout_attempts attempt
       JOIN orders ON orders.id=attempt.order_id WHERE orders.public_id=?`).get(orderPublicId) as
       { id: string; order_id: string; state: string; refref_attempt_id: string | null } | undefined;
     if (!attempt || attempt.refref_attempt_id || !["CREATING", "CREATE_UNKNOWN"].includes(attempt.state)) return;
     db.prepare("UPDATE checkout_attempts SET state='DECLINED',observed_payment_projection_json=?,updated_at=? WHERE id=?")
-      .run(JSON.stringify({ stage: "ATTEMPT_CREATE_REFUSED", code, externalAttemptAbsent: true }), now, attempt.id);
+      .run(JSON.stringify({ stage, code, externalAttemptAbsent: true }), now, attempt.id);
     db.prepare("UPDATE orders SET state='CANCELLED',updated_at=? WHERE id=?").run(now, attempt.order_id);
     db.prepare("UPDATE checkout_quotes SET state='DECLINED',failure_code=?,updated_at=? WHERE order_public_id=?")
       .run(code, now, orderPublicId);
   }).immediate();
 }
 
-export async function reconcileCheckout(db: Database.Database, rail: PaymentRail, orderPublicId: string, now = new Date().toISOString()) {
+/**
+ * Reads a payment back and applies what Refref says. Reconciliation, fulfilment of an accepted payment
+ * and its ACK run whatever the storefront switch says; only the recovery of an unanswered create may
+ * start new money, and it does so only while `admission` reads the storefront OPEN. Without
+ * `admission` it is read-back only.
+ */
+export async function reconcileCheckout(db: Database.Database, rail: PaymentRail, orderPublicId: string, now = new Date().toISOString(),
+  admission?: StorefrontSwitchConfig) {
   const attempt = db.prepare(`SELECT attempt.idempotency_key,attempt.refref_attempt_id,attempt.state,attempt.request_payload_json,attempt.created_at
     FROM checkout_attempts attempt JOIN orders ON orders.id=attempt.order_id
     WHERE orders.public_id=?`).get(orderPublicId) as { idempotency_key: string; refref_attempt_id: string | null; state: string; request_payload_json: string; created_at: string } | undefined;
@@ -1188,18 +1224,31 @@ export async function reconcileCheckout(db: Database.Database, rail: PaymentRail
     || (attempt.state === "CREATING" && new Date(now).getTime() - new Date(attempt.created_at).getTime() >= CREATING_UNANSWERED_AFTER_MS);
   if (attempt.state === "CREATING" && !unanswered) return { orderPublicId, state: "CREATE_UNKNOWN" as const, checkoutUrl: undefined };
   if (attempt.state === "DECLINED" && !attempt.refref_attempt_id) return { orderPublicId, state: "DECLINED" as const, checkoutUrl: undefined };
+  const mayInitiate = () => admission !== undefined && recoveryMayInitiate(db, admission, orderPublicId, now);
   let projection: RailProjection;
   try { projection = unanswered
-    ? await rail.recoverCreate(JSON.parse(attempt.request_payload_json) as PaymentCreateInput, attempt.refref_attempt_id ?? undefined)
+    ? await rail.recoverCreate(JSON.parse(attempt.request_payload_json) as PaymentCreateInput, attempt.refref_attempt_id ?? undefined, { mayInitiate })
     : await rail.reconcile({ idempotencyKey: attempt.idempotency_key, orderPublicId, attemptId: attempt.refref_attempt_id ?? "" });
   } catch (error) {
     if (error instanceof RailAttemptRefusalError) recordAttemptRefusal(db, orderPublicId, error.message, now);
+    // Still unanswered: kept as it is and read back again later, never declared absent.
+    if (error instanceof PaymentInitiationStoppedError) return { orderPublicId, state: "CREATE_UNKNOWN" as const, checkoutUrl: undefined };
     throw error;
   }
   return applyRailProjection(db, rail, orderPublicId, projection, now);
 }
 
-export async function reconcilePendingCheckouts(db: Database.Database, rail: PaymentRail, now = new Date().toISOString()) {
+/** A confirmed attempt continues under the storefront's current opening; a stop holds it at read-back. */
+function recoveryMayInitiate(db: Database.Database, admission: StorefrontSwitchConfig, orderPublicId: string, now: string, stage: SalesStopStage = "PAYMENT_RECOVERY") {
+  const line = db.prepare(`SELECT product.kind FROM orders JOIN order_lines line ON line.order_id=orders.id
+    JOIN products product ON product.id=line.product_id WHERE orders.public_id=?`).get(orderPublicId) as { kind: OfferRow["kind"] } | undefined;
+  if (!line) return false;
+  try { assertStorefrontOpen(db, admission, line.kind === "LAB" ? "LAB" : "COURSES", stage, { now }); return true; }
+  catch (error) { if (error instanceof SalesStoppedError) return false; throw error; }
+}
+
+export async function reconcilePendingCheckouts(db: Database.Database, rail: PaymentRail, now = new Date().toISOString(),
+  admission?: StorefrontSwitchConfig) {
   const rows = db.prepare(`SELECT orders.public_id FROM orders JOIN checkout_attempts attempt ON attempt.order_id=orders.id
     WHERE (attempt.state IN ('CREATE_UNKNOWN','PENDING','CUSTOMER_ACTION_REQUIRED')
            -- A create whose request never answered (the process stopped after the order was committed).
@@ -1211,7 +1260,7 @@ export async function reconcilePendingCheckouts(db: Database.Database, rail: Pay
   let reconciled = 0;
   let failed = 0;
   for (const row of rows) {
-    try { await reconcileCheckout(db, rail, row.public_id, now); reconciled += 1; }
+    try { await reconcileCheckout(db, rail, row.public_id, now, admission); reconciled += 1; }
     catch { failed += 1; }
   }
   return { selected: rows.length, reconciled, failed };

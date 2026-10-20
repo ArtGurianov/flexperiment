@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { buildCheckoutSnapshot } from "../src/checkout-snapshot";
 import { RefrefPaymentRail, refrefSnapshotDigest } from "../src/refref-payment-rail";
-import { AmbiguousRailCreateError, type PaymentCreateInput, type PaymentResolveInput } from "../src/checkout";
+import { AmbiguousRailCreateError, PaymentInitiationStoppedError, type PaymentCreateInput, type PaymentResolveInput } from "../src/checkout";
 
 /** What an offer's qualified fiscal policy contributes to the snapshot (fiscal-policy.ts); the rail no longer does. */
 const POLICY_FISCAL = { taxSystem: "USN_INCOME", vatCode: "NONE", paymentMethod: "FULL_PREPAYMENT", paymentObject: "SERVICE" } as const;
@@ -152,7 +152,7 @@ describe("RefrefPaymentRail", () => {
       }))
       .mockResolvedValueOnce(response({ status: "PAYMENT_READY", providerPaymentUrl: "https://pay.refref.ru/replayed" }));
 
-    await expect(rail.recoverCreate(recoveredInput)).resolves.toMatchObject({
+    await expect(rail.recoverCreate(recoveredInput, undefined, { mayInitiate: () => true })).resolves.toMatchObject({
       attemptId: "20000000-0000-4000-8000-000000000002",
       state: "CUSTOMER_ACTION_REQUIRED",
       checkoutUrl: "https://pay.refref.ru/replayed",
@@ -160,6 +160,50 @@ describe("RefrefPaymentRail", () => {
     expect(request.mock.calls.map(([url]) => new URL(String(url)).pathname)).toEqual([
       "/v1-rc/integrations/merchant-orders/order",
       "/v1-rc/integrations/orders/order/checkout-attempts/20000000-0000-4000-8000-000000000002/obligations/full/payment-session",
+    ]);
+  });
+
+  it("while sales are stopped, reads an unanswered create back and never starts a session or a new attempt (ART-319)", async () => {
+    const request = vi.fn<typeof fetch>();
+    const rail = new RefrefPaymentRail({ apiBaseUrl: "https://api.refref.ru/v1-rc/", apiKey: "key",
+      merchantId: "00000000-0000-4000-8000-000000000001", fetch: request });
+    const recoveredInput = createInput(rail);
+    request.mockResolvedValueOnce(response({
+      id: "merchant-order", merchantOrderId: "order", status: "OPEN",
+      checkoutAttempts: [{
+        id: "20000000-0000-4000-8000-000000000002", status: "OPEN",
+        referralResolutionId: recoveredInput.quote.resolutionId, snapshotHash: recoveredInput.snapshotHash,
+        lineItems: [{ lineRef: "line", offerRef: "course:one", refundableAmountKopecks: 0 }],
+        obligations: [{ obligationRef: "full", status: "OUTSTANDING", payment: null }],
+      }],
+    }));
+    await expect(rail.recoverCreate(recoveredInput, undefined, { mayInitiate: () => false }))
+      .rejects.toBeInstanceOf(PaymentInitiationStoppedError);
+    // An order Refref has never seen: no identical create is sent; it stays unanswered.
+    request.mockResolvedValueOnce(response({ error: { code: "NOT_FOUND", message: "none", requestId: "r" } }, 404));
+    await expect(rail.recoverCreate(recoveredInput, undefined, { mayInitiate: () => false })).rejects.toBeInstanceOf(PaymentInitiationStoppedError);
+    expect(request.mock.calls.map(([url, init]) => `${init?.method ?? "GET"} ${new URL(String(url)).pathname}`)).toEqual([
+      "GET /v1-rc/integrations/merchant-orders/order",
+      "GET /v1-rc/integrations/merchant-orders/order",
+    ]);
+  });
+
+  it("rechecks admission between the recovered attempt POST and its payment-session POST", async () => {
+    const request = vi.fn<typeof fetch>();
+    const rail = new RefrefPaymentRail({ apiBaseUrl: "https://synthetic.test/v1-rc", apiKey: "synthetic", merchantId: "synthetic", fetch: request });
+    const command = createInput(rail);
+    let open = true;
+    let finishAttempt!: (response: Response) => void;
+    request.mockResolvedValueOnce(response({ checkoutAttempts: [] }))
+      .mockImplementationOnce(() => new Promise<Response>((resolve) => { finishAttempt = resolve; }));
+    const recovery = rail.recoverCreate(command, undefined, { mayInitiate: () => open });
+    await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(2));
+    open = false;
+    finishAttempt(response({ checkoutAttemptId: "external-attempt", snapshotHash: command.snapshotHash, obligations: [] }, 201));
+    await expect(recovery).rejects.toBeInstanceOf(PaymentInitiationStoppedError);
+    expect(request.mock.calls.map(([url, init]) => `${init?.method} ${new URL(String(url)).pathname}`)).toEqual([
+      "GET /v1-rc/integrations/merchant-orders/order",
+      "POST /v1-rc/integrations/orders/order/checkout-attempts",
     ]);
   });
 

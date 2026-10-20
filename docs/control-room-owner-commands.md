@@ -14,7 +14,12 @@ cli campaign create --actor art < campaign.json          # {"courseRef","idempot
 cli campaign status <campaign-id>
 cli campaign confirm <campaign-id> --actor art           # only with MARKETING_BROADCASTS_ENABLED=true
 cli campaign retry <campaign-id> --actor art             # only with MARKETING_BROADCASTS_ENABLED=true
+cli storefront-switch status                             # the runtime's read-back of the switch (ART-319)
+cli storefront-switch preflight COURSES                  # may COURSES/LAB be opened; read-only
 ```
+
+Neither switch command opens or closes anything. The switch is changed only on the host, as root,
+with `scripts/v2/storefront-switch.py` ([runbook](storefront-switch-runbook.md)).
 
 ## Second factor (TOTP, RFC 6238)
 

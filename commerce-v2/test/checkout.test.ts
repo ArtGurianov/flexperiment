@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { checkout, confirmCheckout, MockPaymentRail, prepareCheckout, reconcileCheckout, reconcilePendingCheckouts } from "../src/checkout";
 import { migrateV2 } from "../src/db";
 import { stageALegalManifestJson } from "./fixtures/legal";
-import { activatePublicSales, qualifyTestFiscalPolicies, testCheckoutConfig } from "./fixtures/sales";
+import { openTestStorefront, qualifyTestFiscalPolicies, setTestStorefronts, testCheckoutConfig } from "./fixtures/sales";
 
 let db: Database.Database;
 let rail: MockPaymentRail;
@@ -21,7 +21,7 @@ beforeEach(() => {
   db.prepare(`INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode)
     VALUES ('offer','course:one','product',10000,'PUBLIC')`).run();
   qualifyTestFiscalPolicies(db);
-  activatePublicSales(db);
+  openTestStorefront(db);
 });
 
 const input = { customerId: "customer", customerEmail: "student@example.com", offerRef: "course:one", idempotencyKey: "checkout-one" };
@@ -32,21 +32,20 @@ describe("live sale-mode gate", () => {
   const confirm = (quoteId: string, config = testCheckoutConfig) => confirmCheckout(db, rail, config, {
     customerId: input.customerId, customerEmail: input.customerEmail, quoteId, idempotencyKey: input.idempotencyKey,
   }, "2026-09-30T10:01:00Z");
-  const revokeActivation = () => db.prepare(`UPDATE sales_activation SET revoked_at='2026-09-30T10:00:30Z',
-    revocation_reason='paused' WHERE revoked_at IS NULL`).run();
+  const stopSales = () => setTestStorefronts(db, { COURSES: "CLOSED" });
 
-  it("refuses a PUBLIC offer with no current activation row at preview", async () => {
-    revokeActivation();
-    await expect(preview("no-activation")).rejects.toThrow("SALES_ACTIVATION_REQUIRED");
+  it("refuses a PUBLIC offer while its storefront is stopped at preview", async () => {
+    stopSales();
+    await expect(preview("no-activation")).rejects.toThrow("SALES_STOPPED");
     expect(db.prepare("SELECT COUNT(*) AS count FROM checkout_quotes").get()).toEqual({ count: 0 });
   });
 
-  it("re-checks activation at confirm and on a replayed preview, so a reviewed quote cannot outlive it", async () => {
+  it("re-checks the switch at confirm and on a replayed preview, so a reviewed quote cannot outlive a stop", async () => {
     const prepared = await preview("before-revocation");
     if (prepared.state !== "PRICE_REVIEW_REQUIRED") throw new Error("expected quote");
-    revokeActivation();
-    await expect(preview("before-revocation")).rejects.toThrow("SALES_ACTIVATION_REQUIRED");
-    await expect(confirm(prepared.quoteId)).rejects.toThrow("SALES_ACTIVATION_REQUIRED");
+    stopSales();
+    await expect(preview("before-revocation")).rejects.toThrow("SALES_STOPPED");
+    await expect(confirm(prepared.quoteId)).rejects.toThrow("SALES_STOPPED");
     expect(db.prepare("SELECT COUNT(*) AS count FROM orders").get()).toEqual({ count: 0 });
     expect(db.prepare("SELECT state FROM checkout_quotes").get()).toEqual({ state: "REVIEW" });
   });
@@ -58,9 +57,11 @@ describe("live sale-mode gate", () => {
     expect(db.prepare("SELECT COUNT(*) AS count FROM orders").get()).toEqual({ count: 0 });
   });
 
-  it("sells an ACCEPTANCE_ONLY offer only to its allowlist and without a public activation", async () => {
-    revokeActivation();
+  it("sells an ACCEPTANCE_ONLY offer only to its allowlist, and an emergency stop covers it too", async () => {
     db.prepare(`UPDATE offers SET sale_mode='ACCEPTANCE_ONLY',acceptance_allowlist_json='["student@example.com"]'`).run();
+    stopSales();
+    await expect(preview("acceptance-stopped")).rejects.toThrow("SALES_STOPPED");
+    setTestStorefronts(db, { COURSES: "OPEN" });
     const prepared = await preview("acceptance");
     expect(prepared.state).toBe("PRICE_REVIEW_REQUIRED");
     await expect(prepareCheckout(db, rail, testCheckoutConfig, {
@@ -179,7 +180,7 @@ describe("scripted mock checkout orchestration", () => {
     db.prepare(`INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode)
       VALUES ('lab-offer','lab:november','lab-product',250000,'PUBLIC')`).run();
     qualifyTestFiscalPolicies(db);
-    activatePublicSales(db, "LAB");
+    openTestStorefront(db, "LAB");
 
     await checkout(db, rail, testCheckoutConfig, {
       customerId: "customer",

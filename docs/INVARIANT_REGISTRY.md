@@ -134,6 +134,7 @@ real person received a real amount.
 | Invariant | Enforced by | Guarded by | Status |
 |---|---|---|---|
 | A payment authorization is never edited or deleted | `PAYMENT_AUTHORIZATION_IMMUTABLE` | `agent-referrals-payment-constraints.test.ts` | ACTIVE |
+| New paid money (quote, repeat preview, confirmation, provider initiation, create recovery) needs the owner's storefront switch OPEN; missing, invalid, writable, not the journal's last record, or stale is CLOSED; reconciliation, fulfilment and refunds continue (ART-319) | `assertStorefrontOpen`, `hostStorefrontSwitchSource`, `storefront_switch_observations` (migration 0035) | `commerce-v2/test/storefront-switch.test.ts`, `scripts/ci/storefront-switch-fixture.sh` | ACTIVE |
 | A payment attempt is never deleted | `PAYMENT_ATTEMPT_IMMUTABLE` | `agent-referrals-payment-constraints.test.ts` | ACTIVE |
 | A settled attempt is never rewritten | `PAYMENT_ATTEMPT_TERMINAL_IMMUTABLE` | `agent-referrals-payment-constraints.test.ts` | ACTIVE |
 | An attempt restates the authorization that permitted it | `PAYMENT_ATTEMPT_RELATIONAL_INCONSISTENT` | `agent-referrals-payment-constraints.test.ts` | ACTIVE |

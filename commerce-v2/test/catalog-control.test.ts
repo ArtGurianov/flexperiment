@@ -3,9 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { beforeEach, describe, expect, it } from "vitest";
-import { activateSales, assertLiveOfferSaleMode, configureProduct, withdrawProduct } from "../src/catalog-control";
+import { assertLiveOfferSaleMode, configureProduct, withdrawProduct } from "../src/catalog-control";
 import { migrateV2 } from "../src/db";
 import { loadCommerceRuntimeConfig } from "../src/payment-mode";
+import { setTestStorefronts, testCheckoutConfig } from "./fixtures/sales";
 import { readV2Migrations } from "../src/migration-integrity";
 import { writeMigrationBundle } from "./fixtures/migrations";
 
@@ -31,48 +32,33 @@ describe("catalog control room commands", () => {
     })).toThrow("PAYMENTS_DISABLED");
   });
 
-  it("requires evidence before public activation and writes an audited withdrawal", () => {
-    const config = loadCommerceRuntimeConfig({ DEPLOY_ENV: "test", PAYMENT_MODE: "mock" });
-    expect(() => configureProduct(db, config, {
-      productRef: "course:paid", offerRef: "course:paid", kind: "ONLINE_COURSE", courseRef: "paid",
-      accessModel: "PAID", priceKopecks: 100, saleMode: "PUBLIC", actor: "author", expectedVersion: 0,
-    })).toThrow("SALES_ACTIVATION_REQUIRED");
-    activateSales(db, { kind: "ONLINE_COURSE", evidenceIssue: "ART-240", evidenceSha256: "a".repeat(64), actor: "owner" });
-    configureProduct(db, config, {
-      paymentPurpose: "Synthetic merchant course purpose",
-      productRef: "course:paid", offerRef: "course:paid", kind: "ONLINE_COURSE", courseRef: "paid",
-      accessModel: "PAID", priceKopecks: 100, saleMode: "PUBLIC", actor: "author", expectedVersion: 0,
-    });
-    withdrawProduct(db, { productRef: "course:paid", reason: "Rights expired", termsRef: "offer-v1#withdrawal", actor: "owner", expectedVersion: 1 });
+  it("configures a PUBLIC offer only while its storefront is open and writes an audited withdrawal", () => {
+    const config = testCheckoutConfig;
+    const paid = { paymentPurpose: "Synthetic merchant course purpose", productRef: "course:paid", offerRef: "course:paid",
+      kind: "ONLINE_COURSE" as const, courseRef: "paid", accessModel: "PAID" as const, priceKopecks: 100, saleMode: "PUBLIC" as const,
+      actor: "author", expectedVersion: 0 };
+    setTestStorefronts(db, { COURSES: "CLOSED" });
+    expect(() => configureProduct(db, config, paid)).toThrow("SALES_STOPPED");
+    // Without a switch at all (no host mount) nothing is PUBLIC either.
+    expect(() => configureProduct(db, loadCommerceRuntimeConfig({ DEPLOY_ENV: "test", PAYMENT_MODE: "mock" }), paid)).toThrow("SALES_STOPPED");
+    // The LAB switch does not open courses; closing an offer never needs the switch.
+    setTestStorefronts(db, { LAB: "OPEN" });
+    expect(() => configureProduct(db, config, paid)).toThrow("SALES_STOPPED");
+    setTestStorefronts(db, { COURSES: "OPEN" });
+    configureProduct(db, config, paid);
+    setTestStorefronts(db, { COURSES: "CLOSED" });
+    configureProduct(db, config, { ...paid, saleMode: "CLOSED", expectedVersion: 1 });
+    withdrawProduct(db, { productRef: "course:paid", reason: "Rights expired", termsRef: "offer-v1#withdrawal", actor: "owner", expectedVersion: 2 });
     expect(db.prepare("SELECT withdrawn_at IS NOT NULL AS withdrawn FROM products").get()).toEqual({ withdrawn: 1 });
-    expect(db.prepare("SELECT COUNT(*) AS count FROM audit_log").get()).toEqual({ count: 2 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM audit_log").get()).toEqual({ count: 3 });
   });
 
-  it("accepts public sales activation only with the acceptance evidence named for its kind", () => {
-    const evidence = { evidenceSha256: "b".repeat(64), actor: "owner" };
-    for (const [kind, evidenceIssue] of [
-      ["ONLINE_COURSE", "ART-243"], ["LAB", "ART-240"],
-      ["ONLINE_COURSE", "ART-999"], ["LAB", "ART-2430"],
-    ] as const) {
-      expect(() => activateSales(db, { kind, evidenceIssue, ...evidence })).toThrow("SALES_ACTIVATION_EVIDENCE_INVALID");
-    }
-    expect(() => activateSales(db, { kind: "ONLINE_COURSE", evidenceIssue: "ART-240", evidenceSha256: "short", actor: "owner" }))
-      .toThrow("SALES_ACTIVATION_EVIDENCE_INVALID");
-    expect(db.prepare("SELECT COUNT(*) AS count FROM sales_activation").get()).toEqual({ count: 0 });
-
-    activateSales(db, { kind: "ONLINE_COURSE", evidenceIssue: "ART-240", ...evidence });
-    activateSales(db, { kind: "LAB", evidenceIssue: "ART-243", ...evidence });
-    expect(db.prepare("SELECT product_kind,evidence_issue FROM sales_activation ORDER BY product_kind").all()).toEqual([
-      { product_kind: "LAB", evidence_issue: "ART-243" },
-      { product_kind: "ONLINE_COURSE", evidence_issue: "ART-240" },
-    ]);
-
-    // Checkout trusts the row, so the schema refuses wrong or rewritten evidence even outside the command.
-    db.prepare("UPDATE sales_activation SET revoked_at='2026-09-30T00:00:00Z',revocation_reason='test' WHERE product_kind='LAB'").run();
+  it("keeps sales_activation as read-only history that authorizes nothing", () => {
     expect(() => db.prepare(`INSERT INTO sales_activation(id,product_kind,evidence_issue,evidence_sha256,activated_by,activated_at)
-      VALUES ('direct','LAB','ART-240',?,'owner','2026-09-30T00:00:00Z')`).run("c".repeat(64))).toThrow("SALES_ACTIVATION_EVIDENCE_INVALID");
-    expect(() => db.prepare("UPDATE sales_activation SET evidence_issue='ART-243' WHERE product_kind='ONLINE_COURSE'").run())
-      .toThrow("SALES_ACTIVATION_EVIDENCE_IMMUTABLE");
+      VALUES ('direct','ONLINE_COURSE','ART-240',?,'owner','2026-09-30T00:00:00Z')`).run("c".repeat(64))).toThrow("SALES_ACTIVATION_RETIRED");
+    setTestStorefronts(db, { COURSES: "CLOSED" });
+    expect(() => assertLiveOfferSaleMode(db, testCheckoutConfig, { kind: "ONLINE_COURSE", accessModel: "PAID", saleMode: "PUBLIC" }))
+      .toThrow("SALES_STOPPED");
   });
 
   it("rejects stale catalogue edits and withdrawals", () => {
@@ -142,18 +128,18 @@ describe("catalog control room commands", () => {
   });
 });
 
-describe("ONLINE_COURSE activation fence (migration 0016)", () => {
-  const evidence = { evidenceSha256: "d".repeat(64), actor: "owner" };
-  const mock = loadCommerceRuntimeConfig({ DEPLOY_ENV: "test", PAYMENT_MODE: "mock" });
+describe("ONLINE_COURSE fence (migration 0016) after sales_activation (migration 0032)", () => {
   const bundle = { kind: "COURSE_BUNDLE", accessModel: "PAID", saleMode: "PUBLIC" } as const;
   const course = { kind: "ONLINE_COURSE", accessModel: "PAID", saleMode: "PUBLIC" } as const;
   const directBundle = (id: string) => db.prepare(`INSERT INTO sales_activation(id,product_kind,evidence_issue,evidence_sha256,activated_by,activated_at)
     VALUES (?,'COURSE_BUNDLE','ART-240',?,'owner','2026-10-01T00:00:00Z')`).run(id, "e".repeat(64));
+  const directCourse = (id: string) => db.prepare(`INSERT INTO sales_activation(id,product_kind,evidence_issue,evidence_sha256,activated_by,activated_at)
+    VALUES (?,'ONLINE_COURSE','ART-240',?,'owner','2026-10-01T00:00:00Z')`).run(id, "f".repeat(64));
 
-  /** A database as it was before 0016: every migration up to it, from a copy of the directory. */
-  const before0016 = () => {
+  /** A database as it was before `version`: every migration up to it, from a copy of the directory. */
+  const before = (version: string) => {
     const dir = mkdtempSync(join(tmpdir(), "fx-0016-"));
-    writeMigrationBundle(dir, Object.fromEntries(readV2Migrations().filter(({ version }) => version < "0016").map(({ version, sql }) => [version, sql])));
+    writeMigrationBundle(dir, Object.fromEntries(readV2Migrations().filter((migration) => migration.version < version).map(({ version: name, sql }) => [name, sql])));
     const old = new Database(":memory:");
     old.pragma("foreign_keys = ON");
     migrateV2(old, dir);
@@ -161,60 +147,49 @@ describe("ONLINE_COURSE activation fence (migration 0016)", () => {
     return old;
   };
 
-  it("ART-240 evidence opens ONLINE_COURSE sales and never COURSE_BUNDLE, through the command or direct SQL", () => {
-    expect(() => activateSales(db, { kind: "COURSE_BUNDLE", evidenceIssue: "ART-240", ...evidence })).toThrow("SALES_ACTIVATION_NOT_QUALIFIED");
-    expect(() => directBundle("direct")).toThrow("SALES_ACTIVATION_EVIDENCE_INVALID");
-    activateSales(db, { kind: "ONLINE_COURSE", evidenceIssue: "ART-240", ...evidence });
-    expect(() => assertLiveOfferSaleMode(db, mock, course)).not.toThrow();
-    expect(() => assertLiveOfferSaleMode(db, mock, bundle)).toThrow("SALES_ACTIVATION_REQUIRED");
-    // Acceptance-only selling of a bundle needs no activation, as before; it never becomes PUBLIC.
-    expect(() => assertLiveOfferSaleMode(db, mock, { ...bundle, saleMode: "ACCEPTANCE_ONLY" })).not.toThrow();
+  it("an open COURSES switch opens ONLINE_COURSE sales and never COURSE_BUNDLE", () => {
+    expect(() => assertLiveOfferSaleMode(db, testCheckoutConfig, course)).not.toThrow();
+    expect(() => assertLiveOfferSaleMode(db, testCheckoutConfig, bundle)).toThrow("COURSE_BUNDLE_NOT_QUALIFIED");
+    // Acceptance-only selling of a bundle stays possible, as before; it never becomes PUBLIC.
+    expect(() => assertLiveOfferSaleMode(db, testCheckoutConfig, { ...bundle, saleMode: "ACCEPTANCE_ONLY" })).not.toThrow();
   });
 
-  it("LAB activation is independent of the course fence", () => {
-    activateSales(db, { kind: "LAB", evidenceIssue: "ART-243", ...evidence });
-    expect(() => assertLiveOfferSaleMode(db, mock, { kind: "LAB", accessModel: "PAID", saleMode: "PUBLIC" })).not.toThrow();
-    expect(() => assertLiveOfferSaleMode(db, mock, course)).toThrow("SALES_ACTIVATION_REQUIRED");
+  it("the LAB switch is independent of the COURSES switch", () => {
+    setTestStorefronts(db, { COURSES: "CLOSED" });
+    expect(() => assertLiveOfferSaleMode(db, testCheckoutConfig, { kind: "LAB", accessModel: "PAID", saleMode: "PUBLIC" })).not.toThrow();
+    expect(() => assertLiveOfferSaleMode(db, testCheckoutConfig, course)).toThrow("SALES_STOPPED");
   });
 
-  it("a revoked activation stays revoked, whatever its kind", () => {
-    activateSales(db, { kind: "ONLINE_COURSE", evidenceIssue: "ART-240", ...evidence });
-    db.prepare("UPDATE sales_activation SET revoked_at='2026-10-02T00:00:00Z',revocation_reason='evidence withdrawn'").run();
-    expect(() => db.prepare("UPDATE sales_activation SET revoked_at=NULL,revocation_reason=NULL").run()).toThrow("SALES_ACTIVATION_REVOCATION_FINAL");
-    expect(() => db.prepare("UPDATE sales_activation SET revocation_reason='rewritten'").run()).toThrow("SALES_ACTIVATION_REVOCATION_FINAL");
-    expect(() => assertLiveOfferSaleMode(db, mock, course)).toThrow("SALES_ACTIVATION_REQUIRED");
-    // Re-opening is a new activation, under the evidence rule.
-    activateSales(db, { kind: "ONLINE_COURSE", evidenceIssue: "ART-240", ...evidence });
-    expect(() => assertLiveOfferSaleMode(db, mock, course)).not.toThrow();
-  });
-
-  it("a bundle activation from before 0016 authorizes nothing, is revoked with its reason, and entitlements are untouched", () => {
-    const old = before0016();
+  it("history from before 0016 and 0032 survives both migrations, authorizes nothing and stays frozen", () => {
+    const old = before("0016");
     try {
       db = old;
       directBundle("historical");
-      activateSales(db, { kind: "ONLINE_COURSE", evidenceIssue: "ART-240", ...evidence });
-      // Already granted access, seeded without its order (foreign keys off only for the seed): 0016 must not touch it.
+      directCourse("course");
+      // Already granted access, seeded without its order (foreign keys off only for the seed): neither migration touches it.
       db.pragma("foreign_keys = OFF");
       db.prepare(`INSERT INTO course_entitlements(id,customer_id,scope,course_ref,source_order_line_id,granted_at)
         VALUES ('grant','customer','ALL_COURSES',NULL,'line','2026-10-01T00:00:00Z')`).run();
       db.pragma("foreign_keys = ON");
       const grants = db.prepare("SELECT * FROM course_entitlements").all();
 
-      // The application ignores the row even before the migration runs: its evidence no longer qualifies.
-      expect(() => assertLiveOfferSaleMode(db, mock, bundle)).toThrow("SALES_ACTIVATION_REQUIRED");
-
       migrateV2(db);
       expect(db.prepare("SELECT id,product_kind,revoked_at IS NOT NULL AS revoked,revocation_reason FROM sales_activation ORDER BY product_kind").all()).toEqual([
         { id: "historical", product_kind: "COURSE_BUNDLE", revoked: 1,
           revocation_reason: "ONLINE_COURSE_FENCE: ART-240 evidence does not qualify COURSE_BUNDLE (migration 0016)" },
-        expect.objectContaining({ product_kind: "ONLINE_COURSE", revoked: 0, revocation_reason: null }),
+        { id: "course", product_kind: "ONLINE_COURSE", revoked: 0, revocation_reason: null },
       ]);
       expect(db.prepare("SELECT * FROM course_entitlements").all()).toEqual(grants);
-      expect(() => db.prepare("UPDATE sales_activation SET revoked_at=NULL,revocation_reason=NULL WHERE id='historical'").run())
-        .toThrow("SALES_ACTIVATION_REVOCATION_FINAL");
-      expect(() => assertLiveOfferSaleMode(db, mock, bundle)).toThrow("SALES_ACTIVATION_REQUIRED");
-      expect(() => assertLiveOfferSaleMode(db, mock, course)).not.toThrow();
+      expect(() => db.prepare("UPDATE sales_activation SET revoked_at=NULL,revocation_reason=NULL WHERE id='historical'").run()).toThrow();
+      expect(() => db.prepare("UPDATE sales_activation SET revoked_at='2026-10-19T00:00:00Z',revocation_reason='x' WHERE id='course'").run())
+        .toThrow("SALES_ACTIVATION_RETIRED");
+      // Immutable history: it cannot be emptied either (review P2).
+      expect(() => db.prepare("DELETE FROM sales_activation").run()).toThrow("SALES_ACTIVATION_RETIRED");
+      expect(db.prepare("SELECT COUNT(*) AS n FROM sales_activation").get()).toEqual({ n: 2 });
+      // An unrevoked historical activation opens nothing: only the owner's switch does.
+      setTestStorefronts(db, { COURSES: "CLOSED" });
+      expect(() => assertLiveOfferSaleMode(db, testCheckoutConfig, course)).toThrow("SALES_STOPPED");
+      expect(() => assertLiveOfferSaleMode(db, testCheckoutConfig, bundle)).toThrow("COURSE_BUNDLE_NOT_QUALIFIED");
     } finally {
       old.close();
     }

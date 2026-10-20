@@ -152,11 +152,23 @@ does.
   browser commands fail without overwriting a newer decision. A product's
   identity (kind, course or occurrence, offer ref) is fixed at creation and
   guarded by triggers; only access model, price, sale mode and allowlist are
-  editable. Public selling additionally requires a matching active
-  `sales_activation` record, re-checked with the live payment mode at checkout
-  preview and confirmation. An activation must cite the acceptance evidence
-  for its kind — ART-240 for ONLINE_COURSE only, ART-243 for LAB; COURSE_BUNDLE requires its own explicitly qualified bundle evidence and must not reuse ART-240 — which
-  the command and a schema trigger both enforce.
+  editable. Selling any paid offer, `PUBLIC` or `ACCEPTANCE_ONLY`, additionally
+  requires its storefront (`COURSES`, `LAB`) to be OPEN on the owner's
+  storefront switch (ART-319, migration 0035): a root-owned host file mounted
+  read-only into Commerce beside the owner's append-only journal (also
+  read-only), both written only by the owner over SSH
+  (`scripts/v2/storefront-switch.py`, [runbook](storefront-switch-runbook.md)).
+  It is re-read with the live payment mode at every checkout step; missing,
+  invalid, writable, not what the journal last recorded, or stale means CLOSED.
+  A `COURSE_BUNDLE` never becomes `PUBLIC` (no acceptance qualifies it; the
+  migration 0016 fence). The former `sales_activation` table is immutable
+  history: triggers refuse every insert, update and delete, and no row
+  authorizes anything; isolated restore (ART-313) consults it only on
+  databases older than 0035.
+- `storefront_switch_observations` (migration 0035) records each switch
+  generation the runtime has read, with its document digest, append-only. It
+  opens nothing; it lets the runtime refuse a file restored to an older
+  generation or a generation reused for other content, across restarts.
 - `lab_occurrences` (migration 0029, ART-199) has a lifecycle, not a sales
   status: `SCHEDULED` or terminal `CANCELLED`; in progress and finished are
   derived from `starts_at`/`ends_at`. Selling is the offer's `sale_mode` alone.
@@ -227,7 +239,8 @@ does.
   applied promotion and Refref's own deadline. Confirmation takes price, terms
   and line from the intent and never rebuilds them from the catalogue: a price
   change or an ordinary offer close does not end it; offer withdrawal, a legal
-  release change, a storefront close (activation revoked or payments off) and a
+  release change, a storefront close (the owner's switch closed since the quote:
+  `storefront_open_since` no longer the current opening, or payments off) and a
   frozen fiscal policy that is no longer qualified do. Final admission runs
   inside the same `BEGIN IMMEDIATE` transaction that creates `orders`,
   `order_lines` and `checkout_attempts` and consumes the intent once. Before

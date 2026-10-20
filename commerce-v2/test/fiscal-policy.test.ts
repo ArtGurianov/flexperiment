@@ -5,7 +5,7 @@ import { migrateV2 } from "../src/db";
 import { draftFiscalPolicy, qualifiedFiscalPolicy, qualifyFiscalPolicy, retireFiscalPolicy } from "../src/fiscal-policy";
 import { legalManifestHash } from "../src/legal-control";
 import { stageALegalManifestJson } from "./fixtures/legal";
-import { activatePublicSales, testCheckoutConfig, testOwnerLegalDecision } from "./fixtures/sales";
+import { openTestStorefront, testCheckoutConfig, testOwnerLegalDecision } from "./fixtures/sales";
 
 let db: Database.Database;
 let rail: MockPaymentRail;
@@ -39,7 +39,7 @@ beforeEach(() => {
   db.prepare(`INSERT INTO products(id,product_ref,kind,access_model) VALUES ('bundle','bundle:all-courses','COURSE_BUNDLE','PAID')`).run();
   db.prepare(`INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode) VALUES ('bundle-offer','bundle:all-courses','bundle',50000,'CLOSED')`).run();
   db.prepare("UPDATE offers SET payment_purpose='Synthetic merchant offer purpose'").run();
-  activatePublicSales(db);
+  openTestStorefront(db);
 });
 
 const input = { customerId: "customer", customerEmail: "student@example.com", offerRef: "course:one", idempotencyKey: "checkout-one" };

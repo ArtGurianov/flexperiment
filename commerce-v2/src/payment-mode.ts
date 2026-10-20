@@ -1,4 +1,5 @@
 import { CLOSED_PAID_TEST_PROFILE, closedPaidTestEnabled } from "../../lib/closed-paid-test-profile";
+import type { StorefrontSwitchSource } from "./storefront-switch";
 export type PaymentMode = "disabled" | "mock" | "refref";
 export type KinescopeDeliveryMode = "open" | "protected";
 export type SaleMode = "CLOSED" | "ACCEPTANCE_ONLY" | "PUBLIC";
@@ -24,6 +25,11 @@ export type CommerceRuntimeConfig = {
     /** Refref vNext surface (`/v1-vnext`, docs/openapi-vnext.yaml) for arrival claims and context close; served from the staged cutover. */
     readonly vnextApiBaseUrl?: string;
   };
+  /**
+   * The owner's storefront switch (storefront-switch.ts). The server attaches the read-only host file;
+   * it is never loaded from env, and without one every storefront is CLOSED.
+   */
+  readonly storefrontSwitch?: StorefrontSwitchSource;
 };
 
 type Environment = Readonly<Record<string, string | undefined>>;
@@ -97,12 +103,11 @@ export function loadCommerceRuntimeConfig(env: Environment = process.env): Comme
   };
 }
 
-export type SaleModePolicyConfig = Pick<CommerceRuntimeConfig, "deployEnvironment" | "paymentMode" | "closedPaidTest">;
+export type SaleModePolicyConfig = Pick<CommerceRuntimeConfig, "deployEnvironment" | "paymentMode" | "closedPaidTest" | "storefrontSwitch">;
 
 export function assertOfferSaleModeAllowed(
   config: SaleModePolicyConfig,
   offer: { readonly kind: "ONLINE_COURSE" | "COURSE_BUNDLE" | "LAB"; readonly accessModel: "FREE" | "PAID"; readonly saleMode: SaleMode },
-  activationExists: boolean,
 ) {
   if (offer.saleMode === "CLOSED") return;
   if (config.closedPaidTest && (offer.kind !== "ONLINE_COURSE"
@@ -113,7 +118,9 @@ export function assertOfferSaleModeAllowed(
   if (config.paymentMode === "mock" && config.deployEnvironment === "production") {
     throw new CommerceConfigurationError("MOCK_FORBIDDEN_IN_PRODUCTION");
   }
-  if (offer.saleMode === "PUBLIC" && !activationExists) throw new CommerceConfigurationError("SALES_ACTIVATION_REQUIRED");
+  // No acceptance qualifies the all-courses bundle yet (ART-240 qualifies one course): an open COURSES
+  // switch never makes it PUBLIC (the fence of migration 0016, kept after sales_activation).
+  if (offer.saleMode === "PUBLIC" && offer.kind === "COURSE_BUNDLE") throw new CommerceConfigurationError("COURSE_BUNDLE_NOT_QUALIFIED");
   if (offer.saleMode === "ACCEPTANCE_ONLY" && config.paymentMode !== "refref" && config.deployEnvironment === "production") {
     throw new CommerceConfigurationError("ACCEPTANCE_OFFER_REQUIRES_REFREF");
   }

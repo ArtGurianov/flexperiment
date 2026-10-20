@@ -3,6 +3,7 @@ import type Database from "better-sqlite3";
 import { assertOfferSaleModeAllowed, type CommerceRuntimeConfig, type SaleMode, type SaleModePolicyConfig } from "./payment-mode";
 import { validPaymentPurpose } from "./payment-purpose";
 import { assertClosedPaidTestOffer } from "./closed-paid-test";
+import { assertStorefrontOpen } from "./storefront-switch";
 
 export type ProductCommand = {
   productRef: string;
@@ -20,26 +21,17 @@ export type ProductCommand = {
 };
 
 /**
- * An activation counts only while its evidence still qualifies its kind. A row that predates a
- * narrowing (a COURSE_BUNDLE activation on ART-240) authorizes nothing, revoked or not.
- */
-const activeSalesActivation = (db: Database.Database, kind: ProductCommand["kind"]) => {
-  const evidenceIssue = salesActivationEvidenceIssue[kind];
-  return evidenceIssue !== undefined && Boolean(db.prepare(
-    "SELECT 1 FROM sales_activation WHERE product_kind=? AND evidence_issue=? AND revoked_at IS NULL").get(kind, evidenceIssue));
-};
-
-/**
- * The one sale-mode gate. Control Room writes and every checkout step evaluate it against the live
- * payment mode and the current activation row, so a PUBLIC offer stops selling the moment its
- * activation is revoked even though the stored sale mode still says PUBLIC.
+ * The one sale-mode gate for Control Room writes. A PUBLIC offer is configured only while its
+ * storefront switch is OPEN (ART-319); checkout re-reads the switch for every paid offer at every step,
+ * so a stop holds even though the stored sale mode still says PUBLIC.
  */
 export function assertLiveOfferSaleMode(
   db: Database.Database,
   config: SaleModePolicyConfig,
   offer: Pick<ProductCommand, "kind" | "accessModel" | "saleMode">,
 ) {
-  assertOfferSaleModeAllowed(config, offer, activeSalesActivation(db, offer.kind));
+  assertOfferSaleModeAllowed(config, offer);
+  if (offer.saleMode === "PUBLIC") assertStorefrontOpen(db, config, offer.kind === "LAB" ? "LAB" : "COURSES", "CONTROL_ROOM");
 }
 
 export function configureProduct(db: Database.Database, config: CommerceRuntimeConfig, command: ProductCommand, now = new Date().toISOString()) {
@@ -197,28 +189,4 @@ export function withdrawProduct(
   apply.immediate();
   const version = (db.prepare("SELECT version FROM products WHERE product_ref=?").get(command.productRef) as { version: number }).version;
   return { productRef: command.productRef, withdrawnAt: now, version };
-}
-
-/**
- * The acceptance run whose evidence may open public sales for each product kind. ART-240 qualifies
- * one ONLINE_COURSE, never COURSE_BUNDLE: a bundle has no acceptance yet, so nothing opens it
- * (migration 0016 holds the same rule).
- */
-export const salesActivationEvidenceIssue: Readonly<Partial<Record<ProductCommand["kind"], string>>> = {
-  ONLINE_COURSE: "ART-240",
-  LAB: "ART-243",
-};
-
-export function activateSales(
-  db: Database.Database,
-  command: { kind: ProductCommand["kind"]; evidenceIssue: string; evidenceSha256: string; actor: string },
-  now = new Date().toISOString(),
-) {
-  if (!["ONLINE_COURSE", "COURSE_BUNDLE", "LAB"].includes(command.kind)) throw new Error("SALES_ACTIVATION_KIND_INVALID");
-  if (!Object.hasOwn(salesActivationEvidenceIssue, command.kind)) throw new Error("SALES_ACTIVATION_NOT_QUALIFIED");
-  if (command.evidenceIssue !== salesActivationEvidenceIssue[command.kind] || !/^[a-f0-9]{64}$/.test(command.evidenceSha256)
-    || !command.actor?.trim()) throw new Error("SALES_ACTIVATION_EVIDENCE_INVALID");
-  db.prepare(`INSERT INTO sales_activation(id,product_kind,evidence_issue,evidence_sha256,activated_by,activated_at)
-    VALUES (?,?,?,?,?,?)`).run(randomUUID(), command.kind, command.evidenceIssue, command.evidenceSha256, command.actor, now);
-  return { kind: command.kind, activatedAt: now };
 }
