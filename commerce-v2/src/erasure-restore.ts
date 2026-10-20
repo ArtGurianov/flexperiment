@@ -24,6 +24,16 @@ const REVIEWED_SCHEMA_SHA256 = new Set([
   "9c464ba0199cd18fa0eb3d5598d3bc0131fd68bd9fad2064676e8801c498eb2b",
   // 0032: order-scoped guest credentials, recovery links and durable admission records.
   "354508649dd6ec29f477b118711913b2fb9b00c979e3f7c2bb895aae2c87f01a",
+  // ART-316: the same reviewed 0025–0032 schemas with a non-null SQL digest
+  // in schema_migrations. Only deployment bookkeeping changes; no subject data.
+  "1a7cb532cc3dcfca00aa28db60c6bdf2107bfd9f4724e208f56ac8884892f533", // 0025 with hashed journal
+  "843b590535499e0ed2b21425366a997752dce678fad5f323c0d94fd35bea67cd", // 0026 with hashed journal
+  "9d79cf6ca02deb196efdac294c440a15d834a21ea5967a14fdc39d4f607c6320", // 0027 with hashed journal
+  "c5cdac066a69425dc8b45e4ee55d00971f5b34cc465d1cd818d882bee8df56ab", // 0028 with hashed journal
+  "7471a6e4dab60bbe9a12049069d17f61ec364a05ca73e18ad938a4750595853a", // 0029 with hashed journal
+  "3e3a8a7e5e6df89e7c51d0da8f9a47cc50f5670da4007abc30bf6558d4f9af5e", // 0030 with hashed journal
+  "06215c8121d4a4fd6ae35697e73b2b1b620e2fd416d37ae1bba0eda5191a1790", // 0031 with hashed journal
+  "60b856fcbe80f36cb32737d850b6fc75356b365e5806d622912e7ec3bfbd53e9", // 0032 with hashed journal
 ]);
 function assertReviewedSchema(db: Database.Database) {
   const schema = db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").all();

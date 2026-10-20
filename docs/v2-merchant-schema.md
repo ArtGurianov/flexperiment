@@ -10,6 +10,45 @@ merchant database. The database is created from
 the ordered migrations under `commerce-v2/migrations`; it is a new lineage and is never
 applied to the frozen v1 database.
 
+## Immutable migration journal (ART-316)
+
+`commerce-v2/migrations/migration.lock` is an ordered, complete SHA-256 manifest
+of the exact SQL bytes. Append the next numbered SQL file and its digest
+together; never change, rename, remove or reorder a committed migration or
+its lock entry. Calculate a new digest with `shasum -a 256 <file>`. Validate
+with `pnpm commerce-v2:check-migrations` from the repository root, using full
+Git history (`git fetch --unshallow` if the checkout is shallow). CI rejects
+changes against every reachable historical SQL/lock revision, including a
+joint SQL/lock rewrite, deletion/restoration and drift on a merged branch.
+
+Startup, the migration CLI and direct application verify the complete bundle
+and the applied journal before running pending SQL. `schema_migrations`
+retains `version` and `applied_at` and adds a non-null lowercase `sha256`.
+Applied rows must form an exact prefix of the locked files; unknown versions,
+gaps and mismatched hashes stop startup before traffic or external work.
+All migration SQL and journal writes run in one immediate transaction.
+
+The first run on a supported pre-digest database upgrades only its journal,
+preserving application rows, versions and original timestamps. The legacy
+allowance is sealed to the 0001–0032 chain at `dc351af2` by a code-pinned chain
+digest; later migrations cannot receive legacy backfilled hashes. A changed
+bundle or invalid legacy journal is refused without a partial upgrade. If
+pending SQL fails, the journal upgrade rolls back too. Take the normal
+independently recoverable backup before an authorized host installation; a
+refusal calls for investigation and recovery, never editing the stored hash,
+deleting journal rows or resetting data. The old version-only ledger cannot
+prove past SQL bytes retrospectively; the upgrade trusts its valid version
+identities within the sealed deployment chain. See the
+[design](plans/2026-10-20-migration-integrity-design.md).
+
+Retention and isolated erasure restore keep their exact legacy fingerprint
+allowlists and also admit the matching 0025–0032 schemas with the hashed
+journal. The current 0032 fingerprint with that journal is
+`60b856fcbe80f36cb32737d850b6fc75356b365e5806d622912e7ec3bfbd53e9`.
+Only deployment bookkeeping changes; no subject-data classification changes.
+Historical release controllers retain their own pinned source/schema and
+must not be retargeted implicitly to this schema.
+
 ## Authority boundary
 
 Flexperiment stores its own customers, catalogue projection, prices, sale
