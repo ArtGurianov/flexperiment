@@ -48,10 +48,15 @@ const addLab = (startsAt = "2026-11-01T09:00:00Z") => {
   activatePublicSales(db, "LAB");
 };
 
-beforeEach(() => {
+function setupDatabase(beforeVersion?: string) {
   db = new Database(":memory:");
   db.pragma("foreign_keys = ON");
-  migrateV2(db);
+  if (beforeVersion) {
+    const directory = join(process.cwd(), "commerce-v2/migrations");
+    for (const version of readdirSync(directory).filter((name) => name.endsWith(".sql") && name < beforeVersion).sort()) {
+      applyV2Migration(db, version, readFileSync(join(directory, version), "utf8"));
+    }
+  } else migrateV2(db);
   rail = new MockPaymentRail();
   db.prepare("INSERT INTO customers(id,email_normalized) VALUES ('customer','student@example.com')").run();
   db.prepare(`INSERT INTO legal_releases(id,storefront,version,manifest_json,effective_at,active)
@@ -60,7 +65,8 @@ beforeEach(() => {
   db.prepare("INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode) VALUES ('offer','course:one','product',10000,'PUBLIC')").run();
   qualifyTestFiscalPolicies(db);
   activatePublicSales(db);
-});
+}
+beforeEach(() => setupDatabase());
 
 describe("durable intent before the first Refref call", () => {
   it("persists the order and line ids and the exact request, with no buyer identity, before resolving", async () => {
@@ -326,12 +332,22 @@ describe("issued quote guarantee", () => {
 
   it("LAB: migration 0031 ends legacy unconfirmed quotes without claiming their missing edit history", async () => {
     addLab();
-    db.exec("DROP TRIGGER lab_occurrences_invalidate_unconfirmed_quotes");
-    db.prepare("DELETE FROM schema_migrations WHERE version='0031_lab_quote_invalidation.sql'").run();
     const quote = await quoted(await preview("upgrade", { offerRef: "lab:november" }));
+    const row = db.prepare("SELECT * FROM checkout_quotes").get() as Record<string, unknown>;
+    db.close(); setupDatabase("0031");
+    addLab();
+    // Import the issued quote through the original DRAFT -> RESOLVING -> REVIEW
+    // transitions. Modern checkout code requires 0032 and cannot run on 0030.
+    const reviewFields = ["base_amount_kopecks", "discount_kopecks", "final_amount_kopecks", "rail_quote_json", "expires_at"];
+    const draft = { ...row, state: "DRAFT", ...Object.fromEntries(reviewFields.map((key) => [key, null])) };
+    const fields = Object.keys(draft);
+    db.prepare(`INSERT INTO checkout_quotes(${fields.join(",")}) VALUES (${fields.map(() => "?").join(",")})`).run(...Object.values(draft));
+    db.prepare("UPDATE checkout_quotes SET state='RESOLVING'").run();
+    db.prepare(`UPDATE checkout_quotes SET state='REVIEW',${reviewFields.map((key) => `${key}=?`).join(",")}`).run(...reviewFields.map((key) => row[key]));
     const version = "0031_lab_quote_invalidation.sql";
     applyV2Migration(db, version, readFileSync(join(process.cwd(), "commerce-v2/migrations", version), "utf8"));
     expect(intent()).toMatchObject({ state: "EXPIRED", consumed_at: null });
+    migrateV2(db); // Current checkout code can run after the complete upgrade.
     await expect(confirm(quote.quoteId, "old-upgrade")).rejects.toThrow("CHECKOUT_QUOTE_STALE");
     expect(count("orders")).toBe(0);
   });

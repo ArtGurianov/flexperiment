@@ -12,6 +12,7 @@
     "commerce:worker": "tsx commerce/src/worker.ts",
     "commerce:migrate": "tsx commerce/src/migrate.ts",
     "commerce-v2:migrate": "tsx commerce-v2/src/migrate.ts",
+    "commerce-v2:check-migrations": "node --import tsx scripts/ci/check-v2-migrations.ts",
     "commerce-v2:seed": "tsx commerce-v2/src/seed-cli.ts",
     "commerce-v2:dev": "tsx watch commerce-v2/src/server.ts",
     "commerce-v2:start": "tsx commerce-v2/src/start.ts",

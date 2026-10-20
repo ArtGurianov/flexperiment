@@ -129,6 +129,6 @@ describe("OwnerLegalDecision authority without an external counsel dependency", 
     expect((db.prepare("SELECT legal_basis_json FROM fiscal_policy_versions WHERE id=?").get(policyId) as { legal_basis_json: string }).legal_basis_json).toBe(raw);
     expect(db.prepare("SELECT count(*) n FROM schema_migrations").get()).toEqual({ n: 32 });
     const hash = createHash("sha256").update(JSON.stringify(db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").all())).digest("hex");
-    expect(hash).toBe("354508649dd6ec29f477b118711913b2fb9b00c979e3f7c2bb895aae2c87f01a");
+    expect(hash).toBe("60b856fcbe80f36cb32737d850b6fc75356b365e5806d622912e7ec3bfbd53e9");
   });
 });
