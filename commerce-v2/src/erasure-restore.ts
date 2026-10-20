@@ -38,7 +38,7 @@ const REVIEWED_SCHEMA_SHA256 = new Set([
   "60b856fcbe80f36cb32737d850b6fc75356b365e5806d622912e7ec3bfbd53e9", // 0032 with hashed journal
   "9959d7e84141c7f73f2573bbfa438f0d161c208582d02c6d09e55ef43289f16b", // 0033 with hashed journal
 ]);
-function assertReviewedSchema(db: Database.Database) {
+export function assertReviewedRestoreSchema(db: Database.Database) {
   const schema = db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").all();
   if (!REVIEWED_SCHEMA_SHA256.has(createHash("sha256").update(JSON.stringify(schema)).digest("hex"))) {
     throw new ErasureLedgerError("ERASURE_RESTORE_UNCLASSIFIED_SCHEMA");
@@ -86,7 +86,7 @@ function applyErasure(db: Database.Database, ledger: VerifiedErasureLedger, keys
     return db.transaction(() => {
       assertDrain?.();
       VerifiedErasureLedger.prototype.assertFresh.call(ledger,now);
-      assertReviewedSchema(db);
+      assertReviewedRestoreSchema(db);
       // Restore admission is NOT based on a watermark stored in the restored DB.
       // Unknown columns/tables/FKs fail the entire transaction, never disable FKs.
       let erasedAccounts = 0; let suppressedEmails = 0;
