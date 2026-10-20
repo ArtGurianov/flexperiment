@@ -58,6 +58,22 @@ describe("full-history migration CI", () => {
     expect(() => checkV2MigrationHistory(repo.root)).toThrow("committed migration/lock deletion");
   });
 
+  it.each(["0001_baseline.sql", "migration.lock"])("rejects %s renamed to .bak and restored with unchanged bytes", (filename) => {
+    const repo = repository();
+    repo.git("config", "diff.renames", "true");
+    const path = `commerce-v2/migrations/${filename}`;
+    const backup = filename.endsWith(".sql") ? path.replace(/\.sql$/, ".bak") : `${path}.bak`;
+    repo.git("mv", path, backup); repo.commit();
+    repo.git("mv", backup, path); repo.commit();
+    // Prove this fixture exercises R100, which a deletion-only log misses
+    // unless rename detection is explicitly disabled by the checker.
+    expect(repo.git("log", "--format=", "--name-status", "--diff-filter=R", "HEAD", "--", "commerce-v2/migrations"))
+      .toContain("R100");
+    expect(repo.git("log", "--full-history", "-m", "--format=", "--name-only", "--diff-filter=D", "HEAD", "--", "commerce-v2/migrations").trim())
+      .toBe("");
+    expect(() => checkV2MigrationHistory(repo.root)).toThrow("committed migration/lock deletion");
+  });
+
   it("rejects removal or renaming of an old migration and its lock entry", () => {
     const repo = repository();
     unlinkSync(join(repo.directory, "0001_baseline.sql"));

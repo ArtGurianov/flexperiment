@@ -45,7 +45,9 @@ export function checkV2MigrationHistory(root = process.cwd()) {
   }
   // Inspect deletion commits too, including delete/restore pairs with identical
   // final bytes. -m exposes changes against both parents of merge commits.
-  const deleted = git("log", "--full-history", "-m", "--format=", "--name-only", "--diff-filter=D", "HEAD", "--", directory)
+  // Disable rename detection so a temporary rename also deletes the protected
+  // original path, even when a later commit restores its exact name and bytes.
+  const deleted = git("log", "--full-history", "-m", "--no-renames", "--format=", "--name-only", "--diff-filter=D", "HEAD", "--", directory)
     .split("\n").filter((path) => path.endsWith(".sql") || path === lockPath);
   if (deleted.length) fail(`committed migration/lock deletion: ${deleted[0]}`);
   return { migrations: current.size, revisions: revisions.length };
