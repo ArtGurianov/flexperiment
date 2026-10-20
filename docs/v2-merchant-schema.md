@@ -279,7 +279,7 @@ does.
   before it may advance the local order. `checkout_attempts` projects that
   protocol without becoming payment authority.
   Frozen V1 snapshots remain readable for historical recovery; new issuance is
-  V2. Neither shape yet implements the target v9 ServiceUnit manifest; see
+  V2. Neither shape yet implements the target v9 purchase manifest (ART-394); see
   [the contract status](refref-v9-contract-status.md).
 - `course_entitlements` is append-only grant evidence per order line. Revoking
   one line never revokes a separate COURSE or ALL_COURSES grant.
