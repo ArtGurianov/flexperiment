@@ -46,6 +46,8 @@ const supportedSchemaSha256 = new Set([
   "9c464ba0199cd18fa0eb3d5598d3bc0131fd68bd9fad2064676e8801c498eb2b",
   // 0032: order-scoped guest credentials, recovery links and durable admission records.
   "354508649dd6ec29f477b118711913b2fb9b00c979e3f7c2bb895aae2c87f01a",
+  // 0033: hold reference/deadline in the classified intent; no new subject store or erasure target.
+  "094641e45ef9046a2195ceef34e2162555b7b245a7019953c83ff7753762e1ba",
 ]);
 const parse = <T>(schema: z.ZodType<T>, value: unknown): T => {
   const result = schema.safeParse(value); return result.success ? result.data : refuse("RETENTION_POLICY_OR_HOLD_INVALID");

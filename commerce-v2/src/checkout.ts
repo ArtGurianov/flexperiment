@@ -329,6 +329,8 @@ type FrozenLineSnapshot = {
   readonly unitRef?: string;
   readonly serviceStartsAt?: string;
   readonly serviceEndsAt?: string;
+  /** Merchant-local reservation; never part of the Refref shared snapshot or attempt. */
+  readonly seatHold?: { readonly ref: string; readonly expiresAt: string };
   readonly occurrence?: {
     readonly occurrenceRef: string;
     readonly title: string;
@@ -490,6 +492,7 @@ type IntentRow = {
   sale_mode_at_quote: "ACCEPTANCE_ONLY" | "PUBLIC";
   catalog_amount_kopecks: number; merchant_discount_kopecks: number; merchant_promotion_snapshot_json: string | null;
   checkout_code_input: string | null; line_snapshot_json: string | null;
+  seat_hold_ref: string | null; seat_hold_expires_at: string | null;
   state: IntentState; failure_code: string | null; customer_action_url: string | null; refref_resolution_id: string | null;
   base_amount_kopecks: number | null; discount_kopecks: number | null; final_amount_kopecks: number | null;
   rail_quote_json: string | null; expires_at: string | null; consumed_at: string | null; created_at: string;
@@ -499,8 +502,8 @@ const intentBy = (db: Database.Database, column: "id" | "preview_idempotency_key
   db.prepare(`SELECT id,customer_id,offer_id,legal_release_id,storefront,order_public_id,line_ref,preview_idempotency_key,
     request_fingerprint,resolution_request_json,sale_mode_at_quote,catalog_amount_kopecks,merchant_discount_kopecks,
     merchant_promotion_snapshot_json,checkout_code_input,line_snapshot_json,state,failure_code,customer_action_url,
-    refref_resolution_id,base_amount_kopecks,discount_kopecks,final_amount_kopecks,rail_quote_json,expires_at,consumed_at,created_at
-    FROM checkout_quotes WHERE ${column}=?`).get(value) as IntentRow | undefined;
+    refref_resolution_id,base_amount_kopecks,discount_kopecks,final_amount_kopecks,rail_quote_json,expires_at,consumed_at,created_at,
+    seat_hold_ref,seat_hold_expires_at FROM checkout_quotes WHERE ${column}=?`).get(value) as IntentRow | undefined;
 
 const storedPricing = (intent: IntentRow): CheckoutQuotePricing => ({
   catalogAmountKopecks: intent.catalog_amount_kopecks,
@@ -588,7 +591,11 @@ function assertIssuedIntentAdmissible(db: Database.Database, config: CheckoutPol
   if (legalRelease(db, intent.storefront)?.id !== intent.legal_release_id || !intent.line_snapshot_json) throw new CheckoutConflictError("CHECKOUT_QUOTE_STALE");
   const frozenLine = JSON.parse(intent.line_snapshot_json) as FrozenLineSnapshot;
   if (offer.kind === "LAB") {
-    const { venue } = assertLabOccurrenceAdmissible(db, offer.occurrence_ref, now);
+    const { venue } = assertLabOccurrenceAdmissible(db, offer.occurrence_ref, now, intent.id);
+    if (!intent.seat_hold_ref || !intent.seat_hold_expires_at || intent.seat_hold_expires_at <= now
+      || frozenLine.seatHold?.ref !== intent.seat_hold_ref || frozenLine.seatHold.expiresAt !== intent.seat_hold_expires_at) {
+      throw new CheckoutConflictError("CHECKOUT_QUOTE_EXPIRED");
+    }
     const current = freezeLine(db, offer, venue).occurrence;
     const frozen = frozenLine.occurrence;
     if (!current || !frozen || current.startsAt !== frozen.startsAt || current.endsAt !== frozen.endsAt
@@ -607,6 +614,7 @@ function intentDeadline(intent: IntentRow) {
   const frozenLine = intent.line_snapshot_json ? JSON.parse(intent.line_snapshot_json) as FrozenLineSnapshot : undefined;
   if (frozenLine?.serviceStartsAt) deadlines.push(new Date(frozenLine.serviceStartsAt).toISOString());
   if (intent.expires_at) deadlines.push(intent.expires_at);
+  if (intent.seat_hold_expires_at) deadlines.push(intent.seat_hold_expires_at);
   return deadlines.sort()[0];
 }
 
@@ -772,6 +780,26 @@ export async function prepareCheckout(
   const lineRef = randomUUID();
   // New-quote admission and the intent's frozen facts, in one write transaction (design §2).
   const draft = db.transaction(() => {
+    // A concurrent prepare may have committed while read-back was awaiting Refref.
+    const existing = intentBy(db, "preview_idempotency_key", input.previewIdempotencyKey)
+      ?? (input.orderPublicId ? intentBy(db, "order_public_id", input.orderPublicId) : undefined);
+    if (existing) {
+      if (existing.customer_id !== input.customerId || existing.request_fingerprint !== fingerprint
+        || (input.orderPublicId !== undefined && input.orderPublicId !== existing.order_public_id)) {
+        throw new CheckoutConflictError("IDEMPOTENCY_KEY_REUSED");
+      }
+      return existing;
+    }
+    // Replace only unconfirmed LAB intents in this verified admission scope. Expiration and
+    // re-acquisition share the write lock: a failure rolls back and preserves the old hold.
+    const candidate = offerByRef(db, input.offerRef);
+    if (candidate?.kind === "LAB") {
+      const scope = paymentAdmissionScope(db, input.customerId, candidate.offer_id, orderPublicId);
+      assertNoOpenPayment(db, scope);
+      db.prepare(`UPDATE checkout_quotes AS intent SET state='EXPIRED',failure_code='CHECKOUT_INTENT_REPLACED',updated_at=@now
+        WHERE ${PAYMENT_ADMISSION_SCOPE} AND consumed_at IS NULL
+          AND state IN ('DRAFT','RESOLVING','CUSTOMER_ACTION_REQUIRED','REVIEW')`).run({ ...scope, now });
+    }
     const offer = assertOfferCanBePurchased(db, config, offerByRef(db, input.offerRef), input.customerId, input.customerEmail, now);
     assertNoOtherPaidTestOrder(db, config, offer.offer_ref);
     if (config.closedPaidTest) readyImmediateCourseAccess(db, offer.course_ref!);
@@ -780,7 +808,10 @@ export async function prepareCheckout(
     const legal = legalRelease(db, storefront);
     if (!legal) throw new Error("LEGAL_RELEASE_REQUIRED");
     assertNoOpenPayment(db, paymentAdmissionScope(db, input.customerId, offer.offer_id, orderPublicId));
-    const lineSnapshot = freezeLine(db, offer, offer.venue);
+    const seatHold = offer.kind === "LAB" ? { ref: randomUUID(), expiresAt: new Date(Math.min(
+      Date.parse(now) + QUOTE_TTL_MS, Date.parse(offer.occurrence_starts_at!),
+    )).toISOString() } : undefined;
+    const lineSnapshot = { ...freezeLine(db, offer, offer.venue), ...(seatHold ? { seatHold } : {}) };
     assertClosedPaidTestFiscal(config, lineSnapshot.fiscal);
     const codeResolution = resolveCheckoutCode(db, input.checkoutCode, offer.offer_ref, offer.price_kopecks, config.merchantPromotionPrefix, now);
     const merchantDiscountKopecks = codeResolution.promotion?.merchantDiscountKopecks ?? 0;
@@ -807,16 +838,16 @@ export async function prepareCheckout(
     db.prepare(`INSERT INTO checkout_quotes
       (id,customer_id,offer_id,legal_release_id,storefront,order_public_id,line_ref,preview_idempotency_key,request_fingerprint,
         resolution_request_json,sale_mode_at_quote,catalog_amount_kopecks,merchant_discount_kopecks,merchant_promotion_id,
-        merchant_promotion_snapshot_json,checkout_code_input,line_snapshot_json,state,created_at,updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'DRAFT',?,?)`).run(
+        merchant_promotion_snapshot_json,checkout_code_input,line_snapshot_json,seat_hold_ref,seat_hold_expires_at,state,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'DRAFT',?,?)`).run(
       intentId, input.customerId, offer.offer_id, legal.id, storefront, orderPublicId, lineRef, input.previewIdempotencyKey, fingerprint,
       JSON.stringify(frozen), offer.sale_mode, offer.price_kopecks, merchantDiscountKopecks,
       codeResolution.promotion?.id ?? null, codeResolution.promotion ? JSON.stringify(codeResolution.promotion) : null,
-      checkoutCodeInput, JSON.stringify(lineSnapshot), now, now,
+      checkoutCodeInput, JSON.stringify(lineSnapshot), seatHold?.ref ?? null, seatHold?.expiresAt ?? null, now, now,
     );
+    return intentBy(db, "id", intentId)!;
   });
-  draft.immediate();
-  return advanceIntent(db, rail, intentBy(db, "id", intentId)!, context, now);
+  return advanceIntent(db, rail, draft.immediate(), context, now);
 }
 
 export async function confirmCheckout(
@@ -867,7 +898,11 @@ export async function confirmCheckout(
   const admissionScope = paymentAdmissionScope(db, input.customerId, pending.offer_id, pending.order_public_id);
   await readBackOpenPayments(db, rail, admissionScope, now);
 
-  const { offer, frozenLine } = assertIssuedIntentAdmissible(db, config, pending, input.customerEmail, now);
+  // These immutable facts build the request. Live admission belongs to create.immediate()
+  // below; a concurrent confirmation must reuse its committed order, not seek another seat.
+  const offer = offerById(db, pending.offer_id);
+  if (!offer) throw new CheckoutConflictError("OFFER_NOT_AVAILABLE");
+  const frozenLine = JSON.parse(pending.line_snapshot_json!) as FrozenLineSnapshot;
   const quote = JSON.parse(pending.rail_quote_json!) as RailQuote;
   const orderId = randomUUID();
   const attemptId = randomUUID();
@@ -912,6 +947,7 @@ export async function confirmCheckout(
     // Final admission of the issued intent and the payment-safety checks, under the same write lock
     // as the order: a second process (CLI) cannot slip a change in between.
     const current = intentBy(db, "id", pending.id)!;
+    if (current.consumed_at) return false;
     if (current.state === "EXPIRED") throw expiredIntentError(current);
     if (current.state !== "REVIEW") throw new Error("CHECKOUT_QUOTE_UNAVAILABLE");
     if (current.expires_at! <= now) throw new CheckoutConflictError("CHECKOUT_QUOTE_EXPIRED");
@@ -931,8 +967,8 @@ export async function confirmCheckout(
     // This is historical delivery evidence, not an entitlement limited to this content version.
     const initialAccessEvidence = frozenLine.requiresImmediateAccess ? readyImmediateCourseAccess(db, offer.course_ref!) : undefined;
     assertNoOtherPaidTestOrder(db, config, offer.offer_ref);
-    // The seat count is re-read under the write lock that creates the order taking it.
-    if (offer.kind === "LAB") assertLabOccurrenceAdmissible(db, offer.occurrence_ref, now);
+    // assertIssuedIntentAdmissible verified the original hold under this lock;
+    // consumed_at below atomically removes it from quote inventory as the order takes its seat.
     if (review) {
       // Re-read under the same write transaction as order creation; no backfilled UI event.
       const current = paidTestReview(db, config, input.customerEmail)!;
@@ -963,8 +999,9 @@ export async function confirmCheckout(
     const consumed = db.prepare("UPDATE checkout_quotes SET state='PAYMENT_CREATING',consumed_at=?,updated_at=? WHERE id=? AND state='REVIEW'")
       .run(now, now, pending.id);
     if (consumed.changes !== 1) throw new Error("CHECKOUT_QUOTE_UNAVAILABLE");
+    return true;
   });
-  create.immediate();
+  if (!create.immediate()) return reconcileCheckout(db, rail, publicId, now);
 
   try {
     const projection = await rail.create(railInput);
