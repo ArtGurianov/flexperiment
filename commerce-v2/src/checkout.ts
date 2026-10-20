@@ -320,6 +320,11 @@ const legalRelease = (db: Database.Database, storefront: Storefront) => db.prepa
 ).get(storefront) as LegalRow | undefined;
 
 const storefrontForOffer = (offer: OfferRow): Storefront => offer.kind === "LAB" ? "LAB" : "COURSES";
+/** The storefront that sells an offer, or `undefined` for an unknown one (refused later by admission). */
+export const offerStorefront = (db: Database.Database, offerRef: string): Storefront | undefined => {
+  const offer = offerByRef(db, offerRef);
+  return offer ? storefrontForOffer(offer) : undefined;
+};
 
 type FrozenLineSnapshot = {
   readonly paymentPurpose: string;

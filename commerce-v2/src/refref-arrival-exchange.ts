@@ -31,8 +31,10 @@ const receiptSchema = z.object({
 const closedSchema = z.object({ browserContextId: z.string(), status: z.literal("CLOSED") });
 const errorSchema = z.object({ error: z.object({ code: z.string() }).passthrough() });
 
-/** Codes a repeat of the same claim cannot change. BROWSER_CONTEXT_IDLE_POLICY_REQUIRED is the owner's to fix. */
-const FINAL_CLAIM_REFUSALS = new Set(["ARRIVAL_PROOF_INVALID", "ARRIVAL_ALREADY_CLAIMED", "CONTEXT_SCOPE_MISMATCH", "INVALID_REQUEST"]);
+/** 409 codes a repeat of the same claim cannot change. BROWSER_CONTEXT_IDLE_POLICY_REQUIRED is the owner's to fix. */
+const FINAL_CONFLICTS = new Set(["ARRIVAL_ALREADY_CLAIMED", "CONTEXT_SCOPE_MISMATCH"]);
+/** Only a closed error-code shape is kept; anything else from the wire is stored as its HTTP status. */
+const storedCode = (code: string, status: number) => /^[A-Z][A-Z0-9_]{0,63}$/.test(code) ? code : `HTTP_${status}`;
 
 export class RefrefArrivalExchange implements ArrivalExchange {
   private readonly request: typeof fetch;
@@ -70,11 +72,12 @@ export class RefrefArrivalExchange implements ArrivalExchange {
       return { kind: "CONFIRMED", claimId: receipt.data.claimId, eligibleUntil: receipt.data.eligibleUntil };
     }
     if (answer.code === "CONTEXT_CLOSED") return { kind: "CONTEXT_CLOSED" };
-    if ((answer.status === 400 || answer.status === 409 || answer.status === 422) && FINAL_CLAIM_REFUSALS.has(answer.code)) {
-      return { kind: "REFUSED", code: answer.code };
+    // The same body is refused the same way again: any 400 (the request itself), any 422 (one
+    // non-oracle code for unknown, foreign, other-origin or late proof) and the final conflicts.
+    if (answer.status === 400 || answer.status === 422 || (answer.status === 409 && FINAL_CONFLICTS.has(answer.code))) {
+      return { kind: "REFUSED", code: storedCode(answer.code, answer.status) };
     }
-    if (answer.status === 422) return { kind: "REFUSED", code: "ARRIVAL_PROOF_INVALID" };
-    return { kind: "UNKNOWN", code: answer.code };
+    return { kind: "UNKNOWN", code: storedCode(answer.code, answer.status) };
   }
 
   async close(browserContextId: string, signal: AbortSignal): Promise<ContextCloseOutcome> {

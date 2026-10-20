@@ -113,7 +113,8 @@ response under the process lifecycle (tracked, drained on SIGTERM), at most
 500 ms per attempt, and again after every later same-context `/v1` request and
 platform page view (Next.js `proxy.ts` → `POST /v1/browser-context/touch`),
 single-flight and at most every 2 s per proof, until the claim window closes.
-Buy (`/v1/checkout/preview`) spends at most 1,500 ms on exchange/readback, then
+Buy (`/v1/checkout/preview`) first refuses an offer of another storefront than the
+forwarding host's (409 `CHECKOUT_STOREFRONT_MISMATCH`), then spends at most 1,500 ms on exchange/readback, then
 freezes `storefrontOrigin`, `browserContextId` and `deliveryDegraded`
 (`TIMEOUT`, `FAILED` or `EXPIRED` when any proof of the context is unconfirmed)
 into the intent; a repeat of the intent sends what it froze. The whole feature
@@ -247,7 +248,8 @@ does.
   the first account seen in it so the next boundary rotates it; the binding
   never leaves Flexperiment and cascades on customer erasure. A LAB context has
   no account boundary. An arrival row keeps the raw proof only while `PENDING`
-  and never past its 30-minute claim window; settled rows keep its SHA-256,
+  and never past 30 minutes from capture (a merchant-local limit that ends at or after Refref's
+  `issuedAt + 30 min` deadline); settled rows keep its SHA-256,
   state (`CONFIRMED`, `FAILED`, `EXPIRED`, `ABANDONED`) and the claim receipt.
   Contexts and their arrivals are deleted once their cookie lifetime has
   passed and no close is outstanding.

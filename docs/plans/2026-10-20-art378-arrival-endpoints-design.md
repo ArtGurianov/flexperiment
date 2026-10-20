@@ -18,7 +18,7 @@ payment or sales activation. The feature is off unless `BROWSER_CONTEXT_ENABLED=
 | Cookie | `__Host-flx-ctx-lms` / `__Host-flx-ctx-lab` | HTTP `Set-Cookie` only; HttpOnly, Secure, SameSite=Lax, Path=/, no Domain; Max-Age per storefront (default 30 days, ≥ 24 h). Distinct names so two origins on one host in development never share a context. |
 | Context IDs | merchant-generated, 256-bit base64url | A presented unknown, expired, rotated or foreign-storefront ID is never adopted; a fresh ID is issued. |
 | After-response work | `commerce-v2/src/after-response.ts` | Tracked tasks, drained on SIGTERM/SIGINT (≤ 2 s). Not an untracked Promise. |
-| Claim client | `commerce-v2/src/refref-arrival-exchange.ts` | Closed body `{arrivalProof, browserContextId, storefrontOrigin}`; 201/200 receipt echo checked. Final: 422, `ARRIVAL_ALREADY_CLAIMED`, `CONTEXT_SCOPE_MISMATCH`, 400. `CONTEXT_CLOSED` re-homes. Everything else (timeout, transport, 5xx, 429, idle policy missing) is UNKNOWN and retried. |
+| Claim client | `commerce-v2/src/refref-arrival-exchange.ts` | Closed body `{arrivalProof, browserContextId, storefrontOrigin}`; 201/200 receipt echo checked. Final for the proof: any 400, any 422, 409 `ARRIVAL_ALREADY_CLAIMED` / `CONTEXT_SCOPE_MISMATCH`; the stored code is the error code if it has the closed `A-Z0-9_` shape, else `HTTP_<status>`. `CONTEXT_CLOSED` re-homes. Everything else (timeout, transport, 5xx, 429, idle policy missing) is UNKNOWN and retried. |
 | Page-view retry | `apps/platform/proxy.ts` | Only with the LMS cookie, never prefetches/assets/API; `event.waitUntil` keeps the internal touch alive. LAB page loads already call `/v1/lab/catalogue` and `/v1/me`. |
 
 ## Lifecycle
@@ -28,8 +28,13 @@ payment or sales activation. The feature is off unless `BROWSER_CONTEXT_ENABLED=
   another origin, `/arrive` or `/v1`; schedule one ≤ 500 ms claim attempt after the response.
 - **Later requests:** every `/v1` request with a context cookie, and every platform page view,
   schedules a retry after its response: single-flight per proof, at most once per 2 s, never after
-  `captured_at + 30 min` (the proof is then EXPIRED and cleared). Merchant capture time is never
-  earlier than Refref `issuedAt`, so the local window never outlives Refref's.
+  `captured_at + 30 min` (the proof is then EXPIRED and cleared). This is a merchant-local retry and
+  retention limit, not Refref's deadline: Refref accepts a first claim until issuer `issuedAt + 30 min`,
+  which the proof does not carry, and capture is never earlier than `issuedAt`, so the local window
+  ends at or after Refref's. A proof delivered late can be retried after Refref stopped accepting it;
+  Refref answers with its single non-oracle 422, recorded as FAILED (`ARRIVAL_PROOF_INVALID`), so a
+  Buy over it is degraded `FAILED`, not `EXPIRED`. An exact claim Refref had already committed is
+  still answered 200 with its receipt.
 - **LMS account boundary:** the first signed-in account seen binds an anonymous context (anonymous
   click → login → Buy keeps the Arrival). Sign-out always rotates, bound or not. A request from a
   different account, or signed out, in a bound context rotates it. Rotation abandons pending proof,
@@ -37,6 +42,9 @@ payment or sales activation. The feature is off unless `BROWSER_CONTEXT_ENABLED=
   acknowledged). A background retry never claims into a context awaiting rotation.
 - **Refref closed the context:** a successor with the same binding takes the unconfirmed proofs and
   reaches the browser on its next cookie-setting response; a closed successor fails the proof.
+- **Storefront isolation:** Buy refuses with 409 `CHECKOUT_STOREFRONT_MISMATCH` when the offer's
+  storefront is not the one of the forwarding host, before any context is admitted or exchanged; an
+  LMS context never attributes a LAB order, nor the reverse.
 - **Buy:** if an intent already exists for the idempotency key or order, its frozen context is sent
   unchanged. Otherwise admit the context, spend ≤ 1,500 ms on attempts, and freeze
   `deliveryDegraded`: FAILED if any proof failed, else EXPIRED if any expired, else TIMEOUT if any is

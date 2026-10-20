@@ -22,6 +22,14 @@ export const BROWSER_CONTEXT_COOKIES: Readonly<Record<Storefront, string>> = {
 };
 export const ARRIVAL_PROOF_PARAM = "arrival";
 export const ARRIVAL_RETURN_PARAM = "to";
+/**
+ * Merchant-local limit for retrying a claim and for keeping the raw proof, counted from capture.
+ * Refref's authoritative deadline is issuer `issuedAt` + 30 minutes, which the proof does not carry:
+ * capture is never earlier than `issuedAt`, so this window ends at or after Refref's. A late-delivered
+ * proof can therefore be retried after Refref stopped accepting it; Refref answers that with the
+ * single non-oracle 422, recorded as FAILED (refref docs/openapi-vnext.yaml `claimArrival`).
+ * (`claim_deadline_at` in migration 0034 holds this merchant limit.)
+ */
 export const CLAIM_WINDOW_MS = 30 * 60_000;
 export const ATTEMPT_CEILING_MS = 500;
 export const BUY_BUDGET_MS = 1_500;

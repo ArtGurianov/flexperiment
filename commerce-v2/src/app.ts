@@ -12,7 +12,7 @@ import { flagOrphanedOverrides } from "./access-overrides";
 import { getEditorialDraft, getEditorialPublished, publishEditorialDraft, relistEditorialCourse, restrictEditorialCourse, saveEditorialDraft, type EditorialDocument } from "./course-editorial";
 import { assertPaymentCreationEnabled, CommerceConfigurationError, type CommerceRuntimeConfig } from "./payment-mode";
 import { saveResumePosition } from "./resume";
-import { CheckoutConflictError, confirmCheckout, frozenResolutionContext, prepareCheckout, reconcileCheckout, type PaidCheckoutAcceptance, type PaymentRail, type ResolutionContext } from "./checkout";
+import { CheckoutConflictError, confirmCheckout, frozenResolutionContext, offerStorefront, prepareCheckout, reconcileCheckout, type PaidCheckoutAcceptance, type PaymentRail, type ResolutionContext } from "./checkout";
 import { ARRIVAL_PROOF_PARAM, ARRIVAL_RETURN_PARAM, cleanArrivalTarget, presentedContextId, storefrontForRequest, type BrowserContexts } from "./browser-context";
 import { configureLabOffer, configureProduct, withdrawProduct } from "./catalog-control";
 import { cancelLabOccurrence, createCity, createLabOccurrence, editLabOccurrence, renameCity } from "./lab-occurrences";
@@ -817,6 +817,10 @@ export function createCommerceV2App(deps: Dependencies) {
       // signed handoff names; never a buyer-supplied value.
       const storefront = guest ? "LAB" : storefrontForRequest(origins, context.req.raw.headers);
       if (handoff && storefront && handoff.storefront !== storefront) throw new Error("CHECKOUT_STOREFRONT_MISMATCH");
+      // An origin buys only its own storefront's offers: an LMS context never attributes a LAB order,
+      // nor the reverse (ART-378). Checked before any context is admitted or exchanged.
+      const offerOwner = offerStorefront(deps.db, body.offerRef);
+      if (storefront && offerOwner && offerOwner !== storefront) throw new CheckoutConflictError("CHECKOUT_STOREFRONT_MISMATCH");
       let resolutionContext: ResolutionContext = guest ? { storefrontOrigin: origins.lab }
         : handoff ? { storefrontOrigin: storefrontOrigin(origins, handoff.storefront) } : {};
       const contexts = deps.browserContexts;
@@ -843,7 +847,7 @@ export function createCommerceV2App(deps: Dependencies) {
         checkoutCode: body.checkoutCode,
         displayedAmountKopecks: body.displayedAmountKopecks,
         orderPublicId,
-        storefront: guest ? "LAB" : handoff?.storefront,
+        storefront: guest ? "LAB" : handoff?.storefront ?? storefront,
         ...resolutionContext,
       }, now().toISOString());
       return context.json({ ...result, ...(guest ? { labLegal: labLegalReview(deps.db) } : {}) }, result.state === "RESOLUTION_PENDING" ? 202 : 200, noStore);

@@ -269,6 +269,23 @@ describe("30-minute exchange and retry on later same-context requests", () => {
     expect(arrivals()[0]).toMatchObject({ state: "EXPIRED", arrival_proof: null });
   });
 
+  it("retries a late-delivered proof only until Refref refuses it, and freezes FAILED, never EXPIRED (review #3)", async () => {
+    // Issued at Refref 8 minutes before the landing: Refref's own window ends 22 minutes after capture,
+    // the merchant's 30 minutes after it. Past 22 minutes Refref answers its single non-oracle 422.
+    exchange.script.push({ kind: "UNKNOWN", code: "TRANSPORT" }, { kind: "REFUSED", code: "ARRIVAL_PROOF_INVALID" });
+    const browser = new Browser(PLATFORM, "A");
+    await browser.arrive(PROOF);
+    await tasks.drain();
+    advance(25 * 60_000);
+    await browser.post("/v1/browser-context/touch");
+    await tasks.drain();
+    expect(arrivals()[0]).toMatchObject({ state: "FAILED", failure_code: "ARRIVAL_PROOF_INVALID", arrival_proof: null, attempts: 2 });
+    advance(3_000);
+    await browser.buy("late");
+    expect(exchange.claims).toHaveLength(2);
+    expect(frozenRequest("late").deliveryDegraded).toEqual({ degraded: true, reason: "FAILED" });
+  });
+
   it("treats a definitive refusal as final for that proof", async () => {
     exchange.script.push({ kind: "REFUSED", code: "ARRIVAL_PROOF_INVALID" });
     const browser = new Browser(LAB);
@@ -554,6 +571,38 @@ describe("LAB guest Buy (ART-384 guest checkout)", () => {
   });
 });
 
+describe("storefront isolation at Buy (review #1)", () => {
+  it.each([
+    ["LMS origin, LAB offer", PLATFORM, "A", "lab:november"],
+    ["LAB origin, LMS offer", LAB, "A", "course:one"],
+  ] as const)("refuses %s before any context is admitted or exchanged", async (_case, host, customer, offerRef) => {
+    addLab();
+    exchange.script.push({ kind: "UNKNOWN", code: "TRANSPORT" });
+    const browser = new Browser(host, customer);
+    await browser.arrive(PROOF);
+    await tasks.drain();
+    const context = browser.context();
+    const claims = exchange.claims.length;
+    advance(3_000);
+    const response = await browser.buy("cross", offerRef);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ code: "CHECKOUT_STOREFRONT_MISMATCH" });
+    expect(response.headers.getSetCookie()).toEqual([]);
+    expect(browser.context()).toBe(context);
+    expect(exchange.claims).toHaveLength(claims);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM checkout_quotes").get()).toEqual({ n: 0 });
+    expect(contextRow(context!)).toMatchObject({ status: "ACTIVE", bound_customer_id: host === PLATFORM ? "A" : null });
+  });
+
+  it("still buys each storefront's own offer from its own origin", async () => {
+    addLab();
+    expect((await new Browser(PLATFORM, "A").buy("own-lms")).status).toBe(200);
+    expect((await new Browser(LAB, "B").buy("own-lab", "lab:november")).status).toBe(200);
+    expect(frozenRequest("own-lms").storefrontOrigin).toBe("http://localhost:3001");
+    expect(frozenRequest("own-lab").storefrontOrigin).toBe("http://localhost:3000");
+  });
+});
+
 describe("no arrival token in logs, analytics or retained state", () => {
   it("keeps the proof out of every log line, Location, frozen intent and settled row", async () => {
     const lines: string[] = [];
@@ -659,6 +708,11 @@ describe("Refref vNext claim client", () => {
     [409, { error: { code: "CONTEXT_CLOSED" } }, { kind: "CONTEXT_CLOSED" }],
     [409, { error: { code: "BROWSER_CONTEXT_IDLE_POLICY_REQUIRED" } }, { kind: "UNKNOWN", code: "BROWSER_CONTEXT_IDLE_POLICY_REQUIRED" }],
     [503, null, { kind: "UNKNOWN", code: "HTTP_503" }],
+    [400, { error: { code: "BAD_REQUEST" } }, { kind: "REFUSED", code: "BAD_REQUEST" }],
+    [400, null, { kind: "REFUSED", code: "HTTP_400" }],
+    [400, { error: { code: "not a <code>" } }, { kind: "REFUSED", code: "HTTP_400" }],
+    [422, { error: { code: "SOMETHING_NEW" } }, { kind: "REFUSED", code: "SOMETHING_NEW" }],
+    [409, { error: { code: "SOMETHING_NEW" } }, { kind: "UNKNOWN", code: "SOMETHING_NEW" }],
     [429, { error: { code: "RATE_LIMITED" } }, { kind: "UNKNOWN", code: "RATE_LIMITED" }],
     [201, { ...receipt, browserContextId: "d".repeat(43) }, { kind: "REFUSED", code: "CLAIM_RECEIPT_MISMATCH" }],
   ])("maps HTTP %i %j", async (status, body, outcome) => {
