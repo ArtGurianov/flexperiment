@@ -26,3 +26,11 @@ documented negative drills, and never substitutes for deployment/erasure admissi
 
 Validate with real SQLite online backup/restore fixtures, post-backup accepted payment/refund tails,
 replays, denied access, preserved merchant facts, fresh erasure suppression and adversarial mismatches.
+
+Review corrections (P1/P2): require both the local order and attempt transition allowlists to admit
+the verified remote outcome. Unpaid terminal witnesses may only replay the same terminal outcome;
+paid witnesses cannot regress to unpaid, and refunded witnesses remain refunded. Partial-refund
+attempts are held for review. A conflict is `RESTORE_LOCAL_MONEY_AHEAD`, before any money/access
+write. The source SQLite must have an exact canonical absolute path: reject aliases, including
+symlinked parent directories, apply live-source exclusions to canonical paths and use that same path
+for permissions, WAL/SHM detection, hashing, custody separation and copying.

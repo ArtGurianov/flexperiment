@@ -28,17 +28,26 @@ function fileHash(filename: string) {
   finally { closeSync(fd); }
   return hash.digest("hex");
 }
+function isRuntimeSource(filename: string) {
+  const liveRoot = "/var/lib/flexperiment-v2";
+  const canonicalLiveRoot = existsSync(liveRoot) ? realpathSync(liveRoot) : join(realpathSync("/var"), "lib", "flexperiment-v2");
+  const defaultDatabase = join(process.cwd(), "commerce-v2-data", "commerce.sqlite");
+  return filename.startsWith(liveRoot) || filename.startsWith(canonicalLiveRoot) || filename === defaultDatabase
+    || (existsSync(defaultDatabase) && filename === realpathSync(defaultDatabase));
+}
 
 /** Always copies a detached source into a NEW private directory. No default/live DB path or migration. */
 export async function runRestoreReconciliation(configFile: string) {
   process.umask(0o077);
   const c = configurationSchema.parse(JSON.parse(privateFile(configFile, 64 * 1024).toString("utf8")));
   const inventory = restoreInventorySchema.parse(JSON.parse(privateFile(c.inventoryFile).toString("utf8")));
-  if (c.sourceDatabase.startsWith("/var/lib/flexperiment-v2")
-    || c.sourceDatabase === join(process.cwd(), "commerce-v2-data", "commerce.sqlite")) throw new Error("RESTORE_ISOLATION_REQUIRED");
-  assertPrivateFile(c.sourceDatabase, Number.MAX_SAFE_INTEGER);
-  if (fileHash(c.sourceDatabase) !== inventory.backupSha256
-    || existsSync(`${c.sourceDatabase}-wal`) || existsSync(`${c.sourceDatabase}-shm`)) throw new Error("RESTORE_BACKUP_IDENTITY_REFUSED");
+  if (isRuntimeSource(c.sourceDatabase)) throw new Error("RESTORE_ISOLATION_REQUIRED");
+  const sourceDatabase = realpathSync(c.sourceDatabase);
+  // Reject every alias, including symlinked parents; all later source I/O uses this exact canonical path.
+  if (sourceDatabase !== c.sourceDatabase || isRuntimeSource(sourceDatabase)) throw new Error("RESTORE_ISOLATION_REQUIRED");
+  assertPrivateFile(sourceDatabase, Number.MAX_SAFE_INTEGER);
+  if (fileHash(sourceDatabase) !== inventory.backupSha256
+    || existsSync(`${sourceDatabase}-wal`) || existsSync(`${sourceDatabase}-shm`)) throw new Error("RESTORE_BACKUP_IDENTITY_REFUSED");
   const output = lstatSync(c.outputDirectory);
   if (!output.isDirectory() || output.isSymbolicLink() || output.uid !== process.getuid?.() || (output.mode & 0o777) !== 0o700
     || realpathSync(c.outputDirectory) !== c.outputDirectory || c.outputDirectory.startsWith("/var/lib/flexperiment-v2")) throw new Error("RESTORE_ISOLATION_REQUIRED");
@@ -47,11 +56,11 @@ export async function runRestoreReconciliation(configFile: string) {
   if (existsSync(databasePath) || existsSync(reportPath)) throw new Error("RESTORE_OUTPUT_ALREADY_EXISTS");
   const keys = readErasureVerificationKeys(c.keysFile, inventory.scope);
   const library = prepareLibraryErasureRead({ file: c.erasureReadConfigFile, scope: inventory.scope, keys,
-    forbiddenRoots: [dirname(c.sourceDatabase), c.outputDirectory] });
+    forbiddenRoots: [dirname(sourceDatabase), c.outputDirectory] });
   let db: Database.Database | undefined;
   try {
     const reader = new RefrefRestoreReader({ apiBaseUrl: c.apiBaseUrl, apiKey: privateFile(c.apiKeyFile, 4096).toString("utf8").trim() });
-    copyFileSync(c.sourceDatabase, databasePath, constants.COPYFILE_EXCL);
+    copyFileSync(sourceDatabase, databasePath, constants.COPYFILE_EXCL);
     // Bind the actual copied bytes too; a changing input is not a detached backup.
     if (fileHash(databasePath) !== inventory.backupSha256) throw new Error("RESTORE_BACKUP_IDENTITY_REFUSED");
     db = new Database(databasePath, { fileMustExist: true }); db.pragma("foreign_keys=ON");

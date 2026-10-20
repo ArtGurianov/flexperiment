@@ -83,8 +83,48 @@ const reconcile = (read = vi.fn(async () => structuredClone(observation)), erasu
 const financial = () => ({ orders: db.prepare("SELECT public_id,state FROM orders ORDER BY public_id").all(),
   entitlements: db.prepare("SELECT * FROM course_entitlements ORDER BY id").all(),
   events: db.prepare("SELECT * FROM audit_log WHERE actor='ISOLATED_RESTORE' ORDER BY id").all() });
+function unpaidOutcome(state: "CANCELLED" | "EXPIRED") {
+  const attempt = observation.order.checkoutAttempts[0]; attempt.status = state;
+  attempt.obligations[0].status = "CANCELLED"; attempt.obligations[0].payment = null;
+  attempt.lineItems[0].refundableAmountKopecks = 0; observation.fulfillment.status = "NOT_READY";
+}
 
 describe("isolated SQLite backup + fresh Refref money tail", () => {
+  it.each([
+    ["CANCELLED", "PENDING", "FULFILLED"], ["EXPIRED", "PENDING", "FULFILLED"],
+    ["CANCELLED", "PENDING", "REFUNDED"], ["EXPIRED", "PENDING", "REFUNDED"],
+    ["PAYMENT_PENDING", "DECLINED", "FULFILLED"], ["PAYMENT_PENDING", "EXPIRED", "FULFILLED"],
+    ["PAYMENT_PENDING", "DECLINED", "REFUNDED"], ["PAYMENT_PENDING", "EXPIRED", "REFUNDED"],
+    ["FULFILLED", "PENDING", "CANCELLED"], ["FULFILLED", "PENDING", "EXPIRED"],
+    ["PAYMENT_PENDING", "PAID", "CANCELLED"], ["PAYMENT_PENDING", "PAID", "EXPIRED"],
+    ["PAYMENT_PENDING", "REFUNDED", "FULFILLED"], ["PAYMENT_PENDING", "REFUNDED", "CANCELLED"],
+    ["REFUNDED", "PENDING", "FULFILLED"], ["REFUNDED", "PENDING", "EXPIRED"],
+    ["CANCELLED", "PENDING", "EXPIRED"], ["EXPIRED", "PENDING", "CANCELLED"],
+    ["PAYMENT_PENDING", "DECLINED", "EXPIRED"], ["PAYMENT_PENDING", "EXPIRED", "CANCELLED"],
+    ["CANCELLED", "PAID", "CANCELLED"], ["FULFILLED", "DECLINED", "FULFILLED"],
+  ])("holds conflicting local order %s / attempt %s against remote %s before money or access changes", async (order, attempt, target) => {
+    await restore();
+    db.prepare("UPDATE orders SET state=?").run(order); db.prepare("UPDATE checkout_attempts SET state=?").run(attempt);
+    if (target === "REFUNDED") refunded();
+    if (target === "CANCELLED" || target === "EXPIRED") unpaidOutcome(target);
+    const before = financial(), attempts = db.prepare("SELECT * FROM checkout_attempts").all();
+    await expect(reconcile()).rejects.toThrow("RESTORE_LOCAL_MONEY_AHEAD");
+    expect(financial()).toEqual(before); expect(db.prepare("SELECT * FROM checkout_attempts").all()).toEqual(attempts);
+    expect(customerCanAccessCourse(db, "customer", "course-one")).toBe(false);
+    expect(db.prepare("SELECT sale_mode FROM offers").get()).toEqual({ sale_mode: "CLOSED" });
+  });
+  it.each([
+    ["CANCELLED", "DECLINED", "CANCELLED"], ["EXPIRED", "EXPIRED", "EXPIRED"],
+    ["FULFILLED", "PAID", "FULFILLED"], ["REFUNDED", "REFUNDED", "REFUNDED"],
+  ])("replays matching terminal order %s / attempt %s against remote %s", async (order, attempt, target) => {
+    await restore();
+    db.prepare("UPDATE orders SET state=?").run(order); db.prepare("UPDATE checkout_attempts SET state=?").run(attempt);
+    if (target === "REFUNDED") refunded();
+    if (target === "CANCELLED" || target === "EXPIRED") unpaidOutcome(target);
+    await reconcile(); const once = financial(); await reconcile(); expect(financial()).toEqual(once);
+    expect(db.prepare("SELECT state FROM orders").get()).toEqual({ state: target });
+    expect(customerCanAccessCourse(db, "customer", "course-one")).toBe(target === "FULFILLED");
+  });
   it("recovers a post-backup payment once, repairs access, freezes checkout, preserves merchant-owned records and reads back", async () => {
     await restore();
     grantManualEntitlement(db, { customerId: "customer", scope: "COURSE", courseRef: "course-one", reason: "manual",

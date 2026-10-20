@@ -34,8 +34,12 @@ reconciliation before using it as current money authority.
 ## Inventory and protected configuration
 
 Use private files (`0600`, owned by the operator, no symlinks/hardlinks) and a new private output
-directory (`0700`, canonical absolute path). Inventory is owner evidence, not proof of completeness
-created by this command. `backupSha256` is the **decrypted detached SQLite's** SHA; preserve the
+directory (`0700`, canonical absolute path). The source SQLite also requires its exact canonical
+absolute path (`realpath`): aliases through symlinked parents are refused before reading custody or
+creating an output. Live-source exclusions, WAL/SHM checks, hashing and copying use the canonical
+source; a symlink cannot disguise a runtime database as a detached backup.
+Inventory is owner evidence, not proof of completeness created by this command.
+`backupSha256` is the **decrypted detached SQLite's** SHA; preserve the
 ciphertext hash separately. `sourceEvidenceSha256` binds the independently reviewed inventory
 evidence, including the (T, X] comparison and merchant-owned recovery decisions.
 
@@ -122,6 +126,13 @@ Manual grants, manual revocations, legal/marketing consent and editorial history
 Used LAB tickets are never reset. Current independent erasure suppression takes precedence over
 restored marketing consent. An operational `DELIVERED` ACK cannot stand in for a local grant; a
 `READY` ACK stays pending for the normal idempotent sweep after separate runtime admission.
+
+Both local order and checkout-attempt transition allowlists must admit the verified remote outcome.
+`CANCELLED`/`DECLINED` may only replay cancellation, `EXPIRED` may only replay expiry, and `REFUNDED`
+may only replay a full refund. A local paid/refund-pending witness cannot become unpaid. A local
+partial-refund attempt requires manual review on this full-only rail. Contradictions return
+`RESTORE_LOCAL_MONEY_AHEAD` before any money fact, entitlement, order or attempt projection is written;
+sales remain closed. Matching terminal outcomes remain idempotent.
 
 Success writes private `reconciliation.json`, with inventory, stable remote, erasure and logical
 database hashes; state is `RECONCILED_CLOSED`, `ownerGo=REQUIRED`, `runtimeAdmission=PENDING`.

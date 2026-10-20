@@ -1,8 +1,8 @@
 import Database from "better-sqlite3";
 import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { migrateV2 } from "../src/db";
 import { VerifiedErasureLedger, issueErasureCheckpoint, type ErasureKeys } from "../src/erasure-ledger";
@@ -72,5 +72,15 @@ describe("one-shot recovery CLI isolation and reopened read-back", () => {
     const db = new Database(join(output, "reconciled.sqlite"));
     try { db.exec("INSERT INTO customers(id,email_normalized) VALUES ('unexpected','unexpected@example.test')"); } finally { db.close(); }
     expect(() => verifyRestoreReconciliation(file)).toThrow("RESTORE_READBACK_FAILED");
+  });
+  it.each(["parent-directory", "file"])("refuses a source alias through a symlinked %s before copying or reading custody", async kind => {
+    const sourceHash = bytesHash(source), alias = join(root, "source-alias");
+    symlinkSync(kind === "parent-directory" ? dirname(source) : source, alias, kind === "parent-directory" ? "dir" : "file");
+    const c = JSON.parse(readFileSync(config, "utf8"));
+    c.sourceDatabase = kind === "parent-directory" ? join(alias, basename(source)) : alias;
+    writeFileSync(config, JSON.stringify(c));
+    await expect(runRestoreReconciliation(config)).rejects.toThrow("RESTORE_ISOLATION_REQUIRED");
+    expect(existsSync(join(output, "reconciled.sqlite"))).toBe(false);
+    expect(libraryReader.prepareLibraryErasureRead).not.toHaveBeenCalled(); expect(bytesHash(source)).toBe(sourceHash);
   });
 });

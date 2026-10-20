@@ -74,15 +74,44 @@ function freezeSales(db: Database.Database, now: string) {
     db.prepare("UPDATE sales_activation SET revoked_at=?,revocation_reason='ISOLATED_RESTORE' WHERE revoked_at IS NULL").run(now);
   }).immediate();
 }
-type LocalOrder = { id: string; public_id: string; customer_id: string; state: string; total_kopecks: number;
+type LocalOrderState = "DRAFT" | "PAYMENT_PENDING" | "FULFILLED" | "EXPIRED" | "CANCELLED" | "REFUND_PENDING" | "REFUNDED" | "REVIEW_REQUIRED";
+type LocalAttemptState = "CREATING" | "CREATE_UNKNOWN" | "PENDING" | "CUSTOMER_ACTION_REQUIRED" | "PAID" | "DECLINED" | "EXPIRED"
+  | "REFUND_PENDING" | "PARTIALLY_REFUNDED" | "REFUNDED" | "REVIEW_REQUIRED";
+type RecoveryOrderState = "FULFILLED" | "REFUNDED" | "CANCELLED" | "EXPIRED";
+// Both local witnesses must admit the independently verified remote outcome. A terminal unpaid
+// outcome is never replaced by accepted money (or another unpaid terminal), and paid/refunded
+// evidence is never erased by an unpaid outcome. Unknown states have no permitted transition.
+const ORDER_RECOVERY_TARGETS: Readonly<Record<LocalOrderState, readonly RecoveryOrderState[]>> = {
+  DRAFT: ["FULFILLED", "REFUNDED", "CANCELLED", "EXPIRED"],
+  PAYMENT_PENDING: ["FULFILLED", "REFUNDED", "CANCELLED", "EXPIRED"],
+  REVIEW_REQUIRED: ["FULFILLED", "REFUNDED", "CANCELLED", "EXPIRED"],
+  FULFILLED: ["FULFILLED", "REFUNDED"], REFUND_PENDING: ["FULFILLED", "REFUNDED"],
+  CANCELLED: ["CANCELLED"], EXPIRED: ["EXPIRED"], REFUNDED: ["REFUNDED"],
+};
+const ATTEMPT_RECOVERY_TARGETS: Readonly<Record<LocalAttemptState, readonly RecoveryOrderState[]>> = {
+  CREATING: ["FULFILLED", "REFUNDED", "CANCELLED", "EXPIRED"],
+  CREATE_UNKNOWN: ["FULFILLED", "REFUNDED", "CANCELLED", "EXPIRED"],
+  PENDING: ["FULFILLED", "REFUNDED", "CANCELLED", "EXPIRED"],
+  CUSTOMER_ACTION_REQUIRED: ["FULFILLED", "REFUNDED", "CANCELLED", "EXPIRED"],
+  REVIEW_REQUIRED: ["FULFILLED", "REFUNDED", "CANCELLED", "EXPIRED"],
+  PAID: ["FULFILLED", "REFUNDED"], REFUND_PENDING: ["FULFILLED", "REFUNDED"],
+  DECLINED: ["CANCELLED"], EXPIRED: ["EXPIRED"], REFUNDED: ["REFUNDED"],
+  PARTIALLY_REFUNDED: [], // This recovery tool supports only a single full refund.
+};
+function assertLocalRecoveryTransition(order: LocalOrder, attempt: LocalAttempt, target: RecoveryOrderState) {
+  if (!ORDER_RECOVERY_TARGETS[order.state]?.includes(target) || !ATTEMPT_RECOVERY_TARGETS[attempt.state]?.includes(target)) {
+    fail("RESTORE_LOCAL_MONEY_AHEAD");
+  }
+}
+type LocalOrder = { id: string; public_id: string; customer_id: string; state: LocalOrderState; total_kopecks: number;
   currency: string; checkout_snapshot_json: string; snapshot_hash: string; legal_release_id: string };
 type LocalLine = { id: string; order_id: string; offer_ref_snapshot: string; unit_amount_kopecks: number;
   kind: "ONLINE_COURSE" | "COURSE_BUNDLE" | "LAB"; course_ref: string | null; occurrence_ref: string | null };
-type LocalAttempt = { id: string; refref_attempt_id: string | null; refref_resolution_id: string | null;
+type LocalAttempt = { id: string; state: LocalAttemptState; refref_attempt_id: string | null; refref_resolution_id: string | null;
   refref_snapshot_hash: string | null; request_payload_json: string; fulfillment_acknowledged_at: string | null };
 type Entitlement = { customer_id: string; scope: string; course_ref: string | null; revoked_at: string | null; revocation_reason: string | null };
 type Plan = { order: LocalOrder; line: LocalLine; localAttempt: LocalAttempt; observation: RecoveryObservation;
-  state: "FULFILLED" | "REFUNDED" | "CANCELLED" | "EXPIRED"; entitlement?: Entitlement };
+  state: RecoveryOrderState; entitlement?: Entitlement };
 
 function localOrders(db: Database.Database) {
   const rows = db.prepare("SELECT * FROM orders ORDER BY public_id").all() as LocalOrder[];
@@ -161,7 +190,7 @@ function planOrder(db: Database.Database, order: LocalOrder, item: RestoreInvent
       || !["CANCELLED", "EXPIRED"].includes(attempt.status)) fail("RESTORE_PAYMENT_REVIEW_REQUIRED");
     state = attempt.status === "EXPIRED" ? "EXPIRED" : "CANCELLED";
   }
-  if (order.state === "REFUNDED" && state !== "REFUNDED") fail("RESTORE_LOCAL_MONEY_AHEAD");
+  assertLocalRecoveryTransition(order, localAttempt, state);
   const entitlement = db.prepare("SELECT * FROM course_entitlements WHERE source_order_line_id=?").get(line.id) as Entitlement | undefined;
   if (entitlement && (entitlement.customer_id !== order.customer_id || line.kind === "LAB"
     || entitlement.scope !== (line.kind === "COURSE_BUNDLE" ? "ALL_COURSES" : "COURSE") || entitlement.course_ref !== line.course_ref
