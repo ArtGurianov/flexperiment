@@ -8,6 +8,7 @@ import { installationFixture } from "./fixtures/erasure-installation";
 // Import the real server composition, replacing only its socket and external IO.
 // No mock auth/session, payment rail, database, migration or application handler.
 const runtime = vi.hoisted(() => ({ db: undefined as Database.Database | undefined, serve: vi.fn(),
+  tamperMigrationJournal: false,
   installationState: "NEVER_INSTALLED" as "NEVER_INSTALLED" | "REQUIRED" }));
 vi.mock("@hono/node-server", () => ({ serve: runtime.serve }));
 vi.mock("../src/erasure-installation", async (load) => {
@@ -20,7 +21,12 @@ vi.mock("../src/erasure-installation", async (load) => {
 vi.mock("../src/db", async (load) => {
   const actual = await load<typeof import("../src/db")>();
   return { ...actual, openV2Database: vi.fn(() => {
-    runtime.db = actual.openV2Database(":memory:"); return runtime.db;
+    runtime.db = actual.openV2Database(":memory:");
+    if (runtime.tamperMigrationJournal) {
+      actual.migrateV2(runtime.db);
+      runtime.db.prepare("UPDATE schema_migrations SET sha256=? WHERE version='0001_v2_baseline.sql'").run("a".repeat(64));
+    }
+    return runtime.db;
   }) };
 });
 import { openV2Database } from "../src/db";
@@ -52,6 +58,7 @@ let previousExitCode: typeof process.exitCode;
 beforeEach(() => {
   previousExitCode = process.exitCode;
   runtime.installationState = "NEVER_INSTALLED";
+  runtime.tamperMigrationJournal = false;
   vi.resetModules(); vi.clearAllMocks();
   const environment: Record<string, string | undefined> = {
     NODE_ENV: "production", DEPLOY_ENV: "production", PAYMENT_MODE: "disabled", SOURCE_COMMIT: sha,
@@ -91,6 +98,13 @@ afterEach(() => {
 });
 
 describe("ART-162 / ART-179 normal production server, payment disabled", () => {
+  it("refuses a migration digest mismatch before serving traffic or making external calls", async () => {
+    runtime.tamperMigrationJournal = true;
+    const { serverStartup } = await import("../src/server");
+    await expect(serverStartup).rejects.toThrow("V2_MIGRATION_LEDGER_DIGEST_MISMATCH");
+    expect(runtime.serve).not.toHaveBeenCalled();
+    expect(fetcher).not.toHaveBeenCalled();
+  });
   it("keeps anonymous LAB creation/mail closed when the real server has no trusted socket metadata", async () => {
     await boot();
     for (const path of ["/v1/lab/guest/start", "/v1/lab/guest/recover"]) {

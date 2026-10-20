@@ -1,4 +1,4 @@
-import { copyFileSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
@@ -6,6 +6,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { activateSales, assertLiveOfferSaleMode, configureProduct, withdrawProduct } from "../src/catalog-control";
 import { migrateV2 } from "../src/db";
 import { loadCommerceRuntimeConfig } from "../src/payment-mode";
+import { readV2Migrations } from "../src/migration-integrity";
+import { writeMigrationBundle } from "./fixtures/migrations";
 
 let db: Database.Database;
 beforeEach(() => { db = new Database(":memory:"); db.pragma("foreign_keys = ON"); migrateV2(db); });
@@ -150,9 +152,8 @@ describe("ONLINE_COURSE activation fence (migration 0016)", () => {
 
   /** A database as it was before 0016: every migration up to it, from a copy of the directory. */
   const before0016 = () => {
-    const source = join(__dirname, "..", "migrations");
     const dir = mkdtempSync(join(tmpdir(), "fx-0016-"));
-    for (const name of readdirSync(source)) if (name.endsWith(".sql") && name < "0016") copyFileSync(join(source, name), join(dir, name));
+    writeMigrationBundle(dir, Object.fromEntries(readV2Migrations().filter(({ version }) => version < "0016").map(({ version, sql }) => [version, sql])));
     const old = new Database(":memory:");
     old.pragma("foreign_keys = ON");
     migrateV2(old, dir);

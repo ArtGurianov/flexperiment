@@ -38,6 +38,9 @@ Migration 0033 expires old unconfirmed LAB quotes because they never reserved
 capacity. It preserves consumed intents and existing order seats. The reviewed
 schema fingerprints in erasure/retention include the added intent columns and
 triggers; customer ownership and erasure targets remain those of the intent.
+After integration with ART-316, `migration.lock` records the exact unchanged
+0033 SQL digest, and the reviewed schema also covers its hashed migration journal.
+The legacy journal upgrade allowance remains limited to 0001–0032.
 
 Validation covers two independent SQLite processes contending for the last seat,
 concurrent identical requests, replacement rollback, expired hold reuse, frozen
