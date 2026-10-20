@@ -130,7 +130,7 @@ export function controlRoomLabOccurrences(db: Database.Database, now = new Date(
       withdrawn_at: string | null; offer_ref: string | null; sale_mode: SaleMode | null; price_kopecks: number | null;
       payment_purpose: string | null; acceptance_allowlist_json: string | null }>;
   return { generatedAt: now, occurrences: rows.map((row) => {
-    const inventory = labSeatInventory(db, row);
+    const inventory = labSeatInventory(db, row, now);
     return {
       occurrenceRef: row.occurrence_ref, cityId: row.city_id, cityTitle: row.city_title, title: row.title,
       startsAt: row.starts_at, endsAt: row.ends_at, timezone: row.timezone, phase: occurrencePhase(row, now), visibility: row.visibility,

@@ -38,6 +38,8 @@ export type LabSeatInventory = {
   readonly sold: number;
   /** Seats of orders whose payment may still settle; no TTL frees them, only a final outcome. */
   readonly pending: number;
+  /** Unconfirmed, unexpired intent holds, included in pending and customerCommitted. */
+  readonly held: number;
   readonly customerCommitted: number;
   readonly available: number;
 };
@@ -106,17 +108,26 @@ const occurrenceRow = (db: Database.Database, occurrenceRef: string) =>
 /**
  * The one seat partition. A seat is released only by a final order outcome (expired, declined,
  * refunded); any other or unknown state keeps it, so an uncertain payment never loses its seat.
- * ART-200 adds quote holds to `pending`.
+ * Unconfirmed holds count only while their intent and both deadlines remain live.
+ * Confirmation replaces that hold with the order in the same write transaction.
  */
-export function labSeatInventory(db: Database.Database, occurrence: Pick<LabOccurrenceRow, "occurrence_ref" | "capacity" | "admin_reserved_seats">): LabSeatInventory {
+export function labSeatInventory(db: Database.Database, occurrence: Pick<LabOccurrenceRow, "occurrence_ref" | "capacity" | "admin_reserved_seats">,
+  now = new Date().toISOString(), excludeQuoteId: string | null = null): LabSeatInventory {
   const row = db.prepare(`SELECT
       COUNT(*) FILTER (WHERE orders.state NOT IN ('EXPIRED','CANCELLED','REFUNDED')) AS committed,
       COUNT(*) FILTER (WHERE orders.state IN ('FULFILLED','REFUND_PENDING')) AS sold
     FROM order_lines line JOIN orders ON orders.id=line.order_id JOIN products product ON product.id=line.product_id
     WHERE product.occurrence_ref=?`).get(occurrence.occurrence_ref) as { committed: number; sold: number };
-  const customerCommitted = Number(row.committed);
+  const { held } = db.prepare(`SELECT COUNT(*) AS held FROM checkout_quotes intent
+    JOIN offers offer ON offer.id=intent.offer_id JOIN products product ON product.id=offer.product_id
+    WHERE product.occurrence_ref=? AND intent.consumed_at IS NULL
+      AND intent.state IN ('DRAFT','RESOLVING','CUSTOMER_ACTION_REQUIRED','REVIEW')
+      AND intent.seat_hold_ref IS NOT NULL AND julianday(intent.seat_hold_expires_at)>julianday(?)
+      AND (intent.expires_at IS NULL OR julianday(intent.expires_at)>julianday(?))
+      AND (? IS NULL OR intent.id<>?)`).get(occurrence.occurrence_ref, now, now, excludeQuoteId, excludeQuoteId) as { held: number };
+  const customerCommitted = Number(row.committed) + held;
   return { capacity: occurrence.capacity, adminReservedSeats: occurrence.admin_reserved_seats, sold: Number(row.sold),
-    pending: customerCommitted - Number(row.sold), customerCommitted,
+    pending: customerCommitted - Number(row.sold), held, customerCommitted,
     available: occurrence.capacity - occurrence.admin_reserved_seats - customerCommitted };
 }
 
@@ -129,7 +140,7 @@ const assertInventoryTarget = (inventory: LabSeatInventory, capacity: number, ad
  * Live admission of a LAB occurrence for a new quote or order: scheduled, not started, a declared
  * venue and a free seat. Visibility is not a sales control; an UNLISTED occurrence sells by link.
  */
-export function assertLabOccurrenceAdmissible(db: Database.Database, occurrenceRef: string | null, now: string) {
+export function assertLabOccurrenceAdmissible(db: Database.Database, occurrenceRef: string | null, now: string, excludeQuoteId: string | null = null) {
   const row = occurrenceRef ? occurrenceRow(db, occurrenceRef) : undefined;
   if (!row) throw new CheckoutConflictError("LAB_OCCURRENCE_NOT_FOUND");
   const phase = occurrencePhase(row, now);
@@ -137,7 +148,7 @@ export function assertLabOccurrenceAdmissible(db: Database.Database, occurrenceR
   if (phase !== "SCHEDULED") throw new CheckoutConflictError("LAB_OCCURRENCE_STARTED");
   const venue = venueDisclosure(row);
   if (!venue) throw new CheckoutConflictError("LAB_VENUE_UNDECLARED");
-  if (labSeatInventory(db, row).available < 1) throw new CheckoutConflictError("LAB_OCCURRENCE_SOLD_OUT");
+  if (labSeatInventory(db, row, now, excludeQuoteId).available < 1) throw new CheckoutConflictError("LAB_OCCURRENCE_SOLD_OUT");
   const buyerVenue: BuyerVenueDisclosure = venue.status === "CONFIRMED"
     ? { status: venue.status, name: venue.name, address: venue.address } : venue;
   return { row, venue: buyerVenue };
@@ -286,7 +297,7 @@ export function editLabOccurrence(db: Database.Database, command: {
     if (patch.venue === undefined && next.venue_status === "TO_BE_ANNOUNCED"
       && Date.parse(next.venue_announce_by!) >= Date.parse(next.starts_at)) throw new Error("LAB_VENUE_ANNOUNCEMENT_TOO_LATE");
     if (next.visibility === "LISTED" && !next.venue_status) throw new Error("LAB_VENUE_UNDECLARED");
-    const inventory = labSeatInventory(db, before);
+    const inventory = labSeatInventory(db, before, now);
     const scheduleChanged = changed.some((field) => (SCHEDULE_FIELDS as readonly string[]).includes(field));
     if (scheduleChanged) {
       if (phase !== "SCHEDULED") throw new Error("LAB_OCCURRENCE_STARTED");
@@ -331,7 +342,9 @@ export function cancelLabOccurrence(db: Database.Database, command: {
     const phase = occurrencePhase(before, now);
     if (phase === "CANCELLED") throw new Error("LAB_OCCURRENCE_CANCELLED");
     if (phase === "FINISHED") throw new Error("LAB_OCCURRENCE_FINISHED");
-    if (labSeatInventory(db, before).customerCommitted > 0) throw new Error("LAB_OCCURRENCE_HAS_COMMITTED_SEATS");
+    const inventory = labSeatInventory(db, before, now);
+    // Unconfirmed quotes are invalidated by the lifecycle trigger; started orders need ART-203.
+    if (inventory.customerCommitted > inventory.held) throw new Error("LAB_OCCURRENCE_HAS_COMMITTED_SEATS");
     const product = db.prepare("SELECT id FROM products WHERE occurrence_ref=?").get(command.occurrenceRef) as { id: string } | undefined;
     if (product) {
       db.prepare("UPDATE offers SET sale_mode='CLOSED',updated_at=? WHERE product_id=? AND sale_mode<>'CLOSED'").run(now, product.id);

@@ -1,7 +1,10 @@
 import { retireFiscalPolicy } from "../src/fiscal-policy";
 import { RefrefPaymentRail } from "../src/refref-payment-rail";
-import { cancelLabOccurrence, labSeatInventory, type LabOccurrenceRow } from "../src/lab-occurrences";
+import { cancelLabOccurrence, editLabOccurrence, labSeatInventory, type LabOccurrenceRow } from "../src/lab-occurrences";
 import Database from "better-sqlite3";
+import { fork } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -232,14 +235,14 @@ describe("two tabs", () => {
     expect(count("orders")).toBe(1);
   });
 
-  it("LAB: a quote opened beside one that was paid is not paid again; a new intent afterwards is a deliberate second ticket", async () => {
+  it("LAB: replacing an intent makes the old tab unpayable; a fresh intent after payment buys a second ticket", async () => {
     addLab();
     const lab = (key: string, now = T0) => prepareCheckout(db, rail, testCheckoutConfig,
       { ...customer, offerRef: "lab:november", previewIdempotencyKey: key }, now);
     const one = await quoted(await lab("lab-one"));
     const two = await quoted(await lab("lab-two"));
-    expect(await confirm(one.quoteId, "lab-pay-one")).toMatchObject({ state: "PAID" });
-    await expect(confirm(two.quoteId, "lab-pay-two")).rejects.toThrow("CHECKOUT_ALREADY_PAID");
+    await expect(confirm(one.quoteId, "lab-pay-one")).rejects.toThrow("CHECKOUT_INTENT_REPLACED");
+    expect(await confirm(two.quoteId, "lab-pay-two")).toMatchObject({ state: "PAID" });
     const three = await quoted(await lab("lab-three", at(2)));
     expect(await confirm(three.quoteId, "lab-pay-three", at(3))).toMatchObject({ state: "PAID" });
     expect(count("orders")).toBe(2);
@@ -337,9 +340,11 @@ describe("issued quote guarantee", () => {
     db.close(); setupDatabase("0031");
     addLab();
     // Import the issued quote through the original DRAFT -> RESOLVING -> REVIEW
-    // transitions. Modern checkout code requires 0032 and cannot run on 0030.
+    // transitions. Modern checkout code requires 0033 and cannot run on 0030.
     const reviewFields = ["base_amount_kopecks", "discount_kopecks", "final_amount_kopecks", "rail_quote_json", "expires_at"];
-    const draft = { ...row, state: "DRAFT", ...Object.fromEntries(reviewFields.map((key) => [key, null])) };
+    const legacyColumns = new Set((db.pragma("table_info(checkout_quotes)") as Array<{ name: string }>).map(column => column.name));
+    const draft = Object.fromEntries(Object.entries({ ...row, state: "DRAFT",
+      ...Object.fromEntries(reviewFields.map((key) => [key, null])) }).filter(([key]) => legacyColumns.has(key)));
     const fields = Object.keys(draft);
     db.prepare(`INSERT INTO checkout_quotes(${fields.join(",")}) VALUES (${fields.map(() => "?").join(",")})`).run(...Object.values(draft));
     db.prepare("UPDATE checkout_quotes SET state='RESOLVING'").run();
@@ -494,20 +499,19 @@ describe("HTTP", () => {
     expect(count("orders")).toBe(0);
   });
 
-  it("answers the loser of two buyers confirming the last LAB seat with repeatable HTTP 409", async () => {
+  it("refuses the second last-seat preview with HTTP 409 while the held quote remains confirmable", async () => {
     addLab();
     db.exec("UPDATE lab_occurrences SET capacity=1");
     db.prepare("INSERT INTO customers(id,email_normalized) VALUES ('second','second@example.com')").run();
     const one = await (await post("/v1/checkout/preview", "seat-one", { offerRef: "lab:november" })).json() as { quoteId: string };
-    const two = await (await post("/v1/checkout/preview", "seat-two", { offerRef: "lab:november" }, T0, "second")).json() as { quoteId: string };
     const create = vi.spyOn(rail, "create");
-    expect((await post("/v1/checkout", "pay-one", { quoteId: one.quoteId })).status).toBe(201);
     for (let repeat = 0; repeat < 2; repeat++) {
-      const refused = await post("/v1/checkout", "pay-two", { quoteId: two.quoteId }, T0, "second");
+      const refused = await post("/v1/checkout/preview", "seat-two", { offerRef: "lab:november" }, T0, "second");
       expect(refused.status).toBe(409);
       expect(refused.headers.get("cache-control")).toBe("no-store");
       expect(await refused.json()).toEqual({ code: "LAB_OCCURRENCE_SOLD_OUT" });
     }
+    expect((await post("/v1/checkout", "pay-one", { quoteId: one.quoteId })).status).toBe(201);
     expect(create).toHaveBeenCalledTimes(1);
     expect(count("orders")).toBe(1);
     expect(count("checkout_attempts")).toBe(1);
@@ -709,5 +713,227 @@ describe("review regressions", () => {
     expect(labSeatInventory(db, row)).toMatchObject({ pending: 1, available: 19 });
     expect(await preview("uncertain-lab", { offerRef: "lab:november", scenario: "ambiguous_create" }, at(20)))
       .toMatchObject({ orderPublicId: intent().order_public_id });
+  });
+});
+
+
+describe("ART-200 merchant-local LAB holds", () => {
+  const lab = (key: string, now = T0, extra: Partial<Parameters<typeof prepareCheckout>[3]> = {}) =>
+    preview(key, { offerRef: "lab:november", ...extra }, now);
+  const inventory = (now = T0) => labSeatInventory(db,
+    db.prepare("SELECT * FROM lab_occurrences").get() as LabOccurrenceRow, now);
+  const hold = (quoteId: string) => db.prepare("SELECT seat_hold_ref,seat_hold_expires_at,line_snapshot_json FROM checkout_quotes WHERE id=?")
+    .get(quoteId) as { seat_hold_ref: string; seat_hold_expires_at: string; line_snapshot_json: string };
+
+  it("reserves before resolution, reuses the same hold, freezes its deadline and converts it after commit", async () => {
+    addLab(); db.exec("UPDATE lab_occurrences SET capacity=1");
+    const resolve = rail.resolve.bind(rail);
+    vi.spyOn(rail, "resolve").mockImplementation(async input => {
+      expect(db.inTransaction).toBe(false);
+      expect(inventory()).toMatchObject({ held: 1, pending: 1, available: 0 });
+      return resolve(input);
+    });
+    const q = await quoted(await lab("held"));
+    const first = hold(q.quoteId);
+    expect(JSON.parse(first.line_snapshot_json).seatHold).toEqual({ ref: first.seat_hold_ref, expiresAt: at(15) });
+    await lab("held", at(2));
+    expect(hold(q.quoteId)).toEqual(first);
+    expect(() => db.prepare("UPDATE checkout_quotes SET seat_hold_expires_at=?").run(at(30))).toThrow("CHECKOUT_SEAT_HOLD_FROZEN");
+    const create = rail.create.bind(rail);
+    vi.spyOn(rail, "create").mockImplementation(async input => {
+      expect(db.inTransaction).toBe(false);
+      expect(inventory(at(3))).toMatchObject({ held: 0, pending: 1, available: 0 });
+      expect(count("orders")).toBe(1); expect(count("checkout_attempts")).toBe(1);
+      expect(JSON.stringify(input)).not.toMatch(/inventoryReservation|latePaymentPolicy|seatHold/);
+      return create(input);
+    });
+    db.exec("UPDATE offers SET sale_mode='CLOSED',price_kopecks=999999 WHERE id='lab-offer'");
+    expect(await confirm(q.quoteId, "pay", at(3))).toMatchObject({ state: "PAID" });
+    expect(inventory(at(4))).toMatchObject({ held: 0, pending: 0, sold: 1, available: 0 });
+  });
+
+  it("frees an expired unconfirmed hold and refuses its old quote after another buyer takes the seat", async () => {
+    addLab(); db.exec("UPDATE lab_occurrences SET capacity=1");
+    const old = await quoted(await lab("old"));
+    expect(inventory(at(15))).toMatchObject({ held: 0, available: 1 });
+    db.prepare("INSERT INTO customers(id,email_normalized) VALUES ('second','second@example.com')").run();
+    await quoted(await lab("second", at(15), { customerId: "second", customerEmail: "second@example.com" }));
+    await expect(confirm(old.quoteId, "old-pay", at(16))).rejects.toThrow("CHECKOUT_QUOTE_EXPIRED");
+    expect(count("orders")).toBe(0);
+    expect(inventory(at(16))).toMatchObject({ held: 1, available: 0 });
+  });
+
+  it("replaces a hold atomically and rolls the replacement back if new admission fails", async () => {
+    addLab(); db.exec("UPDATE lab_occurrences SET capacity=1");
+    const old = await quoted(await lab("old"));
+    db.exec("UPDATE offers SET sale_mode='CLOSED' WHERE id='lab-offer'");
+    await expect(lab("failed", at(1))).rejects.toThrow("OFFER_CLOSED");
+    expect(db.prepare("SELECT state FROM checkout_quotes WHERE id=?").get(old.quoteId)).toEqual({ state: "REVIEW" });
+    db.exec("UPDATE offers SET sale_mode='PUBLIC' WHERE id='lab-offer'");
+    const fresh = await quoted(await lab("new", at(2), { checkoutCode: "PARTNER" }));
+    expect(fresh.quoteId).not.toBe(old.quoteId);
+    expect(inventory(at(3))).toMatchObject({ held: 1, available: 0 });
+    await expect(confirm(old.quoteId, "old-pay", at(3))).rejects.toThrow("CHECKOUT_INTENT_REPLACED");
+    await expect(lab("old", at(3))).rejects.toThrow("CHECKOUT_INTENT_REPLACED");
+    expect(await confirm(fresh.quoteId, "new-pay", at(3))).toMatchObject({ state: "PAID" });
+  });
+
+  it("inherits the original hold deadline through chained replacements and frees the last seat at minute 15", async () => {
+    addLab(); db.exec("UPDATE lab_occurrences SET capacity=1");
+    const original = await quoted(await lab("original"));
+    const middle = await quoted(await lab("middle", at(7)));
+    const replacement = await quoted(await lab("replacement", at(14), { checkoutCode: "PARTNER" }));
+    expect(new Set([original.quoteId, middle.quoteId, replacement.quoteId]).size).toBe(3);
+    const holds = [original, middle, replacement].map(q => hold(q.quoteId));
+    expect(new Set(holds.map(row => row.seat_hold_ref)).size).toBe(3);
+    for (const row of holds) {
+      expect(row.seat_hold_expires_at).toBe(at(15));
+      expect(JSON.parse(row.line_snapshot_json).seatHold.expiresAt).toBe(at(15));
+    }
+    expect(replacement.expiresAt).toBe(at(15));
+    expect(inventory(at(14))).toMatchObject({ held: 1, available: 0 });
+    expect(inventory(at(15))).toMatchObject({ held: 0, available: 1 });
+    db.prepare("INSERT INTO customers(id,email_normalized) VALUES ('second','second@example.com')").run();
+    const second = await quoted(await lab("second", at(15), { customerId: "second", customerEmail: "second@example.com" }));
+    expect(second.expiresAt).toBe(at(30));
+    await expect(confirm(original.quoteId, "old-pay", at(15))).rejects.toThrow("CHECKOUT_INTENT_REPLACED");
+    await expect(confirm(middle.quoteId, "middle-pay", at(15))).rejects.toThrow("CHECKOUT_INTENT_REPLACED");
+    await expect(confirm(replacement.quoteId, "replacement-pay", at(15))).rejects.toThrow("CHECKOUT_QUOTE_EXPIRED");
+    expect(await confirm(second.quoteId, "second-pay", at(15), { customerId: "second", customerEmail: "second@example.com" }))
+      .toMatchObject({ state: "PAID" });
+    expect(count("orders")).toBe(1);
+  });
+
+  it("retains a replacement's seat beyond its inherited deadline once an unanswered payment has started", async () => {
+    addLab(); db.exec("UPDATE lab_occurrences SET capacity=1");
+    await quoted(await lab("original"));
+    const replacement = await quoted(await lab("replacement", at(14), { scenario: "ambiguous_create" }));
+    expect(replacement.expiresAt).toBe(at(15));
+    expect(await confirm(replacement.quoteId, "pay", at(14))).toMatchObject({ state: "CREATE_UNKNOWN" });
+    expect(inventory(at(16))).toMatchObject({ held: 0, pending: 1, available: 0 });
+    db.prepare("INSERT INTO customers(id,email_normalized) VALUES ('second','second@example.com')").run();
+    await expect(lab("second", at(16), { customerId: "second", customerEmail: "second@example.com" }))
+      .rejects.toThrow("LAB_OCCURRENCE_SOLD_OUT");
+    expect(await confirm(replacement.quoteId, "retry", at(16))).toMatchObject({ state: "PAID" });
+    expect(count("orders")).toBe(1); expect(count("checkout_attempts")).toBe(1);
+  });
+
+  it("retains an unanswered attempt beyond TTL and recovers the same order and attempt without a new hold", async () => {
+    addLab(); db.exec("UPDATE lab_occurrences SET capacity=1");
+    const q = await quoted(await lab("uncertain", T0, { scenario: "ambiguous_create" }));
+    const first = hold(q.quoteId);
+    const create = vi.spyOn(rail, "create"), recover = vi.spyOn(rail, "recoverCreate");
+    const result = await confirm(q.quoteId, "pay");
+    expect(result.state).toBe("CREATE_UNKNOWN");
+    expect(inventory(at(40))).toMatchObject({ held: 0, pending: 1, available: 0 });
+    expect(await confirm(q.quoteId, "retry-key", at(40))).toMatchObject({ orderPublicId: result.orderPublicId, state: "PAID" });
+    expect(create).toHaveBeenCalledTimes(1); expect(recover).toHaveBeenCalledTimes(1);
+    expect(recover.mock.calls[0][0]).toEqual(create.mock.calls[0][0]);
+    expect(hold(q.quoteId)).toEqual(first);
+    expect(count("orders")).toBe(1); expect(count("checkout_attempts")).toBe(1);
+    expect(inventory(at(40))).toMatchObject({ held: 0, sold: 1, available: 0 });
+  });
+
+  it("counts holds in operator capacity/reserve edits and releases a refused resolution", async () => {
+    addLab(); db.exec("UPDATE lab_occurrences SET capacity=1");
+    const original = rail.resolve.bind(rail);
+    vi.spyOn(rail, "resolve").mockRejectedValueOnce(new RailRefusalError("REFUSED"));
+    await expect(lab("refused")).rejects.toThrow("REFUSED");
+    expect(inventory()).toMatchObject({ held: 0, available: 1 });
+    vi.spyOn(rail, "resolve").mockImplementation(original);
+    await quoted(await lab("held"));
+    expect(() => editLabOccurrence(db, { occurrenceRef: "lab:november", expectedVersion: 1,
+      patch: { adminReservedSeats: 1 }, actor: "owner", reason: "reserve" }, T0)).toThrow("LAB_RESERVE_EXCEEDS_AVAILABLE_CAPACITY");
+  });
+
+  it("confirms the same last-seat hold concurrently without seeking a second seat or attempt", async () => {
+    addLab(); db.exec("UPDATE lab_occurrences SET capacity=1");
+    const q = await quoted(await lab("one"));
+    const create = vi.spyOn(rail, "create");
+    const results = await Promise.all([confirm(q.quoteId, "one-pay"), confirm(q.quoteId, "two-pay")]);
+    expect(new Set(results.map(result => result.orderPublicId)).size).toBe(1);
+    expect(count("orders")).toBe(1); expect(count("checkout_attempts")).toBe(1);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(inventory(at(2))).toMatchObject({ held: 0, sold: 1, available: 0 });
+  });
+
+  it("reuses a single hold for two overlapping requests with the same key", async () => {
+    addLab(); db.exec("UPDATE lab_occurrences SET capacity=1");
+    const results = await Promise.all([lab("same"), lab("same")]);
+    expect(results.map(result => result.state)).toEqual(["PRICE_REVIEW_REQUIRED", "PRICE_REVIEW_REQUIRED"]);
+    expect(count("checkout_quotes")).toBe(1);
+    expect(inventory()).toMatchObject({ held: 1, available: 0 });
+  });
+
+  it("upgrades old LAB quotes by expiring only unconfirmed intents, preserving started payments", () => {
+    addLab();
+    const legacy = new Database(":memory:"); legacy.pragma("foreign_keys=ON");
+    try {
+      const directory = join(process.cwd(), "commerce-v2/migrations");
+      for (const version of readdirSync(directory).filter(name => name.endsWith(".sql") && name < "0033").sort()) {
+        applyV2Migration(legacy, version, readFileSync(join(directory, version), "utf8"));
+      }
+      for (const table of ["customers", "legal_releases", "cities", "lab_occurrences", "products", "offers"]) {
+        for (const row of db.prepare(`SELECT * FROM ${table}`).all() as Record<string, unknown>[]) {
+          const columns = Object.keys(row);
+          legacy.prepare(`INSERT INTO ${table} (${columns.join(",")}) VALUES (${columns.map(() => "?").join(",")})`).run(...Object.values(row));
+        }
+      }
+      for (const id of ["unconfirmed", "started"]) {
+        legacy.prepare(`INSERT INTO checkout_quotes(id,customer_id,offer_id,legal_release_id,storefront,order_public_id,
+          line_ref,preview_idempotency_key,request_fingerprint,resolution_request_json,sale_mode_at_quote,
+          catalog_amount_kopecks,line_snapshot_json,state,created_at,updated_at)
+          VALUES (?,'customer','lab-offer','lab-legal','LAB',?,?,?,?, '{}','PUBLIC',250000,'{}','DRAFT',?,?)`)
+          .run(id, `order-${id}`, `line-${id}`, `key-${id}`, "a".repeat(64), T0, T0);
+        legacy.prepare("UPDATE checkout_quotes SET state='RESOLVING' WHERE id=?").run(id);
+        legacy.prepare(`UPDATE checkout_quotes SET state='REVIEW',rail_quote_json='{}',base_amount_kopecks=250000,
+          discount_kopecks=0,final_amount_kopecks=250000,expires_at=? WHERE id=?`).run(at(15), id);
+      }
+      legacy.prepare("UPDATE checkout_quotes SET state='PAYMENT_CREATING',consumed_at=? WHERE id='started'").run(at(1));
+      legacy.exec("UPDATE checkout_quotes SET state='UNCERTAIN' WHERE id='started'");
+      const started = legacy.prepare("SELECT * FROM checkout_quotes WHERE id='started'").get();
+      migrateV2(legacy);
+      expect(legacy.prepare("SELECT state,failure_code FROM checkout_quotes WHERE id='unconfirmed'").get())
+        .toEqual({ state: "EXPIRED", failure_code: "CHECKOUT_QUOTE_EXPIRED" });
+      expect(legacy.prepare("SELECT * FROM checkout_quotes WHERE id='started'").get())
+        .toEqual({ ...started as object, seat_hold_ref: null, seat_hold_expires_at: null });
+      expect(legacy.pragma("foreign_key_check")).toEqual([]);
+    } finally { legacy.close(); }
+  });
+
+  it("serializes two independent SQLite processes quoting the last seat", async () => {
+    addLab(); db.exec("UPDATE lab_occurrences SET capacity=1");
+    db.prepare("INSERT INTO customers(id,email_normalized) VALUES ('second','second@example.com')").run();
+    const directory = mkdtempSync(join(tmpdir(), "lab-hold-race-"));
+    const filename = join(directory, "commerce.sqlite");
+    const children: ReturnType<typeof fork>[] = [];
+    try {
+      await db.backup(filename);
+      const runs = ["customer", "second"].map(customerId => {
+        const child = fork(join(process.cwd(), "commerce-v2/test/fixtures/lab-seat-quote-worker.ts"), [], {
+          execArgv: ["--import", "tsx"], stdio: ["ignore", "ignore", "pipe", "ipc"], env: { ...process.env, NODE_ENV: "test" },
+        });
+        children.push(child);
+        let stderr = ""; child.stderr?.on("data", data => { stderr += data; });
+        const ready = new Promise<void>((resolve, reject) => {
+          child.once("message", () => resolve()); child.once("error", reject);
+          child.once("exit", code => { if (code) reject(new Error(stderr)); });
+        });
+        const result = new Promise<{ state?: string; error?: string }>((resolve, reject) => {
+          child.on("message", message => { if (message !== "ready") resolve(message as { state?: string; error?: string }); });
+          child.once("error", reject); child.once("exit", code => { if (code) reject(new Error(stderr)); });
+        });
+        return { child, ready, result, customerId };
+      });
+      await Promise.all(runs.map(run => run.ready));
+      for (const run of runs) run.child.send({ filename, customerId: run.customerId, key: run.customerId, now: T0 });
+      const results = await Promise.all(runs.map(run => run.result));
+      expect(results.filter(result => result.state === "PRICE_REVIEW_REQUIRED")).toHaveLength(1);
+      expect(results.filter(result => result.error === "LAB_OCCURRENCE_SOLD_OUT")).toHaveLength(1);
+      const disk = new Database(filename);
+      try {
+        expect(disk.prepare("SELECT COUNT(*) AS n FROM checkout_quotes WHERE seat_hold_ref IS NOT NULL").get()).toEqual({ n: 1 });
+      } finally { disk.close(); }
+    } finally { for (const child of children) child.kill(); rmSync(directory, { recursive: true, force: true }); }
   });
 });
