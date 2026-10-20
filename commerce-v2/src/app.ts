@@ -12,7 +12,8 @@ import { flagOrphanedOverrides } from "./access-overrides";
 import { getEditorialDraft, getEditorialPublished, publishEditorialDraft, relistEditorialCourse, restrictEditorialCourse, saveEditorialDraft, type EditorialDocument } from "./course-editorial";
 import { assertPaymentCreationEnabled, CommerceConfigurationError, type CommerceRuntimeConfig } from "./payment-mode";
 import { saveResumePosition } from "./resume";
-import { CheckoutConflictError, confirmCheckout, prepareCheckout, reconcileCheckout, type PaidCheckoutAcceptance, type PaymentRail } from "./checkout";
+import { CheckoutConflictError, confirmCheckout, frozenResolutionContext, prepareCheckout, reconcileCheckout, type PaidCheckoutAcceptance, type PaymentRail, type ResolutionContext } from "./checkout";
+import { ARRIVAL_PROOF_PARAM, ARRIVAL_RETURN_PARAM, cleanArrivalTarget, presentedContextId, storefrontForRequest, type BrowserContexts } from "./browser-context";
 import { configureLabOffer, configureProduct, withdrawProduct } from "./catalog-control";
 import { cancelLabOccurrence, createCity, createLabOccurrence, editLabOccurrence, renameCity } from "./lab-occurrences";
 import { unsubscribeCustomer, type CampaignEmail } from "./campaigns";
@@ -87,6 +88,8 @@ type Dependencies = {
   /** Test clock for the bounded wait; production waits before verifying any password. */
   readonly controlRoomLoginWait?: (milliseconds: number) => Promise<void>;
   readonly erasureFence?: ErasureRuntimeFence;
+  /** Arrival endpoints and browser contexts (ART-378); absent while the feature is off. */
+  readonly browserContexts?: BrowserContexts;
 };
 
 type AppBindings = { Variables: { controlRoomAdminId?: string; controlRoomSessionId?: string } };
@@ -186,6 +189,66 @@ export function createCommerceV2App(deps: Dependencies) {
       return context.json({ error: { code: "FOUNDATION_ISOLATED" } }, 503, noStore);
     }
     await next();
+  });
+
+  // ART-378 (refref docs/29 §2, §4, §6). The signed-in account matters only to rotate an LMS context;
+  // an unreadable session changes nothing.
+  const accountOf = async (headers: Headers) => {
+    if (!deps.authenticateCustomer) return undefined;
+    try { return { customerId: await deps.authenticateCustomer(headers) }; } catch { return undefined; }
+  };
+  /** A bounded claim attempt for a context's still-unconfirmed proof, run after the response. */
+  const retryExchange = async (contexts: BrowserContexts, storefront: Storefront, presented: string, headers: Headers) => {
+    if (!contexts.hasPending(storefront, presented)) return;
+    // An LMS context bound to an account other than the signed-in one waits for its rotation instead.
+    const bound = contexts.boundCustomer(storefront, presented);
+    if (bound !== null && (await accountOf(headers))?.customerId !== bound) return;
+    contexts.scheduleExchange(storefront, presented);
+  };
+  const contextHandledPaths = new Set(["/v1/browser-context/arrive", "/v1/browser-context/touch", "/v1/checkout/preview"]);
+  // Every later same-context request, anonymous browsing included, retries after its response.
+  app.use("/v1/*", async (context, next) => {
+    await next();
+    const contexts = deps.browserContexts;
+    if (!contexts || contextHandledPaths.has(context.req.path)) return;
+    const headers = new Headers(context.req.raw.headers);
+    const storefront = storefrontForRequest(origins, headers);
+    const presented = storefront && presentedContextId(headers, storefront);
+    if (storefront && presented) contexts.after(() => retryExchange(contexts, storefront, presented, headers));
+  });
+
+  // The storefront arrival endpoint: platform `/arrive` and LAB `/arrive` forward here. The proof is
+  // captured server-side and the browser leaves at once for a clean first-party URL; no Refref call
+  // happens before the response.
+  app.get("/v1/browser-context/arrive", async (context) => {
+    const headers = context.req.raw.headers;
+    const storefront = storefrontForRequest(origins, headers);
+    if (!storefront) return context.json({ code: "NOT_FOUND" }, 404, noStore);
+    const url = new URL(context.req.url);
+    context.header("Cache-Control", "no-store");
+    context.header("X-Robots-Tag", "noindex, nofollow");
+    context.header("Location", cleanArrivalTarget(origins, storefront, url.searchParams.get(ARRIVAL_RETURN_PARAM)));
+    const contexts = deps.browserContexts;
+    if (contexts) {
+      const account = storefront === "COURSES" ? await accountOf(headers) : undefined;
+      const admitted = contexts.admit(storefront, presentedContextId(headers, storefront), { account, create: true })!;
+      if (admitted.setCookie) context.header("Set-Cookie", admitted.setCookie, { append: true });
+      // Refref sets exactly one proof; anything else is not an Arrival this endpoint can vouch for.
+      const proofs = url.searchParams.getAll(ARRIVAL_PROOF_PARAM);
+      if (proofs.length === 1) contexts.capture(admitted.id, proofs[0]);
+      contexts.scheduleExchange(storefront, admitted.id);
+    }
+    return context.body(null, 303);
+  });
+
+  // Platform page views (Next.js proxy, after its response): retry only, never a cookie change.
+  app.post("/v1/browser-context/touch", (context) => {
+    const contexts = deps.browserContexts;
+    const headers = new Headers(context.req.raw.headers);
+    const storefront = storefrontForRequest(origins, headers);
+    const presented = storefront && presentedContextId(headers, storefront);
+    if (contexts && storefront && presented) contexts.after(() => retryExchange(contexts, storefront, presented, headers));
+    return context.body(null, 204, noStore);
   });
 
   app.get("/identity", (context) => context.json({
@@ -664,6 +727,19 @@ export function createCommerceV2App(deps: Dependencies) {
         return context.json({ code: error instanceof Error ? error.message : "AUTH_INITIATION_REJECTED" }, 422, noStore);
       }
     });
+    // LMS logout always switches to a new context ID; pending proof stays with the old one.
+    app.post("/v1/auth/sign-out", async (context) => {
+      const response = await deps.authHandler!(context.req.raw);
+      const contexts = deps.browserContexts;
+      const headers = context.req.raw.headers;
+      const storefront = storefrontForRequest(origins, headers);
+      if (!contexts || !storefront || !response.ok) return response;
+      const rotated = contexts.rotateOnLogout(storefront, presentedContextId(headers, storefront));
+      if (!rotated?.setCookie) return response;
+      const output = new Response(response.body, response);
+      output.headers.append("Set-Cookie", rotated.setCookie);
+      return output;
+    });
     app.all("/v1/auth/*", (context) => deps.authHandler!(context.req.raw));
   }
 
@@ -735,17 +811,40 @@ export function createCommerceV2App(deps: Dependencies) {
         ? verifyCheckoutHandoffState(deps.config.refref!.handoffStateSecret, body.state ?? "", customerId, now().getTime())
         : undefined;
       if (guest) labLegalReview(deps.db);
+      const previewIdempotencyKey = guest ? `${guest.order_public_id}:preview:${context.req.header("idempotency-key") ?? ""}` : context.req.header("idempotency-key") ?? "";
+      const orderPublicId = guest?.order_public_id ?? handoff?.orderPublicId;
+      // Server-side, from the guest LAB order, the forwarding storefront host or the storefront the
+      // signed handoff names; never a buyer-supplied value.
+      const storefront = guest ? "LAB" : storefrontForRequest(origins, context.req.raw.headers);
+      if (handoff && storefront && handoff.storefront !== storefront) throw new Error("CHECKOUT_STOREFRONT_MISMATCH");
+      let resolutionContext: ResolutionContext = guest ? { storefrontOrigin: origins.lab }
+        : handoff ? { storefrontOrigin: storefrontOrigin(origins, handoff.storefront) } : {};
+      const contexts = deps.browserContexts;
+      if (contexts && storefront && context.req.header("idempotency-key")?.trim()) {
+        // A repeat of an issued intent sends what it froze; only a new intent runs the Buy exchange (ART-378).
+        const frozen = frozenResolutionContext(deps.db, { previewIdempotencyKey, orderPublicId });
+        if (frozen) resolutionContext = frozen;
+        else {
+          const presented = presentedContextId(context.req.raw.headers, storefront);
+          const admitted = contexts.admit(storefront, presented,
+            { account: storefront === "COURSES" ? { customerId } : undefined, create: true })!;
+          const delivery = await contexts.deliveryForBuy(storefront, admitted.id);
+          const cookie = delivery.browserContextId === presented ? undefined : contexts.cookieFor(storefront, delivery.browserContextId);
+          if (cookie) context.header("Set-Cookie", cookie, { append: true });
+          resolutionContext = { storefrontOrigin: storefrontOrigin(origins, storefront),
+            browserContextId: delivery.browserContextId, deliveryDegraded: delivery.deliveryDegraded };
+        }
+      }
       const result = await prepareCheckout(deps.db, deps.paymentRail, deps.config, {
         customerId, customerEmail: customer.email_normalized, offerRef: body.offerRef,
-        previewIdempotencyKey: guest ? `${guest.order_public_id}:preview:${context.req.header("idempotency-key") ?? ""}` : context.req.header("idempotency-key") ?? "",
+        previewIdempotencyKey,
         scenario: deps.config.paymentMode === "mock" ? body.mockScenario : undefined,
         handoffToken: body.handoffToken,
         checkoutCode: body.checkoutCode,
         displayedAmountKopecks: body.displayedAmountKopecks,
-        orderPublicId: guest?.order_public_id ?? handoff?.orderPublicId,
+        orderPublicId,
         storefront: guest ? "LAB" : handoff?.storefront,
-        // Server-side, from the storefront the signed handoff names; never a buyer-supplied value.
-        storefrontOrigin: guest ? origins.lab : handoff ? storefrontOrigin(origins, handoff.storefront) : undefined,
+        ...resolutionContext,
       }, now().toISOString());
       return context.json({ ...result, ...(guest ? { labLegal: labLegalReview(deps.db) } : {}) }, result.state === "RESOLUTION_PENDING" ? 202 : 200, noStore);
     } catch (error) {
@@ -1001,6 +1100,13 @@ export function createCommerceV2App(deps: Dependencies) {
 
   app.get("/v1/me", async (context) => {
     const customerId = await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;
+    // An LMS page load binds an anonymous context to the account or rotates it at an account boundary.
+    const storefront = storefrontForRequest(origins, context.req.raw.headers);
+    if (deps.browserContexts && storefront === "COURSES") {
+      const admitted = deps.browserContexts.admit(storefront, presentedContextId(context.req.raw.headers, storefront),
+        { account: { customerId }, create: false });
+      if (admitted?.setCookie) context.header("Set-Cookie", admitted.setCookie, { append: true });
+    }
     if (!customerId) return context.json({ customer: null }, 200, noStore);
     const customer = deps.db.prepare("SELECT id,email_normalized,display_name FROM customers WHERE id=?").get(customerId);
     const entitlements = deps.db.prepare(`SELECT scope,course_ref,granted_at FROM course_entitlements

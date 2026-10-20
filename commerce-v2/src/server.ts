@@ -21,6 +21,9 @@ import { createLabTicketEmailDelivery, createMagicLinkEmailDelivery } from "./au
 import { dirname } from "node:path";
 import { prepareErasureRuntime } from "./erasure-runtime";
 import { ErasureInstallationEvidence, readErasureInstallation } from "./erasure-installation";
+import { AfterResponseTasks } from "./after-response";
+import { BrowserContexts, loadBrowserContextConfig } from "./browser-context";
+import { RefrefArrivalExchange } from "./refref-arrival-exchange";
 
 async function startServer() {
 const installation=readErasureInstallation(process.env);
@@ -91,6 +94,21 @@ const paymentRail = config.paymentMode === "mock" ? new MockPaymentRail()
     merchantId: config.refref.merchantId,
   }) : undefined;
 
+// ART-378: arrival endpoints and browser contexts. Off unless BROWSER_CONTEXT_ENABLED=true; the
+// claim/close client exists only where the Refref vNext surface is configured.
+const diagnostic = (event: string, code?: string) => {
+  try { console.error(JSON.stringify({ event, ...(code ? { code } : {}) })); } catch { /* never fail the caller */ }
+};
+const afterResponse = new AfterResponseTasks(() => diagnostic("AFTER_RESPONSE_TASK_FAILED"));
+const browserContextConfig = loadBrowserContextConfig();
+const browserContexts = browserContextConfig ? new BrowserContexts({
+  db, origins, config: browserContextConfig, now: () => new Date(),
+  exchange: config.refref?.vnextApiBaseUrl
+    ? new RefrefArrivalExchange({ apiBaseUrl: config.refref.vnextApiBaseUrl, apiKey: config.refref.apiKey }) : undefined,
+  schedule: (task) => afterResponse.schedule(erasureFence ? () => erasureFence.run("WORKER", task) : task),
+  alert: (code) => diagnostic("BROWSER_CONTEXT_ALERT", code),
+}) : undefined;
+
 const campaignTransport = emailDeliveryEndpoint ? async (message: CampaignEmail) => {
   const response = await fetch(emailDeliveryEndpoint, {
     method: "POST",
@@ -150,7 +168,23 @@ const app = createCommerceV2App({
     totpKey: controlRoomTotp,
   } : undefined,
   erasureFence,
+  browserContexts,
 });
+
+if (browserContexts) {
+  let contextSweepRunning = false;
+  const contextSweep = async () => {
+    if (contextSweepRunning) return;
+    contextSweepRunning = true;
+    try {
+      const sweep = () => browserContexts.maintain();
+      if (erasureFence) await erasureFence.run("WORKER", sweep); else await sweep();
+    } catch { diagnostic("BROWSER_CONTEXT_SWEEP_FAILED"); }
+    finally { contextSweepRunning = false; }
+  };
+  const contextSweepTimer = setInterval(() => { void contextSweep(); }, Number(process.env.BROWSER_CONTEXT_SWEEP_INTERVAL_MS ?? 30_000));
+  contextSweepTimer.unref();
+}
 
 if (marketingBroadcastsEnabled && campaignUnsubscribeSecret && sendCampaignEmail) {
   let campaignDispatchRunning = false;
@@ -192,7 +226,15 @@ if (paymentRail) {
   void checkoutPoll();
 }
 
-serve({ fetch: app.fetch, port: Number(process.env.PORT ?? 3002) });
+const server = serve({ fetch: app.fetch, port: Number(process.env.PORT ?? 3002) });
+// After-response work is owned by the process: stop accepting requests, let tracked attempts finish
+// within their bound, then exit.
+for (const signal of ["SIGTERM", "SIGINT"] as const) {
+  process.once(signal, () => {
+    server.close();
+    void afterResponse.drain(2_000).finally(() => process.exit(0));
+  });
+}
 }
 // Expose completion, not a detached task: composition tests and supervisors must
 // observe async boot admission before treating a module import as a running server.

@@ -531,6 +531,23 @@ function assertDeliveryDegraded(value: DeliveryDegraded) {
 /** What the caller may have of the browser context, frozen into the intent. */
 export type ResolutionContext = { storefrontOrigin?: string; browserContextId?: string; deliveryDegraded?: DeliveryDegraded };
 
+/**
+ * The context an existing intent froze, for a repeat of its preview or the buyer back on its order:
+ * the replay sends exactly that, never a recomputed one, so a late ACK cannot clear a degradation
+ * (refref docs/29 §6). `undefined` when no intent exists yet.
+ */
+export function frozenResolutionContext(db: Database.Database, keys: { previewIdempotencyKey: string; orderPublicId?: string }): ResolutionContext | undefined {
+  const existing = intentBy(db, "preview_idempotency_key", keys.previewIdempotencyKey)
+    ?? (keys.orderPublicId ? intentBy(db, "order_public_id", keys.orderPublicId) : undefined);
+  if (!existing?.resolution_request_json) return existing ? {} : undefined;
+  const { request } = JSON.parse(existing.resolution_request_json) as Omit<PaymentResolveInput, "handoffToken">;
+  return {
+    ...(request.storefrontOrigin === undefined ? {} : { storefrontOrigin: request.storefrontOrigin }),
+    ...(request.browserContextId === undefined ? {} : { browserContextId: request.browserContextId }),
+    deliveryDegraded: request.deliveryDegraded,
+  };
+}
+
 /** Customer-wide dedupe requires a verified caller; a guest email supplies no such authority.
  * Derive the narrower scope from the durable LAB access row, never a browser flag.
  * Customer-scoped checkouts also exclude guest rows so an anonymous attempt cannot

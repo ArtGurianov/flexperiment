@@ -34,6 +34,7 @@
     "0030_checkout_intents.sql": "e7f8e3c0eb66b5e3f1e0c38cc4bf8ff7df87b6301ff0500f31b283e601564c70",
     "0031_lab_quote_invalidation.sql": "2878a82c78f99a75a64ee0bc2c38c9e326b3c5bc959a8682ccff4ad06beac8bd",
     "0032_lab_guest_tickets.sql": "234ef3a726969cb1306558fb42e7ab0863c4e360c45b04b47a7da991705a04a9",
-    "0033_lab_seat_holds.sql": "aace5461504487ad00da50d1fbf6f0dbe7514a1aadfe2e9910a6f9f8958e7391"
+    "0033_lab_seat_holds.sql": "aace5461504487ad00da50d1fbf6f0dbe7514a1aadfe2e9910a6f9f8958e7391",
+    "0034_browser_contexts.sql": "b7bd54cad4fc6882f0e91ec2237a2d3429678679d8f7489a723ce15fde270d80"
   }
 }
