@@ -816,7 +816,7 @@ export function createCommerceV2App(deps: Dependencies) {
       // Server-side, from the guest LAB order, the forwarding storefront host or the storefront the
       // signed handoff names; never a buyer-supplied value.
       const storefront = guest ? "LAB" : storefrontForRequest(origins, context.req.raw.headers);
-      if (handoff && storefront && handoff.storefront !== storefront) throw new Error("CHECKOUT_STOREFRONT_MISMATCH");
+      if (handoff && storefront && handoff.storefront !== storefront) throw new CheckoutConflictError("CHECKOUT_STOREFRONT_MISMATCH");
       // An origin buys only its own storefront's offers: an LMS context never attributes a LAB order,
       // nor the reverse (ART-378). Checked before any context is admitted or exchanged.
       const offerOwner = offerStorefront(deps.db, body.offerRef);

@@ -149,6 +149,22 @@ describe("closed paid test admission", () => {
     expect((await request(accept, "http-accepted")).status).toBe(201);
     expect(db.prepare("SELECT customer_id,total_kopecks FROM orders").get()).toEqual({ customer_id: "buyer", total_kopecks: 100 });
   });
+  it("returns 409 when a valid signed handoff names a different storefront from the forwarding host", async () => {
+    const app = createCommerceV2App({ db, config, serviceToken: "synthetic", sourceCommit: "a".repeat(40), paymentRail: rail,
+      authenticateCustomer: async () => "buyer" });
+    // The offer belongs to COURSES, matching the host. Only the signed handoff is for LAB.
+    const state = issueCheckoutHandoffState(env.REFREF_HANDOFF_STATE_SECRET,
+      { customerId: "buyer", returnPath: "/courses/test-course", storefront: "LAB" }).token;
+    const resolve = vi.spyOn(rail, "resolve");
+    const response = await app.request("/v1/checkout/preview", { method: "POST",
+      headers: { "content-type": "application/json", "idempotency-key": "mismatched-handoff",
+        "x-forwarded-host": "localhost:3001" },
+      body: JSON.stringify({ offerRef: input.offerRef, state }) });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ code: "CHECKOUT_STOREFRONT_MISMATCH" });
+    expect(resolve).not.toHaveBeenCalled();
+    expect(db.prepare("SELECT count(*) n FROM checkout_quotes").get()).toEqual({ n: 0 });
+  });
   it("records deliberate acceptance once with the first order, retries that order, refuses a second charge", async () => {
     const result = await confirm(accept); expect(result.orderPublicId).toBeTruthy();
     const event = db.prepare("SELECT evidence_json FROM audit_log WHERE action='PAID_CHECKOUT_TERMS_ACCEPTED'").get() as { evidence_json: string };
