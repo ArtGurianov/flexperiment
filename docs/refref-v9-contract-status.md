@@ -30,7 +30,8 @@ campaign, terms and partner.
 
 LAB anchors on the planned event or programme end; immediate LMS anchors on
 qualified purchase acceptance, never lesson progress or last login. A basket's
-deadline runs from its latest service anchor plus 14 calendar days; verified
+deadline runs from the latest anchor of its eligible services (D1.1) plus 14
+calendar days; verified
 TOUR/LAB moves share a 30-day total extension budget. Today
 `checkout.ts:371` ties only the readiness evidence (`immediate_access_json`) to
 fiscal FULL_PAYMENT while the entitlement is granted on PAID; v9 derives the
@@ -48,11 +49,16 @@ Refref computes the referral discount on the whole order and allocates it per
 line (existing `000034` algorithm) only for receipts, payment documents and
 customer refunds. The reward is one Commission from the eligible after-discount
 total. Partial cancellation preserves it; a partial refund by itself changes
-nothing. Only cancellation of **every** service of the purchase — directly or by
-successive cancellations — with an independently successful positive refund
-(any amount, including partial with lawful retention) and a timely upheld claim
-zeros it. Example: an order with an already delivered immediate course and a LAB
-ticket keeps the whole Commission when only the ticket is cancelled. This does
+nothing. Only cancellation of **every eligible** service of the purchase — directly or by
+successive cancellations — zeros it, together with an independently successful
+refund whose positive amount is allocated to eligible lines by the merchant's
+immutable per-line breakdown, equal to the bank amount (D1.2; any amount,
+including partial with lawful retention), and a timely upheld claim. The eligible
+set is frozen in the payable manifest by campaign terms (D1.1): non-eligible
+items never extend the deadline or block cancellation, and a refund allocated
+only to them never zeros the Commission. Example: if an already delivered
+immediate course and a LAB ticket are both eligible, cancelling only the ticket
+keeps the whole Commission; if the course is not eligible, it does not matter. This does
 not change Flexperiment's separate consumer refund/access obligations or justify
 retaining/revoking access without the product's own policy.
 
