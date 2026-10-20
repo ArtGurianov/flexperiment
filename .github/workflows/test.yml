@@ -57,6 +57,8 @@ jobs:
         run: python3 -B scripts/v2/test_closed_e2e_gateway.py -v
       - name: Independent V2 owner control contract
         run: python3 scripts/v2/test_owner_rpc.py
+      - name: Owner storefront switch host tool (ART-319)
+        run: python3 -B scripts/v2/test_storefront_switch.py -v
       - name: Kinescope DRM owner provisioning and project PUT contracts
         run: python3 -m unittest scripts/v2/test_provision_canary_drm_credentials.py scripts/v2/test_configure_kinescope_drm_auth.py -v
       - name: Isolated V2 canary same-origin proxy contract (real nginx)

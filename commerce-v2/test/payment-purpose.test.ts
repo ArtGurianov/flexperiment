@@ -7,7 +7,7 @@ import { configureProduct,setCoursePaymentPurpose } from "../src/catalog-control
 import { buildCheckoutSnapshot,checkoutSnapshotHash } from "../src/checkout-snapshot";
 import { checkout,confirmCheckout,MockPaymentRail,prepareCheckout,reconcileCheckout } from "../src/checkout";
 import { validPaymentPurpose } from "../src/payment-purpose";
-import { activatePublicSales,qualifyTestFiscalPolicies,testCheckoutConfig } from "./fixtures/sales";
+import { openTestStorefront,qualifyTestFiscalPolicies,testCheckoutConfig } from "./fixtures/sales";
 import { stageALegalManifestJson } from "./fixtures/legal";
 
 let db: Database.Database;
@@ -19,7 +19,7 @@ beforeEach(()=>{
   db.prepare("INSERT INTO legal_releases(id,storefront,version,manifest_json,effective_at,active) VALUES ('legal','COURSES','v1',?,'2026-09-30T00:00:00Z',1)").run(stageALegalManifestJson);
   db.prepare("INSERT INTO products(id,product_ref,kind,access_model,course_ref) VALUES ('product','course:one','ONLINE_COURSE','PAID','one')").run();
   db.prepare("INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode) VALUES ('offer','course:one','product',10000,'PUBLIC')").run();
-  qualifyTestFiscalPolicies(db); activatePublicSales(db);
+  qualifyTestFiscalPolicies(db); openTestStorefront(db);
   db.prepare("UPDATE offers SET payment_purpose=?").run("Оплата онлайн-курса «Глайдинг»");
 });
 

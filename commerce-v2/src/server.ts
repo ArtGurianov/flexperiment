@@ -10,6 +10,7 @@ import { MockPaymentRail, reconcilePendingCheckouts } from "./checkout";
 import { RefrefPaymentRail } from "./refref-payment-rail";
 import { readBuildIdentity } from "./build-identity";
 import { createRefrefReadinessProbe } from "./readiness";
+import { hostStorefrontSwitchSource } from "./storefront-switch";
 import { refundEnvelopeKeyringFromEnvironment } from "./refund-envelope";
 import { reconcilePendingRefunds } from "./refunds";
 import { loadCommerceOrigins } from "./origins";
@@ -28,7 +29,8 @@ import { RefrefArrivalExchange } from "./refref-arrival-exchange";
 async function startServer() {
 const installation=readErasureInstallation(process.env);
 ErasureInstallationEvidence.assertRuntime(installation,process.env);
-const config = loadCommerceRuntimeConfig();
+// The owner's storefront switch is attached here only, from the fixed read-only host mount (ART-319).
+const config = { ...loadCommerceRuntimeConfig(), storefrontSwitch: hostStorefrontSwitchSource() };
 // Preserve the configured foundation dependency when switching to normal mode.
 // Production and a live Refref rail may never report readiness without probing it.
 const probeRefref = process.env.REFREF_READINESS_URL || config.deployEnvironment === "production" || config.paymentMode === "refref"
@@ -213,7 +215,7 @@ if (paymentRail) {
     checkoutPollRunning = true;
     try {
       const reconcile=async()=>{
-        await reconcilePendingCheckouts(db, paymentRail);
+        await reconcilePendingCheckouts(db, paymentRail, undefined, config);
         if (refundEnvelopeKeys) await reconcilePendingRefunds(db, paymentRail, refundEnvelopeKeys);
       };
       if(erasureFence) await erasureFence.run("WORKER",reconcile);else await reconcile();

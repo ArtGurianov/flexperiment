@@ -11,7 +11,7 @@ backup_volume="${task_id}-backup"
 installation_volume="${task_id}-host-admission"
 cleanup() {
   docker rm -f "$task_id" >/dev/null 2>&1 || true
-  docker volume rm "$data_volume" "$backup_volume" "$installation_volume" "${task_id}-legacy" "${task_id}-installed" >/dev/null 2>&1 || true
+  docker volume rm "$data_volume" "$backup_volume" "$installation_volume" "${task_id}-legacy" "${task_id}-installed" "${task_id}-storefront-switch" "${task_id}-storefront-journal" >/dev/null 2>&1 || true
   rm -rf "$task_dir"
 }
 trap cleanup EXIT
@@ -101,4 +101,6 @@ start
 check
 storage verify "$marker"
 erasure_fixture_image_checks "$image" "$task_id"
+source scripts/ci/storefront-switch-fixture.sh
+storefront_switch_image_checks "$image" "$task_id"
 echo 'FOUNDATION_IMAGE=PASS persistence=PASS encrypted_restore=PASS refref_unavailable_fail_closed=PASS curl_healthcheck=PASS runtime_backup_cli=PASS'

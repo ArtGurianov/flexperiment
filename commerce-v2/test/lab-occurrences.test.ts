@@ -9,7 +9,7 @@ import { assertLabOccurrenceAdmissible, cancelLabOccurrence, createCity, createL
   type LabOccurrenceCreateCommand } from "../src/lab-occurrences";
 import { publicLabCatalogue } from "../src/lab-catalogue";
 import { stageALegalManifestJson } from "./fixtures/legal";
-import { activatePublicSales, qualifyTestFiscalPolicies, testCheckoutConfig } from "./fixtures/sales";
+import { openTestStorefront, qualifyTestFiscalPolicies, testCheckoutConfig } from "./fixtures/sales";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -41,7 +41,7 @@ beforeEach(() => {
   db.prepare(`INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode,payment_purpose)
     VALUES ('lab-offer',?,'lab-product',250000,'PUBLIC','Участие в мастер-классе LAB')`).run(REF);
   qualifyTestFiscalPolicies(db);
-  activatePublicSales(db, "LAB");
+  openTestStorefront(db, "LAB");
 });
 
 let customers = 0;

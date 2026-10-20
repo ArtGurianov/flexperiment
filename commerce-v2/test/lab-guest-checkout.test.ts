@@ -11,7 +11,7 @@ import { labAccess, checkInLabTicket, labLegalReview, readLabTicket, type LabTic
 import { decideRefund, executeApprovedRefund } from "../src/refunds";
 import { controlRoomSessionCookie, issueControlRoomSession } from "../src/control-room-auth";
 import { stageBLegalManifestJson } from "./fixtures/legal";
-import { activatePublicSales, qualifyTestFiscalPolicies, testCheckoutConfig } from "./fixtures/sales";
+import { openTestStorefront, qualifyTestFiscalPolicies, testCheckoutConfig } from "./fixtures/sales";
 
 let db: Database.Database, rail: MockPaymentRail;
 let time: Date;
@@ -47,7 +47,7 @@ beforeEach(() => {
     VALUES ('event','lab:one','city','LAB','2026-11-01T09:00:00Z','2026-11-01T17:00:00Z','Asia/Novosibirsk',20,'CONFIRMED','Студия','Адрес')`).run();
   db.prepare("INSERT INTO products(id,product_ref,kind,access_model,occurrence_ref) VALUES ('product','lab:one','LAB','PAID','lab:one')").run();
   db.prepare("INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode) VALUES ('offer','lab:one','product',10000,'PUBLIC')").run();
-  qualifyTestFiscalPolicies(db); activatePublicSales(db, "LAB");
+  qualifyTestFiscalPolicies(db); openTestStorefront(db, "LAB");
   app = createCommerceV2App({ db, config: testCheckoutConfig, sourceCommit: "a".repeat(40), serviceToken: "synthetic",
     paymentRail: rail, now: () => time, sendLabTicketEmail: send, controlRoomAuth: auth,
     labGuestTrustedProxyIps: ["10.0.5.4"], labGuestPeerAddress: () => peerAddress,

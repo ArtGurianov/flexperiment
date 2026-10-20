@@ -10,7 +10,7 @@ import {
   RefrefArrivalExchange, type ArrivalClaimInput, type ArrivalClaimOutcome, type ArrivalExchange, type ContextCloseOutcome,
 } from "../src/refref-arrival-exchange";
 import { stageALegalManifestJson, stageBLegalManifestJson } from "./fixtures/legal";
-import { activatePublicSales, qualifyTestFiscalPolicies, testCheckoutConfig } from "./fixtures/sales";
+import { openTestStorefront, qualifyTestFiscalPolicies, testCheckoutConfig } from "./fixtures/sales";
 
 // ART-378 (B2): storefront arrival endpoints, first-party context lifecycle, 30-minute exchange and
 // retry, bounded Buy readback and frozen delivery degradation (refref docs/29 §2, §4, §6).
@@ -113,7 +113,7 @@ const addLab = () => {
   db.prepare("INSERT INTO products(id,product_ref,kind,access_model,occurrence_ref) VALUES ('lab-product','lab:november','LAB','PAID','lab:november')").run();
   db.prepare("INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode) VALUES ('lab-offer','lab:november','lab-product',250000,'PUBLIC')").run();
   qualifyTestFiscalPolicies(db);
-  activatePublicSales(db, "LAB");
+  openTestStorefront(db, "LAB");
 };
 
 beforeEach(() => {
@@ -130,7 +130,7 @@ beforeEach(() => {
   db.prepare("INSERT INTO products(id,product_ref,kind,access_model,course_ref) VALUES ('product','course:one','ONLINE_COURSE','PAID','course-one')").run();
   db.prepare("INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode) VALUES ('offer','course:one','product',10000,'PUBLIC')").run();
   qualifyTestFiscalPolicies(db);
-  activatePublicSales(db);
+  openTestStorefront(db);
   build();
 });
 
@@ -539,7 +539,7 @@ describe("LAB guest Buy (ART-384 guest checkout)", () => {
     db.prepare("INSERT INTO products(id,product_ref,kind,access_model,occurrence_ref) VALUES ('lab-product','lab:one','LAB','PAID','lab:one')").run();
     db.prepare("INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode) VALUES ('lab-offer','lab:one','lab-product',10000,'PUBLIC')").run();
     qualifyTestFiscalPolicies(db);
-    activatePublicSales(db, "LAB");
+    openTestStorefront(db, "LAB");
     app = createCommerceV2App({ db, config: testCheckoutConfig, serviceToken: "synthetic", sourceCommit: "a".repeat(40), paymentRail: rail, origins,
       now: () => clock, authenticateCustomer: async () => null, browserContexts: contexts, sendLabTicketEmail: async () => {},
       labGuestTrustedProxyIps: ["10.0.5.4"], labGuestPeerAddress: () => "10.0.5.4" });

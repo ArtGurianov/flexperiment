@@ -36,6 +36,7 @@ import { issuePlaybackToken, verifyPlaybackToken, type PlaybackKeyring } from ".
 import { recordPlaybackAccessEvent } from "./playback-telemetry";
 import { loadCommerceOrigins, storefrontOrigin, type CommerceOrigins, type Storefront } from "./origins";
 import { databaseReady, type RefrefReadiness } from "./readiness";
+import { storefrontSwitchStatus } from "./storefront-switch";
 import { publicLabCatalogue } from "./lab-catalogue";
 import { getCustomerStorefrontCourse, getCustomerStorefrontLesson, getStorefrontCourse, getStorefrontLesson, listCustomerStorefrontLibrary, listStorefrontCourses } from "./storefront-content";
 import { authenticatedConsentStatus, hasRequiredAccountConsents, recordAuthenticatedConsents, type AuthenticatedConsentInput } from "./authenticated-consents";
@@ -140,7 +141,7 @@ const LAB_COMMAND_CONFLICT = new Set([
   "LAB_RESERVE_EXCEEDS_AVAILABLE_CAPACITY", "LAB_OCCURRENCE_HAS_COMMITTED_SEATS", "WITHDRAWN_PRODUCT_IMMUTABLE",
   "CATALOG_VERSION_CONFLICT", "PRODUCT_IDENTITY_IMMUTABLE", "LAB_OCCURRENCE_OFFER_EXISTS",
   "FREE_ACCESS_HISTORY_REQUIRES_RECONCILIATION", "CLOSED_PAID_TEST_SCOPE_REFUSED", "PAYMENTS_DISABLED",
-  "MOCK_FORBIDDEN_IN_PRODUCTION", "SALES_ACTIVATION_REQUIRED", "ACCEPTANCE_OFFER_REQUIRES_REFREF",
+  "MOCK_FORBIDDEN_IN_PRODUCTION", "SALES_STOPPED", "COURSE_BUNDLE_NOT_QUALIFIED", "ACCEPTANCE_OFFER_REQUIRES_REFREF",
 ]);
 const labCommandError = (context: Context, error: unknown, fallback: string) => {
   const code = error instanceof CommerceConfigurationError ? error.code : error instanceof Error ? error.message : "";
@@ -278,6 +279,9 @@ export function createCommerceV2App(deps: Dependencies) {
         authEmail: deps.foundationMode ? "disabled" : deps.runtimeCapabilities?.authEmailConfigured === false ? "missing" : "configured",
         captcha: deps.foundationMode ? "disabled" : deps.runtimeCapabilities?.captchaConfigured === false ? "missing" : "configured",
         erasure: deps.erasureFence ? erasureReady ? "qualified" : "closed" : "not_installed",
+        // Reported, never a readiness condition: a stop must not restart or unroute Commerce, and
+        // reconciliation and refunds keep running while it holds (ART-319).
+        salesSwitch: databaseOk ? storefrontSwitchStatus(deps.db, deps.config) : { state: "UNAVAILABLE", reason: "DATABASE_UNAVAILABLE", COURSES: "CLOSED", LAB: "CLOSED" },
         kinescope: deps.foundationMode ? "disabled" : deps.runtimeCapabilities?.kinescopeApiConfigured === false ? "missing" : "configured_not_probed",
         kinescopeDrm: deps.config.kinescopeDeliveryMode === "protected" ? (deps.kinescopeDrmAuth ? "configured" : "missing") : "not_required",
         catalog: {
@@ -959,7 +963,7 @@ export function createCommerceV2App(deps: Dependencies) {
     const owned = deps.db.prepare("SELECT 1 FROM orders WHERE public_id=? AND customer_id=?").get(context.req.param("orderPublicId"), customerId);
     if (!owned) return context.json({ code: "ORDER_NOT_FOUND" }, 404, noStore);
     try {
-      return context.json(await reconcileCheckout(deps.db, deps.paymentRail, context.req.param("orderPublicId"), now().toISOString()), 200, noStore);
+      return context.json(await reconcileCheckout(deps.db, deps.paymentRail, context.req.param("orderPublicId"), now().toISOString(), deps.config), 200, noStore);
     } catch (error) {
       return context.json({ code: error instanceof Error ? error.message : "RECONCILE_FAILED" }, 409, noStore);
     }

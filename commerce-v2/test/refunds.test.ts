@@ -6,7 +6,7 @@ import { checkout, MockPaymentRail, reconcileCheckout, type AcceptedRefund, type
 import { migrateV2 } from "../src/db";
 import type { RefundEnvelope, RefundEnvelopeKeyring } from "../src/refund-envelope";
 import { stageALegalManifestJson, stageBLegalManifestJson } from "./fixtures/legal";
-import { activatePublicSales, qualifyTestFiscalPolicies, testCheckoutConfig } from "./fixtures/sales";
+import { openTestStorefront, qualifyTestFiscalPolicies, testCheckoutConfig } from "./fixtures/sales";
 import { decideRefund, executeApprovedRefund, listRefundCases, reconcilePendingRefunds, recordCourseAccessStart, registerEmailRefund, requestRefund } from "../src/refunds";
 
 const keys: RefundEnvelopeKeyring = { currentKeyId: "k1", keys: { k1: Buffer.alloc(32, 1), k0: Buffer.alloc(32, 2) } };
@@ -48,7 +48,7 @@ beforeEach(() => {
   db.prepare(`INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode)
     VALUES ('offer','course:one','product',10000,'PUBLIC')`).run();
   qualifyTestFiscalPolicies(db);
-  activatePublicSales(db);
+  openTestStorefront(db);
 });
 
 async function paidOrder(scenario?: string) {
@@ -139,7 +139,7 @@ describe("email refund intake", () => {
       VALUES ('lab-product','lab:fixture','LAB','PAID','lab:fixture')`).run();
     db.prepare(`INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode)
       VALUES ('lab-offer','lab:fixture','lab-product',10000,'PUBLIC')`).run();
-    qualifyTestFiscalPolicies(db); activatePublicSales(db, "LAB");
+    qualifyTestFiscalPolicies(db); openTestStorefront(db, "LAB");
     const order = await checkout(db, rail, testCheckoutConfig, { customerId: "customer", customerEmail: "student@example.com",
       offerRef: "lab:fixture", idempotencyKey: "lab-payment" }, "2026-09-30T10:00:00Z");
     const request = registerEmailRefund(db, { ...mail, orderPublicId: order.orderPublicId }, now);

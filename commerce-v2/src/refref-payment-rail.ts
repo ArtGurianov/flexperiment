@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { AmbiguousRailCreateError, RailAttemptRefusalError, RailRefusalError, type AcceptedRefund, type CheckoutCodeOutcome, type PaymentCreateInput, type PaymentRail, type PaymentRefundInput, type PaymentResolveInput, type RailProjection, type RailResolution, type RefundSubmission } from "./checkout";
+import { AmbiguousRailCreateError, PaymentInitiationStoppedError, RailAttemptRefusalError, RailRefusalError, type AcceptedRefund, type CheckoutCodeOutcome, type PaymentCreateInput, type PaymentRail, type PaymentRecoveryOptions, type PaymentRefundInput, type PaymentResolveInput, type RailProjection, type RailResolution, type RefundSubmission } from "./checkout";
 import type { RefundEnvelope } from "./refund-envelope";
 import { checkoutSnapshotHash, type SharedCheckoutSnapshot } from "./checkout-snapshot";
 
@@ -200,7 +200,11 @@ export class RefrefPaymentRail implements PaymentRail {
     } };
   }
 
-  async create(input: PaymentCreateInput): Promise<RailProjection> {
+  async create(input: PaymentCreateInput, options: PaymentRecoveryOptions = { mayInitiate: () => true }): Promise<RailProjection> {
+    return this.createAdmitted(input, options.mayInitiate);
+  }
+
+  private async createAdmitted(input: PaymentCreateInput, mayInitiate: () => boolean): Promise<RailProjection> {
     const { quote } = input;
     if (quote.baseAmountKopecks !== input.amountKopecks
       || quote.finalAmountKopecks !== input.amountKopecks - quote.discountKopecks
@@ -208,6 +212,7 @@ export class RefrefPaymentRail implements PaymentRail {
     if (checkoutSnapshotHash(input.snapshot) !== input.snapshotHash) throw new Error("REFREF_SNAPSHOT_HASH_INVALID");
     let created: z.infer<typeof createAttemptSchema>;
     try {
+      if (!mayInitiate()) throw new PaymentInitiationStoppedError();
       created = await this.call("POST", `/integrations/orders/${encodeURIComponent(input.orderPublicId)}/checkout-attempts`, createAttemptSchema, {
         referralResolutionId: quote.resolutionId, snapshot: input.snapshot, snapshotHash: input.snapshotHash,
       }, input.idempotencyKey);
@@ -231,14 +236,15 @@ export class RefrefPaymentRail implements PaymentRail {
     }
     const attemptId = created.checkoutAttemptId;
     if (created.snapshotHash !== input.snapshotHash) throw new Error("REFREF_SNAPSHOT_HASH_MISMATCH");
-    return this.createPaymentSession(input, attemptId);
+    return this.createPaymentSession(input, attemptId, mayInitiate);
   }
 
-  private async createPaymentSession(input: PaymentCreateInput, attemptId: string): Promise<RailProjection> {
+  private async createPaymentSession(input: PaymentCreateInput, attemptId: string, mayInitiate: () => boolean): Promise<RailProjection> {
     if (!input.successUrl) throw new Error("REFREF_SUCCESS_URL_REQUIRED");
     const evidence = { resolutionId: input.quote.resolutionId, snapshotHash: input.snapshotHash };
     let session: z.infer<typeof paymentSessionSchema>;
     try {
+      if (!mayInitiate()) throw new PaymentInitiationStoppedError({ attemptId, ...evidence });
       session = await this.call("POST", `/integrations/orders/${encodeURIComponent(input.orderPublicId)}/checkout-attempts/${encodeURIComponent(attemptId)}/obligations/full/payment-session`, paymentSessionSchema, {
         successUrl: input.successUrl, receiptContact: { email: input.customerEmail },
       });
@@ -252,7 +258,7 @@ export class RefrefPaymentRail implements PaymentRail {
     throw new Error("REFREF_PAYMENT_SESSION_INVALID");
   }
 
-  async recoverCreate(input: PaymentCreateInput, knownAttemptId?: string): Promise<RailProjection> {
+  async recoverCreate(input: PaymentCreateInput, knownAttemptId?: string, options: PaymentRecoveryOptions = { mayInitiate: () => false }): Promise<RailProjection> {
     let attempt: Attempt | undefined;
     if (knownAttemptId) {
       attempt = await this.call("GET", `/integrations/orders/${encodeURIComponent(input.orderPublicId)}/checkout-attempts/${encodeURIComponent(knownAttemptId)}`, attemptSchema);
@@ -266,10 +272,15 @@ export class RefrefPaymentRail implements PaymentRail {
         if (!(error instanceof RefrefHttpError) || error.status !== 404) throw error;
       }
     }
-    if (!attempt) return this.create(input);
+    if (!attempt) {
+      // Sales stopped: the identical create is not sent; the order is read back again later.
+      return this.createAdmitted(input, options.mayInitiate);
+    }
     const projection = this.projection(attempt);
     if (projection.state !== "PENDING" && projection.state !== "CUSTOMER_ACTION_REQUIRED") return projection;
-    return this.createPaymentSession(input, attempt.id);
+    // Admission is read after the GET, at the session POST boundary. A refusal keeps the local
+    // unanswered create uncertain so later recovery still reads it back and may resume the session.
+    return this.createPaymentSession(input, attempt.id, options.mayInitiate);
   }
 
   async reconcile(input: { orderPublicId: string; attemptId: string }): Promise<RailProjection> {

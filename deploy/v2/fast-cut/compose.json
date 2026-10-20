@@ -74,6 +74,24 @@
         },
         {
           "type": "bind",
+          "source": "/var/lib/flexperiment-sales-canary/switch",
+          "target": "/etc/flexperiment-sales",
+          "read_only": true,
+          "bind": {
+            "create_host_path": false
+          }
+        },
+        {
+          "type": "bind",
+          "source": "/var/lib/flexperiment-sales-canary/journal",
+          "target": "/etc/flexperiment-sales-journal",
+          "read_only": true,
+          "bind": {
+            "create_host_path": false
+          }
+        },
+        {
+          "type": "bind",
           "source": "/var/lib/flexperiment-erasure-canary/fence",
           "target": "/var/lib/flexperiment-erasure-canary/fence",
           "read_only": false,

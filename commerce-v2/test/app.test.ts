@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createCommerceV2App } from "../src/app";
 import { migrateV2 } from "../src/db";
 import { stageBLegalManifestJson } from "./fixtures/legal";
-import { activatePublicSales, qualifyTestFiscalPolicies } from "./fixtures/sales";
+import { openTestStorefront, qualifyTestFiscalPolicies, setTestStorefronts, withTestStorefrontSwitch } from "./fixtures/sales";
 import { loadCommerceRuntimeConfig } from "../src/payment-mode";
 import { applyCourseManifest, withManifestHash } from "../src/manifest";
 import { startVideoUpload } from "../src/kinescope";
@@ -32,7 +32,7 @@ type AppDependencies = Parameters<typeof createCommerceV2App>[0];
 
 const app = (paymentMode: "disabled" | "mock" = "disabled", overrides: Partial<AppDependencies> = {}) => createCommerceV2App({
   db,
-  config: loadCommerceRuntimeConfig({ DEPLOY_ENV: paymentMode === "mock" ? "test" : "production", PAYMENT_MODE: paymentMode, KINESCOPE_DELIVERY_MODE: "open", MERCHANT_PROMOTION_PREFIX: "FX-" }),
+  config: withTestStorefrontSwitch(loadCommerceRuntimeConfig({ DEPLOY_ENV: paymentMode === "mock" ? "test" : "production", PAYMENT_MODE: paymentMode, KINESCOPE_DELIVERY_MODE: "open", MERCHANT_PROMOTION_PREFIX: "FX-" })),
   sourceCommit: "a".repeat(40),
   serviceToken: token,
   paymentRail: paymentMode === "mock" ? new MockPaymentRail() : undefined,
@@ -322,13 +322,14 @@ describe("commerce v2 boundaries", () => {
       VALUES ('offer','course:one','product',10000,'PUBLIC')`).run();
     const server = app("mock");
     const headers = { authorization: "Session customer", "content-type": "application/json", "idempotency-key": "preview" };
+    setTestStorefronts(db, { COURSES: "CLOSED" });
     const unactivated = await server.request("/v1/checkout/preview", {
       method: "POST", headers: { ...headers, "idempotency-key": "unactivated" }, body: JSON.stringify({ offerRef: "course:one" }),
     });
     expect(unactivated.status).toBe(409);
-    expect(await unactivated.json()).toEqual({ code: "SALES_ACTIVATION_REQUIRED" });
+    expect(await unactivated.json()).toEqual({ code: "SALES_STOPPED" });
     qualifyTestFiscalPolicies(db);
-    activatePublicSales(db);
+    openTestStorefront(db);
     const preview = await server.request("/v1/checkout/preview", {
       method: "POST", headers, body: JSON.stringify({ offerRef: "course:one" }),
     });
@@ -353,8 +354,8 @@ describe("commerce v2 boundaries", () => {
     db.prepare(`INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode)
       VALUES ('offer','course:one','product',10000,'PUBLIC')`).run();
     qualifyTestFiscalPolicies(db);
-    activatePublicSales(db);
-    const config = loadCommerceRuntimeConfig({
+    openTestStorefront(db);
+    const config = withTestStorefrontSwitch(loadCommerceRuntimeConfig({
       DEPLOY_ENV: "test",
       PAYMENT_MODE: "refref",
       KINESCOPE_DELIVERY_MODE: "protected",
@@ -365,7 +366,7 @@ describe("commerce v2 boundaries", () => {
       REFREF_API_BASE_URL: "https://api.refref.ru/v1-rc",
       REFREF_CHECKOUT_ORIGIN: "https://checkout.refref.ru",
       REFREF_HANDOFF_STATE_SECRET: "secret",
-    });
+    }));
     const server = app("disabled", {
       config,
       paymentRail: new MockPaymentRail(),
@@ -416,7 +417,7 @@ describe("commerce v2 boundaries", () => {
       VALUES ('product','course:one','ONLINE_COURSE','PAID','course-one')`).run();
     db.prepare(`INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode)
       VALUES ('offer','course:one','product',10000,'PUBLIC')`).run();
-    qualifyTestFiscalPolicies(db); activatePublicSales(db);
+    qualifyTestFiscalPolicies(db); openTestStorefront(db);
     const rail = new MockPaymentRail();
     const order = await checkout(db, rail, testCheckoutConfig, { customerId: "customer", customerEmail: "student@example.com",
       offerRef: "course:one", idempotencyKey: "mail-intake-paid-order" }, "2026-09-30T10:00:00Z");
@@ -460,7 +461,7 @@ describe("commerce v2 boundaries", () => {
     db.prepare(`INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode)
       VALUES ('offer','course:one','product',10000,'PUBLIC')`).run();
     qualifyTestFiscalPolicies(db);
-    activatePublicSales(db);
+    openTestStorefront(db);
     const server = app("mock");
     const customerHeaders = { authorization: "Session customer", "content-type": "application/json", "idempotency-key": "preview-refund" };
     const preview = await server.request("/v1/checkout/preview", {
@@ -544,7 +545,7 @@ describe("commerce v2 boundaries", () => {
     db.prepare(`INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode)
       VALUES ('offer','course:one','product',10000,'PUBLIC')`).run();
     qualifyTestFiscalPolicies(db);
-    activatePublicSales(db);
+    openTestStorefront(db);
     applyCourseManifest(db, withManifestHash({
       courseRef: "course-one", version: 1, visibility: "LISTED", sections: [], lessons: [], operations: [],
     }));

@@ -10,7 +10,7 @@ import { migrateV2 } from "../src/db";
 import { loadCommerceRuntimeConfig } from "../src/payment-mode";
 import { enrolledTotp, testTotpKey } from "./fixtures/control-room-totp";
 import { stageALegalManifestJson } from "./fixtures/legal";
-import { activatePublicSales, qualifyTestFiscalPolicies, testCheckoutConfig } from "./fixtures/sales";
+import { openTestStorefront, qualifyTestFiscalPolicies, setTestStorefronts, testCheckoutConfig, withTestStorefrontSwitch } from "./fixtures/sales";
 
 /** ART-341: LAB occurrence CRUD through the Control Room, against one live price. */
 const NOW = "2026-09-30T12:00:00.000Z";
@@ -62,7 +62,7 @@ const openForSale = async () => {
   expect((await setOffer({})).status).toBe(200);
   qualifyTestFiscalPolicies(db);
   expect((await edit({ visibility: "LISTED" })).status).toBe(200);
-  activatePublicSales(db, "LAB");
+  openTestStorefront(db, "LAB");
   expect((await setOffer({ saleMode: "PUBLIC" })).status).toBe(200);
 };
 
@@ -76,7 +76,7 @@ beforeEach(async () => {
   const totp = enrolledTotp(db, new Date(NOW));
   server = createCommerceV2App({
     db, sourceCommit: "a".repeat(40), serviceToken: "service-token", paymentRail: rail, now: () => new Date(NOW),
-    config: loadCommerceRuntimeConfig({ DEPLOY_ENV: "test", PAYMENT_MODE: "mock", KINESCOPE_DELIVERY_MODE: "open", MERCHANT_PROMOTION_PREFIX: "FX-" }),
+    config: withTestStorefrontSwitch(loadCommerceRuntimeConfig({ DEPLOY_ENV: "test", PAYMENT_MODE: "mock", KINESCOPE_DELIVERY_MODE: "open", MERCHANT_PROMOTION_PREFIX: "FX-" })),
     controlRoomAuth: { origin: ORIGIN, sessionSecret: "test-control-room-secret", passwordScrypt, trustedProxyIps: ["127.0.0.1"], totpKey: testTotpKey },
     controlRoomPeerAddress: () => "127.0.0.1",
   });
@@ -132,13 +132,14 @@ describe("Control Room LAB occurrence CRUD", () => {
       .toEqual({ status: 200, body: { occurrenceRef: REF, version: 2, changed: true } });
     expect(await setOffer({})).toEqual({ status: 200, body: { productRef: REF, offerRef: REF, version: 1 } });
     expect(await edit({ visibility: "LISTED" })).toMatchObject({ status: 200, body: { version: 3 } });
-    // LAB sales stay CLOSED: no PUBLIC offer without the LAB acceptance activation (ART-243).
-    expect(await setOffer({ saleMode: "PUBLIC" })).toEqual({ status: 409, body: { error: { code: "SALES_ACTIVATION_REQUIRED" } } });
+    // LAB sales stay CLOSED: no PUBLIC offer while the owner's LAB switch is closed (ART-319).
+    setTestStorefronts(db, { LAB: "CLOSED" });
+    expect(await setOffer({ saleMode: "PUBLIC" })).toEqual({ status: 409, body: { error: { code: "SALES_STOPPED" } } });
     expect((await current()).offer).toMatchObject({ saleMode: "CLOSED", priceKopecks: 250_000, productVersion: 1 });
     expect((await publicCatalogue()).occurrences).toEqual([]);
 
     qualifyTestFiscalPolicies(db);
-    activatePublicSales(db, "LAB");
+    openTestStorefront(db, "LAB");
     expect((await setOffer({ saleMode: "PUBLIC" })).status).toBe(200);
     expect((await publicCatalogue()).occurrences).toEqual([expect.objectContaining({ occurrenceRef: REF, amountKopecks: 250_000 })]);
     expect((await setOffer({ saleMode: "CLOSED" })).status).toBe(200);

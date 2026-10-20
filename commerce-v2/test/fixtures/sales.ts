@@ -1,19 +1,61 @@
 import type Database from "better-sqlite3";
-import { activateSales, salesActivationEvidenceIssue, type ProductCommand } from "../../src/catalog-control";
+import type { ProductCommand } from "../../src/catalog-control";
 import { draftFiscalPolicy, qualifyFiscalPolicy } from "../../src/fiscal-policy";
 import { legalManifestHash } from "../../src/legal-control";
 import { recordOwnerLegalDecision } from "../../src/owner-legal-decision";
-import { loadCommerceRuntimeConfig } from "../../src/payment-mode";
+import type { Storefront } from "../../src/origins";
+import { loadCommerceRuntimeConfig, type CommerceRuntimeConfig } from "../../src/payment-mode";
+import type { StorefrontSwitchDocument } from "../../src/storefront-switch";
 
-/** Local/test runtime: the scripted mock rail, with the same live sale-mode gate production uses. */
-export const testCheckoutConfig = loadCommerceRuntimeConfig({ NODE_ENV: "test" });
+type TestSwitch = { generation: number; storefronts: StorefrontSwitchDocument["storefronts"]; raw?: string | Error };
+const switches = new WeakMap<Database.Database, TestSwitch>();
+const switchOf = (db: Database.Database) => {
+  let current = switches.get(db);
+  // Unrelated tests sell as before: both storefronts open at generation 1. Stop tests close them.
+  if (!current) switches.set(db, current = { generation: 1, storefronts: { COURSES: { state: "OPEN", openSince: 1 }, LAB: { state: "OPEN", openSince: 1 } } });
+  return current;
+};
 
-/** A PUBLIC offer sells only with a current audited activation row for its kind. */
-export function activatePublicSales(db: Database.Database, kind: ProductCommand["kind"] = "ONLINE_COURSE") {
-  return activateSales(db, {
-    // A kind no acceptance qualifies (COURSE_BUNDLE) is refused by activateSales itself.
-    kind, evidenceIssue: salesActivationEvidenceIssue[kind] ?? "", evidenceSha256: "a".repeat(64), actor: "owner",
-  }, "2026-09-29T00:00:00Z");
+/** The owner's switch document as scripts/v2/storefront-switch.py writes it, for a test database. */
+export function testStorefrontSwitchDocument(db: Database.Database, scope: StorefrontSwitchDocument["scope"] = "local"): StorefrontSwitchDocument {
+  const current = switchOf(db);
+  return { schema: "flexperiment.storefront-switch/1", scope, generation: current.generation,
+    changedAt: "2026-10-19T09:00:00.000Z", changedBy: "owner", reason: "synthetic test switch", evidenceIssue: "ART-319",
+    storefronts: current.storefronts };
+}
+
+/** Each change is a new generation; reopening a storefront starts a new opening, as the host tool does. */
+export function setTestStorefronts(db: Database.Database, changes: Partial<Record<Storefront, "OPEN" | "CLOSED">>) {
+  const current = switchOf(db);
+  current.generation += 1;
+  delete current.raw;
+  for (const [storefront, state] of Object.entries(changes) as [Storefront, "OPEN" | "CLOSED"][]) {
+    if (state === "CLOSED") current.storefronts[storefront] = { state: "CLOSED" };
+    else if (current.storefronts[storefront].state !== "OPEN") current.storefronts[storefront] = { state: "OPEN", openSince: current.generation };
+  }
+  return current.generation;
+}
+
+/** Replaces what the source returns (bytes, or a read failure) until the next setTestStorefronts. */
+export function setTestStorefrontSwitchRaw(db: Database.Database, raw: string | Error) { switchOf(db).raw = raw; }
+
+/** The config with a synthetic switch of its own scope, standing in for the server's read-only host file. */
+export function withTestStorefrontSwitch<T extends Pick<CommerceRuntimeConfig, "deployEnvironment">>(config: T) {
+  const scope = config.deployEnvironment === "production" ? "production" : config.deployEnvironment === "staging" ? "canary" : "local";
+  return { ...config, storefrontSwitch: (db: Database.Database) => {
+    const current = switchOf(db);
+    if (current.raw instanceof Error) throw current.raw;
+    return current.raw ?? JSON.stringify(testStorefrontSwitchDocument(db, scope));
+  } };
+}
+
+/** Local/test runtime: the scripted mock rail, with the same live sale-mode gate and switch production uses. */
+export const testCheckoutConfig = withTestStorefrontSwitch(loadCommerceRuntimeConfig({ NODE_ENV: "test" }));
+
+/** Opens the storefront of this product kind on the owner's switch (no-op while it is open). */
+export function openTestStorefront(db: Database.Database, kind: ProductCommand["kind"] = "ONLINE_COURSE") {
+  const storefront: Storefront = kind === "LAB" ? "LAB" : "COURSES";
+  if (switchOf(db).storefronts[storefront].state !== "OPEN") setTestStorefronts(db, { [storefront]: "OPEN" });
 }
 
 /**

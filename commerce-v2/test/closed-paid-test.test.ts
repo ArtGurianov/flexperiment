@@ -1,6 +1,6 @@
 import { resolvePlaybackAccess } from "../src/playback-access";
 import { applyCourseManifest, withManifestHash } from "../src/manifest";
-import { qualifyTestFiscalPolicy } from "./fixtures/sales";
+import { qualifyTestFiscalPolicy, withTestStorefrontSwitch } from "./fixtures/sales";
 import Database from "better-sqlite3";
 import { execFileSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -31,7 +31,7 @@ const env = {
   REFREF_READINESS_URL: "https://ops.refref.ru/readyz", REFREF_API_KEY: "synthetic-key", REFREF_MERCHANT_SLUG: "flexperiment",
   REFREF_MERCHANT_ID: "00000000-0000-4000-8000-000000000001", REFREF_HANDOFF_STATE_SECRET: "synthetic-handoff-secret",
 };
-const config = loadCommerceRuntimeConfig(env);
+const config = withTestStorefrontSwitch(loadCommerceRuntimeConfig(env));
 let db: Database.Database;
 let rail: MockPaymentRail;
 const input = { customerId: "buyer", customerEmail: email, offerRef: "course:test-course", previewIdempotencyKey: "review" };

@@ -62,8 +62,13 @@ export function verifyRestoreReport(db: Database.Database, value: unknown) {
 export function assertRestoreSalesClosed(db: Database.Database) {
   if (db.prepare("SELECT 1 FROM offers WHERE sale_mode<>'CLOSED' LIMIT 1").get()
     || (legacyLabSalesColumn(db) && db.prepare("SELECT 1 FROM lab_occurrences WHERE sales_status<>'CLOSED' LIMIT 1").get())
-    || db.prepare("SELECT 1 FROM sales_activation WHERE revoked_at IS NULL LIMIT 1").get()) fail("RESTORE_SALES_OPEN");
+    || (legacySalesActivation(db) && db.prepare("SELECT 1 FROM sales_activation WHERE revoked_at IS NULL LIMIT 1").get())) fail("RESTORE_SALES_OPEN");
 }
+// From 0035 (ART-319) sales_activation is frozen history that authorizes nothing: new paid money
+// needs the owner's host switch, which a database restore never carries. Older restores still
+// treat an unrevoked activation as an open gate.
+const legacySalesActivation = (db: Database.Database) => !db.prepare(
+  "SELECT 1 FROM sqlite_master WHERE type='table' AND name='storefront_switch_observations'").get();
 const legacyLabSalesColumn = (db: Database.Database) => (db.pragma("table_info(lab_occurrences)") as { name: string }[])
   .some(column => column.name === "sales_status");
 function freezeSales(db: Database.Database, now: string) {
@@ -71,7 +76,7 @@ function freezeSales(db: Database.Database, now: string) {
     db.prepare("UPDATE offers SET sale_mode='CLOSED',updated_at=? WHERE sale_mode<>'CLOSED'").run(now);
     // 0029 removed this second gate. Older reviewed restores still have it.
     if (legacyLabSalesColumn(db)) db.prepare("UPDATE lab_occurrences SET sales_status='CLOSED',updated_at=? WHERE sales_status<>'CLOSED'").run(now);
-    db.prepare("UPDATE sales_activation SET revoked_at=?,revocation_reason='ISOLATED_RESTORE' WHERE revoked_at IS NULL").run(now);
+    if (legacySalesActivation(db)) db.prepare("UPDATE sales_activation SET revoked_at=?,revocation_reason='ISOLATED_RESTORE' WHERE revoked_at IS NULL").run(now);
   }).immediate();
 }
 type LocalOrderState = "DRAFT" | "PAYMENT_PENDING" | "FULFILLED" | "EXPIRED" | "CANCELLED" | "REFUND_PENDING" | "REFUNDED" | "REVIEW_REQUIRED";

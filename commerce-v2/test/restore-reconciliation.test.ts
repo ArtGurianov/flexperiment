@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { migrateV2 } from "../src/db";
 import { checkout, confirmCheckout, MockPaymentRail, prepareCheckout } from "../src/checkout";
 import { stageALegalManifestJson, stageBLegalManifestJson } from "./fixtures/legal";
-import { activatePublicSales, qualifyTestFiscalPolicies, testCheckoutConfig } from "./fixtures/sales";
+import { openTestStorefront, qualifyTestFiscalPolicies, testCheckoutConfig } from "./fixtures/sales";
 import { grantManualEntitlement, customerCanAccessCourse } from "../src/entitlements";
 import { decideRefund, executeApprovedRefund, requestRefund } from "../src/refunds";
 import { saveEditorialDraft } from "../src/course-editorial";
@@ -35,7 +35,7 @@ beforeEach(() => {
     VALUES ('legal','COURSES','stage-a-v1',?,'2026-09-30T00:00:00Z',1)`).run(stageALegalManifestJson);
   source.exec(`INSERT INTO products(id,product_ref,kind,access_model,course_ref) VALUES ('product','course:one','ONLINE_COURSE','PAID','course-one');
     INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode) VALUES ('offer','course:one','product',10000,'PUBLIC');`);
-  qualifyTestFiscalPolicies(source); activatePublicSales(source); rail = new MockPaymentRail();
+  qualifyTestFiscalPolicies(source); openTestStorefront(source); rail = new MockPaymentRail();
   const signing = generateKeyPairSync("ed25519"); signer = { keyId: "signer", privateKey: signing.privateKey };
   keys = { signing: { signer: signing.publicKey }, subject: { subject: randomBytes(32) } };
   ledger = new ErasureLedgerStore({ directory: join(root, "ledger"), scope: "canary", keys, signer, forbiddenRoots: [join(root, "source.sqlite")] });
@@ -214,7 +214,7 @@ describe("isolated SQLite backup + fresh Refref money tail", () => {
         VALUES ('event','lab:one','city','LAB','2026-11-01T09:00:00Z','2026-11-01T17:00:00Z','Asia/Novosibirsk',20,'CONFIRMED','Studio','Address');
       INSERT INTO products(id,product_ref,kind,access_model,occurrence_ref) VALUES ('lab-product','lab:one','LAB','PAID','lab:one');
       INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode) VALUES ('lab-offer','lab:one','lab-product',10000,'PUBLIC');`);
-    qualifyTestFiscalPolicies(source); activatePublicSales(source, "LAB");
+    qualifyTestFiscalPolicies(source); openTestStorefront(source, "LAB");
     const token = randomBytes(32).toString("base64url");
     const guest = startLabGuest(source, { email: "student@example.test", accessToken: token }, "2026-10-19T10:00:00.000Z");
     const quote = await prepareCheckout(source, rail, testCheckoutConfig, { customerId: "customer", customerEmail: "student@example.test",

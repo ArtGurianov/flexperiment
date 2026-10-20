@@ -4,7 +4,7 @@ import { confirmCheckout, prepareCheckout, type PaymentCreateInput, type Payment
 import { migrateV2 } from "../src/db";
 import { resolveCheckoutCode, saveMerchantPromotion } from "../src/promotions";
 import { stageBLegalManifestJson } from "./fixtures/legal";
-import { activatePublicSales, qualifyTestFiscalPolicies, testCheckoutConfig } from "./fixtures/sales";
+import { openTestStorefront, qualifyTestFiscalPolicies, testCheckoutConfig } from "./fixtures/sales";
 
 class CapturingRail implements PaymentRail {
   readonly checkoutSnapshotConfig = {
@@ -59,7 +59,7 @@ beforeEach(() => {
   db.prepare(`INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode)
     VALUES ('offer','course:one','product',10000,'PUBLIC')`).run();
   qualifyTestFiscalPolicies(db);
-  activatePublicSales(db);
+  openTestStorefront(db);
 });
 
 const preview = (checkoutCode: string, key = checkoutCode) => prepareCheckout(db, rail, testCheckoutConfig, {
