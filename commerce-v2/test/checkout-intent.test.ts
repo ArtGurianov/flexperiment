@@ -760,6 +760,46 @@ describe("ART-200 merchant-local LAB holds", () => {
     expect(await confirm(fresh.quoteId, "new-pay", at(3))).toMatchObject({ state: "PAID" });
   });
 
+  it("inherits the original hold deadline through chained replacements and frees the last seat at minute 15", async () => {
+    addLab(); db.exec("UPDATE lab_occurrences SET capacity=1");
+    const original = await quoted(await lab("original"));
+    const middle = await quoted(await lab("middle", at(7)));
+    const replacement = await quoted(await lab("replacement", at(14), { checkoutCode: "PARTNER" }));
+    expect(new Set([original.quoteId, middle.quoteId, replacement.quoteId]).size).toBe(3);
+    const holds = [original, middle, replacement].map(q => hold(q.quoteId));
+    expect(new Set(holds.map(row => row.seat_hold_ref)).size).toBe(3);
+    for (const row of holds) {
+      expect(row.seat_hold_expires_at).toBe(at(15));
+      expect(JSON.parse(row.line_snapshot_json).seatHold.expiresAt).toBe(at(15));
+    }
+    expect(replacement.expiresAt).toBe(at(15));
+    expect(inventory(at(14))).toMatchObject({ held: 1, available: 0 });
+    expect(inventory(at(15))).toMatchObject({ held: 0, available: 1 });
+    db.prepare("INSERT INTO customers(id,email_normalized) VALUES ('second','second@example.com')").run();
+    const second = await quoted(await lab("second", at(15), { customerId: "second", customerEmail: "second@example.com" }));
+    expect(second.expiresAt).toBe(at(30));
+    await expect(confirm(original.quoteId, "old-pay", at(15))).rejects.toThrow("CHECKOUT_INTENT_REPLACED");
+    await expect(confirm(middle.quoteId, "middle-pay", at(15))).rejects.toThrow("CHECKOUT_INTENT_REPLACED");
+    await expect(confirm(replacement.quoteId, "replacement-pay", at(15))).rejects.toThrow("CHECKOUT_QUOTE_EXPIRED");
+    expect(await confirm(second.quoteId, "second-pay", at(15), { customerId: "second", customerEmail: "second@example.com" }))
+      .toMatchObject({ state: "PAID" });
+    expect(count("orders")).toBe(1);
+  });
+
+  it("retains a replacement's seat beyond its inherited deadline once an unanswered payment has started", async () => {
+    addLab(); db.exec("UPDATE lab_occurrences SET capacity=1");
+    await quoted(await lab("original"));
+    const replacement = await quoted(await lab("replacement", at(14), { scenario: "ambiguous_create" }));
+    expect(replacement.expiresAt).toBe(at(15));
+    expect(await confirm(replacement.quoteId, "pay", at(14))).toMatchObject({ state: "CREATE_UNKNOWN" });
+    expect(inventory(at(16))).toMatchObject({ held: 0, pending: 1, available: 0 });
+    db.prepare("INSERT INTO customers(id,email_normalized) VALUES ('second','second@example.com')").run();
+    await expect(lab("second", at(16), { customerId: "second", customerEmail: "second@example.com" }))
+      .rejects.toThrow("LAB_OCCURRENCE_SOLD_OUT");
+    expect(await confirm(replacement.quoteId, "retry", at(16))).toMatchObject({ state: "PAID" });
+    expect(count("orders")).toBe(1); expect(count("checkout_attempts")).toBe(1);
+  });
+
   it("retains an unanswered attempt beyond TTL and recovers the same order and attempt without a new hold", async () => {
     addLab(); db.exec("UPDATE lab_occurrences SET capacity=1");
     const q = await quoted(await lab("uncertain", T0, { scenario: "ambiguous_create" }));

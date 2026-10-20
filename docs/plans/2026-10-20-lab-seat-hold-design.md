@@ -15,9 +15,13 @@ share one `BEGIN IMMEDIATE`. Failure rolls back replacement too. Guest admission
 scopes remain order-bound; an anonymous mailbox never replaces another guest's
 hold. Repeating the same intent reuses its hold and original deadline, including
 when another process committed while this request awaited payment read-back.
+Replacement captures the live hold's original absolute deadline under that lock
+and inherits it across every replacement, even though the new hold has its own
+reference. Replacement never grants another 15 minutes.
 
-Hold expiry is the earlier of intent creation plus 15 minutes and occurrence
-start. Refref/promotion deadlines may shorten the reviewed quote. Only live,
+Hold expiry is the earliest of intent creation plus 15 minutes, occurrence
+start and the inherited live hold deadline (when replacing an intent).
+Refref/promotion deadlines may shorten the reviewed quote. Only live,
 unconsumed intents count as quote holds. Expired, refused, replaced and materially
 invalidated quotes cannot be confirmed. Inventory includes holds in catalogue,
 Control Room and operator capacity/reserve checks. Cancellation may invalidate
@@ -37,7 +41,8 @@ triggers; customer ownership and erasure targets remain those of the intent.
 
 Validation covers two independent SQLite processes contending for the last seat,
 concurrent identical requests, replacement rollback, expired hold reuse, frozen
-hold identity, reserve bounds, pre-confirm cancellation, migration of old quotes,
+hold identity, reserve bounds, pre-confirm cancellation, chained replacements at
+minutes 7/14 releasing the seat at minute 15, migration of old quotes,
 and lost attempt answers with the original request/order/attempt and no new hold.
 Local verification and CI do not authorize deployment, production migration,
 real payments or LAB sales activation.

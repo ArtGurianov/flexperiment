@@ -793,9 +793,18 @@ export async function prepareCheckout(
     // Replace only unconfirmed LAB intents in this verified admission scope. Expiration and
     // re-acquisition share the write lock: a failure rolls back and preserves the old hold.
     const candidate = offerByRef(db, input.offerRef);
+    let inheritedHoldExpiry: string | null = null;
     if (candidate?.kind === "LAB") {
       const scope = paymentAdmissionScope(db, input.customerId, candidate.offer_id, orderPublicId);
       assertNoOpenPayment(db, scope);
+      // Re-acquiring a replacement must not renew the live reservation's clock.
+      // Capture its absolute deadline before expiring the old intent, under this same lock.
+      const previousHold = db.prepare(`SELECT MIN(intent.seat_hold_expires_at) AS expiresAt
+        FROM checkout_quotes intent WHERE ${PAYMENT_ADMISSION_SCOPE}
+          AND consumed_at IS NULL AND state IN ('DRAFT','RESOLVING','CUSTOMER_ACTION_REQUIRED','REVIEW')
+          AND seat_hold_ref IS NOT NULL AND julianday(seat_hold_expires_at)>julianday(@now)
+          AND (expires_at IS NULL OR julianday(expires_at)>julianday(@now))`).get({ ...scope, now }) as { expiresAt: string | null };
+      inheritedHoldExpiry = previousHold.expiresAt;
       db.prepare(`UPDATE checkout_quotes AS intent SET state='EXPIRED',failure_code='CHECKOUT_INTENT_REPLACED',updated_at=@now
         WHERE ${PAYMENT_ADMISSION_SCOPE} AND consumed_at IS NULL
           AND state IN ('DRAFT','RESOLVING','CUSTOMER_ACTION_REQUIRED','REVIEW')`).run({ ...scope, now });
@@ -810,6 +819,7 @@ export async function prepareCheckout(
     assertNoOpenPayment(db, paymentAdmissionScope(db, input.customerId, offer.offer_id, orderPublicId));
     const seatHold = offer.kind === "LAB" ? { ref: randomUUID(), expiresAt: new Date(Math.min(
       Date.parse(now) + QUOTE_TTL_MS, Date.parse(offer.occurrence_starts_at!),
+      inheritedHoldExpiry ? Date.parse(inheritedHoldExpiry) : Infinity,
     )).toISOString() } : undefined;
     const lineSnapshot = { ...freezeLine(db, offer, offer.venue), ...(seatHold ? { seatHold } : {}) };
     assertClosedPaidTestFiscal(config, lineSnapshot.fiscal);
