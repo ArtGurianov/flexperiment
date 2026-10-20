@@ -2,11 +2,18 @@
 
 Flexperiment is a pnpm monorepo with separate storefront and service applications:
 
-- `apps/platform` — course storefront and Payload authoring UI;
+- `apps/platform` — Next.js SSR course storefront;
 - `apps/lab` — LAB static storefront;
-- `apps/admin` — operator control room;
+- `apps/admin` — unified editorial and commercial Control Room;
 - `commerce-v2` — v2 identity, catalogue, access and checkout service;
 - `commerce` — frozen v1 commerce and controlled-release tooling.
+
+Commerce V2 owns course drafts and the atomic published graph; Payload is retired
+from the current source and the qualified closed canary. Historical editorial
+archives remain evidence, not a second writer. Public launch and operational
+cleanup have their own gates (ART-41 and ART-340). See the
+[publication protocol](docs/course-publication-protocol.md) and
+[Refref contract status](docs/refref-v9-contract-status.md).
 
 ## Local development
 
