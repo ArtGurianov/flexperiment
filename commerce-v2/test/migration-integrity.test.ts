@@ -123,8 +123,8 @@ describe("one-time legacy journal upgrade", () => {
       if (kind === "gap") db.prepare("DELETE FROM schema_migrations WHERE version=?").run(first.version);
       if (kind === "unknown") db.prepare("UPDATE schema_migrations SET version='0000_unknown.sql' WHERE version=?").run(first.version);
       if (kind === "future") {
-        dir = copyBundle();
-        const entries = Object.fromEntries(readV2Migrations().map(({ version, sql }) => [version, sql]));
+        dir = temporary();
+        const entries = Object.fromEntries(readV2Migrations().slice(0, 32).map(({ version, sql }) => [version, sql]));
         entries["0033_future.sql"] = "SELECT 1;"; writeMigrationBundle(dir, entries);
         db.exec("INSERT INTO schema_migrations(version) VALUES ('0033_future.sql')");
       }
@@ -135,8 +135,8 @@ describe("one-time legacy journal upgrade", () => {
   });
 
   it("rolls the legacy upgrade back when a pending migration fails", () => {
-    const db = database(); applyLegacyV2Migrations(db, 32); const before = journal(db); const dir = copyBundle();
-    const entries = Object.fromEntries(readV2Migrations().map(({ version, sql }) => [version, sql]));
+    const db = database(); applyLegacyV2Migrations(db, 32); const before = journal(db); const dir = temporary();
+    const entries = Object.fromEntries(readV2Migrations().slice(0, 32).map(({ version, sql }) => [version, sql]));
     entries["0033_broken.sql"] = "CREATE TABLE partial(id); INVALID SQL;"; writeMigrationBundle(dir, entries);
     expect(() => migrateV2(db, dir)).toThrow();
     expect(journal(db)).toEqual(before);

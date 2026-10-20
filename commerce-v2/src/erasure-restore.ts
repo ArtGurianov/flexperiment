@@ -24,6 +24,8 @@ const REVIEWED_SCHEMA_SHA256 = new Set([
   "9c464ba0199cd18fa0eb3d5598d3bc0131fd68bd9fad2064676e8801c498eb2b",
   // 0032: order-scoped guest credentials, recovery links and durable admission records.
   "354508649dd6ec29f477b118711913b2fb9b00c979e3f7c2bb895aae2c87f01a",
+  // 0033: hold reference/deadline in the classified intent; no new subject store or erasure target.
+  "094641e45ef9046a2195ceef34e2162555b7b245a7019953c83ff7753762e1ba",
   // ART-316: the same reviewed 0025–0032 schemas with a non-null SQL digest
   // in schema_migrations. Only deployment bookkeeping changes; no subject data.
   "1a7cb532cc3dcfca00aa28db60c6bdf2107bfd9f4724e208f56ac8884892f533", // 0025 with hashed journal
@@ -34,6 +36,7 @@ const REVIEWED_SCHEMA_SHA256 = new Set([
   "3e3a8a7e5e6df89e7c51d0da8f9a47cc50f5670da4007abc30bf6558d4f9af5e", // 0030 with hashed journal
   "06215c8121d4a4fd6ae35697e73b2b1b620e2fd416d37ae1bba0eda5191a1790", // 0031 with hashed journal
   "60b856fcbe80f36cb32737d850b6fc75356b365e5806d622912e7ec3bfbd53e9", // 0032 with hashed journal
+  "9959d7e84141c7f73f2573bbfa438f0d161c208582d02c6d09e55ef43289f16b", // 0033 with hashed journal
 ]);
 export function assertReviewedRestoreSchema(db: Database.Database) {
   const schema = db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").all();

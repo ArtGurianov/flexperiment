@@ -25,7 +25,7 @@ export function publicLabCatalogue(db: Database.Database, paymentMode: PaymentMo
       venue: venue.status === "CONFIRMED"
         ? { status: venue.status, name: venue.public ? venue.name : null, address: venue.public ? venue.address : null }
         : { status: venue.status, disclosureText: venue.disclosureText, announceBy: venue.announceBy },
-      soldOut: labSeatInventory(db, row).available < 1,
+      soldOut: labSeatInventory(db, row, now.toISOString()).available < 1,
     };
   });
   return labCatalogueSchema.parse({ schema: "flexperiment.lab-catalogue/1", paymentMode, cities, occurrences });
