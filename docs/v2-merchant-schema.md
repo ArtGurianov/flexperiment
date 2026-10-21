@@ -58,13 +58,14 @@ idempotency keys and the latest observed Refref projection needed to reconcile
 its own obligations. Provider credentials and provider-native payment state do
 not belong in this database.
 
-For the current deployed Payload path, its editorial SQLite remains separate
-and stores its own drafts, published content, media metadata, versions and jobs.
-Migration 0026 adds Commerce-owned editorial drafts and immutable published
-version snapshots for the staged replacement. Commerce-authored courses publish
-directly into the existing `catalog_*_projection` tables, while legacy
-manifest-owned courses retain the old path. Neither database attaches the other.
-This migration alone does not activate the replacement reader or retire Payload.
+Current source uses Commerce-owned editorial drafts and immutable published
+version snapshots, introduced by migration 0026. Control Room publishes directly
+into the existing `catalog_*_projection` tables in one local transaction.
+ART-331/335 removed the live manifest lease, legacy writer routes and Payload
+readers; ART-337 records the closed-canary cut. That evidence does not authorize
+public launch. The separate Payload SQLite and manifest path were historical
+pre-cutover authorities; their retained archives are not active writers.
+See the [publication protocol](course-publication-protocol.md).
 
 ## Migration 0026 schema and recovery review (ART-332)
 
@@ -268,7 +269,7 @@ does.
   passed and no close is outstanding.
 - `orders` and `order_lines` freeze the confirmed live offer, legal release and
   checkout snapshot used for a purchase. The order JSON is the exact closed
-  `refref.shared-checkout-snapshot/1` structure produced by the merchant-side
+  `refref.shared-checkout-snapshot/2` structure produced for new purchases by the merchant-side
   builder; its `snapshot_hash` is the lowercase SHA-256 portion of the
   `refref-jcs-1:<hex>` digest sent unchanged with that structure to Refref.
   Each paid line separately preserves catalogue price, merchant discount,
@@ -277,6 +278,9 @@ does.
   times and the venue disclosure promised to the buyer. Refref's accepted projection must return the same namespaced digest
   before it may advance the local order. `checkout_attempts` projects that
   protocol without becoming payment authority.
+  Frozen V1 snapshots remain readable for historical recovery; new issuance is
+  V2. Neither shape yet implements the target v9 purchase manifest (ART-394); see
+  [the contract status](refref-v9-contract-status.md).
 - `course_entitlements` is append-only grant evidence per order line. Revoking
   one line never revokes a separate COURSE or ALL_COURSES grant.
 - `course_access_starts` records the first successful playback grant backed by
@@ -306,11 +310,10 @@ does.
   database rows or accept browser-supplied actor identities. Internal service
   reads continue to require the service token; browser reads and commands use
   the Control Room session and same-origin checks.
-- `catalog_*_projection` is the current published graph. The legacy writer
-  applies a full-state manifest; the Commerce editorial writer marks its courses
+- `catalog_*_projection` is the current published graph. The Commerce editorial writer marks its courses
   and commits draft revision CAS, published version CAS, graph, audit,
-  idempotency result and immutable snapshot in one SQLite transaction. Legacy
-  manifest writes cannot overwrite Commerce-authored courses. Previously
+  idempotency result and immutable snapshot in one SQLite transaction. The former
+  manifest writer route is removed; retained manifest evidence is historical. Previously
   published refs omitted from a new editorial draft remain unlisted instead of
   being deleted. Emergency unlist persists across ordinary editorial publishes;
   an audited CAS `relist` is required to release it, and withdrawal cannot be
@@ -318,9 +321,9 @@ does.
   immutable `document_json` bytes, with the current projection carrying the
   latest digest. Course versions only move forward; section visibility
   participates in a lesson's effective visibility.
-- `access_overrides` records restrictive intent. PENDING overrides remain
-  enforced until commerce resolves them to FINALIZED, SUPERSEDED or
-  RELEASED_ROLLED_BACK with the required proof.
+- Historical `access_overrides` recorded restrictive intent. In the former
+  manifest protocol PENDING overrides remained enforced until resolved to
+  FINALIZED, SUPERSEDED or RELEASED_ROLLED_BACK with the required proof.
   Manifest-finalized outcomes record the resolving version and hash; rollback
   release instead records the process epoch, deadline and transaction-ended
   proof as JSON because no resolving manifest exists in that case.
@@ -393,24 +396,24 @@ while trying a different catalogue against an already seeded database fails.
 ## Stage A admission and course authoring
 
 Stage A is the free-course launch phase, not a special course implementation.
-Any real course manually authored in Payload can qualify the first user journey;
+Any real course manually authored in the Commerce V2 Control Room can qualify the first user journey;
 neither its title/slug nor a prescribed lesson count/duration is a release gate.
 The first course is an ART-169 editorial milestone, not mandatory seed data.
-Payload's immutable-ref hooks assign actual course/section/lesson identities.
+Commerce's editorial commands assign actual course/section/lesson identities.
 Proposed durations are not processed video metadata; real Kinescope uploads,
 bindings and metadata are required. Test-generated refs/DBs never become launch data.
 
-An authenticated author creates ordinary drafts through the existing collection
-access and hooks. Draft/unlisted content must remain invisible publicly, refs
+An authenticated author creates ordinary drafts through the Control Room and
+Commerce editorial API. Draft/unlisted content must remain invisible publicly, refs
 immutable, relations valid and failed transactions atomic. Closed canary editorial
-hooks still reject mutation, including Local API calls. No automatic import,
+admission still rejects unauthorized mutation. No automatic import,
 publication, jobs, email or provider effects may bypass that boundary.
 
 After separate content/media admission, use the existing processed video binding
-and Payload publish → immutable manifest → Commerce acknowledgement pipeline.
-Verify actual version/hash and independent read-back. Drafts cannot build a
-published manifest; unknown/unprocessed videos cannot be invented in seeds.
-The CMS commercial control reads/writes canonical Commerce products/offers with
+and atomic Commerce draft → published graph/version pipeline.
+Verify actual version/hash and independent read-back. Drafts cannot become
+public data; unknown/unprocessed videos cannot be invented in seeds.
+Control Room reads/writes canonical Commerce products/offers with
 author authority, same-origin checks, CAS, idempotency and independent GET
 reconciliation. Saving editorial content is not a hidden commercial POST.
 FREE requires zero price and nonfinancial enrollment, never a fake zero-price
@@ -427,10 +430,10 @@ ART-179 acceptance must distinguish isolated tests from actual delivery/browser/
 | Protected access | Server-side required-consent gate must be qualified, independently of React. Unverified/unconfirmed accounts cannot bypass it through historical entitlements or FREE enrollment. Scope between COURSES/LAB must be explicit before marketing activation. |
 | Email and CAPTCHA | Actual NotiSend receipt, not API acceptance or configured status; valid server-side CAPTCHA and refusal of invalid/expired tokens. Evidence never contains link/token/recipient secrets. |
 | Browser/proxy/session | Intended isolated frontend, TLS/Host and same-origin auth, no production fallback. Secure/HttpOnly host-only cookies, no shared .flexperiment.ru Domain; appropriate SameSite, real reload/navigation persistence. Expired/replayed links and foreign callbacks refuse. |
-| FREE/video/progress | Verified and properly confirmed account, approved FREE product and fresh published manifest; unknown/stale/unlisted/withdrawn lesson denies. Real protected Kinescope playback binds video/subject and rejects foreign/expired grants. Resume persists through navigation. |
+| FREE/video/progress | Verified and properly confirmed account, approved FREE product and current Commerce-published graph; unknown/stale/unlisted/withdrawn lesson denies. Real protected Kinescope playback binds video/subject and rejects foreign/expired grants. Resume persists through navigation. |
 | Logout/revocation | Logout and server revoke invalidate session access. Already issued video tokens remain bounded by short TTL; do not claim instantaneous player revocation. |
 | No financial effects | Zero new orders/payment attempts/refunds/paid grants/provider calls during FREE E2E; checkout returns PAYMENTS_DISABLED, marketing broadcasts remain false. |
-| Erasure and restore safety | Qualify deletion on request and an independent current suppression/erasure ledger. Restoring an older snapshot must not resurrect deleted accounts, old sessions or unsubscribed marketing; absent/stale ledger keeps admission closed. This mechanism is pending, not proved by legal prose or row deletion alone. |
+| Erasure and restore safety | Preserve qualified deletion/fencing and independent current suppression/erasure evidence. Restoring an older snapshot must not resurrect deleted accounts, old sessions or unsubscribed marketing; absent/stale ledger keeps admission closed. ART-351 records the accepted canary result and explicit owner limits; it is not a public launch or fresh recovery admission. |
 | Operational preservation (ART-41) | Preserve backup timers/freshness and sanitized evidence; production alert delivery needs its own evidence. Canary alerts do not prove production alerts. Public registration, four HTTPS 403 guards, production changes and F9 require their own admission. |
 
 Current engineering evidence is not live CMS authoring, legal activation or full
@@ -447,8 +450,9 @@ playback/DRM and progress operations. Missing/malformed legal state fails closed
 Historical entitlement or retained FREE enrollment does not override this gate.
 Account identity, legal confirmation, order history and logout remain accessible
 for reconciliation and account rights; public catalogue metadata is unchanged.
-Payload's entitled-content readers independently check Commerce consent status before
-querying private editorial data. Client components are not access authority.
+The current Next storefront reads private content through Commerce APIs, which
+enforce consent and entitlement before returning it. No Payload reader or Local
+API is an alternate access path. Client components are not access authority.
 
 The account UI starts all choices unchecked, performs one explicit idempotent POST
 and confirms admission with independent no-store GET. Lost response/failed read-back

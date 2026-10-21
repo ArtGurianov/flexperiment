@@ -2,6 +2,20 @@
 
 The merchant implementation is contract-tested engineering functionality, **not** proof of live production money movement or production entitlement acceptance (ART-240).
 
+## Version and rollout boundary
+
+The handoff flow below describes the retained RC.2 implementation and its
+historical acceptance. ADR-139's browser-scoped Arrival contract is the target
+for new checkout: ART-373/378 implement durable intent and arrival foundations;
+ART-379 still owns explicit LMS/LAB checkout integration and each storefront's
+own conformance. Their merge does not prove the whole new entry path deployed.
+
+Refref v9 owner policy and Draft ADR-140 (revision 7) add purchase-level rewards and
+whole-purchase cancellation claims, with their own not-yet-implemented wire contract. See
+[v9 contract status](refref-v9-contract-status.md). A customer refund/access
+decision and a Refref decision about a partner's reward are separate. A bank
+refund or entitlement revocation alone does not zero a v9 partner reward.
+
 ## Flow and authority
 
 `handoff → resolution → checkout attempt → payment session → return read/background polling → fulfillment ACK → refund request/read-back`.

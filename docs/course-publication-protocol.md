@@ -1,6 +1,25 @@
 # Course publication protocol (ART-207–210, ART-223)
 
-## Commerce editorial transition (ART-330, implemented in source; rollout pending)
+## Current authority (ART-330/331/333/335/337)
+
+Commerce V2 owns the live editorial graph and its draft/publish transaction;
+the unified Control Room is the authoring interface. Payload dependencies and
+manifest/override writer routes are removed from current source. The qualified
+closed-canary transition is recorded in
+[ART-337](release/ART-337_FAST_CUT.md); public F9/paid admission and archive or
+volume cleanup remain separate. Source changes do not prove a later deployment.
+
+Publication, access restrictions and consent checks use the current local
+Commerce graph. ART-339 uses SSR/no-store discovery with publication metadata;
+there is no required Payload job, ISR invalidation service or manifest lease.
+The schema contract is [v2-merchant-schema.md](v2-merchant-schema.md).
+
+## Historical transition and pre-cutover protocol
+
+The remaining sections preserve the original Payload-era protocol and migration
+0026 transition design. Statements below about an installed Payload canary,
+manifest acknowledgement or lease apply only to that historical pre-ART-337
+state. They are not current launch gates or permission to restart retired writers.
 
 Migration 0026 adds a Commerce-owned editorial draft aggregate and immutable
 published version snapshots. The current published graph is the existing

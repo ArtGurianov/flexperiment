@@ -1,7 +1,11 @@
 # Legal release publish and cutover runbook
 
-This runbook applies to a new immutable Commerce legal release. It does not
-replace legal review or authorize a publication on its own.
+**Historical v1 procedure.** This text describes the retired release subsystem,
+not a current V2 publication command. LAB V1 is stopped; do not restart its
+controllers or replay these commands. [Deployment invariants](release/DEPLOYMENT_INVARIANTS.md)
+and the exact durable source govern a separately authorized historical recovery.
+V2 uses the [merchant legal/admission contract](v2-merchant-schema.md) and
+[recorded owner legal decisions](legal/OWNER_LEGAL_DECISIONS.md).
 
 ## Preparation
 
@@ -27,12 +31,12 @@ replace legal review or authorize a publication on its own.
 ## Atomic checkout cutover
 
 For an interrupted controlled legal or schema cutover, use the
-[legal cutover recovery runbook](runbooks/LEGAL_CUTOVER_RECOVERY.md). It
+[historical legal cutover recovery runbook](https://github.com/ArtGurianov/flexperiment/blob/ba5b5fe111cc1b6a831193e342dc35eb1523fa43/docs/runbooks/LEGAL_CUTOVER_RECOVERY.md). It
 governs durable-state recovery and replaces any ad-hoc replay of the historical
 sequence below.
 
 For the age-band release, use the automated controlled procedure in
-[`controlled-production-cutover.md`](controlled-production-cutover.md). Do not
+[`controlled-production-cutover.md` at its historical revision](https://github.com/ArtGurianov/flexperiment/blob/ba5b5fe111cc1b6a831193e342dc35eb1523fa43/docs/controlled-production-cutover.md). Do not
 manually pause, publish and reopen step-by-step: the release owner and durable
 gate are the authority. The older sequence below remains historical context for
 non-automated legal releases only.
