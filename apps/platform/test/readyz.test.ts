@@ -21,6 +21,15 @@ describe("non-canary production platform readiness", () => {
     expect(await response.json()).toMatchObject({ ok: true, commerce: "ok", sourceCommit: "a".repeat(40) });
   });
 
+  it("waits for a slow but in-budget Commerce authority read instead of a 3s cut", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation((_input, init) => new Promise((resolve, reject) => {
+      const timer = setTimeout(() => resolve(Response.json(ready)), 3_500);
+      init?.signal?.addEventListener("abort", () => { clearTimeout(timer); reject(init.signal?.reason); });
+    }));
+    const response = await GET();
+    expect(response.status).toBe(200);
+  }, 10_000);
+
   it.each([true, undefined])("returns 503 when Commerce foundationMode is %s", async foundationMode => {
     const upstream = { ...ready, foundationMode };
     vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json(upstream));
