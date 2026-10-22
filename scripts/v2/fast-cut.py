@@ -100,6 +100,8 @@ CURL_EXIT_DETAILS = {7: 'PROBE_TRANSPORT', 22: 'HTTP_STATUS', 28: 'PROBE_TIMEOUT
 # healthcheck waits longer than what it wraps; test_fast_cut.py pins the chain.
 READINESS_TIMEOUT = {'commerce': 10, 'platform': 15, 'admin': 20}
 READINESS_COMMAND_TIMEOUT = 30
+READINESS_ATTEMPTS = 3
+READINESS_RETRY_PAUSE = 5
 
 
 class GuardRefusal(ValueError):
@@ -382,43 +384,62 @@ def inspect(role):
     return name,{'imageReference':expected['image'],'imageId':image['Id'],'rootfs':qualified['rootfs'],'identity':identity}
 
 
+def readiness(role, name):
+    if role=='commerce':
+        ready=json.loads(run(['docker','exec',name,'curl','-fsS','--max-time',str(READINESS_TIMEOUT['commerce']),
+                              'http://127.0.0.1:3002/readyz'],timeout=READINESS_COMMAND_TIMEOUT,exit_details=CURL_EXIT_DETAILS))
+        require(ready['ok'] and ready['foundationMode'] is False and ready['capabilities']['erasure']=='qualified'
+                and ready['core']['paymentMode']==('refref' if paid_test() else 'disabled')
+                and ready['sourceCommit']==release()[role]['sourceCommit'],'FAST_CUT_COMMERCE_NOT_READY')
+        if paid_test():
+            require(ready['core'].get('closedPaidTestProfile')==paid_test()['profile']
+                    and ready['core'].get('closedPaidTestLegalSha256')==paid_test()['legalManifestSha256']
+                    and ready['core'].get('closedPaidTestRefrefSource')==paid_test()['refrefSourceCommit']
+                    and ready['capabilities']['refref']=='ready', 'FAST_CUT_PAID_TEST_NOT_READY')
+    elif role=='platform':
+        # The probe always reports an envelope so a 503 keeps Platform's fixed reason.
+        probe=json.loads(run(['docker','exec',name,'node','-e',"fetch('http://127.0.0.1:3001/readyz',{signal:AbortSignal.timeout(%d)})"
+                 ".then(async r=>console.log(JSON.stringify({status:r.status,body:await r.text()})))"
+                 ".catch(e=>console.log(JSON.stringify({error:e&&e.name==='TimeoutError'?'TIMEOUT':'TRANSPORT'})))"
+                 % (READINESS_TIMEOUT['platform']*1000)],timeout=READINESS_COMMAND_TIMEOUT))
+        if 'error' in probe:
+            raise GuardRefusal('FAST_CUT_PLATFORM_NOT_READY','PROBE_'+probe['error'] if type(probe['error']) is str else None)
+        if probe.get('status')!=200:
+            try: reason=json.loads(probe['body']).get('reason')
+            except (TypeError,ValueError,AttributeError): reason=None
+            raise GuardRefusal('FAST_CUT_PLATFORM_NOT_READY',reason,probe.get('status'))
+        require(json.loads(probe['body'])['sourceCommit']==release()[role]['sourceCommit'],'FAST_CUT_PLATFORM_NOT_READY')
+    else:
+        ready=json.loads(run(['docker','exec',name,'wget','-T',str(READINESS_TIMEOUT['admin']),'-qO-','http://127.0.0.1/readyz'],
+                             timeout=READINESS_COMMAND_TIMEOUT))
+        # Native Admin identity is checked by inspect(). Its nginx /readyz
+        # proxies Commerce, so this response identifies the upstream role.
+        require(ready['sourceCommit']==release()['commerce']['sourceCommit'] and ready.get('service')=='commerce-v2'
+                and ready['ok'],'FAST_CUT_ADMIN_NOT_READY')
+
+
+def bounded_readiness(role, name):
+    # A readiness answer can be slow for a moment (fresh S3 authority read).
+    # Only this read-only probe is repeated, each time from scratch: identity,
+    # schema, fence and ledger guards run once, after it, and are never retried.
+    for attempt in range(1, READINESS_ATTEMPTS+1):
+        started=time.monotonic()
+        try:
+            return readiness(role, name)
+        except Exception as error:
+            if attempt == READINESS_ATTEMPTS: raise
+            print(json.dumps({**failure_report('check', error, started), 'state': 'FAST_CUT_READINESS_RETRY',
+                              'attempt': attempt}), file=sys.stderr, flush=True)
+            time.sleep(READINESS_RETRY_PAUSE)
+
+
 def check():
     result={'sourceCommit':release()['commerce']['sourceCommit'],'roles':{}}
     for role in ['commerce','platform','admin']:
         mark_stage(role+'_identity')
         name,result['roles'][role]=inspect(role)
         mark_stage(role+'_readiness')
-        if role=='commerce':
-            ready=json.loads(run(['docker','exec',name,'curl','-fsS','--max-time',str(READINESS_TIMEOUT['commerce']),
-                                  'http://127.0.0.1:3002/readyz'],timeout=READINESS_COMMAND_TIMEOUT,exit_details=CURL_EXIT_DETAILS))
-            require(ready['ok'] and ready['foundationMode'] is False and ready['capabilities']['erasure']=='qualified'
-                    and ready['core']['paymentMode']==('refref' if paid_test() else 'disabled')
-                    and ready['sourceCommit']==release()[role]['sourceCommit'],'FAST_CUT_COMMERCE_NOT_READY')
-            if paid_test():
-                require(ready['core'].get('closedPaidTestProfile')==paid_test()['profile']
-                        and ready['core'].get('closedPaidTestLegalSha256')==paid_test()['legalManifestSha256']
-                        and ready['core'].get('closedPaidTestRefrefSource')==paid_test()['refrefSourceCommit']
-                        and ready['capabilities']['refref']=='ready', 'FAST_CUT_PAID_TEST_NOT_READY')
-        elif role=='platform':
-            # The probe always reports an envelope so a 503 keeps Platform's fixed reason.
-            probe=json.loads(run(['docker','exec',name,'node','-e',"fetch('http://127.0.0.1:3001/readyz',{signal:AbortSignal.timeout(%d)})"
-                     ".then(async r=>console.log(JSON.stringify({status:r.status,body:await r.text()})))"
-                     ".catch(e=>console.log(JSON.stringify({error:e&&e.name==='TimeoutError'?'TIMEOUT':'TRANSPORT'})))"
-                     % (READINESS_TIMEOUT['platform']*1000)],timeout=READINESS_COMMAND_TIMEOUT))
-            if 'error' in probe:
-                raise GuardRefusal('FAST_CUT_PLATFORM_NOT_READY','PROBE_'+probe['error'] if type(probe['error']) is str else None)
-            if probe.get('status')!=200:
-                try: reason=json.loads(probe['body']).get('reason')
-                except (TypeError,ValueError,AttributeError): reason=None
-                raise GuardRefusal('FAST_CUT_PLATFORM_NOT_READY',reason,probe.get('status'))
-            require(json.loads(probe['body'])['sourceCommit']==release()[role]['sourceCommit'],'FAST_CUT_PLATFORM_NOT_READY')
-        else:
-            ready=json.loads(run(['docker','exec',name,'wget','-T',str(READINESS_TIMEOUT['admin']),'-qO-','http://127.0.0.1/readyz'],
-                                 timeout=READINESS_COMMAND_TIMEOUT))
-            # Native Admin identity is checked by inspect(). Its nginx /readyz
-            # proxies Commerce, so this response identifies the upstream role.
-            require(ready['sourceCommit']==release()['commerce']['sourceCommit'] and ready.get('service')=='commerce-v2'
-                    and ready['ok'],'FAST_CUT_ADMIN_NOT_READY')
+        bounded_readiness(role,name)
     mark_stage('database')
     db=sqlite3.connect(DATABASE.as_uri()+'?mode=ro',uri=True);db.row_factory=sqlite3.Row
     rows=[dict(v) for v in db.execute("select type,name,tbl_name,sql from sqlite_master where name not like 'sqlite_%' order by type,name")]
