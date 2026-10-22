@@ -87,6 +87,12 @@ DIAGNOSTIC_CODES = frozenset({
     'FAST_CUT_SOURCE_AMBIGUOUS',
     'FAST_CUT_SOURCE_SCOPE',
 })
+# Readiness probe outcomes; Platform's /readyz reports the UPSTREAM_*/CONFIGURATION/INTERNAL values.
+DIAGNOSTIC_DETAILS = frozenset({
+    'PROBE_TIMEOUT', 'PROBE_TRANSPORT', 'HTTP_STATUS', 'CONFIGURATION', 'INTERNAL',
+    'UPSTREAM_TIMEOUT', 'UPSTREAM_TRANSPORT', 'UPSTREAM_STATUS', 'UPSTREAM_CONTRACT',
+})
+CURL_EXIT_DETAILS = {7: 'PROBE_TRANSPORT', 22: 'HTTP_STATUS', 28: 'PROBE_TIMEOUT'}
 
 # One readiness budget, widening outward. Commerce answers /readyz (fresh S3
 # authority read included) within 10s; Platform waits exactly that for Commerce
@@ -97,7 +103,10 @@ READINESS_COMMAND_TIMEOUT = 30
 
 
 class GuardRefusal(ValueError):
-    pass
+    def __init__(self, code, detail=None, http_status=None):
+        # Detail/status are untrusted until failure_report() allowlists them.
+        super().__init__(code)
+        self.detail, self.http_status = detail, http_status
 
 
 def mark_stage(stage):
@@ -129,6 +138,10 @@ def failure_report(operation, error, started):
               'observedAt': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}
     if code is not None:
         report['code'] = code
+        if type(error.detail) is str and error.detail in DIAGNOSTIC_DETAILS:
+            report['detail'] = error.detail
+        if type(error.http_status) is int and 100 <= error.http_status <= 599:
+            report['httpStatus'] = error.http_status
     return report
 
 
@@ -136,9 +149,10 @@ def require(value, code):
     if not value: raise GuardRefusal(code)
 
 
-def run(args, timeout=180):
+def run(args, timeout=180, exit_details=None):
     result = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=timeout)
-    require(result.returncode == 0, 'FAST_CUT_COMMAND_FAILED')
+    if result.returncode != 0:
+        raise GuardRefusal('FAST_CUT_COMMAND_FAILED', (exit_details or {}).get(result.returncode))
     return result.stdout
 
 
@@ -376,7 +390,7 @@ def check():
         mark_stage(role+'_readiness')
         if role=='commerce':
             ready=json.loads(run(['docker','exec',name,'curl','-fsS','--max-time',str(READINESS_TIMEOUT['commerce']),
-                                  'http://127.0.0.1:3002/readyz'],timeout=READINESS_COMMAND_TIMEOUT))
+                                  'http://127.0.0.1:3002/readyz'],timeout=READINESS_COMMAND_TIMEOUT,exit_details=CURL_EXIT_DETAILS))
             require(ready['ok'] and ready['foundationMode'] is False and ready['capabilities']['erasure']=='qualified'
                     and ready['core']['paymentMode']==('refref' if paid_test() else 'disabled')
                     and ready['sourceCommit']==release()[role]['sourceCommit'],'FAST_CUT_COMMERCE_NOT_READY')
@@ -386,10 +400,18 @@ def check():
                         and ready['core'].get('closedPaidTestRefrefSource')==paid_test()['refrefSourceCommit']
                         and ready['capabilities']['refref']=='ready', 'FAST_CUT_PAID_TEST_NOT_READY')
         elif role=='platform':
-            raw=run(['docker','exec',name,'node','-e',"fetch('http://127.0.0.1:3001/readyz',{signal:AbortSignal.timeout(%d)})"
-                     ".then(async r=>{if(!r.ok)process.exit(1);console.log(await r.text())}).catch(()=>process.exit(1))"
-                     % (READINESS_TIMEOUT['platform']*1000)],timeout=READINESS_COMMAND_TIMEOUT)
-            require(json.loads(raw)['sourceCommit']==release()[role]['sourceCommit'],'FAST_CUT_PLATFORM_NOT_READY')
+            # The probe always reports an envelope so a 503 keeps Platform's fixed reason.
+            probe=json.loads(run(['docker','exec',name,'node','-e',"fetch('http://127.0.0.1:3001/readyz',{signal:AbortSignal.timeout(%d)})"
+                     ".then(async r=>console.log(JSON.stringify({status:r.status,body:await r.text()})))"
+                     ".catch(e=>console.log(JSON.stringify({error:e&&e.name==='TimeoutError'?'TIMEOUT':'TRANSPORT'})))"
+                     % (READINESS_TIMEOUT['platform']*1000)],timeout=READINESS_COMMAND_TIMEOUT))
+            if 'error' in probe:
+                raise GuardRefusal('FAST_CUT_PLATFORM_NOT_READY','PROBE_'+probe['error'] if type(probe['error']) is str else None)
+            if probe.get('status')!=200:
+                try: reason=json.loads(probe['body']).get('reason')
+                except (TypeError,ValueError,AttributeError): reason=None
+                raise GuardRefusal('FAST_CUT_PLATFORM_NOT_READY',reason,probe.get('status'))
+            require(json.loads(probe['body'])['sourceCommit']==release()[role]['sourceCommit'],'FAST_CUT_PLATFORM_NOT_READY')
         else:
             ready=json.loads(run(['docker','exec',name,'wget','-T',str(READINESS_TIMEOUT['admin']),'-qO-','http://127.0.0.1/readyz'],
                                  timeout=READINESS_COMMAND_TIMEOUT))

@@ -281,7 +281,7 @@ class FastCut(unittest.TestCase):
             db.execute.side_effect=execute;return db
         def check(admin_source,platform_source=vector['platform']['sourceCommit']):
             ready=[{'ok':True,'foundationMode':False,'capabilities':{'erasure':'qualified'},'core':{'paymentMode':'disabled'},'sourceCommit':target},
-                   {'sourceCommit':platform_source},{'ok':True,'service':'commerce-v2','sourceCommit':admin_source},{'state':'REMOTE_VERIFIED','scope':'canary','sequence':1}]
+                   {'status':200,'body':json.dumps({'sourceCommit':platform_source})},{'ok':True,'service':'commerce-v2','sourceCommit':admin_source},{'state':'REMOTE_VERIFIED','scope':'canary','sequence':1}]
             with patch.object(f,'release',return_value=vector),patch.object(f,'inspect',side_effect=lambda role:(role,{})), \
                  patch.object(f,'run',side_effect=[json.dumps(r).encode() for r in ready]), \
                  patch.object(f.sqlite3,'connect',side_effect=[connection(),connection(True)]), \
@@ -318,18 +318,55 @@ class FastCut(unittest.TestCase):
     def test_readiness_probes_carry_their_own_bounded_wait(self):
         vector=f.validate_release(self.commerce_candidate());target=vector['commerce']['sourceCommit'];calls=[]
         ready={'commerce':{'ok':True,'foundationMode':False,'capabilities':{'erasure':'qualified'},'core':{'paymentMode':'disabled'},'sourceCommit':target},
-               'platform':{'sourceCommit':vector['platform']['sourceCommit']},'admin':{'ok':True,'service':'commerce-v2','sourceCommit':target}}
-        def command(args,timeout=180):
+               'platform':{'status':200,'body':json.dumps({'sourceCommit':vector['platform']['sourceCommit']})},'admin':{'ok':True,'service':'commerce-v2','sourceCommit':target}}
+        def command(args,timeout=180,**kwargs):
             calls.append((args,timeout))
             return json.dumps(ready[['commerce','platform','admin'][len(calls)-1]]).encode()
         with patch.object(f,'release',return_value=vector),patch.object(f,'inspect',side_effect=lambda role:(role,{})), \
              patch.object(f,'run',side_effect=command),patch.object(f,'DATABASE',Path('/nonexistent/commerce.sqlite')), \
-             self.assertRaises(Exception):f.check()
+             self.assertRaises(f.sqlite3.OperationalError):f.check()
         (commerce,c_timeout),(platform,p_timeout),(admin,a_timeout)=calls[:3]
         self.assertEqual(commerce[commerce.index('--max-time')+1],str(f.READINESS_TIMEOUT['commerce']))
         self.assertIn('AbortSignal.timeout(%d)'%(f.READINESS_TIMEOUT['platform']*1000),platform[-1])
         self.assertEqual(admin[admin.index('-T')+1],str(f.READINESS_TIMEOUT['admin']))
         self.assertEqual({c_timeout,p_timeout,a_timeout},{f.READINESS_COMMAND_TIMEOUT})
+
+    def test_platform_readiness_refusal_reports_only_allowlisted_detail(self):
+        vector=f.validate_release(self.commerce_candidate());target=vector['commerce']['sourceCommit']
+        secret='synthetic-private-value@example.invalid/token'
+        commerce={'ok':True,'foundationMode':False,'capabilities':{'erasure':'qualified'},'core':{'paymentMode':'disabled'},'sourceCommit':target}
+        refused=lambda reason:json.dumps({'ok':False,'service':'platform','error':'PLATFORM_NOT_READY','reason':reason,'elapsedMs':10001})
+        cases=[({'status':503,'body':refused('UPSTREAM_TIMEOUT')},'UPSTREAM_TIMEOUT',503),
+               ({'status':503,'body':refused('UPSTREAM_CONTRACT')},'UPSTREAM_CONTRACT',503),
+               ({'status':503,'body':refused(secret)},None,503),
+               ({'status':502,'body':secret},None,502),
+               ({'status':secret,'body':secret},None,None),
+               ({'error':'TIMEOUT'},'PROBE_TIMEOUT',None),
+               ({'error':'TRANSPORT'},'PROBE_TRANSPORT',None),
+               ({'error':secret},None,None)]
+        for envelope,detail,status in cases:
+            with self.subTest(envelope=envelope):
+                output=io.StringIO()
+                with patch.object(f,'release',return_value=vector),patch.object(f,'inspect',side_effect=lambda role:(role,{})), \
+                     patch.object(f,'run',side_effect=[json.dumps(commerce).encode(),json.dumps(envelope).encode()]), \
+                     contextlib.redirect_stdout(output):
+                    self.assertEqual(f.main(['check']),1)
+                raw=output.getvalue();self.assertNotIn(secret,raw);report=json.loads(raw)
+                self.assertEqual(report['stage'],'platform_readiness');self.assertEqual(report['code'],'FAST_CUT_PLATFORM_NOT_READY')
+                self.assertEqual(report.get('detail'),detail);self.assertEqual(report.get('httpStatus'),status)
+
+    def test_commerce_probe_exit_code_maps_to_fixed_detail(self):
+        vector=f.validate_release(self.commerce_candidate());secret='synthetic-private-value@example.invalid/token'
+        for rc,detail in [(28,'PROBE_TIMEOUT'),(7,'PROBE_TRANSPORT'),(22,'HTTP_STATUS'),(99,None)]:
+            with self.subTest(rc=rc):
+                output=io.StringIO()
+                completed=subprocess.CompletedProcess(['curl'],rc,stdout=secret.encode())
+                with patch.object(f,'release',return_value=vector),patch.object(f,'inspect',side_effect=lambda role:(role,{})), \
+                     patch.object(f.subprocess,'run',return_value=completed),contextlib.redirect_stdout(output):
+                    self.assertEqual(f.main(['check']),1)
+                raw=output.getvalue();self.assertNotIn(secret,raw);report=json.loads(raw)
+                self.assertEqual((report['stage'],report['code']),('commerce_readiness','FAST_CUT_COMMAND_FAILED'))
+                self.assertEqual(report.get('detail'),detail)
 
     def test_actual_admin_nginx_readiness_has_new_upstream_source_and_retained_native_identity(self):
         target=self.candidate()['roles']['commerce']['sourceCommit']

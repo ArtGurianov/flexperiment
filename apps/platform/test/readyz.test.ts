@@ -33,9 +33,43 @@ describe("non-canary production platform readiness", () => {
   it.each([true, undefined])("returns 503 when Commerce foundationMode is %s", async foundationMode => {
     const upstream = { ...ready, foundationMode };
     vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json(upstream));
+    vi.spyOn(console, "error").mockImplementation(() => {});
     const response = await GET();
     expect(response.status).toBe(503);
     expect(response.headers.get("cache-control")).toBe("no-store");
-    expect(await response.json()).toEqual({ ok: false, service: "platform", error: "PLATFORM_NOT_READY" });
+    expect(await response.json()).toMatchObject({ ok: false, service: "platform", error: "PLATFORM_NOT_READY", reason: "UPSTREAM_CONTRACT" });
+  });
+});
+
+describe("platform readiness failure diagnostics", () => {
+  const secret = "synthetic-secret-token";
+  it.each([
+    ["UPSTREAM_TIMEOUT", () => Promise.reject(new DOMException(secret, "TimeoutError")), undefined],
+    ["UPSTREAM_TRANSPORT", () => Promise.reject(new TypeError(`fetch failed ${secret}`)), undefined],
+    ["UPSTREAM_STATUS", () => Promise.resolve(Response.json({ ok: false, secret }, { status: 503 })), 503],
+    ["UPSTREAM_CONTRACT", () => Promise.resolve(new Response(`{not json ${secret}`)), undefined],
+  ] as const)("reports %s with timing and no upstream text", async (reason, upstream, upstreamStatus) => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(upstream);
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const response = await GET();
+    expect(response.status).toBe(503);
+    const body = await response.json();
+    expect(body).toEqual({ ok: false, service: "platform", error: "PLATFORM_NOT_READY", reason,
+      elapsedMs: expect.any(Number), ...(upstreamStatus ? { upstreamStatus } : {}) });
+    expect(log).toHaveBeenCalledTimes(1);
+    const line = String(log.mock.calls[0][0]);
+    expect(JSON.parse(line)).toEqual({ event: "PLATFORM_READINESS_FAILED", reason,
+      elapsedMs: body.elapsedMs, ...(upstreamStatus ? { upstreamStatus } : {}) });
+    for (const leaked of [secret, "commerce.test"]) {
+      expect(line).not.toContain(leaked);
+      expect(JSON.stringify(body)).not.toContain(leaked);
+    }
+  });
+
+  it("reports a missing Commerce origin as configuration, not an upstream outage", async () => {
+    vi.stubEnv("COMMERCE_INTERNAL_ORIGIN", "");
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const response = await GET();
+    expect(await response.json()).toMatchObject({ reason: "CONFIGURATION" });
   });
 });
