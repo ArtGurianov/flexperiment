@@ -41,3 +41,28 @@ delivery PASS. Unknown/refused outcome stays HOLD; do not resend blindly.
 Keep existing backups ACTIVE/FRESH and four HTTPS guards at 403. Existing
 canary runtimes, production, V1, Refref, volumes and release refs remain unchanged.
 No new Linear issues; update ART-166/ART-41 with exact observed results.
+
+## Incident state (2026-10-22 follow-up)
+
+On 2026-10-22 one stale canary backup produced a stale-backup alert every
+hour (2 backup + 8 freshness messages), and nothing announced when it
+recovered. Each event now has one incident in
+`/var/lib/flexperiment-v2-canary-alerts/<event>.json`: a systemd
+`StateDirectory`, mode 0700, holding only integer timestamps and a counter.
+
+- First failure: alert. Identical repeats within 6 h: not sent, only counted.
+  Then one "still failing" reminder carrying the suppressed count.
+- An unaccepted notification is not recorded, so the next failure sends again.
+- `OnSuccess=flexperiment-v2-canary-recovery@<event>.service` runs
+  `--recovered`. It sends one recovery notice only when an incident is open,
+  then closes it. Without an open incident it contacts no provider.
+- Unreadable, foreign or malformed state counts as "no incident", so the
+  handler fails toward notifying. `probe` is never suppressed or recorded.
+- Suppression never changes the failed backup/freshness unit, which stays
+  failed in systemd.
+
+The message still carries no stage/code. The handler keeps its "no
+runtime/DB/log access" rule, and systemd 249 on adman-vps does not pass
+`MONITOR_*` metadata to OnFailure units. The cause is in the failed unit's
+journal line (`FAST_CUT_HOLD` with stage, code and, since the readiness
+follow-up, detail).

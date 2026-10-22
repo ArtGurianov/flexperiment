@@ -1,0 +1,20 @@
+[Unit]
+Description=Canary-only backup recovery notice (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+UMask=0077
+ExecStart=/usr/bin/python3 /usr/local/lib/flexperiment-v2/canary-backup-alert.py --recovered %i
+TimeoutStartSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+# Incident state only (no credentials): repeats are suppressed, recovery is sent once.
+StateDirectory=flexperiment-v2-canary-alerts
+StateDirectoryMode=0700
+ProtectHome=read-only
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# Credentials remain in a root-only host file, never argv or EnvironmentFile.

@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Canary-only operator alerts. Fixed payloads; no runtime/DB/log access or retries."""
+"""Canary-only operator alerts. Fixed payloads; no runtime/DB/log access or retries.
+
+One incident per event: the first failure alerts, identical repeats are
+suppressed until a reminder is due, and the unit's OnSuccess hook
+(--recovered) sends one recovery and closes it. Suppression never hides the
+failed systemd unit itself.
+"""
 import datetime
 import json
 import os
@@ -7,6 +13,7 @@ from pathlib import Path
 import re
 import stat
 import sys
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -16,6 +23,10 @@ EVENTS = {'commerce-backup', 'commerce-freshness', 'platform-backup', 'platform-
 URLS = {'notisend': 'https://api.notisend.ru/v1/email/messages',
         'telebuzzy': 'https://telebuzzy.xyz/api/notify'}
 MAX_BYTES = 16384
+STATE = Path('/var/lib/flexperiment-v2-canary-alerts')
+REMINDER_SECONDS = 6 * 3600
+TITLES = {'probe': '[CANARY] Flexperiment backup alert TEST', 'opened': '[CANARY] Flexperiment backup alert',
+          'reminder': '[CANARY] Flexperiment backup still failing', 'recovered': '[CANARY] Flexperiment backup recovered'}
 
 
 def require(condition):
@@ -79,17 +90,18 @@ def request(channel, config, body, event_id):
         return {'result': 'UNKNOWN'}
 
 
-def notify(event, config, send=request):
+def notify(event, config, send=request, kind=None, history=''):
     require(event in EVENTS)
+    kind = kind or ('probe' if event == 'probe' else 'opened')
     event_id = str(uuid.uuid4())
     timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    title = '[CANARY] Flexperiment backup alert' + (' TEST' if event == 'probe' else '')
-    message = f'{title}\nEvent: {event}\nTime: {timestamp}\nReference: {event_id}\nCheck canary backup/freshness service status. No customer or database data included.'
+    title = TITLES[kind]
+    message = f'{title}\nEvent: {event}\nTime: {timestamp}\nReference: {event_id}\n{history}Check canary backup/freshness service status. No customer or database data included.'
     bodies = {
         'notisend': {'to': 'accidents@flexperiment.ru', 'from_email': config['fromEmail'],
                      'from_name': config['fromName'], 'subject': title, 'text': message,
                      'smtp_headers': {'Reply-To': config['replyTo']}},
-        'telebuzzy': {'title': title, 'severity': 'info' if event == 'probe' else 'critical',
+        'telebuzzy': {'title': title, 'severity': 'info' if kind in ['probe', 'recovered'] else 'critical',
                      'app': 'flexperiment-v2-canary-backups', 'action': 'Check canary backups',
                      'event': event, 'reference': event_id, 'timestamp': timestamp},
     }
@@ -99,13 +111,81 @@ def notify(event, config, send=request):
             outcomes[channel] = send(channel, config, bodies[channel], event_id)
         except Exception:
             outcomes[channel] = {'result': 'UNKNOWN'}
-    return {'event': event, 'reference': event_id, 'timestamp': timestamp, 'channels': outcomes}
+    return {'event': event, 'kind': kind, 'reference': event_id, 'timestamp': timestamp, 'channels': outcomes}
+
+
+def accepted(result):
+    return any(v['result'] in ['ACCEPTED', 'DELIVERED'] for v in result['channels'].values())
+
+
+def read_state(path):
+    """Open incident or None. Anything unexpected fails toward notifying."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        return None
+    with os.fdopen(descriptor) as handle:
+        info = os.fstat(handle.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_size > 1024:
+            return None
+        try:
+            state = json.loads(handle.read())
+        except ValueError:
+            return None
+    fields = {'openedAt', 'lastSentAt', 'suppressed'}
+    if not isinstance(state, dict) or set(state) != fields or not all(type(state[k]) is int and state[k] >= 0 for k in fields):
+        return None
+    return state
+
+
+def write_state(path, state):
+    temporary = path.with_name('.' + path.name + '.' + uuid.uuid4().hex)
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, 'w') as handle:
+        handle.write(json.dumps(state)); handle.flush(); os.fsync(handle.fileno())
+    os.replace(temporary, path)
+
+
+def history(state, now=None):
+    since = datetime.datetime.fromtimestamp(state['openedAt'], datetime.timezone.utc).isoformat()
+    until = '' if now is None else ', recovered ' + datetime.datetime.fromtimestamp(now, datetime.timezone.utc).isoformat()
+    return f'Failing since: {since}{until} ({state["suppressed"]} repeated failures not re-sent)\n'
+
+
+def handle(event, config, send=None, state_dir=None, now=None, recovered=False):
+    require(event in EVENTS and not (recovered and event == 'probe'))
+    send = send or request
+    if event == 'probe':
+        return notify(event, config, send)
+    path = (state_dir or STATE) / (event + '.json')
+    state = read_state(path)
+    at = int((now or time.time)())
+    if recovered:
+        if state is None:
+            return {'event': event, 'result': 'NO_OPEN_INCIDENT'}
+        result = notify(event, config, send, 'recovered', history(state, at))
+        if accepted(result):
+            path.unlink(missing_ok=True)
+        return result
+    if state is not None and at - state['lastSentAt'] < REMINDER_SECONDS:
+        write_state(path, {**state, 'suppressed': state['suppressed'] + 1})
+        return {'event': event, 'result': 'SUPPRESSED', 'suppressed': state['suppressed'] + 1}
+    result = notify(event, config, send, 'reminder' if state else 'opened', history(state) if state else '')
+    # An unaccepted notification is not recorded, so the next failure tries again.
+    if accepted(result):
+        write_state(path, {'openedAt': state['openedAt'] if state else at, 'lastSentAt': at, 'suppressed': 0})
+    return result
 
 
 def main():
-    require(os.geteuid() == 0 and len(sys.argv) == 2 and sys.argv[1] in EVENTS)
-    result = notify(sys.argv[1], load_config())
+    args = sys.argv[1:]
+    recovered = len(args) == 2 and args[0] == '--recovered'
+    require(os.geteuid() == 0 and (len(args) == 1 or recovered) and args[-1] in EVENTS
+            and not (recovered and args[-1] == 'probe'))
+    result = handle(args[-1], load_config(), recovered=recovered)
     print(json.dumps(result, separators=(',', ':')))
+    if 'channels' not in result:
+        return 0
     return 0 if all(v['result'] in ['ACCEPTED', 'DELIVERED'] for v in result['channels'].values()) else 1
 
 

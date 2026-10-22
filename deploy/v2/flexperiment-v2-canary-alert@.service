@@ -12,6 +12,9 @@ TimeoutStartSec=30
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
+# Incident state only (no credentials): repeats are suppressed, recovery is sent once.
+StateDirectory=flexperiment-v2-canary-alerts
+StateDirectoryMode=0700
 ProtectHome=read-only
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 # Credentials remain in a root-only host file, never argv or EnvironmentFile.

@@ -116,6 +116,107 @@ class CanaryAlerts(unittest.TestCase):
         self.assertIn('canary check',(units/'commerce-canary-backup-freshness.service').read_text())
         self.assertNotIn('production',(units/'commerce-canary-backup-freshness.service').read_text())
 
+    def incident(self, temp, event, at, send, recovered=False):
+        return alerts.handle(event, CONFIG, send=send, state_dir=Path(temp), now=lambda: at, recovered=recovered)
+
+    def test_repeated_failure_is_sent_once_then_reminded_then_recovered_once(self):
+        sent = []
+        def send(channel, config, body, key):
+            sent.append((channel, body)); return {'result': 'ACCEPTED'}
+        with tempfile.TemporaryDirectory() as temp:
+            opened = self.incident(temp, 'commerce-freshness', 1_000_000, send)
+            self.assertEqual((opened['kind'], len(sent)), ('opened', 2))
+            for hour in range(1, 6):
+                quiet = self.incident(temp, 'commerce-freshness', 1_000_000 + hour * 3600, send)
+                self.assertEqual(quiet['result'], 'SUPPRESSED')
+            self.assertEqual(len(sent), 2)
+            reminder = self.incident(temp, 'commerce-freshness', 1_000_000 + alerts.REMINDER_SECONDS, send)
+            self.assertEqual((reminder['kind'], len(sent)), ('reminder', 4))
+            self.assertIn('still failing', sent[-1][1]['title'])
+            self.assertIn('5 repeated failures not re-sent', sent[-2][1]['text'])
+            recovered = self.incident(temp, 'commerce-freshness', 1_000_000 + 30_000, send, recovered=True)
+            self.assertEqual((recovered['kind'], len(sent)), ('recovered', 6))
+            self.assertIn('recovered', sent[-1][1]['title'])
+            self.assertEqual(sent[-1][1]['severity'], 'info')
+            self.assertEqual(list(Path(temp).iterdir()), [])
+            again = self.incident(temp, 'commerce-freshness', 1_000_000 + 40_000, send)
+            self.assertEqual(again['kind'], 'opened')
+
+    def test_success_without_open_incident_contacts_no_provider(self):
+        def send(*_): raise AssertionError('NO_PROVIDER_CALL_EXPECTED')
+        with tempfile.TemporaryDirectory() as temp:
+            self.assertEqual(self.incident(temp, 'commerce-backup', 1, send, recovered=True)['result'], 'NO_OPEN_INCIDENT')
+
+    def test_incidents_are_independent_per_event(self):
+        sent = []
+        def send(channel, config, body, key):
+            sent.append(channel); return {'result': 'ACCEPTED'}
+        with tempfile.TemporaryDirectory() as temp:
+            self.incident(temp, 'commerce-backup', 1, send)
+            self.assertEqual(self.incident(temp, 'commerce-freshness', 2, send)['kind'], 'opened')
+            self.assertEqual(len(sent), 4)
+
+    def test_unaccepted_notification_is_not_recorded_so_next_failure_sends_again(self):
+        with tempfile.TemporaryDirectory() as temp:
+            refused = self.incident(temp, 'commerce-backup', 1, lambda *_: {'result': 'REFUSED', 'httpStatus': 401})
+            self.assertEqual(refused['kind'], 'opened')
+            sent = []
+            def send(channel, *_):
+                sent.append(channel); return {'result': 'ACCEPTED'}
+            self.assertEqual(self.incident(temp, 'commerce-backup', 2, send)['kind'], 'opened')
+            self.assertEqual(len(sent), 2)
+
+    def test_probe_is_never_suppressed_or_recorded(self):
+        sent = []
+        def send(channel, *_):
+            sent.append(channel); return {'result': 'ACCEPTED'}
+        with tempfile.TemporaryDirectory() as temp:
+            for at in [1, 2]: self.assertEqual(self.incident(temp, 'probe', at, send)['kind'], 'probe')
+            self.assertEqual((len(sent), list(Path(temp).iterdir())), (4, []))
+
+    def test_state_is_private_and_unreadable_state_fails_toward_notifying(self):
+        ok = lambda *_: {'result': 'ACCEPTED'}
+        with tempfile.TemporaryDirectory() as temp:
+            self.incident(temp, 'commerce-backup', 1, ok)
+            [state] = Path(temp).iterdir()
+            self.assertEqual(state.stat().st_mode & 0o777, 0o600)
+            self.assertNotIn('SECRET', state.read_text())
+            for corrupt in ['{not json', json.dumps({'openedAt': 'SECRET', 'lastSentAt': []}), '[]']:
+                state.write_text(corrupt)
+                self.assertEqual(self.incident(temp, 'commerce-backup', 2, ok)['kind'], 'opened')
+            state.unlink(); state.symlink_to(Path(temp) / 'elsewhere')
+            self.assertEqual(self.incident(temp, 'commerce-backup', 3, ok)['kind'], 'opened')
+
+    def test_cli_exits_zero_when_suppressed_and_recovery_flag_is_exact(self):
+        with tempfile.TemporaryDirectory() as temp, patch.object(alerts, 'STATE', Path(temp)), \
+             patch.object(alerts, 'load_config', return_value=CONFIG), patch.object(alerts.os, 'geteuid', return_value=0), \
+             patch.object(alerts, 'request', return_value={'result': 'ACCEPTED'}) as provider:
+            for argv in [['x', 'commerce-backup'], ['x', 'commerce-backup'],
+                         ['x', '--recovered', 'commerce-backup'], ['x', '--recovered', 'commerce-backup']]:
+                with patch.object(alerts.sys, 'argv', argv), patch('sys.stdout', new_callable=io.StringIO):
+                    self.assertEqual(alerts.main(), 0)
+            self.assertEqual(provider.call_count, 4)
+            for argv in [['x', '--recovered', 'probe'], ['x', '--recover', 'commerce-backup'], ['x', 'commerce-backup', 'extra']]:
+                with patch.object(alerts.sys, 'argv', argv), self.assertRaises(ValueError): alerts.main()
+
+    def test_every_failure_hook_has_a_recovery_hook_sharing_private_state(self):
+        root = Path(__file__).resolve().parents[2]
+        units = [path for path in (root/'deploy/v2').rglob('*') if path.is_file() and 'OnFailure=flexperiment-v2-canary-alert@' in path.read_text()]
+        self.assertGreaterEqual(len(units), 7)
+        for path in units:
+            event = path.read_text().split('OnFailure=flexperiment-v2-canary-alert@')[1].split('.service')[0]
+            if event == 'probe':
+                self.assertNotIn('OnSuccess=', path.read_text())
+            else:
+                self.assertIn('OnSuccess=flexperiment-v2-canary-recovery@' + event + '.service', path.read_text(), path)
+        for name, flag in [('flexperiment-v2-canary-alert@.service', ' %i'), ('flexperiment-v2-canary-recovery@.service', ' --recovered %i')]:
+            unit = (root/'deploy/v2'/name).read_text()
+            self.assertIn('StateDirectory=flexperiment-v2-canary-alerts\n', unit)
+            self.assertIn('StateDirectoryMode=0700\n', unit)
+            self.assertIn('canary-backup-alert.py' + flag + '\n', unit)
+            self.assertIn('ProtectSystem=strict\n', unit)
+        self.assertEqual(alerts.STATE, Path('/var/lib/flexperiment-v2-canary-alerts'))
+
     def test_causal_independent_channel_regression(self):
         result=unittest.TestResult()
         def wrong(event,config,send): return {'channels':{'notisend':send('notisend',config,{},'id')}}
