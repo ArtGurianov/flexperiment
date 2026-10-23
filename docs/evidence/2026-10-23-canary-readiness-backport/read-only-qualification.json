@@ -1,0 +1,40 @@
+{
+  "state": "READ_ONLY_BACKPORT_QUALIFIED_NOT_INSTALLED",
+  "observedAtUtc": "2026-10-23T01:38:58.614796+00:00",
+  "candidateSha256": "80cfa254c650d53059b3cfcb98bbe911421aeecccf48d761e861a53fdf5f3708",
+  "installedHelperSha256": "9ce826f47e8e07e1ea124fadc7ec39dcde5e4c52efe2094d9e80c4812a435583",
+  "runtimeCheck": {
+    "sourceCommit": "56f864ee5b5325acd2ed5c5ad6ea756182326bf7",
+    "schemaFingerprint": "40ede1d98e15b510c920418cd525e039346890560e7e9dc2fe90aecd760b86a1",
+    "fence": "OPEN",
+    "ledgerSequence": 1,
+    "leases": 0,
+    "state": "RUNTIME_CHECK_PASS_NOT_FINAL_ACCEPTANCE"
+  },
+  "freshness": {
+    "status": "FRESH",
+    "verifiedAt": 1792714511
+  },
+  "roles": {
+    "commerce": {
+      "id": "9d3cdd16d745b9b62a3d294f933fb146aebeda2c0f6f4e3274ea00545fbd15ea",
+      "image": "sha256:1de5828b602b5d1852fc705598d3742da883134b6e157d8472238a17ce53b43a",
+      "startedAt": "2026-10-19T03:30:18.334078931Z"
+    },
+    "platform": {
+      "id": "9da18e5612c6105642f10953b55e2b2c7c64a85c852e28395013696b070a465b",
+      "image": "sha256:9c7fee07994457e7b9dd4ac8345e54addd39c91c45e45f49a05bba546e972655",
+      "startedAt": "2026-10-19T03:30:24.951064872Z"
+    },
+    "admin": {
+      "id": "e778731a7dfd1920c3d9d29565a13bd6216c74f7ec74effccc05cea98fe344c4",
+      "image": "sha256:5d3fa609800de8ab98d9ef4a4793612b5f81d9f8fe56cb10003b75aec287bb29",
+      "startedAt": "2026-10-19T03:30:00.411883999Z"
+    }
+  },
+  "containersUnchanged": true,
+  "privateInputsUnchanged": true,
+  "helperStillBase": true,
+  "elapsedSeconds": 6.02,
+  "noSnapshotUploadInstallRestartOrTimerChange": true
+}

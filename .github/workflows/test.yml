@@ -53,6 +53,8 @@ jobs:
         run: python3 scripts/v2/test_canary_backup_alert.py -v
       - name: Closed fast-cut Compose and backup contracts
         run: python3 -B scripts/v2/test_fast_cut.py -v
+      - name: Admitted canary host readiness compatibility backport
+        run: python3 -B deploy/host/canary-readiness-backport/test_backport.py -v
       - name: Closed tester TLS and callback bridge contract
         run: python3 -B scripts/v2/test_closed_e2e_gateway.py -v
       - name: Independent V2 owner control contract
