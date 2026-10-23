@@ -59,6 +59,11 @@ recovered. Each event now has one incident in
   acknowledged the incident. A channel that refuses the recovery keeps it
   pending, and the next success retries that channel alone. Without an open
   incident it contacts no provider.
+- The fact of recovery (`recoveredAt`) is kept apart from recovery delivery.
+  A failure after recovery always opens a new incident for every channel, even
+  while a recovery notice is still undelivered. That notice is superseded, never
+  a reason to suppress the new alert. A retried recovery reports the first
+  recovery time.
 - Alert and recovery for the same event hold a per-event `flock` across the
   state read, the provider calls and the state write, so a recovery cannot
   slip in front of an in-flight alert and leave a stale incident behind. Both

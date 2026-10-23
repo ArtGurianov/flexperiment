@@ -171,6 +171,35 @@ class CanaryAlerts(unittest.TestCase):
             self.assertEqual(self.kinds(self.incident(temp, 'commerce-backup', 18000, send, recovered=True)), [('notisend', 'recovered')])
             self.assertEqual(self.states(temp), [])
 
+    def test_new_failure_after_recovery_opens_a_new_incident_even_with_recovery_undelivered(self):
+        for refusing in [('notisend', 'telebuzzy'), ('telebuzzy',)]:
+            with self.subTest(refusing=refusing), tempfile.TemporaryDirectory() as temp:
+                outcome = {'notisend': 'ACCEPTED', 'telebuzzy': 'ACCEPTED'}
+                send = lambda channel, *_: {'result': outcome[channel]}
+                self.incident(temp, 'commerce-backup', 1, send)
+                for channel in refusing: outcome[channel] = 'REFUSED'
+                self.incident(temp, 'commerce-backup', 3600, send, recovered=True)
+                for channel in refusing: outcome[channel] = 'ACCEPTED'
+                # The service recovered; a later failure is a new incident for every channel, never SUPPRESSED.
+                self.assertEqual(self.kinds(self.incident(temp, 'commerce-backup', 7200, send)),
+                                 [('notisend', 'opened'), ('telebuzzy', 'opened')])
+                self.assertEqual(self.incident(temp, 'commerce-backup', 10800, send)['result'], 'SUPPRESSED')
+                self.assertEqual(self.kinds(self.incident(temp, 'commerce-backup', 14400, send, recovered=True)),
+                                 [('notisend', 'recovered'), ('telebuzzy', 'recovered')])
+                self.assertEqual(self.states(temp), [])
+
+    def test_pending_recovery_keeps_the_first_recovery_time(self):
+        sent, outcome = [], {'notisend': 'ACCEPTED', 'telebuzzy': 'ACCEPTED'}
+        def send(channel, config, body, key):
+            sent.append((channel, body)); return {'result': outcome[channel]}
+        with tempfile.TemporaryDirectory() as temp:
+            self.incident(temp, 'commerce-backup', 86_400, send)
+            outcome['notisend'] = 'REFUSED'; self.incident(temp, 'commerce-backup', 90_000, send, recovered=True)
+            outcome['notisend'] = 'ACCEPTED'
+            self.assertEqual(self.kinds(self.incident(temp, 'commerce-backup', 93_600, send, recovered=True)), [('notisend', 'recovered')])
+            self.assertIn('recovered 1970-01-02T01:00:00+00:00', sent[-1][1]['text'])
+            self.assertEqual(self.states(temp), [])
+
     def test_recovery_waits_for_an_in_flight_alert_and_is_not_lost(self):
         import threading
         entered, release, sent = threading.Event(), threading.Event(), []

@@ -138,8 +138,9 @@ def read_state(path):
         except ValueError:
             return None
     # channels: when each channel last acknowledged a failure notice of this incident.
-    if not isinstance(state, dict) or set(state) != {'openedAt', 'suppressed', 'channels'} \
-            or not all(type(state[k]) is int and state[k] >= 0 for k in ['openedAt', 'suppressed']) \
+    # recoveredAt: 0 while failing; once the service recovered, only recovery delivery is pending.
+    if not isinstance(state, dict) or set(state) != {'openedAt', 'suppressed', 'channels', 'recoveredAt'} \
+            or not all(type(state[k]) is int and state[k] >= 0 for k in ['openedAt', 'suppressed', 'recoveredAt']) \
             or not isinstance(state['channels'], dict) or not set(state['channels']) <= set(CHANNELS) \
             or not all(type(v) is int and v > 0 for v in state['channels'].values()):
         return None
@@ -182,13 +183,18 @@ def transition(event, config, send, path, at, recovered):
         if state is None or not state['channels']:
             path.unlink(missing_ok=True)
             return {'event': event, 'result': 'NO_OPEN_INCIDENT'}
-        result = notify(event, config, send, 'recovered', history(state, at), [c for c in CHANNELS if c in state['channels']])
+        state['recoveredAt'] = state['recoveredAt'] or at
+        result = notify(event, config, send, 'recovered', history(state, state['recoveredAt']),
+                        [c for c in CHANNELS if c in state['channels']])
         for channel, outcome in result['channels'].items():
             if accepted(outcome): del state['channels'][channel]
         if state['channels']: write_state(path, state)
         else: path.unlink(missing_ok=True)
         return {'event': event, 'result': 'SENT', 'notifications': [result]}
-    state = state or {'openedAt': at, 'suppressed': 0, 'channels': {}}
+    # A failure after recovery is a new incident for every channel; it supersedes any
+    # recovery notice still awaiting delivery instead of being suppressed by it.
+    if state is None or state['recoveredAt']:
+        state = {'openedAt': at, 'suppressed': 0, 'channels': {}, 'recoveredAt': 0}
     due = {c: 'reminder' if c in state['channels'] else 'opened' for c in CHANNELS
            if c not in state['channels'] or at - state['channels'][c] >= REMINDER_SECONDS}
     if not due:
