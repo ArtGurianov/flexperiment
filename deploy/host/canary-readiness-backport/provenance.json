@@ -1,0 +1,51 @@
+{
+  "schema": "flexperiment.canary-readiness-backport/1",
+  "baseCommit": "56f864ee5b5325acd2ed5c5ad6ea756182326bf7",
+  "baseSha256": "9ce826f47e8e07e1ea124fadc7ec39dcde5e4c52efe2094d9e80c4812a435583",
+  "upstreamCommit": "c8a637e3e94274dcde995753836b036e98df97db",
+  "helperSha256": "251dba8853660ebd6b2bf9695c00c07056a67be541932773c317c9e3243f27da",
+  "changedBaseNodes": [
+    "GuardRefusal",
+    "failure_report",
+    "run",
+    "check",
+    "release",
+    "main",
+    "DIAGNOSTIC_CODES"
+  ],
+  "addedNodes": [
+    "DIAGNOSTIC_DETAILS",
+    "CURL_EXIT_DETAILS",
+    "READINESS_TIMEOUT",
+    "READINESS_COMMAND_TIMEOUT",
+    "READINESS_ATTEMPTS",
+    "READINESS_RETRY_PAUSE",
+    "COMPAT_RELEASE",
+    "readiness",
+    "bounded_readiness"
+  ],
+  "unchangedNodesSha256": "293e12b24d07fb240efb093991402250b841571d238b96f595da3a397e426bf5",
+  "checkDatabaseFenceLedgerTailSha256": "3b132898bfd5ebf1393f25985971903c57444693d171e78444766c1fdc71e928",
+  "release": {
+    "commerce": {
+      "sourceCommit": "56f864ee5b5325acd2ed5c5ad6ea756182326bf7",
+      "imageReference": "ghcr.io/artgurianov/flexperiment-commerce-v2@sha256:1de5828b602b5d1852fc705598d3742da883134b6e157d8472238a17ce53b43a"
+    },
+    "platform": {
+      "sourceCommit": "80a11bde55c38973bcde99b4a92ee9e09c5dc6ad",
+      "imageReference": "ghcr.io/artgurianov/flexperiment-platform-v2@sha256:9c7fee07994457e7b9dd4ac8345e54addd39c91c45e45f49a05bba546e972655"
+    },
+    "admin": {
+      "sourceCommit": "56f864ee5b5325acd2ed5c5ad6ea756182326bf7",
+      "imageReference": "ghcr.io/artgurianov/flexperiment-admin-v2@sha256:5d3fa609800de8ab98d9ef4a4793612b5f81d9f8fe56cb10003b75aec287bb29"
+    }
+  },
+  "upstreamNodeSha256": {
+    "GuardRefusal": "60f65c2b4f26ea79305409b1b42d47e2b6dbfbbb28d89556ca1ca88f49ddcf78",
+    "failure_report": "9926f3330577726f8969cf35891e9c5ceeb519004c08532216afd1d9c670fb15",
+    "run": "155fbd39cb21f8a090a2abb92d18e446b36a53fdc2966b2014359261469d206c",
+    "readiness": "084a785fe9123b60b4246b61ac5a08549aa89305a4fe4a875422c1b12567c691",
+    "bounded_readiness": "f854c39962e758db1dd3f9e662bdd940f74708167097ed86044c4df27d277bf0",
+    "check": "f1325360330c2d7195c4ec19f5c33961c34fd69822e5e0acf01edb62f216620a"
+  }
+}
