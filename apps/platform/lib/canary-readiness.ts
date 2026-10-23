@@ -1,12 +1,18 @@
 import { validatePlatformCanary } from "./canary-config";
 import { CLOSED_PAID_TEST_PROFILE } from "../../../lib/closed-paid-test-profile";
 
+/** Longer than Commerce's own /readyz deadline (READINESS_DEADLINE_MS, 8s, fresh S3
+ * erasure-authority read included), so Platform always receives Commerce's answer.
+ * 3s turned slow-but-valid reads into ~10% PLATFORM_NOT_READY (2026-10-22).
+ * Every outer probe waits longer; scripts/v2/test_fast_cut.py pins the chain. */
+export const COMMERCE_READINESS_TIMEOUT_MS = 10_000;
+
 export async function assertCommerceReady() {
   const canary = validatePlatformCanary();
   const origin = process.env.COMMERCE_INTERNAL_ORIGIN;
   if (!origin) throw new Error("COMMERCE_NOT_CONFIGURED");
   const response = await fetch(new URL("/readyz", origin), {
-    method: "GET", redirect: "error", cache: "no-store", signal: AbortSignal.timeout(3000),
+    method: "GET", redirect: "error", cache: "no-store", signal: AbortSignal.timeout(COMMERCE_READINESS_TIMEOUT_MS),
   });
   if (response.status !== 200 || !response.body) {
     await response.body?.cancel();

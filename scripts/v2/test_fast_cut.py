@@ -290,6 +290,50 @@ class FastCut(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'ADMIN_NOT_READY'):check(f.SOURCE)
         with self.assertRaisesRegex(ValueError,'PLATFORM_NOT_READY'):check(target,platform_source=target)
 
+    def test_readiness_timeouts_widen_outward_across_every_layer(self):
+        import re
+        services=json.loads((ROOT/'deploy/v2/fast-cut/compose.json').read_bytes())['services']
+        def seconds(value):return int(value.rstrip('s'))
+        def health(role):return services[role]['healthcheck']
+        def abort_ms(text):return int(re.search(r'AbortSignal\.timeout\((\d+)\)',text).group(1))
+        commerce_curl=health('commerce')['test'];budget=int(commerce_curl[commerce_curl.index('--max-time')+1])
+        source=(ROOT/'apps/platform/lib/canary-readiness.ts').read_text()
+        platform_wait=int(re.search(r'COMMERCE_READINESS_TIMEOUT_MS = ([\d_]+);',source).group(1).replace('_',''))
+        nginx_wait=seconds(re.search(r'proxy_read_timeout (\d+s);',(ROOT/'deploy/v2/frontends/proxy.conf').read_text()).group(1))
+        admin_wget=health('admin')['test'];admin_health=int(admin_wget[admin_wget.index('-T')+1])
+        commerce=(ROOT/'commerce-v2/src/readiness.ts').read_text()
+        deadline=int(re.search(r'READINESS_DEADLINE_MS = ([\d_]+);',commerce).group(1).replace('_',''))
+        # Commerce enforces its own deadline (fresh authority read included); every client waits longer.
+        self.assertLess(deadline,budget*1000)
+        self.assertEqual(f.READINESS_TIMEOUT['commerce'],budget)
+        self.assertGreater(seconds(health('commerce')['timeout']),budget)
+        # Each wrapper waits at least as long as what it wraps, then strictly longer outward.
+        self.assertEqual(platform_wait,budget*1000)
+        self.assertGreaterEqual(nginx_wait,budget)
+        self.assertGreater(abort_ms(health('platform')['test'][-1]),platform_wait)
+        self.assertGreater(seconds(health('platform')['timeout'])*1000,abort_ms(health('platform')['test'][-1]))
+        self.assertGreater(f.READINESS_TIMEOUT['platform']*1000,platform_wait)
+        self.assertGreater(admin_health,nginx_wait)
+        self.assertGreater(seconds(health('admin')['timeout']),admin_health)
+        self.assertGreater(f.READINESS_TIMEOUT['admin'],nginx_wait)
+        self.assertGreater(f.READINESS_COMMAND_TIMEOUT,max(f.READINESS_TIMEOUT.values()))
+
+    def test_readiness_probes_carry_their_own_bounded_wait(self):
+        vector=f.validate_release(self.commerce_candidate());target=vector['commerce']['sourceCommit'];calls=[]
+        ready={'commerce':{'ok':True,'foundationMode':False,'capabilities':{'erasure':'qualified'},'core':{'paymentMode':'disabled'},'sourceCommit':target},
+               'platform':{'sourceCommit':vector['platform']['sourceCommit']},'admin':{'ok':True,'service':'commerce-v2','sourceCommit':target}}
+        def command(args,timeout=180):
+            calls.append((args,timeout))
+            return json.dumps(ready[['commerce','platform','admin'][len(calls)-1]]).encode()
+        with patch.object(f,'release',return_value=vector),patch.object(f,'inspect',side_effect=lambda role:(role,{})), \
+             patch.object(f,'run',side_effect=command),patch.object(f,'DATABASE',Path('/nonexistent/commerce.sqlite')), \
+             self.assertRaises(Exception):f.check()
+        (commerce,c_timeout),(platform,p_timeout),(admin,a_timeout)=calls[:3]
+        self.assertEqual(commerce[commerce.index('--max-time')+1],str(f.READINESS_TIMEOUT['commerce']))
+        self.assertIn('AbortSignal.timeout(%d)'%(f.READINESS_TIMEOUT['platform']*1000),platform[-1])
+        self.assertEqual(admin[admin.index('-T')+1],str(f.READINESS_TIMEOUT['admin']))
+        self.assertEqual({c_timeout,p_timeout,a_timeout},{f.READINESS_COMMAND_TIMEOUT})
+
     def test_actual_admin_nginx_readiness_has_new_upstream_source_and_retained_native_identity(self):
         target=self.candidate()['roles']['commerce']['sourceCommit']
         prefix='fast-cut-readiness-'+uuid.uuid4().hex[:12];network=prefix+'-net';upstream=prefix+'-upstream';admin=prefix+'-admin'

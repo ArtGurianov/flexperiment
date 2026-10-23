@@ -88,6 +88,14 @@ DIAGNOSTIC_CODES = frozenset({
     'FAST_CUT_SOURCE_SCOPE',
 })
 
+# One readiness budget, widening outward. Commerce itself answers /readyz within
+# READINESS_DEADLINE_MS (8s, commerce-v2/src/readiness.ts), reporting a still-running
+# fresh S3 authority read as "unverified". Its clients wait 10s (curl here, Platform)
+# and Admin nginx 15s (frontends/proxy.conf). Each probe here and each Compose
+# healthcheck waits longer than what it wraps; test_fast_cut.py pins the chain.
+READINESS_TIMEOUT = {'commerce': 10, 'platform': 15, 'admin': 20}
+READINESS_COMMAND_TIMEOUT = 30
+
 
 class GuardRefusal(ValueError):
     pass
@@ -368,7 +376,8 @@ def check():
         name,result['roles'][role]=inspect(role)
         mark_stage(role+'_readiness')
         if role=='commerce':
-            ready=json.loads(run(['docker','exec',name,'curl','-fsS','--max-time','10','http://127.0.0.1:3002/readyz']))
+            ready=json.loads(run(['docker','exec',name,'curl','-fsS','--max-time',str(READINESS_TIMEOUT['commerce']),
+                                  'http://127.0.0.1:3002/readyz'],timeout=READINESS_COMMAND_TIMEOUT))
             require(ready['ok'] and ready['foundationMode'] is False and ready['capabilities']['erasure']=='qualified'
                     and ready['core']['paymentMode']==('refref' if paid_test() else 'disabled')
                     and ready['sourceCommit']==release()[role]['sourceCommit'],'FAST_CUT_COMMERCE_NOT_READY')
@@ -378,10 +387,13 @@ def check():
                         and ready['core'].get('closedPaidTestRefrefSource')==paid_test()['refrefSourceCommit']
                         and ready['capabilities']['refref']=='ready', 'FAST_CUT_PAID_TEST_NOT_READY')
         elif role=='platform':
-            raw=run(['docker','exec',name,'node','-e',"fetch('http://127.0.0.1:3001/readyz').then(async r=>{if(!r.ok)process.exit(1);console.log(await r.text())}).catch(()=>process.exit(1))"])
+            raw=run(['docker','exec',name,'node','-e',"fetch('http://127.0.0.1:3001/readyz',{signal:AbortSignal.timeout(%d)})"
+                     ".then(async r=>{if(!r.ok)process.exit(1);console.log(await r.text())}).catch(()=>process.exit(1))"
+                     % (READINESS_TIMEOUT['platform']*1000)],timeout=READINESS_COMMAND_TIMEOUT)
             require(json.loads(raw)['sourceCommit']==release()[role]['sourceCommit'],'FAST_CUT_PLATFORM_NOT_READY')
         else:
-            ready=json.loads(run(['docker','exec',name,'wget','-qO-','http://127.0.0.1/readyz']))
+            ready=json.loads(run(['docker','exec',name,'wget','-T',str(READINESS_TIMEOUT['admin']),'-qO-','http://127.0.0.1/readyz'],
+                                 timeout=READINESS_COMMAND_TIMEOUT))
             # Native Admin identity is checked by inspect(). Its nginx /readyz
             # proxies Commerce, so this response identifies the upstream role.
             require(ready['sourceCommit']==release()['commerce']['sourceCommit'] and ready.get('service')=='commerce-v2'
