@@ -345,3 +345,41 @@ describe("independent request sources (PR #264 P2)", () => {
     expect(count("lab_guest_access")).toBe(before); expect(count("lab_guest_rate_limits")).toBe(0); expect(send).not.toHaveBeenCalled();
   });
 });
+
+
+describe("review: safe guest checkout restart", () => {
+  it.each(["decline", "expiry"])("permits a new purchase after authoritative %s and preserves old history", async scenario => {
+    const old = await purchase(scenario);
+    const create = vi.spyOn(rail, "create"), recover = vi.spyOn(rail, "recoverCreate");
+    expect(await json(await request("/v1/lab/guest/restart", {}, old.token))).toEqual({ restartAllowed: true });
+    expect(create).not.toHaveBeenCalled(); expect(recover).not.toHaveBeenCalled();
+    const next = await purchase();
+    expect(next.orderPublicId).not.toBe(old.orderPublicId); expect(next.token).not.toBe(old.token);
+    expect(next.paid.state).toBe("PAID"); expect(count("lab_tickets")).toBe(1); expect(count("orders")).toBe(2);
+    expect((await request(`/v1/checkout/${old.orderPublicId}`, undefined, old.token)).status).toBe(200);
+  });
+  it.each(["customer_action", "late_payment", "ambiguous_create", "success"])("refuses restart of %s without losing the old capability or starting another payment", async scenario => {
+    const old = await purchase(scenario);
+    const create = vi.spyOn(rail, "create"), recover = vi.spyOn(rail, "recoverCreate");
+    expect((await request("/v1/lab/guest/restart", {}, old.token)).status).toBe(409);
+    expect(labAccess(db, old.token).order_public_id).toBe(old.orderPublicId);
+    expect(count("lab_guest_access")).toBe(1); expect(count("orders")).toBe(1);
+    expect(create).not.toHaveBeenCalled();
+    if (recover.mock.calls.length) expect(recover.mock.calls[0][2]!.mayInitiate()).toBe(false);
+  });
+  it("retires an unconfirmed quote/hold atomically so another tab cannot pay it or create a delayed first quote", async () => {
+    const old = await start(), prepared = await quote(old.token);
+    expect(await json(await request("/v1/lab/guest/restart", {}, old.token))).toEqual({ restartAllowed: true });
+    expect((await request("/v1/checkout", { quoteId: prepared.quoteId, labAcceptance: acceptance() }, old.token)).status).toBeGreaterThanOrEqual(400);
+    const noQuote = await start();
+    await json(await request("/v1/lab/guest/restart", {}, noQuote.token));
+    expect((await request("/v1/checkout/preview", { offerRef: "lab:one" }, noQuote.token)).status).toBe(409);
+    expect(count("orders")).toBe(0); expect(count("checkout_attempts")).toBe(0);
+  });
+  it("does not infer terminal refusal from failed read-back", async () => {
+    const old = await purchase("decline");
+    vi.spyOn(rail, "reconcile").mockRejectedValue(new TypeError("read-back unavailable"));
+    expect((await request("/v1/lab/guest/restart", {}, old.token)).status).toBe(409);
+    expect(db.prepare("SELECT 1 FROM audit_log WHERE action='LAB_CHECKOUT_RETIRED'").get()).toBeUndefined();
+  });
+});

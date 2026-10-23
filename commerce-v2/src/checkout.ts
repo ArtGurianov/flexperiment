@@ -663,6 +663,9 @@ function assertFrozenFiscalPolicyQualified(db: Database.Database, offer: OfferRo
  */
 function assertIssuedIntentAdmissible(db: Database.Database, config: CheckoutPolicyConfig, intent: IntentRow, customerEmail: string,
   now: string, stage: SalesStopStage) {
+  if (intent.storefront === "LAB" && db.prepare("SELECT 1 FROM audit_log WHERE action='LAB_CHECKOUT_RETIRED' AND subject_ref=?").get(intent.order_public_id)) {
+    throw new CheckoutConflictError("LAB_CHECKOUT_RETIRED");
+  }
   const offer = offerById(db, intent.offer_id);
   if (!offer || offer.withdrawn_at) throw new CheckoutConflictError("OFFER_NOT_AVAILABLE");
   if (offer.access_model === "FREE") throw new CheckoutConflictError("FREE_PRODUCT_CHECKOUT_FORBIDDEN");
@@ -905,6 +908,9 @@ export async function prepareCheckout(
       db.prepare(`UPDATE checkout_quotes AS intent SET state='EXPIRED',failure_code='CHECKOUT_INTENT_REPLACED',updated_at=@now
         WHERE ${PAYMENT_ADMISSION_SCOPE} AND consumed_at IS NULL
           AND state IN ('DRAFT','RESOLVING','CUSTOMER_ACTION_REQUIRED','REVIEW')`).run({ ...scope, now });
+    }
+    if (candidate?.kind === "LAB" && db.prepare("SELECT 1 FROM audit_log WHERE action='LAB_CHECKOUT_RETIRED' AND subject_ref=?").get(orderPublicId)) {
+      throw new CheckoutConflictError("LAB_CHECKOUT_RETIRED");
     }
     const offer = assertOfferCanBePurchased(db, config, offerByRef(db, input.offerRef), input.customerId, input.customerEmail, now);
     assertNoOtherPaidTestOrder(db, config, offer.offer_ref);
@@ -1348,19 +1354,52 @@ function recoveryMayInitiate(db: Database.Database, admission: StorefrontSwitchC
 
 export async function reconcilePendingCheckouts(db: Database.Database, rail: PaymentRail, now = new Date().toISOString(),
   admission?: StorefrontSwitchConfig) {
-  const rows = db.prepare(`SELECT orders.public_id FROM orders JOIN checkout_attempts attempt ON attempt.order_id=orders.id
+  const rows = db.prepare(`SELECT orders.public_id,attempt.state FROM orders JOIN checkout_attempts attempt ON attempt.order_id=orders.id
     WHERE (attempt.state IN ('CREATE_UNKNOWN','PENDING','CUSTOMER_ACTION_REQUIRED')
            -- A create whose request never answered (the process stopped after the order was committed).
            OR (attempt.state = 'CREATING' AND julianday(?) - julianday(attempt.created_at) >= ? / 86400000.0)
+           -- Retry only the v9 payment whose independent qualification is still missing.
+           OR (attempt.state = 'REVIEW_REQUIRED' AND attempt.refref_attempt_id IS NOT NULL
+               AND json_extract(attempt.request_payload_json,'$.quote.purchase.payable.schema')='refref.purchase-payable/2'
+               AND json_extract(attempt.observed_payment_projection_json,'$.failureCode')='PURCHASE_QUALIFICATION_UNVERIFIED')
            -- Paid and granted, but Refref has not had the ACK: sent again until it has.
            OR (attempt.state = 'PAID' AND attempt.fulfillment_acknowledged_at IS NULL))
       AND (attempt.refref_attempt_id IS NULL OR attempt.refref_attempt_id NOT LIKE 'resolution:%')
-    ORDER BY attempt.updated_at LIMIT 100`).all(now, CREATING_UNANSWERED_AFTER_MS) as Array<{ public_id: string }>;
+    ORDER BY attempt.updated_at LIMIT 100`).all(now, CREATING_UNANSWERED_AFTER_MS) as Array<{ public_id: string; state: string }>;
   let reconciled = 0;
   let failed = 0;
   for (const row of rows) {
-    try { await reconcileCheckout(db, rail, row.public_id, now, admission); reconciled += 1; }
+    try {
+      // Qualification retry has a known remote attempt and is read-only even with sales OPEN.
+      await reconcileCheckout(db, rail, row.public_id, now, row.state === "REVIEW_REQUIRED" ? undefined : admission); reconciled += 1;
+    }
     catch { failed += 1; }
   }
   return { selected: rows.length, reconciled, failed };
+}
+
+/** The caller derives the order from the guest capability. Remote read-back precedes atomic retirement;
+ * the durable marker also fences a delayed first preview. Historical order/ticket reads stay available. */
+export async function retireLabCheckout(db: Database.Database, rail: PaymentRail, orderPublicId: string, now = new Date().toISOString()) {
+  const readAttempt = () => db.prepare(`SELECT attempt.state FROM checkout_attempts attempt JOIN orders ON orders.id=attempt.order_id
+    WHERE orders.public_id=?`).get(orderPublicId) as { state: string } | undefined;
+  const previous = readAttempt();
+  if (previous) {
+    const observed = await reconcileCheckout(db, rail, orderPublicId, now);
+    if (!["DECLINED", "EXPIRED"].includes(observed.state)) throw new CheckoutConflictError("LAB_CHECKOUT_RESTART_UNSAFE");
+  }
+  return db.transaction(() => {
+    if (!db.prepare("SELECT 1 FROM lab_guest_access WHERE order_public_id=?").get(orderPublicId)) throw new CheckoutConflictError("LAB_ACCESS_INVALID");
+    const current = readAttempt();
+    // A confirmation committed during read-back must never be mistaken for an unstarted purchase.
+    if (current && (!previous || !["DECLINED", "EXPIRED"].includes(current.state))) throw new CheckoutConflictError("LAB_CHECKOUT_RESTART_UNSAFE");
+    if (!db.prepare("SELECT 1 FROM audit_log WHERE action='LAB_CHECKOUT_RETIRED' AND subject_ref=?").get(orderPublicId)) {
+      db.prepare(`UPDATE checkout_quotes SET state='EXPIRED',failure_code='LAB_CHECKOUT_RETIRED',updated_at=?
+        WHERE order_public_id=? AND consumed_at IS NULL AND state IN ('DRAFT','RESOLVING','CUSTOMER_ACTION_REQUIRED','REVIEW')`).run(now, orderPublicId);
+      db.prepare(`INSERT INTO audit_log(id,actor,action,subject_type,subject_ref,evidence_json,created_at)
+        VALUES (?,'LAB_GUEST','LAB_CHECKOUT_RETIRED','ORDER',?,?,?)`).run(randomUUID(), orderPublicId,
+          JSON.stringify({ paymentState: current?.state ?? "NOT_STARTED", oldCheckoutFenced: true }), now);
+    }
+    return { restartAllowed: true as const };
+  }).immediate();
 }

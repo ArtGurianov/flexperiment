@@ -30,10 +30,17 @@ export default function LabGuestCheckout({ offerRef, displayedAmountKopecks }: {
   const [personalData, setPersonalData] = useState(false), [terms, setTerms] = useState(false), [receiptContact, setReceiptContact] = useState(false);
   const accepted = personalData && terms && receiptContact;
   const [busy, setBusy] = useState(false);
+  const [hasCheckout, setHasCheckout] = useState(false);
   const [message, setMessage] = useState("");
   const session = useRef<Session | null>(null);
   const lock = useRef(false);
   const storageKey = `lab-guest-v1:${offerRef}`;
+  const terminalPayment = (state: string) => {
+    if (state !== "DECLINED" && state !== "EXPIRED") return false;
+    setQuote(null); setPersonalData(false); setTerms(false); setReceiptContact(false);
+    setMessage(state === "DECLINED" ? "Платёж отклонён. Можно проверить возможность нового заказа." : "Время оплаты истекло. Можно проверить возможность нового заказа.");
+    return true;
+  };
   const preview = async (event?: FormEvent, restoring = false) => {
     event?.preventDefault(); if (lock.current) return; lock.current = true; setBusy(true); setMessage("");
     try {
@@ -43,7 +50,7 @@ export default function LabGuestCheckout({ offerRef, displayedAmountKopecks }: {
       if (previous && previous.email !== contact) throw new Error("LAB_CONTACT_CHANGED");
       const current = previous ?? { accessToken: newLabCapability(), previewKey: crypto.randomUUID(), paymentKey: crypto.randomUUID(), email: contact, checkoutCode: checkoutCode.trim() };
       setEmail(current.email); setCheckoutCode(current.checkoutCode ?? "");
-      session.current = current;
+      session.current = current; setHasCheckout(true);
       // Save before the first request: a lost answer cannot create a fresh purchase intent on retry.
       sessionStorage.setItem(storageKey, JSON.stringify(current));
       const started = await labRequest("/v1/lab/guest/start", { email: current.email, accessToken: current.accessToken });
@@ -52,6 +59,7 @@ export default function LabGuestCheckout({ offerRef, displayedAmountKopecks }: {
       sessionStorage.setItem(storageKey, JSON.stringify(current));
       sessionStorage.setItem("lab-ticket-v1", JSON.stringify({ accessToken: current.accessToken, orderPublicId: current.orderPublicId }));
       const result = await labRequest("/v1/checkout/preview", { offerRef, displayedAmountKopecks, checkoutCode: current.checkoutCode || undefined }, current.accessToken, current.previewKey);
+      if (terminalPayment(result.state)) return;
       if (result.state === "RESOLUTION_PENDING") { setMessage("Уточняем условия. Повторите проверку — повторной оплаты не будет."); return; }
       if (result.orderPublicId && ["PAID", "PENDING", "CREATE_UNKNOWN", "CUSTOMER_ACTION_REQUIRED"].includes(result.state)) {
         if (result.checkoutUrl && new URL(result.checkoutUrl).protocol === "https:") window.location.assign(result.checkoutUrl);
@@ -69,9 +77,25 @@ export default function LabGuestCheckout({ offerRef, displayedAmountKopecks }: {
       const current = session.current;
       const result = await labRequest("/v1/checkout", { quoteId: quote.quoteId, labAcceptance: { personalDataConsent: true,
         termsAccepted: true, receiptContactAccepted: true, releaseVersion: quote.labLegal.releaseVersion, manifestSha256: quote.labLegal.manifestSha256 } }, current.accessToken, current.paymentKey);
+      if (terminalPayment(result.state)) return;
       if (result.checkoutUrl && new URL(result.checkoutUrl).protocol === "https:") window.location.assign(result.checkoutUrl);
       else router.push(`/ticket#access=${current.accessToken}`);
     } catch { setMessage("Не удалось получить результат оплаты. Проверьте заказ по ссылке на билет; повторное нажатие использует тот же заказ."); }
+    finally { lock.current = false; setBusy(false); }
+  };
+  const restartPurchase = async () => {
+    if (lock.current || !session.current) return;
+    lock.current = true; setBusy(true);
+    try {
+      const current = session.current;
+      // Even a lost guest-start ACK is recovered under the old capability before retirement.
+      if (!current.orderPublicId) await labRequest("/v1/lab/guest/start", { email: current.email, accessToken: current.accessToken });
+      const result = await labRequest("/v1/lab/guest/restart", {}, current.accessToken);
+      if (result.restartAllowed !== true) throw new Error("LAB_CHECKOUT_RESTART_UNSAFE");
+      sessionStorage.removeItem(storageKey); session.current = null; setHasCheckout(false);
+      setQuote(null); setPersonalData(false); setTerms(false); setReceiptContact(false);
+      setTicketLink(null); setMessage("Можно проверить условия нового заказа и изменить промокод.");
+    } catch { setMessage("Сначала нужно уточнить прежний платёж. Заказ и ключи сохранены; проверьте заказ по ссылке на билет."); }
     finally { lock.current = false; setBusy(false); }
   };
   const restoreCheckout = useEffectEvent(() => preview(undefined, true));
@@ -83,7 +107,7 @@ export default function LabGuestCheckout({ offerRef, displayedAmountKopecks }: {
   return <div className="guestCheckout">
     <p>Билет без регистрации. Email нужен для билета, чека и восстановления.</p>
     {!quote ? <form onSubmit={preview}><label>Email для билета и чека<input required type="email" maxLength={254} autoComplete="email" value={email} onChange={event => setEmail(event.target.value)} /></label>
-      <label>Промокод<input autoComplete="off" maxLength={64} disabled={busy} value={checkoutCode} onChange={event => setCheckoutCode(event.target.value)} /></label>
+      <label>Промокод<input autoComplete="off" maxLength={64} disabled={busy || hasCheckout} value={checkoutCode} onChange={event => setCheckoutCode(event.target.value)} /></label>
       <button disabled={busy}>{busy ? "Проверяем…" : "Проверить условия"}</button></form>
       : <div><h4>{quote.occurrence.title}</h4><p>{new Date(quote.occurrence.startsAt).toLocaleString("ru-RU", { timeZone: quote.occurrence.timezone })}</p>
         <p>{quote.occurrence.venue.status === "CONFIRMED" ? `${quote.occurrence.venue.name}, ${quote.occurrence.venue.address}` : quote.occurrence.venue.disclosureText}</p>
@@ -100,6 +124,7 @@ export default function LabGuestCheckout({ offerRef, displayedAmountKopecks }: {
         <button disabled={busy || !accepted} onClick={pay}>{busy ? "Проверяем заказ…" : "Подтвердить и оплатить"}</button>
       </div>}
     {ticketLink && <Link href={ticketLink}>Проверить заказ и билет</Link>}
+    {hasCheckout && <button disabled={busy} onClick={() => void restartPurchase()}>Начать новый заказ</button>}
     {message && <p role="alert">{message}</p>}
   </div>;
 }

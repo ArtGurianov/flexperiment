@@ -15,6 +15,7 @@ export function registerLabGuestRoutes(parent: Hono, deps: {
   authenticateCustomer?: (headers: Headers) => Promise<string | null>;
   sendLabTicketEmail?: (message: LabTicketEmail) => Promise<void>;
   erasureFence?: ErasureRuntimeFence;
+  retireCheckout: (orderPublicId: string) => Promise<{ restartAllowed: true }>;
 }) {
   const app = new Hono();
   app.onError((error, c) => c.json({ code: error instanceof LabTicketError ? error.message : "LAB_REQUEST_UNAVAILABLE" }, error instanceof LabTicketError ? 409 : 503, noStore));
@@ -43,6 +44,11 @@ export function registerLabGuestRoutes(parent: Hono, deps: {
       return c.json({ code: "LAB_RATE_LIMITED" }, 429, noStore);
     }
     return c.json(startLabGuest(deps.db, body, time), 201, noStore);
+  });
+  app.post("/v1/lab/guest/restart", async c => {
+    const access = accessFor(c);
+    try { return c.json(await deps.retireCheckout(access.order_public_id), 200, noStore); }
+    catch { return c.json({ code: "LAB_CHECKOUT_RESTART_UNSAFE" }, 409, noStore); }
   });
   app.get("/v1/lab/guest/ticket", async c => {
     accessFor(c);

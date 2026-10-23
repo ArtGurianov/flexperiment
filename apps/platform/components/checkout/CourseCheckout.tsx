@@ -69,6 +69,17 @@ export default function CourseCheckout({ courseRef, offerRef, saleMode, priceKop
     } catch { /* The durable server intent still owns replay when storage is unavailable. */ }
   };
 
+  const resetTerminalPurchase = () => {
+    previewIdempotencyKey.current = null; paymentIdempotencyKey.current = null;
+    setQuote(null); setTermsAccepted(false);
+    try { if (storageKey.current) sessionStorage.removeItem(storageKey.current); } catch { /* Server admission still applies. */ }
+  };
+  const terminalPayment = (result: CheckoutResult) => {
+    if (result.state !== "DECLINED" && result.state !== "EXPIRED") return false;
+    resetTerminalPurchase();
+    setStatus(result.state === "DECLINED" ? "Платёж отклонён. Можно начать новую покупку." : "Время оплаты истекло. Можно начать новую покупку.");
+    return true;
+  };
   useEffect(() => {
     const orderPublicId = new URLSearchParams(window.location.search).get("order");
     if (!orderPublicId) return;
@@ -115,6 +126,7 @@ export default function CourseCheckout({ courseRef, offerRef, saleMode, priceKop
       });
       const result = await response.json() as CheckoutQuote | CheckoutResult;
       if (!response.ok) throw new Error(result.code || "CHECKOUT_PREVIEW_FAILED");
+      if (terminalPayment(result)) return;
       if (result.state === "RESOLUTION_PENDING") { setStatus("Уточняем цену. Повторите проверку — оплата ещё не начата."); return; }
       if (result.orderPublicId && ["PAID", "PENDING", "CREATE_UNKNOWN", "CUSTOMER_ACTION_REQUIRED"].includes(result.state ?? "")) {
         if (result.checkoutUrl && new URL(result.checkoutUrl).protocol === "https:") window.location.assign(result.checkoutUrl);
@@ -165,8 +177,10 @@ export default function CourseCheckout({ courseRef, offerRef, saleMode, priceKop
       });
       let result = await response.json() as CheckoutResult;
       if (!response.ok) throw new Error(result.code || "CHECKOUT_FAILED");
+      if (terminalPayment(result)) return;
       if (result.checkoutUrl && new URL(result.checkoutUrl).protocol === "https:") { window.location.assign(result.checkoutUrl); return; }
       result = await observeCheckout(result);
+      if (terminalPayment(result)) return;
       if (result.state === "PAID") { setSession("owned"); setStatus("Доступ открыт."); window.location.reload(); return; }
       setStatus(result.state === "DECLINED" ? "Платёж отклонён." : result.state === "EXPIRED" ? "Время оплаты истекло." : "Статус платежа уточняется. Попробуйте снова через минуту.");
     } catch (error) {
@@ -175,7 +189,7 @@ export default function CourseCheckout({ courseRef, offerRef, saleMode, priceKop
         setConsentRequired(true);
         setTermsAccepted(false);
         setStatus("Перед покупкой подтвердите актуальные документы аккаунта.");
-      } else if (["CHECKOUT_QUOTE_EXPIRED", "CHECKOUT_QUOTE_STALE", "CHECKOUT_QUOTE_UNAVAILABLE"].includes(code)) {
+      } else if (["CHECKOUT_QUOTE_EXPIRED", "CHECKOUT_QUOTE_STALE"].includes(code)) {
         setQuote(null); previewIdempotencyKey.current = null; paymentIdempotencyKey.current = null;
         if (storageKey.current) sessionStorage.removeItem(storageKey.current);
         setStatus("Цена изменилась или время подтверждения истекло. Проверьте её ещё раз.");

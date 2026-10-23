@@ -13,7 +13,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createCommerceV2App } from "../src/app";
 import {
   AmbiguousRailCreateError, CheckoutConflictError, confirmCheckout, MockPaymentRail, prepareCheckout, RailRefusalError,
-  reconcileCheckout, reconcilePendingCheckouts, type PaymentResolveInput,
+  reconcileCheckout, reconcilePendingCheckouts, type PaymentResolveInput, type RailProjection,
 } from "../src/checkout";
 import { applyV2Migration, migrateV2 } from "../src/db";
 import { saveMerchantPromotion } from "../src/promotions";
@@ -1003,6 +1003,50 @@ describe("ART-398 opt-in v9 checkout binding", () => {
     expect((await confirm(quote.quoteId, "pay-no-proof")).state).toBe("REVIEW_REQUIRED");
     expect(count("course_entitlements")).toBe(0);
     expect(db.prepare("SELECT 1 FROM audit_log WHERE action='PURCHASE_QUALIFIED'").get()).toBeUndefined();
+  });
+  it("background sweep retries delayed v9 qualification without creating money, even with the storefront closed", async () => {
+    enablePurchaseRail(); readyCourse();
+    const createQualified = vi.mocked(rail.create).getMockImplementation()!;
+    let qualified: RailProjection;
+    vi.mocked(rail.create).mockImplementation(async input => {
+      qualified = await createQualified(input);
+      return { ...qualified, purchaseQualification: undefined };
+    });
+    const q = await quoted(await preview("delayed-bank"));
+    const result = await confirm(q.quoteId, "one-payment");
+    expect(result.state).toBe("REVIEW_REQUIRED");
+    const originalIntent = intent().resolution_request_json;
+    const stored = db.prepare("SELECT request_payload_json FROM checkout_attempts").get() as { request_payload_json: string };
+    const input = JSON.parse(stored.request_payload_json);
+    const qualification = qualifyPurchase(input.quote.purchase.payable, input.purchaseAcceptance,
+      { ...qualified!.purchaseQualification!.payment, verifiedAt: at(2) }, at(2));
+    const reconcile = vi.spyOn(rail, "reconcile")
+      .mockResolvedValueOnce({ ...qualified!, purchaseQualification: undefined })
+      .mockResolvedValueOnce({ ...qualified!, purchaseQualification: { ...qualification, payableHash: `refref-jcs-1:${"0".repeat(64)}` } })
+      .mockResolvedValue({ ...qualified!, purchaseQualification: qualification });
+    const recover = vi.spyOn(rail, "recoverCreate");
+    setTestStorefronts(db, { COURSES: "CLOSED" });
+    for (const minute of [2, 3]) {
+      expect(await reconcilePendingCheckouts(db, rail, at(minute), testCheckoutConfig)).toEqual({ selected: 1, reconciled: 1, failed: 0 });
+      expect(count("course_entitlements")).toBe(0);
+    }
+    expect(await reconcilePendingCheckouts(db, rail, at(4), testCheckoutConfig)).toEqual({ selected: 1, reconciled: 1, failed: 0 });
+    expect(count("course_entitlements")).toBe(1);
+    expect(db.prepare("SELECT evidence_json FROM audit_log WHERE action='PURCHASE_QUALIFIED'").all()).toHaveLength(1);
+    expect(intent().resolution_request_json).toBe(originalIntent);
+    expect((db.prepare("SELECT request_payload_json FROM checkout_attempts").get() as { request_payload_json: string }).request_payload_json).toBe(stored.request_payload_json);
+    expect(rail.create).toHaveBeenCalledTimes(1); expect(recover).not.toHaveBeenCalled();
+    expect(reconcile.mock.calls.every(([request]) => request.idempotencyKey === "one-payment" && request.orderPublicId === result.orderPublicId)).toBe(true);
+    expect(await reconcilePendingCheckouts(db, rail, at(5), testCheckoutConfig)).toEqual({ selected: 0, reconciled: 0, failed: 0 });
+  });
+  it("does not automatically sweep unrelated manual-review cases", async () => {
+    enablePurchaseRail(); readyCourse();
+    vi.mocked(rail.create).mockImplementation(input => MockPaymentRail.prototype.create.call(rail, input));
+    const q = await quoted(await preview("manual-review")); await confirm(q.quoteId, "review-payment");
+    db.prepare("UPDATE checkout_attempts SET observed_payment_projection_json=json_set(observed_payment_projection_json,'$.failureCode','PAYMENT_AMOUNT_MISMATCH')").run();
+    const reconcile = vi.spyOn(rail, "reconcile");
+    expect(await reconcilePendingCheckouts(db, rail, at(2), testCheckoutConfig)).toEqual({ selected: 0, reconciled: 0, failed: 0 });
+    expect(reconcile).not.toHaveBeenCalled();
   });
   it("LAB independently freezes its exact end, timezone and schedule provenance", async () => {
     addLab(); enablePurchaseRail();

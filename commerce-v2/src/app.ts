@@ -13,7 +13,7 @@ import { flagOrphanedOverrides } from "./access-overrides";
 import { getEditorialDraft, getEditorialPublished, publishEditorialDraft, relistEditorialCourse, restrictEditorialCourse, saveEditorialDraft, type EditorialDocument } from "./course-editorial";
 import { assertPaymentCreationEnabled, CommerceConfigurationError, type CommerceRuntimeConfig } from "./payment-mode";
 import { saveResumePosition } from "./resume";
-import { CheckoutConflictError, checkoutIntentNavigation, confirmCheckout, frozenResolutionContext, offerStorefront, prepareCheckout, reconcileCheckout, type PaidCheckoutAcceptance, type PaymentRail, type ResolutionContext } from "./checkout";
+import { CheckoutConflictError, checkoutIntentNavigation, confirmCheckout, frozenResolutionContext, offerStorefront, prepareCheckout, reconcileCheckout, retireLabCheckout, type PaidCheckoutAcceptance, type PaymentRail, type ResolutionContext } from "./checkout";
 import { ARRIVAL_PROOF_PARAM, ARRIVAL_RETURN_PARAM, cleanArrivalTarget, presentedContextId, storefrontForRequest, type BrowserContexts } from "./browser-context";
 import { configureLabOffer, configureProduct, withdrawProduct } from "./catalog-control";
 import { cancelLabOccurrence, createCity, createLabOccurrence, editLabOccurrence, renameCity } from "./lab-occurrences";
@@ -779,6 +779,10 @@ export function createCommerceV2App(deps: Dependencies) {
 
   registerLabGuestRoutes(app as unknown as Hono, { db: deps.db, origin: origins.lab, now,
     authenticateCustomer: deps.authenticateCustomer, sendLabTicketEmail: deps.sendLabTicketEmail, erasureFence: deps.erasureFence,
+    retireCheckout: orderPublicId => {
+      if (!deps.paymentRail) throw new Error("PAYMENT_RAIL_UNAVAILABLE");
+      return retireLabCheckout(deps.db, deps.paymentRail, orderPublicId, now().toISOString());
+    },
     requestSource: context => {
       let peer: string | undefined;
       try { peer = deps.labGuestPeerAddress ? deps.labGuestPeerAddress(context) : getConnInfo(context).remote.address; }

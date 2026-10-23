@@ -15,3 +15,11 @@ LMS readiness is explicit and independent of FULL_PAYMENT/FULL_PREPAYMENT. LAB f
 Use the existing vNext resolution endpoint and immutable B1 request; payment uses the existing accepted-resolution checkout API. New buyer requests never visit the RC.2 handoff endpoint. Preserve signed payment-return and historic RC.2 recovery. Require origin/context for vNext and verify response order, context, origin, hash, exact lines, totals and deadline. Unknown resolution never permits payment.
 
 LMS: signed-in preview → final price/documents → explicit acceptance → payment, with persistent idempotency keys for reload recovery. LAB: the same resolution protocol on its own origin, existing guest identity/capability, legal acceptance and local seat hold. Retain independent storefront switches and acceptance evidence. Test backend routes and each buyer component separately with local fake Refref/provider responses; no claim of deployed browser or bank E2E.
+
+## Review corrections (PR #279, baseline abb974a8)
+
+All three supplied findings are confirmed. LMS clears quote/acceptance and both saved replay keys only on an authoritative DECLINED/EXPIRED result, including restored previews; unresolved outcomes and unavailable quotes retain their identity. No automatic payment retry follows the reset.
+
+The sweep admits only v9 payable/2 REVIEW_REQUIRED attempts with a known remote attempt and PURCHASE_QUALIFICATION_UNVERIFIED. It passes no payment-creation admission. Exact accepted input/payable/payment identity is retained; invalid evidence still cannot grant access, and other manual-review classes remain excluded.
+
+LAB uses a capability-scoped, same-origin POST /v1/lab/guest/restart. If payment exists it first reads that same attempt back without creation admission, allowing only definitive DECLINED/EXPIRED. If no attempt exists, the no-payment check, unconfirmed quote/hold retirement and durable LAB_CHECKOUT_RETIRED audit marker commit under the confirmation write lock. Confirmation and even a delayed first preview are fenced by that marker. Historical reads keep the old capability. Only a successful restart response lets the browser discard its session and choose new keys/capability/promo; unknown, paid and unavailable outcomes keep the old identity. No schema or production changes are needed.

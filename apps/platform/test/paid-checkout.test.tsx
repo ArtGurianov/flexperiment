@@ -116,3 +116,61 @@ describe("ART-379 direct checkout and reload", () => {
     expect(fetcher.mock.calls.map(([path]) => path)).toEqual(["/v1/me", "/v1/checkout/preview"]);
   });
 });
+
+
+describe("review: terminal LMS payment recovery", () => {
+  it.each(["DECLINED", "EXPIRED"])("clears the saved %s attempt and permits a new preview/payment after reload", async state => {
+    const previews: string[] = [], payments: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (path: string, options?: RequestInit) => {
+      if (path === "/v1/me") return Response.json({ customer: { id: "buyer" }, entitlements: [] });
+      const key = (options?.headers as Record<string, string>)["idempotency-key"];
+      if (path === "/v1/checkout/preview") {
+        previews.push(key);
+        return Response.json({ quoteId: `quote-${previews.length}`, state: "PRICE_REVIEW_REQUIRED", finalAmountKopecks: 10000,
+          baseAmountKopecks: 10000, merchantDiscountKopecks: 0, referralDiscountKopecks: 0, discountKopecks: 0, checkoutCodeOutcome: "NONE" });
+      }
+      payments.push(key); return Response.json({ state, orderPublicId: `order-${payments.length}` });
+    }));
+    const first = render(<CourseCheckout courseRef="one" offerRef="course:one" saleMode="PUBLIC" priceKopecks={10000} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Купить курс →" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Купить курс →" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Подтвердить и оплатить →" }));
+    await screen.findByText(/Можно начать новую покупку/);
+    expect(sessionStorage.getItem("course-checkout-v1:buyer:course:one")).toBeNull();
+    first.unmount(); render(<CourseCheckout courseRef="one" offerRef="course:one" saleMode="PUBLIC" priceKopecks={10000} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Купить курс →" })).toBeEnabled());
+    expect(previews).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "Купить курс →" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Подтвердить и оплатить →" }));
+    await waitFor(() => expect(payments).toHaveLength(2));
+    expect(previews[1]).not.toBe(previews[0]); expect(payments[1]).not.toBe(payments[0]);
+  });
+  it.each(["PENDING", "CREATE_UNKNOWN"])("preserves %s identity and promo when reload reads back an unresolved payment", async state => {
+    const saved = JSON.stringify({ version: 1, previewKey: "same-preview", paymentKey: "same-pay", checkoutCode: "PARTNER20" });
+    sessionStorage.setItem("course-checkout-v1:buyer:course:one", saved);
+    const calls: RequestInit[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (path: string, options?: RequestInit) => {
+      if (path === "/v1/me") return Response.json({ customer: { id: "buyer" } });
+      expect(path).toBe("/v1/checkout/preview"); calls.push(options!);
+      return Response.json({ state, orderPublicId: "same-order" });
+    }));
+    render(<CourseCheckout courseRef="one" offerRef="course:one" saleMode="PUBLIC" priceKopecks={10000} />);
+    await screen.findByText(/Повторная проверка использует тот же заказ/);
+    expect(sessionStorage.getItem("course-checkout-v1:buyer:course:one")).toBe(saved);
+    expect(calls[0].headers).toMatchObject({ "idempotency-key": "same-preview" });
+    expect(JSON.parse(String(calls[0].body))).toMatchObject({ checkoutCode: "PARTNER20" });
+  });
+  it("releases an old terminal intent restored from storage before a new preview", async () => {
+    sessionStorage.setItem("course-checkout-v1:buyer:course:one", JSON.stringify({ version: 1, previewKey: "old-preview", paymentKey: "old-pay", checkoutCode: "" }));
+    const keys: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (path: string, options?: RequestInit) => {
+      if (path === "/v1/me") return Response.json({ customer: { id: "buyer" } });
+      keys.push((options?.headers as Record<string, string>)["idempotency-key"]);
+      return Response.json({ state: "DECLINED", orderPublicId: "old-order" });
+    }));
+    render(<CourseCheckout courseRef="one" offerRef="course:one" saleMode="PUBLIC" priceKopecks={10000} />);
+    await screen.findByText(/Можно начать новую покупку/);
+    fireEvent.click(screen.getByRole("button", { name: "Купить курс →" }));
+    await waitFor(() => expect(keys).toHaveLength(2)); expect(keys[1]).not.toBe("old-preview");
+  });
+});
