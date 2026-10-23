@@ -267,8 +267,12 @@ class CanaryAlerts(unittest.TestCase):
 
     def test_cli_exit_reflects_every_attempted_channel(self):
         outcome = {'notisend': 'ACCEPTED', 'telebuzzy': 'ACCEPTED'}
+        def source(_):
+            recovered='--recovered' in alerts.sys.argv
+            return self.source_observation(2 if recovered else 1,recovered)
         with tempfile.TemporaryDirectory() as temp, patch.object(alerts, 'STATE', Path(temp)), \
              patch.object(alerts, 'load_config', return_value=CONFIG), patch.object(alerts, 'running_as_root', return_value=True), \
+             patch.object(alerts,'read_source',side_effect=source) as metadata, \
              patch.object(alerts, 'request', side_effect=lambda channel, *_: {'result': outcome[channel]}) as provider:
             def run(*argv):
                 with patch.object(alerts.sys, 'argv', ['x', *argv]), patch('sys.stdout', new_callable=io.StringIO):
@@ -279,8 +283,77 @@ class CanaryAlerts(unittest.TestCase):
             outcome['telebuzzy'] = 'ACCEPTED'
             self.assertEqual([run('--recovered', 'commerce-backup'), run('--recovered', 'commerce-backup')], [0, 0])
             self.assertEqual(provider.call_count, 2 + 2 + 1 + 1)
+            self.assertEqual(metadata.call_count, 6)
+            self.assertEqual({call.args[0] for call in metadata.call_args_list}, {'commerce-backup'})
             for argv in [['x', '--recovered', 'probe'], ['x', '--recover', 'commerce-backup'], ['x', 'commerce-backup', 'extra']]:
                 with patch.object(alerts.sys, 'argv', argv), self.assertRaises(ValueError): alerts.main()
+
+    def test_reminders_are_periodic_at_six_twelve_and_eighteen_hours(self):
+        notices=[]
+        def send(channel,config,body,key):
+            if channel=='notisend':notices.append(body)
+            return {'result':'ACCEPTED'}
+        with tempfile.TemporaryDirectory() as temp:
+            for hour in range(19):self.incident(temp,'commerce-freshness',1_000_000+hour*3600,send)
+        self.assertEqual(len(notices),4)
+        for reminder in notices[1:]:self.assertIn('5 repeated failures not re-sent',reminder['text'])
+
+    def test_suppressed_counts_are_independent_when_other_channel_is_retried(self):
+        notices=[];hour=0
+        def send(channel,config,body,key):
+            if channel=='notisend':notices.append(body)
+            return {'result':'ACCEPTED' if channel=='notisend' or hour==3 else 'REFUSED'}
+        with tempfile.TemporaryDirectory() as temp:
+            for hour in range(7):self.incident(temp,'commerce-freshness',1_000_000+hour*3600,send)
+            [path]=self.states(temp);state=json.loads(path.read_text())
+        self.assertEqual(len(notices),2)
+        self.assertIn('5 repeated failures not re-sent',notices[-1]['text'])
+        self.assertEqual(state['suppressed'],{'notisend':0,'telebuzzy':3})
+
+    @staticmethod
+    def source_observation(sequence,recovered):
+        return {'bootId':'00000000-0000-0000-0000-000000000001',
+                'invocationId':f'{sequence:032x}','exitUsec':sequence*1_000_000,'recovered':recovered}
+
+    def test_delayed_recovery_cannot_close_a_more_recent_failed_invocation(self):
+        sent=[];current=self.source_observation(1,False)
+        def send(channel,*_):sent.append(channel);return {'result':'ACCEPTED'}
+        with tempfile.TemporaryDirectory() as temp,patch.object(alerts,'read_source',side_effect=lambda _:current):
+            def run(at,recovered=False):
+                return alerts.handle('commerce-freshness',CONFIG,send=send,state_dir=Path(temp),now=lambda:at,
+                                     recovered=recovered,source='fast-cut-commerce-freshness')
+            run(100)
+            # Invocation2 succeeded, but its handler was delayed. Invocation3
+            # failed and is processed first; neither stale view may close it.
+            current=self.source_observation(3,False);run(7300)
+            [path]=self.states(temp);before=path.read_bytes();sent.clear()
+            self.assertEqual(run(7400,True)['result'],'IGNORED_STALE_SOURCE')
+            current=self.source_observation(2,True)
+            self.assertEqual(run(7500,True)['result'],'IGNORED_STALE_SOURCE')
+            self.assertEqual((sent,path.read_bytes()),([],before))
+            current=self.source_observation(4,True)
+            self.assertEqual(self.kinds(run(8000,True)),[('notisend','recovered'),('telebuzzy','recovered')])
+
+    def test_source_metadata_is_allowlisted_and_bounded(self):
+        import subprocess
+        raw=b'Result=success\nExecMainExitTimestampMonotonic=123\nActiveState=inactive\nInvocationID='+b'a'*32+b'\n'
+        with patch.object(alerts.subprocess,'run',return_value=subprocess.CompletedProcess([],0,stdout=raw)) as run, \
+             patch.object(Path,'read_text',return_value='00000000-0000-0000-0000-000000000001'):
+            self.assertTrue(alerts.read_source('fast-cut-commerce-freshness')['recovered'])
+            self.assertIn('flexperiment-fast-cut-canary-freshness.service',run.call_args.args[0])
+            self.assertEqual(run.call_args.kwargs['timeout'],5)
+            with self.assertRaises(ValueError):alerts.read_source('production')
+            run.assert_called_once()
+
+    def test_unknown_source_can_alert_but_never_close_an_incident(self):
+        ok=lambda *_:{'result':'ACCEPTED'}
+        with tempfile.TemporaryDirectory() as temp,patch.object(alerts,'read_source',side_effect=ValueError('SYNTHETIC_SECRET')):
+            result=alerts.handle('commerce-freshness',CONFIG,send=ok,state_dir=Path(temp),source='fast-cut-commerce-freshness')
+            self.assertEqual(self.kinds(result),[('notisend','opened'),('telebuzzy','opened')])
+            self.assertEqual(self.states(temp),[])
+            result=alerts.handle('commerce-freshness',CONFIG,send=ok,state_dir=Path(temp),source='fast-cut-commerce-freshness',recovered=True)
+            self.assertEqual((result['result'],result['notifications']),('SOURCE_UNVERIFIED',[]))
+            self.assertNotIn('SYNTHETIC_SECRET',json.dumps(result))
 
     def test_every_failure_hook_has_a_recovery_hook_sharing_private_state(self):
         root = Path(__file__).resolve().parents[2]
@@ -291,6 +364,7 @@ class CanaryAlerts(unittest.TestCase):
             if event == 'probe':
                 self.assertNotIn('OnSuccess=', path.read_text())
             else:
+                self.assertIn(event, alerts.SOURCE_BINDINGS, path)
                 self.assertIn('OnSuccess=flexperiment-v2-canary-recovery@' + event + '.service', path.read_text(), path)
         for name, flag in [('flexperiment-v2-canary-alert@.service', ' %i'), ('flexperiment-v2-canary-recovery@.service', ' --recovered %i')]:
             unit = (root/'deploy/v2'/name).read_text()

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Canary-only operator alerts. Fixed payloads; no runtime/DB/log access or retries.
+"""Canary-only operator alerts. Fixed payloads; no application/DB/log access.
 
 One incident per event, tracked per channel: a channel gets the first
 failure, then nothing until a reminder is due; the unit's OnSuccess hook
@@ -8,6 +8,8 @@ incident. A channel that did not acknowledge is retried on the next run.
 Alert and recovery for one event are serialized by a lock held across the
 read, the provider calls and the state write. Suppression never hides the
 failed systemd unit itself.
+Only allowlisted source-unit metadata and the host boot ID are read to reject
+obsolete callbacks; provider calls have no automatic retries within a run.
 """
 import datetime
 import fcntl
@@ -17,6 +19,7 @@ from pathlib import Path
 import re
 import stat
 import sys
+import subprocess
 import time
 import urllib.error
 import urllib.request
@@ -25,6 +28,16 @@ import uuid
 CONFIG = Path('/root/flexperiment-v2-owner/canary-alerts.json')
 EVENTS = {'commerce-backup', 'commerce-freshness', 'platform-backup', 'platform-freshness', 'probe'}
 CHANNELS = ('notisend', 'telebuzzy')
+# Template instances identify the exact originating unit, including the two
+# distinct Commerce installations. Only these systemd metadata reads are allowed.
+SOURCE_BINDINGS = {
+    'commerce-backup': ('commerce-backup', 'flexperiment-commerce-v2-backup@canary.service'),
+    'commerce-freshness': ('commerce-freshness', 'commerce-canary-backup-freshness.service'),
+    'platform-backup': ('platform-backup', 'platform-canary-backup.service'),
+    'platform-freshness': ('platform-freshness', 'platform-canary-backup-freshness.service'),
+    'fast-cut-commerce-backup': ('commerce-backup', 'flexperiment-fast-cut-canary-backup.service'),
+    'fast-cut-commerce-freshness': ('commerce-freshness', 'flexperiment-fast-cut-canary-freshness.service'),
+}
 URLS = {'notisend': 'https://api.notisend.ru/v1/email/messages',
         'telebuzzy': 'https://telebuzzy.xyz/api/notify'}
 MAX_BYTES = 16384
@@ -139,8 +152,11 @@ def read_state(path):
             return None
     # channels: when each channel last acknowledged a failure notice of this incident.
     # recoveredAt: 0 while failing; once the service recovered, only recovery delivery is pending.
-    if not isinstance(state, dict) or set(state) != {'openedAt', 'suppressed', 'channels', 'recoveredAt'} \
-            or not all(type(state[k]) is int and state[k] >= 0 for k in ['openedAt', 'suppressed', 'recoveredAt']) \
+    if not isinstance(state, dict) or set(state) != {'openedAt', 'suppressed', 'channels', 'recoveredAt', 'source'} \
+            or not all(type(state[k]) is int and state[k] >= 0 for k in ['openedAt', 'recoveredAt']) \
+            or not isinstance(state['suppressed'], dict) or set(state['suppressed']) != set(CHANNELS) \
+            or not all(type(v) is int and v >= 0 for v in state['suppressed'].values()) \
+            or not (state['source'] is None or valid_source(state['source'])) \
             or not isinstance(state['channels'], dict) or not set(state['channels']) <= set(CHANNELS) \
             or not all(type(v) is int and v > 0 for v in state['channels'].values()):
         return None
@@ -155,61 +171,108 @@ def write_state(path, state):
     os.replace(temporary, path)
 
 
-def history(state, now=None):
+def history(state, channel, now=None):
     since = datetime.datetime.fromtimestamp(state['openedAt'], datetime.timezone.utc).isoformat()
     until = '' if now is None else ', recovered ' + datetime.datetime.fromtimestamp(now, datetime.timezone.utc).isoformat()
-    return f'Failing since: {since}{until} ({state["suppressed"]} repeated failures not re-sent)\n'
+    return f'Failing since: {since}{until} ({state["suppressed"][channel]} repeated failures not re-sent)\n'
 
 
-def handle(event, config, send=None, state_dir=None, now=None, recovered=False):
+def valid_source(value):
+    return (isinstance(value, dict) and set(value) == {'bootId', 'invocationId', 'exitUsec', 'recovered'}
+            and type(value['exitUsec']) is int and value['exitUsec'] > 0 and type(value['recovered']) is bool
+            and isinstance(value['bootId'], str) and re.fullmatch(r'[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}', value['bootId'])
+            and isinstance(value['invocationId'], str) and re.fullmatch(r'[a-f0-9]{32}', value['invocationId']))
+
+
+def read_source(binding):
+    require(binding in SOURCE_BINDINGS)
+    unit = SOURCE_BINDINGS[binding][1]
+    result = subprocess.run(['systemctl', 'show', unit, '--no-pager',
+        '--property=ActiveState,Result,InvocationID,ExecMainExitTimestampMonotonic'],
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=5)
+    require(result.returncode == 0 and len(result.stdout) <= 2048)
+    rows = [line.split('=', 1) for line in result.stdout.decode('ascii').splitlines() if line]
+    require(all(len(row) == 2 for row in rows) and len(rows) == 4)
+    fields = dict(rows)
+    require(set(fields) == {'ActiveState', 'Result', 'InvocationID', 'ExecMainExitTimestampMonotonic'})
+    if fields['ActiveState'] not in ['inactive', 'failed']:
+        return None  # A newer invocation is still active; its own callback will observe completion.
+    require(fields['Result'] == 'success' if fields['ActiveState'] == 'inactive' else fields['Result'] != 'success')
+    value = {'bootId': Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
+             'invocationId': fields['InvocationID'], 'exitUsec': int(fields['ExecMainExitTimestampMonotonic']),
+             'recovered': fields['ActiveState'] == 'inactive'}
+    require(valid_source(value))
+    return value
+
+
+def handle(event, config, send=None, state_dir=None, now=None, recovered=False, source=None):
     require(event in EVENTS and not (recovered and event == 'probe'))
+    require(source is None or source in SOURCE_BINDINGS and SOURCE_BINDINGS[source][0] == event)
     send = send or request
     if event == 'probe':
         return {'event': event, 'result': 'SENT', 'notifications': [notify(event, config, send)]}
     directory = state_dir or STATE
-    lock = os.open(directory / (event + '.lock'), os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    key = source or event
+    lock = os.open(directory / (key + '.lock'), os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     try:
-        # Held across read, provider calls and write: a recovery can never interleave
-        # with an in-flight alert for the same event and lose the incident.
         fcntl.flock(lock, fcntl.LOCK_EX)
-        return transition(event, config, send, directory / (event + '.json'), int((now or time.time)()), recovered)
+        observed = None
+        if source:
+            try:
+                observed = read_source(source)
+            except Exception:
+                # An unknown source can alert, but can never close/suppress an incident.
+                notifications = [] if recovered else [notify(event, config, send)]
+                return {'event': event, 'result': 'SOURCE_UNVERIFIED', 'notifications': notifications}
+            if observed is None or observed['recovered'] != recovered:
+                return {'event': event, 'result': 'IGNORED_STALE_SOURCE'}
+        return transition(event, config, send, directory / (key + '.json'), int((now or time.time)()), recovered, observed)
     finally:
         os.close(lock)
 
 
-def transition(event, config, send, path, at, recovered):
+def transition(event, config, send, path, at, recovered, observed=None):
     state = read_state(path)
+    if state is not None and observed and state['source']:
+        previous = state['source']
+        if observed['bootId'] == previous['bootId'] and observed['exitUsec'] < previous['exitUsec']:
+            return {'event': event, 'result': 'IGNORED_STALE_SOURCE'}
+        if observed['bootId'] != previous['bootId'] and not recovered:
+            state = None
     if recovered:
         if state is None or not state['channels']:
             path.unlink(missing_ok=True)
             return {'event': event, 'result': 'NO_OPEN_INCIDENT'}
         state['recoveredAt'] = state['recoveredAt'] or at
-        result = notify(event, config, send, 'recovered', history(state, state['recoveredAt']),
-                        [c for c in CHANNELS if c in state['channels']])
-        for channel, outcome in result['channels'].items():
-            if accepted(outcome): del state['channels'][channel]
+        state['source'] = observed or state['source']
+        notifications = []
+        for channel in CHANNELS:
+            if channel not in state['channels']: continue
+            result = notify(event, config, send, 'recovered', history(state, channel, state['recoveredAt']), [channel])
+            notifications.append(result)
+            if accepted(result['channels'][channel]): del state['channels'][channel]
         if state['channels']: write_state(path, state)
         else: path.unlink(missing_ok=True)
-        return {'event': event, 'result': 'SENT', 'notifications': [result]}
-    # A failure after recovery is a new incident for every channel; it supersedes any
-    # recovery notice still awaiting delivery instead of being suppressed by it.
+        return {'event': event, 'result': 'SENT', 'notifications': notifications}
     if state is None or state['recoveredAt']:
-        state = {'openedAt': at, 'suppressed': 0, 'channels': {}, 'recoveredAt': 0}
+        state = {'openedAt': at, 'suppressed': {c: 0 for c in CHANNELS}, 'channels': {}, 'recoveredAt': 0, 'source': observed}
+    state['source'] = observed or state['source']
     due = {c: 'reminder' if c in state['channels'] else 'opened' for c in CHANNELS
            if c not in state['channels'] or at - state['channels'][c] >= REMINDER_SECONDS}
+    for channel in CHANNELS:
+        if channel not in due: state['suppressed'][channel] += 1
     if not due:
-        state['suppressed'] += 1; write_state(path, state)
+        write_state(path, state)
         return {'event': event, 'result': 'SUPPRESSED', 'suppressed': state['suppressed']}
     notifications = []
-    for kind in ['opened', 'reminder']:
-        channels = [c for c in CHANNELS if due.get(c) == kind]
-        if not channels: continue
-        result = notify(event, config, send, kind, history(state) if kind == 'reminder' else '', channels)
+    for channel in CHANNELS:
+        if channel not in due: continue
+        kind = due[channel]
+        result = notify(event, config, send, kind, history(state, channel) if kind == 'reminder' else '', [channel])
         notifications.append(result)
-        # Only an acknowledging channel is recorded; any other is retried on the next failure.
-        for channel, outcome in result['channels'].items():
-            if accepted(outcome): state['channels'][channel] = at
-    if any(accepted(o) for n in notifications for o in n['channels'].values()): state['suppressed'] = 0
+        if accepted(result['channels'][channel]):
+            state['channels'][channel] = at
+            state['suppressed'][channel] = 0
     write_state(path, state)
     return {'event': event, 'result': 'SENT', 'notifications': notifications}
 
@@ -221,11 +284,13 @@ def running_as_root():
 def main():
     args = sys.argv[1:]
     recovered = len(args) == 2 and args[0] == '--recovered'
-    require(running_as_root() and (len(args) == 1 or recovered) and args[-1] in EVENTS
+    require(running_as_root() and (len(args) == 1 or recovered) and args[-1] in set(SOURCE_BINDINGS) | {'probe'}
             and not (recovered and args[-1] == 'probe'))
-    result = handle(args[-1], load_config(), recovered=recovered)
+    binding = args[-1]
+    event = 'probe' if binding == 'probe' else SOURCE_BINDINGS[binding][0]
+    result = handle(event, load_config(), recovered=recovered, source=None if binding == 'probe' else binding)
     print(json.dumps(result, separators=(',', ':')))
-    return 0 if all(accepted(o) for n in result.get('notifications', []) for o in n['channels'].values()) else 1
+    return 0 if result['result'] != 'SOURCE_UNVERIFIED' and all(accepted(o) for n in result.get('notifications', []) for o in n['channels'].values()) else 1
 
 
 if __name__ == '__main__':

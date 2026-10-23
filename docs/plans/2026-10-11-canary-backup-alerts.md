@@ -47,14 +47,18 @@ No new Linear issues; update ART-166/ART-41 with exact observed results.
 On 2026-10-22 one stale canary backup produced a stale-backup alert every
 hour (2 backup + 8 freshness messages), and nothing announced when it
 recovered. Each event now has one incident in
-`/var/lib/flexperiment-v2-canary-alerts/<event>.json`: a systemd
-`StateDirectory`, mode 0700, holding only integer timestamps and a counter.
+`/var/lib/flexperiment-v2-canary-alerts/<source-binding>.json`: a systemd
+`StateDirectory`, mode 0700, holding timestamps, per-channel counters and
+validated source-unit metadata (boot ID, invocation ID, monotonic exit time,
+success/failure). Legacy and fast-cut Commerce use separate source bindings.
 
 - Tracking is per channel. A channel gets the first failure, then nothing for
-  6 h, then one "still failing" reminder carrying the suppressed count. A
+  6 h, then a "still failing" reminder every 6 h while the incident continues
+  (6, 12, 18 h and so on). Each channel has its own suppressed count; retrying
+  or acknowledging another channel never resets that count. A
   channel that did not acknowledge (refused, unknown) is not recorded, so the
   next failure sends to that channel again, and only to it.
-- `OnSuccess=flexperiment-v2-canary-recovery@<event>.service` runs
+- `OnSuccess=flexperiment-v2-canary-recovery@<source-binding>.service` runs
   `--recovered`. It sends one recovery notice to every channel that
   acknowledged the incident. A channel that refuses the recovery keeps it
   pending, and the next success retries that channel alone. Without an open
@@ -64,9 +68,19 @@ recovered. Each event now has one incident in
   while a recovery notice is still undelivered. That notice is superseded, never
   a reason to suppress the new alert. A retried recovery reports the first
   recovery time.
-- Alert and recovery for the same event hold a per-event `flock` across the
-  state read, the provider calls and the state write, so a recovery cannot
-  slip in front of an in-flight alert and leave a stale incident behind. Both
+- Alert and recovery for the same source hold a `flock` across the source
+  metadata read, state read, provider calls and state write. This serializes
+  writes but does not establish chronological callback order. Under the lock,
+  read only four allowlisted `systemctl show` properties with a 5 s timeout:
+  `ActiveState`, `Result`, `InvocationID`, `ExecMainExitTimestampMonotonic`,
+  plus `/proc/sys/kernel/random/boot_id`. Ignore callbacks whose phase disagrees
+  with the latest completed source run, or whose monotonic exit time predates
+  the recorded run in the same boot. An active source is left to its completion
+  callback. Unknown metadata may send an unsuppressed failure, but cannot close
+  or suppress an incident. This rejects a delayed recovery after a newer failure;
+  it does not reconstruct intermediate source runs never observed by a handler.
+  Fast-cut hooks use `fast-cut-commerce-backup` / `fast-cut-commerce-freshness`;
+  the notification event names stay `commerce-backup` / `commerce-freshness`. Both
   templates use `TimeoutStartSec=60`: two 10 s provider calls of the other
   holder, plus their own.
 - Unreadable, foreign or malformed state counts as "no incident", so the
@@ -74,8 +88,9 @@ recovered. Each event now has one incident in
 - Suppression never changes the failed backup/freshness unit, which stays
   failed in systemd.
 
-The message still carries no stage/code. The handler keeps its "no
-runtime/DB/log access" rule, and systemd 249 on adman-vps does not pass
+The message still carries no stage/code. Source-unit metadata is the only
+host-status access; no application runtime, DB, journal or arbitrary unit reads
+are allowed. systemd 249 on adman-vps does not pass
 `MONITOR_*` metadata to OnFailure units. The cause is in the failed unit's
 journal line (`FAST_CUT_HOLD` with stage, code and, since the readiness
 follow-up, detail).
