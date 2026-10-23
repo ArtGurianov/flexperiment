@@ -1,3 +1,5 @@
+import { applyCourseManifest, withManifestHash } from "../src/manifest";
+import { resolvePurchaseV2, purchasePayableHash, CLAIM_POLICY_D1_2 } from "../src/refref-contract/purchase-manifest-v1";
 import { retireFiscalPolicy } from "../src/fiscal-policy";
 import { RefrefPaymentRail } from "../src/refref-payment-rail";
 import { cancelLabOccurrence, editLabOccurrence, labSeatInventory, type LabOccurrenceRow } from "../src/lab-occurrences";
@@ -936,5 +938,58 @@ describe("ART-200 merchant-local LAB holds", () => {
         expect(disk.prepare("SELECT COUNT(*) AS n FROM checkout_quotes WHERE seat_hold_ref IS NOT NULL").get()).toEqual({ n: 1 });
       } finally { disk.close(); }
     } finally { for (const child of children) child.kill(); rmSync(directory, { recursive: true, force: true }); }
+  });
+});
+
+
+describe("ART-398 opt-in v9 checkout binding", () => {
+  function enablePurchaseRail() {
+    Object.assign(rail, { purchaseManifest: { businessId: "business-1", schema: "refref.purchase-payable/2" } });
+    vi.spyOn(rail, "resolve").mockImplementation(async input => {
+      // The exact input is durable before the rail sees it.
+      expect(JSON.parse(intent().resolution_request_json).purchase).toEqual(input.purchase);
+      const payable = resolvePurchaseV2(input.purchase!.input, {
+        campaignId: "campaign-1", termsVersionId: "terms-1", termsHash: `refref-jcs-1:${"b".repeat(64)}`,
+        partnerId: "partner-1", participationId: "participation-1", profile: "VNEXT_ONE_FULL_PAYMENT",
+        eligibleLineRefs: input.purchase!.input.lines.map(l => l.lineRef),
+        discount: { type: "PERCENT", basisPoints: 1000 }, reward: { type: "PERCENT", basisPoints: 2000 },
+      }, { quoteRef: "resolution-1", issuedAt: T0, expiresAt: at(15) }, CLAIM_POLICY_D1_2);
+      return { state: "PRICE_REVIEW_REQUIRED", quote: { resolutionId: "resolution-1", termsVersionId: "terms-1",
+        baseAmountKopecks: payable.lines[0].merchantAmountKopecks,
+        discountKopecks: payable.lines[0].referralDiscountKopecks, finalAmountKopecks: payable.totalKopecks, expiresAt: at(15),
+        purchase: { schema: "refref.purchase-quote/2", payable, payableHash: purchasePayableHash(payable) } } };
+    });
+  }
+  function readyCourse() {
+    applyCourseManifest(db, withManifestHash({ courseRef: "course-one", version: 1, visibility: "LISTED",
+      sections: [{ sectionRef: "section", visibility: "LISTED" }],
+      lessons: [{ lessonRef: "lesson", sectionRef: "section", everPublished: true, visibility: "LISTED", freePreview: false }], operations: [] }));
+    db.exec("INSERT INTO video_upload_sessions(id,lesson_ref,video_id,status,uploader_endpoint) VALUES ('upload','lesson','video','READY','https://example.test/upload')");
+    db.prepare("INSERT INTO lesson_video_bindings(lesson_ref,active_video_id,duration_seconds,bound_at,updated_at) VALUES ('lesson','video',150,?,?)").run(T0,T0);
+  }
+  it("LMS FULL_PREPAYMENT still requires readiness and binds acceptance/payment/fiscal amount to payable/2", async () => {
+    enablePurchaseRail();
+    await expect(preview("not-ready")).rejects.toThrow("IMMEDIATE_COURSE_ACCESS_NOT_READY");
+    readyCourse();
+    const quote = await quoted(await preview("ready"));
+    const create = vi.spyOn(rail, "create");
+    expect(create).not.toHaveBeenCalled();
+    const frozen = JSON.parse(intent().resolution_request_json) as PaymentResolveInput;
+    expect(frozen.purchase!.input.lines[0].service).toMatchObject({ kind: "LMS", accessProfile: "IMMEDIATE" });
+    const paid = await confirm(quote.quoteId, "pay");
+    expect(paid.state).toBe("PAID");
+    const input = create.mock.calls[0][0];
+    expect(input.purchaseAcceptance?.payableHash).toBe(input.quote.purchase!.payableHash);
+    expect(input.snapshot.paymentObligations[0].fiscal.items[0]).toMatchObject({ amountKopecks: 9000, paymentMethod: "FULL_PREPAYMENT" });
+    expect(db.prepare("SELECT immediate_access_json FROM order_lines").get()).toMatchObject({ immediate_access_json: expect.any(String) });
+    await confirm(quote.quoteId, "another-tab");
+    expect(create).toHaveBeenCalledTimes(1);
+  });
+  it("LAB independently freezes its exact end, timezone and schedule provenance", async () => {
+    addLab(); enablePurchaseRail();
+    const quote = await quoted(await preview("lab-v9", { offerRef: "lab:november" }));
+    const frozen = JSON.parse(intent().resolution_request_json) as PaymentResolveInput;
+    expect(frozen.purchase!.input.lines[0].service).toMatchObject({ kind: "LAB", serviceEndsAt: "2026-11-01T17:00:00.000Z", timeZone: "Asia/Novosibirsk", provenance: { contentHash: expect.stringMatching(/^sha256:/) } });
+    expect((await confirm(quote.quoteId,"lab-pay")).state).toBe("PAID");
   });
 });

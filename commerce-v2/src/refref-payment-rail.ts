@@ -162,6 +162,7 @@ export class RefrefPaymentRail implements PaymentRail {
   }
 
   async resolve(input: PaymentResolveInput): Promise<RailResolution> {
+    if (input.purchase) throw new Error("PURCHASE_V9_TRANSPORT_NOT_QUALIFIED");
     if (!input.handoffToken) throw new Error("REFREF_HANDOFF_TOKEN_REQUIRED");
     // RC.2 takes the frozen line unchanged; the vNext-only fields (origin, context, degradation) stay in
     // the intent until the vNext rail sends the whole frozen body (ART-373, C3).
@@ -205,6 +206,7 @@ export class RefrefPaymentRail implements PaymentRail {
   }
 
   private async createAdmitted(input: PaymentCreateInput, mayInitiate: () => boolean): Promise<RailProjection> {
+    if (input.quote.purchase || input.purchaseAcceptance) throw new Error("PURCHASE_V9_TRANSPORT_NOT_QUALIFIED");
     const { quote } = input;
     if (quote.baseAmountKopecks !== input.amountKopecks
       || quote.finalAmountKopecks !== input.amountKopecks - quote.discountKopecks
@@ -296,6 +298,7 @@ export class RefrefPaymentRail implements PaymentRail {
   }
 
   async prepareRefund(input: PaymentRefundInput): Promise<RefundEnvelope> {
+    if (input.purchase) throw new Error("PURCHASE_V9_TRANSPORT_NOT_QUALIFIED");
     const attempt = await this.call("GET", `/integrations/orders/${encodeURIComponent(input.orderPublicId)}/checkout-attempts/${encodeURIComponent(input.attemptId)}`, attemptSchema);
     const payment = attempt.obligations.flatMap(({ payment }) => payment ? [payment] : []).filter(({ status }) => status === "SUCCEEDED")[0];
     const line = attempt.lineItems.find(({ lineRef }) => lineRef === input.lineRef);

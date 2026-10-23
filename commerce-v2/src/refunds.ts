@@ -292,7 +292,11 @@ export async function executeApprovedRefund(
   if (!decision || !["APPROVED", "EXECUTING"].includes(context.request_state)) throw new Error("REFUND_APPROVAL_REQUIRED");
   if (decision.amount_kopecks !== context.unit_amount_kopecks || successfulRefundedAmount(db, context.order_line_id) !== 0) throw new Error("REFUND_FULL_ONLY");
   // The one request this execution will ever send, built and checked before anything is written.
+  const purchaseAttempt = db.prepare(`SELECT attempt.request_payload_json FROM checkout_attempts attempt
+    JOIN orders ON orders.id=attempt.order_id WHERE orders.public_id=?`).get(context.order_public_id) as { request_payload_json: string } | undefined;
+  const purchase = purchaseAttempt ? JSON.parse(purchaseAttempt.request_payload_json).quote?.purchase : undefined;
   const envelope = await rail.prepareRefund({
+    ...(purchase ? { purchase } : {}),
     attemptId: context.refref_attempt_id,
     amountKopecks: decision.amount_kopecks,
     orderPublicId: context.order_public_id,

@@ -1,3 +1,5 @@
+import { merchantPurchase, consumePurchaseQuote, acceptPurchase, type FrozenPurchaseInput } from "./purchase-manifest";
+import type { PurchaseQuoteEnvelopeV2, PurchaseAcceptance, Service } from "./refref-contract/purchase-manifest-v1";
 import { acceptLabPurchase, issueLabTicket, type LabAcceptance } from "./lab-tickets";
 import { CheckoutConflictError } from "./checkout-conflict";
 export { CheckoutConflictError } from "./checkout-conflict";
@@ -58,6 +60,7 @@ export type RailQuote = {
   scenario?: string;
   /** Refref's own payment-admissibility deadline for the resolution, when it states one; replay never extends it. */
   expiresAt?: string;
+  purchase?: PurchaseQuoteEnvelopeV2;
 };
 export type CheckoutCodeOutcome = "NONE" | "APPLIED" | "NOT_APPLICABLE" | "NOT_RECOGNIZED" | "NOT_APPLIED_ATTRIBUTION_LOCKED" | "NOT_APPLIED_CUSTOMER_KEPT_CURRENT";
 export type RailResolution =
@@ -89,6 +92,7 @@ export type PaymentResolveInput = {
   /** RC.2 handoff token (docs/28 §4); the vNext body has no token. */
   handoffToken?: string;
   scenario?: string;
+  purchase?: FrozenPurchaseInput;
 };
 type PaymentOrderInput = {
   idempotencyKey: string; orderPublicId: string; amountKopecks: number; scenario?: string;
@@ -97,7 +101,7 @@ type PaymentOrderInput = {
   legalReleaseRef: string; legalReleaseHash: string; handoffToken?: string; checkoutCode?: string;
 };
 export type PaymentCreateInput = PaymentOrderInput & {
-  quote: RailQuote; successUrl?: string; snapshot: SharedCheckoutSnapshot; snapshotHash: string;
+  quote: RailQuote; purchaseAcceptance?: PurchaseAcceptance; successUrl?: string; snapshot: SharedCheckoutSnapshot; snapshotHash: string;
 };
 export type PaymentRefundInput = {
   idempotencyKey: string;
@@ -106,6 +110,7 @@ export type PaymentRefundInput = {
   amountKopecks: number;
   customerEmail: string;
   lineRef: string;
+  purchase?: PurchaseQuoteEnvelopeV2;
   fiscalItem: SharedCheckoutSnapshot["paymentObligations"][number]["fiscal"]["items"][number];
 };
 /** What Refref answered for a refund execution (createRefund, getRefundExecution). UNKNOWN: the answer was lost. */
@@ -128,6 +133,8 @@ export type RailSnapshotConfig = Pick<CheckoutSnapshotConfig, "merchantId" | "fi
 export type PaymentRecoveryOptions = { mayInitiate: () => boolean };
 
 export interface PaymentRail {
+  /** Opt-in source seam; v9 endpoints/admission are qualified separately in ART-400/412. */
+  readonly purchaseManifest?: { businessId: string; schema: "refref.purchase-payable/2" };
   readonly checkoutSnapshotConfig: RailSnapshotConfig;
   resolve(input: PaymentResolveInput): Promise<RailResolution>;
   create(input: PaymentCreateInput, options?: PaymentRecoveryOptions): Promise<RailProjection>;
@@ -346,6 +353,7 @@ type FrozenLineSnapshot = {
   /** The offer's qualified fiscal policy when the quote was made; a different one makes the quote stale. */
   readonly fiscal: FrozenFiscalPolicy;
   readonly requiresImmediateAccess?: true;
+  readonly purchaseService?: Service;
   readonly unitRef?: string;
   readonly serviceStartsAt?: string;
   readonly serviceEndsAt?: string;
@@ -364,14 +372,19 @@ type FrozenLineSnapshot = {
 
 const refrefInstant = (value: string) => occurrenceInstant(value, "OCCURRENCE_TIME_INVALID");
 
-const freezeLine = (db: Database.Database, offer: OfferRow, venue?: BuyerVenueDisclosure): FrozenLineSnapshot => {
+const freezeLine = (db: Database.Database, offer: OfferRow, venue?: BuyerVenueDisclosure, purchaseAt?: string): FrozenLineSnapshot => {
   if (!validPaymentPurpose(offer.payment_purpose)) throw new Error("PAYMENT_PURPOSE_REQUIRED");
   const fiscal = checkoutAdmission(() => qualifiedFiscalPolicy(db, offer.offer_ref, offer.kind));
   if (offer.kind !== "LAB") {
-    if (offer.kind === "ONLINE_COURSE" && fiscal.paymentMethod === "FULL_PAYMENT") {
-      readyImmediateCourseAccess(db, offer.course_ref!);
-      return { fiscal, paymentPurpose: offer.payment_purpose, requiresImmediateAccess: true };
+    if (offer.kind === "ONLINE_COURSE" && (purchaseAt || fiscal.paymentMethod === "FULL_PAYMENT")) {
+      const readiness = readyImmediateCourseAccess(db, offer.course_ref!);
+      return { fiscal, paymentPurpose: offer.payment_purpose, requiresImmediateAccess: true,
+        ...(purchaseAt ? { purchaseService: { kind: "LMS" as const, accessProfile: "IMMEDIATE" as const, readinessEvidence: {
+          sourceRef: `lms-ready:${createHash("sha256").update(JSON.stringify(readiness)).digest("hex")}`,
+          contentHash: `sha256:${createHash("sha256").update(JSON.stringify(readiness)).digest("hex")}`, occurredAt: purchaseAt,
+        } } } : {}) };
     }
+    if (purchaseAt) throw new CheckoutConflictError("PURCHASE_PROFILE_NOT_QUALIFIED");
     return { fiscal, paymentPurpose: offer.payment_purpose };
   }
   if (!offer.occurrence_ref || !offer.occurrence_title || !offer.occurrence_starts_at || !offer.occurrence_ends_at
@@ -384,6 +397,10 @@ const freezeLine = (db: Database.Database, offer: OfferRow, venue?: BuyerVenueDi
     unitRef: offer.occurrence_ref,
     serviceStartsAt: startsAt,
     serviceEndsAt: endsAt,
+    ...(purchaseAt ? { purchaseService: { kind: "LAB" as const, serviceEndsAt: new Date(endsAt).toISOString(),
+      timeZone: offer.occurrence_timezone, provenance: { sourceRef: `lab-schedule:${createHash("sha256").update(offer.occurrence_ref).digest("hex")}`,
+        contentHash: `sha256:${createHash("sha256").update(JSON.stringify({ occurrenceRef: offer.occurrence_ref, startsAt, endsAt, timeZone: offer.occurrence_timezone })).digest("hex")}`,
+        occurredAt: purchaseAt } } } : {}),
     occurrence: {
       occurrenceRef: offer.occurrence_ref,
       title: offer.occurrence_title,
@@ -730,6 +747,16 @@ async function advanceIntent(db: Database.Database, rail: PaymentRail, intent: I
       return intentBy(db, "id", intent.id)!;
     }
     const { quote } = resolved;
+    if (frozen.purchase) {
+      const purchase = consumePurchaseQuote(frozen.purchase, quote.purchase);
+      const payableLine = purchase.payable.lines[0];
+      if (purchase.payable.lines.length !== 1 || payableLine.lineRef !== intent.line_ref
+        || quote.baseAmountKopecks !== payableLine.merchantAmountKopecks || quote.discountKopecks !== payableLine.referralDiscountKopecks
+        || quote.finalAmountKopecks !== purchase.payable.totalKopecks || quote.resolutionId !== purchase.payable.quote.quoteRef
+        || quote.termsVersionId !== purchase.payable.terms.termsVersionId || quote.expiresAt !== purchase.payable.quote.expiresAt) {
+        throw new CheckoutConflictError("PURCHASE_QUOTE_BINDING_MISMATCH");
+      }
+    } else if (quote.purchase) throw new CheckoutConflictError("PURCHASE_INPUT_REQUIRED");
     if (quote.baseAmountKopecks !== line.merchantOfferAmountKopecks
       || quote.finalAmountKopecks !== line.merchantOfferAmountKopecks - quote.discountKopecks
       || quote.finalAmountKopecks <= 0) {
@@ -863,7 +890,7 @@ export async function prepareCheckout(
       Date.parse(now) + QUOTE_TTL_MS, Date.parse(offer.occurrence_starts_at!),
       inheritedHoldExpiry ? Date.parse(inheritedHoldExpiry) : Infinity,
     )).toISOString() } : undefined;
-    const lineSnapshot = { ...freezeLine(db, offer, offer.venue), ...(seatHold ? { seatHold } : {}) };
+    const lineSnapshot = { ...freezeLine(db, offer, offer.venue, rail.purchaseManifest ? now : undefined), ...(seatHold ? { seatHold } : {}) };
     assertClosedPaidTestFiscal(config, lineSnapshot.fiscal);
     const codeResolution = resolveCheckoutCode(db, input.checkoutCode, offer.offer_ref, offer.price_kopecks, config.merchantPromotionPrefix, now);
     const merchantDiscountKopecks = codeResolution.promotion?.merchantDiscountKopecks ?? 0;
@@ -884,7 +911,12 @@ export async function prepareCheckout(
       ...(codeResolution.refrefCheckoutCode ? { checkoutCode: codeResolution.refrefCheckoutCode } : {}),
       deliveryDegraded,
     };
+    const purchase = rail.purchaseManifest ? merchantPurchase(rail.purchaseManifest.businessId, orderPublicId, [{
+      lineRef, offerRef: offer.offer_ref, quantity: 1, merchantAmountKopecks: offer.price_kopecks - merchantDiscountKopecks,
+      service: lineSnapshot.purchaseService!,
+    }]) : undefined;
     const frozen: Omit<PaymentResolveInput, "handoffToken"> = {
+      ...(purchase ? { purchase } : {}),
       idempotencyKey: input.previewIdempotencyKey, request, ...(input.scenario === undefined ? {} : { scenario: input.scenario }),
     };
     db.prepare(`INSERT INTO checkout_quotes
@@ -986,7 +1018,10 @@ export async function confirmCheckout(
   });
   const snapshotJson = canonicalCheckoutSnapshotJson(snapshot);
   const snapshotHashHex = snapshotHash.replace(/^refref-jcs-1:/, "");
+  const frozenRequest = pending.resolution_request_json ? JSON.parse(pending.resolution_request_json) as PaymentResolveInput : undefined;
+  const purchaseAcceptance = frozenRequest?.purchase ? acceptPurchase(frozenRequest.purchase, quote.purchase, now) : undefined;
   const railInput: PaymentCreateInput = {
+    ...(purchaseAcceptance ? { purchaseAcceptance } : {}),
     idempotencyKey: input.idempotencyKey, orderPublicId: publicId, amountKopecks: pending.base_amount_kopecks!,
     scenario: quote.scenario,
     customerEmail: input.customerEmail, offerRef: offer.offer_ref,

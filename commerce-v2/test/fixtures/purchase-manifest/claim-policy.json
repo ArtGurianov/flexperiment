@@ -1,0 +1,2923 @@
+{
+  "contractVersion": "refref.purchase-payable/2",
+  "claimPolicy": "D1_2_MIN_COMMISSION_ELIGIBLE/1",
+  "note": "Derived from ../purchase-manifest-v1 by generate.mjs. v1 files and hashes are unchanged historical vectors.",
+  "producers": [
+    {
+      "name": "mikluha-three-travellers",
+      "base": "mikluha-three-travellers",
+      "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+      "rewardKopecks": 270000,
+      "eligibleAfterDiscountKopecks": 2700000
+    },
+    {
+      "name": "lab-occurrence",
+      "base": "lab-occurrence",
+      "payableHash": "refref-jcs-1:7b5ee887a2b6300df907a6e100f36f7b75559dbd34dad7746b1e19e2eec053ec",
+      "rewardKopecks": 40500,
+      "eligibleAfterDiscountKopecks": 405000
+    },
+    {
+      "name": "lab-programme-last-session",
+      "base": "lab-programme-last-session",
+      "payableHash": "refref-jcs-1:c47f83db84cdfde8fd3e6fdf412c515acb4c8c075fa9fc641e5b25c39a452c06",
+      "rewardKopecks": 40500,
+      "eligibleAfterDiscountKopecks": 405000
+    },
+    {
+      "name": "immediate-lms",
+      "base": "immediate-lms",
+      "payableHash": "refref-jcs-1:dbc17358f20c7319c0a0e3a22f39f2060a0ba965960f73c8d4265abe7da12eb5",
+      "rewardKopecks": 45000,
+      "eligibleAfterDiscountKopecks": 450000
+    },
+    {
+      "name": "mixed-date-tour-lab-lms",
+      "base": "mixed-date-tour-lab-lms",
+      "payableHash": "refref-jcs-1:bcbcbf9f96278a992c6ef59d96032a4c40677737688737f16fe3c0ab6580b571",
+      "rewardKopecks": 355500,
+      "eligibleAfterDiscountKopecks": 3555000
+    },
+    {
+      "name": "eligible-course-noneligible-future-ticket",
+      "base": "eligible-course-noneligible-future-ticket",
+      "payableHash": "refref-jcs-1:6385b68156036fe46f71a7b226a09901834aa045eea869f2edaf09a77431ee02",
+      "rewardKopecks": 50000,
+      "eligibleAfterDiscountKopecks": 500000
+    },
+    {
+      "name": "fully-discounted-eligible-line",
+      "base": "fully-discounted-eligible-line",
+      "payableHash": "refref-jcs-1:94063da7b801536215334ceeab17c2f2f93759d86e0c0508812c2968498cd70f",
+      "rewardKopecks": 0,
+      "eligibleAfterDiscountKopecks": 0
+    },
+    {
+      "name": "fixed-reward-once",
+      "base": "fixed-reward-once",
+      "payableHash": "refref-jcs-1:0b62e355e3c51a6735271066552ef3b1357e1c7670ba0663a8ed6ea841114bc8",
+      "rewardKopecks": 77777,
+      "eligibleAfterDiscountKopecks": 2700000
+    },
+    {
+      "name": "largest-remainder-c-tie",
+      "base": "largest-remainder-c-tie",
+      "payableHash": "refref-jcs-1:08988469962fd59e7d0685e4034756558c2a3bd49c66e42af90c5fc4b7061702",
+      "rewardKopecks": 1,
+      "eligibleAfterDiscountKopecks": 2
+    },
+    {
+      "name": "discount-floor-reward-half-away",
+      "base": "discount-floor-reward-half-away",
+      "payableHash": "refref-jcs-1:2674e20b92e49c0c5b089efdd22f375e75d4ddb7eb9d5e086cdf7058b2bbefd8",
+      "rewardKopecks": 1,
+      "eligibleAfterDiscountKopecks": 1
+    },
+    {
+      "name": "fixed-reward-above-eligible-price",
+      "base": "mikluha-three-travellers",
+      "reward": {
+        "type": "FIXED_RUB",
+        "amountKopecks": 5000000
+      },
+      "payableHash": "refref-jcs-1:7f88da5a083207ea448177bc75aca6e787ff5d0b77cc3af6599e7ff3f1ece15f",
+      "rewardKopecks": 5000000,
+      "eligibleAfterDiscountKopecks": 2700000
+    }
+  ],
+  "scenarios": [
+    {
+      "name": "all-three-cancelled-costs-retained",
+      "producer": "mikluha-three-travellers",
+      "claim": {
+        "schema": "refref.purchase-cancellation-claim/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-mikluha-three-travellers",
+        "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+        "scope": "WHOLE_PURCHASE",
+        "idempotencyKey": "claim-1",
+        "reason": "ALL_ELIGIBLE_SERVICES_CANCELLED",
+        "coverage": [
+          {
+            "lineRef": "tour",
+            "coveredQuantity": 3,
+            "segments": [
+              {
+                "coverageRef": "whole-line",
+                "quantity": 3,
+                "evidence": [
+                  {
+                    "sourceRef": "evidence-1",
+                    "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "occurredAt": "2026-10-21T01:00:00.000Z"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "refunds": [
+          {
+            "businessId": "business-1",
+            "purchaseRef": "purchase-mikluha-three-travellers",
+            "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+            "operation": {
+              "provider": "ALFA",
+              "connectionId": "connection-1",
+              "paymentRef": "bank-mikluha-three-travellers",
+              "refundRef": "refund-1"
+            },
+            "amountKopecks": 1000000,
+            "currency": "RUB",
+            "allocationSource": "REFREF_COMMAND",
+            "allocationEvidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T01:00:00.000Z"
+            },
+            "lineAllocations": [
+              {
+                "lineRef": "tour",
+                "amountKopecks": 1000000
+              }
+            ]
+          }
+        ]
+      },
+      "decision": {
+        "schema": "refref.claim-decision-snapshot/1",
+        "admission": {
+          "schema": "refref.claim-admission-receipt/1",
+          "businessId": "business-1",
+          "purchaseRef": "purchase-mikluha-three-travellers",
+          "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+          "claimHash": "refref-jcs-1:391f9bab7d2b9135292f473ef99988dbdfd9cd69bdc86517d7efc7e7f40ddc6a",
+          "admissionKey": "refref-jcs-1:261b24fdf72466302a896bf7c0d679ddb563e611994ffbe5346a65ff0657a44a",
+          "effectKey": "refref-jcs-1:f03f094555d648c04b3baa55956d424a91e39c6910d944274b83466c72893782",
+          "receivedAt": "2026-10-21T02:00:00.000Z",
+          "decisionDueAt": "2026-11-04T21:00:00.000Z",
+          "calendarVersion": "RF-2026-v1",
+          "ticketRef": "ticket-1"
+        },
+        "outcome": "UPHELD",
+        "decidedAt": "2026-10-22T02:00:00.000Z",
+        "verifiedCoverage": [
+          {
+            "lineRef": "tour",
+            "coveredQuantity": 3,
+            "nonOverlapping": true,
+            "rightsTerminated": true,
+            "evidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T01:00:00.000Z"
+            }
+          }
+        ],
+        "refundStates": [
+          {
+            "businessId": "business-1",
+            "purchaseRef": "purchase-mikluha-three-travellers",
+            "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+            "operation": {
+              "provider": "ALFA",
+              "connectionId": "connection-1",
+              "paymentRef": "bank-mikluha-three-travellers",
+              "refundRef": "refund-1"
+            },
+            "amountKopecks": 1000000,
+            "currency": "RUB",
+            "status": "SUCCEEDED",
+            "verifiedAt": "2026-10-21T03:01:00.000Z",
+            "independentEvidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T03:01:00.000Z"
+            },
+            "succeededAt": "2026-10-21T03:00:00.000Z"
+          }
+        ]
+      },
+      "priorRefunds": [],
+      "v1Expected": {
+        "admission": "ACCEPTED",
+        "effect": -270000
+      },
+      "expected": {
+        "admission": "ACCEPTED",
+        "effect": -270000
+      }
+    },
+    {
+      "name": "course-cancelled-one-ruble-ticket-still-valid",
+      "producer": "eligible-course-noneligible-future-ticket",
+      "claim": {
+        "schema": "refref.purchase-cancellation-claim/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-eligible-course-noneligible-future-ticket",
+        "payableHash": "refref-jcs-1:6385b68156036fe46f71a7b226a09901834aa045eea869f2edaf09a77431ee02",
+        "scope": "WHOLE_PURCHASE",
+        "idempotencyKey": "claim-1",
+        "reason": "ALL_ELIGIBLE_SERVICES_CANCELLED",
+        "coverage": [
+          {
+            "lineRef": "course",
+            "coveredQuantity": 1,
+            "segments": [
+              {
+                "coverageRef": "whole-line",
+                "quantity": 1,
+                "evidence": [
+                  {
+                    "sourceRef": "evidence-1",
+                    "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "occurredAt": "2026-10-21T01:00:00.000Z"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "refunds": [
+          {
+            "businessId": "business-1",
+            "purchaseRef": "purchase-eligible-course-noneligible-future-ticket",
+            "payableHash": "refref-jcs-1:6385b68156036fe46f71a7b226a09901834aa045eea869f2edaf09a77431ee02",
+            "operation": {
+              "provider": "ALFA",
+              "connectionId": "connection-1",
+              "paymentRef": "bank-eligible-course-noneligible-future-ticket",
+              "refundRef": "refund-1"
+            },
+            "amountKopecks": 100,
+            "currency": "RUB",
+            "allocationSource": "REFREF_COMMAND",
+            "allocationEvidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T01:00:00.000Z"
+            },
+            "lineAllocations": [
+              {
+                "lineRef": "course",
+                "amountKopecks": 100
+              }
+            ]
+          }
+        ]
+      },
+      "decision": {
+        "schema": "refref.claim-decision-snapshot/1",
+        "admission": {
+          "schema": "refref.claim-admission-receipt/1",
+          "businessId": "business-1",
+          "purchaseRef": "purchase-eligible-course-noneligible-future-ticket",
+          "payableHash": "refref-jcs-1:6385b68156036fe46f71a7b226a09901834aa045eea869f2edaf09a77431ee02",
+          "claimHash": "refref-jcs-1:9bdf2eb2934b50abb6ce390ab877a1df3a6f3ccebcbef3a5b89f14d5df701d24",
+          "admissionKey": "refref-jcs-1:85d754584e8dabd7fe819a1795ce77649ba5a2df6294a6818e19da9d9f019daf",
+          "effectKey": "refref-jcs-1:e8eeb26c24cde9ce5fac654896dd1eb6d667b78349f4dec63af86c1a255c6f57",
+          "receivedAt": "2026-10-21T02:00:00.000Z",
+          "decisionDueAt": "2026-11-04T21:00:00.000Z",
+          "calendarVersion": "RF-2026-v1",
+          "ticketRef": "ticket-1"
+        },
+        "outcome": "UPHELD",
+        "decidedAt": "2026-10-22T02:00:00.000Z",
+        "verifiedCoverage": [
+          {
+            "lineRef": "course",
+            "coveredQuantity": 1,
+            "nonOverlapping": true,
+            "rightsTerminated": true,
+            "evidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T01:00:00.000Z"
+            }
+          }
+        ],
+        "refundStates": [
+          {
+            "businessId": "business-1",
+            "purchaseRef": "purchase-eligible-course-noneligible-future-ticket",
+            "payableHash": "refref-jcs-1:6385b68156036fe46f71a7b226a09901834aa045eea869f2edaf09a77431ee02",
+            "operation": {
+              "provider": "ALFA",
+              "connectionId": "connection-1",
+              "paymentRef": "bank-eligible-course-noneligible-future-ticket",
+              "refundRef": "refund-1"
+            },
+            "amountKopecks": 100,
+            "currency": "RUB",
+            "status": "SUCCEEDED",
+            "verifiedAt": "2026-10-21T03:01:00.000Z",
+            "independentEvidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T03:01:00.000Z"
+            },
+            "succeededAt": "2026-10-21T03:00:00.000Z"
+          }
+        ]
+      },
+      "priorRefunds": [],
+      "v1Expected": {
+        "admission": "ACCEPTED",
+        "effect": -50000
+      },
+      "expected": {
+        "admission": "ACCEPTED",
+        "effect": "REFUND_BELOW_CLAIM_POLICY_THRESHOLD"
+      }
+    },
+    {
+      "name": "one-traveller-cancelled",
+      "producer": "mikluha-three-travellers",
+      "claim": {
+        "schema": "refref.purchase-cancellation-claim/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-mikluha-three-travellers",
+        "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+        "scope": "WHOLE_PURCHASE",
+        "idempotencyKey": "claim-1",
+        "reason": "ALL_ELIGIBLE_SERVICES_CANCELLED",
+        "coverage": [
+          {
+            "lineRef": "tour",
+            "coveredQuantity": 1,
+            "segments": [
+              {
+                "coverageRef": "whole-line",
+                "quantity": 1,
+                "evidence": [
+                  {
+                    "sourceRef": "evidence-1",
+                    "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "occurredAt": "2026-10-21T01:00:00.000Z"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "refunds": [
+          {
+            "businessId": "business-1",
+            "purchaseRef": "purchase-mikluha-three-travellers",
+            "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+            "operation": {
+              "provider": "ALFA",
+              "connectionId": "connection-1",
+              "paymentRef": "bank-mikluha-three-travellers",
+              "refundRef": "refund-1"
+            },
+            "amountKopecks": 1000000,
+            "currency": "RUB",
+            "allocationSource": "REFREF_COMMAND",
+            "allocationEvidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T01:00:00.000Z"
+            },
+            "lineAllocations": [
+              {
+                "lineRef": "tour",
+                "amountKopecks": 1000000
+              }
+            ]
+          }
+        ]
+      },
+      "decision": {
+        "schema": "refref.claim-decision-snapshot/1",
+        "admission": {
+          "schema": "refref.claim-admission-receipt/1",
+          "businessId": "business-1",
+          "purchaseRef": "purchase-mikluha-three-travellers",
+          "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+          "claimHash": "refref-jcs-1:fa368f5958991fcf6500ab52ba9e9d789e61aa77d25baf601eacc107a7910031",
+          "admissionKey": "refref-jcs-1:261b24fdf72466302a896bf7c0d679ddb563e611994ffbe5346a65ff0657a44a",
+          "effectKey": "refref-jcs-1:f03f094555d648c04b3baa55956d424a91e39c6910d944274b83466c72893782",
+          "receivedAt": "2026-10-21T02:00:00.000Z",
+          "decisionDueAt": "2026-11-04T21:00:00.000Z",
+          "calendarVersion": "RF-2026-v1",
+          "ticketRef": "ticket-1"
+        },
+        "outcome": "UPHELD",
+        "decidedAt": "2026-10-22T02:00:00.000Z",
+        "verifiedCoverage": [
+          {
+            "lineRef": "tour",
+            "coveredQuantity": 3,
+            "nonOverlapping": true,
+            "rightsTerminated": true,
+            "evidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T01:00:00.000Z"
+            }
+          }
+        ],
+        "refundStates": [
+          {
+            "businessId": "business-1",
+            "purchaseRef": "purchase-mikluha-three-travellers",
+            "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+            "operation": {
+              "provider": "ALFA",
+              "connectionId": "connection-1",
+              "paymentRef": "bank-mikluha-three-travellers",
+              "refundRef": "refund-1"
+            },
+            "amountKopecks": 1000000,
+            "currency": "RUB",
+            "status": "SUCCEEDED",
+            "verifiedAt": "2026-10-21T03:01:00.000Z",
+            "independentEvidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T03:01:00.000Z"
+            },
+            "succeededAt": "2026-10-21T03:00:00.000Z"
+          }
+        ]
+      },
+      "priorRefunds": [],
+      "v1Expected": {
+        "admission": "INCOMPLETE_CANCELLATION_COVERAGE"
+      },
+      "expected": {
+        "admission": "INCOMPLETE_CANCELLATION_COVERAGE"
+      }
+    },
+    {
+      "name": "delivered-eligible-course-not-cancelled",
+      "producer": "mixed-date-tour-lab-lms",
+      "claim": {
+        "schema": "refref.purchase-cancellation-claim/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-mixed-date-tour-lab-lms",
+        "payableHash": "refref-jcs-1:bcbcbf9f96278a992c6ef59d96032a4c40677737688737f16fe3c0ab6580b571",
+        "scope": "WHOLE_PURCHASE",
+        "idempotencyKey": "claim-1",
+        "reason": "ALL_ELIGIBLE_SERVICES_CANCELLED",
+        "coverage": [
+          {
+            "lineRef": "course",
+            "coveredQuantity": 1,
+            "segments": [
+              {
+                "coverageRef": "whole-line",
+                "quantity": 1,
+                "evidence": [
+                  {
+                    "sourceRef": "evidence-1",
+                    "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "occurredAt": "2026-10-21T01:00:00.000Z"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "lineRef": "later",
+            "coveredQuantity": 1,
+            "segments": [
+              {
+                "coverageRef": "whole-line",
+                "quantity": 1,
+                "evidence": [
+                  {
+                    "sourceRef": "evidence-1",
+                    "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "occurredAt": "2026-10-21T01:00:00.000Z"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "lineRef": "tour",
+            "coveredQuantity": 3,
+            "segments": [
+              {
+                "coverageRef": "whole-line",
+                "quantity": 3,
+                "evidence": [
+                  {
+                    "sourceRef": "evidence-1",
+                    "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "occurredAt": "2026-10-21T01:00:00.000Z"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "refunds": [
+          {
+            "businessId": "business-1",
+            "purchaseRef": "purchase-mixed-date-tour-lab-lms",
+            "payableHash": "refref-jcs-1:bcbcbf9f96278a992c6ef59d96032a4c40677737688737f16fe3c0ab6580b571",
+            "operation": {
+              "provider": "ALFA",
+              "connectionId": "connection-1",
+              "paymentRef": "bank-mixed-date-tour-lab-lms",
+              "refundRef": "refund-1"
+            },
+            "amountKopecks": 100,
+            "currency": "RUB",
+            "allocationSource": "REFREF_COMMAND",
+            "allocationEvidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T01:00:00.000Z"
+            },
+            "lineAllocations": [
+              {
+                "lineRef": "course",
+                "amountKopecks": 100
+              }
+            ]
+          }
+        ]
+      },
+      "decision": {
+        "schema": "refref.claim-decision-snapshot/1",
+        "admission": {
+          "schema": "refref.claim-admission-receipt/1",
+          "businessId": "business-1",
+          "purchaseRef": "purchase-mixed-date-tour-lab-lms",
+          "payableHash": "refref-jcs-1:bcbcbf9f96278a992c6ef59d96032a4c40677737688737f16fe3c0ab6580b571",
+          "claimHash": "refref-jcs-1:820381303ef389de1c5085514cf4e68ddde4d0ee44b59a843c14aa3ebd243d0e",
+          "admissionKey": "refref-jcs-1:6d0cf4ff4c3f45098496db4200a8e69cab91b0b4335e68e86d9b7ccd1f48a527",
+          "effectKey": "refref-jcs-1:6b82a10ef24e6fbf1ec8ce8096df4ec8e26490f020c6115a3af7363e62a2ce64",
+          "receivedAt": "2026-10-21T02:00:00.000Z",
+          "decisionDueAt": "2026-11-04T21:00:00.000Z",
+          "calendarVersion": "RF-2026-v1",
+          "ticketRef": "ticket-1"
+        },
+        "outcome": "UPHELD",
+        "decidedAt": "2026-10-22T02:00:00.000Z",
+        "verifiedCoverage": [
+          {
+            "lineRef": "course",
+            "coveredQuantity": 1,
+            "nonOverlapping": true,
+            "rightsTerminated": false,
+            "evidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T01:00:00.000Z"
+            }
+          },
+          {
+            "lineRef": "later",
+            "coveredQuantity": 1,
+            "nonOverlapping": true,
+            "rightsTerminated": true,
+            "evidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T01:00:00.000Z"
+            }
+          },
+          {
+            "lineRef": "tour",
+            "coveredQuantity": 3,
+            "nonOverlapping": true,
+            "rightsTerminated": true,
+            "evidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T01:00:00.000Z"
+            }
+          }
+        ],
+        "refundStates": [
+          {
+            "businessId": "business-1",
+            "purchaseRef": "purchase-mixed-date-tour-lab-lms",
+            "payableHash": "refref-jcs-1:bcbcbf9f96278a992c6ef59d96032a4c40677737688737f16fe3c0ab6580b571",
+            "operation": {
+              "provider": "ALFA",
+              "connectionId": "connection-1",
+              "paymentRef": "bank-mixed-date-tour-lab-lms",
+              "refundRef": "refund-1"
+            },
+            "amountKopecks": 100,
+            "currency": "RUB",
+            "status": "SUCCEEDED",
+            "verifiedAt": "2026-10-21T03:01:00.000Z",
+            "independentEvidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T03:01:00.000Z"
+            },
+            "succeededAt": "2026-10-21T03:00:00.000Z"
+          }
+        ]
+      },
+      "priorRefunds": [],
+      "v1Expected": {
+        "admission": "ACCEPTED",
+        "effect": "CANCELLATION_NOT_VERIFIED"
+      },
+      "expected": {
+        "admission": "ACCEPTED",
+        "effect": "CANCELLATION_NOT_VERIFIED"
+      }
+    },
+    {
+      "name": "bank-pending-admission-without-zeroing",
+      "producer": "mikluha-three-travellers",
+      "claim": {
+        "schema": "refref.purchase-cancellation-claim/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-mikluha-three-travellers",
+        "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+        "scope": "WHOLE_PURCHASE",
+        "idempotencyKey": "claim-1",
+        "reason": "ALL_ELIGIBLE_SERVICES_CANCELLED",
+        "coverage": [
+          {
+            "lineRef": "tour",
+            "coveredQuantity": 3,
+            "segments": [
+              {
+                "coverageRef": "whole-line",
+                "quantity": 3,
+                "evidence": [
+                  {
+                    "sourceRef": "evidence-1",
+                    "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "occurredAt": "2026-10-21T01:00:00.000Z"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "refunds": [
+          {
+            "businessId": "business-1",
+            "purchaseRef": "purchase-mikluha-three-travellers",
+            "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+            "operation": {
+              "provider": "ALFA",
+              "connectionId": "connection-1",
+              "paymentRef": "bank-mikluha-three-travellers",
+              "refundRef": "refund-1"
+            },
+            "amountKopecks": 1000000,
+            "currency": "RUB",
+            "allocationSource": "REFREF_COMMAND",
+            "allocationEvidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T01:00:00.000Z"
+            },
+            "lineAllocations": [
+              {
+                "lineRef": "tour",
+                "amountKopecks": 1000000
+              }
+            ]
+          }
+        ]
+      },
+      "decision": {
+        "schema": "refref.claim-decision-snapshot/1",
+        "admission": {
+          "schema": "refref.claim-admission-receipt/1",
+          "businessId": "business-1",
+          "purchaseRef": "purchase-mikluha-three-travellers",
+          "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+          "claimHash": "refref-jcs-1:391f9bab7d2b9135292f473ef99988dbdfd9cd69bdc86517d7efc7e7f40ddc6a",
+          "admissionKey": "refref-jcs-1:261b24fdf72466302a896bf7c0d679ddb563e611994ffbe5346a65ff0657a44a",
+          "effectKey": "refref-jcs-1:f03f094555d648c04b3baa55956d424a91e39c6910d944274b83466c72893782",
+          "receivedAt": "2026-10-21T02:00:00.000Z",
+          "decisionDueAt": "2026-11-04T21:00:00.000Z",
+          "calendarVersion": "RF-2026-v1",
+          "ticketRef": "ticket-1"
+        },
+        "outcome": "UPHELD",
+        "decidedAt": "2026-10-22T02:00:00.000Z",
+        "verifiedCoverage": [
+          {
+            "lineRef": "tour",
+            "coveredQuantity": 3,
+            "nonOverlapping": true,
+            "rightsTerminated": true,
+            "evidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T01:00:00.000Z"
+            }
+          }
+        ],
+        "refundStates": [
+          {
+            "businessId": "business-1",
+            "purchaseRef": "purchase-mikluha-three-travellers",
+            "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+            "operation": {
+              "provider": "ALFA",
+              "connectionId": "connection-1",
+              "paymentRef": "bank-mikluha-three-travellers",
+              "refundRef": "refund-1"
+            },
+            "amountKopecks": 1000000,
+            "currency": "RUB",
+            "status": "PENDING",
+            "verifiedAt": "2026-10-21T03:01:00.000Z",
+            "independentEvidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T03:01:00.000Z"
+            }
+          }
+        ]
+      },
+      "priorRefunds": [],
+      "v1Expected": {
+        "admission": "ACCEPTED",
+        "effect": "SUCCESSFUL_REFUND_REQUIRED"
+      },
+      "expected": {
+        "admission": "ACCEPTED",
+        "effect": "SUCCESSFUL_REFUND_REQUIRED"
+      }
+    },
+    {
+      "name": "success-too-late-no-effect",
+      "producer": "mikluha-three-travellers",
+      "claim": {
+        "schema": "refref.purchase-cancellation-claim/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-mikluha-three-travellers",
+        "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+        "scope": "WHOLE_PURCHASE",
+        "idempotencyKey": "claim-1",
+        "reason": "ALL_ELIGIBLE_SERVICES_CANCELLED",
+        "coverage": [
+          {
+            "lineRef": "tour",
+            "coveredQuantity": 3,
+            "segments": [
+              {
+                "coverageRef": "whole-line",
+                "quantity": 3,
+                "evidence": [
+                  {
+                    "sourceRef": "evidence-1",
+                    "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "occurredAt": "2026-10-21T01:00:00.000Z"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "refunds": [
+          {
+            "businessId": "business-1",
+            "purchaseRef": "purchase-mikluha-three-travellers",
+            "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+            "operation": {
+              "provider": "ALFA",
+              "connectionId": "connection-1",
+              "paymentRef": "bank-mikluha-three-travellers",
+              "refundRef": "refund-1"
+            },
+            "amountKopecks": 1000000,
+            "currency": "RUB",
+            "allocationSource": "REFREF_COMMAND",
+            "allocationEvidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T01:00:00.000Z"
+            },
+            "lineAllocations": [
+              {
+                "lineRef": "tour",
+                "amountKopecks": 1000000
+              }
+            ]
+          }
+        ]
+      },
+      "decision": {
+        "schema": "refref.claim-decision-snapshot/1",
+        "admission": {
+          "schema": "refref.claim-admission-receipt/1",
+          "businessId": "business-1",
+          "purchaseRef": "purchase-mikluha-three-travellers",
+          "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+          "claimHash": "refref-jcs-1:391f9bab7d2b9135292f473ef99988dbdfd9cd69bdc86517d7efc7e7f40ddc6a",
+          "admissionKey": "refref-jcs-1:261b24fdf72466302a896bf7c0d679ddb563e611994ffbe5346a65ff0657a44a",
+          "effectKey": "refref-jcs-1:f03f094555d648c04b3baa55956d424a91e39c6910d944274b83466c72893782",
+          "receivedAt": "2026-10-21T02:00:00.000Z",
+          "decisionDueAt": "2026-11-04T21:00:00.000Z",
+          "calendarVersion": "RF-2026-v1",
+          "ticketRef": "ticket-1"
+        },
+        "outcome": "UPHELD",
+        "decidedAt": "2026-11-04T21:00:00.000Z",
+        "verifiedCoverage": [
+          {
+            "lineRef": "tour",
+            "coveredQuantity": 3,
+            "nonOverlapping": true,
+            "rightsTerminated": true,
+            "evidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T01:00:00.000Z"
+            }
+          }
+        ],
+        "refundStates": [
+          {
+            "businessId": "business-1",
+            "purchaseRef": "purchase-mikluha-three-travellers",
+            "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+            "operation": {
+              "provider": "ALFA",
+              "connectionId": "connection-1",
+              "paymentRef": "bank-mikluha-three-travellers",
+              "refundRef": "refund-1"
+            },
+            "amountKopecks": 1000000,
+            "currency": "RUB",
+            "status": "SUCCEEDED",
+            "verifiedAt": "2026-10-21T03:01:00.000Z",
+            "independentEvidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T03:01:00.000Z"
+            },
+            "succeededAt": "2026-10-21T03:00:00.000Z"
+          }
+        ]
+      },
+      "priorRefunds": [],
+      "v1Expected": {
+        "admission": "ACCEPTED",
+        "effect": 0
+      },
+      "expected": {
+        "admission": "ACCEPTED",
+        "effect": 0
+      }
+    },
+    {
+      "name": "successive-nonoverlapping-three-cancellations",
+      "producer": "mikluha-three-travellers",
+      "claim": {
+        "schema": "refref.purchase-cancellation-claim/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-mikluha-three-travellers",
+        "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+        "scope": "WHOLE_PURCHASE",
+        "idempotencyKey": "claim-1",
+        "reason": "ALL_ELIGIBLE_SERVICES_CANCELLED",
+        "coverage": [
+          {
+            "lineRef": "tour",
+            "coveredQuantity": 3,
+            "segments": [
+              {
+                "coverageRef": "segment-0",
+                "quantity": 1,
+                "evidence": [
+                  {
+                    "sourceRef": "evidence-1",
+                    "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "occurredAt": "2026-10-21T01:00:00.000Z"
+                  }
+                ]
+              },
+              {
+                "coverageRef": "segment-1",
+                "quantity": 1,
+                "evidence": [
+                  {
+                    "sourceRef": "evidence-1",
+                    "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "occurredAt": "2026-10-21T01:00:00.000Z"
+                  }
+                ]
+              },
+              {
+                "coverageRef": "segment-2",
+                "quantity": 1,
+                "evidence": [
+                  {
+                    "sourceRef": "evidence-1",
+                    "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "occurredAt": "2026-10-21T01:00:00.000Z"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "refunds": [
+          {
+            "businessId": "business-1",
+            "purchaseRef": "purchase-mikluha-three-travellers",
+            "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+            "operation": {
+              "provider": "ALFA",
+              "connectionId": "connection-1",
+              "paymentRef": "bank-mikluha-three-travellers",
+              "refundRef": "refund-1"
+            },
+            "amountKopecks": 1000000,
+            "currency": "RUB",
+            "allocationSource": "REFREF_COMMAND",
+            "allocationEvidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T01:00:00.000Z"
+            },
+            "lineAllocations": [
+              {
+                "lineRef": "tour",
+                "amountKopecks": 1000000
+              }
+            ]
+          }
+        ]
+      },
+      "decision": {
+        "schema": "refref.claim-decision-snapshot/1",
+        "admission": {
+          "schema": "refref.claim-admission-receipt/1",
+          "businessId": "business-1",
+          "purchaseRef": "purchase-mikluha-three-travellers",
+          "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+          "claimHash": "refref-jcs-1:5405108c3a267c92a38da814bf3a4893bf9eacab5a3991e25ab88beda8b64710",
+          "admissionKey": "refref-jcs-1:261b24fdf72466302a896bf7c0d679ddb563e611994ffbe5346a65ff0657a44a",
+          "effectKey": "refref-jcs-1:f03f094555d648c04b3baa55956d424a91e39c6910d944274b83466c72893782",
+          "receivedAt": "2026-10-21T02:00:00.000Z",
+          "decisionDueAt": "2026-11-04T21:00:00.000Z",
+          "calendarVersion": "RF-2026-v1",
+          "ticketRef": "ticket-1"
+        },
+        "outcome": "UPHELD",
+        "decidedAt": "2026-10-22T02:00:00.000Z",
+        "verifiedCoverage": [
+          {
+            "lineRef": "tour",
+            "coveredQuantity": 3,
+            "nonOverlapping": true,
+            "rightsTerminated": true,
+            "evidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T01:00:00.000Z"
+            }
+          }
+        ],
+        "refundStates": [
+          {
+            "businessId": "business-1",
+            "purchaseRef": "purchase-mikluha-three-travellers",
+            "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+            "operation": {
+              "provider": "ALFA",
+              "connectionId": "connection-1",
+              "paymentRef": "bank-mikluha-three-travellers",
+              "refundRef": "refund-1"
+            },
+            "amountKopecks": 1000000,
+            "currency": "RUB",
+            "status": "SUCCEEDED",
+            "verifiedAt": "2026-10-21T03:01:00.000Z",
+            "independentEvidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T03:01:00.000Z"
+            },
+            "succeededAt": "2026-10-21T03:00:00.000Z"
+          }
+        ]
+      },
+      "priorRefunds": [],
+      "v1Expected": {
+        "admission": "ACCEPTED",
+        "effect": -270000
+      },
+      "expected": {
+        "admission": "ACCEPTED",
+        "effect": -270000
+      }
+    },
+    {
+      "name": "same-seat-documents-not-three-seats",
+      "producer": "mikluha-three-travellers",
+      "claim": {
+        "schema": "refref.purchase-cancellation-claim/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-mikluha-three-travellers",
+        "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+        "scope": "WHOLE_PURCHASE",
+        "idempotencyKey": "claim-1",
+        "reason": "ALL_ELIGIBLE_SERVICES_CANCELLED",
+        "coverage": [
+          {
+            "lineRef": "tour",
+            "coveredQuantity": 3,
+            "segments": [
+              {
+                "coverageRef": "whole-line",
+                "quantity": 3,
+                "evidence": [
+                  {
+                    "sourceRef": "evidence-1",
+                    "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "occurredAt": "2026-10-21T01:00:00.000Z"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "refunds": [
+          {
+            "businessId": "business-1",
+            "purchaseRef": "purchase-mikluha-three-travellers",
+            "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+            "operation": {
+              "provider": "ALFA",
+              "connectionId": "connection-1",
+              "paymentRef": "bank-mikluha-three-travellers",
+              "refundRef": "refund-1"
+            },
+            "amountKopecks": 1000000,
+            "currency": "RUB",
+            "allocationSource": "REFREF_COMMAND",
+            "allocationEvidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T01:00:00.000Z"
+            },
+            "lineAllocations": [
+              {
+                "lineRef": "tour",
+                "amountKopecks": 1000000
+              }
+            ]
+          }
+        ]
+      },
+      "decision": {
+        "schema": "refref.claim-decision-snapshot/1",
+        "admission": {
+          "schema": "refref.claim-admission-receipt/1",
+          "businessId": "business-1",
+          "purchaseRef": "purchase-mikluha-three-travellers",
+          "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+          "claimHash": "refref-jcs-1:391f9bab7d2b9135292f473ef99988dbdfd9cd69bdc86517d7efc7e7f40ddc6a",
+          "admissionKey": "refref-jcs-1:261b24fdf72466302a896bf7c0d679ddb563e611994ffbe5346a65ff0657a44a",
+          "effectKey": "refref-jcs-1:f03f094555d648c04b3baa55956d424a91e39c6910d944274b83466c72893782",
+          "receivedAt": "2026-10-21T02:00:00.000Z",
+          "decisionDueAt": "2026-11-04T21:00:00.000Z",
+          "calendarVersion": "RF-2026-v1",
+          "ticketRef": "ticket-1"
+        },
+        "outcome": "UPHELD",
+        "decidedAt": "2026-10-22T02:00:00.000Z",
+        "verifiedCoverage": [
+          {
+            "lineRef": "tour",
+            "coveredQuantity": 1,
+            "nonOverlapping": false,
+            "rightsTerminated": true,
+            "evidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T01:00:00.000Z"
+            }
+          }
+        ],
+        "refundStates": [
+          {
+            "businessId": "business-1",
+            "purchaseRef": "purchase-mikluha-three-travellers",
+            "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+            "operation": {
+              "provider": "ALFA",
+              "connectionId": "connection-1",
+              "paymentRef": "bank-mikluha-three-travellers",
+              "refundRef": "refund-1"
+            },
+            "amountKopecks": 1000000,
+            "currency": "RUB",
+            "status": "SUCCEEDED",
+            "verifiedAt": "2026-10-21T03:01:00.000Z",
+            "independentEvidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T03:01:00.000Z"
+            },
+            "succeededAt": "2026-10-21T03:00:00.000Z"
+          }
+        ]
+      },
+      "priorRefunds": [],
+      "v1Expected": {
+        "admission": "ACCEPTED",
+        "effect": "CANCELLATION_NOT_VERIFIED"
+      },
+      "expected": {
+        "admission": "ACCEPTED",
+        "effect": "CANCELLATION_NOT_VERIFIED"
+      }
+    },
+    {
+      "name": "refund-only-noneligible-ticket",
+      "producer": "eligible-course-noneligible-future-ticket",
+      "claim": {
+        "schema": "refref.purchase-cancellation-claim/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-eligible-course-noneligible-future-ticket",
+        "payableHash": "refref-jcs-1:6385b68156036fe46f71a7b226a09901834aa045eea869f2edaf09a77431ee02",
+        "scope": "WHOLE_PURCHASE",
+        "idempotencyKey": "claim-1",
+        "reason": "ALL_ELIGIBLE_SERVICES_CANCELLED",
+        "coverage": [
+          {
+            "lineRef": "course",
+            "coveredQuantity": 1,
+            "segments": [
+              {
+                "coverageRef": "whole-line",
+                "quantity": 1,
+                "evidence": [
+                  {
+                    "sourceRef": "evidence-1",
+                    "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "occurredAt": "2026-10-21T01:00:00.000Z"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "refunds": [
+          {
+            "businessId": "business-1",
+            "purchaseRef": "purchase-eligible-course-noneligible-future-ticket",
+            "payableHash": "refref-jcs-1:6385b68156036fe46f71a7b226a09901834aa045eea869f2edaf09a77431ee02",
+            "operation": {
+              "provider": "ALFA",
+              "connectionId": "connection-1",
+              "paymentRef": "bank-eligible-course-noneligible-future-ticket",
+              "refundRef": "refund-1"
+            },
+            "amountKopecks": 100,
+            "currency": "RUB",
+            "allocationSource": "REFREF_COMMAND",
+            "allocationEvidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T01:00:00.000Z"
+            },
+            "lineAllocations": [
+              {
+                "lineRef": "ticket",
+                "amountKopecks": 100
+              }
+            ]
+          }
+        ]
+      },
+      "decision": {
+        "schema": "refref.claim-decision-snapshot/1",
+        "admission": {
+          "schema": "refref.claim-admission-receipt/1",
+          "businessId": "business-1",
+          "purchaseRef": "purchase-eligible-course-noneligible-future-ticket",
+          "payableHash": "refref-jcs-1:6385b68156036fe46f71a7b226a09901834aa045eea869f2edaf09a77431ee02",
+          "claimHash": "refref-jcs-1:8fa1b1c9253a2035eb7b7455376859778ff6a10bd1c71d9324fa0acbed67635b",
+          "admissionKey": "refref-jcs-1:85d754584e8dabd7fe819a1795ce77649ba5a2df6294a6818e19da9d9f019daf",
+          "effectKey": "refref-jcs-1:e8eeb26c24cde9ce5fac654896dd1eb6d667b78349f4dec63af86c1a255c6f57",
+          "receivedAt": "2026-10-21T02:00:00.000Z",
+          "decisionDueAt": "2026-11-04T21:00:00.000Z",
+          "calendarVersion": "RF-2026-v1",
+          "ticketRef": "ticket-1"
+        },
+        "outcome": "UPHELD",
+        "decidedAt": "2026-10-22T02:00:00.000Z",
+        "verifiedCoverage": [
+          {
+            "lineRef": "course",
+            "coveredQuantity": 1,
+            "nonOverlapping": true,
+            "rightsTerminated": true,
+            "evidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T01:00:00.000Z"
+            }
+          }
+        ],
+        "refundStates": [
+          {
+            "businessId": "business-1",
+            "purchaseRef": "purchase-eligible-course-noneligible-future-ticket",
+            "payableHash": "refref-jcs-1:6385b68156036fe46f71a7b226a09901834aa045eea869f2edaf09a77431ee02",
+            "operation": {
+              "provider": "ALFA",
+              "connectionId": "connection-1",
+              "paymentRef": "bank-eligible-course-noneligible-future-ticket",
+              "refundRef": "refund-1"
+            },
+            "amountKopecks": 100,
+            "currency": "RUB",
+            "status": "SUCCEEDED",
+            "verifiedAt": "2026-10-21T03:01:00.000Z",
+            "independentEvidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T03:01:00.000Z"
+            },
+            "succeededAt": "2026-10-21T03:00:00.000Z"
+          }
+        ]
+      },
+      "priorRefunds": [],
+      "v1Expected": {
+        "admission": "REFUND_HAS_NO_POSITIVE_ELIGIBLE_AMOUNT"
+      },
+      "expected": {
+        "admission": "REFUND_HAS_NO_POSITIVE_ELIGIBLE_AMOUNT"
+      }
+    },
+    {
+      "name": "breakdown-does-not-equal-bank",
+      "producer": "mikluha-three-travellers",
+      "claim": {
+        "schema": "refref.purchase-cancellation-claim/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-mikluha-three-travellers",
+        "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+        "scope": "WHOLE_PURCHASE",
+        "idempotencyKey": "claim-1",
+        "reason": "ALL_ELIGIBLE_SERVICES_CANCELLED",
+        "coverage": [
+          {
+            "lineRef": "tour",
+            "coveredQuantity": 3,
+            "segments": [
+              {
+                "coverageRef": "whole-line",
+                "quantity": 3,
+                "evidence": [
+                  {
+                    "sourceRef": "evidence-1",
+                    "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "occurredAt": "2026-10-21T01:00:00.000Z"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "refunds": [
+          {
+            "businessId": "business-1",
+            "purchaseRef": "purchase-mikluha-three-travellers",
+            "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+            "operation": {
+              "provider": "ALFA",
+              "connectionId": "connection-1",
+              "paymentRef": "bank-mikluha-three-travellers",
+              "refundRef": "refund-1"
+            },
+            "amountKopecks": 1000001,
+            "currency": "RUB",
+            "allocationSource": "REFREF_COMMAND",
+            "allocationEvidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T01:00:00.000Z"
+            },
+            "lineAllocations": [
+              {
+                "lineRef": "tour",
+                "amountKopecks": 1000000
+              }
+            ]
+          }
+        ]
+      },
+      "decision": {
+        "schema": "refref.claim-decision-snapshot/1",
+        "admission": {
+          "schema": "refref.claim-admission-receipt/1",
+          "businessId": "business-1",
+          "purchaseRef": "purchase-mikluha-three-travellers",
+          "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+          "claimHash": "refref-jcs-1:57302b9133025208ba0014aae3efb22deb545e510e4bae3c9b46e1d9875b93be",
+          "admissionKey": "refref-jcs-1:261b24fdf72466302a896bf7c0d679ddb563e611994ffbe5346a65ff0657a44a",
+          "effectKey": "refref-jcs-1:f03f094555d648c04b3baa55956d424a91e39c6910d944274b83466c72893782",
+          "receivedAt": "2026-10-21T02:00:00.000Z",
+          "decisionDueAt": "2026-11-04T21:00:00.000Z",
+          "calendarVersion": "RF-2026-v1",
+          "ticketRef": "ticket-1"
+        },
+        "outcome": "UPHELD",
+        "decidedAt": "2026-10-22T02:00:00.000Z",
+        "verifiedCoverage": [
+          {
+            "lineRef": "tour",
+            "coveredQuantity": 3,
+            "nonOverlapping": true,
+            "rightsTerminated": true,
+            "evidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T01:00:00.000Z"
+            }
+          }
+        ],
+        "refundStates": [
+          {
+            "businessId": "business-1",
+            "purchaseRef": "purchase-mikluha-three-travellers",
+            "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+            "operation": {
+              "provider": "ALFA",
+              "connectionId": "connection-1",
+              "paymentRef": "bank-mikluha-three-travellers",
+              "refundRef": "refund-1"
+            },
+            "amountKopecks": 1000001,
+            "currency": "RUB",
+            "status": "SUCCEEDED",
+            "verifiedAt": "2026-10-21T03:01:00.000Z",
+            "independentEvidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T03:01:00.000Z"
+            },
+            "succeededAt": "2026-10-21T03:00:00.000Z"
+          }
+        ]
+      },
+      "priorRefunds": [],
+      "v1Expected": {
+        "admission": "REFUND_BREAKDOWN_SUM_MISMATCH"
+      },
+      "expected": {
+        "admission": "REFUND_BREAKDOWN_SUM_MISMATCH"
+      }
+    },
+    {
+      "name": "same-operation-twice",
+      "producer": "mikluha-three-travellers",
+      "claim": {
+        "schema": "refref.purchase-cancellation-claim/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-mikluha-three-travellers",
+        "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+        "scope": "WHOLE_PURCHASE",
+        "idempotencyKey": "claim-1",
+        "reason": "ALL_ELIGIBLE_SERVICES_CANCELLED",
+        "coverage": [
+          {
+            "lineRef": "tour",
+            "coveredQuantity": 3,
+            "segments": [
+              {
+                "coverageRef": "whole-line",
+                "quantity": 3,
+                "evidence": [
+                  {
+                    "sourceRef": "evidence-1",
+                    "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "occurredAt": "2026-10-21T01:00:00.000Z"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "refunds": [
+          {
+            "businessId": "business-1",
+            "purchaseRef": "purchase-mikluha-three-travellers",
+            "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+            "operation": {
+              "provider": "ALFA",
+              "connectionId": "connection-1",
+              "paymentRef": "bank-mikluha-three-travellers",
+              "refundRef": "refund-1"
+            },
+            "amountKopecks": 1000000,
+            "currency": "RUB",
+            "allocationSource": "REFREF_COMMAND",
+            "allocationEvidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T01:00:00.000Z"
+            },
+            "lineAllocations": [
+              {
+                "lineRef": "tour",
+                "amountKopecks": 1000000
+              }
+            ]
+          },
+          {
+            "businessId": "business-1",
+            "purchaseRef": "purchase-mikluha-three-travellers",
+            "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+            "operation": {
+              "provider": "ALFA",
+              "connectionId": "connection-1",
+              "paymentRef": "bank-mikluha-three-travellers",
+              "refundRef": "refund-1"
+            },
+            "amountKopecks": 1000000,
+            "currency": "RUB",
+            "allocationSource": "REFREF_COMMAND",
+            "allocationEvidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T01:00:00.000Z"
+            },
+            "lineAllocations": [
+              {
+                "lineRef": "tour",
+                "amountKopecks": 1000000
+              }
+            ]
+          }
+        ]
+      },
+      "decision": {
+        "schema": "refref.claim-decision-snapshot/1",
+        "admission": {
+          "schema": "refref.claim-admission-receipt/1",
+          "businessId": "business-1",
+          "purchaseRef": "purchase-mikluha-three-travellers",
+          "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+          "claimHash": "refref-jcs-1:547f5f97fbd8e5c38639b5a2c5d3e9da4f8cba49b44c69580e9091def2aaf07e",
+          "admissionKey": "refref-jcs-1:261b24fdf72466302a896bf7c0d679ddb563e611994ffbe5346a65ff0657a44a",
+          "effectKey": "refref-jcs-1:f03f094555d648c04b3baa55956d424a91e39c6910d944274b83466c72893782",
+          "receivedAt": "2026-10-21T02:00:00.000Z",
+          "decisionDueAt": "2026-11-04T21:00:00.000Z",
+          "calendarVersion": "RF-2026-v1",
+          "ticketRef": "ticket-1"
+        },
+        "outcome": "UPHELD",
+        "decidedAt": "2026-10-22T02:00:00.000Z",
+        "verifiedCoverage": [
+          {
+            "lineRef": "tour",
+            "coveredQuantity": 3,
+            "nonOverlapping": true,
+            "rightsTerminated": true,
+            "evidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T01:00:00.000Z"
+            }
+          }
+        ],
+        "refundStates": [
+          {
+            "businessId": "business-1",
+            "purchaseRef": "purchase-mikluha-three-travellers",
+            "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+            "operation": {
+              "provider": "ALFA",
+              "connectionId": "connection-1",
+              "paymentRef": "bank-mikluha-three-travellers",
+              "refundRef": "refund-1"
+            },
+            "amountKopecks": 1000000,
+            "currency": "RUB",
+            "status": "SUCCEEDED",
+            "verifiedAt": "2026-10-21T03:01:00.000Z",
+            "independentEvidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T03:01:00.000Z"
+            },
+            "succeededAt": "2026-10-21T03:00:00.000Z"
+          },
+          {
+            "businessId": "business-1",
+            "purchaseRef": "purchase-mikluha-three-travellers",
+            "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+            "operation": {
+              "provider": "ALFA",
+              "connectionId": "connection-1",
+              "paymentRef": "bank-mikluha-three-travellers",
+              "refundRef": "refund-1"
+            },
+            "amountKopecks": 1000000,
+            "currency": "RUB",
+            "status": "SUCCEEDED",
+            "verifiedAt": "2026-10-21T03:01:00.000Z",
+            "independentEvidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T03:01:00.000Z"
+            },
+            "succeededAt": "2026-10-21T03:00:00.000Z"
+          }
+        ]
+      },
+      "priorRefunds": [],
+      "v1Expected": {
+        "admission": "DUPLICATE_REFUND_OPERATION"
+      },
+      "expected": {
+        "admission": "DUPLICATE_REFUND_OPERATION"
+      }
+    },
+    {
+      "name": "externally-executed-refund-evidenced",
+      "producer": "mikluha-three-travellers",
+      "claim": {
+        "schema": "refref.purchase-cancellation-claim/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-mikluha-three-travellers",
+        "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+        "scope": "WHOLE_PURCHASE",
+        "idempotencyKey": "claim-1",
+        "reason": "ALL_ELIGIBLE_SERVICES_CANCELLED",
+        "coverage": [
+          {
+            "lineRef": "tour",
+            "coveredQuantity": 3,
+            "segments": [
+              {
+                "coverageRef": "whole-line",
+                "quantity": 3,
+                "evidence": [
+                  {
+                    "sourceRef": "evidence-1",
+                    "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "occurredAt": "2026-10-21T01:00:00.000Z"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "refunds": [
+          {
+            "businessId": "business-1",
+            "purchaseRef": "purchase-mikluha-three-travellers",
+            "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+            "operation": {
+              "provider": "ALFA",
+              "connectionId": "connection-1",
+              "paymentRef": "bank-mikluha-three-travellers",
+              "refundRef": "refund-1"
+            },
+            "amountKopecks": 1000000,
+            "currency": "RUB",
+            "allocationSource": "MERCHANT_BANK_EXECUTED",
+            "allocationEvidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T01:00:00.000Z"
+            },
+            "lineAllocations": [
+              {
+                "lineRef": "tour",
+                "amountKopecks": 1000000
+              }
+            ]
+          }
+        ]
+      },
+      "decision": {
+        "schema": "refref.claim-decision-snapshot/1",
+        "admission": {
+          "schema": "refref.claim-admission-receipt/1",
+          "businessId": "business-1",
+          "purchaseRef": "purchase-mikluha-three-travellers",
+          "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+          "claimHash": "refref-jcs-1:8a0170c9335f2a9fddadafcee620bb4ff2d5d74b50642aabad49208adc8a5218",
+          "admissionKey": "refref-jcs-1:261b24fdf72466302a896bf7c0d679ddb563e611994ffbe5346a65ff0657a44a",
+          "effectKey": "refref-jcs-1:f03f094555d648c04b3baa55956d424a91e39c6910d944274b83466c72893782",
+          "receivedAt": "2026-10-21T02:00:00.000Z",
+          "decisionDueAt": "2026-11-04T21:00:00.000Z",
+          "calendarVersion": "RF-2026-v1",
+          "ticketRef": "ticket-1"
+        },
+        "outcome": "UPHELD",
+        "decidedAt": "2026-10-22T02:00:00.000Z",
+        "verifiedCoverage": [
+          {
+            "lineRef": "tour",
+            "coveredQuantity": 3,
+            "nonOverlapping": true,
+            "rightsTerminated": true,
+            "evidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T01:00:00.000Z"
+            }
+          }
+        ],
+        "refundStates": [
+          {
+            "businessId": "business-1",
+            "purchaseRef": "purchase-mikluha-three-travellers",
+            "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+            "operation": {
+              "provider": "ALFA",
+              "connectionId": "connection-1",
+              "paymentRef": "bank-mikluha-three-travellers",
+              "refundRef": "refund-1"
+            },
+            "amountKopecks": 1000000,
+            "currency": "RUB",
+            "status": "SUCCEEDED",
+            "verifiedAt": "2026-10-21T03:01:00.000Z",
+            "independentEvidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T03:01:00.000Z"
+            },
+            "succeededAt": "2026-10-21T03:00:00.000Z"
+          }
+        ]
+      },
+      "priorRefunds": [],
+      "v1Expected": {
+        "admission": "ACCEPTED",
+        "effect": -270000
+      },
+      "expected": {
+        "admission": "ACCEPTED",
+        "effect": -270000
+      }
+    },
+    {
+      "name": "changed-existing-operation-allocation",
+      "producer": "mikluha-three-travellers",
+      "claim": {
+        "schema": "refref.purchase-cancellation-claim/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-mikluha-three-travellers",
+        "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+        "scope": "WHOLE_PURCHASE",
+        "idempotencyKey": "claim-1",
+        "reason": "ALL_ELIGIBLE_SERVICES_CANCELLED",
+        "coverage": [
+          {
+            "lineRef": "tour",
+            "coveredQuantity": 3,
+            "segments": [
+              {
+                "coverageRef": "whole-line",
+                "quantity": 3,
+                "evidence": [
+                  {
+                    "sourceRef": "evidence-1",
+                    "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "occurredAt": "2026-10-21T01:00:00.000Z"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "refunds": [
+          {
+            "businessId": "business-1",
+            "purchaseRef": "purchase-mikluha-three-travellers",
+            "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+            "operation": {
+              "provider": "ALFA",
+              "connectionId": "connection-1",
+              "paymentRef": "bank-mikluha-three-travellers",
+              "refundRef": "refund-1"
+            },
+            "amountKopecks": 1000000,
+            "currency": "RUB",
+            "allocationSource": "REFREF_COMMAND",
+            "allocationEvidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T01:00:00.000Z"
+            },
+            "lineAllocations": [
+              {
+                "lineRef": "tour",
+                "amountKopecks": 1000000
+              }
+            ]
+          }
+        ]
+      },
+      "decision": {
+        "schema": "refref.claim-decision-snapshot/1",
+        "admission": {
+          "schema": "refref.claim-admission-receipt/1",
+          "businessId": "business-1",
+          "purchaseRef": "purchase-mikluha-three-travellers",
+          "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+          "claimHash": "refref-jcs-1:391f9bab7d2b9135292f473ef99988dbdfd9cd69bdc86517d7efc7e7f40ddc6a",
+          "admissionKey": "refref-jcs-1:261b24fdf72466302a896bf7c0d679ddb563e611994ffbe5346a65ff0657a44a",
+          "effectKey": "refref-jcs-1:f03f094555d648c04b3baa55956d424a91e39c6910d944274b83466c72893782",
+          "receivedAt": "2026-10-21T02:00:00.000Z",
+          "decisionDueAt": "2026-11-04T21:00:00.000Z",
+          "calendarVersion": "RF-2026-v1",
+          "ticketRef": "ticket-1"
+        },
+        "outcome": "UPHELD",
+        "decidedAt": "2026-10-22T02:00:00.000Z",
+        "verifiedCoverage": [
+          {
+            "lineRef": "tour",
+            "coveredQuantity": 3,
+            "nonOverlapping": true,
+            "rightsTerminated": true,
+            "evidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T01:00:00.000Z"
+            }
+          }
+        ],
+        "refundStates": [
+          {
+            "businessId": "business-1",
+            "purchaseRef": "purchase-mikluha-three-travellers",
+            "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+            "operation": {
+              "provider": "ALFA",
+              "connectionId": "connection-1",
+              "paymentRef": "bank-mikluha-three-travellers",
+              "refundRef": "refund-1"
+            },
+            "amountKopecks": 1000000,
+            "currency": "RUB",
+            "status": "SUCCEEDED",
+            "verifiedAt": "2026-10-21T03:01:00.000Z",
+            "independentEvidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T03:01:00.000Z"
+            },
+            "succeededAt": "2026-10-21T03:00:00.000Z"
+          }
+        ]
+      },
+      "priorRefunds": [
+        {
+          "businessId": "business-1",
+          "purchaseRef": "purchase-mikluha-three-travellers",
+          "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+          "operation": {
+            "provider": "ALFA",
+            "connectionId": "connection-1",
+            "paymentRef": "bank-mikluha-three-travellers",
+            "refundRef": "refund-1"
+          },
+          "amountKopecks": 1000000,
+          "currency": "RUB",
+          "allocationSource": "REFREF_COMMAND",
+          "allocationEvidence": {
+            "sourceRef": "evidence-1",
+            "contentHash": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "occurredAt": "2026-10-21T01:00:00.000Z"
+          },
+          "lineAllocations": [
+            {
+              "lineRef": "tour",
+              "amountKopecks": 1000000
+            }
+          ]
+        }
+      ],
+      "v1Expected": {
+        "admission": "REFUND_BREAKDOWN_REPLAY_CONFLICT"
+      },
+      "expected": {
+        "admission": "REFUND_BREAKDOWN_REPLAY_CONFLICT"
+      }
+    },
+    {
+      "name": "exact-refund-operation-replay",
+      "producer": "mikluha-three-travellers",
+      "claim": {
+        "schema": "refref.purchase-cancellation-claim/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-mikluha-three-travellers",
+        "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+        "scope": "WHOLE_PURCHASE",
+        "idempotencyKey": "claim-1",
+        "reason": "ALL_ELIGIBLE_SERVICES_CANCELLED",
+        "coverage": [
+          {
+            "lineRef": "tour",
+            "coveredQuantity": 3,
+            "segments": [
+              {
+                "coverageRef": "whole-line",
+                "quantity": 3,
+                "evidence": [
+                  {
+                    "sourceRef": "evidence-1",
+                    "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "occurredAt": "2026-10-21T01:00:00.000Z"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "refunds": [
+          {
+            "businessId": "business-1",
+            "purchaseRef": "purchase-mikluha-three-travellers",
+            "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+            "operation": {
+              "provider": "ALFA",
+              "connectionId": "connection-1",
+              "paymentRef": "bank-mikluha-three-travellers",
+              "refundRef": "refund-1"
+            },
+            "amountKopecks": 1000000,
+            "currency": "RUB",
+            "allocationSource": "REFREF_COMMAND",
+            "allocationEvidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T01:00:00.000Z"
+            },
+            "lineAllocations": [
+              {
+                "lineRef": "tour",
+                "amountKopecks": 1000000
+              }
+            ]
+          }
+        ]
+      },
+      "decision": {
+        "schema": "refref.claim-decision-snapshot/1",
+        "admission": {
+          "schema": "refref.claim-admission-receipt/1",
+          "businessId": "business-1",
+          "purchaseRef": "purchase-mikluha-three-travellers",
+          "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+          "claimHash": "refref-jcs-1:391f9bab7d2b9135292f473ef99988dbdfd9cd69bdc86517d7efc7e7f40ddc6a",
+          "admissionKey": "refref-jcs-1:261b24fdf72466302a896bf7c0d679ddb563e611994ffbe5346a65ff0657a44a",
+          "effectKey": "refref-jcs-1:f03f094555d648c04b3baa55956d424a91e39c6910d944274b83466c72893782",
+          "receivedAt": "2026-10-21T02:00:00.000Z",
+          "decisionDueAt": "2026-11-04T21:00:00.000Z",
+          "calendarVersion": "RF-2026-v1",
+          "ticketRef": "ticket-1"
+        },
+        "outcome": "UPHELD",
+        "decidedAt": "2026-10-22T02:00:00.000Z",
+        "verifiedCoverage": [
+          {
+            "lineRef": "tour",
+            "coveredQuantity": 3,
+            "nonOverlapping": true,
+            "rightsTerminated": true,
+            "evidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T01:00:00.000Z"
+            }
+          }
+        ],
+        "refundStates": [
+          {
+            "businessId": "business-1",
+            "purchaseRef": "purchase-mikluha-three-travellers",
+            "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+            "operation": {
+              "provider": "ALFA",
+              "connectionId": "connection-1",
+              "paymentRef": "bank-mikluha-three-travellers",
+              "refundRef": "refund-1"
+            },
+            "amountKopecks": 1000000,
+            "currency": "RUB",
+            "status": "SUCCEEDED",
+            "verifiedAt": "2026-10-21T03:01:00.000Z",
+            "independentEvidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T03:01:00.000Z"
+            },
+            "succeededAt": "2026-10-21T03:00:00.000Z"
+          }
+        ]
+      },
+      "priorRefunds": [
+        {
+          "businessId": "business-1",
+          "purchaseRef": "purchase-mikluha-three-travellers",
+          "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+          "operation": {
+            "provider": "ALFA",
+            "connectionId": "connection-1",
+            "paymentRef": "bank-mikluha-three-travellers",
+            "refundRef": "refund-1"
+          },
+          "amountKopecks": 1000000,
+          "currency": "RUB",
+          "allocationSource": "REFREF_COMMAND",
+          "allocationEvidence": {
+            "sourceRef": "evidence-1",
+            "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "occurredAt": "2026-10-21T01:00:00.000Z"
+          },
+          "lineAllocations": [
+            {
+              "lineRef": "tour",
+              "amountKopecks": 1000000
+            }
+          ]
+        }
+      ],
+      "v1Expected": {
+        "admission": "ACCEPTED",
+        "effect": -270000
+      },
+      "expected": {
+        "admission": "ACCEPTED",
+        "effect": -270000
+      }
+    },
+    {
+      "name": "bank-success-after-original-sla",
+      "producer": "mikluha-three-travellers",
+      "claim": {
+        "schema": "refref.purchase-cancellation-claim/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-mikluha-three-travellers",
+        "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+        "scope": "WHOLE_PURCHASE",
+        "idempotencyKey": "claim-1",
+        "reason": "ALL_ELIGIBLE_SERVICES_CANCELLED",
+        "coverage": [
+          {
+            "lineRef": "tour",
+            "coveredQuantity": 3,
+            "segments": [
+              {
+                "coverageRef": "whole-line",
+                "quantity": 3,
+                "evidence": [
+                  {
+                    "sourceRef": "evidence-1",
+                    "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "occurredAt": "2026-10-21T01:00:00.000Z"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "refunds": [
+          {
+            "businessId": "business-1",
+            "purchaseRef": "purchase-mikluha-three-travellers",
+            "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+            "operation": {
+              "provider": "ALFA",
+              "connectionId": "connection-1",
+              "paymentRef": "bank-mikluha-three-travellers",
+              "refundRef": "refund-1"
+            },
+            "amountKopecks": 1000000,
+            "currency": "RUB",
+            "allocationSource": "REFREF_COMMAND",
+            "allocationEvidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T01:00:00.000Z"
+            },
+            "lineAllocations": [
+              {
+                "lineRef": "tour",
+                "amountKopecks": 1000000
+              }
+            ]
+          }
+        ]
+      },
+      "decision": {
+        "schema": "refref.claim-decision-snapshot/1",
+        "admission": {
+          "schema": "refref.claim-admission-receipt/1",
+          "businessId": "business-1",
+          "purchaseRef": "purchase-mikluha-three-travellers",
+          "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+          "claimHash": "refref-jcs-1:391f9bab7d2b9135292f473ef99988dbdfd9cd69bdc86517d7efc7e7f40ddc6a",
+          "admissionKey": "refref-jcs-1:261b24fdf72466302a896bf7c0d679ddb563e611994ffbe5346a65ff0657a44a",
+          "effectKey": "refref-jcs-1:f03f094555d648c04b3baa55956d424a91e39c6910d944274b83466c72893782",
+          "receivedAt": "2026-10-21T02:00:00.000Z",
+          "decisionDueAt": "2026-11-04T21:00:00.000Z",
+          "calendarVersion": "RF-2026-v1",
+          "ticketRef": "ticket-1"
+        },
+        "outcome": "UPHELD",
+        "decidedAt": "2026-10-22T02:00:00.000Z",
+        "verifiedCoverage": [
+          {
+            "lineRef": "tour",
+            "coveredQuantity": 3,
+            "nonOverlapping": true,
+            "rightsTerminated": true,
+            "evidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T01:00:00.000Z"
+            }
+          }
+        ],
+        "refundStates": [
+          {
+            "businessId": "business-1",
+            "purchaseRef": "purchase-mikluha-three-travellers",
+            "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+            "operation": {
+              "provider": "ALFA",
+              "connectionId": "connection-1",
+              "paymentRef": "bank-mikluha-three-travellers",
+              "refundRef": "refund-1"
+            },
+            "amountKopecks": 1000000,
+            "currency": "RUB",
+            "status": "SUCCEEDED",
+            "verifiedAt": "2026-11-04T21:00:00.002Z",
+            "independentEvidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T03:01:00.000Z"
+            },
+            "succeededAt": "2026-11-04T21:00:00.001Z"
+          }
+        ]
+      },
+      "priorRefunds": [],
+      "v1Expected": {
+        "admission": "ACCEPTED",
+        "effect": "SUCCESSFUL_REFUND_REQUIRED"
+      },
+      "expected": {
+        "admission": "ACCEPTED",
+        "effect": "SUCCESSFUL_REFUND_REQUIRED"
+      }
+    },
+    {
+      "name": "bank-success-at-original-sla",
+      "producer": "mikluha-three-travellers",
+      "claim": {
+        "schema": "refref.purchase-cancellation-claim/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-mikluha-three-travellers",
+        "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+        "scope": "WHOLE_PURCHASE",
+        "idempotencyKey": "claim-1",
+        "reason": "ALL_ELIGIBLE_SERVICES_CANCELLED",
+        "coverage": [
+          {
+            "lineRef": "tour",
+            "coveredQuantity": 3,
+            "segments": [
+              {
+                "coverageRef": "whole-line",
+                "quantity": 3,
+                "evidence": [
+                  {
+                    "sourceRef": "evidence-1",
+                    "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "occurredAt": "2026-10-21T01:00:00.000Z"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "refunds": [
+          {
+            "businessId": "business-1",
+            "purchaseRef": "purchase-mikluha-three-travellers",
+            "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+            "operation": {
+              "provider": "ALFA",
+              "connectionId": "connection-1",
+              "paymentRef": "bank-mikluha-three-travellers",
+              "refundRef": "refund-1"
+            },
+            "amountKopecks": 1000000,
+            "currency": "RUB",
+            "allocationSource": "REFREF_COMMAND",
+            "allocationEvidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T01:00:00.000Z"
+            },
+            "lineAllocations": [
+              {
+                "lineRef": "tour",
+                "amountKopecks": 1000000
+              }
+            ]
+          }
+        ]
+      },
+      "decision": {
+        "schema": "refref.claim-decision-snapshot/1",
+        "admission": {
+          "schema": "refref.claim-admission-receipt/1",
+          "businessId": "business-1",
+          "purchaseRef": "purchase-mikluha-three-travellers",
+          "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+          "claimHash": "refref-jcs-1:391f9bab7d2b9135292f473ef99988dbdfd9cd69bdc86517d7efc7e7f40ddc6a",
+          "admissionKey": "refref-jcs-1:261b24fdf72466302a896bf7c0d679ddb563e611994ffbe5346a65ff0657a44a",
+          "effectKey": "refref-jcs-1:f03f094555d648c04b3baa55956d424a91e39c6910d944274b83466c72893782",
+          "receivedAt": "2026-10-21T02:00:00.000Z",
+          "decisionDueAt": "2026-11-04T21:00:00.000Z",
+          "calendarVersion": "RF-2026-v1",
+          "ticketRef": "ticket-1"
+        },
+        "outcome": "UPHELD",
+        "decidedAt": "2026-10-22T02:00:00.000Z",
+        "verifiedCoverage": [
+          {
+            "lineRef": "tour",
+            "coveredQuantity": 3,
+            "nonOverlapping": true,
+            "rightsTerminated": true,
+            "evidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T01:00:00.000Z"
+            }
+          }
+        ],
+        "refundStates": [
+          {
+            "businessId": "business-1",
+            "purchaseRef": "purchase-mikluha-three-travellers",
+            "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+            "operation": {
+              "provider": "ALFA",
+              "connectionId": "connection-1",
+              "paymentRef": "bank-mikluha-three-travellers",
+              "refundRef": "refund-1"
+            },
+            "amountKopecks": 1000000,
+            "currency": "RUB",
+            "status": "SUCCEEDED",
+            "verifiedAt": "2026-11-04T21:00:00.000Z",
+            "independentEvidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T03:01:00.000Z"
+            },
+            "succeededAt": "2026-11-04T21:00:00.000Z"
+          }
+        ]
+      },
+      "priorRefunds": [],
+      "v1Expected": {
+        "admission": "ACCEPTED",
+        "effect": "SUCCESSFUL_REFUND_REQUIRED"
+      },
+      "expected": {
+        "admission": "ACCEPTED",
+        "effect": "SUCCESSFUL_REFUND_REQUIRED"
+      }
+    },
+    {
+      "name": "bank-success-earlier-but-confirmed-after-sla",
+      "producer": "mikluha-three-travellers",
+      "claim": {
+        "schema": "refref.purchase-cancellation-claim/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-mikluha-three-travellers",
+        "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+        "scope": "WHOLE_PURCHASE",
+        "idempotencyKey": "claim-1",
+        "reason": "ALL_ELIGIBLE_SERVICES_CANCELLED",
+        "coverage": [
+          {
+            "lineRef": "tour",
+            "coveredQuantity": 3,
+            "segments": [
+              {
+                "coverageRef": "whole-line",
+                "quantity": 3,
+                "evidence": [
+                  {
+                    "sourceRef": "evidence-1",
+                    "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "occurredAt": "2026-10-21T01:00:00.000Z"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "refunds": [
+          {
+            "businessId": "business-1",
+            "purchaseRef": "purchase-mikluha-three-travellers",
+            "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+            "operation": {
+              "provider": "ALFA",
+              "connectionId": "connection-1",
+              "paymentRef": "bank-mikluha-three-travellers",
+              "refundRef": "refund-1"
+            },
+            "amountKopecks": 1000000,
+            "currency": "RUB",
+            "allocationSource": "REFREF_COMMAND",
+            "allocationEvidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T01:00:00.000Z"
+            },
+            "lineAllocations": [
+              {
+                "lineRef": "tour",
+                "amountKopecks": 1000000
+              }
+            ]
+          }
+        ]
+      },
+      "decision": {
+        "schema": "refref.claim-decision-snapshot/1",
+        "admission": {
+          "schema": "refref.claim-admission-receipt/1",
+          "businessId": "business-1",
+          "purchaseRef": "purchase-mikluha-three-travellers",
+          "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+          "claimHash": "refref-jcs-1:391f9bab7d2b9135292f473ef99988dbdfd9cd69bdc86517d7efc7e7f40ddc6a",
+          "admissionKey": "refref-jcs-1:261b24fdf72466302a896bf7c0d679ddb563e611994ffbe5346a65ff0657a44a",
+          "effectKey": "refref-jcs-1:f03f094555d648c04b3baa55956d424a91e39c6910d944274b83466c72893782",
+          "receivedAt": "2026-10-21T02:00:00.000Z",
+          "decisionDueAt": "2026-11-04T21:00:00.000Z",
+          "calendarVersion": "RF-2026-v1",
+          "ticketRef": "ticket-1"
+        },
+        "outcome": "UPHELD",
+        "decidedAt": "2026-10-22T02:00:00.000Z",
+        "verifiedCoverage": [
+          {
+            "lineRef": "tour",
+            "coveredQuantity": 3,
+            "nonOverlapping": true,
+            "rightsTerminated": true,
+            "evidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T01:00:00.000Z"
+            }
+          }
+        ],
+        "refundStates": [
+          {
+            "businessId": "business-1",
+            "purchaseRef": "purchase-mikluha-three-travellers",
+            "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+            "operation": {
+              "provider": "ALFA",
+              "connectionId": "connection-1",
+              "paymentRef": "bank-mikluha-three-travellers",
+              "refundRef": "refund-1"
+            },
+            "amountKopecks": 1000000,
+            "currency": "RUB",
+            "status": "SUCCEEDED",
+            "verifiedAt": "2026-11-04T21:00:00.001Z",
+            "independentEvidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T03:01:00.000Z"
+            },
+            "succeededAt": "2026-10-22T01:00:00.000Z"
+          }
+        ]
+      },
+      "priorRefunds": [],
+      "v1Expected": {
+        "admission": "ACCEPTED",
+        "effect": "SUCCESSFUL_REFUND_REQUIRED"
+      },
+      "expected": {
+        "admission": "ACCEPTED",
+        "effect": "SUCCESSFUL_REFUND_REQUIRED"
+      }
+    },
+    {
+      "name": "bank-success-confirmed-after-decision",
+      "producer": "mikluha-three-travellers",
+      "claim": {
+        "schema": "refref.purchase-cancellation-claim/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-mikluha-three-travellers",
+        "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+        "scope": "WHOLE_PURCHASE",
+        "idempotencyKey": "claim-1",
+        "reason": "ALL_ELIGIBLE_SERVICES_CANCELLED",
+        "coverage": [
+          {
+            "lineRef": "tour",
+            "coveredQuantity": 3,
+            "segments": [
+              {
+                "coverageRef": "whole-line",
+                "quantity": 3,
+                "evidence": [
+                  {
+                    "sourceRef": "evidence-1",
+                    "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "occurredAt": "2026-10-21T01:00:00.000Z"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "refunds": [
+          {
+            "businessId": "business-1",
+            "purchaseRef": "purchase-mikluha-three-travellers",
+            "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+            "operation": {
+              "provider": "ALFA",
+              "connectionId": "connection-1",
+              "paymentRef": "bank-mikluha-three-travellers",
+              "refundRef": "refund-1"
+            },
+            "amountKopecks": 1000000,
+            "currency": "RUB",
+            "allocationSource": "REFREF_COMMAND",
+            "allocationEvidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T01:00:00.000Z"
+            },
+            "lineAllocations": [
+              {
+                "lineRef": "tour",
+                "amountKopecks": 1000000
+              }
+            ]
+          }
+        ]
+      },
+      "decision": {
+        "schema": "refref.claim-decision-snapshot/1",
+        "admission": {
+          "schema": "refref.claim-admission-receipt/1",
+          "businessId": "business-1",
+          "purchaseRef": "purchase-mikluha-three-travellers",
+          "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+          "claimHash": "refref-jcs-1:391f9bab7d2b9135292f473ef99988dbdfd9cd69bdc86517d7efc7e7f40ddc6a",
+          "admissionKey": "refref-jcs-1:261b24fdf72466302a896bf7c0d679ddb563e611994ffbe5346a65ff0657a44a",
+          "effectKey": "refref-jcs-1:f03f094555d648c04b3baa55956d424a91e39c6910d944274b83466c72893782",
+          "receivedAt": "2026-10-21T02:00:00.000Z",
+          "decisionDueAt": "2026-11-04T21:00:00.000Z",
+          "calendarVersion": "RF-2026-v1",
+          "ticketRef": "ticket-1"
+        },
+        "outcome": "UPHELD",
+        "decidedAt": "2026-10-22T02:00:00.000Z",
+        "verifiedCoverage": [
+          {
+            "lineRef": "tour",
+            "coveredQuantity": 3,
+            "nonOverlapping": true,
+            "rightsTerminated": true,
+            "evidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T01:00:00.000Z"
+            }
+          }
+        ],
+        "refundStates": [
+          {
+            "businessId": "business-1",
+            "purchaseRef": "purchase-mikluha-three-travellers",
+            "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+            "operation": {
+              "provider": "ALFA",
+              "connectionId": "connection-1",
+              "paymentRef": "bank-mikluha-three-travellers",
+              "refundRef": "refund-1"
+            },
+            "amountKopecks": 1000000,
+            "currency": "RUB",
+            "status": "SUCCEEDED",
+            "verifiedAt": "2026-10-22T02:00:00.001Z",
+            "independentEvidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T03:01:00.000Z"
+            },
+            "succeededAt": "2026-10-22T01:00:00.000Z"
+          }
+        ]
+      },
+      "priorRefunds": [],
+      "v1Expected": {
+        "admission": "ACCEPTED",
+        "effect": "SUCCESSFUL_REFUND_REQUIRED"
+      },
+      "expected": {
+        "admission": "ACCEPTED",
+        "effect": "SUCCESSFUL_REFUND_REQUIRED"
+      }
+    },
+    {
+      "name": "percent-refund-one-below-commission",
+      "producer": "mikluha-three-travellers",
+      "claim": {
+        "schema": "refref.purchase-cancellation-claim/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-mikluha-three-travellers",
+        "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+        "scope": "WHOLE_PURCHASE",
+        "idempotencyKey": "claim-1",
+        "reason": "ALL_ELIGIBLE_SERVICES_CANCELLED",
+        "coverage": [
+          {
+            "lineRef": "tour",
+            "coveredQuantity": 3,
+            "segments": [
+              {
+                "coverageRef": "whole-line",
+                "quantity": 3,
+                "evidence": [
+                  {
+                    "sourceRef": "evidence-1",
+                    "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "occurredAt": "2026-10-21T01:00:00.000Z"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "refunds": [
+          {
+            "businessId": "business-1",
+            "purchaseRef": "purchase-mikluha-three-travellers",
+            "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+            "operation": {
+              "provider": "ALFA",
+              "connectionId": "connection-1",
+              "paymentRef": "bank-mikluha-three-travellers",
+              "refundRef": "refund-1"
+            },
+            "amountKopecks": 269999,
+            "currency": "RUB",
+            "allocationSource": "REFREF_COMMAND",
+            "allocationEvidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T01:00:00.000Z"
+            },
+            "lineAllocations": [
+              {
+                "lineRef": "tour",
+                "amountKopecks": 269999
+              }
+            ]
+          }
+        ]
+      },
+      "decision": {
+        "schema": "refref.claim-decision-snapshot/1",
+        "admission": {
+          "schema": "refref.claim-admission-receipt/1",
+          "businessId": "business-1",
+          "purchaseRef": "purchase-mikluha-three-travellers",
+          "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+          "claimHash": "refref-jcs-1:f6a28755e6066a909887f637de362375d06e4aa0b05f3be481a9c088f71f962a",
+          "admissionKey": "refref-jcs-1:261b24fdf72466302a896bf7c0d679ddb563e611994ffbe5346a65ff0657a44a",
+          "effectKey": "refref-jcs-1:f03f094555d648c04b3baa55956d424a91e39c6910d944274b83466c72893782",
+          "receivedAt": "2026-10-21T02:00:00.000Z",
+          "decisionDueAt": "2026-11-04T21:00:00.000Z",
+          "calendarVersion": "RF-2026-v1",
+          "ticketRef": "ticket-1"
+        },
+        "outcome": "UPHELD",
+        "decidedAt": "2026-10-22T02:00:00.000Z",
+        "verifiedCoverage": [
+          {
+            "lineRef": "tour",
+            "coveredQuantity": 3,
+            "nonOverlapping": true,
+            "rightsTerminated": true,
+            "evidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T01:00:00.000Z"
+            }
+          }
+        ],
+        "refundStates": [
+          {
+            "businessId": "business-1",
+            "purchaseRef": "purchase-mikluha-three-travellers",
+            "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+            "operation": {
+              "provider": "ALFA",
+              "connectionId": "connection-1",
+              "paymentRef": "bank-mikluha-three-travellers",
+              "refundRef": "refund-1"
+            },
+            "amountKopecks": 269999,
+            "currency": "RUB",
+            "status": "SUCCEEDED",
+            "verifiedAt": "2026-10-21T03:01:00.000Z",
+            "independentEvidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T03:01:00.000Z"
+            },
+            "succeededAt": "2026-10-21T03:00:00.000Z"
+          }
+        ]
+      },
+      "priorRefunds": [],
+      "expected": {
+        "admission": "ACCEPTED",
+        "effect": "REFUND_BELOW_CLAIM_POLICY_THRESHOLD"
+      }
+    },
+    {
+      "name": "percent-refund-equal-to-commission",
+      "producer": "mikluha-three-travellers",
+      "claim": {
+        "schema": "refref.purchase-cancellation-claim/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-mikluha-three-travellers",
+        "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+        "scope": "WHOLE_PURCHASE",
+        "idempotencyKey": "claim-1",
+        "reason": "ALL_ELIGIBLE_SERVICES_CANCELLED",
+        "coverage": [
+          {
+            "lineRef": "tour",
+            "coveredQuantity": 3,
+            "segments": [
+              {
+                "coverageRef": "whole-line",
+                "quantity": 3,
+                "evidence": [
+                  {
+                    "sourceRef": "evidence-1",
+                    "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "occurredAt": "2026-10-21T01:00:00.000Z"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "refunds": [
+          {
+            "businessId": "business-1",
+            "purchaseRef": "purchase-mikluha-three-travellers",
+            "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+            "operation": {
+              "provider": "ALFA",
+              "connectionId": "connection-1",
+              "paymentRef": "bank-mikluha-three-travellers",
+              "refundRef": "refund-1"
+            },
+            "amountKopecks": 270000,
+            "currency": "RUB",
+            "allocationSource": "REFREF_COMMAND",
+            "allocationEvidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T01:00:00.000Z"
+            },
+            "lineAllocations": [
+              {
+                "lineRef": "tour",
+                "amountKopecks": 270000
+              }
+            ]
+          }
+        ]
+      },
+      "decision": {
+        "schema": "refref.claim-decision-snapshot/1",
+        "admission": {
+          "schema": "refref.claim-admission-receipt/1",
+          "businessId": "business-1",
+          "purchaseRef": "purchase-mikluha-three-travellers",
+          "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+          "claimHash": "refref-jcs-1:f0ae9e727fb1b0e33f4dba14bf850df89d7b8b98c7f5b53979841fa36298de76",
+          "admissionKey": "refref-jcs-1:261b24fdf72466302a896bf7c0d679ddb563e611994ffbe5346a65ff0657a44a",
+          "effectKey": "refref-jcs-1:f03f094555d648c04b3baa55956d424a91e39c6910d944274b83466c72893782",
+          "receivedAt": "2026-10-21T02:00:00.000Z",
+          "decisionDueAt": "2026-11-04T21:00:00.000Z",
+          "calendarVersion": "RF-2026-v1",
+          "ticketRef": "ticket-1"
+        },
+        "outcome": "UPHELD",
+        "decidedAt": "2026-10-22T02:00:00.000Z",
+        "verifiedCoverage": [
+          {
+            "lineRef": "tour",
+            "coveredQuantity": 3,
+            "nonOverlapping": true,
+            "rightsTerminated": true,
+            "evidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T01:00:00.000Z"
+            }
+          }
+        ],
+        "refundStates": [
+          {
+            "businessId": "business-1",
+            "purchaseRef": "purchase-mikluha-three-travellers",
+            "payableHash": "refref-jcs-1:4f27aed2754bd2ba837b4b65d4ee9c9e747ad39cdda4de355919379c774693b9",
+            "operation": {
+              "provider": "ALFA",
+              "connectionId": "connection-1",
+              "paymentRef": "bank-mikluha-three-travellers",
+              "refundRef": "refund-1"
+            },
+            "amountKopecks": 270000,
+            "currency": "RUB",
+            "status": "SUCCEEDED",
+            "verifiedAt": "2026-10-21T03:01:00.000Z",
+            "independentEvidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T03:01:00.000Z"
+            },
+            "succeededAt": "2026-10-21T03:00:00.000Z"
+          }
+        ]
+      },
+      "priorRefunds": [],
+      "expected": {
+        "admission": "ACCEPTED",
+        "effect": -270000
+      }
+    },
+    {
+      "name": "fixed-above-price-refund-one-below-eligible-paid",
+      "producer": "fixed-reward-above-eligible-price",
+      "claim": {
+        "schema": "refref.purchase-cancellation-claim/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-mikluha-three-travellers",
+        "payableHash": "refref-jcs-1:7f88da5a083207ea448177bc75aca6e787ff5d0b77cc3af6599e7ff3f1ece15f",
+        "scope": "WHOLE_PURCHASE",
+        "idempotencyKey": "claim-1",
+        "reason": "ALL_ELIGIBLE_SERVICES_CANCELLED",
+        "coverage": [
+          {
+            "lineRef": "tour",
+            "coveredQuantity": 3,
+            "segments": [
+              {
+                "coverageRef": "whole-line",
+                "quantity": 3,
+                "evidence": [
+                  {
+                    "sourceRef": "evidence-1",
+                    "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "occurredAt": "2026-10-21T01:00:00.000Z"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "refunds": [
+          {
+            "businessId": "business-1",
+            "purchaseRef": "purchase-mikluha-three-travellers",
+            "payableHash": "refref-jcs-1:7f88da5a083207ea448177bc75aca6e787ff5d0b77cc3af6599e7ff3f1ece15f",
+            "operation": {
+              "provider": "ALFA",
+              "connectionId": "connection-1",
+              "paymentRef": "bank-mikluha-three-travellers",
+              "refundRef": "refund-1"
+            },
+            "amountKopecks": 2699999,
+            "currency": "RUB",
+            "allocationSource": "REFREF_COMMAND",
+            "allocationEvidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T01:00:00.000Z"
+            },
+            "lineAllocations": [
+              {
+                "lineRef": "tour",
+                "amountKopecks": 2699999
+              }
+            ]
+          }
+        ]
+      },
+      "decision": {
+        "schema": "refref.claim-decision-snapshot/1",
+        "admission": {
+          "schema": "refref.claim-admission-receipt/1",
+          "businessId": "business-1",
+          "purchaseRef": "purchase-mikluha-three-travellers",
+          "payableHash": "refref-jcs-1:7f88da5a083207ea448177bc75aca6e787ff5d0b77cc3af6599e7ff3f1ece15f",
+          "claimHash": "refref-jcs-1:44af0655bdb4d809b4ec0eb083c5fc23240377d5f93efb0ea2b6f0377305568b",
+          "admissionKey": "refref-jcs-1:261b24fdf72466302a896bf7c0d679ddb563e611994ffbe5346a65ff0657a44a",
+          "effectKey": "refref-jcs-1:f03f094555d648c04b3baa55956d424a91e39c6910d944274b83466c72893782",
+          "receivedAt": "2026-10-21T02:00:00.000Z",
+          "decisionDueAt": "2026-11-04T21:00:00.000Z",
+          "calendarVersion": "RF-2026-v1",
+          "ticketRef": "ticket-1"
+        },
+        "outcome": "UPHELD",
+        "decidedAt": "2026-10-22T02:00:00.000Z",
+        "verifiedCoverage": [
+          {
+            "lineRef": "tour",
+            "coveredQuantity": 3,
+            "nonOverlapping": true,
+            "rightsTerminated": true,
+            "evidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T01:00:00.000Z"
+            }
+          }
+        ],
+        "refundStates": [
+          {
+            "businessId": "business-1",
+            "purchaseRef": "purchase-mikluha-three-travellers",
+            "payableHash": "refref-jcs-1:7f88da5a083207ea448177bc75aca6e787ff5d0b77cc3af6599e7ff3f1ece15f",
+            "operation": {
+              "provider": "ALFA",
+              "connectionId": "connection-1",
+              "paymentRef": "bank-mikluha-three-travellers",
+              "refundRef": "refund-1"
+            },
+            "amountKopecks": 2699999,
+            "currency": "RUB",
+            "status": "SUCCEEDED",
+            "verifiedAt": "2026-10-21T03:01:00.000Z",
+            "independentEvidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T03:01:00.000Z"
+            },
+            "succeededAt": "2026-10-21T03:00:00.000Z"
+          }
+        ]
+      },
+      "priorRefunds": [],
+      "expected": {
+        "admission": "ACCEPTED",
+        "effect": "REFUND_BELOW_CLAIM_POLICY_THRESHOLD"
+      }
+    },
+    {
+      "name": "fixed-above-price-full-eligible-refund",
+      "producer": "fixed-reward-above-eligible-price",
+      "claim": {
+        "schema": "refref.purchase-cancellation-claim/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-mikluha-three-travellers",
+        "payableHash": "refref-jcs-1:7f88da5a083207ea448177bc75aca6e787ff5d0b77cc3af6599e7ff3f1ece15f",
+        "scope": "WHOLE_PURCHASE",
+        "idempotencyKey": "claim-1",
+        "reason": "ALL_ELIGIBLE_SERVICES_CANCELLED",
+        "coverage": [
+          {
+            "lineRef": "tour",
+            "coveredQuantity": 3,
+            "segments": [
+              {
+                "coverageRef": "whole-line",
+                "quantity": 3,
+                "evidence": [
+                  {
+                    "sourceRef": "evidence-1",
+                    "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "occurredAt": "2026-10-21T01:00:00.000Z"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "refunds": [
+          {
+            "businessId": "business-1",
+            "purchaseRef": "purchase-mikluha-three-travellers",
+            "payableHash": "refref-jcs-1:7f88da5a083207ea448177bc75aca6e787ff5d0b77cc3af6599e7ff3f1ece15f",
+            "operation": {
+              "provider": "ALFA",
+              "connectionId": "connection-1",
+              "paymentRef": "bank-mikluha-three-travellers",
+              "refundRef": "refund-1"
+            },
+            "amountKopecks": 2700000,
+            "currency": "RUB",
+            "allocationSource": "REFREF_COMMAND",
+            "allocationEvidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T01:00:00.000Z"
+            },
+            "lineAllocations": [
+              {
+                "lineRef": "tour",
+                "amountKopecks": 2700000
+              }
+            ]
+          }
+        ]
+      },
+      "decision": {
+        "schema": "refref.claim-decision-snapshot/1",
+        "admission": {
+          "schema": "refref.claim-admission-receipt/1",
+          "businessId": "business-1",
+          "purchaseRef": "purchase-mikluha-three-travellers",
+          "payableHash": "refref-jcs-1:7f88da5a083207ea448177bc75aca6e787ff5d0b77cc3af6599e7ff3f1ece15f",
+          "claimHash": "refref-jcs-1:f51a614a4bac6df9fbadd6e7e4469efde5127fd9c0ff9fa0cd73637d5022ff2c",
+          "admissionKey": "refref-jcs-1:261b24fdf72466302a896bf7c0d679ddb563e611994ffbe5346a65ff0657a44a",
+          "effectKey": "refref-jcs-1:f03f094555d648c04b3baa55956d424a91e39c6910d944274b83466c72893782",
+          "receivedAt": "2026-10-21T02:00:00.000Z",
+          "decisionDueAt": "2026-11-04T21:00:00.000Z",
+          "calendarVersion": "RF-2026-v1",
+          "ticketRef": "ticket-1"
+        },
+        "outcome": "UPHELD",
+        "decidedAt": "2026-10-22T02:00:00.000Z",
+        "verifiedCoverage": [
+          {
+            "lineRef": "tour",
+            "coveredQuantity": 3,
+            "nonOverlapping": true,
+            "rightsTerminated": true,
+            "evidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T01:00:00.000Z"
+            }
+          }
+        ],
+        "refundStates": [
+          {
+            "businessId": "business-1",
+            "purchaseRef": "purchase-mikluha-three-travellers",
+            "payableHash": "refref-jcs-1:7f88da5a083207ea448177bc75aca6e787ff5d0b77cc3af6599e7ff3f1ece15f",
+            "operation": {
+              "provider": "ALFA",
+              "connectionId": "connection-1",
+              "paymentRef": "bank-mikluha-three-travellers",
+              "refundRef": "refund-1"
+            },
+            "amountKopecks": 2700000,
+            "currency": "RUB",
+            "status": "SUCCEEDED",
+            "verifiedAt": "2026-10-21T03:01:00.000Z",
+            "independentEvidence": {
+              "sourceRef": "evidence-1",
+              "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "occurredAt": "2026-10-21T03:01:00.000Z"
+            },
+            "succeededAt": "2026-10-21T03:00:00.000Z"
+          }
+        ]
+      },
+      "priorRefunds": [],
+      "expected": {
+        "admission": "ACCEPTED",
+        "effect": -5000000
+      }
+    }
+  ]
+}
