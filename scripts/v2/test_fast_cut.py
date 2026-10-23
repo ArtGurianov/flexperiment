@@ -285,7 +285,7 @@ class FastCut(unittest.TestCase):
             with patch.object(f,'release',return_value=vector),patch.object(f,'inspect',side_effect=lambda role:(role,{})), \
                  patch.object(f,'run',side_effect=[json.dumps(r).encode() for r in ready]), \
                  patch.object(f.sqlite3,'connect',side_effect=[connection(),connection(True)]), \
-                 patch.object(f,'SCHEMA',__import__('hashlib').sha256(b'[]').hexdigest()):return f.check()
+                 patch.object(f,'SCHEMA',__import__('hashlib').sha256(b'[]').hexdigest()),patch.object(f,'READINESS_ATTEMPTS',1):return f.check()
         self.assertEqual(check(target)['sourceCommit'],target)
         with self.assertRaisesRegex(ValueError,'ADMIN_NOT_READY'):check(f.SOURCE)
         with self.assertRaisesRegex(ValueError,'PLATFORM_NOT_READY'):check(target,platform_source=target)
@@ -352,7 +352,7 @@ class FastCut(unittest.TestCase):
                 output=io.StringIO()
                 with patch.object(f,'release',return_value=vector),patch.object(f,'inspect',side_effect=lambda role:(role,{})), \
                      patch.object(f,'run',side_effect=[json.dumps(commerce).encode(),json.dumps(envelope).encode()]), \
-                     contextlib.redirect_stdout(output):
+                     patch.object(f,'READINESS_ATTEMPTS',1),contextlib.redirect_stdout(output):
                     self.assertEqual(f.main(['check']),1)
                 raw=output.getvalue();self.assertNotIn(secret,raw);report=json.loads(raw)
                 self.assertEqual(report['stage'],'platform_readiness');self.assertEqual(report['code'],'FAST_CUT_PLATFORM_NOT_READY')
@@ -365,11 +365,116 @@ class FastCut(unittest.TestCase):
                 output=io.StringIO()
                 completed=subprocess.CompletedProcess(['curl'],rc,stdout=secret.encode())
                 with patch.object(f,'release',return_value=vector),patch.object(f,'inspect',side_effect=lambda role:(role,{})), \
-                     patch.object(f.subprocess,'run',return_value=completed),contextlib.redirect_stdout(output):
+                     patch.object(f.subprocess,'run',return_value=completed),patch.object(f,'READINESS_ATTEMPTS',1), \
+                     contextlib.redirect_stdout(output):
                     self.assertEqual(f.main(['check']),1)
                 raw=output.getvalue();self.assertNotIn(secret,raw);report=json.loads(raw)
                 self.assertEqual((report['stage'],report['code']),('commerce_readiness','FAST_CUT_COMMAND_FAILED'))
                 self.assertEqual(report.get('detail'),detail)
+
+    def readiness_fixture(self,platform_probes,inspect=None):
+        """check() against synthetic runtimes; Platform answers from platform_probes in order."""
+        vector=f.validate_release(self.commerce_candidate());target=vector['commerce']['sourceCommit']
+        commerce={'ok':True,'foundationMode':False,'capabilities':{'erasure':'qualified'},'core':{'paymentMode':'disabled'},'sourceCommit':target}
+        admin={'ok':True,'service':'commerce-v2','sourceCommit':target};probes=iter(platform_probes)
+        def command(args,**kwargs):
+            if args[:2]==['/usr/local/bin/flexperiment-erasure','read']:return json.dumps({'state':'REMOTE_VERIFIED','scope':'canary','sequence':1}).encode()
+            role=args[2]
+            if role=='platform':return json.dumps(next(probes)).encode()
+            return json.dumps(commerce if role=='commerce' else admin).encode()
+        def connection(*args,**kwargs):
+            db=Mock()
+            def execute(query):
+                result=Mock()
+                if 'sqlite_master' in query:result.__iter__=Mock(return_value=iter([]))
+                elif 'foreign_key_check' in query:result.fetchall.return_value=[]
+                elif 'fence_state' in query:result.fetchone.return_value=('canary','OPEN',1,None)
+                elif 'fence_leases' in query:result.fetchone.return_value=(0,)
+                elif 'integrity_check' in query:result.fetchone.return_value=('ok',)
+                else:result.fetchone.return_value=(28,)
+                return result
+            db.execute.side_effect=execute;return db
+        return contextlib.ExitStack(),[
+            patch.object(f,'release',return_value=vector),
+            patch.object(f,'inspect',side_effect=inspect or (lambda role:(role,{}))),
+            patch.object(f,'run',side_effect=command),patch.object(f.sqlite3,'connect',side_effect=connection),
+            patch.object(f,'SCHEMA',__import__('hashlib').sha256(b'[]').hexdigest()),
+            patch.object(f.time,'sleep')],vector
+
+    def test_one_slow_platform_readiness_is_retried_after_a_bounded_pause(self):
+        secret='synthetic-private-value@example.invalid/token'
+        refused={'status':503,'body':json.dumps({'ok':False,'error':'PLATFORM_NOT_READY','reason':'UPSTREAM_TIMEOUT','note':secret})}
+        platform=f.validate_release(self.commerce_candidate())['platform']['sourceCommit']
+        stack,patches,_=self.readiness_fixture([refused,{'status':200,'body':json.dumps({'sourceCommit':platform})}])
+        errors=io.StringIO()
+        with stack:
+            mocks=[stack.enter_context(p) for p in patches];sleep=mocks[-1]
+            with contextlib.redirect_stderr(errors):result=f.check()
+        self.assertEqual(result['state'],'RUNTIME_CHECK_PASS_NOT_FINAL_ACCEPTANCE')
+        sleep.assert_called_once_with(f.READINESS_RETRY_PAUSE)
+        self.assertNotIn(secret,errors.getvalue())
+        retry=json.loads(errors.getvalue())
+        self.assertEqual({k:retry[k] for k in ['state','stage','attempt','code','detail','httpStatus']},
+                         {'state':'FAST_CUT_READINESS_RETRY','stage':'platform_readiness','attempt':1,
+                          'code':'FAST_CUT_PLATFORM_NOT_READY','detail':'UPSTREAM_TIMEOUT','httpStatus':503})
+
+    def test_persistent_readiness_refusal_holds_backup_after_bounded_attempts(self):
+        refused={'status':503,'body':json.dumps({'reason':'UPSTREAM_TIMEOUT'})}
+        stack,patches,_=self.readiness_fixture([refused]*f.READINESS_ATTEMPTS)
+        output=io.StringIO();errors=io.StringIO()
+        with stack:
+            mocks=[stack.enter_context(p) for p in patches];sleep=mocks[-1];command=mocks[2]
+            with patch.object(f,'transport') as transport,contextlib.redirect_stdout(output),contextlib.redirect_stderr(errors):
+                self.assertEqual(f.main(['backup']),1)
+        report=json.loads(output.getvalue())
+        self.assertEqual((report['stage'],report['code'],report['detail']),('platform_readiness','FAST_CUT_PLATFORM_NOT_READY','UPSTREAM_TIMEOUT'))
+        self.assertEqual(sleep.call_count,f.READINESS_ATTEMPTS-1)
+        self.assertEqual(len(errors.getvalue().splitlines()),f.READINESS_ATTEMPTS-1)
+        self.assertEqual([c.args[0][2] for c in command.call_args_list],['commerce']+['platform']*f.READINESS_ATTEMPTS)
+        transport.assert_not_called()
+
+    def test_identity_drift_is_never_retried(self):
+        def drift(role):raise f.GuardRefusal('FAST_CUT_IMAGE_DRIFT')
+        stack,patches,_=self.readiness_fixture([],inspect=drift)
+        with stack:
+            mocks=[stack.enter_context(p) for p in patches];sleep=mocks[-1];inspect=mocks[1]
+            with self.assertRaisesRegex(ValueError,'IMAGE_DRIFT'):f.check()
+        self.assertEqual(inspect.call_count,1);sleep.assert_not_called()
+
+    def test_readiness_retries_fit_inside_the_backup_unit(self):
+        import ast,inspect,re
+        tree=ast.parse(Path(f.__file__).read_text())
+        def function(name):return next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name==name)
+        def runs(name):return [n for n in ast.walk(function(name)) if isinstance(n,ast.Call) and isinstance(n.func,ast.Name) and n.func.id=='run']
+        default=inspect.signature(f.run).parameters['timeout'].default
+        def timeout(call):return next((ast.literal_eval(k.value) for k in call.keywords if k.arg=='timeout'),default)
+        # Three role inspections plus the post-check Commerce inspection; Admin
+        # additionally checks the ingress network and the Commerce/proxy peers.
+        identity=(4*len(runs('inspect'))+len(runs('assert_runtime_networks')))*default
+        readiness=3*(f.READINESS_ATTEMPTS*f.READINESS_COMMAND_TIMEOUT+(f.READINESS_ATTEMPTS-1)*f.READINESS_RETRY_PAUSE)
+        transport=ast.parse((ROOT/'scripts/v2/scheduled-backup.py').read_text())
+        call=next(n for n in ast.walk(next(n for n in transport.body if isinstance(n,ast.FunctionDef) and n.name=='run'))
+                  if isinstance(n,ast.Call) and isinstance(n.func,ast.Attribute) and n.func.attr=='run')
+        transport_timeout=next(ast.literal_eval(k.value) for k in call.keywords if k.arg=='timeout')
+        s3_calls=sum(isinstance(n,ast.Call) and isinstance(n.func,ast.Attribute) and n.func.attr=='s3' for n in ast.walk(function('backup')))
+        worst=identity+readiness+sum(timeout(c) for c in runs('check')+runs('backup'))+s3_calls*transport_timeout
+        unit=(ROOT/'deploy/v2/fast-cut/backup.service').read_text()
+        seconds=int(re.search(r'TimeoutStartSec=(\d+)min',unit).group(1))*60
+        self.assertEqual(identity,14*180)
+        self.assertEqual(worst,4440)  # 74 min of subprocess limits, not the previous 25 min estimate.
+        self.assertGreaterEqual(seconds,worst+300)  # Additional local IO/scheduling allowance.
+        self.assertLess(6*3600+seconds,8*3600)  # A full allowed run still fits the freshness window.
+
+    def test_docker_exec_timeout_keeps_a_fixed_code_and_never_reaches_snapshot(self):
+        vector=f.validate_release(self.commerce_candidate());out=io.StringIO()
+        def command(*args,**kwargs):raise subprocess.TimeoutExpired(['docker','exec','SYNTHETIC_SECRET'],30)
+        with patch.object(f,'release',return_value=vector),patch.object(f,'inspect',return_value=('commerce',{})), \
+             patch.object(f.subprocess,'run',side_effect=command),patch.object(f.time,'sleep'),patch.object(f,'transport') as transport, \
+             contextlib.redirect_stdout(out),contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(f.main(['backup']),1)
+        report=json.loads(out.getvalue());self.assertEqual(report['code'],'FAST_CUT_COMMAND_TIMEOUT')
+        self.assertEqual(report['stage'],'commerce_readiness');self.assertNotIn('SYNTHETIC_SECRET',out.getvalue())
+        transport.assert_not_called()
 
     def test_actual_admin_nginx_readiness_has_new_upstream_source_and_retained_native_identity(self):
         target=self.candidate()['roles']['commerce']['sourceCommit']
@@ -440,9 +545,9 @@ class FastCut(unittest.TestCase):
         errors=[(f.GuardRefusal('FAST_CUT_FENCE'),'GUARD_REFUSED','FAST_CUT_FENCE'),
                 (f.GuardRefusal('FAST_CUT_'+secret),'UNKNOWN',None),
                 (ValueError('FAST_CUT_FENCE '+secret),'UNKNOWN',None),
-                (subprocess.TimeoutExpired(['curl',secret],9,output=secret.encode()),'TIMEOUT',None),
+                (subprocess.TimeoutExpired(['curl',secret],9,output=secret.encode()),'TIMEOUT','FAST_CUT_COMMAND_TIMEOUT'),
                 (PermissionError(secret),'PERMISSION',None),(FileNotFoundError(secret),'MISSING_FILE',None),
-                (json.JSONDecodeError(secret,secret,0),'INVALID_JSON',None),(HostileError(),'UNKNOWN',None)]
+                (json.JSONDecodeError(secret,secret,0),'INVALID_JSON','FAST_CUT_INVALID_JSON'),(HostileError(),'UNKNOWN',None)]
         for error,reason,code in errors:
             with self.subTest(reason=reason,code=code):
                 def refuse():
