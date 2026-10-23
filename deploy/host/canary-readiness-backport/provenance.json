@@ -24,8 +24,8 @@
     "readiness",
     "bounded_readiness"
   ],
-  "unchangedNodesSha256": "293e12b24d07fb240efb093991402250b841571d238b96f595da3a397e426bf5",
-  "checkDatabaseFenceLedgerTailSha256": "3b132898bfd5ebf1393f25985971903c57444693d171e78444766c1fdc71e928",
+  "unchangedNodesSha256": "56f6fff2c537a78c3fd1b640ae2fc8f1222dfafd7e4d71ab0c126845f41b2754",
+  "checkDatabaseFenceLedgerTailSha256": "fe8e3670bc61afc0290310eba4af959c95b19bf86a1a10eca802f842116557ef",
   "release": {
     "commerce": {
       "sourceCommit": "56f864ee5b5325acd2ed5c5ad6ea756182326bf7",
@@ -41,11 +41,12 @@
     }
   },
   "upstreamNodeSha256": {
-    "GuardRefusal": "60f65c2b4f26ea79305409b1b42d47e2b6dbfbbb28d89556ca1ca88f49ddcf78",
-    "failure_report": "f86d0a19640f4f6ad37719c5f7ae06406a3a699a092c779402fac8c18ed63db9",
-    "run": "155fbd39cb21f8a090a2abb92d18e446b36a53fdc2966b2014359261469d206c",
-    "readiness": "084a785fe9123b60b4246b61ac5a08549aa89305a4fe4a875422c1b12567c691",
-    "bounded_readiness": "f854c39962e758db1dd3f9e662bdd940f74708167097ed86044c4df27d277bf0",
-    "check": "f1325360330c2d7195c4ec19f5c33961c34fd69822e5e0acf01edb62f216620a"
-  }
+    "GuardRefusal": "855e1e9e0e8dbb29dc4bb5cffe1c60447a3295023f1979e3723eec297cbb6228",
+    "failure_report": "1b3722096ee313723c66419be824721fe5adab813af52c0606977b5858dceab4",
+    "run": "6b6ab7104c96bf7d9a05f551c3a0cf288b6829132dcea91e0339a95002f51b07",
+    "readiness": "070b35d2fd2eb6b5c065f0728b183236cf1fd375e22025048c1008c992127a6f",
+    "bounded_readiness": "7b2ca92b79603702dd186fb1cc945644a2246724a8eba96bd8038eee253359e1",
+    "check": "8006c8ad5850622055b8d816580075bf71dfc4980bef964f2ca8aaa7ac08fe76"
+  },
+  "astEncoding": "nonempty-fields-json-v1"
 }

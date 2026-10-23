@@ -9,6 +9,11 @@ by main, CI or a deployment workflow.
 
 `provenance.json` records the exact installed base, reviewed host improvements,
 output SHA-256, unchanged AST and the only admitted release vector.
+AST hashes use `nonempty-fields-json-v1`: node kinds, nonempty named fields,
+ordered lists and typed constant values, with no location attributes. This
+avoids version-dependent `ast.dump` output and newly added empty `type_params`.
+Base/upstream hashes are derived independently from their pinned Git objects;
+the helper's complete byte hash remains a separate check.
 
 - Base helper: source `56f864ee5b5325acd2ed5c5ad6ea756182326bf7`, SHA-256
   `9ce826f47e8e07e1ea124fadc7ec39dcde5e4c52efe2094d9e80c4812a435583`.

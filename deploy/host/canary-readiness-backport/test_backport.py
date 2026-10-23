@@ -17,6 +17,26 @@ LANE=Path(__file__).resolve().parent
 spec=importlib.util.spec_from_file_location('fast_cut',LANE/'fast-cut.py')
 f=importlib.util.module_from_spec(spec);spec.loader.exec_module(f)
 
+
+def ast_digest(node):
+    """Version-independent AST encoding, excluding location and empty fields.
+
+    Python 3.14's ast.dump omits empty fields that older versions print, while
+    Python 3.12 added empty type_params fields. Neither changes these guards.
+    Preserve every nonempty field, list order and constant type/value.
+    """
+    import ast,hashlib
+    def encode(value):
+        if isinstance(value,ast.AST):
+            return [type(value).__name__, {key:encode(item) for key,item in ast.iter_fields(value)
+                                         if item is not None and item != []}]
+        if isinstance(value,list):return [encode(item) for item in value]
+        if isinstance(value,bytes):return {'bytesHex':value.hex()}
+        if value is None or type(value) in (str,int,float,bool):return value
+        raise TypeError('UNSUPPORTED_PROVENANCE_AST_VALUE')
+    return hashlib.sha256(json.dumps(encode(node),sort_keys=True,separators=(',',':'),ensure_ascii=True).encode()).hexdigest()
+
+
 class FastCut(unittest.TestCase):
     def test_control_room_ingress_requires_exact_private_receipt_and_requalification(self):
         canary = 'flexperiment-fast-cut-canary'
@@ -595,32 +615,45 @@ class CompatibilityScope(unittest.TestCase):
         self.assertEqual(self.provenance['baseSha256'],'9ce826f47e8e07e1ea124fadc7ec39dcde5e4c52efe2094d9e80c4812a435583')
 
     def test_all_unmodified_guards_and_snapshot_transport_equal_the_installed_base(self):
-        import ast,hashlib
+        import ast
         tree=ast.parse((LANE/'fast-cut.py').read_text())
         excluded=self.provenance['changedBaseNodes']+self.provenance['addedNodes']
         def key(node):
             if isinstance(node,(ast.FunctionDef,ast.ClassDef)):return node.name
             if isinstance(node,ast.Assign) and len(node.targets)==1 and isinstance(node.targets[0],ast.Name):return node.targets[0].id
         nodes=[node for node in tree.body if key(node) not in excluded]
-        digest=hashlib.sha256(ast.dump(ast.Module(body=nodes,type_ignores=[]),include_attributes=False).encode()).hexdigest()
+        digest=ast_digest(ast.Module(body=nodes,type_ignores=[]))
         self.assertEqual(digest,self.provenance['unchangedNodesSha256'])
         self.assertIn('FAST_CUT_STOREFRONT_SWITCH_MOUNT',(ROOT/'scripts/v2/fast-cut.py').read_text())
 
     def test_database_fence_and_signed_ledger_tail_is_unchanged_and_not_retried(self):
-        import ast,hashlib
+        import ast
         check=next(node for node in ast.parse((LANE/'fast-cut.py').read_text()).body if isinstance(node,ast.FunctionDef) and node.name=='check')
         start=next(i for i,node in enumerate(check.body) if isinstance(node,ast.Expr) and isinstance(node.value,ast.Call)
                    and isinstance(node.value.func,ast.Name) and node.value.func.id=='mark_stage' and ast.literal_eval(node.value.args[0])=='database')
         tail=check.body[start:]
-        digest=hashlib.sha256(ast.dump(ast.Module(body=tail,type_ignores=[]),include_attributes=False).encode()).hexdigest()
+        digest=ast_digest(ast.Module(body=tail,type_ignores=[]))
         self.assertEqual(digest,self.provenance['checkDatabaseFenceLedgerTailSha256'])
 
     def test_transplanted_readiness_functions_match_the_reviewed_upstream(self):
-        import ast,hashlib
+        import ast
         tree=ast.parse((LANE/'fast-cut.py').read_text())
         for name,expected in self.provenance['upstreamNodeSha256'].items():
             node=next(n for n in tree.body if getattr(n,'name',None)==name)
-            self.assertEqual(hashlib.sha256(ast.dump(node,include_attributes=False).encode()).hexdigest(),expected,name)
+            self.assertEqual(ast_digest(node),expected,name)
+
+    def test_provenance_ignores_new_empty_fields_but_detects_changed_guards(self):
+        import ast
+        tree=ast.parse('def guard():\n return b"fixed"\n')
+        before=ast_digest(tree)
+        function=tree.body[0]
+        if 'type_params' not in function._fields:
+            function._fields=(*function._fields,'type_params')
+        function.type_params=[]
+        self.assertEqual(ast_digest(tree),before)
+        function.body[0].value.value=b'changed'
+        self.assertNotEqual(ast_digest(tree),before)
+        self.assertEqual(self.provenance['astEncoding'],'nonempty-fields-json-v1')
 
     def read_release(self, roles):
         with tempfile.TemporaryDirectory() as directory,patch.object(f,'INPUT',Path(directory)):
