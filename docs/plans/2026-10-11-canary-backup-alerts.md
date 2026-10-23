@@ -50,12 +50,20 @@ recovered. Each event now has one incident in
 `/var/lib/flexperiment-v2-canary-alerts/<event>.json`: a systemd
 `StateDirectory`, mode 0700, holding only integer timestamps and a counter.
 
-- First failure: alert. Identical repeats within 6 h: not sent, only counted.
-  Then one "still failing" reminder carrying the suppressed count.
-- An unaccepted notification is not recorded, so the next failure sends again.
+- Tracking is per channel. A channel gets the first failure, then nothing for
+  6 h, then one "still failing" reminder carrying the suppressed count. A
+  channel that did not acknowledge (refused, unknown) is not recorded, so the
+  next failure sends to that channel again, and only to it.
 - `OnSuccess=flexperiment-v2-canary-recovery@<event>.service` runs
-  `--recovered`. It sends one recovery notice only when an incident is open,
-  then closes it. Without an open incident it contacts no provider.
+  `--recovered`. It sends one recovery notice to every channel that
+  acknowledged the incident. A channel that refuses the recovery keeps it
+  pending, and the next success retries that channel alone. Without an open
+  incident it contacts no provider.
+- Alert and recovery for the same event hold a per-event `flock` across the
+  state read, the provider calls and the state write, so a recovery cannot
+  slip in front of an in-flight alert and leave a stale incident behind. Both
+  templates use `TimeoutStartSec=60`: two 10 s provider calls of the other
+  holder, plus their own.
 - Unreadable, foreign or malformed state counts as "no incident", so the
   handler fails toward notifying. `probe` is never suppressed or recorded.
 - Suppression never changes the failed backup/freshness unit, which stays

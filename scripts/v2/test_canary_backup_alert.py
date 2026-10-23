@@ -119,51 +119,98 @@ class CanaryAlerts(unittest.TestCase):
     def incident(self, temp, event, at, send, recovered=False):
         return alerts.handle(event, CONFIG, send=send, state_dir=Path(temp), now=lambda: at, recovered=recovered)
 
+    @staticmethod
+    def kinds(result):
+        return sorted((channel, n['kind']) for n in result.get('notifications', []) for channel in n['channels'])
+
+    @staticmethod
+    def states(temp):
+        return [p for p in Path(temp).iterdir() if p.suffix == '.json']
+
     def test_repeated_failure_is_sent_once_then_reminded_then_recovered_once(self):
         sent = []
         def send(channel, config, body, key):
             sent.append((channel, body)); return {'result': 'ACCEPTED'}
+        both = lambda kind: [('notisend', kind), ('telebuzzy', kind)]
         with tempfile.TemporaryDirectory() as temp:
-            opened = self.incident(temp, 'commerce-freshness', 1_000_000, send)
-            self.assertEqual((opened['kind'], len(sent)), ('opened', 2))
+            self.assertEqual(self.kinds(self.incident(temp, 'commerce-freshness', 1_000_000, send)), both('opened'))
             for hour in range(1, 6):
                 quiet = self.incident(temp, 'commerce-freshness', 1_000_000 + hour * 3600, send)
                 self.assertEqual(quiet['result'], 'SUPPRESSED')
             self.assertEqual(len(sent), 2)
             reminder = self.incident(temp, 'commerce-freshness', 1_000_000 + alerts.REMINDER_SECONDS, send)
-            self.assertEqual((reminder['kind'], len(sent)), ('reminder', 4))
+            self.assertEqual((self.kinds(reminder), len(sent)), (both('reminder'), 4))
             self.assertIn('still failing', sent[-1][1]['title'])
             self.assertIn('5 repeated failures not re-sent', sent[-2][1]['text'])
             recovered = self.incident(temp, 'commerce-freshness', 1_000_000 + 30_000, send, recovered=True)
-            self.assertEqual((recovered['kind'], len(sent)), ('recovered', 6))
+            self.assertEqual((self.kinds(recovered), len(sent)), (both('recovered'), 6))
             self.assertIn('recovered', sent[-1][1]['title'])
             self.assertEqual(sent[-1][1]['severity'], 'info')
-            self.assertEqual(list(Path(temp).iterdir()), [])
-            again = self.incident(temp, 'commerce-freshness', 1_000_000 + 40_000, send)
-            self.assertEqual(again['kind'], 'opened')
+            self.assertEqual(self.states(temp), [])
+            self.assertEqual(self.kinds(self.incident(temp, 'commerce-freshness', 1_000_000 + 40_000, send)), both('opened'))
+
+    def test_partial_channel_failure_is_retried_only_for_that_channel(self):
+        sent = []
+        outcome = {'notisend': 'ACCEPTED', 'telebuzzy': 'REFUSED'}
+        def send(channel, config, body, key):
+            sent.append(channel); return {'result': outcome[channel]}
+        with tempfile.TemporaryDirectory() as temp:
+            self.incident(temp, 'commerce-backup', 1, send)
+            self.assertEqual(sent, ['notisend', 'telebuzzy'])
+            # The refused channel is not suppressed; the acknowledged one is.
+            self.assertEqual(self.kinds(self.incident(temp, 'commerce-backup', 3600, send)), [('telebuzzy', 'opened')])
+            outcome['telebuzzy'] = 'ACCEPTED'
+            self.assertEqual(self.kinds(self.incident(temp, 'commerce-backup', 7200, send)), [('telebuzzy', 'opened')])
+            self.assertEqual(self.incident(temp, 'commerce-backup', 10800, send)['result'], 'SUPPRESSED')
+            # Recovery is kept for the channel that refused it, and sent to it alone next time.
+            outcome['notisend'] = 'REFUSED'
+            self.assertEqual(self.kinds(self.incident(temp, 'commerce-backup', 14400, send, recovered=True)),
+                             [('notisend', 'recovered'), ('telebuzzy', 'recovered')])
+            self.assertEqual(len(self.states(temp)), 1)
+            outcome['notisend'] = 'ACCEPTED'
+            self.assertEqual(self.kinds(self.incident(temp, 'commerce-backup', 18000, send, recovered=True)), [('notisend', 'recovered')])
+            self.assertEqual(self.states(temp), [])
+
+    def test_recovery_waits_for_an_in_flight_alert_and_is_not_lost(self):
+        import threading
+        entered, release, sent = threading.Event(), threading.Event(), []
+        def slow(channel, config, body, key):
+            if not sent: entered.set(); release.wait(5)
+            sent.append((channel, body['subject' if channel == 'notisend' else 'title'])); return {'result': 'ACCEPTED'}
+        with tempfile.TemporaryDirectory() as temp:
+            alert = threading.Thread(target=self.incident, args=(temp, 'commerce-backup', 1, slow))
+            alert.start(); self.assertTrue(entered.wait(5))
+            results = []
+            recovery = threading.Thread(target=lambda: results.append(self.incident(temp, 'commerce-backup', 2, slow, recovered=True)))
+            recovery.start(); recovery.join(0.3)
+            self.assertTrue(recovery.is_alive(), 'recovery must wait for the in-flight alert')
+            release.set(); alert.join(5); recovery.join(5)
+            self.assertEqual(self.kinds(results[0]), [('notisend', 'recovered'), ('telebuzzy', 'recovered')])
+            self.assertEqual(self.states(temp), [])
+            self.assertEqual(self.kinds(self.incident(temp, 'commerce-backup', 3, slow)), [('notisend', 'opened'), ('telebuzzy', 'opened')])
 
     def test_success_without_open_incident_contacts_no_provider(self):
         def send(*_): raise AssertionError('NO_PROVIDER_CALL_EXPECTED')
         with tempfile.TemporaryDirectory() as temp:
             self.assertEqual(self.incident(temp, 'commerce-backup', 1, send, recovered=True)['result'], 'NO_OPEN_INCIDENT')
+            # An incident no channel ever acknowledged is closed silently.
+            self.incident(temp, 'commerce-backup', 2, lambda *_: {'result': 'REFUSED'})
+            self.assertEqual(self.incident(temp, 'commerce-backup', 3, send, recovered=True)['result'], 'NO_OPEN_INCIDENT')
+            self.assertEqual(self.states(temp), [])
 
     def test_incidents_are_independent_per_event(self):
-        sent = []
-        def send(channel, config, body, key):
-            sent.append(channel); return {'result': 'ACCEPTED'}
+        ok = lambda *_: {'result': 'ACCEPTED'}
         with tempfile.TemporaryDirectory() as temp:
-            self.incident(temp, 'commerce-backup', 1, send)
-            self.assertEqual(self.incident(temp, 'commerce-freshness', 2, send)['kind'], 'opened')
-            self.assertEqual(len(sent), 4)
+            self.incident(temp, 'commerce-backup', 1, ok)
+            self.assertEqual(self.kinds(self.incident(temp, 'commerce-freshness', 2, ok)), [('notisend', 'opened'), ('telebuzzy', 'opened')])
 
     def test_unaccepted_notification_is_not_recorded_so_next_failure_sends_again(self):
         with tempfile.TemporaryDirectory() as temp:
-            refused = self.incident(temp, 'commerce-backup', 1, lambda *_: {'result': 'REFUSED', 'httpStatus': 401})
-            self.assertEqual(refused['kind'], 'opened')
+            self.incident(temp, 'commerce-backup', 1, lambda *_: {'result': 'REFUSED', 'httpStatus': 401})
             sent = []
             def send(channel, *_):
                 sent.append(channel); return {'result': 'ACCEPTED'}
-            self.assertEqual(self.incident(temp, 'commerce-backup', 2, send)['kind'], 'opened')
+            self.assertEqual(self.kinds(self.incident(temp, 'commerce-backup', 2, send)), [('notisend', 'opened'), ('telebuzzy', 'opened')])
             self.assertEqual(len(sent), 2)
 
     def test_probe_is_never_suppressed_or_recorded(self):
@@ -171,31 +218,38 @@ class CanaryAlerts(unittest.TestCase):
         def send(channel, *_):
             sent.append(channel); return {'result': 'ACCEPTED'}
         with tempfile.TemporaryDirectory() as temp:
-            for at in [1, 2]: self.assertEqual(self.incident(temp, 'probe', at, send)['kind'], 'probe')
+            for at in [1, 2]: self.assertEqual(self.kinds(self.incident(temp, 'probe', at, send)), [('notisend', 'probe'), ('telebuzzy', 'probe')])
             self.assertEqual((len(sent), list(Path(temp).iterdir())), (4, []))
 
     def test_state_is_private_and_unreadable_state_fails_toward_notifying(self):
         ok = lambda *_: {'result': 'ACCEPTED'}
+        opened = [('notisend', 'opened'), ('telebuzzy', 'opened')]
         with tempfile.TemporaryDirectory() as temp:
             self.incident(temp, 'commerce-backup', 1, ok)
-            [state] = Path(temp).iterdir()
-            self.assertEqual(state.stat().st_mode & 0o777, 0o600)
+            [state] = self.states(temp)
+            for path in Path(temp).iterdir(): self.assertEqual(path.stat().st_mode & 0o777, 0o600)
             self.assertNotIn('SECRET', state.read_text())
-            for corrupt in ['{not json', json.dumps({'openedAt': 'SECRET', 'lastSentAt': []}), '[]']:
+            for corrupt in ['{not json', json.dumps({'openedAt': 'SECRET', 'suppressed': 0, 'channels': {}}), '[]',
+                            json.dumps({'openedAt': 1, 'suppressed': 0, 'channels': {'SECRET': 5}})]:
                 state.write_text(corrupt)
-                self.assertEqual(self.incident(temp, 'commerce-backup', 2, ok)['kind'], 'opened')
+                self.assertEqual(self.kinds(self.incident(temp, 'commerce-backup', 2, ok)), opened)
             state.unlink(); state.symlink_to(Path(temp) / 'elsewhere')
-            self.assertEqual(self.incident(temp, 'commerce-backup', 3, ok)['kind'], 'opened')
+            self.assertEqual(self.kinds(self.incident(temp, 'commerce-backup', 3, ok)), opened)
 
-    def test_cli_exits_zero_when_suppressed_and_recovery_flag_is_exact(self):
+    def test_cli_exit_reflects_every_attempted_channel(self):
+        outcome = {'notisend': 'ACCEPTED', 'telebuzzy': 'ACCEPTED'}
         with tempfile.TemporaryDirectory() as temp, patch.object(alerts, 'STATE', Path(temp)), \
-             patch.object(alerts, 'load_config', return_value=CONFIG), patch.object(alerts.os, 'geteuid', return_value=0), \
-             patch.object(alerts, 'request', return_value={'result': 'ACCEPTED'}) as provider:
-            for argv in [['x', 'commerce-backup'], ['x', 'commerce-backup'],
-                         ['x', '--recovered', 'commerce-backup'], ['x', '--recovered', 'commerce-backup']]:
-                with patch.object(alerts.sys, 'argv', argv), patch('sys.stdout', new_callable=io.StringIO):
-                    self.assertEqual(alerts.main(), 0)
-            self.assertEqual(provider.call_count, 4)
+             patch.object(alerts, 'load_config', return_value=CONFIG), patch.object(alerts, 'running_as_root', return_value=True), \
+             patch.object(alerts, 'request', side_effect=lambda channel, *_: {'result': outcome[channel]}) as provider:
+            def run(*argv):
+                with patch.object(alerts.sys, 'argv', ['x', *argv]), patch('sys.stdout', new_callable=io.StringIO):
+                    return alerts.main()
+            self.assertEqual([run('commerce-backup'), run('commerce-backup')], [0, 0])
+            outcome['telebuzzy'] = 'REFUSED'
+            self.assertEqual([run('--recovered', 'commerce-backup'), run('--recovered', 'commerce-backup')], [1, 1])
+            outcome['telebuzzy'] = 'ACCEPTED'
+            self.assertEqual([run('--recovered', 'commerce-backup'), run('--recovered', 'commerce-backup')], [0, 0])
+            self.assertEqual(provider.call_count, 2 + 2 + 1 + 1)
             for argv in [['x', '--recovered', 'probe'], ['x', '--recover', 'commerce-backup'], ['x', 'commerce-backup', 'extra']]:
                 with patch.object(alerts.sys, 'argv', argv), self.assertRaises(ValueError): alerts.main()
 
@@ -215,6 +269,8 @@ class CanaryAlerts(unittest.TestCase):
             self.assertIn('StateDirectoryMode=0700\n', unit)
             self.assertIn('canary-backup-alert.py' + flag + '\n', unit)
             self.assertIn('ProtectSystem=strict\n', unit)
+            # Room for waiting on the other template's lock (two bounded 10s provider calls) plus its own.
+            self.assertIn('TimeoutStartSec=60\n', unit)
         self.assertEqual(alerts.STATE, Path('/var/lib/flexperiment-v2-canary-alerts'))
 
     def test_causal_independent_channel_regression(self):

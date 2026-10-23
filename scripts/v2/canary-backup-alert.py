@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """Canary-only operator alerts. Fixed payloads; no runtime/DB/log access or retries.
 
-One incident per event: the first failure alerts, identical repeats are
-suppressed until a reminder is due, and the unit's OnSuccess hook
-(--recovered) sends one recovery and closes it. Suppression never hides the
+One incident per event, tracked per channel: a channel gets the first
+failure, then nothing until a reminder is due; the unit's OnSuccess hook
+(--recovered) sends one recovery to every channel that acknowledged the
+incident. A channel that did not acknowledge is retried on the next run.
+Alert and recovery for one event are serialized by a lock held across the
+read, the provider calls and the state write. Suppression never hides the
 failed systemd unit itself.
 """
 import datetime
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -20,6 +24,7 @@ import uuid
 
 CONFIG = Path('/root/flexperiment-v2-owner/canary-alerts.json')
 EVENTS = {'commerce-backup', 'commerce-freshness', 'platform-backup', 'platform-freshness', 'probe'}
+CHANNELS = ('notisend', 'telebuzzy')
 URLS = {'notisend': 'https://api.notisend.ru/v1/email/messages',
         'telebuzzy': 'https://telebuzzy.xyz/api/notify'}
 MAX_BYTES = 16384
@@ -90,7 +95,7 @@ def request(channel, config, body, event_id):
         return {'result': 'UNKNOWN'}
 
 
-def notify(event, config, send=request, kind=None, history=''):
+def notify(event, config, send=request, kind=None, history='', channels=CHANNELS):
     require(event in EVENTS)
     kind = kind or ('probe' if event == 'probe' else 'opened')
     event_id = str(uuid.uuid4())
@@ -106,7 +111,7 @@ def notify(event, config, send=request, kind=None, history=''):
                      'event': event, 'reference': event_id, 'timestamp': timestamp},
     }
     outcomes = {}
-    for channel in ['notisend', 'telebuzzy']:
+    for channel in channels:
         try:
             outcomes[channel] = send(channel, config, bodies[channel], event_id)
         except Exception:
@@ -114,8 +119,8 @@ def notify(event, config, send=request, kind=None, history=''):
     return {'event': event, 'kind': kind, 'reference': event_id, 'timestamp': timestamp, 'channels': outcomes}
 
 
-def accepted(result):
-    return any(v['result'] in ['ACCEPTED', 'DELIVERED'] for v in result['channels'].values())
+def accepted(outcome):
+    return outcome['result'] in ['ACCEPTED', 'DELIVERED']
 
 
 def read_state(path):
@@ -132,8 +137,11 @@ def read_state(path):
             state = json.loads(handle.read())
         except ValueError:
             return None
-    fields = {'openedAt', 'lastSentAt', 'suppressed'}
-    if not isinstance(state, dict) or set(state) != fields or not all(type(state[k]) is int and state[k] >= 0 for k in fields):
+    # channels: when each channel last acknowledged a failure notice of this incident.
+    if not isinstance(state, dict) or set(state) != {'openedAt', 'suppressed', 'channels'} \
+            or not all(type(state[k]) is int and state[k] >= 0 for k in ['openedAt', 'suppressed']) \
+            or not isinstance(state['channels'], dict) or not set(state['channels']) <= set(CHANNELS) \
+            or not all(type(v) is int and v > 0 for v in state['channels'].values()):
         return None
     return state
 
@@ -156,37 +164,62 @@ def handle(event, config, send=None, state_dir=None, now=None, recovered=False):
     require(event in EVENTS and not (recovered and event == 'probe'))
     send = send or request
     if event == 'probe':
-        return notify(event, config, send)
-    path = (state_dir or STATE) / (event + '.json')
+        return {'event': event, 'result': 'SENT', 'notifications': [notify(event, config, send)]}
+    directory = state_dir or STATE
+    lock = os.open(directory / (event + '.lock'), os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        # Held across read, provider calls and write: a recovery can never interleave
+        # with an in-flight alert for the same event and lose the incident.
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        return transition(event, config, send, directory / (event + '.json'), int((now or time.time)()), recovered)
+    finally:
+        os.close(lock)
+
+
+def transition(event, config, send, path, at, recovered):
     state = read_state(path)
-    at = int((now or time.time)())
     if recovered:
-        if state is None:
-            return {'event': event, 'result': 'NO_OPEN_INCIDENT'}
-        result = notify(event, config, send, 'recovered', history(state, at))
-        if accepted(result):
+        if state is None or not state['channels']:
             path.unlink(missing_ok=True)
-        return result
-    if state is not None and at - state['lastSentAt'] < REMINDER_SECONDS:
-        write_state(path, {**state, 'suppressed': state['suppressed'] + 1})
-        return {'event': event, 'result': 'SUPPRESSED', 'suppressed': state['suppressed'] + 1}
-    result = notify(event, config, send, 'reminder' if state else 'opened', history(state) if state else '')
-    # An unaccepted notification is not recorded, so the next failure tries again.
-    if accepted(result):
-        write_state(path, {'openedAt': state['openedAt'] if state else at, 'lastSentAt': at, 'suppressed': 0})
-    return result
+            return {'event': event, 'result': 'NO_OPEN_INCIDENT'}
+        result = notify(event, config, send, 'recovered', history(state, at), [c for c in CHANNELS if c in state['channels']])
+        for channel, outcome in result['channels'].items():
+            if accepted(outcome): del state['channels'][channel]
+        if state['channels']: write_state(path, state)
+        else: path.unlink(missing_ok=True)
+        return {'event': event, 'result': 'SENT', 'notifications': [result]}
+    state = state or {'openedAt': at, 'suppressed': 0, 'channels': {}}
+    due = {c: 'reminder' if c in state['channels'] else 'opened' for c in CHANNELS
+           if c not in state['channels'] or at - state['channels'][c] >= REMINDER_SECONDS}
+    if not due:
+        state['suppressed'] += 1; write_state(path, state)
+        return {'event': event, 'result': 'SUPPRESSED', 'suppressed': state['suppressed']}
+    notifications = []
+    for kind in ['opened', 'reminder']:
+        channels = [c for c in CHANNELS if due.get(c) == kind]
+        if not channels: continue
+        result = notify(event, config, send, kind, history(state) if kind == 'reminder' else '', channels)
+        notifications.append(result)
+        # Only an acknowledging channel is recorded; any other is retried on the next failure.
+        for channel, outcome in result['channels'].items():
+            if accepted(outcome): state['channels'][channel] = at
+    if any(accepted(o) for n in notifications for o in n['channels'].values()): state['suppressed'] = 0
+    write_state(path, state)
+    return {'event': event, 'result': 'SENT', 'notifications': notifications}
+
+
+def running_as_root():
+    return os.geteuid() == 0
 
 
 def main():
     args = sys.argv[1:]
     recovered = len(args) == 2 and args[0] == '--recovered'
-    require(os.geteuid() == 0 and (len(args) == 1 or recovered) and args[-1] in EVENTS
+    require(running_as_root() and (len(args) == 1 or recovered) and args[-1] in EVENTS
             and not (recovered and args[-1] == 'probe'))
     result = handle(args[-1], load_config(), recovered=recovered)
     print(json.dumps(result, separators=(',', ':')))
-    if 'channels' not in result:
-        return 0
-    return 0 if all(v['result'] in ['ACCEPTED', 'DELIVERED'] for v in result['channels'].values()) else 1
+    return 0 if all(accepted(o) for n in result.get('notifications', []) for o in n['channels'].values()) else 1
 
 
 if __name__ == '__main__':
