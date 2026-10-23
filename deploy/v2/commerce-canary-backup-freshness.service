@@ -1,6 +1,7 @@
 [Unit]
 Description=Commerce V2 canary backup freshness check
 OnFailure=flexperiment-v2-canary-alert@commerce-freshness.service
+OnSuccess=flexperiment-v2-canary-recovery@commerce-freshness.service
 
 [Service]
 Type=oneshot
