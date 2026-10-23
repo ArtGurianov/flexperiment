@@ -94,8 +94,9 @@ DIAGNOSTIC_DETAILS = frozenset({
 })
 CURL_EXIT_DETAILS = {7: 'PROBE_TRANSPORT', 22: 'HTTP_STATUS', 28: 'PROBE_TIMEOUT'}
 
-# One readiness budget, widening outward. Commerce answers /readyz (fresh S3
-# authority read included) within 10s; Platform waits exactly that for Commerce
+# One readiness budget, widening outward. Commerce itself answers /readyz within
+# READINESS_DEADLINE_MS (8s, commerce-v2/src/readiness.ts), reporting a still-running
+# fresh S3 authority read as "unverified". Its clients wait 10s (curl here, Platform)
 # and Admin nginx 15s (frontends/proxy.conf). Each probe here and each Compose
 # healthcheck waits longer than what it wraps; test_fast_cut.py pins the chain.
 READINESS_TIMEOUT = {'commerce': 10, 'platform': 15, 'admin': 20}
