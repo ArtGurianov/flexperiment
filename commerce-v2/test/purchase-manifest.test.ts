@@ -85,3 +85,22 @@ describe("ART-398 published payable/2 producer/consumer vectors", () => {
     expect(() => consumePurchaseQualification(f.frozen, f.envelope, f.acceptance, { ...f.payment, kind: "FISCAL_OFFSET" } as unknown as BankFullPayment, f.at)).toThrow("PURCHASE_SCHEMA_INVALID:bankFullPayment");
   });
 });
+
+describe("second review: canonical acceptance times", () => {
+  it.each([
+    ["2026-10-21T01:00:00.000Z", true],
+    ["2026-10-21T01:14:59.999Z", true],
+    ["2026-10-21T00:59:59.999Z", false],
+    ["2026-10-21T01:15:00.000Z", false],
+    ["2026-10-21T01:15:00.001Z", false],
+  ])("checks the actual quote window for %s (valid=%s)", (acceptedAt, valid) => {
+    const f = fixtures.find(f => f.name === "immediate-lms")!;
+    const accept = () => acceptPurchase(f.frozen, f.envelope, acceptedAt);
+    if (valid) expect(accept().acceptedAt).toBe(acceptedAt);
+    else expect(accept).toThrow("ACCEPTANCE_OUTSIDE_QUOTE_WINDOW");
+  });
+  it.each(["2026-10-21T03:10:00+02:00", "2026-10-21T00:10:00-01:00", "2026-10-21T01:10:00Z", "2026-10-21T01:10:00.0000Z"])("preserves the pinned schema's rejection of noncanonical %s", acceptedAt => {
+    const f = fixtures.find(f => f.name === "immediate-lms")!;
+    expect(() => acceptPurchase(f.frozen, f.envelope, acceptedAt)).toThrow("PURCHASE_SCHEMA_INVALID:acceptance");
+  });
+});

@@ -519,7 +519,9 @@ export type IntentState = "DRAFT" | "RESOLVING" | "CUSTOMER_ACTION_REQUIRED" | "
   | "PAYMENT_CREATING" | "PENDING" | "UNCERTAIN" | "PAID" | "DECLINED" | "EXPIRED" | "REVIEW_REQUIRED";
 
 /** Refref definitively refused this resolution request (for example a different request for the same order). */
-export class RailRefusalError extends CheckoutConflictError {}
+export class RailRefusalError extends CheckoutConflictError {
+  constructor(code: string) { super(code, undefined, true); }
+}
 
 /** Only attempt-create rejection plus authoritative absence of any external attempt. Never session failure. */
 export class RailAttemptRefusalError extends CheckoutConflictError {}
@@ -604,11 +606,12 @@ function intentLegalReview(db: Database.Database, intent: IntentRow, receiptEmai
 /** Owned server facts for payment return, never browser-supplied order/origin/customer identity. */
 export function checkoutIntentNavigation(db: Database.Database, customerId: string, quoteId: string) {
   const intent = intentBy(db, "id", quoteId);
-  if (!intent || intent.customer_id !== customerId) throw new Error("CHECKOUT_QUOTE_NOT_FOUND");
+  if (!intent || intent.customer_id !== customerId) throw new CheckoutConflictError("CHECKOUT_QUOTE_NOT_FOUND");
   const offer = offerById(db, intent.offer_id)!;
+  const course = db.prepare("SELECT slug FROM catalog_course_projection WHERE course_ref=?").get(offer.course_ref) as { slug: string | null } | undefined;
   const frozen = intent.resolution_request_json ? JSON.parse(intent.resolution_request_json) as PaymentResolveInput : undefined;
   return { customerId, orderPublicId: intent.order_public_id, storefront: intent.storefront,
-    returnPath: intent.storefront === "LAB" ? "/ticket" : `/courses/${encodeURIComponent(offer.course_ref ?? "")}`,
+    returnPath: intent.storefront === "LAB" ? "/ticket" : course?.slug ? `/courses/${encodeURIComponent(course.slug)}` : "/courses",
     protocol: frozen?.protocol };
 }
 
@@ -770,23 +773,32 @@ async function advanceIntent(db: Database.Database, rail: PaymentRail, intent: I
     const current = intentBy(db, "id", intent.id)!;
     // Another request for the same intent got there first: its outcome stands.
     if (current.state !== "RESOLVING") return current;
-    if (resolved.state === "CUSTOMER_ACTION_REQUIRED" && frozen.protocol === "VNEXT") throw new RailRefusalError("VNEXT_BROWSER_HANDOFF_REFUSED");
+    if (resolved.state === "CUSTOMER_ACTION_REQUIRED" && frozen.protocol === "VNEXT") {
+      refuseIntent(db, intent.id, "VNEXT_BROWSER_HANDOFF_REFUSED", now);
+      return intentBy(db, "id", intent.id)!;
+    }
     if (resolved.state === "CUSTOMER_ACTION_REQUIRED") {
       db.prepare(`UPDATE checkout_quotes SET state='CUSTOMER_ACTION_REQUIRED',refref_resolution_id=?,customer_action_url=?,updated_at=?
         WHERE id=?`).run(resolved.resolutionId, resolved.checkoutUrl, now, intent.id);
       return intentBy(db, "id", intent.id)!;
     }
     const { quote } = resolved;
-    if (frozen.purchase) {
-      const purchase = consumePurchaseQuote(frozen.purchase, quote.purchase);
-      const payableLine = purchase.payable.lines[0];
-      if (purchase.payable.lines.length !== 1 || payableLine.lineRef !== intent.line_ref
-        || quote.baseAmountKopecks !== payableLine.merchantAmountKopecks || quote.discountKopecks !== payableLine.referralDiscountKopecks
-        || quote.finalAmountKopecks !== purchase.payable.totalKopecks || quote.resolutionId !== purchase.payable.quote.quoteRef
-        || quote.termsVersionId !== purchase.payable.terms.termsVersionId || quote.expiresAt !== purchase.payable.quote.expiresAt) {
-        throw new CheckoutConflictError("PURCHASE_QUOTE_BINDING_MISMATCH");
-      }
-    } else if (quote.purchase) throw new CheckoutConflictError("PURCHASE_INPUT_REQUIRED");
+    try {
+      if (frozen.purchase) {
+        const purchase = consumePurchaseQuote(frozen.purchase, quote.purchase);
+        const payableLine = purchase.payable.lines[0];
+        if (purchase.payable.lines.length !== 1 || payableLine.lineRef !== intent.line_ref
+          || quote.baseAmountKopecks !== payableLine.merchantAmountKopecks || quote.discountKopecks !== payableLine.referralDiscountKopecks
+          || quote.finalAmountKopecks !== purchase.payable.totalKopecks || quote.resolutionId !== purchase.payable.quote.quoteRef
+          || quote.termsVersionId !== purchase.payable.terms.termsVersionId || quote.expiresAt !== purchase.payable.quote.expiresAt) {
+          throw new CheckoutConflictError("PURCHASE_QUOTE_BINDING_MISMATCH");
+        }
+      } else if (quote.purchase) throw new CheckoutConflictError("PURCHASE_INPUT_REQUIRED");
+    } catch (error) {
+      // Pure contract validation has no ambiguous payment side effect. Commit refusal before raising.
+      refuseIntent(db, intent.id, (error as Error).message, now);
+      return intentBy(db, "id", intent.id)!;
+    }
     if (quote.baseAmountKopecks !== line.merchantOfferAmountKopecks
       || quote.finalAmountKopecks !== line.merchantOfferAmountKopecks - quote.discountKopecks
       || quote.finalAmountKopecks <= 0) {
@@ -864,7 +876,10 @@ export async function prepareCheckout(
   const replay = intentBy(db, "preview_idempotency_key", input.previewIdempotencyKey);
   if (replay) {
     if (replay.customer_id !== input.customerId || replay.request_fingerprint !== fingerprint
-      || (input.orderPublicId !== undefined && input.orderPublicId !== replay.order_public_id)) throw new CheckoutConflictError("IDEMPOTENCY_KEY_REUSED");
+      || (input.orderPublicId !== undefined && input.orderPublicId !== replay.order_public_id)) {
+      throw new CheckoutConflictError("IDEMPOTENCY_KEY_REUSED", undefined,
+        replay.customer_id === input.customerId && replay.offer_id === offerByRef(db, input.offerRef)?.offer_id && !replay.consumed_at);
+    }
     return advanceIntent(db, rail, replay, context, now);
   }
   const resumed = input.orderPublicId ? intentBy(db, "order_public_id", input.orderPublicId) : undefined;
@@ -997,7 +1012,7 @@ export async function confirmCheckout(
   }
 
   const pending = intentBy(db, "id", input.quoteId);
-  if (!pending || pending.customer_id !== input.customerId) throw new Error("CHECKOUT_QUOTE_NOT_FOUND");
+  if (!pending || pending.customer_id !== input.customerId) throw new CheckoutConflictError("CHECKOUT_QUOTE_NOT_FOUND");
   if (input.expectedOrderPublicId && pending.order_public_id !== input.expectedOrderPublicId) throw new Error("CHECKOUT_STATE_INVALID");
   if (input.storefront && input.storefront !== pending.storefront) throw new Error("CHECKOUT_STOREFRONT_MISMATCH");
   // Confirmed already (another tab, or a reload with a new key): the order it started, read back.
@@ -1386,13 +1401,13 @@ export async function retireLabCheckout(db: Database.Database, rail: PaymentRail
   const previous = readAttempt();
   if (previous) {
     const observed = await reconcileCheckout(db, rail, orderPublicId, now);
-    if (!["DECLINED", "EXPIRED"].includes(observed.state)) throw new CheckoutConflictError("LAB_CHECKOUT_RESTART_UNSAFE");
+    if (!["DECLINED", "EXPIRED", "PAID"].includes(observed.state)) throw new CheckoutConflictError("LAB_CHECKOUT_RESTART_UNSAFE");
   }
   return db.transaction(() => {
     if (!db.prepare("SELECT 1 FROM lab_guest_access WHERE order_public_id=?").get(orderPublicId)) throw new CheckoutConflictError("LAB_ACCESS_INVALID");
     const current = readAttempt();
     // A confirmation committed during read-back must never be mistaken for an unstarted purchase.
-    if (current && (!previous || !["DECLINED", "EXPIRED"].includes(current.state))) throw new CheckoutConflictError("LAB_CHECKOUT_RESTART_UNSAFE");
+    if (current && (!previous || !["DECLINED", "EXPIRED", "PAID"].includes(current.state))) throw new CheckoutConflictError("LAB_CHECKOUT_RESTART_UNSAFE");
     if (!db.prepare("SELECT 1 FROM audit_log WHERE action='LAB_CHECKOUT_RETIRED' AND subject_ref=?").get(orderPublicId)) {
       db.prepare(`UPDATE checkout_quotes SET state='EXPIRED',failure_code='LAB_CHECKOUT_RETIRED',updated_at=?
         WHERE order_public_id=? AND consumed_at IS NULL AND state IN ('DRAFT','RESOLVING','CUSTOMER_ACTION_REQUIRED','REVIEW')`).run(now, orderPublicId);

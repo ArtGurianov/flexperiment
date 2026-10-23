@@ -1,3 +1,4 @@
+import { saveEditorialDraft, publishEditorialDraft } from "../src/course-editorial";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createCommerceV2App } from "../src/app";
@@ -18,6 +19,7 @@ let db: Database.Database;
 let rail: MockPaymentRail;
 let app: ReturnType<typeof createCommerceV2App>;
 let lost = false;
+let corruptResponse: ((value: Record<string, unknown>) => void) | undefined;
 const resolveRequests: PaymentResolveInput[] = [];
 function build(storefronts: ("COURSES" | "LAB")[] = ["COURSES", "LAB"]) {
   const config: CommerceRuntimeConfig = { ...testCheckoutConfig, paymentMode: "refref", refref: { apiKey: "synthetic", merchantId,
@@ -36,7 +38,7 @@ const post = (path: string, body: unknown, key: string, storefront: "COURSES" | 
   app.request(path, { method: "POST", headers: headers(storefront, key, token), body: JSON.stringify(body) });
 
 beforeEach(() => {
-  db = new Database(":memory:"); migrateV2(db); rail = new MockPaymentRail(); lost = false; resolveRequests.length = 0;
+  db = new Database(":memory:"); migrateV2(db); rail = new MockPaymentRail(); lost = false; corruptResponse = undefined; resolveRequests.length = 0;
   db.exec("INSERT INTO customers(id,email_normalized) VALUES ('customer','student@example.test')");
   for (const storefront of ["COURSES", "LAB"]) db.prepare("INSERT INTO legal_releases(id,storefront,version,manifest_json,effective_at,active) VALUES (?,?,?,?,'2026-10-20',1)")
     .run(storefront, storefront, `${storefront}-b`, stageBLegalManifestJson);
@@ -47,6 +49,12 @@ beforeEach(() => {
     VALUES ('lab','lab:one','city','LAB','2026-11-01T09:00:00Z','2026-11-01T17:00:00Z','Asia/Novosibirsk',20,'CONFIRMED','Студия','Адрес')`);
   db.exec("INSERT INTO products(id,product_ref,kind,access_model,occurrence_ref) VALUES ('lab','lab:one','LAB','PAID','lab:one')");
   db.exec("INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode) VALUES ('lab','lab:one','lab',10001,'PUBLIC')");
+  saveEditorialDraft(db, { expectedRevision: 0, actor: "author", document: {
+    courseRef: "one", title: "Course", slug: "published-course-slug", summary: "Summary", visibility: "LISTED",
+    sections: [{ sectionRef: "section", title: "Section", position: 0, visibility: "LISTED" }],
+    lessons: [{ lessonRef: "lesson", sectionRef: "section", title: "Lesson", slug: "lesson", position: 0, visibility: "LISTED", freePreview: false }],
+  } }, T0.toISOString());
+  publishEditorialDraft(db, { courseRef: "one", expectedRevision: 1, expectedPublishedVersion: 0, idempotencyKey: "publish", actor: "author" }, T0.toISOString());
   qualifyTestFiscalPolicies(db);
   vi.spyOn(rail, "resolve").mockImplementation(async input => {
     resolveRequests.push(structuredClone(input));
@@ -58,6 +66,7 @@ beforeEach(() => {
         currency: "RUB", lines: input.request.lines }), currency: "RUB",
       lines: [{ lineRef: input.request.lines[0].lineRef, eligible: true, referralDiscountAmountKopecks: 501 }],
       totals: { merchantOfferAmountKopecks: 10001, referralDiscountAmountKopecks: 501, payableAmountKopecks: 9500 }, expiresAt: "2026-10-23T04:15:00Z" };
+    corruptResponse?.(response);
     const client = new RefrefPaymentRail({ apiBaseUrl: "https://api.refref.test/v1-rc", vnextApiBaseUrl: "https://api.refref.test/v1-vnext",
       apiKey: "synthetic", merchantId, fetch: async () => { if (lost) throw new TypeError("lost ACK"); return Response.json(response); } });
     return client.resolve(input);
@@ -85,9 +94,11 @@ describe("ART-379 independent source E2E profiles (mock payment provider)", () =
     expect(create).toHaveBeenCalledOnce();
     expect(create.mock.calls[0][0].quote.finalAmountKopecks).toBe(9500);
     const success = new URL(create.mock.calls[0][0].successUrl!);
+    const signedBody = JSON.parse(Buffer.from(success.searchParams.get("state")!.split(".")[0], "base64url").toString());
+    expect(signedBody).not.toHaveProperty("protocol");
     const navigation = await app.request(`/v1/checkout/handoff/return?state=${encodeURIComponent(success.searchParams.get("state")!)}`,
       { headers: headers("COURSES", "return") });
-    expect(await navigation.json()).toMatchObject({ phase: "PAYMENT_RETURN", returnPath: "/courses/one" });
+    expect(await navigation.json()).toMatchObject({ phase: "PAYMENT_RETURN", returnPath: "/courses/published-course-slug" });
     expect(resolveRequests[0]).toMatchObject({ protocol: "VNEXT", request: { storefrontOrigin: origins.platform } });
     expect(JSON.stringify(resolveRequests)).not.toContain("student@example.test");
     expect((await post("/v1/checkout/handoff", {}, "old-entry")).status).toBe(410);
@@ -120,5 +131,39 @@ describe("ART-379 independent source E2E profiles (mock payment provider)", () =
     expect(db.prepare("SELECT COUNT(*) AS n FROM lab_tickets").get()).toEqual({ n: 1 });
     expect(resolveRequests[0].request.storefrontOrigin).toBe(origins.lab);
     expect((await post("/v1/checkout/preview", { offerRef: "course:one" }, "not-admitted")).status).toBeGreaterThanOrEqual(400);
+  });
+});
+
+ describe("second review: durable resolution refusal and quote lookup", () => {
+  it.each(["binding", "line", "totals"])("commits a %s refusal once and releases the LAB hold", async kind => {
+    corruptResponse = value => {
+      if (kind === "binding") value.inputHash = "wrong";
+      if (kind === "line") value.lines = [{ lineRef: (value.lines as Array<{lineRef:string}>)[0].lineRef, eligible: true, referralDiscountAmountKopecks: 10002 }];
+      if (kind === "totals") value.totals = { merchantOfferAmountKopecks: 10001, referralDiscountAmountKopecks: 501, payableAmountKopecks: 1 };
+    };
+    const token = "g".repeat(43);
+    await post("/v1/lab/guest/start", { email: "guest@example.test", accessToken: token }, "start", "LAB", token);
+    const body = { offerRef: "lab:one" };
+    const first = await post("/v1/checkout/preview", body, "preview", "LAB", token);
+    expect(first.status).toBe(409); expect(await first.json()).toMatchObject({ newIntentAllowed: true });
+    expect((await post("/v1/checkout/preview", body, "preview", "LAB", token)).status).toBe(409);
+    expect(resolveRequests).toHaveLength(1);
+    expect(db.prepare("SELECT state,consumed_at FROM checkout_quotes").get()).toEqual({ state: "REFUSED", consumed_at: null });
+    expect(db.prepare("SELECT count(*) AS n FROM checkout_quotes WHERE state IN ('DRAFT','RESOLVING','CUSTOMER_ACTION_REQUIRED','REVIEW')").get()).toEqual({ n: 0 });
+    expect(db.prepare("SELECT count(*) AS n FROM checkout_attempts").get()).toEqual({ n: 0 });
+  });
+  it.each(["COURSES", "LAB"] as const)("returns redacted 404 for missing/foreign %s quote without a server-failure signal", async storefront => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const token = "g".repeat(43);
+    if (storefront === "LAB") await post("/v1/lab/guest/start", { email: "guest@example.test", accessToken: token }, "start", "LAB", token);
+    const own = await (await post("/v1/checkout/preview", { offerRef: "course:one" }, "preview")).json();
+    if (storefront === "COURSES") db.exec("INSERT INTO customers(id,email_normalized) VALUES ('other','other@example.test')");
+    for (const quoteId of ["absent", own.quoteId]) {
+      const hdr = headers(storefront, "confirm", storefront === "LAB" ? token : undefined);
+      if (storefront === "COURSES") Object.assign(hdr, { "x-test-customer": "other" });
+      const result = await app.request("/v1/checkout", { method: "POST", headers: hdr, body: JSON.stringify({ quoteId }) });
+      expect(result.status).toBe(404); expect(await result.json()).toEqual({ code: "CHECKOUT_QUOTE_NOT_FOUND" });
+    }
+    expect(log).not.toHaveBeenCalled(); log.mockRestore();
   });
 });

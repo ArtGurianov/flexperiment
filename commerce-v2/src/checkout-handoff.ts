@@ -66,5 +66,6 @@ export function issueDirectPaymentReturnState(secret: string, input: {
   customerId: string; orderPublicId: string; returnPath: string; storefront: Storefront;
 }, now = Date.now()) {
   if (!input.returnPath.startsWith("/") || input.returnPath.startsWith("//") || input.returnPath.includes("\\")) throw new Error("CHECKOUT_RETURN_PATH_INVALID");
-  return issueState(secret, { ...input, phase: "PAYMENT_RETURN", expiresAt: now + 24 * 60 * 60_000 });
+  const { customerId, orderPublicId, returnPath, storefront } = input;
+  return issueState(secret, { customerId, orderPublicId, returnPath, storefront, phase: "PAYMENT_RETURN", expiresAt: now + 24 * 60 * 60_000 });
 }

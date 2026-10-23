@@ -160,3 +160,27 @@ describe("guest LAB browser flow", () => {
     await waitFor(() => expect(fetcher).toHaveBeenCalledWith("/v1/lab/guest/recover", expect.objectContaining({ body: JSON.stringify({ email: "guest@example.com" }) })));
   });
 });
+
+ describe("second review: guest page restoration", () => {
+  it.each(["PENDING", "CUSTOMER_ACTION_REQUIRED", "CREATE_UNKNOWN"])("restores %s without start or automatic bank navigation", async state => {
+    const saved = JSON.stringify({ accessToken: "t".repeat(43), orderPublicId: "order", previewKey: "preview", paymentKey: "pay", email: "guest@example.test" });
+    sessionStorage.setItem("lab-guest-v1:lab:one", saved);
+    const request = vi.fn(async () => response({ state, orderPublicId: "order", checkoutUrl: "https://bank.example.test/pay" }));
+    vi.stubGlobal("fetch", request); render(<LabGuestCheckout offerRef="lab:one" displayedAmountKopecks={10000} />);
+    expect(await screen.findByRole("link", { name: "Продолжить оплату" })).toHaveAttribute("href", "https://bank.example.test/pay");
+    expect(request).toHaveBeenCalledOnce(); expect(request).toHaveBeenCalledWith("/v1/checkout/preview", expect.any(Object));
+    expect(sessionStorage.getItem("lab-guest-v1:lab:one")).toBe(saved);
+  });
+  it("shows a paid ticket and permits deliberate safe restart without discarding the ticket link", async () => {
+    sessionStorage.setItem("lab-guest-v1:lab:one", JSON.stringify({ accessToken: "t".repeat(43), orderPublicId: "order", previewKey: "preview", paymentKey: "pay", email: "guest@example.test" }));
+    const request = vi.fn(async (path: string) => response(path.endsWith("/restart") ? { restartAllowed: true } : { state: "PAID", orderPublicId: "order" }));
+    vi.stubGlobal("fetch", request); render(<LabGuestCheckout offerRef="lab:one" displayedAmountKopecks={10000} />);
+    await screen.findByText(/Заказ оплачен/);
+    const ticket = screen.getByRole("link", { name: "Проверить заказ и билет" }).getAttribute("href");
+    fireEvent.click(screen.getByRole("button", { name: "Начать новый заказ" }));
+    await screen.findByText(/Можно проверить условия нового заказа/);
+    expect(sessionStorage.getItem("lab-guest-v1:lab:one")).toBeNull();
+    expect(screen.getByRole("link", { name: "Проверить заказ и билет" })).toHaveAttribute("href", ticket);
+    expect(request.mock.calls.map(([path]) => path)).toEqual(["/v1/checkout/preview", "/v1/lab/guest/restart"]);
+  });
+});

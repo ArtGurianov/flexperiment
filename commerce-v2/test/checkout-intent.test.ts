@@ -160,6 +160,17 @@ describe("lost answers and replay", () => {
     expect(intent()).toMatchObject({ state: "REFUSED", consumed_at: null });
   });
 
+  it("commits vNext browser-handoff refusal and releases its LAB reservation without another RPC", async () => {
+    addLab();
+    const resolve = vi.spyOn(rail, "resolve");
+    const buy = () => preview("vnext-handoff", { offerRef: "lab:november", checkoutProtocol: "VNEXT", scenario: "handoff_required" });
+    resolve.mockResolvedValue({ state: "CUSTOMER_ACTION_REQUIRED", resolutionId: "resolution", checkoutUrl: "https://example.test/handoff" });
+    await expect(buy()).rejects.toThrow("VNEXT_BROWSER_HANDOFF_REFUSED");
+    await expect(buy()).rejects.toThrow("VNEXT_BROWSER_HANDOFF_REFUSED");
+    expect(intent().state).toBe("REFUSED"); expect(resolve).toHaveBeenCalledOnce();
+    expect(labSeatInventory(db, db.prepare("SELECT * FROM lab_occurrences WHERE occurrence_ref='lab:november'").get() as LabOccurrenceRow, T0).held).toBe(0);
+  });
+
   it("never starts a payment on load or retry, and a replay after confirmation only reads the order back", async () => {
     const create = vi.spyOn(rail, "create");
     const quote = await quoted(await preview("load"));
@@ -610,10 +621,13 @@ describe("HTTP", () => {
     expect((await post("/v1/checkout/preview", "http", { offerRef: "course:one", mockScenario: "ambiguous_resolve" })).status).toBe(200);
     const changed = await post("/v1/checkout/preview", "http", { offerRef: "course:one", checkoutCode: "OTHER" });
     expect(changed.status).toBe(409);
-    expect(await changed.json()).toEqual({ code: "IDEMPOTENCY_KEY_REUSED" });
+    expect(await changed.json()).toEqual({ code: "IDEMPOTENCY_KEY_REUSED", newIntentAllowed: true });
 
     const open = await (await post("/v1/checkout/preview", "open", { offerRef: "course:one", mockScenario: "customer_action" })).json() as { quoteId: string };
     const started = await (await post("/v1/checkout", "open-pay", { quoteId: open.quoteId })).json() as { orderPublicId: string };
+    const changedPaid = await post("/v1/checkout/preview", "open", { offerRef: "course:one", checkoutCode: "OTHER" });
+    expect(changedPaid.status).toBe(409);
+    expect(await changedPaid.json()).toEqual({ code: "IDEMPOTENCY_KEY_REUSED" });
     const refused = await post("/v1/checkout/preview", "after", { offerRef: "course:one" });
     expect(refused.status).toBe(409);
     expect(await refused.json()).toEqual({ code: "CHECKOUT_PAYMENT_IN_PROGRESS", orderPublicId: started.orderPublicId });
@@ -978,6 +992,33 @@ describe("ART-398 opt-in v9 checkout binding", () => {
     db.exec("INSERT INTO video_upload_sessions(id,lesson_ref,video_id,status,uploader_endpoint) VALUES ('upload','lesson','video','READY','https://example.test/upload')");
     db.prepare("INSERT INTO lesson_video_bindings(lesson_ref,active_video_id,duration_seconds,bound_at,updated_at) VALUES ('lesson','video',150,?,?)").run(T0,T0);
   }
+  it.each(["missing", "schema", "hash", "binding"])("commits REFUSED for a %s purchase quote and never resolves it twice", async kind => {
+    enablePurchaseRail(); readyCourse();
+    const resolve = vi.mocked(rail.resolve);
+    const valid = resolve.getMockImplementation()!;
+    resolve.mockImplementation(async input => {
+      const result = await valid(input);
+      if (result.state !== "PRICE_REVIEW_REQUIRED") throw new Error("fixture quote required");
+      if (kind === "missing") delete result.quote.purchase;
+      if (kind === "schema") Object.assign(result.quote.purchase!, { schema: "invalid" });
+      if (kind === "hash") result.quote.purchase!.payableHash = `refref-jcs-1:${"0".repeat(64)}`;
+      if (kind === "binding") result.quote.finalAmountKopecks += 1;
+      return result;
+    });
+    await expect(preview("bad-quote")).rejects.toBeInstanceOf(RailRefusalError);
+    await expect(preview("bad-quote")).rejects.toBeInstanceOf(RailRefusalError);
+    expect(intent()).toMatchObject({ state: "REFUSED", consumed_at: null });
+    expect(resolve).toHaveBeenCalledOnce(); expect(count("checkout_attempts")).toBe(0);
+  });
+  it("persists refusal of an unexpected purchase envelope when no merchant input was frozen", async () => {
+    const resolve = vi.spyOn(rail, "resolve").mockResolvedValue({ state: "PRICE_REVIEW_REQUIRED", quote: {
+      resolutionId: "r", termsVersionId: null, baseAmountKopecks: 10000, discountKopecks: 0, finalAmountKopecks: 10000,
+      purchase: {} as NonNullable<import("../src/checkout").RailQuote["purchase"]>,
+    } });
+    await expect(preview("unexpected-purchase")).rejects.toThrow("PURCHASE_INPUT_REQUIRED");
+    await expect(preview("unexpected-purchase")).rejects.toThrow("PURCHASE_INPUT_REQUIRED");
+    expect(intent().state).toBe("REFUSED"); expect(resolve).toHaveBeenCalledOnce();
+  });
   it("LMS FULL_PREPAYMENT still requires readiness and binds acceptance/payment/fiscal amount to payable/2", async () => {
     enablePurchaseRail();
     await expect(preview("not-ready")).rejects.toThrow("IMMEDIATE_COURSE_ACCESS_NOT_READY");

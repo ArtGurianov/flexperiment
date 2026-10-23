@@ -155,7 +155,7 @@ describe("review: terminal LMS payment recovery", () => {
       return Response.json({ state, orderPublicId: "same-order" });
     }));
     render(<CourseCheckout courseRef="one" offerRef="course:one" saleMode="PUBLIC" priceKopecks={10000} />);
-    await screen.findByText(/Повторная проверка использует тот же заказ/);
+    await screen.findByText(/проверить тот же заказ ещё раз/);
     expect(sessionStorage.getItem("course-checkout-v1:buyer:course:one")).toBe(saved);
     expect(calls[0].headers).toMatchObject({ "idempotency-key": "same-preview" });
     expect(JSON.parse(String(calls[0].body))).toMatchObject({ checkoutCode: "PARTNER20" });
@@ -172,5 +172,48 @@ describe("review: terminal LMS payment recovery", () => {
     await screen.findByText(/Можно начать новую покупку/);
     fireEvent.click(screen.getByRole("button", { name: "Купить курс →" }));
     await waitFor(() => expect(keys).toHaveLength(2)); expect(keys[1]).not.toBe("old-preview");
+  });
+});
+
+ describe("second review: safe browser restoration", () => {
+  it.each(["PENDING", "CUSTOMER_ACTION_REQUIRED", "CREATE_UNKNOWN"])("restores %s with a deliberate payment link and the same keys", async state => {
+    const saved = JSON.stringify({ version: 1, previewKey: "same-preview", paymentKey: "same-pay", checkoutCode: "OLD" });
+    sessionStorage.setItem("course-checkout-v1:buyer:course:one", saved);
+    const request = vi.fn(async (path: string) => Response.json(path === "/v1/me" ? { customer: { id: "buyer" } }
+      : { state, orderPublicId: "same-order", checkoutUrl: "https://bank.example.test/pay" }));
+    vi.stubGlobal("fetch", request);
+    render(<CourseCheckout courseRef="one" offerRef="course:one" saleMode="PUBLIC" priceKopecks={10000} />);
+    expect(await screen.findByRole("link", { name: "Продолжить оплату →" })).toHaveAttribute("href", "https://bank.example.test/pay");
+    expect(sessionStorage.getItem("course-checkout-v1:buyer:course:one")).toBe(saved);
+    expect(screen.getByLabelText("Промокод")).toBeDisabled();
+    expect(request.mock.calls.map(([path]) => path)).toEqual(["/v1/me", "/v1/checkout/preview"]);
+  });
+  it.each(["REFREF_RESOLUTION_REQUEST_MISMATCH", "IDEMPOTENCY_KEY_REUSED"])("allows a new promo/key after server-confirmed pre-payment refusal %s", async code => {
+    sessionStorage.setItem("course-checkout-v1:buyer:course:one", JSON.stringify({ version: 1, previewKey: "old-preview", paymentKey: null, checkoutCode: "OLD" }));
+    const calls: RequestInit[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (path: string, options?: RequestInit) => {
+      if (path === "/v1/me") return Response.json({ customer: { id: "buyer" } });
+      calls.push(options!);
+      if (calls.length === 1) return Response.json({ code, newIntentAllowed: true }, { status: 409 });
+      return Response.json({ state: "RESOLUTION_PENDING", orderPublicId: "new-order" });
+    }));
+    render(<CourseCheckout courseRef="one" offerRef="course:one" saleMode="PUBLIC" priceKopecks={10000} />);
+    await screen.findByText(/Можно изменить промокод/);
+    expect(sessionStorage.getItem("course-checkout-v1:buyer:course:one")).toBeNull();
+    fireEvent.change(screen.getByLabelText("Промокод"), { target: { value: "NEW" } });
+    fireEvent.click(screen.getByRole("button", { name: "Купить курс →" }));
+    await waitFor(() => expect(calls).toHaveLength(2));
+    expect(calls[1].headers).not.toMatchObject({ "idempotency-key": "old-preview" });
+    expect(JSON.parse(String(calls[1].body)).checkoutCode).toBe("NEW");
+  });
+  it("keeps keys for an unqualified 409 instead of guessing that payment is absent", async () => {
+    const saved = JSON.stringify({ version: 1, previewKey: "same-preview", paymentKey: "same-pay", checkoutCode: "OLD" });
+    sessionStorage.setItem("course-checkout-v1:buyer:course:one", saved);
+    vi.stubGlobal("fetch", vi.fn(async (path: string) => path === "/v1/me" ? Response.json({ customer: { id: "buyer" } })
+      : Response.json({ code: "IDEMPOTENCY_KEY_REUSED" }, { status: 409 })));
+    render(<CourseCheckout courseRef="one" offerRef="course:one" saleMode="PUBLIC" priceKopecks={10000} />);
+    await screen.findByText(/Не удалось начать оплату/);
+    expect(sessionStorage.getItem("course-checkout-v1:buyer:course:one")).toBe(saved);
+    expect(screen.getByLabelText("Промокод")).toBeDisabled();
   });
 });

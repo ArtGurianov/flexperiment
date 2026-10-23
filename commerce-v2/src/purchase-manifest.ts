@@ -11,7 +11,7 @@ const ajv = new Ajv2020({ strict: false, allErrors: true });
 addFormats(ajv);
 ajv.addSchema(schema);
 const validate = (name: string, value: unknown) => {
-  if (!ajv.validate({ $ref: `${schema.$id}#/$defs/${name}` }, value)) throw new Error(`PURCHASE_SCHEMA_INVALID:${name}`);
+  if (!ajv.validate(`${schema.$id}#/$defs/${name}`, value)) throw new Error(`PURCHASE_SCHEMA_INVALID:${name}`);
 };
 
 export type FrozenPurchaseInput = { input: PurchaseInputV1; inputHash: string };
@@ -42,7 +42,8 @@ export function consumePurchaseQuote(frozen: FrozenPurchaseInput, response: unkn
 
 export function acceptPurchase(frozen: FrozenPurchaseInput, response: unknown, acceptedAt: string): PurchaseAcceptance {
   const { payable, payableHash } = consumePurchaseQuote(frozen, response);
-  if (acceptedAt < payable.quote.issuedAt || acceptedAt >= payable.quote.expiresAt) throw new Error("ACCEPTANCE_OUTSIDE_QUOTE_WINDOW");
+  const accepted = Date.parse(acceptedAt), issued = Date.parse(payable.quote.issuedAt), expires = Date.parse(payable.quote.expiresAt);
+  if (![accepted, issued, expires].every(Number.isFinite) || accepted < issued || accepted >= expires) throw new Error("ACCEPTANCE_OUTSIDE_QUOTE_WINDOW");
   const acceptance: PurchaseAcceptance = { schema: "refref.purchase-acceptance/1", businessId: payable.businessId,
     purchaseRef: payable.purchaseRef, payableHash, inputHash: frozen.inputHash, quoteRef: payable.quote.quoteRef, acceptedAt };
   validate("acceptance", acceptance);

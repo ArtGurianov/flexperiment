@@ -534,6 +534,8 @@ This is NOT production/runtime erasure readiness. Before live use, separately qu
 No live schema, service, backup scheduler, provider request or public gate is changed
 by the first slice. Its regressions run in the existing CI node-project glob.
 
+Migration `0036_checkout_audit_indexes.sql` adds only nonunique indexes over existing audit action/subject and qualified provider-payment identity. It adds no subject fields, evidence stores or purge targets. Its exact schema digest is classified for isolated erasure restore and offline retention; unknown DDL remains refused. Existing evidence-preservation and runtime-admission rules are unchanged.
+
 ### Category retention engine: offline engineering, not active policy
 
 `commerce-v2/src/pd-retention.ts` is deliberately not wired into startup, jobs or a

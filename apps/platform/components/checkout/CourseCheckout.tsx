@@ -12,9 +12,9 @@ type Props = {
   priceKopecks: number | null;
 };
 
-type CheckoutResult = { orderPublicId?: string; state?: string; checkoutUrl?: string; code?: string };
+type CheckoutResult = { orderPublicId?: string; state?: string; checkoutUrl?: string; code?: string; newIntentAllowed?: boolean };
 type CheckoutQuote = {
-  code?: string; orderPublicId?: string; checkoutUrl?: string;
+  newIntentAllowed?: boolean; code?: string; orderPublicId?: string; checkoutUrl?: string;
   quoteId: string;
   state: "PRICE_REVIEW_REQUIRED";
   baseAmountKopecks: number;
@@ -58,6 +58,9 @@ export default function CourseCheckout({ courseRef, offerRef, saleMode, priceKop
   const [termsAccepted, setTermsAccepted] = useState(false);
   const [consentRequired, setConsentRequired] = useState(false);
   const [checkoutCode, setCheckoutCode] = useState("");
+  const [hasIntent, setHasIntent] = useState(false);
+  const [paymentContinuation, setPaymentContinuation] = useState<string | null>(null);
+  const intentCode = useRef<string | null>(null);
   const previewIdempotencyKey = useRef<string | null>(null);
   const paymentIdempotencyKey = useRef<string | null>(null);
   const storageKey = useRef<string | null>(null);
@@ -69,14 +72,14 @@ export default function CourseCheckout({ courseRef, offerRef, saleMode, priceKop
     } catch { /* The durable server intent still owns replay when storage is unavailable. */ }
   };
 
-  const resetTerminalPurchase = () => {
+  const resetPurchase = () => {
     previewIdempotencyKey.current = null; paymentIdempotencyKey.current = null;
-    setQuote(null); setTermsAccepted(false);
+    setQuote(null); setTermsAccepted(false); setHasIntent(false); setPaymentContinuation(null); intentCode.current = null;
     try { if (storageKey.current) sessionStorage.removeItem(storageKey.current); } catch { /* Server admission still applies. */ }
   };
   const terminalPayment = (result: CheckoutResult) => {
     if (result.state !== "DECLINED" && result.state !== "EXPIRED") return false;
-    resetTerminalPurchase();
+    resetPurchase();
     setStatus(result.state === "DECLINED" ? "Платёж отклонён. Можно начать новую покупку." : "Время оплаты истекло. Можно начать новую покупку.");
     return true;
   };
@@ -110,8 +113,9 @@ export default function CourseCheckout({ courseRef, offerRef, saleMode, priceKop
     if (!offerRef || checkoutLock.current) return;
     checkoutLock.current = true;
     setBusy(true); setStatus("Проверяем итоговую цену…");
+    const code = intentCode.current ?? ((restoredCode ?? checkoutCode).trim() || new URLSearchParams(window.location.search).get("checkoutCode") || "");
     previewIdempotencyKey.current ??= crypto.randomUUID();
-    const code = (restoredCode ?? checkoutCode).trim() || new URLSearchParams(window.location.search).get("checkoutCode") || "";
+    intentCode.current = code; setHasIntent(true);
     setCheckoutCode(code);
     persist(code);
     try {
@@ -125,13 +129,17 @@ export default function CourseCheckout({ courseRef, offerRef, saleMode, priceKop
         }),
       });
       const result = await response.json() as CheckoutQuote | CheckoutResult;
-      if (!response.ok) throw new Error(result.code || "CHECKOUT_PREVIEW_FAILED");
+      if (!response.ok) {
+        if (result.newIntentAllowed) { resetPurchase(); setStatus("Расчёт завершён отказом. Можно изменить промокод и начать новую покупку."); return; }
+        throw new Error(result.code || "CHECKOUT_PREVIEW_FAILED");
+      }
       if (terminalPayment(result)) return;
       if (result.state === "RESOLUTION_PENDING") { setStatus("Уточняем цену. Повторите проверку — оплата ещё не начата."); return; }
       if (result.orderPublicId && ["PAID", "PENDING", "CREATE_UNKNOWN", "CUSTOMER_ACTION_REQUIRED"].includes(result.state ?? "")) {
-        if (result.checkoutUrl && new URL(result.checkoutUrl).protocol === "https:") window.location.assign(result.checkoutUrl);
-        else if (result.state === "PAID") setSession("owned");
-        else setStatus("Статус платежа уточняется. Повторная проверка использует тот же заказ.");
+        setQuote(null);
+        setPaymentContinuation(result.state !== "PAID" && result.checkoutUrl && new URL(result.checkoutUrl).protocol === "https:" ? result.checkoutUrl : null);
+        if (result.state === "PAID") setSession("owned");
+        else setStatus("Статус платежа уточняется. Можно продолжить оплату или проверить тот же заказ ещё раз.");
         return;
       }
       if (result.state !== "PRICE_REVIEW_REQUIRED" || !("quoteId" in result) || !result.quoteId) throw new Error("CHECKOUT_QUOTE_INVALID");
@@ -152,8 +160,7 @@ export default function CourseCheckout({ courseRef, offerRef, saleMode, priceKop
         setConsentRequired(true);
         setStatus("Перед покупкой подтвердите актуальные документы аккаунта.");
       } else if (["CHECKOUT_QUOTE_EXPIRED", "CHECKOUT_QUOTE_STALE"].includes(code)) {
-        previewIdempotencyKey.current = null; paymentIdempotencyKey.current = null;
-        if (storageKey.current) sessionStorage.removeItem(storageKey.current);
+        resetPurchase();
         setStatus("Время расчёта истекло. Проверьте цену ещё раз.");
       } else setStatus(code === "PAYMENTS_DISABLED" || code === "OFFER_CLOSED" ? "Продажи скоро." : "Не удалось начать оплату. Попробуйте ещё раз.");
     } finally {
@@ -190,8 +197,7 @@ export default function CourseCheckout({ courseRef, offerRef, saleMode, priceKop
         setTermsAccepted(false);
         setStatus("Перед покупкой подтвердите актуальные документы аккаунта.");
       } else if (["CHECKOUT_QUOTE_EXPIRED", "CHECKOUT_QUOTE_STALE"].includes(code)) {
-        setQuote(null); previewIdempotencyKey.current = null; paymentIdempotencyKey.current = null;
-        if (storageKey.current) sessionStorage.removeItem(storageKey.current);
+        resetPurchase();
         setStatus("Цена изменилась или время подтверждения истекло. Проверьте её ещё раз.");
       } else setStatus(code === "PAYMENTS_DISABLED" || code === "OFFER_CLOSED" ? "Продажи скоро." : "Не удалось начать оплату. Попробуйте ещё раз.");
     } finally {
@@ -215,7 +221,7 @@ export default function CourseCheckout({ courseRef, offerRef, saleMode, priceKop
               { version: number; previewKey: string; paymentKey: string | null; checkoutCode: string } | null;
             if (saved?.version === 1 && typeof saved.previewKey === "string" && typeof saved.checkoutCode === "string") {
               previewIdempotencyKey.current = saved.previewKey; paymentIdempotencyKey.current = saved.paymentKey;
-              setCheckoutCode(saved.checkoutCode);
+              intentCode.current = saved.checkoutCode; setHasIntent(true); setCheckoutCode(saved.checkoutCode);
               await restoreCheckout(saved.checkoutCode);
             }
           } catch { /* Storage is advisory; the server remains the quote authority. */ }
@@ -230,7 +236,7 @@ export default function CourseCheckout({ courseRef, offerRef, saleMode, priceKop
   return <div className="checkoutCta">
     <strong>{price(quote?.finalAmountKopecks ?? priceKopecks)}</strong>
     {!quote && <label>Промокод
-      <input autoComplete="off" disabled={busy} maxLength={64} onChange={(event) => setCheckoutCode(event.target.value)} value={checkoutCode} />
+      <input autoComplete="off" disabled={busy || hasIntent} maxLength={64} onChange={(event) => setCheckoutCode(event.target.value)} value={checkoutCode} />
     </label>}
     {quote?.legalAcceptance && <div>
       <p>Электронный чек придёт на {quote.legalAcceptance.receiptEmail}.</p>
@@ -252,6 +258,7 @@ export default function CourseCheckout({ courseRef, offerRef, saleMode, priceKop
       {quote.referralDiscountKopecks > 0 && <> · скидка Refref {price(quote.referralDiscountKopecks)}</>}
       {` · итог ${price(quote.finalAmountKopecks)}`}
     </p>}
+    {paymentContinuation && <a href={paymentContinuation}>Продолжить оплату →</a>}
     {status && <p role="status">{status}</p>}
   </div>;
 }

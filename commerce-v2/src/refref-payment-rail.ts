@@ -209,22 +209,25 @@ export class RefrefPaymentRail implements PaymentRail {
       throw new RailRefusalError("REFREF_VNEXT_CONTEXT_REQUIRED");
     }
     const base = this.config.vnextApiBaseUrl;
+    let resolved: z.infer<typeof vnextResolutionSchema>;
     try {
-      const resolved = await this.call("POST", "/integrations/referral-resolutions", vnextResolutionSchema,
+      resolved = await this.call("POST", "/integrations/referral-resolutions", vnextResolutionSchema,
         input.request, input.idempotencyKey, base);
-      return consumeVnextResolution(input, this.config.merchantId, resolved);
     } catch (error) {
       if (isAmbiguousSideEffect(error)) {
         // A lost ACK is recovered under the SAME order and original deadline; no new intent.
         try {
-          const resolved = await this.call("GET", `/integrations/referral-resolutions/by-order/${encodeURIComponent(input.request.merchantOrderRef)}`,
+          resolved = await this.call("GET", `/integrations/referral-resolutions/by-order/${encodeURIComponent(input.request.merchantOrderRef)}`,
             vnextResolutionSchema, undefined, undefined, base);
-          return consumeVnextResolution(input, this.config.merchantId, resolved);
         } catch { throw new AmbiguousRailCreateError(); }
+      } else {
+        if (error instanceof RefrefHttpError && [409, 422].includes(error.status)) throw new RailRefusalError(error.message);
+        throw error;
       }
-      if (error instanceof RefrefHttpError && [409, 422].includes(error.status)) throw new RailRefusalError(error.message);
-      throw error;
     }
+    // A validated response with a wrong binding/line/total is definitive, including after read-back.
+    try { return consumeVnextResolution(input, this.config.merchantId, resolved); }
+    catch (error) { throw new RailRefusalError((error as Error).message); }
   }
 
   async create(input: PaymentCreateInput, options: PaymentRecoveryOptions = { mayInitiate: () => true }): Promise<RailProjection> {

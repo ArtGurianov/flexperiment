@@ -31,6 +31,7 @@ export default function LabGuestCheckout({ offerRef, displayedAmountKopecks }: {
   const accepted = personalData && terms && receiptContact;
   const [busy, setBusy] = useState(false);
   const [hasCheckout, setHasCheckout] = useState(false);
+  const [paymentContinuation, setPaymentContinuation] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const session = useRef<Session | null>(null);
   const lock = useRef(false);
@@ -53,8 +54,10 @@ export default function LabGuestCheckout({ offerRef, displayedAmountKopecks }: {
       session.current = current; setHasCheckout(true);
       // Save before the first request: a lost answer cannot create a fresh purchase intent on retry.
       sessionStorage.setItem(storageKey, JSON.stringify(current));
-      const started = await labRequest("/v1/lab/guest/start", { email: current.email, accessToken: current.accessToken });
-      current.orderPublicId = started.orderPublicId;
+      if (!current.orderPublicId) {
+        const started = await labRequest("/v1/lab/guest/start", { email: current.email, accessToken: current.accessToken });
+        current.orderPublicId = started.orderPublicId;
+      }
       setTicketLink(`/ticket#access=${current.accessToken}`);
       sessionStorage.setItem(storageKey, JSON.stringify(current));
       sessionStorage.setItem("lab-ticket-v1", JSON.stringify({ accessToken: current.accessToken, orderPublicId: current.orderPublicId }));
@@ -62,8 +65,9 @@ export default function LabGuestCheckout({ offerRef, displayedAmountKopecks }: {
       if (terminalPayment(result.state)) return;
       if (result.state === "RESOLUTION_PENDING") { setMessage("Уточняем условия. Повторите проверку — повторной оплаты не будет."); return; }
       if (result.orderPublicId && ["PAID", "PENDING", "CREATE_UNKNOWN", "CUSTOMER_ACTION_REQUIRED"].includes(result.state)) {
-        if (result.checkoutUrl && new URL(result.checkoutUrl).protocol === "https:") window.location.assign(result.checkoutUrl);
-        else router.push(`/ticket#access=${current.accessToken}`);
+        setQuote(null);
+        setPaymentContinuation(result.state !== "PAID" && result.checkoutUrl && new URL(result.checkoutUrl).protocol === "https:" ? result.checkoutUrl : null);
+        setMessage(result.state === "PAID" ? "Заказ оплачен. Билет доступен по ссылке; можно начать отдельный новый заказ." : "Статус платежа уточняется. Можно продолжить оплату или проверить заказ по ссылке на билет.");
         return;
       }
       setQuote(labGuestQuoteSchema.parse(result)); setPersonalData(false); setTerms(false); setReceiptContact(false);
@@ -94,7 +98,7 @@ export default function LabGuestCheckout({ offerRef, displayedAmountKopecks }: {
       if (result.restartAllowed !== true) throw new Error("LAB_CHECKOUT_RESTART_UNSAFE");
       sessionStorage.removeItem(storageKey); session.current = null; setHasCheckout(false);
       setQuote(null); setPersonalData(false); setTerms(false); setReceiptContact(false);
-      setTicketLink(null); setMessage("Можно проверить условия нового заказа и изменить промокод.");
+      setPaymentContinuation(null); setMessage("Можно проверить условия нового заказа и изменить промокод.");
     } catch { setMessage("Сначала нужно уточнить прежний платёж. Заказ и ключи сохранены; проверьте заказ по ссылке на билет."); }
     finally { lock.current = false; setBusy(false); }
   };
@@ -123,6 +127,7 @@ export default function LabGuestCheckout({ offerRef, displayedAmountKopecks }: {
         <label className="consent"><input type="checkbox" checked={receiptContact} onChange={event => setReceiptContact(event.target.checked)} />Получить билет и чек на {email}.</label>
         <button disabled={busy || !accepted} onClick={pay}>{busy ? "Проверяем заказ…" : "Подтвердить и оплатить"}</button>
       </div>}
+    {paymentContinuation && <a href={paymentContinuation}>Продолжить оплату</a>}
     {ticketLink && <Link href={ticketLink}>Проверить заказ и билет</Link>}
     {hasCheckout && <button disabled={busy} onClick={() => void restartPurchase()}>Начать новый заказ</button>}
     {message && <p role="alert">{message}</p>}

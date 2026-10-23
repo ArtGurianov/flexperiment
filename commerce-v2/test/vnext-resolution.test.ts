@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { RefrefPaymentRail } from "../src/refref-payment-rail";
 import { resolutionInputHash } from "../src/refref-contract/shared-checkout-snapshot";
-import type { PaymentResolveInput } from "../src/checkout";
+import { RailRefusalError, type PaymentResolveInput } from "../src/checkout";
 
 const merchantId = "00000000-0000-4000-8000-000000000001";
 const input: PaymentResolveInput = { protocol: "VNEXT", idempotencyKey: "same-preview", request: {
@@ -45,8 +45,18 @@ describe("ART-379 authoritative vNext resolution", () => {
     else if (field === "handoff") bad.customerActionUrl = "https://checkout.refref.test/bounce";
     else bad[field] = "wrong";
     const request = vi.fn<typeof fetch>().mockImplementation(async () => Response.json(bad));
-    await expect(make(request).resolve(input)).rejects.toThrow("PAYMENT_CREATE_UNKNOWN");
+    if (["storefrontOrigin", "handoff"].includes(field)) await expect(make(request).resolve(input)).rejects.toThrow("PAYMENT_CREATE_UNKNOWN");
+    else { await expect(make(request).resolve(input)).rejects.toBeInstanceOf(RailRefusalError); expect(request).toHaveBeenCalledOnce(); }
     expect(request.mock.calls.every(([, options]) => !String(options?.body).includes("customerEmail"))).toBe(true);
+  });
+  it.each(["binding", "line", "totals"])("refuses deterministic %s mismatch even after lost-ACK readback", async kind => {
+    const bad = resolved();
+    if (kind === "binding") bad.inputHash = "wrong";
+    if (kind === "line") bad.lines[0].referralDiscountAmountKopecks = 10002;
+    if (kind === "totals") bad.totals.payableAmountKopecks = 1;
+    const request = vi.fn<typeof fetch>().mockRejectedValueOnce(new TypeError("lost ACK")).mockResolvedValueOnce(Response.json(bad));
+    await expect(make(request).resolve(input)).rejects.toBeInstanceOf(RailRefusalError);
+    expect(request).toHaveBeenCalledTimes(2);
   });
   it("leaves an unknown resolution pending when readback is unavailable, and refuses campaign split", async () => {
     const lost = vi.fn<typeof fetch>().mockRejectedValue(new TypeError("offline"));

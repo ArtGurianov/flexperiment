@@ -115,12 +115,14 @@ const checkoutError = (context: Context, error: unknown, fallback: string) => {
   const configurationCode = error instanceof CommerceConfigurationError && /^[A-Z][A-Z0-9_]*$/.test(error.code) ? error.code : undefined;
   const code = conflict || consent || error instanceof LabTicketError ? message! : configurationCode ?? fallback;
   const orderPublicId = !labBearer(context) && error instanceof CheckoutConflictError ? error.orderPublicId : undefined;
+  const notFound = conflict && message === "CHECKOUT_QUOTE_NOT_FOUND";
+  const newIntentAllowed = error instanceof CheckoutConflictError && error.newIntentAllowed;
   if (!conflict && !consent && !configurationCode) {
     // Redacted operational signal only: no SQL, upstream body, token, stack, cause or customer data.
     try { console.error(JSON.stringify({ event: "CHECKOUT_FAILURE", code: fallback, errorKind: error instanceof Error ? "ERROR" : "NON_ERROR" })); }
     catch { /* Diagnostic transport must not replace the sanitized checkout response. */ }
   }
-  return context.json({ code, ...(orderPublicId ? { orderPublicId } : {}) }, consent ? 403 : conflict ? 409 : 503, noStore);
+  return context.json({ code, ...(orderPublicId ? { orderPublicId } : {}), ...(newIntentAllowed ? { newIntentAllowed: true } : {}) }, notFound ? 404 : consent ? 403 : conflict ? 409 : 503, noStore);
 };
 const CONTROL_ROOM_SESSION_SECONDS = CONTROL_ROOM_SESSION_TTL_MS / 1000;
 
@@ -895,6 +897,9 @@ export function createCommerceV2App(deps: Dependencies) {
       }
       const body = await context.req.json<{ quoteId?: string; state?: string; legalAcceptance?: PaidCheckoutAcceptance; labAcceptance?: LabAcceptance }>();
       if (!body.quoteId) throw new Error("CHECKOUT_QUOTE_REQUIRED");
+      if (guest && !deps.db.prepare("SELECT 1 FROM checkout_quotes WHERE id=? AND order_public_id=? AND storefront='LAB'").get(body.quoteId, guest.order_public_id)) {
+        return context.json({ code: "CHECKOUT_QUOTE_NOT_FOUND" }, 404, noStore);
+      }
       const navigation = checkoutIntentNavigation(deps.db, customerId, body.quoteId);
       const requestStorefront = guest ? "LAB" : storefrontForRequest(origins, context.req.raw.headers);
       if (requestStorefront && navigation.storefront !== requestStorefront) throw new CheckoutConflictError("CHECKOUT_STOREFRONT_MISMATCH");
@@ -908,9 +913,6 @@ export function createCommerceV2App(deps: Dependencies) {
         : undefined;
       const successUrl = paymentReturn ? new URL("/checkout/return", storefrontOrigin(origins, paymentReturn.state.storefront)) : undefined;
       successUrl?.searchParams.set("state", paymentReturn!.token);
-      if (guest && !deps.db.prepare("SELECT 1 FROM checkout_quotes WHERE id=? AND order_public_id=? AND storefront='LAB'").get(body.quoteId, guest.order_public_id)) {
-        return context.json({ code: "CHECKOUT_QUOTE_NOT_FOUND" }, 404, noStore);
-      }
       const result = await confirmCheckout(deps.db, deps.paymentRail, deps.config, {
         customerId,
         customerEmail: customer.email_normalized,

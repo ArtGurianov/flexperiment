@@ -64,6 +64,8 @@ const supportedSchemaSha256 = new Set([
   // 0035: owner storefront-switch observations (no subject data), the quote's opening generation in
   // checkout_quotes, and sales_activation frozen as history; no new identity store. Hashed journal.
   "6ef1be23e4d713fa77e81a1cb0391fcb1292d18634b3d2270751bec6ab58a728",
+  // 0036: two nonunique audit lookup indexes only; no new subject fields, stores or deletion targets.
+  "089392a156085ce6e353b0998cbd53a75c1d08ecda7f604787532c0f1b096221",
 ]);
 const parse = <T>(schema: z.ZodType<T>, value: unknown): T => {
   const result = schema.safeParse(value); return result.success ? result.data : refuse("RETENTION_POLICY_OR_HOLD_INVALID");

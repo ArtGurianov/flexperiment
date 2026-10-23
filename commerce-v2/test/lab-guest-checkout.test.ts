@@ -348,17 +348,19 @@ describe("independent request sources (PR #264 P2)", () => {
 
 
 describe("review: safe guest checkout restart", () => {
-  it.each(["decline", "expiry"])("permits a new purchase after authoritative %s and preserves old history", async scenario => {
+  it.each(["decline", "expiry", "success", "late_payment", "ambiguous_create"])("permits a new purchase after authoritative %s and preserves old history", async scenario => {
     const old = await purchase(scenario);
     const create = vi.spyOn(rail, "create"), recover = vi.spyOn(rail, "recoverCreate");
     expect(await json(await request("/v1/lab/guest/restart", {}, old.token))).toEqual({ restartAllowed: true });
-    expect(create).not.toHaveBeenCalled(); expect(recover).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
+    if (scenario === "ambiguous_create") expect(recover.mock.calls[0][2]!.mayInitiate()).toBe(false);
+    else expect(recover).not.toHaveBeenCalled();
     const next = await purchase();
     expect(next.orderPublicId).not.toBe(old.orderPublicId); expect(next.token).not.toBe(old.token);
-    expect(next.paid.state).toBe("PAID"); expect(count("lab_tickets")).toBe(1); expect(count("orders")).toBe(2);
+    expect(next.paid.state).toBe("PAID"); expect(count("lab_tickets")).toBe(["decline", "expiry"].includes(scenario) ? 1 : 2); expect(count("orders")).toBe(2);
     expect((await request(`/v1/checkout/${old.orderPublicId}`, undefined, old.token)).status).toBe(200);
   });
-  it.each(["customer_action", "late_payment", "ambiguous_create", "success"])("refuses restart of %s without losing the old capability or starting another payment", async scenario => {
+  it.each(["customer_action", "wrong_amount"])("refuses restart of %s without losing the old capability or starting another payment", async scenario => {
     const old = await purchase(scenario);
     const create = vi.spyOn(rail, "create"), recover = vi.spyOn(rail, "recoverCreate");
     expect((await request("/v1/lab/guest/restart", {}, old.token)).status).toBe(409);
@@ -381,5 +383,32 @@ describe("review: safe guest checkout restart", () => {
     vi.spyOn(rail, "reconcile").mockRejectedValue(new TypeError("read-back unavailable"));
     expect((await request("/v1/lab/guest/restart", {}, old.token)).status).toBe(409);
     expect(db.prepare("SELECT 1 FROM audit_log WHERE action='LAB_CHECKOUT_RETIRED'").get()).toBeUndefined();
+  });
+});
+
+ describe("second review: guest recovery quotas and indexed evidence", () => {
+  it("replays a known capability through exhausted creation quotas without charging NAT or email buckets", async () => {
+    const first = await start();
+    for (let i = 0; i < 60; i++) expect((await request("/v1/lab/guest/start", { email: "guest@example.com", accessToken: first.token })).status).toBe(201);
+    expect(count("lab_guest_access")).toBe(1);
+    expect(db.prepare("SELECT sum(attempts) AS n FROM lab_guest_rate_limits").get()).toEqual({ n: 2 });
+    for (let i = 0; i < 29; i++) await start(capability(), `guest-${i}@example.test`);
+    expect((await request("/v1/lab/guest/start", { email: "fresh@example.test", accessToken: capability() })).status).toBe(429);
+    const buckets = db.prepare("SELECT * FROM lab_guest_rate_limits ORDER BY bucket").all();
+    for (let i = 0; i < 12; i++) expect((await request("/v1/lab/guest/start", { email: "guest@example.com", accessToken: first.token })).status).toBe(201);
+    expect(db.prepare("SELECT * FROM lab_guest_rate_limits ORDER BY bucket").all()).toEqual(buckets);
+    expect((await request("/v1/lab/guest/start", { email: "other@example.test", accessToken: first.token })).status).toBe(409);
+    expect(count("lab_guest_access")).toBe(30);
+  });
+  it("uses indexes for checkout retirement, order qualification and provider-payment duplication checks", () => {
+    for (const query of [
+      "SELECT 1 FROM audit_log WHERE action='LAB_CHECKOUT_RETIRED' AND subject_ref='order'",
+      "SELECT evidence_json FROM audit_log WHERE action='PURCHASE_QUALIFIED' AND subject_ref='order'",
+      "SELECT 1 FROM audit_log WHERE action='PURCHASE_QUALIFIED' AND json_extract(evidence_json,'$.providerPaymentIdentity')='bank' AND subject_ref<>'order'",
+    ]) {
+      const plan = db.prepare(`EXPLAIN QUERY PLAN ${query}`).all() as Array<{ detail: string }>;
+      expect(plan.map(row => row.detail).join(" ")).toMatch(/SEARCH.*USING (?:COVERING )?INDEX audit_/);
+      expect(plan.map(row => row.detail).join(" ")).not.toMatch(/SCAN audit_log/);
+    }
   });
 });
