@@ -325,12 +325,24 @@ class FrontendProxy(unittest.TestCase):
         self.assertEqual(self.request("lab-v2", "/v1/lab/internal")[0], 404)
         self.assertEqual(self.request("lab-v2", "/v1/lab/guest/internal")[0], 404)
         self.assertEqual(self.request("lab-v2", "/v1/lab/guest/ticket/extra")[0], 404)
+        self.assertEqual(self.request("lab-v2", "/v1/lab/guest/restart/extra")[0], 404)
 
     def test_v2_allowlists(self):
-        for root in ("auth/get-session", "me", "lessons/access", "checkout/preview", "email/unsubscribe", "legal/current", "lab/catalogue", "lab/guest/start", "lab/guest/ticket", "lab/guest/recover", "lab/guest/recover/confirm", "lab/guest/reissue", "lab/guest/refunds"):
+        for root in ("auth/get-session", "me", "lessons/access", "checkout/preview", "email/unsubscribe", "legal/current", "lab/catalogue", "lab/guest/start", "lab/guest/ticket", "lab/guest/recover", "lab/guest/recover/confirm", "lab/guest/reissue", "lab/guest/refunds", "lab/guest/restart"):
             self.assertEqual(self.request("lab-v2", "/v1/" + root, container=self.edge)[0], 200)
         for path in ("login", "session", "logout", "v2/catalog", "v2/orders"):
             self.assertEqual(self.request("admin-v2", "/v1/admin/" + path)[0], 200)
+
+    def test_lab_restart_forwards_post_and_capability_on_the_exact_lab_route(self):
+        status, _, body = self.request("lab-v2", "/v1/lab/guest/restart", body=b'{}',
+            headers={"Authorization": "Bearer synthetic-restart-capability", "Origin": "https://canary-lab.flexperiment.ru"})
+        echoed = json.loads(body)
+        self.assertEqual(status, 200)
+        self.assertEqual(echoed["method"], "POST")
+        self.assertEqual(echoed["url"], "/v1/lab/guest/restart")
+        self.assertEqual(echoed["headers"]["authorization"], "Bearer synthetic-restart-capability")
+        self.assertEqual(echoed["body"], "{}")
+        self.assertEqual(self.request("admin-v2", "/v1/lab/guest/restart", body=b'{}')[0], 404)
 
     def test_lab_arrival_endpoint_reaches_commerce_and_nothing_else(self):
         proof = "ar1." + "A" * 43
@@ -416,7 +428,7 @@ class FrontendProxy(unittest.TestCase):
                 self.assertEqual(headers["Cache-Control"], "no-store")
         self.assertEqual(self.guest_counts(), before, "failed provenance must not reach Commerce or charge quotas")
         # Capability/confirmation routes remain available during source failure.
-        for path in ("ticket", "recover/confirm", "reissue", "refunds"):
+        for path in ("ticket", "recover/confirm", "reissue", "refunds", "restart"):
             self.assertEqual(self.request("lab-v2", "/v1/lab/guest/" + path)[0], 200)
 
     def test_lab_source_gate_has_a_causal_negative_control(self):
