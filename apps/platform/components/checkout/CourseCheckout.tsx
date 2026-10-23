@@ -134,7 +134,7 @@ export default function CourseCheckout({ courseRef, offerRef, saleMode, priceKop
         throw new Error(result.code || "CHECKOUT_PREVIEW_FAILED");
       }
       if (terminalPayment(result)) return;
-      if (result.state === "RESOLUTION_PENDING") { setStatus("Уточняем цену. Повторите проверку — оплата ещё не начата."); return; }
+      if (result.state === "RESOLUTION_PENDING") { setStatus("Уточняем цену. Промокод сохранён до завершения расчёта — не более 15 минут с первой проверки. Повторите проверку — оплата ещё не начата."); return; }
       if (result.orderPublicId && ["PAID", "PENDING", "CREATE_UNKNOWN", "CUSTOMER_ACTION_REQUIRED"].includes(result.state ?? "")) {
         setQuote(null);
         setPaymentContinuation(result.state !== "PAID" && result.checkoutUrl && new URL(result.checkoutUrl).protocol === "https:" ? result.checkoutUrl : null);

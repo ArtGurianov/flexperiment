@@ -112,6 +112,7 @@ describe("ART-379 direct checkout and reload", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "Купить курс →" })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: "Купить курс →" }));
     expect(await screen.findByText(/Уточняем цену/)).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Промокод сохранён до завершения расчёта — не более 15 минут с первой проверки.");
     expect(screen.queryByRole("button", { name: "Подтвердить и оплатить →" })).not.toBeInTheDocument();
     expect(fetcher.mock.calls.map(([path]) => path)).toEqual(["/v1/me", "/v1/checkout/preview"]);
   });
