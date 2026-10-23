@@ -35,7 +35,7 @@ import { resolvePlaybackAccess } from "./playback-access";
 import { issuePlaybackToken, verifyPlaybackToken, type PlaybackKeyring } from "./playback-auth";
 import { recordPlaybackAccessEvent } from "./playback-telemetry";
 import { loadCommerceOrigins, storefrontOrigin, type CommerceOrigins, type Storefront } from "./origins";
-import { databaseReady, type RefrefReadiness } from "./readiness";
+import { databaseReady, READINESS_DEADLINE_MS, withinDeadline, type RefrefReadiness } from "./readiness";
 import { storefrontSwitchStatus } from "./storefront-switch";
 import { publicLabCatalogue } from "./lab-catalogue";
 import { getCustomerStorefrontCourse, getCustomerStorefrontLesson, getStorefrontCourse, getStorefrontLesson, listCustomerStorefrontLibrary, listStorefrontCourses } from "./storefront-content";
@@ -258,11 +258,14 @@ export function createCommerceV2App(deps: Dependencies) {
     sourceCommit: deps.sourceCommit,
   }, 200, noStore));
   app.get("/readyz", async (context) => {
+    const started = performance.now();
     const databaseOk = databaseReady(deps.db);
     const refref = deps.probeRefref ? await deps.probeRefref().catch(() => "unavailable" as const) : deps.foundationMode ? "unavailable" : undefined;
     const protectedKinescopeMissing = deps.config.kinescopeDeliveryMode === "protected"
       && (deps.runtimeCapabilities?.kinescopeApiConfigured === false || !deps.kinescopeDrmAuth);
-    const erasureReady=deps.erasureFence ? await deps.erasureFence.ready() : true;
+    const erasure = deps.erasureFence
+      ? await withinDeadline(deps.erasureFence.ready(), READINESS_DEADLINE_MS - (performance.now() - started)) : true;
+    const erasureReady = erasure === true;
     const ready = databaseOk && !protectedKinescopeMissing && refref !== "unavailable" && erasureReady
       && (!deps.config.closedPaidTest || refref === "ready");
     return context.json({
@@ -278,7 +281,7 @@ export function createCommerceV2App(deps: Dependencies) {
         refref: refref ?? (deps.config.paymentMode === "refref" ? "configured_not_probed" : "not_required"),
         authEmail: deps.foundationMode ? "disabled" : deps.runtimeCapabilities?.authEmailConfigured === false ? "missing" : "configured",
         captcha: deps.foundationMode ? "disabled" : deps.runtimeCapabilities?.captchaConfigured === false ? "missing" : "configured",
-        erasure: deps.erasureFence ? erasureReady ? "qualified" : "closed" : "not_installed",
+        erasure: deps.erasureFence ? erasure === "DEADLINE" ? "unverified" : erasureReady ? "qualified" : "closed" : "not_installed",
         // Reported, never a readiness condition: a stop must not restart or unroute Commerce, and
         // reconciliation and refunds keep running while it holds (ART-319).
         salesSwitch: databaseOk ? storefrontSwitchStatus(deps.db, deps.config) : { state: "UNAVAILABLE", reason: "DATABASE_UNAVAILABLE", COURSES: "CLOSED", LAB: "CLOSED" },

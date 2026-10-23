@@ -1,8 +1,9 @@
 import { validatePlatformCanary } from "./canary-config";
 import { CLOSED_PAID_TEST_PROFILE } from "../../../lib/closed-paid-test-profile";
 
-/** Commerce's whole readiness budget, including its fresh S3 erasure-authority read.
- * Shorter turned slow-but-valid reads into ~10% PLATFORM_NOT_READY (2026-10-22).
+/** Longer than Commerce's own /readyz deadline (READINESS_DEADLINE_MS, 8s, fresh S3
+ * erasure-authority read included), so Platform always receives Commerce's answer.
+ * 3s turned slow-but-valid reads into ~10% PLATFORM_NOT_READY (2026-10-22).
  * Every outer probe waits longer; scripts/v2/test_fast_cut.py pins the chain. */
 export const COMMERCE_READINESS_TIMEOUT_MS = 10_000;
 

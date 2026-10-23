@@ -301,7 +301,10 @@ class FastCut(unittest.TestCase):
         platform_wait=int(re.search(r'COMMERCE_READINESS_TIMEOUT_MS = ([\d_]+);',source).group(1).replace('_',''))
         nginx_wait=seconds(re.search(r'proxy_read_timeout (\d+s);',(ROOT/'deploy/v2/frontends/proxy.conf').read_text()).group(1))
         admin_wget=health('admin')['test'];admin_health=int(admin_wget[admin_wget.index('-T')+1])
-        # Commerce owns one readiness budget, including its fresh authority read.
+        commerce=(ROOT/'commerce-v2/src/readiness.ts').read_text()
+        deadline=int(re.search(r'READINESS_DEADLINE_MS = ([\d_]+);',commerce).group(1).replace('_',''))
+        # Commerce enforces its own deadline (fresh authority read included); every client waits longer.
+        self.assertLess(deadline,budget*1000)
         self.assertEqual(f.READINESS_TIMEOUT['commerce'],budget)
         self.assertGreater(seconds(health('commerce')['timeout']),budget)
         # Each wrapper waits at least as long as what it wraps, then strictly longer outward.

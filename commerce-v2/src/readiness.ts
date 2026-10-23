@@ -3,6 +3,20 @@ import { V2_SCHEMA_LINEAGE } from "./db";
 import { closedPaidTestEnabled } from "../../lib/closed-paid-test-profile";
 
 export type RefrefReadiness = "ready" | "unavailable" | "not_required";
+
+/** /readyz answers within this, fresh erasure-authority read included (2026-10-22).
+ * A read still running at the deadline is reported "unverified" (503). It is not
+ * cancelled or cached: it finishes on its own and still closes admission itself if it
+ * fails. Every outer probe waits strictly longer; scripts/v2/test_fast_cut.py pins the chain. */
+export const READINESS_DEADLINE_MS = 8_000;
+
+export async function withinDeadline<T>(work: Promise<T>, remainingMs: number): Promise<T | "DEADLINE"> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<"DEADLINE">(resolve => { timer = setTimeout(resolve, Math.max(0, remainingMs), "DEADLINE"); });
+  // A rejection after the deadline is observed here instead of escaping as unhandled.
+  work.catch(() => undefined);
+  try { return await Promise.race([work, deadline]); } finally { clearTimeout(timer); }
+}
 const MAX_RESPONSE_BYTES = 8192;
 
 /** Ops GET only: no API credential, checkout, provider or tenant request. */
