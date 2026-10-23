@@ -1,5 +1,11 @@
 # ART336/338 — two-image canary upgrade proposal
 
+This is a historical exact-source proposal. For the next ordinary release
+from current main, first satisfy [closed-canary release prerequisites](CLOSED_CANARY_RELEASE.md),
+including target schema admission, storefront mounts, compatibility-helper
+retirement and network receipt requalification. Its old schema/vector below
+must not be reused as the current target contract.
+
 **NOT EXECUTED / LIVE HOLD.** PR225/226 merge and artifact publication do not
 authorize runtime changes. ART351's withdrawn restart/Mac experiment stays
 withdrawn. Review this controller independently, then obtain one canary-only

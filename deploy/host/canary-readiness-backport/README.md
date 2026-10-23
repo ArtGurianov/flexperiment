@@ -106,6 +106,13 @@ No status.json rewrite, old-database restore, fence edit or admission reopen.
 
 ### Rollback and retirement
 
+Owner decision on 23 October: retain this installed lane until the next normal
+canary release from main; do not create a separate readiness-only image line.
+The [mandatory release prerequisites](../../../docs/release/CLOSED_CANARY_RELEASE.md)
+cover schema admission, storefront mounts, canonical-helper replacement and
+Control Room network requalification. Monitor retries and final backup outcomes;
+revisit the decision if backups fail despite bounded retries.
+
 After any active backup finishes, restore the exact recorded helper predecessor
 and only the prior named timeout drop-in (or remove that one file if absent
 before). Daemon-reload and restore prior schedules. Do not reset failed units
