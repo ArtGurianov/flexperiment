@@ -12,7 +12,7 @@ For exact `/v1/lab/guest/start` and `/v1/lab/guest/recover`, nginx requires a re
 
 Recreating Traefik with another address intentionally closes these two routes until an authorized nginx reload/restart refreshes trust. Validate exact network membership and Traefik identity/alias **before** refreshing the snapshot. Mere possession of the alias is not application authentication: host Docker/Coolify administration and the restricted network are the authority. After refresh, independently verify client source through the complete path. Never widen trust to the Docker subnet to recover service.
 
-Other guest capability, confirmation, refund, auth and read-only paths retain their existing checks. Admin's trusted-client configuration is unchanged. Commerce keeps its own exact `LAB_GUEST_TRUSTED_PROXY_IPS` verification and durable SQLite source/source+email quotas; the nginx gate does not replace either. ART-384 remains complete; ART-198 deployment and LAB production acceptance remain separate.
+The exact `/v1/lab/guest/restart` route shares the capability-route allowlist; Commerce requires the guest capability and verifies retirement safety before allowing a new purchase. Extra path suffixes remain refused. Other guest capability, confirmation, refund, auth and read-only paths retain their existing checks. Admin's trusted-client configuration is unchanged. Commerce keeps its own exact `LAB_GUEST_TRUSTED_PROXY_IPS` verification and durable SQLite source/source+email quotas; the nginx gate does not replace either. ART-384 remains complete; ART-198 deployment and LAB production acceptance remain separate.
 
 ## Verification
 

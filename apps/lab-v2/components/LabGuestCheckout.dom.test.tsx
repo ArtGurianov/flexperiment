@@ -74,6 +74,64 @@ describe("guest LAB browser flow", () => {
       headers: expect.objectContaining({ "Idempotency-Key": "persisted-payment" }),
     })));
   });
+  it("restores the guest's frozen promo on reload and shows a rejected-code message before any payment", async () => {
+    const token = "t".repeat(43);
+    sessionStorage.setItem("lab-guest-v1:lab:one", JSON.stringify({ accessToken: token, previewKey: "same-preview", paymentKey: "same-pay", email: "guest@example.com", checkoutCode: "PARTNER20" }));
+    const fetcher = vi.fn(async (path: string, options?: RequestInit) => {
+      if (path.endsWith("/start")) return response({ orderPublicId: "order" });
+      expect(JSON.parse(String(options?.body))).toMatchObject({ checkoutCode: "PARTNER20" });
+      return response({ ...quote, checkoutCodeOutcome: "NOT_APPLIED_CAMPAIGN_PAUSED" });
+    });
+    vi.stubGlobal("fetch", fetcher);
+    render(<LabGuestCheckout offerRef="lab:one" displayedAmountKopecks={10000} />);
+    expect(await screen.findByText("Кампания приостановлена; код не применён.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Подтвердить и оплатить" })).toBeDisabled();
+    expect(fetcher.mock.calls.map(([path]) => path)).toEqual(["/v1/lab/guest/start", "/v1/checkout/preview"]);
+  });
+  it("retires the old checkout on the server before new keys and a changed promo can be used", async () => {
+    const first = { accessToken: "t".repeat(43), previewKey: "old-preview", paymentKey: "old-pay", email: "guest@example.com", checkoutCode: "OLD" };
+    sessionStorage.setItem("lab-guest-v1:lab:one", JSON.stringify(first));
+    const bodies: Array<{ path: string; options?: RequestInit }> = [];
+    const fetcher = vi.fn(async (path: string, options?: RequestInit) => {
+      bodies.push({ path, options });
+      if (path.endsWith("/start")) return response({ orderPublicId: "order" });
+      if (path.endsWith("/restart")) return response({ restartAllowed: true });
+      return response({ state: "DECLINED", orderPublicId: "order" });
+    });
+    vi.stubGlobal("fetch", fetcher); render(<LabGuestCheckout offerRef="lab:one" displayedAmountKopecks={10000} />);
+    await screen.findByText(/Платёж отклонён/);
+    expect(screen.getByLabelText("Промокод")).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Начать новый заказ" }));
+    await screen.findByText(/Можно проверить условия нового заказа/);
+    expect(sessionStorage.getItem("lab-guest-v1:lab:one")).toBeNull();
+    fireEvent.change(screen.getByLabelText("Промокод"), { target: { value: "NEW" } });
+    fireEvent.click(screen.getByRole("button", { name: "Проверить условия" }));
+    await waitFor(() => expect(bodies.filter(b => b.path === "/v1/checkout/preview")).toHaveLength(2));
+    const latest = bodies.filter(b => b.path === "/v1/checkout/preview")[1];
+    expect(JSON.parse(String(latest.options?.body)).checkoutCode).toBe("NEW");
+    expect(latest.options?.headers).not.toMatchObject({ "Idempotency-Key": first.previewKey });
+    expect(latest.options?.headers).not.toMatchObject({ Authorization: `Bearer ${first.accessToken}` });
+  });
+  it.each(["uncertain", "offline"])("keeps old capability/keys if restart is %s", async condition => {
+    const first = { accessToken: "t".repeat(43), previewKey: "old-preview", paymentKey: "old-pay", email: "guest@example.com", checkoutCode: "OLD" };
+    sessionStorage.setItem("lab-guest-v1:lab:one", JSON.stringify(first));
+    const fetcher = vi.fn(async (path: string) => {
+      if (path.endsWith("/start")) return response({ orderPublicId: "order" });
+      if (path.endsWith("/restart")) {
+        if (condition === "offline") throw new TypeError("offline");
+        return response({ code: "LAB_CHECKOUT_RESTART_UNSAFE" }, 409);
+      }
+      return response({ state: "RESOLUTION_PENDING", orderPublicId: "order" });
+    });
+    vi.stubGlobal("fetch", fetcher); render(<LabGuestCheckout offerRef="lab:one" displayedAmountKopecks={10000} />);
+    await screen.findByText(/Уточняем условия/);
+    const saved = sessionStorage.getItem("lab-guest-v1:lab:one");
+    fireEvent.click(screen.getByRole("button", { name: "Начать новый заказ" }));
+    await screen.findByText(/Заказ и ключи сохранены/);
+    expect(sessionStorage.getItem("lab-guest-v1:lab:one")).toBe(saved);
+    expect(screen.getByLabelText("Промокод")).toBeDisabled();
+    expect(fetcher.mock.calls.map(([path]) => path)).toEqual(["/v1/lab/guest/start", "/v1/checkout/preview", "/v1/lab/guest/restart"]);
+  });
   it("does not redeem a recovery link on GET/page load; sends tokens in POST and retains replay after failure", async () => {
     history.replaceState(null, "", `/ticket#recover=${"r".repeat(43)}`);
     const fetcher = vi.fn(async () => response({ code: "TEMPORARY" }, 503)); vi.stubGlobal("fetch", fetcher);
@@ -100,5 +158,29 @@ describe("guest LAB browser flow", () => {
     fireEvent.change(screen.getByLabelText("Номер заказа (необязательно)"), { target: { value: "" } });
     fireEvent.click(screen.getByRole("button", { name: "Отправить ссылку на билет" }));
     await waitFor(() => expect(fetcher).toHaveBeenCalledWith("/v1/lab/guest/recover", expect.objectContaining({ body: JSON.stringify({ email: "guest@example.com" }) })));
+  });
+});
+
+ describe("second review: guest page restoration", () => {
+  it.each(["PENDING", "CUSTOMER_ACTION_REQUIRED", "CREATE_UNKNOWN"])("restores %s without start or automatic bank navigation", async state => {
+    const saved = JSON.stringify({ accessToken: "t".repeat(43), orderPublicId: "order", previewKey: "preview", paymentKey: "pay", email: "guest@example.test" });
+    sessionStorage.setItem("lab-guest-v1:lab:one", saved);
+    const request = vi.fn(async () => response({ state, orderPublicId: "order", checkoutUrl: "https://bank.example.test/pay" }));
+    vi.stubGlobal("fetch", request); render(<LabGuestCheckout offerRef="lab:one" displayedAmountKopecks={10000} />);
+    expect(await screen.findByRole("link", { name: "Продолжить оплату" })).toHaveAttribute("href", "https://bank.example.test/pay");
+    expect(request).toHaveBeenCalledOnce(); expect(request).toHaveBeenCalledWith("/v1/checkout/preview", expect.any(Object));
+    expect(sessionStorage.getItem("lab-guest-v1:lab:one")).toBe(saved);
+  });
+  it("shows a paid ticket and permits deliberate safe restart without discarding the ticket link", async () => {
+    sessionStorage.setItem("lab-guest-v1:lab:one", JSON.stringify({ accessToken: "t".repeat(43), orderPublicId: "order", previewKey: "preview", paymentKey: "pay", email: "guest@example.test" }));
+    const request = vi.fn(async (path: string) => response(path.endsWith("/restart") ? { restartAllowed: true } : { state: "PAID", orderPublicId: "order" }));
+    vi.stubGlobal("fetch", request); render(<LabGuestCheckout offerRef="lab:one" displayedAmountKopecks={10000} />);
+    await screen.findByText(/Заказ оплачен/);
+    const ticket = screen.getByRole("link", { name: "Проверить заказ и билет" }).getAttribute("href");
+    fireEvent.click(screen.getByRole("button", { name: "Начать новый заказ" }));
+    await screen.findByText(/Можно проверить условия нового заказа/);
+    expect(sessionStorage.getItem("lab-guest-v1:lab:one")).toBeNull();
+    expect(screen.getByRole("link", { name: "Проверить заказ и билет" })).toHaveAttribute("href", ticket);
+    expect(request.mock.calls.map(([path]) => path)).toEqual(["/v1/checkout/preview", "/v1/lab/guest/restart"]);
   });
 });

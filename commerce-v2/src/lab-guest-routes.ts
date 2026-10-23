@@ -3,7 +3,7 @@ import { Hono, type Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import QRCode from "qrcode";
 import { consumeLabLimit, labAccess, LabTicketError, labEmail, prepareLabRecovery, readLabTicket, redeemLabRecovery,
-  reissueOwnedLabTicket, startLabGuest, type LabTicketEmail } from "./lab-tickets";
+  reissueOwnedLabTicket, startLabGuest, assertLabCapability, capabilityHash, type LabTicketEmail } from "./lab-tickets";
 import { listCustomerRefunds, requestRefund, type RefundReason } from "./refunds";
 import type { ErasureRuntimeFence } from "./erasure-fence";
 
@@ -15,6 +15,7 @@ export function registerLabGuestRoutes(parent: Hono, deps: {
   authenticateCustomer?: (headers: Headers) => Promise<string | null>;
   sendLabTicketEmail?: (message: LabTicketEmail) => Promise<void>;
   erasureFence?: ErasureRuntimeFence;
+  retireCheckout: (orderPublicId: string) => Promise<{ restartAllowed: true }>;
 }) {
   const app = new Hono();
   app.onError((error, c) => c.json({ code: error instanceof LabTicketError ? error.message : "LAB_REQUEST_UNAVAILABLE" }, error instanceof LabTicketError ? 409 : 503, noStore));
@@ -37,12 +38,21 @@ export function registerLabGuestRoutes(parent: Hono, deps: {
     deps.erasureFence?.assertIdentity({ email }, "AUTH_MAIL");
     const source = deps.requestSource(c);
     if (!source) return c.json({ code: "LAB_SOURCE_UNAVAILABLE" }, 503, noStore);
-    // Charge the trusted source first, so rotating email/token cannot allocate unlimited buckets/sessions.
-    if (!consumeLabLimit(deps.db, "start-source", source, 30, time)
-      || !consumeLabLimit(deps.db, "start-source-email", JSON.stringify([source, email]), 10, time)) {
-      return c.json({ code: "LAB_RATE_LIMITED" }, 429, noStore);
-    }
-    return c.json(startLabGuest(deps.db, body, time), 201, noStore);
+    const token = assertLabCapability(body.accessToken);
+    const result = deps.db.transaction(() => {
+      // Capability/email replay creates nothing and consumes no creation quota. Keep lookup, quota
+      // and creation under one write lock; rotating tokens/emails still charges trusted-source limits.
+      const existing = deps.db.prepare("SELECT 1 FROM lab_guest_access WHERE token_sha256=?").get(capabilityHash(token));
+      if (!existing && (!consumeLabLimit(deps.db, "start-source", source, 30, time)
+        || !consumeLabLimit(deps.db, "start-source-email", JSON.stringify([source, email]), 10, time))) return null;
+      return startLabGuest(deps.db, body, time);
+    }).immediate();
+    return result ? c.json(result, 201, noStore) : c.json({ code: "LAB_RATE_LIMITED" }, 429, noStore);
+  });
+  app.post("/v1/lab/guest/restart", async c => {
+    const access = accessFor(c);
+    try { return c.json(await deps.retireCheckout(access.order_public_id), 200, noStore); }
+    catch { return c.json({ code: "LAB_CHECKOUT_RESTART_UNSAFE" }, 409, noStore); }
   });
   app.get("/v1/lab/guest/ticket", async c => {
     accessFor(c);

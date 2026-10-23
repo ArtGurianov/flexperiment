@@ -37,7 +37,7 @@ server {
         include /etc/nginx/v2/proxy.conf;
         proxy_pass http://$commerce_upstream;
     }
-    location ~ ^/v1/lab/guest/(ticket|recover/confirm|reissue|refunds)$ {
+    location ~ ^/v1/lab/guest/(ticket|recover/confirm|reissue|refunds|restart)$ {
         include /etc/nginx/v2/proxy.conf;
         proxy_pass http://$commerce_upstream;
     }

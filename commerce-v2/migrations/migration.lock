@@ -36,6 +36,7 @@
     "0032_lab_guest_tickets.sql": "234ef3a726969cb1306558fb42e7ab0863c4e360c45b04b47a7da991705a04a9",
     "0033_lab_seat_holds.sql": "aace5461504487ad00da50d1fbf6f0dbe7514a1aadfe2e9910a6f9f8958e7391",
     "0034_browser_contexts.sql": "b7bd54cad4fc6882f0e91ec2237a2d3429678679d8f7489a723ce15fde270d80",
-    "0035_storefront_switch.sql": "7b6ff1ab0127eb50e6c4db5bf2ee6fe87a611279785ec829fc65616e4668af58"
+    "0035_storefront_switch.sql": "7b6ff1ab0127eb50e6c4db5bf2ee6fe87a611279785ec829fc65616e4668af58",
+    "0036_checkout_audit_indexes.sql": "0b5ddc9a27333628c8c952e62aadf615268f05c7c25743381f7f394472cb0f9d"
   }
 }

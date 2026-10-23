@@ -136,10 +136,13 @@ describe("closed paid test admission", () => {
   it("HTTP confirm requires acceptance and derives the buyer from the authenticated session", async () => {
     const app = createCommerceV2App({ db, config, serviceToken: "synthetic", sourceCommit: "a".repeat(40), paymentRail: rail,
       authenticateCustomer: async () => "buyer" });
-    const state = issueCheckoutHandoffState(env.REFREF_HANDOFF_STATE_SECRET,
-      { customerId: "buyer", returnPath: "/courses/test-course", storefront: "COURSES" }).token;
+    const historic = issueCheckoutHandoffState(env.REFREF_HANDOFF_STATE_SECRET,
+      { customerId: "buyer", returnPath: "/courses/test-course", storefront: "COURSES" });
+    const state = historic.token;
+    await prepareCheckout(db, rail, config, { ...input, previewIdempotencyKey: "http-review", orderPublicId: historic.state.orderPublicId,
+      handoffToken: "historic-refref-token", storefrontOrigin: "http://localhost:3001" });
     const review = await app.request("/v1/checkout/preview", { method: "POST", headers: { "content-type": "application/json", "idempotency-key": "http-review" },
-      body: JSON.stringify({ offerRef: input.offerRef, state }) });
+      body: JSON.stringify({ offerRef: input.offerRef, state, handoffToken: "historic-refref-token" }) });
     expect(review.status).toBe(200); const quote = await review.json() as { quoteId: string };
     const create = vi.spyOn(rail, "create");
     const request = (acceptance: unknown, key: string) => app.request("/v1/checkout", { method: "POST",
@@ -159,7 +162,7 @@ describe("closed paid test admission", () => {
     const response = await app.request("/v1/checkout/preview", { method: "POST",
       headers: { "content-type": "application/json", "idempotency-key": "mismatched-handoff",
         "x-forwarded-host": "localhost:3001" },
-      body: JSON.stringify({ offerRef: input.offerRef, state }) });
+      body: JSON.stringify({ offerRef: input.offerRef, state, handoffToken: "historic-refref-token" }) });
     expect(response.status).toBe(409);
     expect(await response.json()).toEqual({ code: "CHECKOUT_STOREFRONT_MISMATCH" });
     expect(resolve).not.toHaveBeenCalled();
@@ -272,7 +275,7 @@ describe("closed paid account consent gate", () => {
       .rejects.toThrow("CONSENT_REQUIRED");
     expect(db.prepare("SELECT count(*) n FROM orders").get()).toEqual({ n: 0 });
   });
-  it("returns 403/no-store at handoff, preview and confirm using session identity, ignoring forged choices", async () => {
+  it("retires handoff and returns 403/no-store at preview/confirm using session identity, ignoring forged choices", async () => {
     accountConsent("other");
     const app = createCommerceV2App({ db, config, serviceToken: "synthetic", sourceCommit: "a".repeat(40), paymentRail: rail,
       authenticateCustomer: async () => "buyer" });
@@ -283,8 +286,8 @@ describe("closed paid account consent gate", () => {
       const result = await app.request(path, { method: "POST", headers: { "content-type": "application/json", "idempotency-key": "synthetic-request" },
         body: JSON.stringify({ storefront: "COURSES", returnPath: "/courses/test-course", offerRef: input.offerRef, quoteId: "synthetic-quote", state,
           customerId: "other", personalDataConsent: true, accountTermsAccepted: true, legalAcceptance: accept }) });
-      expect(result.status).toBe(403); expect(result.headers.get("cache-control")).toBe("no-store");
-      expect(await result.json()).toEqual({ code: "CONSENT_REQUIRED" });
+      expect(result.status).toBe(path.endsWith("/handoff") ? 410 : 403); expect(result.headers.get("cache-control")).toBe("no-store");
+      expect(await result.json()).toEqual({ code: path.endsWith("/handoff") ? "CHECKOUT_HANDOFF_RETIRED" : "CONSENT_REQUIRED" });
     }
     expect(resolve).not.toHaveBeenCalled(); expect(create).not.toHaveBeenCalled();
     expect(db.prepare("SELECT customer_id FROM authenticated_consent_actions").all()).toEqual([{ customer_id: "other" }]);

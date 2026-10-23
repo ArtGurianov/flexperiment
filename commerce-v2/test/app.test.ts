@@ -1,3 +1,4 @@
+import { issueCheckoutHandoffState } from "../src/checkout-handoff";
 import Database from "better-sqlite3";
 import { confirmSyntheticAccount } from "./fixtures/confirmed-account";
 import { scryptSync } from "node:crypto";
@@ -9,7 +10,7 @@ import { openTestStorefront, qualifyTestFiscalPolicies, setTestStorefronts, with
 import { loadCommerceRuntimeConfig } from "../src/payment-mode";
 import { applyCourseManifest, withManifestHash } from "../src/manifest";
 import { startVideoUpload } from "../src/kinescope";
-import { checkout, MockPaymentRail } from "../src/checkout";
+import { checkout, prepareCheckout, MockPaymentRail } from "../src/checkout";
 import { controlRoomEntitlements } from "../src/control-room";
 import { testCheckoutConfig } from "./fixtures/sales";
 import { enrolledTotp, testTotpKey } from "./fixtures/control-room-totp";
@@ -345,7 +346,7 @@ describe("commerce v2 boundaries", () => {
     expect(db.prepare("SELECT state,total_kopecks FROM orders").get()).toEqual({ state: "FULFILLED", total_kopecks: 10000 });
   });
 
-  it("carries the signed order identity from attribution handoff through the payment return", async () => {
+  it("retires new handoffs and retains signed identity through historical intent recovery and payment return", async () => {
     db.prepare("INSERT INTO customers(id,email_normalized) VALUES ('customer','student@example.com')").run();
     db.prepare(`INSERT INTO legal_releases(id,storefront,version,manifest_json,effective_at,active)
       VALUES ('legal','COURSES','stage-b-v1',?,'2026-09-30T00:00:00Z',1)`).run(stageBLegalManifestJson);
@@ -367,9 +368,10 @@ describe("commerce v2 boundaries", () => {
       REFREF_CHECKOUT_ORIGIN: "https://checkout.refref.ru",
       REFREF_HANDOFF_STATE_SECRET: "secret",
     }));
+    const rail = new MockPaymentRail();
     const server = app("disabled", {
       config,
-      paymentRail: new MockPaymentRail(),
+      paymentRail: rail,
       origins: {
         platform: "https://flexperiment.ru",
         lab: "https://lab.flexperiment.ru",
@@ -381,10 +383,11 @@ describe("commerce v2 boundaries", () => {
     const issued = await server.request("/v1/checkout/handoff", {
       method: "POST", headers, body: JSON.stringify({ returnPath: "/courses/one", storefront: "COURSES" }),
     });
-    const handoffUrl = new URL((await issued.json() as { url: string }).url);
-    const handoffState = handoffUrl.searchParams.get("state")!;
-    const orderPublicId = handoffUrl.searchParams.get("merchantOrderRef")!;
-    expect(handoffUrl.searchParams.get("returnUrl")).toBe("https://flexperiment.ru/checkout/return");
+    expect(issued.status).toBe(410);
+    const historic = issueCheckoutHandoffState("secret", { customerId: "customer", returnPath: "/courses/one", storefront: "COURSES" });
+    const handoffState = historic.token, orderPublicId = historic.state.orderPublicId;
+    await prepareCheckout(db, rail, config, { customerId: "customer", customerEmail: "student@example.com", offerRef: "course:one",
+      previewIdempotencyKey: "preview-return", orderPublicId, handoffToken: "refref-token", storefrontOrigin: "https://flexperiment.ru" });
     expect(await (await server.request(`/v1/checkout/handoff/return?state=${encodeURIComponent(handoffState)}`, { headers })).json())
       .toEqual({ phase: "HANDOFF", returnPath: "/courses/one", orderPublicId, storefront: "COURSES" });
 

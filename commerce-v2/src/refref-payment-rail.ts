@@ -1,3 +1,4 @@
+import { consumeVnextResolution, vnextResolutionSchema } from "./vnext-resolution";
 import { z } from "zod";
 import { AmbiguousRailCreateError, PaymentInitiationStoppedError, RailAttemptRefusalError, RailRefusalError, type AcceptedRefund, type CheckoutCodeOutcome, type PaymentCreateInput, type PaymentRail, type PaymentRecoveryOptions, type PaymentRefundInput, type PaymentResolveInput, type RailProjection, type RailResolution, type RefundSubmission } from "./checkout";
 import type { RefundEnvelope } from "./refund-envelope";
@@ -7,6 +8,7 @@ type Fetch = typeof fetch;
 type RefrefConfig = {
   apiBaseUrl: string;
   apiKey: string;
+  vnextApiBaseUrl?: string;
   merchantId: string;
   fetch?: Fetch;
 };
@@ -119,8 +121,8 @@ export class RefrefPaymentRail implements PaymentRail {
     };
   }
 
-  private async call<T>(method: string, path: string, schema: z.ZodType<T>, body?: unknown, idempotencyKey?: string): Promise<T> {
-    const target = new URL(this.config.apiBaseUrl);
+  private async call<T>(method: string, path: string, schema: z.ZodType<T>, body?: unknown, idempotencyKey?: string, baseUrl = this.config.apiBaseUrl): Promise<T> {
+    const target = new URL(baseUrl);
     target.pathname = `${target.pathname.replace(/\/$/, "")}${path}`;
     const response = await this.request(target, {
       method,
@@ -162,6 +164,8 @@ export class RefrefPaymentRail implements PaymentRail {
   }
 
   async resolve(input: PaymentResolveInput): Promise<RailResolution> {
+    if (input.purchase) throw new Error("PURCHASE_V9_TRANSPORT_NOT_QUALIFIED");
+    if (input.protocol === "VNEXT") return this.resolveVnext(input);
     if (!input.handoffToken) throw new Error("REFREF_HANDOFF_TOKEN_REQUIRED");
     // RC.2 takes the frozen line unchanged; the vNext-only fields (origin, context, degradation) stay in
     // the intent until the vNext rail sends the whole frozen body (ART-373, C3).
@@ -200,11 +204,38 @@ export class RefrefPaymentRail implements PaymentRail {
     } };
   }
 
+  private async resolveVnext(input: PaymentResolveInput): Promise<RailResolution> {
+    if (!this.config.vnextApiBaseUrl || !input.request.browserContextId || !input.request.storefrontOrigin || input.handoffToken) {
+      throw new RailRefusalError("REFREF_VNEXT_CONTEXT_REQUIRED");
+    }
+    const base = this.config.vnextApiBaseUrl;
+    let resolved: z.infer<typeof vnextResolutionSchema>;
+    try {
+      resolved = await this.call("POST", "/integrations/referral-resolutions", vnextResolutionSchema,
+        input.request, input.idempotencyKey, base);
+    } catch (error) {
+      if (isAmbiguousSideEffect(error)) {
+        // A lost ACK is recovered under the SAME order and original deadline; no new intent.
+        try {
+          resolved = await this.call("GET", `/integrations/referral-resolutions/by-order/${encodeURIComponent(input.request.merchantOrderRef)}`,
+            vnextResolutionSchema, undefined, undefined, base);
+        } catch { throw new AmbiguousRailCreateError(); }
+      } else {
+        if (error instanceof RefrefHttpError && [409, 422].includes(error.status)) throw new RailRefusalError(error.message);
+        throw error;
+      }
+    }
+    // A validated response with a wrong binding/line/total is definitive, including after read-back.
+    try { return consumeVnextResolution(input, this.config.merchantId, resolved); }
+    catch (error) { throw new RailRefusalError((error as Error).message); }
+  }
+
   async create(input: PaymentCreateInput, options: PaymentRecoveryOptions = { mayInitiate: () => true }): Promise<RailProjection> {
     return this.createAdmitted(input, options.mayInitiate);
   }
 
   private async createAdmitted(input: PaymentCreateInput, mayInitiate: () => boolean): Promise<RailProjection> {
+    if (input.quote.purchase || input.purchaseAcceptance) throw new Error("PURCHASE_V9_TRANSPORT_NOT_QUALIFIED");
     const { quote } = input;
     if (quote.baseAmountKopecks !== input.amountKopecks
       || quote.finalAmountKopecks !== input.amountKopecks - quote.discountKopecks
@@ -296,6 +327,7 @@ export class RefrefPaymentRail implements PaymentRail {
   }
 
   async prepareRefund(input: PaymentRefundInput): Promise<RefundEnvelope> {
+    if (input.purchase) throw new Error("PURCHASE_V9_TRANSPORT_NOT_QUALIFIED");
     const attempt = await this.call("GET", `/integrations/orders/${encodeURIComponent(input.orderPublicId)}/checkout-attempts/${encodeURIComponent(input.attemptId)}`, attemptSchema);
     const payment = attempt.obligations.flatMap(({ payment }) => payment ? [payment] : []).filter(({ status }) => status === "SUCCEEDED")[0];
     const line = attempt.lineItems.find(({ lineRef }) => lineRef === input.lineRef);

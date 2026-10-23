@@ -1,0 +1,1335 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://refref.ru/contracts/purchase-manifest-v2.schema.json",
+  "title": "ART-394/ART-417 v9 purchase contract 2: purchase-payable/2 and purchase-quote/2 with a Refref claimPolicy (opt-in target, not a served endpoint)",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/input"
+    },
+    {
+      "$ref": "#/$defs/payable"
+    },
+    {
+      "$ref": "#/$defs/acceptance"
+    },
+    {
+      "$ref": "#/$defs/qualification"
+    },
+    {
+      "$ref": "#/$defs/claim"
+    },
+    {
+      "$ref": "#/$defs/admissionReceipt"
+    },
+    {
+      "$ref": "#/$defs/quoteEnvelope"
+    },
+    {
+      "$ref": "#/$defs/decisionSnapshot"
+    },
+    {
+      "$ref": "#/$defs/claimSupplement"
+    },
+    {
+      "$ref": "#/$defs/supplementReceipt"
+    }
+  ],
+  "$defs": {
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sourceRef",
+        "contentHash",
+        "occurredAt"
+      ],
+      "properties": {
+        "sourceRef": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "contentHash": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "occurredAt": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d\\.\\d{3}Z$"
+        }
+      }
+    },
+    "rate": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "basisPoints"
+          ],
+          "properties": {
+            "type": {
+              "const": "PERCENT"
+            },
+            "basisPoints": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10000
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "amountKopecks"
+          ],
+          "properties": {
+            "type": {
+              "const": "FIXED_RUB"
+            },
+            "amountKopecks": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          }
+        }
+      ]
+    },
+    "service": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "serviceEndsAt",
+            "timeZone",
+            "provenance"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "TOUR",
+                "LAB"
+              ]
+            },
+            "serviceEndsAt": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d\\.\\d{3}Z$"
+            },
+            "timeZone": {
+              "type": "string",
+              "minLength": 3,
+              "maxLength": 128
+            },
+            "provenance": {
+              "$ref": "#/$defs/evidence"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "accessProfile",
+            "readinessEvidence"
+          ],
+          "properties": {
+            "kind": {
+              "const": "LMS"
+            },
+            "accessProfile": {
+              "enum": [
+                "IMMEDIATE",
+                "DELAYED"
+              ]
+            },
+            "readinessEvidence": {
+              "$ref": "#/$defs/evidence"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "category"
+          ],
+          "properties": {
+            "kind": {
+              "const": "NON_SERVICE"
+            },
+            "category": {
+              "enum": [
+                "DELIVERY",
+                "TIP",
+                "OTHER"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "businessId",
+        "purchaseRef",
+        "currency",
+        "lines"
+      ],
+      "properties": {
+        "schema": {
+          "const": "refref.purchase-input/1"
+        },
+        "businessId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "purchaseRef": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "currency": {
+          "const": "RUB"
+        },
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "lineRef",
+              "offerRef",
+              "quantity",
+              "merchantAmountKopecks",
+              "service"
+            ],
+            "properties": {
+              "lineRef": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+              },
+              "offerRef": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+              },
+              "quantity": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              "merchantAmountKopecks": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "service": {
+                "$ref": "#/$defs/service"
+              }
+            }
+          },
+          "minItems": 1,
+          "maxItems": 1000
+        }
+      }
+    },
+    "terms": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "campaignId",
+        "termsVersionId",
+        "termsHash",
+        "partnerId",
+        "participationId",
+        "profile",
+        "eligibleLineRefs",
+        "discount",
+        "reward"
+      ],
+      "properties": {
+        "campaignId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "termsVersionId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "termsHash": {
+          "type": "string",
+          "pattern": "^refref-jcs-1:[0-9a-f]{64}$"
+        },
+        "partnerId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "participationId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "profile": {
+          "const": "VNEXT_ONE_FULL_PAYMENT"
+        },
+        "eligibleLineRefs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+          },
+          "minItems": 0,
+          "maxItems": 1000,
+          "uniqueItems": true
+        },
+        "discount": {
+          "$ref": "#/$defs/rate"
+        },
+        "reward": {
+          "$ref": "#/$defs/rate"
+        }
+      }
+    },
+    "payable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "businessId",
+        "purchaseRef",
+        "currency",
+        "inputHash",
+        "quote",
+        "terms",
+        "lines",
+        "totalKopecks",
+        "eligibleAfterDiscountKopecks",
+        "rewardKopecks",
+        "claimPolicy"
+      ],
+      "properties": {
+        "schema": {
+          "const": "refref.purchase-payable/2"
+        },
+        "businessId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "purchaseRef": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "currency": {
+          "const": "RUB"
+        },
+        "inputHash": {
+          "type": "string",
+          "pattern": "^refref-jcs-1:[0-9a-f]{64}$"
+        },
+        "quote": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "quoteRef",
+            "issuedAt",
+            "expiresAt"
+          ],
+          "properties": {
+            "quoteRef": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+            },
+            "issuedAt": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d\\.\\d{3}Z$"
+            },
+            "expiresAt": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d\\.\\d{3}Z$"
+            }
+          }
+        },
+        "terms": {
+          "$ref": "#/$defs/terms"
+        },
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "lineRef",
+              "offerRef",
+              "quantity",
+              "merchantAmountKopecks",
+              "service",
+              "eligible",
+              "referralDiscountKopecks",
+              "payableAmountKopecks"
+            ],
+            "properties": {
+              "lineRef": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+              },
+              "offerRef": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+              },
+              "quantity": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              "merchantAmountKopecks": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "service": {
+                "$ref": "#/$defs/service"
+              },
+              "eligible": {
+                "type": "boolean"
+              },
+              "referralDiscountKopecks": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "payableAmountKopecks": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              }
+            }
+          },
+          "minItems": 1,
+          "maxItems": 1000
+        },
+        "totalKopecks": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "eligibleAfterDiscountKopecks": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "rewardKopecks": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "claimPolicy": {
+          "type": "string",
+          "pattern": "^[A-Z0-9][A-Z0-9_]{0,63}/[1-9][0-9]{0,5}$"
+        }
+      }
+    },
+    "bankFullPayment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "businessId",
+        "purchaseRef",
+        "payableHash",
+        "payment",
+        "currency",
+        "amountKopecks",
+        "status",
+        "independentEvidence",
+        "succeededAt",
+        "verifiedAt"
+      ],
+      "properties": {
+        "kind": {
+          "const": "BANK_FULL_PAYMENT"
+        },
+        "businessId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "purchaseRef": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "payableHash": {
+          "type": "string",
+          "pattern": "^refref-jcs-1:[0-9a-f]{64}$"
+        },
+        "payment": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "provider",
+            "connectionId",
+            "paymentRef"
+          ],
+          "properties": {
+            "provider": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+            },
+            "connectionId": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+            },
+            "paymentRef": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+            }
+          }
+        },
+        "currency": {
+          "const": "RUB"
+        },
+        "amountKopecks": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "status": {
+          "const": "SUCCEEDED"
+        },
+        "independentEvidence": {
+          "$ref": "#/$defs/evidence"
+        },
+        "succeededAt": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d\\.\\d{3}Z$"
+        },
+        "verifiedAt": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d\\.\\d{3}Z$"
+        }
+      }
+    },
+    "acceptance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "businessId",
+        "purchaseRef",
+        "payableHash",
+        "inputHash",
+        "quoteRef",
+        "acceptedAt"
+      ],
+      "properties": {
+        "schema": {
+          "const": "refref.purchase-acceptance/1"
+        },
+        "businessId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "purchaseRef": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "payableHash": {
+          "type": "string",
+          "pattern": "^refref-jcs-1:[0-9a-f]{64}$"
+        },
+        "inputHash": {
+          "type": "string",
+          "pattern": "^refref-jcs-1:[0-9a-f]{64}$"
+        },
+        "quoteRef": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "acceptedAt": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d\\.\\d{3}Z$"
+        }
+      }
+    },
+    "admissionReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "businessId",
+        "purchaseRef",
+        "payableHash",
+        "claimHash",
+        "admissionKey",
+        "effectKey",
+        "receivedAt",
+        "decisionDueAt",
+        "calendarVersion",
+        "ticketRef"
+      ],
+      "properties": {
+        "schema": {
+          "const": "refref.claim-admission-receipt/1"
+        },
+        "businessId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "purchaseRef": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "payableHash": {
+          "type": "string",
+          "pattern": "^refref-jcs-1:[0-9a-f]{64}$"
+        },
+        "claimHash": {
+          "type": "string",
+          "pattern": "^refref-jcs-1:[0-9a-f]{64}$"
+        },
+        "admissionKey": {
+          "type": "string",
+          "pattern": "^refref-jcs-1:[0-9a-f]{64}$"
+        },
+        "effectKey": {
+          "type": "string",
+          "pattern": "^refref-jcs-1:[0-9a-f]{64}$"
+        },
+        "receivedAt": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d\\.\\d{3}Z$"
+        },
+        "decisionDueAt": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d\\.\\d{3}Z$"
+        },
+        "calendarVersion": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "ticketRef": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        }
+      }
+    },
+    "qualification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "businessId",
+        "purchaseRef",
+        "payableHash",
+        "inputHash",
+        "rewardScopeId",
+        "purchaseQualifiedAt",
+        "payment",
+        "acceptance",
+        "serviceAnchors",
+        "purchaseAnchorAt",
+        "deadlinePolicy",
+        "initialClaimDeadlineAt",
+        "claimDeadlineAt",
+        "hardClaimDeadlineAt"
+      ],
+      "properties": {
+        "schema": {
+          "const": "refref.purchase-qualification/1"
+        },
+        "businessId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "purchaseRef": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "payableHash": {
+          "type": "string",
+          "pattern": "^refref-jcs-1:[0-9a-f]{64}$"
+        },
+        "inputHash": {
+          "type": "string",
+          "pattern": "^refref-jcs-1:[0-9a-f]{64}$"
+        },
+        "rewardScopeId": {
+          "type": "string",
+          "pattern": "^refref-jcs-1:[0-9a-f]{64}$"
+        },
+        "purchaseQualifiedAt": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d\\.\\d{3}Z$"
+        },
+        "payment": {
+          "$ref": "#/$defs/bankFullPayment"
+        },
+        "acceptance": {
+          "$ref": "#/$defs/acceptance"
+        },
+        "serviceAnchors": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "lineRef",
+              "anchorAt"
+            ],
+            "properties": {
+              "lineRef": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+              },
+              "anchorAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d\\.\\d{3}Z$"
+              }
+            }
+          },
+          "minItems": 0,
+          "maxItems": 1000
+        },
+        "purchaseAnchorAt": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d\\.\\d{3}Z$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "deadlinePolicy": {
+          "const": "P7-14-P3-30-Europe-Moscow/1"
+        },
+        "initialClaimDeadlineAt": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d\\.\\d{3}Z$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "claimDeadlineAt": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d\\.\\d{3}Z$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "hardClaimDeadlineAt": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d\\.\\d{3}Z$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lineRef",
+        "segments",
+        "coveredQuantity"
+      ],
+      "properties": {
+        "lineRef": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "segments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "coverageRef",
+              "quantity",
+              "evidence"
+            ],
+            "properties": {
+              "coverageRef": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+              },
+              "quantity": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              "evidence": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/evidence"
+                },
+                "minItems": 1,
+                "maxItems": 1000
+              }
+            }
+          },
+          "minItems": 1,
+          "maxItems": 1000
+        },
+        "coveredQuantity": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "refund": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "businessId",
+        "purchaseRef",
+        "payableHash",
+        "operation",
+        "amountKopecks",
+        "currency",
+        "allocationSource",
+        "allocationEvidence",
+        "lineAllocations"
+      ],
+      "properties": {
+        "businessId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "purchaseRef": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "payableHash": {
+          "type": "string",
+          "pattern": "^refref-jcs-1:[0-9a-f]{64}$"
+        },
+        "operation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "provider",
+            "connectionId",
+            "paymentRef",
+            "refundRef"
+          ],
+          "properties": {
+            "provider": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+            },
+            "connectionId": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+            },
+            "paymentRef": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+            },
+            "refundRef": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+            }
+          }
+        },
+        "amountKopecks": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "currency": {
+          "const": "RUB"
+        },
+        "allocationSource": {
+          "enum": [
+            "REFREF_COMMAND",
+            "MERCHANT_BANK_EXECUTED"
+          ]
+        },
+        "allocationEvidence": {
+          "$ref": "#/$defs/evidence"
+        },
+        "lineAllocations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "lineRef",
+              "amountKopecks"
+            ],
+            "properties": {
+              "lineRef": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+              },
+              "amountKopecks": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              }
+            }
+          },
+          "minItems": 1,
+          "maxItems": 1000
+        }
+      }
+    },
+    "claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "businessId",
+        "purchaseRef",
+        "payableHash",
+        "scope",
+        "idempotencyKey",
+        "reason",
+        "coverage",
+        "refunds"
+      ],
+      "properties": {
+        "schema": {
+          "const": "refref.purchase-cancellation-claim/1"
+        },
+        "businessId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "purchaseRef": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "payableHash": {
+          "type": "string",
+          "pattern": "^refref-jcs-1:[0-9a-f]{64}$"
+        },
+        "scope": {
+          "const": "WHOLE_PURCHASE"
+        },
+        "idempotencyKey": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "reason": {
+          "const": "ALL_ELIGIBLE_SERVICES_CANCELLED"
+        },
+        "coverage": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/coverage"
+          },
+          "minItems": 1,
+          "maxItems": 1000
+        },
+        "refunds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/refund"
+          },
+          "minItems": 1,
+          "maxItems": 1000
+        }
+      }
+    },
+    "quoteEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "payable",
+        "payableHash"
+      ],
+      "properties": {
+        "schema": {
+          "const": "refref.purchase-quote/2"
+        },
+        "payable": {
+          "$ref": "#/$defs/payable"
+        },
+        "payableHash": {
+          "type": "string",
+          "pattern": "^refref-jcs-1:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "bankRefundState": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "businessId",
+            "purchaseRef",
+            "payableHash",
+            "operation",
+            "amountKopecks",
+            "currency",
+            "verifiedAt",
+            "independentEvidence",
+            "status"
+          ],
+          "properties": {
+            "businessId": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+            },
+            "purchaseRef": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+            },
+            "payableHash": {
+              "type": "string",
+              "pattern": "^refref-jcs-1:[0-9a-f]{64}$"
+            },
+            "operation": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "provider",
+                "connectionId",
+                "paymentRef",
+                "refundRef"
+              ],
+              "properties": {
+                "provider": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+                },
+                "connectionId": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+                },
+                "paymentRef": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+                },
+                "refundRef": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+                }
+              }
+            },
+            "amountKopecks": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "currency": {
+              "const": "RUB"
+            },
+            "verifiedAt": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d\\.\\d{3}Z$"
+            },
+            "independentEvidence": {
+              "$ref": "#/$defs/evidence"
+            },
+            "status": {
+              "const": "PENDING"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "businessId",
+            "purchaseRef",
+            "payableHash",
+            "operation",
+            "amountKopecks",
+            "currency",
+            "verifiedAt",
+            "independentEvidence",
+            "status",
+            "succeededAt"
+          ],
+          "properties": {
+            "businessId": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+            },
+            "purchaseRef": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+            },
+            "payableHash": {
+              "type": "string",
+              "pattern": "^refref-jcs-1:[0-9a-f]{64}$"
+            },
+            "operation": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "provider",
+                "connectionId",
+                "paymentRef",
+                "refundRef"
+              ],
+              "properties": {
+                "provider": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+                },
+                "connectionId": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+                },
+                "paymentRef": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+                },
+                "refundRef": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+                }
+              }
+            },
+            "amountKopecks": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "currency": {
+              "const": "RUB"
+            },
+            "verifiedAt": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d\\.\\d{3}Z$"
+            },
+            "independentEvidence": {
+              "$ref": "#/$defs/evidence"
+            },
+            "status": {
+              "const": "SUCCEEDED"
+            },
+            "succeededAt": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d\\.\\d{3}Z$"
+            }
+          }
+        }
+      ]
+    },
+    "decisionSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "admission",
+        "outcome",
+        "decidedAt",
+        "verifiedCoverage",
+        "refundStates"
+      ],
+      "properties": {
+        "schema": {
+          "const": "refref.claim-decision-snapshot/1"
+        },
+        "admission": {
+          "$ref": "#/$defs/admissionReceipt"
+        },
+        "outcome": {
+          "enum": [
+            "UPHELD",
+            "REJECTED",
+            "EXPIRED"
+          ]
+        },
+        "decidedAt": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d\\.\\d{3}Z$"
+        },
+        "verifiedCoverage": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 1000,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "lineRef",
+              "coveredQuantity",
+              "nonOverlapping",
+              "rightsTerminated",
+              "evidence"
+            ],
+            "properties": {
+              "lineRef": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+              },
+              "coveredQuantity": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              "nonOverlapping": {
+                "type": "boolean"
+              },
+              "rightsTerminated": {
+                "type": "boolean"
+              },
+              "evidence": {
+                "$ref": "#/$defs/evidence"
+              }
+            }
+          }
+        },
+        "refundStates": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 1000,
+          "items": {
+            "$ref": "#/$defs/bankRefundState"
+          }
+        }
+      }
+    },
+    "claimSupplement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "businessId",
+        "purchaseRef",
+        "payableHash",
+        "claimHash",
+        "idempotencyKey",
+        "refund",
+        "evidence"
+      ],
+      "properties": {
+        "schema": {
+          "const": "refref.claim-refund-supplement/1"
+        },
+        "businessId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "purchaseRef": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "payableHash": {
+          "type": "string",
+          "pattern": "^refref-jcs-1:[0-9a-f]{64}$"
+        },
+        "claimHash": {
+          "type": "string",
+          "pattern": "^refref-jcs-1:[0-9a-f]{64}$"
+        },
+        "idempotencyKey": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "refund": {
+          "$ref": "#/$defs/refund"
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidence"
+        }
+      }
+    },
+    "supplementReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "businessId",
+        "purchaseRef",
+        "payableHash",
+        "claimHash",
+        "refundIdentity",
+        "requestKey",
+        "supplementHash",
+        "receivedAt",
+        "decisionDueAt"
+      ],
+      "properties": {
+        "schema": {
+          "const": "refref.claim-supplement-receipt/1"
+        },
+        "businessId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "purchaseRef": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "payableHash": {
+          "type": "string",
+          "pattern": "^refref-jcs-1:[0-9a-f]{64}$"
+        },
+        "claimHash": {
+          "type": "string",
+          "pattern": "^refref-jcs-1:[0-9a-f]{64}$"
+        },
+        "refundIdentity": {
+          "type": "string",
+          "pattern": "^refref-jcs-1:[0-9a-f]{64}$"
+        },
+        "requestKey": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "supplementHash": {
+          "type": "string",
+          "pattern": "^refref-jcs-1:[0-9a-f]{64}$"
+        },
+        "receivedAt": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d\\.\\d{3}Z$"
+        },
+        "decisionDueAt": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d\\.\\d{3}Z$"
+        }
+      }
+    }
+  }
+}

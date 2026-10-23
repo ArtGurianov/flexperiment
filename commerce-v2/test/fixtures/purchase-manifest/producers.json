@@ -1,0 +1,2248 @@
+{
+  "contractVersion": 1,
+  "evidence": {
+    "sourceRef": "evidence-1",
+    "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "occurredAt": "2026-10-21T01:00:00.000Z"
+  },
+  "fixtures": [
+    {
+      "name": "mikluha-three-travellers",
+      "input": {
+        "schema": "refref.purchase-input/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-mikluha-three-travellers",
+        "currency": "RUB",
+        "lines": [
+          {
+            "lineRef": "tour",
+            "offerRef": "offer-tour",
+            "quantity": 3,
+            "merchantAmountKopecks": 3000000,
+            "service": {
+              "kind": "TOUR",
+              "serviceEndsAt": "2026-11-01T12:00:00.000Z",
+              "timeZone": "Asia/Novosibirsk",
+              "provenance": {
+                "sourceRef": "evidence-1",
+                "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "occurredAt": "2026-10-21T01:00:00.000Z"
+              }
+            }
+          }
+        ]
+      },
+      "terms": {
+        "campaignId": "campaign-1",
+        "termsVersionId": "terms-1",
+        "termsHash": "refref-jcs-1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "partnerId": "partner-1",
+        "participationId": "participation-1",
+        "profile": "VNEXT_ONE_FULL_PAYMENT",
+        "eligibleLineRefs": [
+          "tour"
+        ],
+        "discount": {
+          "type": "PERCENT",
+          "basisPoints": 1000
+        },
+        "reward": {
+          "type": "PERCENT",
+          "basisPoints": 1000
+        }
+      },
+      "quote": {
+        "quoteRef": "quote-1",
+        "issuedAt": "2026-10-21T01:00:00.000Z",
+        "expiresAt": "2026-10-21T01:15:00.000Z"
+      },
+      "payable": {
+        "schema": "refref.purchase-payable/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-mikluha-three-travellers",
+        "currency": "RUB",
+        "inputHash": "refref-jcs-1:7a4b5ca378b718782e13b9b6a3a0af056636d96abbaffffa245d68b60eb983af",
+        "quote": {
+          "quoteRef": "quote-1",
+          "issuedAt": "2026-10-21T01:00:00.000Z",
+          "expiresAt": "2026-10-21T01:15:00.000Z"
+        },
+        "terms": {
+          "campaignId": "campaign-1",
+          "termsVersionId": "terms-1",
+          "termsHash": "refref-jcs-1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "partnerId": "partner-1",
+          "participationId": "participation-1",
+          "profile": "VNEXT_ONE_FULL_PAYMENT",
+          "eligibleLineRefs": [
+            "tour"
+          ],
+          "discount": {
+            "type": "PERCENT",
+            "basisPoints": 1000
+          },
+          "reward": {
+            "type": "PERCENT",
+            "basisPoints": 1000
+          }
+        },
+        "lines": [
+          {
+            "lineRef": "tour",
+            "offerRef": "offer-tour",
+            "quantity": 3,
+            "merchantAmountKopecks": 3000000,
+            "service": {
+              "kind": "TOUR",
+              "serviceEndsAt": "2026-11-01T12:00:00.000Z",
+              "timeZone": "Asia/Novosibirsk",
+              "provenance": {
+                "sourceRef": "evidence-1",
+                "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "occurredAt": "2026-10-21T01:00:00.000Z"
+              }
+            },
+            "eligible": true,
+            "referralDiscountKopecks": 300000,
+            "payableAmountKopecks": 2700000
+          }
+        ],
+        "totalKopecks": 2700000,
+        "eligibleAfterDiscountKopecks": 2700000,
+        "rewardKopecks": 270000
+      },
+      "acceptance": {
+        "schema": "refref.purchase-acceptance/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-mikluha-three-travellers",
+        "payableHash": "refref-jcs-1:b2ee3b537006fefee0459b8972681d5383831c1a433b3041899e3d895a1e4a62",
+        "inputHash": "refref-jcs-1:7a4b5ca378b718782e13b9b6a3a0af056636d96abbaffffa245d68b60eb983af",
+        "quoteRef": "quote-1",
+        "acceptedAt": "2026-10-21T01:01:00.000Z"
+      },
+      "payment": {
+        "kind": "BANK_FULL_PAYMENT",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-mikluha-three-travellers",
+        "payableHash": "refref-jcs-1:b2ee3b537006fefee0459b8972681d5383831c1a433b3041899e3d895a1e4a62",
+        "payment": {
+          "provider": "ALFA",
+          "connectionId": "connection-1",
+          "paymentRef": "bank-mikluha-three-travellers"
+        },
+        "currency": "RUB",
+        "amountKopecks": 2700000,
+        "status": "SUCCEEDED",
+        "independentEvidence": {
+          "sourceRef": "evidence-1",
+          "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "occurredAt": "2026-10-21T01:01:30.000Z"
+        },
+        "succeededAt": "2026-10-21T01:01:20.000Z",
+        "verifiedAt": "2026-10-21T01:01:30.000Z"
+      },
+      "qualification": {
+        "schema": "refref.purchase-qualification/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-mikluha-three-travellers",
+        "payableHash": "refref-jcs-1:b2ee3b537006fefee0459b8972681d5383831c1a433b3041899e3d895a1e4a62",
+        "inputHash": "refref-jcs-1:7a4b5ca378b718782e13b9b6a3a0af056636d96abbaffffa245d68b60eb983af",
+        "rewardScopeId": "refref-jcs-1:c69be98640620271db3ea4530ae6c3dabd177382fbc98c7f532f795859354501",
+        "purchaseQualifiedAt": "2026-10-21T01:02:00.000Z",
+        "payment": {
+          "kind": "BANK_FULL_PAYMENT",
+          "businessId": "business-1",
+          "purchaseRef": "purchase-mikluha-three-travellers",
+          "payableHash": "refref-jcs-1:b2ee3b537006fefee0459b8972681d5383831c1a433b3041899e3d895a1e4a62",
+          "payment": {
+            "provider": "ALFA",
+            "connectionId": "connection-1",
+            "paymentRef": "bank-mikluha-three-travellers"
+          },
+          "currency": "RUB",
+          "amountKopecks": 2700000,
+          "status": "SUCCEEDED",
+          "independentEvidence": {
+            "sourceRef": "evidence-1",
+            "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "occurredAt": "2026-10-21T01:01:30.000Z"
+          },
+          "succeededAt": "2026-10-21T01:01:20.000Z",
+          "verifiedAt": "2026-10-21T01:01:30.000Z"
+        },
+        "acceptance": {
+          "schema": "refref.purchase-acceptance/1",
+          "businessId": "business-1",
+          "purchaseRef": "purchase-mikluha-three-travellers",
+          "payableHash": "refref-jcs-1:b2ee3b537006fefee0459b8972681d5383831c1a433b3041899e3d895a1e4a62",
+          "inputHash": "refref-jcs-1:7a4b5ca378b718782e13b9b6a3a0af056636d96abbaffffa245d68b60eb983af",
+          "quoteRef": "quote-1",
+          "acceptedAt": "2026-10-21T01:01:00.000Z"
+        },
+        "serviceAnchors": [
+          {
+            "lineRef": "tour",
+            "anchorAt": "2026-11-01T12:00:00.000Z"
+          }
+        ],
+        "purchaseAnchorAt": "2026-11-01T12:00:00.000Z",
+        "deadlinePolicy": "P7-14-P3-30-Europe-Moscow/1",
+        "initialClaimDeadlineAt": "2026-11-15T12:00:00.000Z",
+        "claimDeadlineAt": "2026-11-15T12:00:00.000Z",
+        "hardClaimDeadlineAt": "2026-12-15T12:00:00.000Z"
+      },
+      "expected": {
+        "total": 2700000,
+        "base": 2700000,
+        "reward": 270000,
+        "anchor": "2026-11-01T12:00:00.000Z",
+        "inputHash": "refref-jcs-1:7a4b5ca378b718782e13b9b6a3a0af056636d96abbaffffa245d68b60eb983af",
+        "payableHash": "refref-jcs-1:b2ee3b537006fefee0459b8972681d5383831c1a433b3041899e3d895a1e4a62"
+      }
+    },
+    {
+      "name": "lab-occurrence",
+      "input": {
+        "schema": "refref.purchase-input/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-lab-occurrence",
+        "currency": "RUB",
+        "lines": [
+          {
+            "lineRef": "occurrence",
+            "offerRef": "offer-occurrence",
+            "quantity": 1,
+            "merchantAmountKopecks": 450000,
+            "service": {
+              "kind": "LAB",
+              "serviceEndsAt": "2026-11-02T15:00:00.000Z",
+              "timeZone": "Europe/Moscow",
+              "provenance": {
+                "sourceRef": "evidence-1",
+                "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "occurredAt": "2026-10-21T01:00:00.000Z"
+              }
+            }
+          }
+        ]
+      },
+      "terms": {
+        "campaignId": "campaign-1",
+        "termsVersionId": "terms-1",
+        "termsHash": "refref-jcs-1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "partnerId": "partner-1",
+        "participationId": "participation-1",
+        "profile": "VNEXT_ONE_FULL_PAYMENT",
+        "eligibleLineRefs": [
+          "occurrence"
+        ],
+        "discount": {
+          "type": "PERCENT",
+          "basisPoints": 1000
+        },
+        "reward": {
+          "type": "PERCENT",
+          "basisPoints": 1000
+        }
+      },
+      "quote": {
+        "quoteRef": "quote-1",
+        "issuedAt": "2026-10-21T01:00:00.000Z",
+        "expiresAt": "2026-10-21T01:15:00.000Z"
+      },
+      "payable": {
+        "schema": "refref.purchase-payable/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-lab-occurrence",
+        "currency": "RUB",
+        "inputHash": "refref-jcs-1:bdc36eb83eae32ee2bea14a7ed656016942d8382938e855d2836ca4ee1e1ca18",
+        "quote": {
+          "quoteRef": "quote-1",
+          "issuedAt": "2026-10-21T01:00:00.000Z",
+          "expiresAt": "2026-10-21T01:15:00.000Z"
+        },
+        "terms": {
+          "campaignId": "campaign-1",
+          "termsVersionId": "terms-1",
+          "termsHash": "refref-jcs-1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "partnerId": "partner-1",
+          "participationId": "participation-1",
+          "profile": "VNEXT_ONE_FULL_PAYMENT",
+          "eligibleLineRefs": [
+            "occurrence"
+          ],
+          "discount": {
+            "type": "PERCENT",
+            "basisPoints": 1000
+          },
+          "reward": {
+            "type": "PERCENT",
+            "basisPoints": 1000
+          }
+        },
+        "lines": [
+          {
+            "lineRef": "occurrence",
+            "offerRef": "offer-occurrence",
+            "quantity": 1,
+            "merchantAmountKopecks": 450000,
+            "service": {
+              "kind": "LAB",
+              "serviceEndsAt": "2026-11-02T15:00:00.000Z",
+              "timeZone": "Europe/Moscow",
+              "provenance": {
+                "sourceRef": "evidence-1",
+                "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "occurredAt": "2026-10-21T01:00:00.000Z"
+              }
+            },
+            "eligible": true,
+            "referralDiscountKopecks": 45000,
+            "payableAmountKopecks": 405000
+          }
+        ],
+        "totalKopecks": 405000,
+        "eligibleAfterDiscountKopecks": 405000,
+        "rewardKopecks": 40500
+      },
+      "acceptance": {
+        "schema": "refref.purchase-acceptance/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-lab-occurrence",
+        "payableHash": "refref-jcs-1:76ce0145e4e3b376e33e2645a1a02eb846f6d8cc50971e3be460488545a067d1",
+        "inputHash": "refref-jcs-1:bdc36eb83eae32ee2bea14a7ed656016942d8382938e855d2836ca4ee1e1ca18",
+        "quoteRef": "quote-1",
+        "acceptedAt": "2026-10-21T01:01:00.000Z"
+      },
+      "payment": {
+        "kind": "BANK_FULL_PAYMENT",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-lab-occurrence",
+        "payableHash": "refref-jcs-1:76ce0145e4e3b376e33e2645a1a02eb846f6d8cc50971e3be460488545a067d1",
+        "payment": {
+          "provider": "ALFA",
+          "connectionId": "connection-1",
+          "paymentRef": "bank-lab-occurrence"
+        },
+        "currency": "RUB",
+        "amountKopecks": 405000,
+        "status": "SUCCEEDED",
+        "independentEvidence": {
+          "sourceRef": "evidence-1",
+          "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "occurredAt": "2026-10-21T01:01:30.000Z"
+        },
+        "succeededAt": "2026-10-21T01:01:20.000Z",
+        "verifiedAt": "2026-10-21T01:01:30.000Z"
+      },
+      "qualification": {
+        "schema": "refref.purchase-qualification/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-lab-occurrence",
+        "payableHash": "refref-jcs-1:76ce0145e4e3b376e33e2645a1a02eb846f6d8cc50971e3be460488545a067d1",
+        "inputHash": "refref-jcs-1:bdc36eb83eae32ee2bea14a7ed656016942d8382938e855d2836ca4ee1e1ca18",
+        "rewardScopeId": "refref-jcs-1:c171d9b12755efc58d402be9e88715bab5abbda6cc780daf3757ce724fb860f5",
+        "purchaseQualifiedAt": "2026-10-21T01:02:00.000Z",
+        "payment": {
+          "kind": "BANK_FULL_PAYMENT",
+          "businessId": "business-1",
+          "purchaseRef": "purchase-lab-occurrence",
+          "payableHash": "refref-jcs-1:76ce0145e4e3b376e33e2645a1a02eb846f6d8cc50971e3be460488545a067d1",
+          "payment": {
+            "provider": "ALFA",
+            "connectionId": "connection-1",
+            "paymentRef": "bank-lab-occurrence"
+          },
+          "currency": "RUB",
+          "amountKopecks": 405000,
+          "status": "SUCCEEDED",
+          "independentEvidence": {
+            "sourceRef": "evidence-1",
+            "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "occurredAt": "2026-10-21T01:01:30.000Z"
+          },
+          "succeededAt": "2026-10-21T01:01:20.000Z",
+          "verifiedAt": "2026-10-21T01:01:30.000Z"
+        },
+        "acceptance": {
+          "schema": "refref.purchase-acceptance/1",
+          "businessId": "business-1",
+          "purchaseRef": "purchase-lab-occurrence",
+          "payableHash": "refref-jcs-1:76ce0145e4e3b376e33e2645a1a02eb846f6d8cc50971e3be460488545a067d1",
+          "inputHash": "refref-jcs-1:bdc36eb83eae32ee2bea14a7ed656016942d8382938e855d2836ca4ee1e1ca18",
+          "quoteRef": "quote-1",
+          "acceptedAt": "2026-10-21T01:01:00.000Z"
+        },
+        "serviceAnchors": [
+          {
+            "lineRef": "occurrence",
+            "anchorAt": "2026-11-02T15:00:00.000Z"
+          }
+        ],
+        "purchaseAnchorAt": "2026-11-02T15:00:00.000Z",
+        "deadlinePolicy": "P7-14-P3-30-Europe-Moscow/1",
+        "initialClaimDeadlineAt": "2026-11-16T15:00:00.000Z",
+        "claimDeadlineAt": "2026-11-16T15:00:00.000Z",
+        "hardClaimDeadlineAt": "2026-12-16T15:00:00.000Z"
+      },
+      "expected": {
+        "total": 405000,
+        "base": 405000,
+        "reward": 40500,
+        "anchor": "2026-11-02T15:00:00.000Z",
+        "inputHash": "refref-jcs-1:bdc36eb83eae32ee2bea14a7ed656016942d8382938e855d2836ca4ee1e1ca18",
+        "payableHash": "refref-jcs-1:76ce0145e4e3b376e33e2645a1a02eb846f6d8cc50971e3be460488545a067d1"
+      }
+    },
+    {
+      "name": "lab-programme-last-session",
+      "input": {
+        "schema": "refref.purchase-input/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-lab-programme-last-session",
+        "currency": "RUB",
+        "lines": [
+          {
+            "lineRef": "programme",
+            "offerRef": "offer-programme",
+            "quantity": 1,
+            "merchantAmountKopecks": 450000,
+            "service": {
+              "kind": "LAB",
+              "serviceEndsAt": "2026-12-01T15:00:00.000Z",
+              "timeZone": "Europe/Moscow",
+              "provenance": {
+                "sourceRef": "evidence-1",
+                "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "occurredAt": "2026-10-21T01:00:00.000Z"
+              }
+            }
+          }
+        ]
+      },
+      "terms": {
+        "campaignId": "campaign-1",
+        "termsVersionId": "terms-1",
+        "termsHash": "refref-jcs-1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "partnerId": "partner-1",
+        "participationId": "participation-1",
+        "profile": "VNEXT_ONE_FULL_PAYMENT",
+        "eligibleLineRefs": [
+          "programme"
+        ],
+        "discount": {
+          "type": "PERCENT",
+          "basisPoints": 1000
+        },
+        "reward": {
+          "type": "PERCENT",
+          "basisPoints": 1000
+        }
+      },
+      "quote": {
+        "quoteRef": "quote-1",
+        "issuedAt": "2026-10-21T01:00:00.000Z",
+        "expiresAt": "2026-10-21T01:15:00.000Z"
+      },
+      "payable": {
+        "schema": "refref.purchase-payable/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-lab-programme-last-session",
+        "currency": "RUB",
+        "inputHash": "refref-jcs-1:b7489581d86cada22b7d67d6d09825b938680fb5f2a8e7e9cb52fd7b0208cc70",
+        "quote": {
+          "quoteRef": "quote-1",
+          "issuedAt": "2026-10-21T01:00:00.000Z",
+          "expiresAt": "2026-10-21T01:15:00.000Z"
+        },
+        "terms": {
+          "campaignId": "campaign-1",
+          "termsVersionId": "terms-1",
+          "termsHash": "refref-jcs-1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "partnerId": "partner-1",
+          "participationId": "participation-1",
+          "profile": "VNEXT_ONE_FULL_PAYMENT",
+          "eligibleLineRefs": [
+            "programme"
+          ],
+          "discount": {
+            "type": "PERCENT",
+            "basisPoints": 1000
+          },
+          "reward": {
+            "type": "PERCENT",
+            "basisPoints": 1000
+          }
+        },
+        "lines": [
+          {
+            "lineRef": "programme",
+            "offerRef": "offer-programme",
+            "quantity": 1,
+            "merchantAmountKopecks": 450000,
+            "service": {
+              "kind": "LAB",
+              "serviceEndsAt": "2026-12-01T15:00:00.000Z",
+              "timeZone": "Europe/Moscow",
+              "provenance": {
+                "sourceRef": "evidence-1",
+                "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "occurredAt": "2026-10-21T01:00:00.000Z"
+              }
+            },
+            "eligible": true,
+            "referralDiscountKopecks": 45000,
+            "payableAmountKopecks": 405000
+          }
+        ],
+        "totalKopecks": 405000,
+        "eligibleAfterDiscountKopecks": 405000,
+        "rewardKopecks": 40500
+      },
+      "acceptance": {
+        "schema": "refref.purchase-acceptance/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-lab-programme-last-session",
+        "payableHash": "refref-jcs-1:64a3f088cf36e25221a8b907adde46f6140433e08818bd0314a6edff24c5c7dd",
+        "inputHash": "refref-jcs-1:b7489581d86cada22b7d67d6d09825b938680fb5f2a8e7e9cb52fd7b0208cc70",
+        "quoteRef": "quote-1",
+        "acceptedAt": "2026-10-21T01:01:00.000Z"
+      },
+      "payment": {
+        "kind": "BANK_FULL_PAYMENT",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-lab-programme-last-session",
+        "payableHash": "refref-jcs-1:64a3f088cf36e25221a8b907adde46f6140433e08818bd0314a6edff24c5c7dd",
+        "payment": {
+          "provider": "ALFA",
+          "connectionId": "connection-1",
+          "paymentRef": "bank-lab-programme-last-session"
+        },
+        "currency": "RUB",
+        "amountKopecks": 405000,
+        "status": "SUCCEEDED",
+        "independentEvidence": {
+          "sourceRef": "evidence-1",
+          "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "occurredAt": "2026-10-21T01:01:30.000Z"
+        },
+        "succeededAt": "2026-10-21T01:01:20.000Z",
+        "verifiedAt": "2026-10-21T01:01:30.000Z"
+      },
+      "qualification": {
+        "schema": "refref.purchase-qualification/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-lab-programme-last-session",
+        "payableHash": "refref-jcs-1:64a3f088cf36e25221a8b907adde46f6140433e08818bd0314a6edff24c5c7dd",
+        "inputHash": "refref-jcs-1:b7489581d86cada22b7d67d6d09825b938680fb5f2a8e7e9cb52fd7b0208cc70",
+        "rewardScopeId": "refref-jcs-1:9702c96475c4e05cd2747dc6b29dd25a3882c0f3e6984143e245abeba1489987",
+        "purchaseQualifiedAt": "2026-10-21T01:02:00.000Z",
+        "payment": {
+          "kind": "BANK_FULL_PAYMENT",
+          "businessId": "business-1",
+          "purchaseRef": "purchase-lab-programme-last-session",
+          "payableHash": "refref-jcs-1:64a3f088cf36e25221a8b907adde46f6140433e08818bd0314a6edff24c5c7dd",
+          "payment": {
+            "provider": "ALFA",
+            "connectionId": "connection-1",
+            "paymentRef": "bank-lab-programme-last-session"
+          },
+          "currency": "RUB",
+          "amountKopecks": 405000,
+          "status": "SUCCEEDED",
+          "independentEvidence": {
+            "sourceRef": "evidence-1",
+            "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "occurredAt": "2026-10-21T01:01:30.000Z"
+          },
+          "succeededAt": "2026-10-21T01:01:20.000Z",
+          "verifiedAt": "2026-10-21T01:01:30.000Z"
+        },
+        "acceptance": {
+          "schema": "refref.purchase-acceptance/1",
+          "businessId": "business-1",
+          "purchaseRef": "purchase-lab-programme-last-session",
+          "payableHash": "refref-jcs-1:64a3f088cf36e25221a8b907adde46f6140433e08818bd0314a6edff24c5c7dd",
+          "inputHash": "refref-jcs-1:b7489581d86cada22b7d67d6d09825b938680fb5f2a8e7e9cb52fd7b0208cc70",
+          "quoteRef": "quote-1",
+          "acceptedAt": "2026-10-21T01:01:00.000Z"
+        },
+        "serviceAnchors": [
+          {
+            "lineRef": "programme",
+            "anchorAt": "2026-12-01T15:00:00.000Z"
+          }
+        ],
+        "purchaseAnchorAt": "2026-12-01T15:00:00.000Z",
+        "deadlinePolicy": "P7-14-P3-30-Europe-Moscow/1",
+        "initialClaimDeadlineAt": "2026-12-15T15:00:00.000Z",
+        "claimDeadlineAt": "2026-12-15T15:00:00.000Z",
+        "hardClaimDeadlineAt": "2027-01-14T15:00:00.000Z"
+      },
+      "expected": {
+        "total": 405000,
+        "base": 405000,
+        "reward": 40500,
+        "anchor": "2026-12-01T15:00:00.000Z",
+        "inputHash": "refref-jcs-1:b7489581d86cada22b7d67d6d09825b938680fb5f2a8e7e9cb52fd7b0208cc70",
+        "payableHash": "refref-jcs-1:64a3f088cf36e25221a8b907adde46f6140433e08818bd0314a6edff24c5c7dd"
+      }
+    },
+    {
+      "name": "immediate-lms",
+      "input": {
+        "schema": "refref.purchase-input/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-immediate-lms",
+        "currency": "RUB",
+        "lines": [
+          {
+            "lineRef": "course",
+            "offerRef": "offer-course",
+            "quantity": 1,
+            "merchantAmountKopecks": 500000,
+            "service": {
+              "kind": "LMS",
+              "accessProfile": "IMMEDIATE",
+              "readinessEvidence": {
+                "sourceRef": "evidence-1",
+                "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "occurredAt": "2026-10-21T01:00:00.000Z"
+              }
+            }
+          }
+        ]
+      },
+      "terms": {
+        "campaignId": "campaign-1",
+        "termsVersionId": "terms-1",
+        "termsHash": "refref-jcs-1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "partnerId": "partner-1",
+        "participationId": "participation-1",
+        "profile": "VNEXT_ONE_FULL_PAYMENT",
+        "eligibleLineRefs": [
+          "course"
+        ],
+        "discount": {
+          "type": "PERCENT",
+          "basisPoints": 1000
+        },
+        "reward": {
+          "type": "PERCENT",
+          "basisPoints": 1000
+        }
+      },
+      "quote": {
+        "quoteRef": "quote-1",
+        "issuedAt": "2026-10-21T01:00:00.000Z",
+        "expiresAt": "2026-10-21T01:15:00.000Z"
+      },
+      "payable": {
+        "schema": "refref.purchase-payable/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-immediate-lms",
+        "currency": "RUB",
+        "inputHash": "refref-jcs-1:dfdc0dc4ddb2ad544a008e99873a1335c4918e8fab1605523e4f998bd723d1b4",
+        "quote": {
+          "quoteRef": "quote-1",
+          "issuedAt": "2026-10-21T01:00:00.000Z",
+          "expiresAt": "2026-10-21T01:15:00.000Z"
+        },
+        "terms": {
+          "campaignId": "campaign-1",
+          "termsVersionId": "terms-1",
+          "termsHash": "refref-jcs-1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "partnerId": "partner-1",
+          "participationId": "participation-1",
+          "profile": "VNEXT_ONE_FULL_PAYMENT",
+          "eligibleLineRefs": [
+            "course"
+          ],
+          "discount": {
+            "type": "PERCENT",
+            "basisPoints": 1000
+          },
+          "reward": {
+            "type": "PERCENT",
+            "basisPoints": 1000
+          }
+        },
+        "lines": [
+          {
+            "lineRef": "course",
+            "offerRef": "offer-course",
+            "quantity": 1,
+            "merchantAmountKopecks": 500000,
+            "service": {
+              "kind": "LMS",
+              "accessProfile": "IMMEDIATE",
+              "readinessEvidence": {
+                "sourceRef": "evidence-1",
+                "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "occurredAt": "2026-10-21T01:00:00.000Z"
+              }
+            },
+            "eligible": true,
+            "referralDiscountKopecks": 50000,
+            "payableAmountKopecks": 450000
+          }
+        ],
+        "totalKopecks": 450000,
+        "eligibleAfterDiscountKopecks": 450000,
+        "rewardKopecks": 45000
+      },
+      "acceptance": {
+        "schema": "refref.purchase-acceptance/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-immediate-lms",
+        "payableHash": "refref-jcs-1:3f779707bbf40bfe8d2d54293f7be026e2399c57a6c84619f4a9f62bbf2357cc",
+        "inputHash": "refref-jcs-1:dfdc0dc4ddb2ad544a008e99873a1335c4918e8fab1605523e4f998bd723d1b4",
+        "quoteRef": "quote-1",
+        "acceptedAt": "2026-10-21T01:01:00.000Z"
+      },
+      "payment": {
+        "kind": "BANK_FULL_PAYMENT",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-immediate-lms",
+        "payableHash": "refref-jcs-1:3f779707bbf40bfe8d2d54293f7be026e2399c57a6c84619f4a9f62bbf2357cc",
+        "payment": {
+          "provider": "ALFA",
+          "connectionId": "connection-1",
+          "paymentRef": "bank-immediate-lms"
+        },
+        "currency": "RUB",
+        "amountKopecks": 450000,
+        "status": "SUCCEEDED",
+        "independentEvidence": {
+          "sourceRef": "evidence-1",
+          "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "occurredAt": "2026-10-21T01:01:30.000Z"
+        },
+        "succeededAt": "2026-10-21T01:01:20.000Z",
+        "verifiedAt": "2026-10-21T01:01:30.000Z"
+      },
+      "qualification": {
+        "schema": "refref.purchase-qualification/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-immediate-lms",
+        "payableHash": "refref-jcs-1:3f779707bbf40bfe8d2d54293f7be026e2399c57a6c84619f4a9f62bbf2357cc",
+        "inputHash": "refref-jcs-1:dfdc0dc4ddb2ad544a008e99873a1335c4918e8fab1605523e4f998bd723d1b4",
+        "rewardScopeId": "refref-jcs-1:3f04337c4d1a7c0f0dbe19d09c51bdd483619f4ddd4d54bcb3f3618bdc9d5ba7",
+        "purchaseQualifiedAt": "2026-10-21T01:02:00.000Z",
+        "payment": {
+          "kind": "BANK_FULL_PAYMENT",
+          "businessId": "business-1",
+          "purchaseRef": "purchase-immediate-lms",
+          "payableHash": "refref-jcs-1:3f779707bbf40bfe8d2d54293f7be026e2399c57a6c84619f4a9f62bbf2357cc",
+          "payment": {
+            "provider": "ALFA",
+            "connectionId": "connection-1",
+            "paymentRef": "bank-immediate-lms"
+          },
+          "currency": "RUB",
+          "amountKopecks": 450000,
+          "status": "SUCCEEDED",
+          "independentEvidence": {
+            "sourceRef": "evidence-1",
+            "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "occurredAt": "2026-10-21T01:01:30.000Z"
+          },
+          "succeededAt": "2026-10-21T01:01:20.000Z",
+          "verifiedAt": "2026-10-21T01:01:30.000Z"
+        },
+        "acceptance": {
+          "schema": "refref.purchase-acceptance/1",
+          "businessId": "business-1",
+          "purchaseRef": "purchase-immediate-lms",
+          "payableHash": "refref-jcs-1:3f779707bbf40bfe8d2d54293f7be026e2399c57a6c84619f4a9f62bbf2357cc",
+          "inputHash": "refref-jcs-1:dfdc0dc4ddb2ad544a008e99873a1335c4918e8fab1605523e4f998bd723d1b4",
+          "quoteRef": "quote-1",
+          "acceptedAt": "2026-10-21T01:01:00.000Z"
+        },
+        "serviceAnchors": [
+          {
+            "lineRef": "course",
+            "anchorAt": "2026-10-21T01:02:00.000Z"
+          }
+        ],
+        "purchaseAnchorAt": "2026-10-21T01:02:00.000Z",
+        "deadlinePolicy": "P7-14-P3-30-Europe-Moscow/1",
+        "initialClaimDeadlineAt": "2026-11-04T01:02:00.000Z",
+        "claimDeadlineAt": "2026-11-04T01:02:00.000Z",
+        "hardClaimDeadlineAt": "2026-12-04T01:02:00.000Z"
+      },
+      "expected": {
+        "total": 450000,
+        "base": 450000,
+        "reward": 45000,
+        "anchor": "2026-10-21T01:02:00.000Z",
+        "inputHash": "refref-jcs-1:dfdc0dc4ddb2ad544a008e99873a1335c4918e8fab1605523e4f998bd723d1b4",
+        "payableHash": "refref-jcs-1:3f779707bbf40bfe8d2d54293f7be026e2399c57a6c84619f4a9f62bbf2357cc"
+      }
+    },
+    {
+      "name": "mixed-date-tour-lab-lms",
+      "input": {
+        "schema": "refref.purchase-input/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-mixed-date-tour-lab-lms",
+        "currency": "RUB",
+        "lines": [
+          {
+            "lineRef": "course",
+            "offerRef": "offer-course",
+            "quantity": 1,
+            "merchantAmountKopecks": 500000,
+            "service": {
+              "kind": "LMS",
+              "accessProfile": "IMMEDIATE",
+              "readinessEvidence": {
+                "sourceRef": "evidence-1",
+                "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "occurredAt": "2026-10-21T01:00:00.000Z"
+              }
+            }
+          },
+          {
+            "lineRef": "tour",
+            "offerRef": "offer-tour",
+            "quantity": 3,
+            "merchantAmountKopecks": 3000000,
+            "service": {
+              "kind": "TOUR",
+              "serviceEndsAt": "2026-11-01T12:00:00.000Z",
+              "timeZone": "Asia/Novosibirsk",
+              "provenance": {
+                "sourceRef": "evidence-1",
+                "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "occurredAt": "2026-10-21T01:00:00.000Z"
+              }
+            }
+          },
+          {
+            "lineRef": "later",
+            "offerRef": "offer-later",
+            "quantity": 1,
+            "merchantAmountKopecks": 450000,
+            "service": {
+              "kind": "LAB",
+              "serviceEndsAt": "2026-12-10T09:00:00.000Z",
+              "timeZone": "Europe/Moscow",
+              "provenance": {
+                "sourceRef": "evidence-1",
+                "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "occurredAt": "2026-10-21T01:00:00.000Z"
+              }
+            }
+          }
+        ]
+      },
+      "terms": {
+        "campaignId": "campaign-1",
+        "termsVersionId": "terms-1",
+        "termsHash": "refref-jcs-1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "partnerId": "partner-1",
+        "participationId": "participation-1",
+        "profile": "VNEXT_ONE_FULL_PAYMENT",
+        "eligibleLineRefs": [
+          "course",
+          "tour",
+          "later"
+        ],
+        "discount": {
+          "type": "PERCENT",
+          "basisPoints": 1000
+        },
+        "reward": {
+          "type": "PERCENT",
+          "basisPoints": 1000
+        }
+      },
+      "quote": {
+        "quoteRef": "quote-1",
+        "issuedAt": "2026-10-21T01:00:00.000Z",
+        "expiresAt": "2026-10-21T01:15:00.000Z"
+      },
+      "payable": {
+        "schema": "refref.purchase-payable/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-mixed-date-tour-lab-lms",
+        "currency": "RUB",
+        "inputHash": "refref-jcs-1:d9f4cb74aba40d17bb792cfaed253ac1036cb17d0747925ef368a9bf6755c40e",
+        "quote": {
+          "quoteRef": "quote-1",
+          "issuedAt": "2026-10-21T01:00:00.000Z",
+          "expiresAt": "2026-10-21T01:15:00.000Z"
+        },
+        "terms": {
+          "campaignId": "campaign-1",
+          "termsVersionId": "terms-1",
+          "termsHash": "refref-jcs-1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "partnerId": "partner-1",
+          "participationId": "participation-1",
+          "profile": "VNEXT_ONE_FULL_PAYMENT",
+          "eligibleLineRefs": [
+            "course",
+            "later",
+            "tour"
+          ],
+          "discount": {
+            "type": "PERCENT",
+            "basisPoints": 1000
+          },
+          "reward": {
+            "type": "PERCENT",
+            "basisPoints": 1000
+          }
+        },
+        "lines": [
+          {
+            "lineRef": "course",
+            "offerRef": "offer-course",
+            "quantity": 1,
+            "merchantAmountKopecks": 500000,
+            "service": {
+              "kind": "LMS",
+              "accessProfile": "IMMEDIATE",
+              "readinessEvidence": {
+                "sourceRef": "evidence-1",
+                "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "occurredAt": "2026-10-21T01:00:00.000Z"
+              }
+            },
+            "eligible": true,
+            "referralDiscountKopecks": 50000,
+            "payableAmountKopecks": 450000
+          },
+          {
+            "lineRef": "later",
+            "offerRef": "offer-later",
+            "quantity": 1,
+            "merchantAmountKopecks": 450000,
+            "service": {
+              "kind": "LAB",
+              "serviceEndsAt": "2026-12-10T09:00:00.000Z",
+              "timeZone": "Europe/Moscow",
+              "provenance": {
+                "sourceRef": "evidence-1",
+                "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "occurredAt": "2026-10-21T01:00:00.000Z"
+              }
+            },
+            "eligible": true,
+            "referralDiscountKopecks": 45000,
+            "payableAmountKopecks": 405000
+          },
+          {
+            "lineRef": "tour",
+            "offerRef": "offer-tour",
+            "quantity": 3,
+            "merchantAmountKopecks": 3000000,
+            "service": {
+              "kind": "TOUR",
+              "serviceEndsAt": "2026-11-01T12:00:00.000Z",
+              "timeZone": "Asia/Novosibirsk",
+              "provenance": {
+                "sourceRef": "evidence-1",
+                "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "occurredAt": "2026-10-21T01:00:00.000Z"
+              }
+            },
+            "eligible": true,
+            "referralDiscountKopecks": 300000,
+            "payableAmountKopecks": 2700000
+          }
+        ],
+        "totalKopecks": 3555000,
+        "eligibleAfterDiscountKopecks": 3555000,
+        "rewardKopecks": 355500
+      },
+      "acceptance": {
+        "schema": "refref.purchase-acceptance/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-mixed-date-tour-lab-lms",
+        "payableHash": "refref-jcs-1:cab47db5c69240ac462de7db805365457475f631260e4747bbce02189b5fbe78",
+        "inputHash": "refref-jcs-1:d9f4cb74aba40d17bb792cfaed253ac1036cb17d0747925ef368a9bf6755c40e",
+        "quoteRef": "quote-1",
+        "acceptedAt": "2026-10-21T01:01:00.000Z"
+      },
+      "payment": {
+        "kind": "BANK_FULL_PAYMENT",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-mixed-date-tour-lab-lms",
+        "payableHash": "refref-jcs-1:cab47db5c69240ac462de7db805365457475f631260e4747bbce02189b5fbe78",
+        "payment": {
+          "provider": "ALFA",
+          "connectionId": "connection-1",
+          "paymentRef": "bank-mixed-date-tour-lab-lms"
+        },
+        "currency": "RUB",
+        "amountKopecks": 3555000,
+        "status": "SUCCEEDED",
+        "independentEvidence": {
+          "sourceRef": "evidence-1",
+          "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "occurredAt": "2026-10-21T01:01:30.000Z"
+        },
+        "succeededAt": "2026-10-21T01:01:20.000Z",
+        "verifiedAt": "2026-10-21T01:01:30.000Z"
+      },
+      "qualification": {
+        "schema": "refref.purchase-qualification/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-mixed-date-tour-lab-lms",
+        "payableHash": "refref-jcs-1:cab47db5c69240ac462de7db805365457475f631260e4747bbce02189b5fbe78",
+        "inputHash": "refref-jcs-1:d9f4cb74aba40d17bb792cfaed253ac1036cb17d0747925ef368a9bf6755c40e",
+        "rewardScopeId": "refref-jcs-1:5510d506d85a850949dc3f72bcf2c6ea71c185a17574c57b41b77e22501e72a5",
+        "purchaseQualifiedAt": "2026-10-21T01:02:00.000Z",
+        "payment": {
+          "kind": "BANK_FULL_PAYMENT",
+          "businessId": "business-1",
+          "purchaseRef": "purchase-mixed-date-tour-lab-lms",
+          "payableHash": "refref-jcs-1:cab47db5c69240ac462de7db805365457475f631260e4747bbce02189b5fbe78",
+          "payment": {
+            "provider": "ALFA",
+            "connectionId": "connection-1",
+            "paymentRef": "bank-mixed-date-tour-lab-lms"
+          },
+          "currency": "RUB",
+          "amountKopecks": 3555000,
+          "status": "SUCCEEDED",
+          "independentEvidence": {
+            "sourceRef": "evidence-1",
+            "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "occurredAt": "2026-10-21T01:01:30.000Z"
+          },
+          "succeededAt": "2026-10-21T01:01:20.000Z",
+          "verifiedAt": "2026-10-21T01:01:30.000Z"
+        },
+        "acceptance": {
+          "schema": "refref.purchase-acceptance/1",
+          "businessId": "business-1",
+          "purchaseRef": "purchase-mixed-date-tour-lab-lms",
+          "payableHash": "refref-jcs-1:cab47db5c69240ac462de7db805365457475f631260e4747bbce02189b5fbe78",
+          "inputHash": "refref-jcs-1:d9f4cb74aba40d17bb792cfaed253ac1036cb17d0747925ef368a9bf6755c40e",
+          "quoteRef": "quote-1",
+          "acceptedAt": "2026-10-21T01:01:00.000Z"
+        },
+        "serviceAnchors": [
+          {
+            "lineRef": "course",
+            "anchorAt": "2026-10-21T01:02:00.000Z"
+          },
+          {
+            "lineRef": "later",
+            "anchorAt": "2026-12-10T09:00:00.000Z"
+          },
+          {
+            "lineRef": "tour",
+            "anchorAt": "2026-11-01T12:00:00.000Z"
+          }
+        ],
+        "purchaseAnchorAt": "2026-12-10T09:00:00.000Z",
+        "deadlinePolicy": "P7-14-P3-30-Europe-Moscow/1",
+        "initialClaimDeadlineAt": "2026-12-24T09:00:00.000Z",
+        "claimDeadlineAt": "2026-12-24T09:00:00.000Z",
+        "hardClaimDeadlineAt": "2027-01-23T09:00:00.000Z"
+      },
+      "expected": {
+        "total": 3555000,
+        "base": 3555000,
+        "reward": 355500,
+        "anchor": "2026-12-10T09:00:00.000Z",
+        "inputHash": "refref-jcs-1:d9f4cb74aba40d17bb792cfaed253ac1036cb17d0747925ef368a9bf6755c40e",
+        "payableHash": "refref-jcs-1:cab47db5c69240ac462de7db805365457475f631260e4747bbce02189b5fbe78"
+      }
+    },
+    {
+      "name": "eligible-course-noneligible-future-ticket",
+      "input": {
+        "schema": "refref.purchase-input/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-eligible-course-noneligible-future-ticket",
+        "currency": "RUB",
+        "lines": [
+          {
+            "lineRef": "course",
+            "offerRef": "offer-course",
+            "quantity": 1,
+            "merchantAmountKopecks": 500000,
+            "service": {
+              "kind": "LMS",
+              "accessProfile": "IMMEDIATE",
+              "readinessEvidence": {
+                "sourceRef": "evidence-1",
+                "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "occurredAt": "2026-10-21T01:00:00.000Z"
+              }
+            }
+          },
+          {
+            "lineRef": "ticket",
+            "offerRef": "offer-ticket",
+            "quantity": 1,
+            "merchantAmountKopecks": 50000,
+            "service": {
+              "kind": "TOUR",
+              "serviceEndsAt": "2027-04-21T12:00:00.000Z",
+              "timeZone": "Asia/Novosibirsk",
+              "provenance": {
+                "sourceRef": "evidence-1",
+                "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "occurredAt": "2026-10-21T01:00:00.000Z"
+              }
+            }
+          }
+        ]
+      },
+      "terms": {
+        "campaignId": "campaign-1",
+        "termsVersionId": "terms-1",
+        "termsHash": "refref-jcs-1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "partnerId": "partner-1",
+        "participationId": "participation-1",
+        "profile": "VNEXT_ONE_FULL_PAYMENT",
+        "eligibleLineRefs": [
+          "course"
+        ],
+        "discount": {
+          "type": "PERCENT",
+          "basisPoints": 0
+        },
+        "reward": {
+          "type": "PERCENT",
+          "basisPoints": 1000
+        }
+      },
+      "quote": {
+        "quoteRef": "quote-1",
+        "issuedAt": "2026-10-21T01:00:00.000Z",
+        "expiresAt": "2026-10-21T01:15:00.000Z"
+      },
+      "payable": {
+        "schema": "refref.purchase-payable/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-eligible-course-noneligible-future-ticket",
+        "currency": "RUB",
+        "inputHash": "refref-jcs-1:4b07a90cc66af142b86e2673cd411fed208302b0f87f1d82591df29e2eb57644",
+        "quote": {
+          "quoteRef": "quote-1",
+          "issuedAt": "2026-10-21T01:00:00.000Z",
+          "expiresAt": "2026-10-21T01:15:00.000Z"
+        },
+        "terms": {
+          "campaignId": "campaign-1",
+          "termsVersionId": "terms-1",
+          "termsHash": "refref-jcs-1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "partnerId": "partner-1",
+          "participationId": "participation-1",
+          "profile": "VNEXT_ONE_FULL_PAYMENT",
+          "eligibleLineRefs": [
+            "course"
+          ],
+          "discount": {
+            "type": "PERCENT",
+            "basisPoints": 0
+          },
+          "reward": {
+            "type": "PERCENT",
+            "basisPoints": 1000
+          }
+        },
+        "lines": [
+          {
+            "lineRef": "course",
+            "offerRef": "offer-course",
+            "quantity": 1,
+            "merchantAmountKopecks": 500000,
+            "service": {
+              "kind": "LMS",
+              "accessProfile": "IMMEDIATE",
+              "readinessEvidence": {
+                "sourceRef": "evidence-1",
+                "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "occurredAt": "2026-10-21T01:00:00.000Z"
+              }
+            },
+            "eligible": true,
+            "referralDiscountKopecks": 0,
+            "payableAmountKopecks": 500000
+          },
+          {
+            "lineRef": "ticket",
+            "offerRef": "offer-ticket",
+            "quantity": 1,
+            "merchantAmountKopecks": 50000,
+            "service": {
+              "kind": "TOUR",
+              "serviceEndsAt": "2027-04-21T12:00:00.000Z",
+              "timeZone": "Asia/Novosibirsk",
+              "provenance": {
+                "sourceRef": "evidence-1",
+                "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "occurredAt": "2026-10-21T01:00:00.000Z"
+              }
+            },
+            "eligible": false,
+            "referralDiscountKopecks": 0,
+            "payableAmountKopecks": 50000
+          }
+        ],
+        "totalKopecks": 550000,
+        "eligibleAfterDiscountKopecks": 500000,
+        "rewardKopecks": 50000
+      },
+      "acceptance": {
+        "schema": "refref.purchase-acceptance/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-eligible-course-noneligible-future-ticket",
+        "payableHash": "refref-jcs-1:e87d3311c046fae7091e09652c252abec7756a0b3016fdae071bef85753bf7d9",
+        "inputHash": "refref-jcs-1:4b07a90cc66af142b86e2673cd411fed208302b0f87f1d82591df29e2eb57644",
+        "quoteRef": "quote-1",
+        "acceptedAt": "2026-10-21T01:01:00.000Z"
+      },
+      "payment": {
+        "kind": "BANK_FULL_PAYMENT",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-eligible-course-noneligible-future-ticket",
+        "payableHash": "refref-jcs-1:e87d3311c046fae7091e09652c252abec7756a0b3016fdae071bef85753bf7d9",
+        "payment": {
+          "provider": "ALFA",
+          "connectionId": "connection-1",
+          "paymentRef": "bank-eligible-course-noneligible-future-ticket"
+        },
+        "currency": "RUB",
+        "amountKopecks": 550000,
+        "status": "SUCCEEDED",
+        "independentEvidence": {
+          "sourceRef": "evidence-1",
+          "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "occurredAt": "2026-10-21T01:01:30.000Z"
+        },
+        "succeededAt": "2026-10-21T01:01:20.000Z",
+        "verifiedAt": "2026-10-21T01:01:30.000Z"
+      },
+      "qualification": {
+        "schema": "refref.purchase-qualification/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-eligible-course-noneligible-future-ticket",
+        "payableHash": "refref-jcs-1:e87d3311c046fae7091e09652c252abec7756a0b3016fdae071bef85753bf7d9",
+        "inputHash": "refref-jcs-1:4b07a90cc66af142b86e2673cd411fed208302b0f87f1d82591df29e2eb57644",
+        "rewardScopeId": "refref-jcs-1:65579918bb4adf51b2c8e9eec6c239c5d16a22f46f6b30d3b8b35118e153a993",
+        "purchaseQualifiedAt": "2026-10-21T01:02:00.000Z",
+        "payment": {
+          "kind": "BANK_FULL_PAYMENT",
+          "businessId": "business-1",
+          "purchaseRef": "purchase-eligible-course-noneligible-future-ticket",
+          "payableHash": "refref-jcs-1:e87d3311c046fae7091e09652c252abec7756a0b3016fdae071bef85753bf7d9",
+          "payment": {
+            "provider": "ALFA",
+            "connectionId": "connection-1",
+            "paymentRef": "bank-eligible-course-noneligible-future-ticket"
+          },
+          "currency": "RUB",
+          "amountKopecks": 550000,
+          "status": "SUCCEEDED",
+          "independentEvidence": {
+            "sourceRef": "evidence-1",
+            "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "occurredAt": "2026-10-21T01:01:30.000Z"
+          },
+          "succeededAt": "2026-10-21T01:01:20.000Z",
+          "verifiedAt": "2026-10-21T01:01:30.000Z"
+        },
+        "acceptance": {
+          "schema": "refref.purchase-acceptance/1",
+          "businessId": "business-1",
+          "purchaseRef": "purchase-eligible-course-noneligible-future-ticket",
+          "payableHash": "refref-jcs-1:e87d3311c046fae7091e09652c252abec7756a0b3016fdae071bef85753bf7d9",
+          "inputHash": "refref-jcs-1:4b07a90cc66af142b86e2673cd411fed208302b0f87f1d82591df29e2eb57644",
+          "quoteRef": "quote-1",
+          "acceptedAt": "2026-10-21T01:01:00.000Z"
+        },
+        "serviceAnchors": [
+          {
+            "lineRef": "course",
+            "anchorAt": "2026-10-21T01:02:00.000Z"
+          }
+        ],
+        "purchaseAnchorAt": "2026-10-21T01:02:00.000Z",
+        "deadlinePolicy": "P7-14-P3-30-Europe-Moscow/1",
+        "initialClaimDeadlineAt": "2026-11-04T01:02:00.000Z",
+        "claimDeadlineAt": "2026-11-04T01:02:00.000Z",
+        "hardClaimDeadlineAt": "2026-12-04T01:02:00.000Z"
+      },
+      "expected": {
+        "total": 550000,
+        "base": 500000,
+        "reward": 50000,
+        "anchor": "2026-10-21T01:02:00.000Z",
+        "inputHash": "refref-jcs-1:4b07a90cc66af142b86e2673cd411fed208302b0f87f1d82591df29e2eb57644",
+        "payableHash": "refref-jcs-1:e87d3311c046fae7091e09652c252abec7756a0b3016fdae071bef85753bf7d9"
+      }
+    },
+    {
+      "name": "fully-discounted-eligible-line",
+      "input": {
+        "schema": "refref.purchase-input/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-fully-discounted-eligible-line",
+        "currency": "RUB",
+        "lines": [
+          {
+            "lineRef": "course",
+            "offerRef": "offer-course",
+            "quantity": 1,
+            "merchantAmountKopecks": 500000,
+            "service": {
+              "kind": "LMS",
+              "accessProfile": "IMMEDIATE",
+              "readinessEvidence": {
+                "sourceRef": "evidence-1",
+                "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "occurredAt": "2026-10-21T01:00:00.000Z"
+              }
+            }
+          },
+          {
+            "lineRef": "ticket",
+            "offerRef": "offer-ticket",
+            "quantity": 1,
+            "merchantAmountKopecks": 50000,
+            "service": {
+              "kind": "TOUR",
+              "serviceEndsAt": "2026-11-01T12:00:00.000Z",
+              "timeZone": "Asia/Novosibirsk",
+              "provenance": {
+                "sourceRef": "evidence-1",
+                "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "occurredAt": "2026-10-21T01:00:00.000Z"
+              }
+            }
+          }
+        ]
+      },
+      "terms": {
+        "campaignId": "campaign-1",
+        "termsVersionId": "terms-1",
+        "termsHash": "refref-jcs-1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "partnerId": "partner-1",
+        "participationId": "participation-1",
+        "profile": "VNEXT_ONE_FULL_PAYMENT",
+        "eligibleLineRefs": [
+          "course"
+        ],
+        "discount": {
+          "type": "PERCENT",
+          "basisPoints": 10000
+        },
+        "reward": {
+          "type": "PERCENT",
+          "basisPoints": 1000
+        }
+      },
+      "quote": {
+        "quoteRef": "quote-1",
+        "issuedAt": "2026-10-21T01:00:00.000Z",
+        "expiresAt": "2026-10-21T01:15:00.000Z"
+      },
+      "payable": {
+        "schema": "refref.purchase-payable/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-fully-discounted-eligible-line",
+        "currency": "RUB",
+        "inputHash": "refref-jcs-1:b3890d487deb7e6da22c8708d9c086c629d301934653331deb30397450237ac4",
+        "quote": {
+          "quoteRef": "quote-1",
+          "issuedAt": "2026-10-21T01:00:00.000Z",
+          "expiresAt": "2026-10-21T01:15:00.000Z"
+        },
+        "terms": {
+          "campaignId": "campaign-1",
+          "termsVersionId": "terms-1",
+          "termsHash": "refref-jcs-1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "partnerId": "partner-1",
+          "participationId": "participation-1",
+          "profile": "VNEXT_ONE_FULL_PAYMENT",
+          "eligibleLineRefs": [
+            "course"
+          ],
+          "discount": {
+            "type": "PERCENT",
+            "basisPoints": 10000
+          },
+          "reward": {
+            "type": "PERCENT",
+            "basisPoints": 1000
+          }
+        },
+        "lines": [
+          {
+            "lineRef": "course",
+            "offerRef": "offer-course",
+            "quantity": 1,
+            "merchantAmountKopecks": 500000,
+            "service": {
+              "kind": "LMS",
+              "accessProfile": "IMMEDIATE",
+              "readinessEvidence": {
+                "sourceRef": "evidence-1",
+                "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "occurredAt": "2026-10-21T01:00:00.000Z"
+              }
+            },
+            "eligible": true,
+            "referralDiscountKopecks": 500000,
+            "payableAmountKopecks": 0
+          },
+          {
+            "lineRef": "ticket",
+            "offerRef": "offer-ticket",
+            "quantity": 1,
+            "merchantAmountKopecks": 50000,
+            "service": {
+              "kind": "TOUR",
+              "serviceEndsAt": "2026-11-01T12:00:00.000Z",
+              "timeZone": "Asia/Novosibirsk",
+              "provenance": {
+                "sourceRef": "evidence-1",
+                "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "occurredAt": "2026-10-21T01:00:00.000Z"
+              }
+            },
+            "eligible": false,
+            "referralDiscountKopecks": 0,
+            "payableAmountKopecks": 50000
+          }
+        ],
+        "totalKopecks": 50000,
+        "eligibleAfterDiscountKopecks": 0,
+        "rewardKopecks": 0
+      },
+      "acceptance": {
+        "schema": "refref.purchase-acceptance/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-fully-discounted-eligible-line",
+        "payableHash": "refref-jcs-1:8fd5048336bb1331eb4ee8375c866d0014685b4ff7a7b2ac5cac24de02625749",
+        "inputHash": "refref-jcs-1:b3890d487deb7e6da22c8708d9c086c629d301934653331deb30397450237ac4",
+        "quoteRef": "quote-1",
+        "acceptedAt": "2026-10-21T01:01:00.000Z"
+      },
+      "payment": {
+        "kind": "BANK_FULL_PAYMENT",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-fully-discounted-eligible-line",
+        "payableHash": "refref-jcs-1:8fd5048336bb1331eb4ee8375c866d0014685b4ff7a7b2ac5cac24de02625749",
+        "payment": {
+          "provider": "ALFA",
+          "connectionId": "connection-1",
+          "paymentRef": "bank-fully-discounted-eligible-line"
+        },
+        "currency": "RUB",
+        "amountKopecks": 50000,
+        "status": "SUCCEEDED",
+        "independentEvidence": {
+          "sourceRef": "evidence-1",
+          "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "occurredAt": "2026-10-21T01:01:30.000Z"
+        },
+        "succeededAt": "2026-10-21T01:01:20.000Z",
+        "verifiedAt": "2026-10-21T01:01:30.000Z"
+      },
+      "qualification": {
+        "schema": "refref.purchase-qualification/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-fully-discounted-eligible-line",
+        "payableHash": "refref-jcs-1:8fd5048336bb1331eb4ee8375c866d0014685b4ff7a7b2ac5cac24de02625749",
+        "inputHash": "refref-jcs-1:b3890d487deb7e6da22c8708d9c086c629d301934653331deb30397450237ac4",
+        "rewardScopeId": "refref-jcs-1:2daebb9d26baa7a293f25ba21517b3697e3512a8a0d1c1ed8926555a6de36123",
+        "purchaseQualifiedAt": "2026-10-21T01:02:00.000Z",
+        "payment": {
+          "kind": "BANK_FULL_PAYMENT",
+          "businessId": "business-1",
+          "purchaseRef": "purchase-fully-discounted-eligible-line",
+          "payableHash": "refref-jcs-1:8fd5048336bb1331eb4ee8375c866d0014685b4ff7a7b2ac5cac24de02625749",
+          "payment": {
+            "provider": "ALFA",
+            "connectionId": "connection-1",
+            "paymentRef": "bank-fully-discounted-eligible-line"
+          },
+          "currency": "RUB",
+          "amountKopecks": 50000,
+          "status": "SUCCEEDED",
+          "independentEvidence": {
+            "sourceRef": "evidence-1",
+            "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "occurredAt": "2026-10-21T01:01:30.000Z"
+          },
+          "succeededAt": "2026-10-21T01:01:20.000Z",
+          "verifiedAt": "2026-10-21T01:01:30.000Z"
+        },
+        "acceptance": {
+          "schema": "refref.purchase-acceptance/1",
+          "businessId": "business-1",
+          "purchaseRef": "purchase-fully-discounted-eligible-line",
+          "payableHash": "refref-jcs-1:8fd5048336bb1331eb4ee8375c866d0014685b4ff7a7b2ac5cac24de02625749",
+          "inputHash": "refref-jcs-1:b3890d487deb7e6da22c8708d9c086c629d301934653331deb30397450237ac4",
+          "quoteRef": "quote-1",
+          "acceptedAt": "2026-10-21T01:01:00.000Z"
+        },
+        "serviceAnchors": [
+          {
+            "lineRef": "course",
+            "anchorAt": "2026-10-21T01:02:00.000Z"
+          }
+        ],
+        "purchaseAnchorAt": "2026-10-21T01:02:00.000Z",
+        "deadlinePolicy": "P7-14-P3-30-Europe-Moscow/1",
+        "initialClaimDeadlineAt": "2026-11-04T01:02:00.000Z",
+        "claimDeadlineAt": "2026-11-04T01:02:00.000Z",
+        "hardClaimDeadlineAt": "2026-12-04T01:02:00.000Z"
+      },
+      "expected": {
+        "total": 50000,
+        "base": 0,
+        "reward": 0,
+        "anchor": "2026-10-21T01:02:00.000Z",
+        "inputHash": "refref-jcs-1:b3890d487deb7e6da22c8708d9c086c629d301934653331deb30397450237ac4",
+        "payableHash": "refref-jcs-1:8fd5048336bb1331eb4ee8375c866d0014685b4ff7a7b2ac5cac24de02625749"
+      }
+    },
+    {
+      "name": "fixed-reward-once",
+      "input": {
+        "schema": "refref.purchase-input/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-fixed-reward-once",
+        "currency": "RUB",
+        "lines": [
+          {
+            "lineRef": "tour",
+            "offerRef": "offer-tour",
+            "quantity": 3,
+            "merchantAmountKopecks": 3000000,
+            "service": {
+              "kind": "TOUR",
+              "serviceEndsAt": "2026-11-01T12:00:00.000Z",
+              "timeZone": "Asia/Novosibirsk",
+              "provenance": {
+                "sourceRef": "evidence-1",
+                "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "occurredAt": "2026-10-21T01:00:00.000Z"
+              }
+            }
+          }
+        ]
+      },
+      "terms": {
+        "campaignId": "campaign-1",
+        "termsVersionId": "terms-1",
+        "termsHash": "refref-jcs-1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "partnerId": "partner-1",
+        "participationId": "participation-1",
+        "profile": "VNEXT_ONE_FULL_PAYMENT",
+        "eligibleLineRefs": [
+          "tour"
+        ],
+        "discount": {
+          "type": "PERCENT",
+          "basisPoints": 1000
+        },
+        "reward": {
+          "type": "FIXED_RUB",
+          "amountKopecks": 77777
+        }
+      },
+      "quote": {
+        "quoteRef": "quote-1",
+        "issuedAt": "2026-10-21T01:00:00.000Z",
+        "expiresAt": "2026-10-21T01:15:00.000Z"
+      },
+      "payable": {
+        "schema": "refref.purchase-payable/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-fixed-reward-once",
+        "currency": "RUB",
+        "inputHash": "refref-jcs-1:cccb0fdb171f2acd55d98e0ea32f33fbd127bb63c93abe413b15552d5ac3fe9c",
+        "quote": {
+          "quoteRef": "quote-1",
+          "issuedAt": "2026-10-21T01:00:00.000Z",
+          "expiresAt": "2026-10-21T01:15:00.000Z"
+        },
+        "terms": {
+          "campaignId": "campaign-1",
+          "termsVersionId": "terms-1",
+          "termsHash": "refref-jcs-1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "partnerId": "partner-1",
+          "participationId": "participation-1",
+          "profile": "VNEXT_ONE_FULL_PAYMENT",
+          "eligibleLineRefs": [
+            "tour"
+          ],
+          "discount": {
+            "type": "PERCENT",
+            "basisPoints": 1000
+          },
+          "reward": {
+            "type": "FIXED_RUB",
+            "amountKopecks": 77777
+          }
+        },
+        "lines": [
+          {
+            "lineRef": "tour",
+            "offerRef": "offer-tour",
+            "quantity": 3,
+            "merchantAmountKopecks": 3000000,
+            "service": {
+              "kind": "TOUR",
+              "serviceEndsAt": "2026-11-01T12:00:00.000Z",
+              "timeZone": "Asia/Novosibirsk",
+              "provenance": {
+                "sourceRef": "evidence-1",
+                "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "occurredAt": "2026-10-21T01:00:00.000Z"
+              }
+            },
+            "eligible": true,
+            "referralDiscountKopecks": 300000,
+            "payableAmountKopecks": 2700000
+          }
+        ],
+        "totalKopecks": 2700000,
+        "eligibleAfterDiscountKopecks": 2700000,
+        "rewardKopecks": 77777
+      },
+      "acceptance": {
+        "schema": "refref.purchase-acceptance/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-fixed-reward-once",
+        "payableHash": "refref-jcs-1:c3818f499067f0b9f2b0c6f06d73a1f2bd78862bde740e72cf27264a351b1547",
+        "inputHash": "refref-jcs-1:cccb0fdb171f2acd55d98e0ea32f33fbd127bb63c93abe413b15552d5ac3fe9c",
+        "quoteRef": "quote-1",
+        "acceptedAt": "2026-10-21T01:01:00.000Z"
+      },
+      "payment": {
+        "kind": "BANK_FULL_PAYMENT",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-fixed-reward-once",
+        "payableHash": "refref-jcs-1:c3818f499067f0b9f2b0c6f06d73a1f2bd78862bde740e72cf27264a351b1547",
+        "payment": {
+          "provider": "ALFA",
+          "connectionId": "connection-1",
+          "paymentRef": "bank-fixed-reward-once"
+        },
+        "currency": "RUB",
+        "amountKopecks": 2700000,
+        "status": "SUCCEEDED",
+        "independentEvidence": {
+          "sourceRef": "evidence-1",
+          "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "occurredAt": "2026-10-21T01:01:30.000Z"
+        },
+        "succeededAt": "2026-10-21T01:01:20.000Z",
+        "verifiedAt": "2026-10-21T01:01:30.000Z"
+      },
+      "qualification": {
+        "schema": "refref.purchase-qualification/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-fixed-reward-once",
+        "payableHash": "refref-jcs-1:c3818f499067f0b9f2b0c6f06d73a1f2bd78862bde740e72cf27264a351b1547",
+        "inputHash": "refref-jcs-1:cccb0fdb171f2acd55d98e0ea32f33fbd127bb63c93abe413b15552d5ac3fe9c",
+        "rewardScopeId": "refref-jcs-1:8124bc83eb0526cc167777a56a5736a18bb962c9f941b6cb572ee5b6f6687961",
+        "purchaseQualifiedAt": "2026-10-21T01:02:00.000Z",
+        "payment": {
+          "kind": "BANK_FULL_PAYMENT",
+          "businessId": "business-1",
+          "purchaseRef": "purchase-fixed-reward-once",
+          "payableHash": "refref-jcs-1:c3818f499067f0b9f2b0c6f06d73a1f2bd78862bde740e72cf27264a351b1547",
+          "payment": {
+            "provider": "ALFA",
+            "connectionId": "connection-1",
+            "paymentRef": "bank-fixed-reward-once"
+          },
+          "currency": "RUB",
+          "amountKopecks": 2700000,
+          "status": "SUCCEEDED",
+          "independentEvidence": {
+            "sourceRef": "evidence-1",
+            "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "occurredAt": "2026-10-21T01:01:30.000Z"
+          },
+          "succeededAt": "2026-10-21T01:01:20.000Z",
+          "verifiedAt": "2026-10-21T01:01:30.000Z"
+        },
+        "acceptance": {
+          "schema": "refref.purchase-acceptance/1",
+          "businessId": "business-1",
+          "purchaseRef": "purchase-fixed-reward-once",
+          "payableHash": "refref-jcs-1:c3818f499067f0b9f2b0c6f06d73a1f2bd78862bde740e72cf27264a351b1547",
+          "inputHash": "refref-jcs-1:cccb0fdb171f2acd55d98e0ea32f33fbd127bb63c93abe413b15552d5ac3fe9c",
+          "quoteRef": "quote-1",
+          "acceptedAt": "2026-10-21T01:01:00.000Z"
+        },
+        "serviceAnchors": [
+          {
+            "lineRef": "tour",
+            "anchorAt": "2026-11-01T12:00:00.000Z"
+          }
+        ],
+        "purchaseAnchorAt": "2026-11-01T12:00:00.000Z",
+        "deadlinePolicy": "P7-14-P3-30-Europe-Moscow/1",
+        "initialClaimDeadlineAt": "2026-11-15T12:00:00.000Z",
+        "claimDeadlineAt": "2026-11-15T12:00:00.000Z",
+        "hardClaimDeadlineAt": "2026-12-15T12:00:00.000Z"
+      },
+      "expected": {
+        "total": 2700000,
+        "base": 2700000,
+        "reward": 77777,
+        "anchor": "2026-11-01T12:00:00.000Z",
+        "inputHash": "refref-jcs-1:cccb0fdb171f2acd55d98e0ea32f33fbd127bb63c93abe413b15552d5ac3fe9c",
+        "payableHash": "refref-jcs-1:c3818f499067f0b9f2b0c6f06d73a1f2bd78862bde740e72cf27264a351b1547"
+      }
+    },
+    {
+      "name": "largest-remainder-c-tie",
+      "input": {
+        "schema": "refref.purchase-input/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-largest-remainder-c-tie",
+        "currency": "RUB",
+        "lines": [
+          {
+            "lineRef": "b",
+            "offerRef": "offer-b",
+            "quantity": 1,
+            "merchantAmountKopecks": 1,
+            "service": {
+              "kind": "LMS",
+              "accessProfile": "IMMEDIATE",
+              "readinessEvidence": {
+                "sourceRef": "evidence-1",
+                "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "occurredAt": "2026-10-21T01:00:00.000Z"
+              }
+            }
+          },
+          {
+            "lineRef": "A",
+            "offerRef": "offer-A",
+            "quantity": 1,
+            "merchantAmountKopecks": 1,
+            "service": {
+              "kind": "LMS",
+              "accessProfile": "IMMEDIATE",
+              "readinessEvidence": {
+                "sourceRef": "evidence-1",
+                "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "occurredAt": "2026-10-21T01:00:00.000Z"
+              }
+            }
+          },
+          {
+            "lineRef": "a",
+            "offerRef": "offer-a",
+            "quantity": 1,
+            "merchantAmountKopecks": 1,
+            "service": {
+              "kind": "LMS",
+              "accessProfile": "IMMEDIATE",
+              "readinessEvidence": {
+                "sourceRef": "evidence-1",
+                "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "occurredAt": "2026-10-21T01:00:00.000Z"
+              }
+            }
+          }
+        ]
+      },
+      "terms": {
+        "campaignId": "campaign-1",
+        "termsVersionId": "terms-1",
+        "termsHash": "refref-jcs-1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "partnerId": "partner-1",
+        "participationId": "participation-1",
+        "profile": "VNEXT_ONE_FULL_PAYMENT",
+        "eligibleLineRefs": [
+          "b",
+          "A",
+          "a"
+        ],
+        "discount": {
+          "type": "FIXED_RUB",
+          "amountKopecks": 1
+        },
+        "reward": {
+          "type": "PERCENT",
+          "basisPoints": 5000
+        }
+      },
+      "quote": {
+        "quoteRef": "quote-1",
+        "issuedAt": "2026-10-21T01:00:00.000Z",
+        "expiresAt": "2026-10-21T01:15:00.000Z"
+      },
+      "payable": {
+        "schema": "refref.purchase-payable/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-largest-remainder-c-tie",
+        "currency": "RUB",
+        "inputHash": "refref-jcs-1:a61d42151aba807fc414411afb36a3ab70c3f37dca26609d3b65c6ca6052d4e8",
+        "quote": {
+          "quoteRef": "quote-1",
+          "issuedAt": "2026-10-21T01:00:00.000Z",
+          "expiresAt": "2026-10-21T01:15:00.000Z"
+        },
+        "terms": {
+          "campaignId": "campaign-1",
+          "termsVersionId": "terms-1",
+          "termsHash": "refref-jcs-1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "partnerId": "partner-1",
+          "participationId": "participation-1",
+          "profile": "VNEXT_ONE_FULL_PAYMENT",
+          "eligibleLineRefs": [
+            "A",
+            "a",
+            "b"
+          ],
+          "discount": {
+            "type": "FIXED_RUB",
+            "amountKopecks": 1
+          },
+          "reward": {
+            "type": "PERCENT",
+            "basisPoints": 5000
+          }
+        },
+        "lines": [
+          {
+            "lineRef": "A",
+            "offerRef": "offer-A",
+            "quantity": 1,
+            "merchantAmountKopecks": 1,
+            "service": {
+              "kind": "LMS",
+              "accessProfile": "IMMEDIATE",
+              "readinessEvidence": {
+                "sourceRef": "evidence-1",
+                "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "occurredAt": "2026-10-21T01:00:00.000Z"
+              }
+            },
+            "eligible": true,
+            "referralDiscountKopecks": 1,
+            "payableAmountKopecks": 0
+          },
+          {
+            "lineRef": "a",
+            "offerRef": "offer-a",
+            "quantity": 1,
+            "merchantAmountKopecks": 1,
+            "service": {
+              "kind": "LMS",
+              "accessProfile": "IMMEDIATE",
+              "readinessEvidence": {
+                "sourceRef": "evidence-1",
+                "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "occurredAt": "2026-10-21T01:00:00.000Z"
+              }
+            },
+            "eligible": true,
+            "referralDiscountKopecks": 0,
+            "payableAmountKopecks": 1
+          },
+          {
+            "lineRef": "b",
+            "offerRef": "offer-b",
+            "quantity": 1,
+            "merchantAmountKopecks": 1,
+            "service": {
+              "kind": "LMS",
+              "accessProfile": "IMMEDIATE",
+              "readinessEvidence": {
+                "sourceRef": "evidence-1",
+                "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "occurredAt": "2026-10-21T01:00:00.000Z"
+              }
+            },
+            "eligible": true,
+            "referralDiscountKopecks": 0,
+            "payableAmountKopecks": 1
+          }
+        ],
+        "totalKopecks": 2,
+        "eligibleAfterDiscountKopecks": 2,
+        "rewardKopecks": 1
+      },
+      "acceptance": {
+        "schema": "refref.purchase-acceptance/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-largest-remainder-c-tie",
+        "payableHash": "refref-jcs-1:bf33bdc13036e4fd77c11ee4e59523d67cd81ac5dd8ef1f2aa98dae414aa8bf1",
+        "inputHash": "refref-jcs-1:a61d42151aba807fc414411afb36a3ab70c3f37dca26609d3b65c6ca6052d4e8",
+        "quoteRef": "quote-1",
+        "acceptedAt": "2026-10-21T01:01:00.000Z"
+      },
+      "payment": {
+        "kind": "BANK_FULL_PAYMENT",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-largest-remainder-c-tie",
+        "payableHash": "refref-jcs-1:bf33bdc13036e4fd77c11ee4e59523d67cd81ac5dd8ef1f2aa98dae414aa8bf1",
+        "payment": {
+          "provider": "ALFA",
+          "connectionId": "connection-1",
+          "paymentRef": "bank-largest-remainder-c-tie"
+        },
+        "currency": "RUB",
+        "amountKopecks": 2,
+        "status": "SUCCEEDED",
+        "independentEvidence": {
+          "sourceRef": "evidence-1",
+          "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "occurredAt": "2026-10-21T01:01:30.000Z"
+        },
+        "succeededAt": "2026-10-21T01:01:20.000Z",
+        "verifiedAt": "2026-10-21T01:01:30.000Z"
+      },
+      "qualification": {
+        "schema": "refref.purchase-qualification/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-largest-remainder-c-tie",
+        "payableHash": "refref-jcs-1:bf33bdc13036e4fd77c11ee4e59523d67cd81ac5dd8ef1f2aa98dae414aa8bf1",
+        "inputHash": "refref-jcs-1:a61d42151aba807fc414411afb36a3ab70c3f37dca26609d3b65c6ca6052d4e8",
+        "rewardScopeId": "refref-jcs-1:663f97904201d51fbd2c30f4fc119a0103d9f4e324a86c1fe7865e0238f3fa84",
+        "purchaseQualifiedAt": "2026-10-21T01:02:00.000Z",
+        "payment": {
+          "kind": "BANK_FULL_PAYMENT",
+          "businessId": "business-1",
+          "purchaseRef": "purchase-largest-remainder-c-tie",
+          "payableHash": "refref-jcs-1:bf33bdc13036e4fd77c11ee4e59523d67cd81ac5dd8ef1f2aa98dae414aa8bf1",
+          "payment": {
+            "provider": "ALFA",
+            "connectionId": "connection-1",
+            "paymentRef": "bank-largest-remainder-c-tie"
+          },
+          "currency": "RUB",
+          "amountKopecks": 2,
+          "status": "SUCCEEDED",
+          "independentEvidence": {
+            "sourceRef": "evidence-1",
+            "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "occurredAt": "2026-10-21T01:01:30.000Z"
+          },
+          "succeededAt": "2026-10-21T01:01:20.000Z",
+          "verifiedAt": "2026-10-21T01:01:30.000Z"
+        },
+        "acceptance": {
+          "schema": "refref.purchase-acceptance/1",
+          "businessId": "business-1",
+          "purchaseRef": "purchase-largest-remainder-c-tie",
+          "payableHash": "refref-jcs-1:bf33bdc13036e4fd77c11ee4e59523d67cd81ac5dd8ef1f2aa98dae414aa8bf1",
+          "inputHash": "refref-jcs-1:a61d42151aba807fc414411afb36a3ab70c3f37dca26609d3b65c6ca6052d4e8",
+          "quoteRef": "quote-1",
+          "acceptedAt": "2026-10-21T01:01:00.000Z"
+        },
+        "serviceAnchors": [
+          {
+            "lineRef": "A",
+            "anchorAt": "2026-10-21T01:02:00.000Z"
+          },
+          {
+            "lineRef": "a",
+            "anchorAt": "2026-10-21T01:02:00.000Z"
+          },
+          {
+            "lineRef": "b",
+            "anchorAt": "2026-10-21T01:02:00.000Z"
+          }
+        ],
+        "purchaseAnchorAt": "2026-10-21T01:02:00.000Z",
+        "deadlinePolicy": "P7-14-P3-30-Europe-Moscow/1",
+        "initialClaimDeadlineAt": "2026-11-04T01:02:00.000Z",
+        "claimDeadlineAt": "2026-11-04T01:02:00.000Z",
+        "hardClaimDeadlineAt": "2026-12-04T01:02:00.000Z"
+      },
+      "expected": {
+        "total": 2,
+        "base": 2,
+        "reward": 1,
+        "anchor": "2026-10-21T01:02:00.000Z",
+        "inputHash": "refref-jcs-1:a61d42151aba807fc414411afb36a3ab70c3f37dca26609d3b65c6ca6052d4e8",
+        "payableHash": "refref-jcs-1:bf33bdc13036e4fd77c11ee4e59523d67cd81ac5dd8ef1f2aa98dae414aa8bf1"
+      }
+    },
+    {
+      "name": "discount-floor-reward-half-away",
+      "input": {
+        "schema": "refref.purchase-input/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-discount-floor-reward-half-away",
+        "currency": "RUB",
+        "lines": [
+          {
+            "lineRef": "course",
+            "offerRef": "offer-course",
+            "quantity": 1,
+            "merchantAmountKopecks": 1,
+            "service": {
+              "kind": "LMS",
+              "accessProfile": "IMMEDIATE",
+              "readinessEvidence": {
+                "sourceRef": "evidence-1",
+                "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "occurredAt": "2026-10-21T01:00:00.000Z"
+              }
+            }
+          }
+        ]
+      },
+      "terms": {
+        "campaignId": "campaign-1",
+        "termsVersionId": "terms-1",
+        "termsHash": "refref-jcs-1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "partnerId": "partner-1",
+        "participationId": "participation-1",
+        "profile": "VNEXT_ONE_FULL_PAYMENT",
+        "eligibleLineRefs": [
+          "course"
+        ],
+        "discount": {
+          "type": "PERCENT",
+          "basisPoints": 5000
+        },
+        "reward": {
+          "type": "PERCENT",
+          "basisPoints": 5000
+        }
+      },
+      "quote": {
+        "quoteRef": "quote-1",
+        "issuedAt": "2026-10-21T01:00:00.000Z",
+        "expiresAt": "2026-10-21T01:15:00.000Z"
+      },
+      "payable": {
+        "schema": "refref.purchase-payable/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-discount-floor-reward-half-away",
+        "currency": "RUB",
+        "inputHash": "refref-jcs-1:b395e1f1f148280f96f7323589d72a176167ecf8378c984e200127457bcbe074",
+        "quote": {
+          "quoteRef": "quote-1",
+          "issuedAt": "2026-10-21T01:00:00.000Z",
+          "expiresAt": "2026-10-21T01:15:00.000Z"
+        },
+        "terms": {
+          "campaignId": "campaign-1",
+          "termsVersionId": "terms-1",
+          "termsHash": "refref-jcs-1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "partnerId": "partner-1",
+          "participationId": "participation-1",
+          "profile": "VNEXT_ONE_FULL_PAYMENT",
+          "eligibleLineRefs": [
+            "course"
+          ],
+          "discount": {
+            "type": "PERCENT",
+            "basisPoints": 5000
+          },
+          "reward": {
+            "type": "PERCENT",
+            "basisPoints": 5000
+          }
+        },
+        "lines": [
+          {
+            "lineRef": "course",
+            "offerRef": "offer-course",
+            "quantity": 1,
+            "merchantAmountKopecks": 1,
+            "service": {
+              "kind": "LMS",
+              "accessProfile": "IMMEDIATE",
+              "readinessEvidence": {
+                "sourceRef": "evidence-1",
+                "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "occurredAt": "2026-10-21T01:00:00.000Z"
+              }
+            },
+            "eligible": true,
+            "referralDiscountKopecks": 0,
+            "payableAmountKopecks": 1
+          }
+        ],
+        "totalKopecks": 1,
+        "eligibleAfterDiscountKopecks": 1,
+        "rewardKopecks": 1
+      },
+      "acceptance": {
+        "schema": "refref.purchase-acceptance/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-discount-floor-reward-half-away",
+        "payableHash": "refref-jcs-1:5a35e556ea9d0f631c7e19f29d7abe8de497e38046753d01d92d710f5fa4d50b",
+        "inputHash": "refref-jcs-1:b395e1f1f148280f96f7323589d72a176167ecf8378c984e200127457bcbe074",
+        "quoteRef": "quote-1",
+        "acceptedAt": "2026-10-21T01:01:00.000Z"
+      },
+      "payment": {
+        "kind": "BANK_FULL_PAYMENT",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-discount-floor-reward-half-away",
+        "payableHash": "refref-jcs-1:5a35e556ea9d0f631c7e19f29d7abe8de497e38046753d01d92d710f5fa4d50b",
+        "payment": {
+          "provider": "ALFA",
+          "connectionId": "connection-1",
+          "paymentRef": "bank-discount-floor-reward-half-away"
+        },
+        "currency": "RUB",
+        "amountKopecks": 1,
+        "status": "SUCCEEDED",
+        "independentEvidence": {
+          "sourceRef": "evidence-1",
+          "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "occurredAt": "2026-10-21T01:01:30.000Z"
+        },
+        "succeededAt": "2026-10-21T01:01:20.000Z",
+        "verifiedAt": "2026-10-21T01:01:30.000Z"
+      },
+      "qualification": {
+        "schema": "refref.purchase-qualification/1",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-discount-floor-reward-half-away",
+        "payableHash": "refref-jcs-1:5a35e556ea9d0f631c7e19f29d7abe8de497e38046753d01d92d710f5fa4d50b",
+        "inputHash": "refref-jcs-1:b395e1f1f148280f96f7323589d72a176167ecf8378c984e200127457bcbe074",
+        "rewardScopeId": "refref-jcs-1:7eae9a99df95922fa912a60c280a92e1f4742851223176536f003993e3f926f4",
+        "purchaseQualifiedAt": "2026-10-21T01:02:00.000Z",
+        "payment": {
+          "kind": "BANK_FULL_PAYMENT",
+          "businessId": "business-1",
+          "purchaseRef": "purchase-discount-floor-reward-half-away",
+          "payableHash": "refref-jcs-1:5a35e556ea9d0f631c7e19f29d7abe8de497e38046753d01d92d710f5fa4d50b",
+          "payment": {
+            "provider": "ALFA",
+            "connectionId": "connection-1",
+            "paymentRef": "bank-discount-floor-reward-half-away"
+          },
+          "currency": "RUB",
+          "amountKopecks": 1,
+          "status": "SUCCEEDED",
+          "independentEvidence": {
+            "sourceRef": "evidence-1",
+            "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "occurredAt": "2026-10-21T01:01:30.000Z"
+          },
+          "succeededAt": "2026-10-21T01:01:20.000Z",
+          "verifiedAt": "2026-10-21T01:01:30.000Z"
+        },
+        "acceptance": {
+          "schema": "refref.purchase-acceptance/1",
+          "businessId": "business-1",
+          "purchaseRef": "purchase-discount-floor-reward-half-away",
+          "payableHash": "refref-jcs-1:5a35e556ea9d0f631c7e19f29d7abe8de497e38046753d01d92d710f5fa4d50b",
+          "inputHash": "refref-jcs-1:b395e1f1f148280f96f7323589d72a176167ecf8378c984e200127457bcbe074",
+          "quoteRef": "quote-1",
+          "acceptedAt": "2026-10-21T01:01:00.000Z"
+        },
+        "serviceAnchors": [
+          {
+            "lineRef": "course",
+            "anchorAt": "2026-10-21T01:02:00.000Z"
+          }
+        ],
+        "purchaseAnchorAt": "2026-10-21T01:02:00.000Z",
+        "deadlinePolicy": "P7-14-P3-30-Europe-Moscow/1",
+        "initialClaimDeadlineAt": "2026-11-04T01:02:00.000Z",
+        "claimDeadlineAt": "2026-11-04T01:02:00.000Z",
+        "hardClaimDeadlineAt": "2026-12-04T01:02:00.000Z"
+      },
+      "expected": {
+        "total": 1,
+        "base": 1,
+        "reward": 1,
+        "anchor": "2026-10-21T01:02:00.000Z",
+        "inputHash": "refref-jcs-1:b395e1f1f148280f96f7323589d72a176167ecf8378c984e200127457bcbe074",
+        "payableHash": "refref-jcs-1:5a35e556ea9d0f631c7e19f29d7abe8de497e38046753d01d92d710f5fa4d50b"
+      }
+    }
+  ],
+  "qualificationRefusals": [
+    {
+      "name": "payment-completed-after-qualification",
+      "producer": "mikluha-three-travellers",
+      "payment": {
+        "kind": "BANK_FULL_PAYMENT",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-mikluha-three-travellers",
+        "payableHash": "refref-jcs-1:b2ee3b537006fefee0459b8972681d5383831c1a433b3041899e3d895a1e4a62",
+        "payment": {
+          "provider": "ALFA",
+          "connectionId": "connection-1",
+          "paymentRef": "bank-mikluha-three-travellers"
+        },
+        "currency": "RUB",
+        "amountKopecks": 2700000,
+        "status": "SUCCEEDED",
+        "independentEvidence": {
+          "sourceRef": "evidence-1",
+          "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "occurredAt": "2026-10-21T01:01:30.000Z"
+        },
+        "succeededAt": "2026-10-21T01:02:00.001Z",
+        "verifiedAt": "2026-10-21T01:02:00.002Z"
+      },
+      "expected": "BANK_PAYMENT_NOT_CONFIRMED_AT_QUALIFICATION"
+    },
+    {
+      "name": "payment-readback-after-qualification",
+      "producer": "mikluha-three-travellers",
+      "payment": {
+        "kind": "BANK_FULL_PAYMENT",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-mikluha-three-travellers",
+        "payableHash": "refref-jcs-1:b2ee3b537006fefee0459b8972681d5383831c1a433b3041899e3d895a1e4a62",
+        "payment": {
+          "provider": "ALFA",
+          "connectionId": "connection-1",
+          "paymentRef": "bank-mikluha-three-travellers"
+        },
+        "currency": "RUB",
+        "amountKopecks": 2700000,
+        "status": "SUCCEEDED",
+        "independentEvidence": {
+          "sourceRef": "evidence-1",
+          "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "occurredAt": "2026-10-21T01:01:30.000Z"
+        },
+        "succeededAt": "2026-10-21T01:01:20.000Z",
+        "verifiedAt": "2026-10-21T01:02:00.001Z"
+      },
+      "expected": "BANK_PAYMENT_NOT_CONFIRMED_AT_QUALIFICATION"
+    },
+    {
+      "name": "payment-confirmation-before-bank-completion",
+      "producer": "mikluha-three-travellers",
+      "payment": {
+        "kind": "BANK_FULL_PAYMENT",
+        "businessId": "business-1",
+        "purchaseRef": "purchase-mikluha-three-travellers",
+        "payableHash": "refref-jcs-1:b2ee3b537006fefee0459b8972681d5383831c1a433b3041899e3d895a1e4a62",
+        "payment": {
+          "provider": "ALFA",
+          "connectionId": "connection-1",
+          "paymentRef": "bank-mikluha-three-travellers"
+        },
+        "currency": "RUB",
+        "amountKopecks": 2700000,
+        "status": "SUCCEEDED",
+        "independentEvidence": {
+          "sourceRef": "evidence-1",
+          "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "occurredAt": "2026-10-21T01:01:30.000Z"
+        },
+        "succeededAt": "2026-10-21T01:01:31.000Z",
+        "verifiedAt": "2026-10-21T01:01:30.000Z"
+      },
+      "expected": "BANK_PAYMENT_NOT_CONFIRMED_AT_QUALIFICATION"
+    }
+  ]
+}

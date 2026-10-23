@@ -1,3 +1,5 @@
+import { applyCourseManifest, withManifestHash } from "../src/manifest";
+import { resolvePurchaseV2, purchasePayableHash, qualifyPurchase, CLAIM_POLICY_D1_2 } from "../src/refref-contract/purchase-manifest-v1";
 import { retireFiscalPolicy } from "../src/fiscal-policy";
 import { RefrefPaymentRail } from "../src/refref-payment-rail";
 import { cancelLabOccurrence, editLabOccurrence, labSeatInventory, type LabOccurrenceRow } from "../src/lab-occurrences";
@@ -11,7 +13,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createCommerceV2App } from "../src/app";
 import {
   AmbiguousRailCreateError, CheckoutConflictError, confirmCheckout, MockPaymentRail, prepareCheckout, RailRefusalError,
-  reconcileCheckout, reconcilePendingCheckouts, type PaymentResolveInput,
+  reconcileCheckout, reconcilePendingCheckouts, type PaymentResolveInput, type RailProjection,
 } from "../src/checkout";
 import { applyV2Migration, migrateV2 } from "../src/db";
 import { saveMerchantPromotion } from "../src/promotions";
@@ -156,6 +158,17 @@ describe("lost answers and replay", () => {
     await expect(preview("refused")).rejects.toThrow("REFREF_RESOLUTION_REQUEST_MISMATCH");
     expect(resolve).toHaveBeenCalledTimes(1);
     expect(intent()).toMatchObject({ state: "REFUSED", consumed_at: null });
+  });
+
+  it("commits vNext browser-handoff refusal and releases its LAB reservation without another RPC", async () => {
+    addLab();
+    const resolve = vi.spyOn(rail, "resolve");
+    const buy = () => preview("vnext-handoff", { offerRef: "lab:november", checkoutProtocol: "VNEXT", scenario: "handoff_required" });
+    resolve.mockResolvedValue({ state: "CUSTOMER_ACTION_REQUIRED", resolutionId: "resolution", checkoutUrl: "https://example.test/handoff" });
+    await expect(buy()).rejects.toThrow("VNEXT_BROWSER_HANDOFF_REFUSED");
+    await expect(buy()).rejects.toThrow("VNEXT_BROWSER_HANDOFF_REFUSED");
+    expect(intent().state).toBe("REFUSED"); expect(resolve).toHaveBeenCalledOnce();
+    expect(labSeatInventory(db, db.prepare("SELECT * FROM lab_occurrences WHERE occurrence_ref='lab:november'").get() as LabOccurrenceRow, T0).held).toBe(0);
   });
 
   it("never starts a payment on load or retry, and a replay after confirmation only reads the order back", async () => {
@@ -608,10 +621,13 @@ describe("HTTP", () => {
     expect((await post("/v1/checkout/preview", "http", { offerRef: "course:one", mockScenario: "ambiguous_resolve" })).status).toBe(200);
     const changed = await post("/v1/checkout/preview", "http", { offerRef: "course:one", checkoutCode: "OTHER" });
     expect(changed.status).toBe(409);
-    expect(await changed.json()).toEqual({ code: "IDEMPOTENCY_KEY_REUSED" });
+    expect(await changed.json()).toEqual({ code: "IDEMPOTENCY_KEY_REUSED", newIntentAllowed: true });
 
     const open = await (await post("/v1/checkout/preview", "open", { offerRef: "course:one", mockScenario: "customer_action" })).json() as { quoteId: string };
     const started = await (await post("/v1/checkout", "open-pay", { quoteId: open.quoteId })).json() as { orderPublicId: string };
+    const changedPaid = await post("/v1/checkout/preview", "open", { offerRef: "course:one", checkoutCode: "OTHER" });
+    expect(changedPaid.status).toBe(409);
+    expect(await changedPaid.json()).toEqual({ code: "IDEMPOTENCY_KEY_REUSED" });
     const refused = await post("/v1/checkout/preview", "after", { offerRef: "course:one" });
     expect(refused.status).toBe(409);
     expect(await refused.json()).toEqual({ code: "CHECKOUT_PAYMENT_IN_PROGRESS", orderPublicId: started.orderPublicId });
@@ -936,5 +952,148 @@ describe("ART-200 merchant-local LAB holds", () => {
         expect(disk.prepare("SELECT COUNT(*) AS n FROM checkout_quotes WHERE seat_hold_ref IS NOT NULL").get()).toEqual({ n: 1 });
       } finally { disk.close(); }
     } finally { for (const child of children) child.kill(); rmSync(directory, { recursive: true, force: true }); }
+  });
+});
+
+
+describe("ART-398 opt-in v9 checkout binding", () => {
+  function enablePurchaseRail() {
+    const originalCreate = rail.create.bind(rail);
+    vi.spyOn(rail, "create").mockImplementation(async input => {
+      const projection = await originalCreate(input);
+      const acceptance = input.purchaseAcceptance!;
+      return { ...projection, purchaseQualification: qualifyPurchase(input.quote.purchase!.payable, acceptance, {
+        businessId: acceptance.businessId, purchaseRef: acceptance.purchaseRef, payableHash: acceptance.payableHash,
+        kind: "BANK_FULL_PAYMENT", payment: { provider: "TOCHKA", connectionId: "synthetic", paymentRef: projection.attemptId },
+        status: "SUCCEEDED", currency: "RUB", amountKopecks: input.quote.finalAmountKopecks,
+        succeededAt: at(1), verifiedAt: at(1), independentEvidence: { sourceRef: "synthetic-bank-readback", contentHash: `sha256:${"a".repeat(64)}`, occurredAt: at(1) },
+      }, at(1)) };
+    });
+    Object.assign(rail, { purchaseManifest: { businessId: "business-1", schema: "refref.purchase-payable/2" } });
+    vi.spyOn(rail, "resolve").mockImplementation(async input => {
+      // The exact input is durable before the rail sees it.
+      expect(JSON.parse(intent().resolution_request_json).purchase).toEqual(input.purchase);
+      const payable = resolvePurchaseV2(input.purchase!.input, {
+        campaignId: "campaign-1", termsVersionId: "terms-1", termsHash: `refref-jcs-1:${"b".repeat(64)}`,
+        partnerId: "partner-1", participationId: "participation-1", profile: "VNEXT_ONE_FULL_PAYMENT",
+        eligibleLineRefs: input.purchase!.input.lines.map(l => l.lineRef),
+        discount: { type: "PERCENT", basisPoints: 1000 }, reward: { type: "PERCENT", basisPoints: 2000 },
+      }, { quoteRef: "resolution-1", issuedAt: T0, expiresAt: at(15) }, CLAIM_POLICY_D1_2);
+      return { state: "PRICE_REVIEW_REQUIRED", quote: { resolutionId: "resolution-1", termsVersionId: "terms-1",
+        baseAmountKopecks: payable.lines[0].merchantAmountKopecks,
+        discountKopecks: payable.lines[0].referralDiscountKopecks, finalAmountKopecks: payable.totalKopecks, expiresAt: at(15),
+        purchase: { schema: "refref.purchase-quote/2", payable, payableHash: purchasePayableHash(payable) } } };
+    });
+  }
+  function readyCourse() {
+    applyCourseManifest(db, withManifestHash({ courseRef: "course-one", version: 1, visibility: "LISTED",
+      sections: [{ sectionRef: "section", visibility: "LISTED" }],
+      lessons: [{ lessonRef: "lesson", sectionRef: "section", everPublished: true, visibility: "LISTED", freePreview: false }], operations: [] }));
+    db.exec("INSERT INTO video_upload_sessions(id,lesson_ref,video_id,status,uploader_endpoint) VALUES ('upload','lesson','video','READY','https://example.test/upload')");
+    db.prepare("INSERT INTO lesson_video_bindings(lesson_ref,active_video_id,duration_seconds,bound_at,updated_at) VALUES ('lesson','video',150,?,?)").run(T0,T0);
+  }
+  it.each(["missing", "schema", "hash", "binding"])("commits REFUSED for a %s purchase quote and never resolves it twice", async kind => {
+    enablePurchaseRail(); readyCourse();
+    const resolve = vi.mocked(rail.resolve);
+    const valid = resolve.getMockImplementation()!;
+    resolve.mockImplementation(async input => {
+      const result = await valid(input);
+      if (result.state !== "PRICE_REVIEW_REQUIRED") throw new Error("fixture quote required");
+      if (kind === "missing") delete result.quote.purchase;
+      if (kind === "schema") Object.assign(result.quote.purchase!, { schema: "invalid" });
+      if (kind === "hash") result.quote.purchase!.payableHash = `refref-jcs-1:${"0".repeat(64)}`;
+      if (kind === "binding") result.quote.finalAmountKopecks += 1;
+      return result;
+    });
+    await expect(preview("bad-quote")).rejects.toBeInstanceOf(RailRefusalError);
+    await expect(preview("bad-quote")).rejects.toBeInstanceOf(RailRefusalError);
+    expect(intent()).toMatchObject({ state: "REFUSED", consumed_at: null });
+    expect(resolve).toHaveBeenCalledOnce(); expect(count("checkout_attempts")).toBe(0);
+  });
+  it("persists refusal of an unexpected purchase envelope when no merchant input was frozen", async () => {
+    const resolve = vi.spyOn(rail, "resolve").mockResolvedValue({ state: "PRICE_REVIEW_REQUIRED", quote: {
+      resolutionId: "r", termsVersionId: null, baseAmountKopecks: 10000, discountKopecks: 0, finalAmountKopecks: 10000,
+      purchase: {} as NonNullable<import("../src/checkout").RailQuote["purchase"]>,
+    } });
+    await expect(preview("unexpected-purchase")).rejects.toThrow("PURCHASE_INPUT_REQUIRED");
+    await expect(preview("unexpected-purchase")).rejects.toThrow("PURCHASE_INPUT_REQUIRED");
+    expect(intent().state).toBe("REFUSED"); expect(resolve).toHaveBeenCalledOnce();
+  });
+  it("LMS FULL_PREPAYMENT still requires readiness and binds acceptance/payment/fiscal amount to payable/2", async () => {
+    enablePurchaseRail();
+    await expect(preview("not-ready")).rejects.toThrow("IMMEDIATE_COURSE_ACCESS_NOT_READY");
+    readyCourse();
+    const quote = await quoted(await preview("ready"));
+    const create = vi.spyOn(rail, "create");
+    expect(create).not.toHaveBeenCalled();
+    const frozen = JSON.parse(intent().resolution_request_json) as PaymentResolveInput;
+    expect(frozen.purchase!.input.lines[0].service).toMatchObject({ kind: "LMS", accessProfile: "IMMEDIATE" });
+    const paid = await confirm(quote.quoteId, "pay");
+    expect(paid.state).toBe("PAID");
+    const input = create.mock.calls[0][0];
+    expect(input.purchaseAcceptance?.payableHash).toBe(input.quote.purchase!.payableHash);
+    expect(input.snapshot.paymentObligations[0].fiscal.items[0]).toMatchObject({ amountKopecks: 9000, paymentMethod: "FULL_PREPAYMENT" });
+    expect(db.prepare("SELECT immediate_access_json FROM order_lines").get()).toMatchObject({ immediate_access_json: expect.any(String) });
+    await confirm(quote.quoteId, "another-tab");
+    expect(create).toHaveBeenCalledTimes(1);
+  });
+  it("does not grant v9 access from PAID without an independent bank qualification", async () => {
+    enablePurchaseRail(); readyCourse();
+    vi.spyOn(rail, "create").mockImplementation(input => MockPaymentRail.prototype.create.call(rail, input));
+    const quote = await quoted(await preview("missing-bank-proof"));
+    expect((await confirm(quote.quoteId, "pay-no-proof")).state).toBe("REVIEW_REQUIRED");
+    expect(count("course_entitlements")).toBe(0);
+    expect(db.prepare("SELECT 1 FROM audit_log WHERE action='PURCHASE_QUALIFIED'").get()).toBeUndefined();
+  });
+  it("background sweep retries delayed v9 qualification without creating money, even with the storefront closed", async () => {
+    enablePurchaseRail(); readyCourse();
+    const createQualified = vi.mocked(rail.create).getMockImplementation()!;
+    let qualified: RailProjection;
+    vi.mocked(rail.create).mockImplementation(async input => {
+      qualified = await createQualified(input);
+      return { ...qualified, purchaseQualification: undefined };
+    });
+    const q = await quoted(await preview("delayed-bank"));
+    const result = await confirm(q.quoteId, "one-payment");
+    expect(result.state).toBe("REVIEW_REQUIRED");
+    const originalIntent = intent().resolution_request_json;
+    const stored = db.prepare("SELECT request_payload_json FROM checkout_attempts").get() as { request_payload_json: string };
+    const input = JSON.parse(stored.request_payload_json);
+    const qualification = qualifyPurchase(input.quote.purchase.payable, input.purchaseAcceptance,
+      { ...qualified!.purchaseQualification!.payment, verifiedAt: at(2) }, at(2));
+    const reconcile = vi.spyOn(rail, "reconcile")
+      .mockResolvedValueOnce({ ...qualified!, purchaseQualification: undefined })
+      .mockResolvedValueOnce({ ...qualified!, purchaseQualification: { ...qualification, payableHash: `refref-jcs-1:${"0".repeat(64)}` } })
+      .mockResolvedValue({ ...qualified!, purchaseQualification: qualification });
+    const recover = vi.spyOn(rail, "recoverCreate");
+    setTestStorefronts(db, { COURSES: "CLOSED" });
+    for (const minute of [2, 3]) {
+      expect(await reconcilePendingCheckouts(db, rail, at(minute), testCheckoutConfig)).toEqual({ selected: 1, reconciled: 1, failed: 0 });
+      expect(count("course_entitlements")).toBe(0);
+    }
+    expect(await reconcilePendingCheckouts(db, rail, at(4), testCheckoutConfig)).toEqual({ selected: 1, reconciled: 1, failed: 0 });
+    expect(count("course_entitlements")).toBe(1);
+    expect(db.prepare("SELECT evidence_json FROM audit_log WHERE action='PURCHASE_QUALIFIED'").all()).toHaveLength(1);
+    expect(intent().resolution_request_json).toBe(originalIntent);
+    expect((db.prepare("SELECT request_payload_json FROM checkout_attempts").get() as { request_payload_json: string }).request_payload_json).toBe(stored.request_payload_json);
+    expect(rail.create).toHaveBeenCalledTimes(1); expect(recover).not.toHaveBeenCalled();
+    expect(reconcile.mock.calls.every(([request]) => request.idempotencyKey === "one-payment" && request.orderPublicId === result.orderPublicId)).toBe(true);
+    expect(await reconcilePendingCheckouts(db, rail, at(5), testCheckoutConfig)).toEqual({ selected: 0, reconciled: 0, failed: 0 });
+  });
+  it("does not automatically sweep unrelated manual-review cases", async () => {
+    enablePurchaseRail(); readyCourse();
+    vi.mocked(rail.create).mockImplementation(input => MockPaymentRail.prototype.create.call(rail, input));
+    const q = await quoted(await preview("manual-review")); await confirm(q.quoteId, "review-payment");
+    db.prepare("UPDATE checkout_attempts SET observed_payment_projection_json=json_set(observed_payment_projection_json,'$.failureCode','PAYMENT_AMOUNT_MISMATCH')").run();
+    const reconcile = vi.spyOn(rail, "reconcile");
+    expect(await reconcilePendingCheckouts(db, rail, at(2), testCheckoutConfig)).toEqual({ selected: 0, reconciled: 0, failed: 0 });
+    expect(reconcile).not.toHaveBeenCalled();
+  });
+  it("LAB independently freezes its exact end, timezone and schedule provenance", async () => {
+    addLab(); enablePurchaseRail();
+    const quote = await quoted(await preview("lab-v9", { offerRef: "lab:november" }));
+    const frozen = JSON.parse(intent().resolution_request_json) as PaymentResolveInput;
+    expect(frozen.purchase!.input.lines[0].service).toMatchObject({ kind: "LAB", serviceEndsAt: "2026-11-01T17:00:00.000Z", timeZone: "Asia/Novosibirsk", provenance: { contentHash: expect.stringMatching(/^sha256:/) } });
+    expect((await confirm(quote.quoteId,"lab-pay")).state).toBe("PAID");
   });
 });
