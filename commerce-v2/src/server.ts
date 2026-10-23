@@ -92,6 +92,7 @@ if (config.paymentMode === "refref" && !refundEnvelopeKeys) throw new Error("REF
 const paymentRail = config.paymentMode === "mock" ? new MockPaymentRail()
   : config.paymentMode === "refref" && config.refref ? new RefrefPaymentRail({
     apiBaseUrl: config.refref.apiBaseUrl,
+    vnextApiBaseUrl: config.refref.vnextApiBaseUrl,
     apiKey: config.refref.apiKey,
     merchantId: config.refref.merchantId,
   }) : undefined;

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
 import { checkoutCodeMessage, type CheckoutCodeOutcome } from "./checkout-copy";
 
 type Props = {
@@ -14,6 +14,7 @@ type Props = {
 
 type CheckoutResult = { orderPublicId?: string; state?: string; checkoutUrl?: string; code?: string };
 type CheckoutQuote = {
+  code?: string; orderPublicId?: string; checkoutUrl?: string;
   quoteId: string;
   state: "PRICE_REVIEW_REQUIRED";
   baseAmountKopecks: number;
@@ -35,7 +36,7 @@ const documentLabels: Record<string, string> = { course_offer: "Условия �
   receipt_contact: "Данные для чека", fiscal_items: "Фискальные сведения", privacy: "Политика данных",
   personal_data: "Согласие на обработку данных", account_terms: "Правила аккаунта", marketing_consent: "Рекламный выбор" };
 
-const price = (kopecks: number) => new Intl.NumberFormat("ru-RU", { style: "currency", currency: "RUB", maximumFractionDigits: 0 }).format(kopecks / 100);
+const price = (kopecks: number) => new Intl.NumberFormat("ru-RU", { style: "currency", currency: "RUB", minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(kopecks / 100);
 
 const observeCheckout = async (initial: CheckoutResult): Promise<CheckoutResult> => {
   let result = initial;
@@ -59,17 +60,14 @@ export default function CourseCheckout({ courseRef, offerRef, saleMode, priceKop
   const [checkoutCode, setCheckoutCode] = useState("");
   const previewIdempotencyKey = useRef<string | null>(null);
   const paymentIdempotencyKey = useRef<string | null>(null);
-
-  useEffect(() => {
-    void fetch("/v1/me", { cache: "no-store", credentials: "same-origin" })
-      .then((response) => response.json())
-      .then((body: { customer?: unknown; entitlements?: Array<{ scope: string; course_ref?: string | null }> }) => {
-        if (!body.customer) { setSession("anonymous"); return; }
-        const owned = (body.entitlements ?? []).some((grant) => grant.scope === "ALL_COURSES" || (grant.scope === "COURSE" && grant.course_ref === courseRef));
-        setSession(owned ? "owned" : "signed-in");
-      })
-      .catch(() => setSession("anonymous"));
-  }, [courseRef]);
+  const storageKey = useRef<string | null>(null);
+  const checkoutLock = useRef(false);
+  const persist = (code: string) => {
+    try {
+      if (storageKey.current) sessionStorage.setItem(storageKey.current, JSON.stringify({ version: 1,
+        previewKey: previewIdempotencyKey.current, paymentKey: paymentIdempotencyKey.current, checkoutCode: code }));
+    } catch { /* The durable server intent still owns replay when storage is unavailable. */ }
+  };
 
   useEffect(() => {
     const orderPublicId = new URLSearchParams(window.location.search).get("order");
@@ -97,38 +95,34 @@ export default function CourseCheckout({ courseRef, offerRef, saleMode, priceKop
     return () => { active = false; };
   }, []);
 
-  const previewCheckout = async () => {
-    if (!offerRef) return;
+  const previewCheckout = async (restoredCode?: string) => {
+    if (!offerRef || checkoutLock.current) return;
+    checkoutLock.current = true;
     setBusy(true); setStatus("Проверяем итоговую цену…");
     previewIdempotencyKey.current ??= crypto.randomUUID();
+    const code = (restoredCode ?? checkoutCode).trim() || new URLSearchParams(window.location.search).get("checkoutCode") || "";
+    setCheckoutCode(code);
+    persist(code);
     try {
-      const query = new URLSearchParams(window.location.search);
-      const handoffToken = query.get("rt") || undefined;
-      const handoffState = query.get("state") || undefined;
-      if (!handoffToken) {
-        const handoffResponse = await fetch("/v1/checkout/handoff", {
-          method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" },
-          body: JSON.stringify({ returnPath: pathname, storefront: "COURSES" }),
-        });
-        const handoff = await handoffResponse.json() as { required?: boolean; url?: string; code?: string };
-        if (!handoffResponse.ok) throw new Error(handoff.code || "CHECKOUT_HANDOFF_FAILED");
-        if (handoff.required && handoff.url) { window.location.assign(handoff.url); return; }
-      }
       const response = await fetch("/v1/checkout/preview", {
         method: "POST", credentials: "same-origin",
         headers: { "content-type": "application/json", "idempotency-key": previewIdempotencyKey.current },
         body: JSON.stringify({
           offerRef,
-          handoffToken,
-          state: handoffState,
-          checkoutCode: checkoutCode.trim() || query.get("checkoutCode") || undefined,
+          checkoutCode: code || undefined,
           displayedAmountKopecks: priceKopecks ?? undefined,
         }),
       });
-      const result = await response.json() as CheckoutQuote & CheckoutResult;
+      const result = await response.json() as CheckoutQuote | CheckoutResult;
       if (!response.ok) throw new Error(result.code || "CHECKOUT_PREVIEW_FAILED");
-      if (result.checkoutUrl) { window.location.assign(result.checkoutUrl); return; }
-      if (result.state !== "PRICE_REVIEW_REQUIRED" || !result.quoteId) throw new Error("CHECKOUT_QUOTE_INVALID");
+      if (result.state === "RESOLUTION_PENDING") { setStatus("Уточняем цену. Повторите проверку — оплата ещё не начата."); return; }
+      if (result.orderPublicId && ["PAID", "PENDING", "CREATE_UNKNOWN", "CUSTOMER_ACTION_REQUIRED"].includes(result.state ?? "")) {
+        if (result.checkoutUrl && new URL(result.checkoutUrl).protocol === "https:") window.location.assign(result.checkoutUrl);
+        else if (result.state === "PAID") setSession("owned");
+        else setStatus("Статус платежа уточняется. Повторная проверка использует тот же заказ.");
+        return;
+      }
+      if (result.state !== "PRICE_REVIEW_REQUIRED" || !("quoteId" in result) || !result.quoteId) throw new Error("CHECKOUT_QUOTE_INVALID");
       setQuote(result);
       setTermsAccepted(false);
       const codeMessage = checkoutCodeMessage(result.merchantPromotionCode, result.checkoutCodeOutcome);
@@ -145,27 +139,33 @@ export default function CourseCheckout({ courseRef, offerRef, saleMode, priceKop
       if (code === "CONSENT_REQUIRED") {
         setConsentRequired(true);
         setStatus("Перед покупкой подтвердите актуальные документы аккаунта.");
+      } else if (["CHECKOUT_QUOTE_EXPIRED", "CHECKOUT_QUOTE_STALE"].includes(code)) {
+        previewIdempotencyKey.current = null; paymentIdempotencyKey.current = null;
+        if (storageKey.current) sessionStorage.removeItem(storageKey.current);
+        setStatus("Время расчёта истекло. Проверьте цену ещё раз.");
       } else setStatus(code === "PAYMENTS_DISABLED" || code === "OFFER_CLOSED" ? "Продажи скоро." : "Не удалось начать оплату. Попробуйте ещё раз.");
     } finally {
-      setBusy(false);
+      checkoutLock.current = false; setBusy(false);
     }
   };
 
   const confirmCheckout = async () => {
-    if (!quote || (quote.legalAcceptance && !termsAccepted)) return;
+    if (checkoutLock.current || !quote || (quote.legalAcceptance && !termsAccepted)) return;
+    checkoutLock.current = true;
     setBusy(true); setStatus("Создаём заказ…");
     paymentIdempotencyKey.current ??= crypto.randomUUID();
+    persist(checkoutCode);
     try {
       const response = await fetch("/v1/checkout", {
         method: "POST", credentials: "same-origin",
         headers: { "content-type": "application/json", "idempotency-key": paymentIdempotencyKey.current },
-        body: JSON.stringify({ quoteId: quote.quoteId, state: new URLSearchParams(window.location.search).get("state") || undefined,
+        body: JSON.stringify({ quoteId: quote.quoteId,
           ...(quote.legalAcceptance ? { legalAcceptance: { accepted: termsAccepted, releaseVersion: quote.legalAcceptance.releaseVersion,
             manifestSha256: quote.legalAcceptance.manifestSha256, receiptEmail: quote.legalAcceptance.receiptEmail } } : {}) }),
       });
       let result = await response.json() as CheckoutResult;
       if (!response.ok) throw new Error(result.code || "CHECKOUT_FAILED");
-      if (result.checkoutUrl) { window.location.assign(result.checkoutUrl); return; }
+      if (result.checkoutUrl && new URL(result.checkoutUrl).protocol === "https:") { window.location.assign(result.checkoutUrl); return; }
       result = await observeCheckout(result);
       if (result.state === "PAID") { setSession("owned"); setStatus("Доступ открыт."); window.location.reload(); return; }
       setStatus(result.state === "DECLINED" ? "Платёж отклонён." : result.state === "EXPIRED" ? "Время оплаты истекло." : "Статус платежа уточняется. Попробуйте снова через минуту.");
@@ -177,12 +177,38 @@ export default function CourseCheckout({ courseRef, offerRef, saleMode, priceKop
         setStatus("Перед покупкой подтвердите актуальные документы аккаунта.");
       } else if (["CHECKOUT_QUOTE_EXPIRED", "CHECKOUT_QUOTE_STALE", "CHECKOUT_QUOTE_UNAVAILABLE"].includes(code)) {
         setQuote(null); previewIdempotencyKey.current = null; paymentIdempotencyKey.current = null;
+        if (storageKey.current) sessionStorage.removeItem(storageKey.current);
         setStatus("Цена изменилась или время подтверждения истекло. Проверьте её ещё раз.");
       } else setStatus(code === "PAYMENTS_DISABLED" || code === "OFFER_CLOSED" ? "Продажи скоро." : "Не удалось начать оплату. Попробуйте ещё раз.");
     } finally {
-      setBusy(false);
+      checkoutLock.current = false; setBusy(false);
     }
   };
+
+  const restoreCheckout = useEffectEvent((code: string) => previewCheckout(code));
+
+  useEffect(() => {
+    void fetch("/v1/me", { cache: "no-store", credentials: "same-origin" })
+      .then((response) => response.json())
+      .then(async (body: { customer?: { id: string }; entitlements?: Array<{ scope: string; course_ref?: string | null }> }) => {
+        if (!body.customer) { setSession("anonymous"); return; }
+        const owned = (body.entitlements ?? []).some((grant) => grant.scope === "ALL_COURSES" || (grant.scope === "COURSE" && grant.course_ref === courseRef));
+        setSession(owned ? "owned" : "signed-in");
+        storageKey.current = `course-checkout-v1:${body.customer.id}:${offerRef}`;
+        if (!owned) {
+          try {
+            const saved = JSON.parse(sessionStorage.getItem(storageKey.current) ?? "null") as
+              { version: number; previewKey: string; paymentKey: string | null; checkoutCode: string } | null;
+            if (saved?.version === 1 && typeof saved.previewKey === "string" && typeof saved.checkoutCode === "string") {
+              previewIdempotencyKey.current = saved.previewKey; paymentIdempotencyKey.current = saved.paymentKey;
+              setCheckoutCode(saved.checkoutCode);
+              await restoreCheckout(saved.checkoutCode);
+            }
+          } catch { /* Storage is advisory; the server remains the quote authority. */ }
+        }
+      })
+      .catch(() => setSession("anonymous"));
+  }, [courseRef, offerRef]);
 
   if (session === "owned") return <div className="checkoutCta"><strong>Курс уже ваш</strong><p>Откройте любой урок из программы.</p></div>;
   if (saleMode === "CLOSED" || !offerRef || priceKopecks === null) return <div className="checkoutCta"><strong>Продажи скоро</strong><p>Курс появится в продаже после отдельного запуска платёжного контура.</p></div>;

@@ -24,6 +24,8 @@ export type CommerceRuntimeConfig = {
     readonly handoffStateSecret: string;
     /** Refref vNext surface (`/v1-vnext`, docs/openapi-vnext.yaml) for arrival claims and context close; served from the staged cutover. */
     readonly vnextApiBaseUrl?: string;
+    /** Independent opt-in per storefront; configuration never opens its sales switch. */
+    readonly vnextCheckoutStorefronts?: readonly ("COURSES" | "LAB")[];
   };
   /**
    * The owner's storefront switch (storefront-switch.ts). The server attaches the read-only host file;
@@ -83,6 +85,9 @@ export function loadCommerceRuntimeConfig(env: Environment = process.env): Comme
   if (vnextApiBaseUrl) {
     try { new URL(vnextApiBaseUrl); } catch { throw new CommerceConfigurationError("REFREF_VNEXT_API_BASE_URL_INVALID"); }
   }
+  const vnextCheckoutStorefronts = env.REFREF_CHECKOUT_VNEXT_STOREFRONTS?.split(",").map(v => v.trim()).filter(Boolean) ?? [];
+  if (vnextCheckoutStorefronts.some(v => v !== "COURSES" && v !== "LAB")
+    || (vnextCheckoutStorefronts.length > 0 && !vnextApiBaseUrl)) throw new CommerceConfigurationError("REFREF_VNEXT_CHECKOUT_CONFIG_INVALID");
   return {
     deployEnvironment,
     paymentMode,
@@ -99,6 +104,7 @@ export function loadCommerceRuntimeConfig(env: Environment = process.env): Comme
       checkoutOrigin,
       handoffStateSecret: required(env, "REFREF_HANDOFF_STATE_SECRET"),
       ...(vnextApiBaseUrl ? { vnextApiBaseUrl } : {}),
+      vnextCheckoutStorefronts: vnextCheckoutStorefronts as ("COURSES" | "LAB")[],
     },
   };
 }

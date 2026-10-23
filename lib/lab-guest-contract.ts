@@ -2,6 +2,9 @@ import { z } from "zod";
 
 export const labGuestQuoteSchema = z.object({
   state: z.literal("PRICE_REVIEW_REQUIRED"), quoteId: z.string(), finalAmountKopecks: z.number().int().positive(), expiresAt: z.string(),
+  checkoutCodeOutcome: z.enum(["NONE", "APPLIED", "NOT_APPLICABLE", "NOT_RECOGNIZED", "NOT_APPLIED_ATTRIBUTION_LOCKED",
+    "NOT_APPLIED_CUSTOMER_KEPT_CURRENT", "ALREADY_APPLIED_BY_ARRIVAL", "NOT_APPLIED_ARRIVAL_PRIORITY", "NOT_APPLIED_CAMPAIGN_PAUSED"]).optional(),
+  merchantPromotionCode: z.string().nullable().optional(),
   priceNotice: z.discriminatedUnion("code", [
     z.object({ code: z.literal("CATALOG_PRICE_CHANGED_AFTER_QUOTE"), quotedAmountKopecks: z.number().int().nonnegative(), currentAmountKopecks: z.number().int().nonnegative() }),
     z.object({ code: z.literal("PRICE_CHANGED_SINCE_DISPLAY"), quotedAmountKopecks: z.number().int().nonnegative(), displayedAmountKopecks: z.number().int().nonnegative() }),

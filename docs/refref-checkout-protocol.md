@@ -4,23 +4,19 @@ The merchant implementation is contract-tested engineering functionality, **not*
 
 ## Version and rollout boundary
 
-The handoff flow below describes the retained RC.2 implementation and its
-historical acceptance. ADR-139's browser-scoped Arrival contract is the target
-for new checkout: ART-373/378 implement durable intent and arrival foundations;
-ART-379 still owns explicit LMS/LAB checkout integration and each storefront's
-own conformance. Their merge does not prove the whole new entry path deployed.
+New orders use ADR-139 browser-context resolution: Buy → authoritative price and documents → explicit acceptance → payment. `REFREF_CHECKOUT_VNEXT_STOREFRONTS=COURSES` and/or `LAB` opt each profile in independently, together with `REFREF_VNEXT_API_BASE_URL` and the existing browser-context configuration. Empty profile configuration refuses new Refref checkout. Neither configuration nor source tests open the owner's storefront switch.
 
-Refref v9 owner policy and Draft ADR-140 (revision 7) add purchase-level rewards and
-whole-purchase cancellation claims, with their own not-yet-implemented wire contract. See
-[v9 contract status](refref-v9-contract-status.md). A customer refund/access
-decision and a Refref decision about a partner's reward are separate. A bank
-refund or entitlement revocation alone does not zero a v9 partner reward.
+The new flow never calls the handoff entry. That entry returns 410. The return endpoint and historical HANDOFF phase remain solely for already persisted RC.2 intents and signed payment return. Direct payment-return state is minted from the owned durable quote, without a handoff token or browser-supplied order/origin. New vNext requests retain B1's original payload, context, price and deadline through reload/lost ACK. A missing or uncertain resolution cannot start payment. Rejected promo messages do not discard the promised Arrival discount.
+
+ART-398 additionally provides an opt-in `purchaseManifest` rail capability using frozen input/1 and payable/2 (ART-394/417, D231). The published contract currently has **no served v9 endpoint**. The merchant stores its input before RPC, checks schema/hash/economics before review, binds acceptance/payment/refund to the payable snapshot, and requires a verified qualification before a v9 grant. The existing RC.2 payment rail refuses this capability explicitly. Portable fixtures and a supplied test rail qualify the consumer source seam; ART-400/412 still own real financial conformance/admission. See [v9 contract status](refref-v9-contract-status.md).
 
 ## Flow and authority
 
-`handoff → resolution → checkout attempt → payment session → return read/background polling → fulfillment ACK → refund request/read-back`.
+`browser context → resolution → price/documents → explicit acceptance → checkout attempt → payment session → signed return/readback → fulfillment ACK → refund request/readback`.
 
-Use a signed HMAC-bound handoff state. Checkout constructs a frozen legal/fiscal snapshot from the live offer with its hash; quotes expire after 15 minutes. A stale display price never authorizes payment. Merchant promotion resolution precedes Refref checkout-code handling. Refref owns accepted payment/refund state, the merchant owns entitlement/projection and fulfillment effects.
+New LMS reviews require the pinned Stage B purchase documents and deliberate acceptance even outside the closed-paid-test profile. LAB retains its separate guest legal acceptance and merchant-held seats. Buyer session storage retains replay keys and the submitted promo, then reload re-reads the authoritative quote. It never persists acceptance as permission to pay.
+
+Historical handoff recovery uses its original signed HMAC state. Checkout constructs a frozen legal/fiscal snapshot from the live offer with its hash; quotes expire after 15 minutes. A stale display price never authorizes payment. Merchant promotion resolution precedes Refref checkout-code handling. Refref owns accepted payment/refund state, the merchant owns entitlement/projection and fulfillment effects.
 
 All external creation commands have durable idempotency and outbox-style attempt state. An unknown outcome is recovered by reading `merchant-orders`/attempt/session before deciding whether a new command is safe; never blindly replay. On return, perform an immediate read, **without waiting for scheduled polling**, then continue background reconciliation for late/ambiguous outcomes. Grant each accepted payment exactly once; acknowledge fulfillment exactly once and persist ACK recovery state.
 

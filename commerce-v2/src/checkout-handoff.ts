@@ -60,3 +60,11 @@ export function issueCheckoutPaymentReturnState(secret: string, handoff: Checkou
 export function verifyCheckoutNavigationState(secret: string, token: string, customerId: string, now = Date.now()) {
   return verifyState(secret, token, customerId, now);
 }
+
+/** New vNext orders mint payment return directly from the owned, durable intent. */
+export function issueDirectPaymentReturnState(secret: string, input: {
+  customerId: string; orderPublicId: string; returnPath: string; storefront: Storefront;
+}, now = Date.now()) {
+  if (!input.returnPath.startsWith("/") || input.returnPath.startsWith("//") || input.returnPath.includes("\\")) throw new Error("CHECKOUT_RETURN_PATH_INVALID");
+  return issueState(secret, { ...input, phase: "PAYMENT_RETURN", expiresAt: now + 24 * 60 * 60_000 });
+}

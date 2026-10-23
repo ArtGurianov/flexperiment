@@ -1,5 +1,7 @@
-import { merchantPurchase, consumePurchaseQuote, acceptPurchase, type FrozenPurchaseInput } from "./purchase-manifest";
-import type { PurchaseQuoteEnvelopeV2, PurchaseAcceptance, Service } from "./refref-contract/purchase-manifest-v1";
+import { digest } from "./refref-contract/shared-checkout-snapshot";
+import { providerPaymentIdentity } from "./refref-contract/purchase-manifest-v1";
+import { merchantPurchase, consumePurchaseQuote, consumePurchaseQualification, acceptPurchase, type FrozenPurchaseInput } from "./purchase-manifest";
+import type { PurchaseQuoteEnvelopeV2, PurchaseAcceptance, PurchaseQualification, Service } from "./refref-contract/purchase-manifest-v1";
 import { acceptLabPurchase, issueLabTicket, type LabAcceptance } from "./lab-tickets";
 import { CheckoutConflictError } from "./checkout-conflict";
 export { CheckoutConflictError } from "./checkout-conflict";
@@ -46,6 +48,7 @@ export type RailProjection = {
   refundExecutionId?: string;
   supportReference?: string;
   failureCode?: string;
+  purchaseQualification?: PurchaseQualification;
   paymentAmountKopecks?: number;
   remainingRefundableAmountKopecks?: number;
   expectedRemainingRefundableAmountKopecks?: number;
@@ -62,7 +65,7 @@ export type RailQuote = {
   expiresAt?: string;
   purchase?: PurchaseQuoteEnvelopeV2;
 };
-export type CheckoutCodeOutcome = "NONE" | "APPLIED" | "NOT_APPLICABLE" | "NOT_RECOGNIZED" | "NOT_APPLIED_ATTRIBUTION_LOCKED" | "NOT_APPLIED_CUSTOMER_KEPT_CURRENT";
+export type CheckoutCodeOutcome = "NONE" | "APPLIED" | "NOT_APPLICABLE" | "NOT_RECOGNIZED" | "NOT_APPLIED_ATTRIBUTION_LOCKED" | "NOT_APPLIED_CUSTOMER_KEPT_CURRENT" | "ALREADY_APPLIED_BY_ARRIVAL" | "NOT_APPLIED_ARRIVAL_PRIORITY" | "NOT_APPLIED_CAMPAIGN_PAUSED";
 export type RailResolution =
   | { state: "PRICE_REVIEW_REQUIRED"; quote: RailQuote }
   | { state: "CUSTOMER_ACTION_REQUIRED"; resolutionId: string; checkoutUrl: string };
@@ -88,6 +91,7 @@ export type ResolutionRequest = {
 /** One resolution call: the frozen request and what only the RC.2 rail still needs beside it. */
 export type PaymentResolveInput = {
   idempotencyKey: string;
+  protocol?: "VNEXT";
   request: ResolutionRequest;
   /** RC.2 handoff token (docs/28 §4); the vNext body has no token. */
   handoffToken?: string;
@@ -556,9 +560,9 @@ const storedPricing = (intent: IntentRow): CheckoutQuotePricing => ({
 /** Everything a repeat must match to be the same intent; the RC.2 handoff token is its resolution idempotency identity, stored only as a digest. */
 const intentFingerprint = (facts: {
   customerId: string; offerRef: string; checkoutCode: string | null; storefrontOrigin: string | null;
-  browserContextId: string | null; deliveryDegraded: DeliveryDegraded; scenario: string | null; handoffToken: string | null;
+  browserContextId: string | null; deliveryDegraded: DeliveryDegraded; scenario: string | null; handoffToken: string | null; checkoutProtocol?: "VNEXT";
 }) => createHash("sha256").update(JSON.stringify([facts.customerId, facts.offerRef, facts.checkoutCode, facts.storefrontOrigin,
-  facts.browserContextId, facts.deliveryDegraded, facts.scenario, facts.handoffToken ? createHash("sha256").update(facts.handoffToken).digest("hex") : null])).digest("hex");
+  facts.browserContextId, facts.deliveryDegraded, facts.scenario, facts.handoffToken ? createHash("sha256").update(facts.handoffToken).digest("hex") : null, ...(facts.checkoutProtocol ? [facts.checkoutProtocol] : [])])).digest("hex");
 
 function assertDeliveryDegraded(value: DeliveryDegraded) {
   const keys = Object.keys(value).sort().join(",");
@@ -586,6 +590,26 @@ export function frozenResolutionContext(db: Database.Database, keys: { previewId
     ...(request.browserContextId === undefined ? {} : { browserContextId: request.browserContextId }),
     deliveryDegraded: request.deliveryDegraded,
   };
+}
+
+function intentLegalReview(db: Database.Database, intent: IntentRow, receiptEmail: string) {
+  const legal = db.prepare("SELECT version,manifest_json FROM legal_releases WHERE id=?").get(intent.legal_release_id) as Pick<LegalRow, "version" | "manifest_json">;
+  const manifest = JSON.parse(legal.manifest_json) as LegalReleaseManifest;
+  if (manifest.stage !== "B" || !["course_offer", "refund_terms", "receipt_contact", "privacy"].every(kind => manifest.documents.some(d => d.kind === kind))) {
+    throw new CheckoutConflictError("PURCHASE_LEGAL_RELEASE_REQUIRED");
+  }
+  return { releaseVersion: legal.version, manifestSha256: legalManifestHash(manifest), receiptEmail, documents: manifest.documents };
+}
+
+/** Owned server facts for payment return, never browser-supplied order/origin/customer identity. */
+export function checkoutIntentNavigation(db: Database.Database, customerId: string, quoteId: string) {
+  const intent = intentBy(db, "id", quoteId);
+  if (!intent || intent.customer_id !== customerId) throw new Error("CHECKOUT_QUOTE_NOT_FOUND");
+  const offer = offerById(db, intent.offer_id)!;
+  const frozen = intent.resolution_request_json ? JSON.parse(intent.resolution_request_json) as PaymentResolveInput : undefined;
+  return { customerId, orderPublicId: intent.order_public_id, storefront: intent.storefront,
+    returnPath: intent.storefront === "LAB" ? "/ticket" : `/courses/${encodeURIComponent(offer.course_ref ?? "")}`,
+    protocol: frozen?.protocol };
 }
 
 /** Customer-wide dedupe requires a verified caller; a guest email supplies no such authority.
@@ -707,7 +731,9 @@ async function advanceIntent(db: Database.Database, rail: PaymentRail, intent: I
   const respond = (current: IntentRow) => ({
     ...quoteResponse(current.id, JSON.parse(current.rail_quote_json!) as RailQuote, storedPricing(current), current.expires_at!, current.line_snapshot_json),
     priceNotice: priceNotice(current.catalog_amount_kopecks, offerById(db, current.offer_id)?.price_kopecks, context.displayedAmountKopecks),
-    ...(context.review ? { legalAcceptance: context.review } : {}),
+    ...(context.review ? { legalAcceptance: context.review } :
+      JSON.parse(current.resolution_request_json ?? "{}").protocol === "VNEXT" && current.storefront === "COURSES"
+        ? { legalAcceptance: intentLegalReview(db, current, context.customerEmail) } : {}),
   });
   if (intent.consumed_at) return reconcileCheckout(db, rail, intent.order_public_id, now, config);
   if (intent.state === "REFUSED") throw new RailRefusalError(intent.failure_code ?? "CHECKOUT_RESOLUTION_REFUSED");
@@ -741,6 +767,7 @@ async function advanceIntent(db: Database.Database, rail: PaymentRail, intent: I
     const current = intentBy(db, "id", intent.id)!;
     // Another request for the same intent got there first: its outcome stands.
     if (current.state !== "RESOLVING") return current;
+    if (resolved.state === "CUSTOMER_ACTION_REQUIRED" && frozen.protocol === "VNEXT") throw new RailRefusalError("VNEXT_BROWSER_HANDOFF_REFUSED");
     if (resolved.state === "CUSTOMER_ACTION_REQUIRED") {
       db.prepare(`UPDATE checkout_quotes SET state='CUSTOMER_ACTION_REQUIRED',refref_resolution_id=?,customer_action_url=?,updated_at=?
         WHERE id=?`).run(resolved.resolutionId, resolved.checkoutUrl, now, intent.id);
@@ -779,10 +806,11 @@ async function advanceIntent(db: Database.Database, rail: PaymentRail, intent: I
       expireIntent(db, intent.id, now);
       return intentBy(db, "id", intent.id)!;
     }
+    // The legacy enum column is RC.2-only. vNext outcomes stay exact in the immutable rail_quote_json.
     db.prepare(`UPDATE checkout_quotes SET state='REVIEW',refref_resolution_id=?,customer_action_url=NULL,base_amount_kopecks=?,
       discount_kopecks=?,final_amount_kopecks=?,rail_quote_json=?,refref_checkout_code_outcome=?,expires_at=?,updated_at=? WHERE id=?`)
       .run(quote.resolutionId, quote.baseAmountKopecks, quote.discountKopecks, quote.finalAmountKopecks, JSON.stringify(quote),
-        quote.checkoutCodeOutcome ?? "NONE", expiresAt, now, intent.id);
+        frozen.protocol === "VNEXT" ? null : quote.checkoutCodeOutcome ?? "NONE", expiresAt, now, intent.id);
     return intentBy(db, "id", intent.id)!;
   });
   const settled = settle.immediate();
@@ -808,7 +836,7 @@ export async function prepareCheckout(
   config: CheckoutPolicyConfig,
   input: {
     customerId: string; customerEmail: string; offerRef: string; previewIdempotencyKey: string; scenario?: string;
-    handoffToken?: string; checkoutCode?: string; orderPublicId?: string; storefront?: Storefront; displayedAmountKopecks?: number;
+    checkoutProtocol?: "VNEXT"; handoffToken?: string; checkoutCode?: string; orderPublicId?: string; storefront?: Storefront; displayedAmountKopecks?: number;
   } & ResolutionContext,
   now = new Date().toISOString(),
 ) {
@@ -827,7 +855,7 @@ export async function prepareCheckout(
   if (input.browserContextId !== undefined && !/^[A-Za-z0-9_-]{32,128}$/.test(input.browserContextId)) throw new Error("BROWSER_CONTEXT_ID_INVALID");
   const fingerprint = intentFingerprint({ customerId: input.customerId, offerRef: input.offerRef, checkoutCode: checkoutCodeInput,
     storefrontOrigin: input.storefrontOrigin ?? null, browserContextId: input.browserContextId ?? null, deliveryDegraded,
-    scenario: input.scenario ?? null, handoffToken: input.handoffToken ?? null });
+    scenario: input.scenario ?? null, handoffToken: input.handoffToken ?? null, checkoutProtocol: input.checkoutProtocol });
 
   // A repeat of this request, or the buyer back on the order the handoff signed: the same intent.
   const replay = intentBy(db, "preview_idempotency_key", input.previewIdempotencyKey);
@@ -917,6 +945,7 @@ export async function prepareCheckout(
     }]) : undefined;
     const frozen: Omit<PaymentResolveInput, "handoffToken"> = {
       ...(purchase ? { purchase } : {}),
+      ...(input.checkoutProtocol ? { protocol: input.checkoutProtocol } : {}),
       idempotencyKey: input.previewIdempotencyKey, request, ...(input.scenario === undefined ? {} : { scenario: input.scenario }),
     };
     db.prepare(`INSERT INTO checkout_quotes
@@ -973,7 +1002,9 @@ export async function confirmCheckout(
     expireIntent(db, pending.id, now);
     throw expiredIntentError(pending);
   }
-  const review = paidTestReview(db, config, input.customerEmail);
+  const direct = pending.resolution_request_json && JSON.parse(pending.resolution_request_json).protocol === "VNEXT";
+  const review = paidTestReview(db, config, input.customerEmail)
+    ?? (direct && pending.storefront === "COURSES" ? intentLegalReview(db, pending, input.customerEmail) : undefined);
   if (review && (input.legalAcceptance?.accepted !== true || input.legalAcceptance.releaseVersion !== review.releaseVersion
     || input.legalAcceptance.manifestSha256 !== review.manifestSha256 || input.legalAcceptance.receiptEmail !== review.receiptEmail)) {
     throw new Error("PAID_CHECKOUT_TERMS_ACCEPTANCE_REQUIRED");
@@ -1058,7 +1089,7 @@ export async function confirmCheckout(
     // consumed_at below atomically removes it from quote inventory as the order takes its seat.
     if (review) {
       // Re-read under the same write transaction as order creation; no backfilled UI event.
-      const current = paidTestReview(db, config, input.customerEmail)!;
+      const current = paidTestReview(db, config, input.customerEmail) ?? intentLegalReview(db, pending, input.customerEmail);
       const customer = db.prepare("SELECT email_normalized FROM customers WHERE id=?").get(input.customerId) as { email_normalized: string } | undefined;
       if (customer?.email_normalized !== current.receiptEmail) throw new Error("PAID_CHECKOUT_CONTACT_CHANGED");
       db.prepare(`INSERT INTO audit_log(id,actor,action,subject_type,subject_ref,evidence_json,created_at)
@@ -1163,11 +1194,11 @@ async function applyRailProjection(db: Database.Database, rail: PaymentRail, ord
   let projection = observed;
   const context = db.prepare(`SELECT orders.id AS order_id,orders.customer_id,line.id AS line_id,product.kind,product.course_ref,
     orders.snapshot_hash,orders.total_kopecks,json_extract(orders.checkout_snapshot_json,'$.schema') AS snapshot_schema,
-    attempt.id AS attempt_id,attempt.idempotency_key,attempt.fulfillment_acknowledged_at,line.immediate_access_json FROM orders JOIN order_lines line ON line.order_id=orders.id JOIN products product ON product.id=line.product_id
+    attempt.id AS attempt_id,attempt.idempotency_key,attempt.request_payload_json,attempt.fulfillment_acknowledged_at,line.immediate_access_json FROM orders JOIN order_lines line ON line.order_id=orders.id JOIN products product ON product.id=line.product_id
     JOIN checkout_attempts attempt ON attempt.order_id=orders.id WHERE orders.public_id=?`).get(orderPublicId) as {
       order_id: string; customer_id: string; line_id: string; kind: "ONLINE_COURSE" | "COURSE_BUNDLE" | "LAB";
       course_ref: string | null; snapshot_hash: string; total_kopecks: number; snapshot_schema: string | null;
-      attempt_id: string; idempotency_key: string; fulfillment_acknowledged_at: string | null; immediate_access_json: string | null;
+      attempt_id: string; idempotency_key: string; request_payload_json: string; fulfillment_acknowledged_at: string | null; immediate_access_json: string | null;
     } | undefined;
   if (!context) throw new Error("ORDER_NOT_FOUND");
   if ((context.snapshot_schema === "refref.shared-checkout-snapshot/1" || context.snapshot_schema === "refref.shared-checkout-snapshot/2")
@@ -1177,7 +1208,40 @@ async function applyRailProjection(db: Database.Database, rail: PaymentRail, ord
   if (projection.state === "PAID" && projection.paymentAmountKopecks !== context.total_kopecks) {
     projection = { ...projection, state: "REVIEW_REQUIRED" };
   }
+  const paymentInput = JSON.parse(context.request_payload_json) as PaymentCreateInput;
+  let purchaseQualification: PurchaseQualification | undefined;
+  if (paymentInput.quote?.purchase && projection.state === "PAID") {
+    const stored = db.prepare("SELECT evidence_json FROM audit_log WHERE action='PURCHASE_QUALIFIED' AND subject_ref=?").get(orderPublicId) as { evidence_json: string } | undefined;
+    const saved = stored ? JSON.parse(stored.evidence_json).qualification as PurchaseQualification : undefined;
+    const candidate = projection.purchaseQualification ?? saved;
+    const frozenIntent = intentBy(db, "order_public_id", orderPublicId);
+    const frozen = frozenIntent?.resolution_request_json ? JSON.parse(frozenIntent.resolution_request_json) as PaymentResolveInput : undefined;
+    try {
+      if (!candidate || !frozen?.purchase || !paymentInput.purchaseAcceptance) throw new Error("PURCHASE_QUALIFICATION_REQUIRED");
+      purchaseQualification = consumePurchaseQualification(frozen.purchase, paymentInput.quote.purchase, paymentInput.purchaseAcceptance,
+        candidate.payment, candidate.purchaseQualifiedAt);
+      if (digest(candidate) !== digest(purchaseQualification) || (saved && digest(candidate) !== digest(saved))) throw new Error("PURCHASE_QUALIFICATION_MISMATCH");
+    } catch {
+      projection = { ...projection, state: "REVIEW_REQUIRED", failureCode: "PURCHASE_QUALIFICATION_UNVERIFIED" };
+      purchaseQualification = undefined;
+    }
+  }
   const apply = db.transaction(() => {
+    if (purchaseQualification) {
+      const identity = providerPaymentIdentity(purchaseQualification.payment.payment);
+      const committed = db.prepare("SELECT evidence_json FROM audit_log WHERE action='PURCHASE_QUALIFIED' AND subject_ref=?").get(orderPublicId) as { evidence_json: string } | undefined;
+      if (committed && digest(JSON.parse(committed.evidence_json).qualification) !== digest(purchaseQualification)) {
+        projection = { ...projection, state: "REVIEW_REQUIRED", failureCode: "PURCHASE_QUALIFICATION_MISMATCH" };
+      }
+      const duplicate = db.prepare(`SELECT 1 FROM audit_log WHERE action='PURCHASE_QUALIFIED'
+        AND json_extract(evidence_json,'$.providerPaymentIdentity')=? AND subject_ref<>?`).get(identity, orderPublicId);
+      if (duplicate) { projection = { ...projection, state: "REVIEW_REQUIRED", failureCode: "PURCHASE_PAYMENT_ALREADY_BOUND" }; }
+      else if (!committed && projection.state === "PAID") {
+        db.prepare(`INSERT INTO audit_log(id,actor,action,subject_type,subject_ref,evidence_json,created_at)
+          VALUES (?,'REFREF_RECONCILIATION','PURCHASE_QUALIFIED','ORDER',?,?,?)`).run(randomUUID(), orderPublicId,
+          JSON.stringify({ providerPaymentIdentity: identity, qualification: purchaseQualification }), now);
+      }
+    }
     const terminalRefund = db.prepare("SELECT 1 FROM orders WHERE id=? AND state='REFUNDED'").get(context.order_id);
     if (terminalRefund) return;
     db.prepare(`UPDATE checkout_attempts SET state=?,refref_attempt_id=?,refref_resolution_id=COALESCE(?,refref_resolution_id),

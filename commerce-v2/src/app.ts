@@ -1,3 +1,4 @@
+import { assertClosedPaidTestAccountConsents } from "./closed-paid-test";
 import { labGuestClientIp } from "./lab-guest-client-ip";
 import { registerLabGuestRoutes, labBearer } from "./lab-guest-routes";
 import { checkInLabTicket, prepareLabRecovery, labAccess, labLegalReview, LabTicketError, type LabAcceptance, type LabTicketEmail } from "./lab-tickets";
@@ -12,14 +13,14 @@ import { flagOrphanedOverrides } from "./access-overrides";
 import { getEditorialDraft, getEditorialPublished, publishEditorialDraft, relistEditorialCourse, restrictEditorialCourse, saveEditorialDraft, type EditorialDocument } from "./course-editorial";
 import { assertPaymentCreationEnabled, CommerceConfigurationError, type CommerceRuntimeConfig } from "./payment-mode";
 import { saveResumePosition } from "./resume";
-import { CheckoutConflictError, confirmCheckout, frozenResolutionContext, offerStorefront, prepareCheckout, reconcileCheckout, type PaidCheckoutAcceptance, type PaymentRail, type ResolutionContext } from "./checkout";
+import { CheckoutConflictError, checkoutIntentNavigation, confirmCheckout, frozenResolutionContext, offerStorefront, prepareCheckout, reconcileCheckout, type PaidCheckoutAcceptance, type PaymentRail, type ResolutionContext } from "./checkout";
 import { ARRIVAL_PROOF_PARAM, ARRIVAL_RETURN_PARAM, cleanArrivalTarget, presentedContextId, storefrontForRequest, type BrowserContexts } from "./browser-context";
 import { configureLabOffer, configureProduct, withdrawProduct } from "./catalog-control";
 import { cancelLabOccurrence, createCity, createLabOccurrence, editLabOccurrence, renameCity } from "./lab-occurrences";
 import { unsubscribeCustomer, type CampaignEmail } from "./campaigns";
 import { assertVideoUploadInput, observeKinescopeStatus, pollKinescopeUpload, startVideoUpload, type KinescopeClient, type KinescopeStatus } from "./kinescope";
 import { currentLegalRelease } from "./legal-control";
-import { issueCheckoutHandoffState, issueCheckoutPaymentReturnState, verifyCheckoutHandoffState, verifyCheckoutNavigationState } from "./checkout-handoff";
+import { issueDirectPaymentReturnState, issueCheckoutPaymentReturnState, verifyCheckoutHandoffState, verifyCheckoutNavigationState } from "./checkout-handoff";
 import { listMerchantPromotions, saveMerchantPromotion } from "./promotions";
 import type { RefundEnvelopeKeyring } from "./refund-envelope";
 import { decideRefund, executeApprovedRefund, listCustomerRefunds, listRefundCases, recordCourseAccessStart, registerEmailRefund, requestRefund, type RefundDecisionInput, type RefundReason } from "./refunds";
@@ -41,7 +42,7 @@ import { publicLabCatalogue } from "./lab-catalogue";
 import { getCustomerStorefrontCourse, getCustomerStorefrontLesson, getStorefrontCourse, getStorefrontLesson, listCustomerStorefrontLibrary, listStorefrontCourses } from "./storefront-content";
 import { authenticatedConsentStatus, hasRequiredAccountConsents, recordAuthenticatedConsents, type AuthenticatedConsentInput } from "./authenticated-consents";
 import { ErasureLedgerError } from "./erasure-ledger";
-import { assertClosedPaidTestAccountConsents } from "./closed-paid-test";
+
 import type { ErasureRuntimeFence } from "./erasure-fence";
 
 type Dependencies = {
@@ -804,6 +805,7 @@ export function createCommerceV2App(deps: Dependencies) {
       if (!deps.paymentRail) return context.json({ code: "PAYMENT_RAIL_UNAVAILABLE" }, 503, noStore);
       const customer = deps.db.prepare("SELECT email_normalized FROM customers WHERE id=?").get(customerId) as { email_normalized: string } | undefined;
       if (!customer) return context.json({ code: "CUSTOMER_NOT_FOUND" }, 409, noStore);
+      assertClosedPaidTestAccountConsents(deps.db, deps.config, customerId);
       if (guest) {
         deps.erasureFence?.assertIdentity({ email: customer.email_normalized, customerId }, "AUTH_MAIL");
         if (!context.req.header("idempotency-key")?.trim()) throw new LabTicketError("IDEMPOTENCY_KEY_REQUIRED");
@@ -814,7 +816,7 @@ export function createCommerceV2App(deps: Dependencies) {
       if (guest && !deps.db.prepare("SELECT 1 FROM offers offer JOIN products product ON product.id=offer.product_id WHERE offer.offer_ref=? AND product.kind='LAB'").get(body.offerRef)) {
         return context.json({ code: "OFFER_NOT_AVAILABLE" }, 404, noStore);
       }
-      const handoff = !guest && deps.config.paymentMode === "refref"
+      const handoff = !guest && deps.config.paymentMode === "refref" && body.handoffToken
         ? verifyCheckoutHandoffState(deps.config.refref!.handoffStateSecret, body.state ?? "", customerId, now().getTime())
         : undefined;
       if (guest) labLegalReview(deps.db);
@@ -824,6 +826,10 @@ export function createCommerceV2App(deps: Dependencies) {
       // signed handoff names; never a buyer-supplied value.
       const storefront = guest ? "LAB" : storefrontForRequest(origins, context.req.raw.headers);
       if (handoff && storefront && handoff.storefront !== storefront) throw new CheckoutConflictError("CHECKOUT_STOREFRONT_MISMATCH");
+      if (handoff && !deps.db.prepare("SELECT 1 FROM checkout_quotes WHERE order_public_id=? AND customer_id=?").get(handoff.orderPublicId, customerId)) {
+        throw new CheckoutConflictError("CHECKOUT_HANDOFF_RETIRED");
+      }
+
       // An origin buys only its own storefront's offers: an LMS context never attributes a LAB order,
       // nor the reverse (ART-378). Checked before any context is admitted or exchanged.
       const offerOwner = offerStorefront(deps.db, body.offerRef);
@@ -831,6 +837,10 @@ export function createCommerceV2App(deps: Dependencies) {
       let resolutionContext: ResolutionContext = guest ? { storefrontOrigin: origins.lab }
         : handoff ? { storefrontOrigin: storefrontOrigin(origins, handoff.storefront) } : {};
       const contexts = deps.browserContexts;
+      const directVnext = deps.config.paymentMode === "refref" && !handoff;
+      if (directVnext && (!storefront || !contexts || !deps.config.refref?.vnextCheckoutStorefronts?.includes(storefront))) {
+        throw new CheckoutConflictError("VNEXT_CHECKOUT_NOT_ADMITTED");
+      }
       if (contexts && storefront && context.req.header("idempotency-key")?.trim()) {
         // A repeat of an issued intent sends what it froze; only a new intent runs the Buy exchange (ART-378).
         const frozen = frozenResolutionContext(deps.db, { previewIdempotencyKey, orderPublicId });
@@ -850,7 +860,8 @@ export function createCommerceV2App(deps: Dependencies) {
         customerId, customerEmail: customer.email_normalized, offerRef: body.offerRef,
         previewIdempotencyKey,
         scenario: deps.config.paymentMode === "mock" ? body.mockScenario : undefined,
-        handoffToken: body.handoffToken,
+        handoffToken: handoff || deps.config.paymentMode === "mock" ? body.handoffToken : undefined,
+        checkoutProtocol: directVnext ? "VNEXT" : undefined,
         checkoutCode: body.checkoutCode,
         displayedAmountKopecks: body.displayedAmountKopecks,
         orderPublicId,
@@ -873,17 +884,23 @@ export function createCommerceV2App(deps: Dependencies) {
       if (!deps.paymentRail) return context.json({ code: "PAYMENT_RAIL_UNAVAILABLE" }, 503, noStore);
       const customer = deps.db.prepare("SELECT email_normalized FROM customers WHERE id=?").get(customerId) as { email_normalized: string } | undefined;
       if (!customer) return context.json({ code: "CUSTOMER_NOT_FOUND" }, 409, noStore);
+      assertClosedPaidTestAccountConsents(deps.db, deps.config, customerId);
       if (guest) {
         deps.erasureFence?.assertIdentity({ email: customer.email_normalized, customerId }, "AUTH_MAIL");
         if (!context.req.header("idempotency-key")?.trim()) throw new LabTicketError("IDEMPOTENCY_KEY_REQUIRED");
       }
       const body = await context.req.json<{ quoteId?: string; state?: string; legalAcceptance?: PaidCheckoutAcceptance; labAcceptance?: LabAcceptance }>();
       if (!body.quoteId) throw new Error("CHECKOUT_QUOTE_REQUIRED");
-      const handoff = !guest && deps.config.paymentMode === "refref"
+      const navigation = checkoutIntentNavigation(deps.db, customerId, body.quoteId);
+      const requestStorefront = guest ? "LAB" : storefrontForRequest(origins, context.req.raw.headers);
+      if (requestStorefront && navigation.storefront !== requestStorefront) throw new CheckoutConflictError("CHECKOUT_STOREFRONT_MISMATCH");
+      const handoff = !guest && deps.config.paymentMode === "refref" && navigation.protocol !== "VNEXT"
         ? verifyCheckoutHandoffState(deps.config.refref!.handoffStateSecret, body.state ?? "", customerId, now().getTime())
         : undefined;
-      const paymentReturn = handoff
-        ? issueCheckoutPaymentReturnState(deps.config.refref!.handoffStateSecret, handoff, now().getTime())
+      const paymentReturn = deps.config.paymentMode === "refref" && !guest
+        ? navigation.protocol === "VNEXT"
+          ? issueDirectPaymentReturnState(deps.config.refref!.handoffStateSecret, navigation, now().getTime())
+          : handoff ? issueCheckoutPaymentReturnState(deps.config.refref!.handoffStateSecret, handoff, now().getTime()) : undefined
         : undefined;
       const successUrl = paymentReturn ? new URL("/checkout/return", storefrontOrigin(origins, paymentReturn.state.storefront)) : undefined;
       successUrl?.searchParams.set("state", paymentReturn!.token);
@@ -896,7 +913,7 @@ export function createCommerceV2App(deps: Dependencies) {
         quoteId: body.quoteId,
         idempotencyKey: guest ? `${guest.order_public_id}:pay:${context.req.header("idempotency-key") ?? ""}` : context.req.header("idempotency-key") ?? "",
         expectedOrderPublicId: guest?.order_public_id ?? handoff?.orderPublicId,
-        storefront: guest ? "LAB" : handoff?.storefront,
+        storefront: guest ? "LAB" : requestStorefront ?? handoff?.storefront,
         successUrl: guest ? `${origins.lab}/ticket` : successUrl?.toString(),
         legalAcceptance: body.legalAcceptance,
         labAcceptance: body.labAcceptance,
@@ -918,26 +935,8 @@ export function createCommerceV2App(deps: Dependencies) {
     }
   });
 
-  app.post("/v1/checkout/handoff", async (context) => {
-    const customerId = await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;
-    if (!customerId) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
-    if (deps.config.paymentMode !== "refref") return context.json({ required: false }, 200, noStore);
-    try {
-      assertClosedPaidTestAccountConsents(deps.db, deps.config, customerId);
-      const { returnPath, storefront } = await context.req.json<{ returnPath: string; storefront: Storefront }>();
-      if (storefront !== "COURSES" && storefront !== "LAB") throw new Error("CHECKOUT_STOREFRONT_INVALID");
-      const issued = issueCheckoutHandoffState(deps.config.refref!.handoffStateSecret, { customerId, returnPath, storefront }, now().getTime());
-      const target = new URL("/v1-rc/public/attribution-handoff", deps.config.refref!.checkoutOrigin);
-      target.searchParams.set("merchant", deps.config.refref!.merchantSlug);
-      target.searchParams.set("merchantOrderRef", issued.state.orderPublicId);
-      target.searchParams.set("returnUrl", new URL("/checkout/return", storefrontOrigin(origins, storefront)).toString());
-      target.searchParams.set("state", issued.token);
-      return context.json({ required: true, url: target.toString() }, 200, noStore);
-    } catch (error) {
-      const code = error instanceof Error ? error.message : "CHECKOUT_HANDOFF_FAILED";
-      return context.json({ code }, code === "CONSENT_REQUIRED" ? 403 : 422, noStore);
-    }
-  });
+  // Historic signed returns/read-back remain below; no new order can initiate an RC.2 bounce.
+  app.post("/v1/checkout/handoff", context => context.json({ code: "CHECKOUT_HANDOFF_RETIRED" }, 410, noStore));
 
   app.get("/v1/checkout/handoff/return", async (context) => {
     const customerId = await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;

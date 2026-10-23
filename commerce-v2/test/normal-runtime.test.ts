@@ -189,7 +189,7 @@ describe("ART-162 / ART-179 normal production server, payment disabled", () => {
       expect(response.status).toBe(503);
       expect(await response.json()).toEqual({ code: "PAYMENTS_DISABLED" });
     }
-    expect((await request("/v1/checkout/handoff", post({}))).status).toBe(401);
+    expect((await request("/v1/checkout/handoff", post({}))).status).toBe(410);
     expect(db().prepare("SELECT COUNT(*) n FROM orders").get()).toEqual({ n: 0 });
     expect(db().prepare("SELECT COUNT(*) n FROM checkout_attempts").get()).toEqual({ n: 0 });
     expect(fetcher).not.toHaveBeenCalled();
@@ -226,7 +226,7 @@ describe("ART-162 / ART-179 normal production server, payment disabled", () => {
       else expect(await response.json()).toEqual({ orders: [] });
     }
     const handoff = await request("/v1/checkout/handoff", post({}, { cookie }));
-    expect(handoff.status).toBe(200); expect(await handoff.json()).toEqual({ required: false });
+    expect(handoff.status).toBe(410); expect(await handoff.json()).toEqual({ code: "CHECKOUT_HANDOFF_RETIRED" });
     const checkout = await request("/v1/checkout", post({ quoteId: "no-quote" }, { cookie }));
     expect(checkout.status).toBe(503); expect(await checkout.json()).toEqual({ code: "PAYMENTS_DISABLED" });
     expect(db().prepare("SELECT COUNT(*) n FROM orders").get()).toEqual({ n: 0 });

@@ -74,6 +74,20 @@ describe("guest LAB browser flow", () => {
       headers: expect.objectContaining({ "Idempotency-Key": "persisted-payment" }),
     })));
   });
+  it("restores the guest's frozen promo on reload and shows a rejected-code message before any payment", async () => {
+    const token = "t".repeat(43);
+    sessionStorage.setItem("lab-guest-v1:lab:one", JSON.stringify({ accessToken: token, previewKey: "same-preview", paymentKey: "same-pay", email: "guest@example.com", checkoutCode: "PARTNER20" }));
+    const fetcher = vi.fn(async (path: string, options?: RequestInit) => {
+      if (path.endsWith("/start")) return response({ orderPublicId: "order" });
+      expect(JSON.parse(String(options?.body))).toMatchObject({ checkoutCode: "PARTNER20" });
+      return response({ ...quote, checkoutCodeOutcome: "NOT_APPLIED_CAMPAIGN_PAUSED" });
+    });
+    vi.stubGlobal("fetch", fetcher);
+    render(<LabGuestCheckout offerRef="lab:one" displayedAmountKopecks={10000} />);
+    expect(await screen.findByText("Кампания приостановлена; код не применён.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Подтвердить и оплатить" })).toBeDisabled();
+    expect(fetcher.mock.calls.map(([path]) => path)).toEqual(["/v1/lab/guest/start", "/v1/checkout/preview"]);
+  });
   it("does not redeem a recovery link on GET/page load; sends tokens in POST and retains replay after failure", async () => {
     history.replaceState(null, "", `/ticket#recover=${"r".repeat(43)}`);
     const fetcher = vi.fn(async () => response({ code: "TEMPORARY" }, 503)); vi.stubGlobal("fetch", fetcher);

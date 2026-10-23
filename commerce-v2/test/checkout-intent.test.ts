@@ -1,5 +1,5 @@
 import { applyCourseManifest, withManifestHash } from "../src/manifest";
-import { resolvePurchaseV2, purchasePayableHash, CLAIM_POLICY_D1_2 } from "../src/refref-contract/purchase-manifest-v1";
+import { resolvePurchaseV2, purchasePayableHash, qualifyPurchase, CLAIM_POLICY_D1_2 } from "../src/refref-contract/purchase-manifest-v1";
 import { retireFiscalPolicy } from "../src/fiscal-policy";
 import { RefrefPaymentRail } from "../src/refref-payment-rail";
 import { cancelLabOccurrence, editLabOccurrence, labSeatInventory, type LabOccurrenceRow } from "../src/lab-occurrences";
@@ -944,6 +944,17 @@ describe("ART-200 merchant-local LAB holds", () => {
 
 describe("ART-398 opt-in v9 checkout binding", () => {
   function enablePurchaseRail() {
+    const originalCreate = rail.create.bind(rail);
+    vi.spyOn(rail, "create").mockImplementation(async input => {
+      const projection = await originalCreate(input);
+      const acceptance = input.purchaseAcceptance!;
+      return { ...projection, purchaseQualification: qualifyPurchase(input.quote.purchase!.payable, acceptance, {
+        businessId: acceptance.businessId, purchaseRef: acceptance.purchaseRef, payableHash: acceptance.payableHash,
+        kind: "BANK_FULL_PAYMENT", payment: { provider: "TOCHKA", connectionId: "synthetic", paymentRef: projection.attemptId },
+        status: "SUCCEEDED", currency: "RUB", amountKopecks: input.quote.finalAmountKopecks,
+        succeededAt: at(1), verifiedAt: at(1), independentEvidence: { sourceRef: "synthetic-bank-readback", contentHash: `sha256:${"a".repeat(64)}`, occurredAt: at(1) },
+      }, at(1)) };
+    });
     Object.assign(rail, { purchaseManifest: { businessId: "business-1", schema: "refref.purchase-payable/2" } });
     vi.spyOn(rail, "resolve").mockImplementation(async input => {
       // The exact input is durable before the rail sees it.
@@ -984,6 +995,14 @@ describe("ART-398 opt-in v9 checkout binding", () => {
     expect(db.prepare("SELECT immediate_access_json FROM order_lines").get()).toMatchObject({ immediate_access_json: expect.any(String) });
     await confirm(quote.quoteId, "another-tab");
     expect(create).toHaveBeenCalledTimes(1);
+  });
+  it("does not grant v9 access from PAID without an independent bank qualification", async () => {
+    enablePurchaseRail(); readyCourse();
+    vi.spyOn(rail, "create").mockImplementation(input => MockPaymentRail.prototype.create.call(rail, input));
+    const quote = await quoted(await preview("missing-bank-proof"));
+    expect((await confirm(quote.quoteId, "pay-no-proof")).state).toBe("REVIEW_REQUIRED");
+    expect(count("course_entitlements")).toBe(0);
+    expect(db.prepare("SELECT 1 FROM audit_log WHERE action='PURCHASE_QUALIFIED'").get()).toBeUndefined();
   });
   it("LAB independently freezes its exact end, timezone and schedule provenance", async () => {
     addLab(); enablePurchaseRail();

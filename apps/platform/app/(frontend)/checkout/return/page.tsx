@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 
 export default function CheckoutReturnPage() {
   const router = useRouter();
-  const [message, setMessage] = useState("Проверяем защищённый возврат из Refref…");
+  const [message, setMessage] = useState("Проверяем результат оплаты…");
 
   useEffect(() => {
     const query = new URLSearchParams(window.location.search);
