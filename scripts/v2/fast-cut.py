@@ -53,6 +53,8 @@ DIAGNOSTIC_CODES = frozenset({
     'FAST_CUT_BACKUP_IDENTITY',
     'FAST_CUT_BACKUP_STALE',
     'FAST_CUT_COMMAND_FAILED',
+    'FAST_CUT_COMMAND_TIMEOUT',
+    'FAST_CUT_INVALID_JSON',
     'FAST_CUT_COMMERCE_GUARD',
     'FAST_CUT_COMMERCE_NOT_READY',
     'FAST_CUT_CONTROL_ROOM_NETWORK',
@@ -127,12 +129,14 @@ def failure_report(operation, error, started):
     reason = 'COMMAND_FAILED' if code == 'FAST_CUT_COMMAND_FAILED' else 'GUARD_REFUSED' if code else 'UNKNOWN'
     if isinstance(error, (subprocess.TimeoutExpired, TimeoutError)):
         reason = 'TIMEOUT'
+        code = 'FAST_CUT_COMMAND_TIMEOUT'
     elif isinstance(error, PermissionError):
         reason = 'PERMISSION'
     elif isinstance(error, FileNotFoundError):
         reason = 'MISSING_FILE'
     elif isinstance(error, json.JSONDecodeError):
         reason = 'INVALID_JSON'
+        code = 'FAST_CUT_INVALID_JSON'
     elif isinstance(error, sqlite3.Error):
         reason = 'SQLITE'
     report = {'state': 'FAST_CUT_HOLD', 'operation': operation,
@@ -141,9 +145,9 @@ def failure_report(operation, error, started):
               'observedAt': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}
     if code is not None:
         report['code'] = code
-        if type(error.detail) is str and error.detail in DIAGNOSTIC_DETAILS:
+        if type(error) is GuardRefusal and type(error.detail) is str and error.detail in DIAGNOSTIC_DETAILS:
             report['detail'] = error.detail
-        if type(error.http_status) is int and 100 <= error.http_status <= 599:
+        if type(error) is GuardRefusal and type(error.http_status) is int and 100 <= error.http_status <= 599:
             report['httpStatus'] = error.http_status
     return report
 
