@@ -2,8 +2,8 @@
   "schema": "flexperiment.canary-readiness-backport/1",
   "baseCommit": "56f864ee5b5325acd2ed5c5ad6ea756182326bf7",
   "baseSha256": "9ce826f47e8e07e1ea124fadc7ec39dcde5e4c52efe2094d9e80c4812a435583",
-  "upstreamCommit": "c8a637e3e94274dcde995753836b036e98df97db",
-  "helperSha256": "251dba8853660ebd6b2bf9695c00c07056a67be541932773c317c9e3243f27da",
+  "upstreamCommit": "b2702c6597da8d487322a1fee7a713d2d77d2de4",
+  "helperSha256": "80cfa254c650d53059b3cfcb98bbe911421aeecccf48d761e861a53fdf5f3708",
   "changedBaseNodes": [
     "GuardRefusal",
     "failure_report",
@@ -42,7 +42,7 @@
   },
   "upstreamNodeSha256": {
     "GuardRefusal": "60f65c2b4f26ea79305409b1b42d47e2b6dbfbbb28d89556ca1ca88f49ddcf78",
-    "failure_report": "9926f3330577726f8969cf35891e9c5ceeb519004c08532216afd1d9c670fb15",
+    "failure_report": "f86d0a19640f4f6ad37719c5f7ae06406a3a699a092c779402fac8c18ed63db9",
     "run": "155fbd39cb21f8a090a2abb92d18e446b36a53fdc2966b2014359261469d206c",
     "readiness": "084a785fe9123b60b4246b61ac5a08549aa89305a4fe4a875422c1b12567c691",
     "bounded_readiness": "f854c39962e758db1dd3f9e662bdd940f74708167097ed86044c4df27d277bf0",

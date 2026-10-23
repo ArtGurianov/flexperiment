@@ -1,15 +1,15 @@
 {
   "state": "READ_ONLY_BACKPORT_QUALIFIED_NOT_INSTALLED",
-  "observedAtUtc": "2026-10-23T01:17:52.002902+00:00",
-  "candidateSha256": "251dba8853660ebd6b2bf9695c00c07056a67be541932773c317c9e3243f27da",
+  "observedAtUtc": "2026-10-23T01:38:58.614796+00:00",
+  "candidateSha256": "80cfa254c650d53059b3cfcb98bbe911421aeecccf48d761e861a53fdf5f3708",
   "installedHelperSha256": "9ce826f47e8e07e1ea124fadc7ec39dcde5e4c52efe2094d9e80c4812a435583",
   "runtimeCheck": {
-    "state": "RUNTIME_CHECK_PASS_NOT_FINAL_ACCEPTANCE",
     "sourceCommit": "56f864ee5b5325acd2ed5c5ad6ea756182326bf7",
     "schemaFingerprint": "40ede1d98e15b510c920418cd525e039346890560e7e9dc2fe90aecd760b86a1",
     "fence": "OPEN",
     "ledgerSequence": 1,
-    "leases": 0
+    "leases": 0,
+    "state": "RUNTIME_CHECK_PASS_NOT_FINAL_ACCEPTANCE"
   },
   "freshness": {
     "status": "FRESH",
@@ -35,6 +35,6 @@
   "containersUnchanged": true,
   "privateInputsUnchanged": true,
   "helperStillBase": true,
-  "elapsedSeconds": 8.355,
+  "elapsedSeconds": 6.02,
   "noSnapshotUploadInstallRestartOrTimerChange": true
 }

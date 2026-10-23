@@ -1,6 +1,6 @@
 # Read-only compatibility qualification
 
-On23 October2026 at08:17:52 Novosibirsk, the exact candidate bytes identified
+On 23 October 2026 at 01:38:58 UTC, the exact candidate bytes identified
 by `candidateSha256` in [read-only-qualification.json](./read-only-qualification.json)
 were loaded into memory on adman-vps. Only check() and check_backup() ran.
 The candidate was not written to the host filesystem or installed.

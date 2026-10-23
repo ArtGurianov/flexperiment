@@ -12,7 +12,7 @@ output SHA-256, unchanged AST and the only admitted release vector.
 
 - Base helper: source `56f864ee5b5325acd2ed5c5ad6ea756182326bf7`, SHA-256
   `9ce826f47e8e07e1ea124fadc7ec39dcde5e4c52efe2094d9e80c4812a435583`.
-- Host improvements: PR273–275 at `c8a637e3e94274dcde995753836b036e98df97db`.
+- Host improvements: PR273–275 at `b2702c6597da8d487322a1fee7a713d2d77d2de4`.
 - Commerce/Admin source: `56f864ee5b5325acd2ed5c5ad6ea756182326bf7`;
   Platform source: `80a11bde55c38973bcde99b4a92ee9e09c5dc6ad`.
 - All three immutable image references must match the manifest exactly.
@@ -24,6 +24,13 @@ Only host probes change: commerce10s, platform15s, admin20s; subprocess30s;
 at most three fresh readiness attempts per role with5s pauses. Identity,
 database, fence, ledger, snapshot and upload are not retried. Only allowlisted
 stage/reason/detail/status reaches journals. There is no cached-success fallback.
+
+The timeout drop-in is 90 min. The full subprocess budget is 74 min: identity
+2,520 s, readiness/pauses 300 s, ledger 180 s, snapshot 900 s, copy 180 s,
+upload 180 s and readback 180 s. This leaves 16 min for local work/scheduling;
+it does not bound disk or CPU stalls. Tests derive command counts and timeout
+values from the helper and existing transport. Timeout/JSON failures receive
+fixed diagnostic codes without reflecting commands or upstream data.
 
 The current containers retain their existing deadlines and healthchecks. This
 does **not** install the8s Commerce deadline, fix Platform's internal3s wait,
@@ -85,7 +92,7 @@ named drop-in above, then daemon-reload. Preserve all existing OnFailure hooks.
 Restore only previously active schedules after candidate check/check-backup
 succeed. No container restart, image or mount change is part of this operation.
 
-Read back helper SHA-256, release vector, effective timeout30min, alert hooks,
+Read back helper SHA-256, release vector, effective timeout90min, alert hooks,
 timer state and next triggers. Compare container IDs/start times/images and
 configuration to the pre-apply record. A new manual backup is a separate
 snapshot/upload operation; do it only when that operation is authorized.

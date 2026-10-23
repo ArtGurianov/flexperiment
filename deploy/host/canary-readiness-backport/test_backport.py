@@ -424,11 +424,28 @@ class FastCut(unittest.TestCase):
         self.assertEqual(inspect.call_count,1);sleep.assert_not_called()
 
     def test_readiness_retries_fit_inside_the_backup_unit(self):
+        import ast,inspect,re
+        tree=ast.parse(Path(f.__file__).read_text())
+        def function(name):return next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name==name)
+        def runs(name):return [n for n in ast.walk(function(name)) if isinstance(n,ast.Call) and isinstance(n.func,ast.Name) and n.func.id=='run']
+        default=inspect.signature(f.run).parameters['timeout'].default
+        def timeout(call):return next((ast.literal_eval(k.value) for k in call.keywords if k.arg=='timeout'),default)
+        # Three role inspections plus the post-check Commerce inspection; Admin
+        # additionally checks the ingress network and the Commerce/proxy peers.
+        identity=(4*len(runs('inspect'))+len(runs('assert_runtime_networks')))*default
+        readiness=3*(f.READINESS_ATTEMPTS*f.READINESS_COMMAND_TIMEOUT+(f.READINESS_ATTEMPTS-1)*f.READINESS_RETRY_PAUSE)
+        transport=ast.parse((ROOT/'scripts/v2/scheduled-backup.py').read_text())
+        call=next(n for n in ast.walk(next(n for n in transport.body if isinstance(n,ast.FunctionDef) and n.name=='run'))
+                  if isinstance(n,ast.Call) and isinstance(n.func,ast.Attribute) and n.func.attr=='run')
+        transport_timeout=next(ast.literal_eval(k.value) for k in call.keywords if k.arg=='timeout')
+        s3_calls=sum(isinstance(n,ast.Call) and isinstance(n.func,ast.Attribute) and n.func.attr=='s3' for n in ast.walk(function('backup')))
+        worst=identity+readiness+sum(timeout(c) for c in runs('check')+runs('backup'))+s3_calls*transport_timeout
         unit=(LANE/'backup-timeout.conf').read_text()
-        minutes=int(__import__('re').search(r'TimeoutStartSec=(\d+)min',unit).group(1))
-        worst=3*(f.READINESS_ATTEMPTS*f.READINESS_COMMAND_TIMEOUT+(f.READINESS_ATTEMPTS-1)*f.READINESS_RETRY_PAUSE)
-        # Snapshot alone may take 900s; retries must leave it that and 5 minutes for copy/upload/readback.
-        self.assertLessEqual(worst+900+300,minutes*60)
+        seconds=int(re.search(r'TimeoutStartSec=(\d+)min',unit).group(1))*60
+        self.assertEqual(identity,14*180)
+        self.assertEqual(worst,4440)  # 74 min of subprocess limits, not the previous 25 min estimate.
+        self.assertGreaterEqual(seconds,worst+300)  # Additional local IO/scheduling allowance.
+        self.assertLess(6*3600+seconds,8*3600)  # A full allowed run still fits the freshness window.
 
     def test_actual_admin_nginx_readiness_has_new_upstream_source_and_retained_native_identity(self):
         target=self.candidate()['roles']['commerce']['sourceCommit']
@@ -499,9 +516,9 @@ class FastCut(unittest.TestCase):
         errors=[(f.GuardRefusal('FAST_CUT_FENCE'),'GUARD_REFUSED','FAST_CUT_FENCE'),
                 (f.GuardRefusal('FAST_CUT_'+secret),'UNKNOWN',None),
                 (ValueError('FAST_CUT_FENCE '+secret),'UNKNOWN',None),
-                (subprocess.TimeoutExpired(['curl',secret],9,output=secret.encode()),'TIMEOUT',None),
+                (subprocess.TimeoutExpired(['curl',secret],9,output=secret.encode()),'TIMEOUT','FAST_CUT_COMMAND_TIMEOUT'),
                 (PermissionError(secret),'PERMISSION',None),(FileNotFoundError(secret),'MISSING_FILE',None),
-                (json.JSONDecodeError(secret,secret,0),'INVALID_JSON',None),(HostileError(),'UNKNOWN',None)]
+                (json.JSONDecodeError(secret,secret,0),'INVALID_JSON','FAST_CUT_INVALID_JSON'),(HostileError(),'UNKNOWN',None)]
         for error,reason,code in errors:
             with self.subTest(reason=reason,code=code):
                 def refuse():
@@ -550,6 +567,18 @@ class FastCut(unittest.TestCase):
                 self.assertEqual(transport.s3.call_count,0 if stage in ['fence','snapshot'] else 1 if stage=='remote_upload' else 2)
                 self.assertEqual(commands,[] if stage=='fence' else ['exec'] if stage=='snapshot' else ['exec','cp'])
                 if stage=='remote_readback':self.assertEqual(report['code'],'FAST_CUT_REMOTE_BACKUP_HASH')
+
+    def test_docker_exec_timeout_keeps_a_fixed_code_and_never_reaches_snapshot(self):
+        vector=f.validate_release(self.commerce_candidate());out=io.StringIO()
+        def command(*args,**kwargs):raise subprocess.TimeoutExpired(['docker','exec','SYNTHETIC_SECRET'],30)
+        with patch.object(f,'release',return_value=vector),patch.object(f,'inspect',return_value=('commerce',{})), \
+             patch.object(f.subprocess,'run',side_effect=command),patch.object(f.time,'sleep'),patch.object(f,'transport') as transport, \
+             contextlib.redirect_stdout(out),contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(f.main(['backup']),1)
+        report=json.loads(out.getvalue());self.assertEqual(report['code'],'FAST_CUT_COMMAND_TIMEOUT')
+        self.assertEqual(report['stage'],'commerce_readiness');self.assertNotIn('SYNTHETIC_SECRET',out.getvalue())
+        transport.assert_not_called()
+
 
 class CompatibilityScope(unittest.TestCase):
     def setUp(self):

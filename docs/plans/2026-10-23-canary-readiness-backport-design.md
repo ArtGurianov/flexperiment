@@ -16,14 +16,14 @@ the canonical helper or copy the current main helper over the installed file.
 Keep a temporary compatibility helper in
 `deploy/host/canary-readiness-backport/`. Start from the exact installed bytes
 and transplant only the host probe bounds, allowlisted diagnostics and finite
-readiness waits reviewed in PR273–275 (upstream `c8a637e3e94274dcde995753836b036e98df97db`).
+readiness waits reviewed in PR273–275 (upstream `b2702c6597da8d487322a1fee7a713d2d77d2de4`).
 Keep snapshot/upload, signed authority, fence, schema, artifact and network
 checks unchanged. Add a strict pin to the currently admitted role/image/source
 vector. The old legacy release fallback is refused. A future runtime cannot
 reuse this pre-storefront helper by merely replacing its release descriptor.
 Expose only check, check-backup and backup through this compatibility CLI.
 
-An optional systemd drop-in raises only the backup unit timeout to30 minutes.
+An optional systemd drop-in raises only the backup unit timeout to90 minutes.
 It does not replace the existing unit or its alert hooks. No application,
 Compose file, timer cadence, credential, mount or erasure authority changes.
 
