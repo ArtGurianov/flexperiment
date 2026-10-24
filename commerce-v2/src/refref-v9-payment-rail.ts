@@ -5,7 +5,8 @@ import {AmbiguousRailCreateError,PaymentInitiationStoppedError,RailRefusalError,
  type RailResolution,type PaymentRefundInput,type RefundSubmission,type AcceptedRefund} from "./checkout";
 import type {RefundEnvelope} from "./refund-envelope";
 import {digest} from "./refref-contract/shared-checkout-snapshot";
-import {merchantPurchase,consumePurchaseQuote,consumePurchaseQualification} from "./purchase-manifest";
+import {merchantPurchase,consumePurchaseQuote,consumePurchaseQualification,consumePurchaseRefunds} from "./purchase-manifest";
+import {providerPaymentIdentity} from "./refref-contract/purchase-manifest-v1";
 import type {PurchaseQuoteEnvelopeV2,PurchaseQualification} from "./refref-contract/purchase-manifest-v1";
 const viewSchema=z.object({
  schema:z.literal("refref.purchase-payment/1"),businessId:z.string(),purchaseRef:z.string(),payableHash:z.string(),
@@ -16,6 +17,8 @@ class HttpError extends Error{constructor(readonly status:number){super("V9_HTTP
 export interface V9RailConfig {
  apiBaseUrl:string;apiKey:string;businessId:string;environment:"local"|"test";
  fetch?:typeof fetch;timeoutMs?:number;
+ /** Local opt-in observation only: never creates or submits a bank refund. */
+ externalRefundObservation?:boolean;
 }
 export class RefrefV9PaymentRail implements PaymentRail{
  readonly purchaseManifest;
@@ -125,8 +128,35 @@ export class RefrefV9PaymentRail implements PaymentRail{
   if(!current.purchaseQualification)throw new Error("PURCHASE_QUALIFICATION_REQUIRED");
   await this.json(this.path(input.orderPublicId)+"/fulfillment","POST",{payableHash:current.purchaseQualification.payableHash});
  }
- async prepareRefund(_input:PaymentRefundInput):Promise<RefundEnvelope>{void _input;throw new Error("V9_REFUND_TRANSPORT_NOT_QUALIFIED");}
- async submitRefund(_envelope:RefundEnvelope):Promise<RefundSubmission>{void _envelope;throw new Error("V9_REFUND_TRANSPORT_NOT_QUALIFIED");}
- async readRefundExecution(_id:string):Promise<RefundSubmission>{void _id;throw new Error("V9_REFUND_TRANSPORT_NOT_QUALIFIED");}
- async readRefund(_id:string):Promise<AcceptedRefund|null>{void _id;throw new Error("V9_REFUND_TRANSPORT_NOT_QUALIFIED");}
+ private observationEnabled(){if(!this.config.externalRefundObservation)throw new Error("V9_REFUND_TRANSPORT_NOT_QUALIFIED");}
+ async prepareRefund(input:PaymentRefundInput):Promise<RefundEnvelope>{
+  this.observationEnabled();if(!input.purchase)throw new Error("PURCHASE_QUOTE_REQUIRED");
+  const paid=await this.read({orderPublicId:input.orderPublicId,attemptId:input.attemptId,quote:input.purchase});
+  const line=input.purchase.payable.lines.find(l=>l.lineRef===input.lineRef);
+  if(!paid.purchaseQualification||!line||input.amountKopecks!==line.payableAmountKopecks)throw new Error("REFUND_FULL_ONLY");
+  const refundId="v9r:"+Buffer.from(JSON.stringify({orderPublicId:input.orderPublicId,lineRef:input.lineRef})).toString("base64url");
+  const payment=paid.purchaseQualification.payment.payment;
+  return {idempotencyKey:input.idempotencyKey,paymentId:providerPaymentIdentity(payment),amountKopecks:input.amountKopecks,
+   body:{schema:"refref.v9-refund-observation/1",refundId}};
+ }
+ /** PaymentRail's submission seam observes already executed external refunds.
+  * It makes GETs only and grants no bank execution capability. */
+ async submitRefund(envelope:RefundEnvelope):Promise<RefundSubmission>{
+  this.observationEnabled();const b=z.object({schema:z.literal("refref.v9-refund-observation/1"),refundId:z.string()}).strict().parse(envelope.body);
+  const refund=await this.readRefund(b.refundId);
+  if(refund&&(refund.paymentId!==envelope.paymentId||refund.amountKopecks!==envelope.amountKopecks))throw new Error("REFUND_FACT_MISMATCH");
+  return {status:"PROCESSING",refundExecutionId:b.refundId,...(refund?{canonicalRefundId:b.refundId}:{})};
+ }
+ async readRefundExecution(id:string):Promise<RefundSubmission>{
+  this.observationEnabled();return {status:"PROCESSING",refundExecutionId:id,...(await this.readRefund(id)?{canonicalRefundId:id}:{})};
+ }
+ async readRefund(id:string):Promise<AcceptedRefund|null>{
+  this.observationEnabled();if(!id.startsWith("v9r:")||id.length>1024)throw new Error("PURCHASE_REFUND_INVALID");
+  const binding=z.object({orderPublicId:z.string(),lineRef:z.string()}).strict().parse(JSON.parse(Buffer.from(id.slice(4),"base64url").toString()));
+  const paid=await this.read({orderPublicId:binding.orderPublicId});if(!paid.purchaseQualification)throw new Error("PURCHASE_QUALIFICATION_REQUIRED");
+  const rawQuote=await this.json(this.path(binding.orderPublicId)) as PurchaseQuoteEnvelopeV2;
+  const p=rawQuote.payable,quote=consumePurchaseQuote(merchantPurchase(this.config.businessId,binding.orderPublicId,p.lines.map(({lineRef,offerRef,quantity,merchantAmountKopecks,service})=>({lineRef,offerRef,quantity,merchantAmountKopecks,service}))),rawQuote);
+  const refund=consumePurchaseRefunds(quote,paid.purchaseQualification,binding.lineRef,await this.json(this.path(binding.orderPublicId)+"/refunds"));
+  return refund?{id,...refund}:null;
+ }
 }

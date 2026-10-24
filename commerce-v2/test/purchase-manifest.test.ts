@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import producers from "./fixtures/purchase-manifest/producers.json";
 import policy from "./fixtures/purchase-manifest/claim-policy.json";
-import { merchantPurchase, consumePurchaseQuote, acceptPurchase, consumePurchaseQualification, purchaseRefundAllocation } from "../src/purchase-manifest";
+import { merchantPurchase, consumePurchaseQuote, acceptPurchase, consumePurchaseQualification, purchaseRefundAllocation, consumePurchaseRefunds } from "../src/purchase-manifest";
 import { resolvePurchaseV2, assertClaimAdmission, claimRewardEffect, assertCompatibleCampaigns,
   type PurchaseInputV1, type FrozenTerms, type PurchaseAcceptance, type BankFullPayment,
   type CancellationClaimV1, type ClaimDecisionSnapshot, type RefundBreakdown } from "../src/refref-contract/purchase-manifest-v1";
@@ -103,4 +103,36 @@ describe("second review: canonical acceptance times", () => {
     const f = fixtures.find(f => f.name === "immediate-lms")!;
     expect(() => acceptPurchase(f.frozen, f.envelope, acceptedAt)).toThrow("PURCHASE_SCHEMA_INVALID:acceptance");
   });
+});
+
+
+describe("v9 external refund observation keeps bank and allocation authority separate",()=>{
+ const scenario=policy.scenarios.find(s=>s.name==="all-three-cancelled-costs-retained")!;
+ const f=fixtures.find(f=>f.name===scenario.producer)!;
+ const qualified=consumePurchaseQualification(f.frozen,f.envelope,f.acceptance,f.payment,f.at);
+ const view=()=>{
+  const amount=f.envelope.payable.lines[0].payableAmountKopecks;
+  const breakdown={...structuredClone(scenario.claim.refunds[0]),amountKopecks:amount,lineAllocations:[{lineRef:"tour",amountKopecks:amount}]};
+  const fact={...structuredClone(scenario.decision.refundStates[0]),amountKopecks:amount};
+  return {schema:"refref.purchase-refunds/1",businessId:f.envelope.payable.businessId,purchaseRef:f.envelope.payable.purchaseRef,payableHash:f.envelope.payableHash,refunds:[{breakdown,fact}]};
+ };
+ it("only the full independently succeeded allocation completes the existing full-line refund flow",()=>{
+  expect(consumePurchaseRefunds(f.envelope,qualified,"tour",view())?.amountKopecks).toBe(f.envelope.payable.lines[0].payableAmountKopecks);
+  const pending=view();pending.refunds[0].fact.status="PENDING";delete (pending.refunds[0].fact as {succeededAt?:string}).succeededAt;
+  expect(consumePurchaseRefunds(f.envelope,qualified,"tour",pending)).toBeNull();
+  const partial=view();partial.refunds[0].breakdown.amountKopecks--;partial.refunds[0].breakdown.lineAllocations[0].amountKopecks--;partial.refunds[0].fact.amountKopecks--;
+  expect(consumePurchaseRefunds(f.envelope,qualified,"tour",partial)).toBeNull();
+ });
+ it.each(["foreign-bank","foreign-allocation","amount","allocation","duplicate","missing-fact","future","backwards"])("refuses or defers %s without revoking access",kind=>{
+  const raw=view();const r=raw.refunds[0];
+  if(kind==="foreign-bank")r.fact.operation.paymentRef="foreign";
+  if(kind==="foreign-allocation")r.breakdown.purchaseRef="foreign";
+  if(kind==="amount")r.fact.amountKopecks++;
+  if(kind==="allocation")r.breakdown.lineAllocations[0].amountKopecks--;
+  if(kind==="duplicate")raw.refunds.push(structuredClone(r));
+  if(kind==="future")r.fact.verifiedAt="2099-01-01T00:00:00.000Z";
+  if(kind==="backwards")r.fact.verifiedAt="2000-01-01T00:00:00.000Z";
+  if(kind==="missing-fact"){expect(consumePurchaseRefunds(f.envelope,qualified,"tour",{...raw,refunds:[{breakdown:r.breakdown,fact:null}]})).toBeNull();}
+  else expect(()=>consumePurchaseRefunds(f.envelope,qualified,"tour",raw)).toThrow();
+ });
 });

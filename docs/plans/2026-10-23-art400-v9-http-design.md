@@ -15,3 +15,32 @@ The Refref runner owns disposable PostgreSQL identity, installation and cleanup.
 Local scope: LMS and guest LAB separately, explicit legal consent, one payment/entitlement/ticket, last-seat refusal, lost ACK after commit and restart, malformed quote/readback, terminal retry, foreign order/hash refusal, delayed bank qualification. Browser navigation, live identity/proxy/quota installation, independent bank/profile qualification and ART-412's other blockers are separate. Multi-line financial vectors do not introduce a buyer basket; current merchant storefronts remain one offer per intent.
 
 CUSTODY_IMPACT: NO — source and isolated disposable fixtures only. No merge, host installation, bank operation, production migration, profile opening or financial activation is authorized by this branch.
+
+
+## Approved bounded resilience/F02 extension — 24 October 2026
+
+The stand now checks four persisted crash classes (including distinct money and
+access checkpoints), three controlled races and the earliest TTL/hold/LAB-start
+deadline. Refref's real HTTP child is killed with SIGKILL; its provider journal
+and disposable PG survive. No universal fault-injection framework is introduced.
+
+The default refund refusal remains. A rail instance may explicitly set
+`externalRefundObservation: true` in a local/test stand to observe already
+performed external refunds using GET-only Refref readback. This is not bank
+refund execution: existing `prepareRefund`/`submitRefund`/execution reconciliation
+seams retain a sealed observation envelope and apply only independently bound
+SUCCEEDED allocations totalling the original full line amount. The existing
+Flexperiment full-line refund/access rules are retained; partial or PENDING
+readbacks preserve access. No bank write, fiscal-return qualification or RC.2
+fallback is added. Runtime startup does not enable this observation opt-in.
+
+F02 uses existing Control Room session-authenticated approval/execution handlers
+and existing entitlement/ticket updates. Refref product claim/supplement/decision
+commands use a different session boundary; merchant cannot import bank/schedule
+facts or impersonate a MODERATOR. Independent evidence stores remain separate.
+A financial multi-line wire test checks D1.2 equality without claiming a basket
+UI. The EXPIRED case is a labelled historical fixture, not a real ten-day wait.
+
+Targeted tests precede final exact-head CI and container qualification. Earlier
+proof bundles remain unchanged. Browser Better Auth login, production quota,
+provider profiles, legal/fiscal acceptance and ART-412 are separate gates.
