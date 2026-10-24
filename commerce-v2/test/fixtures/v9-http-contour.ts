@@ -280,7 +280,8 @@ try{
    const starts=(db.prepare("SELECT starts_at FROM lab_occurrences WHERE id='lab'").get() as {starts_at:string}).starts_at;
    assert.equal(saved.expires_at,[new Date(Date.parse(saved.created_at)+900000).toISOString(),saved.seat_hold_expires_at,starts].sort()[0]);
    clock=new Date(Date.parse(saved.expires_at)+1);
-   const old=await control({stats:true});const late=await post("/v1/checkout",{quoteId:q.body.quoteId},"late","LAB",token);assert(late.status>=400);
+   const reviewed=labLegalReview(db);
+   const old=await control({stats:true});const late=await post("/v1/checkout",{quoteId:q.body.quoteId,labAcceptance:{personalDataConsent:true,termsAccepted:true,receiptContactAccepted:true,releaseVersion:reviewed.releaseVersion,manifestSha256:reviewed.manifestSha256}},"late","LAB",token);assert(late.status>=400);
    const again=await post("/v1/checkout/preview",{offerRef:"lab:one"},"expired-recovery","LAB",token);assert(again.status>=400);
    assert.equal((db.prepare("SELECT expires_at FROM checkout_quotes WHERE id=?").get(q.body.quoteId) as {expires_at:string}).expires_at,saved.expires_at);
    assert.equal((await control({stats:true})).begunAttempts,old.begunAttempts);
