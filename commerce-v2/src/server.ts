@@ -7,6 +7,7 @@ import { verifySmartCaptcha } from "./smartcaptcha";
 import { playbackKeyringFromEnvironment } from "./playback-auth";
 import { HttpKinescopeClient } from "./kinescope";
 import { MockPaymentRail, reconcilePendingCheckouts } from "./checkout";
+import { RefrefV9PaymentRail } from "./refref-v9-payment-rail";
 import { RefrefPaymentRail } from "./refref-payment-rail";
 import { readBuildIdentity } from "./build-identity";
 import { createRefrefReadinessProbe } from "./readiness";
@@ -89,7 +90,13 @@ const kinescopeDrmAuth = kinescopeDrmKeyring && kinescopeDrmUsername && kinescop
 // The refund envelope keyring (ART-174): Refref's rail does not start without one, and an invalid one never starts.
 const refundEnvelopeKeys = refundEnvelopeKeyringFromEnvironment(process.env);
 if (config.paymentMode === "refref" && !refundEnvelopeKeys) throw new Error("REFUND_ENVELOPE_KEYS_REQUIRED");
+const v9LocalHttpUrl=process.env.REFREF_V9_LOCAL_HTTP_URL;
+if(v9LocalHttpUrl && !["local","test"].includes(config.deployEnvironment))throw new Error("V9_LOCAL_QUALIFICATION_ONLY");
 const paymentRail = config.paymentMode === "mock" ? new MockPaymentRail()
+  : config.paymentMode === "refref" && config.refref && v9LocalHttpUrl ? new RefrefV9PaymentRail({
+    apiBaseUrl:v9LocalHttpUrl,apiKey:config.refref.apiKey,businessId:config.refref.merchantId,
+    environment:config.deployEnvironment as "local"|"test",
+  })
   : config.paymentMode === "refref" && config.refref ? new RefrefPaymentRail({
     apiBaseUrl: config.refref.apiBaseUrl,
     vnextApiBaseUrl: config.refref.vnextApiBaseUrl,

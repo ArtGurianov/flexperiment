@@ -1,0 +1,16 @@
+.git
+**/node_modules
+**/dist
+**/*.tsbuildinfo
+**/.env
+**/.env.*
+**/.DS_Store
+**/.next
+**/out
+commerce-data
+commerce-v2-data
+.pnpm-store
+*.log
+
+**/.drizzle-introspect
+**/coverage

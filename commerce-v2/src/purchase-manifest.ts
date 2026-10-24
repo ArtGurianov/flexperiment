@@ -4,7 +4,7 @@ import schema from "./refref-contract/purchase-manifest-v2.schema.json";
 import { digest } from "./refref-contract/shared-checkout-snapshot";
 import { assertClaimPolicyAdmissible, purchaseInputHash, purchasePayableHash, qualifyPurchase,
   type PurchaseInputV1, type PurchaseLine, type PurchaseQuoteEnvelopeV2, type PurchaseAcceptance,
-  type BankFullPayment, type PurchaseQualification, type RefundBreakdown } from "./refref-contract/purchase-manifest-v1";
+  providerPaymentIdentity, refundOperationIdentity, type BankRefundState, type BankFullPayment, type PurchaseQualification, type RefundBreakdown } from "./refref-contract/purchase-manifest-v1";
 
 // Use the published closed schema without coercion, defaults or removal of unknown fields.
 const ajv = new Ajv2020({ strict: false, allErrors: true });
@@ -81,4 +81,31 @@ export function purchaseRefundAllocation(envelope: PurchaseQuoteEnvelopeV2, refu
   if (!Number.isSafeInteger(refund.amountKopecks) || refund.amountKopecks <= 0
     || total !== BigInt(refund.amountKopecks)) throw new Error("PURCHASE_REFUND_ALLOCATION_INVALID");
   return { breakdown: structuredClone(refund), breakdownHash: digest(refund), rewardKopecks: payable.rewardKopecks };
+}
+
+/** Read-only completion of the existing full-line refund flow. Allocations are
+ * merchant materials; only separately ingested bank SUCCEEDED facts count. */
+export function consumePurchaseRefunds(quote:PurchaseQuoteEnvelopeV2,qualification:PurchaseQualification,lineRef:string,raw:unknown) {
+  const o=raw as {schema:string;businessId:string;purchaseRef:string;payableHash:string;refunds:{breakdown:RefundBreakdown;fact:BankRefundState|null}[]};
+  const p=quote.payable,line=p.lines.find(l=>l.lineRef===lineRef);
+  if(!o||Object.keys(o).sort().join()!==["schema","businessId","purchaseRef","payableHash","refunds"].sort().join()
+    ||o.schema!=="refref.purchase-refunds/1"||o.businessId!==p.businessId||o.purchaseRef!==p.purchaseRef||o.payableHash!==quote.payableHash
+    ||!Array.isArray(o.refunds)||!line)throw new Error("PURCHASE_REFUND_BINDING_MISMATCH");
+  const payment=qualification.payment.payment,seen=new Set<string>();let amount=0;
+  for(const item of o.refunds){
+    if(!item||Object.keys(item).sort().join()!=="breakdown,fact")throw new Error("PURCHASE_REFUND_INVALID");
+    const r=item.breakdown;validate("refund",r);
+    const binding=(x:RefundBreakdown|BankRefundState)=>x.businessId===p.businessId&&x.purchaseRef===p.purchaseRef&&x.payableHash===quote.payableHash
+      &&x.operation.provider===payment.provider&&x.operation.connectionId===payment.connectionId&&x.operation.paymentRef===payment.paymentRef&&x.currency==="RUB";
+    const id=refundOperationIdentity(r);if(!binding(r)||seen.has(id))throw new Error("PURCHASE_REFUND_BINDING_MISMATCH");seen.add(id);
+    const allocated=r.lineAllocations.reduce((n,a)=>n+a.amountKopecks,0);
+    if(allocated!==r.amountKopecks||r.lineAllocations.some(a=>!p.lines.some(l=>l.lineRef===a.lineRef)))throw new Error("PURCHASE_REFUND_ALLOCATION_MISMATCH");
+    const f=item.fact;if(!f)continue;validate("bankRefundState",f);
+    if(!binding(f)||refundOperationIdentity(f)!==id||f.amountKopecks!==r.amountKopecks)throw new Error("PURCHASE_REFUND_FACT_MISMATCH");
+    if(f.status!=="SUCCEEDED")continue;
+    if(!f.succeededAt||Date.parse(f.succeededAt)>Date.parse(f.verifiedAt)||Date.parse(f.verifiedAt)>Date.now())throw new Error("PURCHASE_REFUND_CHRONOLOGY_MISMATCH");
+    amount+=r.lineAllocations.filter(a=>a.lineRef===lineRef).reduce((n,a)=>n+a.amountKopecks,0);
+  }
+  if(!Number.isSafeInteger(amount)||amount>line.payableAmountKopecks)throw new Error("PURCHASE_REFUND_ALLOCATION_MISMATCH");
+  return amount===line.payableAmountKopecks&&amount>0?{paymentId:providerPaymentIdentity(payment),amountKopecks:amount,status:"SUCCEEDED" as const}:null;
 }
