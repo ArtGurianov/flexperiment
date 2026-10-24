@@ -44,3 +44,20 @@ UI. The EXPIRED case is a labelled historical fixture, not a real ten-day wait.
 Targeted tests precede final exact-head CI and container qualification. Earlier
 proof bundles remain unchanged. Browser Better Auth login, production quota,
 provider profiles, legal/fiscal acceptance and ART-412 are separate gates.
+
+
+## Source review follow-up — 24 October 2026
+
+The payment 400/409 catch stays conservative. Refref publishes no request-bound
+non-acceptance receipt, so neither the status alone nor a failed/404 readback
+proves the original payment absent. Twenty targeted cases cover 400/409 with
+valid PENDING/qualified PAID readback, unavailable/unauthorized/malformed/wrong
+binding readback, and known-attempt recovery with no POST. They deliberately
+prevent converting a resolution-only refusal into a payment terminal outcome.
+The ordinary composition root still does not enable externalRefundObservation;
+its default refusal now covers all four refund methods before network I/O.
+
+The companion Refref change moves asynchronous terms selection outside SQL
+transactions, then rechecks the immutable quote and admission under the lock.
+This needs neither a new financial model nor a new migration. #279 remains an
+independent ART-398/379 review target; this follow-up does not merge or modify it.

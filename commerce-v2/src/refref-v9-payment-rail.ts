@@ -109,6 +109,9 @@ export class RefrefV9PaymentRail implements PaymentRail{
     acceptance:input.purchaseAcceptance,snapshot:input.snapshot,snapshotHash:input.snapshotHash,successUrl:input.successUrl,
     ...(input.snapshot.paymentObligations[0].fiscalizationMode==="PROVIDER"?{receiptContact:{email:input.customerEmail}}:{})}),expected);
   }catch{
+   // Unlike resolution refusal, a payment 4xx is not a non-acceptance receipt:
+   // 409 can coexist with the original accepted attempt, and failed readback
+   // proves no absence. Recover only that order; never unlock a fresh intent.
    try{return await this.read(expected);}catch{throw new AmbiguousRailCreateError();}
   }
  }
