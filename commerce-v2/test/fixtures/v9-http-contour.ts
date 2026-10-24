@@ -1,5 +1,9 @@
 /** Spawned only by the isolated Refref qualification runner. Never imported by the runtime. */
 import assert from "node:assert/strict";
+import {spawn} from "node:child_process";
+import {mkdtempSync,rmSync} from "node:fs";
+import {tmpdir} from "node:os";
+import {join} from "node:path";
 import {createHash,randomBytes,randomUUID} from "node:crypto";
 import {serve} from "@hono/node-server";
 import Database from "better-sqlite3";
@@ -31,12 +35,13 @@ const capture:typeof fetch=async(url,init)=>{
  return fetch(url,init);
 };
 const rail=new RefrefV9PaymentRail({...cfg,fetch:capture,externalRefundObservation:scenario.startsWith("F02_"),...(scenario==="A_TIMEOUT"?{timeoutMs:150}:{})});
-const db=new Database(":memory:");migrateV2(db);
+const db=new Database(process.env.V9_E2E_DB_FILE??":memory:");migrateV2(db);
 const origins={platform:"https://platform.test",lab:"https://lab.test",admin:"https://admin.test",api:"https://api.test"};
 let clock=new Date();
 const config={...testCheckoutConfig,paymentMode:"refref" as const,refref:{apiKey:key,merchantId:businessId,merchantSlug:"isolated",
  apiBaseUrl:base,handoffStateSecret:"synthetic-handoff-secret",checkoutOrigin:"https://checkout.refref.test",
  vnextApiBaseUrl:base,vnextCheckoutStorefronts:["COURSES","LAB"] as ("COURSES"|"LAB")[]}};
+if(!(db.prepare("SELECT 1 FROM products LIMIT 1").get())){
 db.exec("INSERT INTO customers(id,email_normalized) VALUES ('customer','student@example.test')");
 for(const storefront of ["COURSES","LAB"])db.prepare("INSERT INTO legal_releases(id,storefront,version,manifest_json,effective_at,active) VALUES (?,?,?,?,?,1)")
  .run(storefront,storefront,storefront+"-b",stageBLegalManifestJson,"2026-10-20");
@@ -53,6 +58,7 @@ db.prepare("INSERT INTO lab_occurrences(id,occurrence_ref,city_id,title,starts_a
 db.exec("INSERT INTO products(id,product_ref,kind,access_model,occurrence_ref) VALUES ('lab','lab:one','LAB','PAID','lab:one')");
 db.exec("INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode) VALUES ('lab','lab:one','lab',10000,'PUBLIC')");
 qualifyTestFiscalPolicies(db);
+}
 const contexts=new BrowserContexts({db,origins,config:{maxAgeSeconds:{COURSES:2592000,LAB:2592000}},now:()=>clock,schedule:()=>{}});
 const adminAuth={origin:origins.admin,sessionSecret:"isolated-admin-session-secret-32-chars",passwordScrypt:"unused"};
 const adminSession=issueControlRoomSession(adminAuth.sessionSecret,"singleton-admin",Date.now());
@@ -166,7 +172,24 @@ async function f02(){
 }
 try{
  await control({paymentState:"PAID",bankEvidence:true,dropPaymentAckOnce:false,corruptQuotes:false,tamperPaymentHash:false,limiterFailure:false,admission:true,rewardType:"PERCENT",eligibleNone:false});
- if(scenario.startsWith("F02_")){await f02();}
+ if(scenario.startsWith("A_ACCESS_")){
+  const lab=scenario.endsWith("_LAB"),before=scenario.includes("BEFORE");
+  if(process.env.V9_E2E_ACCESS_PHASE==="crash"){
+   if(before){const original=rail.create.bind(rail);rail.create=async(...args)=>{const value=await original(...args);if(value.state==="PAID")process.kill(process.pid,"SIGKILL");return value;};}
+   if(lab){
+    const token=process.env.V9_E2E_GUEST_TOKEN!;await post("/v1/lab/guest/start",{email:"crash@example.test",accessToken:token},"access-start","LAB",token);
+    const q=await post("/v1/checkout/preview",{offerRef:"lab:one"},"access-preview","LAB",token);assert.equal(q.status,200);
+    const legal=labLegalReview(db);const paid=await post("/v1/checkout",{quoteId:q.body.quoteId,labAcceptance:{personalDataConsent:true,termsAccepted:true,receiptContactAccepted:true,releaseVersion:legal.releaseVersion,manifestSha256:legal.manifestSha256}},"access-pay","LAB",token);assert.equal(paid.body.state,"PAID");
+   }else{const q=await preview();assert.equal((await pay(q.body)).body.state,"PAID");}
+   process.kill(process.pid,"SIGKILL");
+  }else{
+   clock=new Date(Date.now()+180000);await reconcilePendingCheckouts(db,new RefrefV9PaymentRail(cfg),clock.toISOString(),config);
+   await reconcilePendingCheckouts(db,new RefrefV9PaymentRail(cfg),clock.toISOString(),config);
+   assert.equal(count("checkout_attempts"),1);
+   if(lab){assert.equal(count("lab_tickets"),1);assert.equal(readLabTicket(db,process.env.V9_E2E_GUEST_TOKEN!).status,"VALID");}
+   else assert.equal(count("course_entitlements"),1);
+  }
+ }else if(scenario.startsWith("F02_")){await f02();}
  else if(scenario.startsWith("A_")&&scenario!=="A_LAB_DEADLINE"){
   const q=await preview();assert.equal(q.status,200,JSON.stringify(q));
   const saved=db.prepare("SELECT * FROM checkout_quotes WHERE id=?").get(q.body.quoteId) as {expires_at:string;seat_hold_expires_at:string;created_at:string;resolution_request_json:string};
@@ -322,4 +345,23 @@ try{
 
 
 }
-main().catch(error=>{console.error(error);process.exitCode=1;});
+async function accessCrash(){
+ const scenario=process.env.V9_E2E_SCENARIO!,dir=mkdtempSync(join(tmpdir(),"v9-access-")),file=join(dir,"commerce.sqlite"),token=randomBytes(32).toString("base64url");
+ try{
+  let saved:unknown,beforeAccess=0;
+  for(const phase of ["crash","resume"]){
+   const result=await new Promise<{code:number|null;signal:NodeJS.Signals|null;output:string}>((resolve,reject)=>{
+    const child=spawn(process.execPath,["--import","tsx",process.argv[1]],{env:{...process.env,V9_E2E_DB_FILE:file,V9_E2E_ACCESS_PHASE:phase,V9_E2E_GUEST_TOKEN:token},stdio:["ignore","pipe","pipe"]});
+    let output="",errors="";child.stdout.on("data",b=>output+=b);child.stderr.on("data",b=>errors+=b);child.on("error",reject);child.on("exit",(code,signal)=>code&&code!==0?reject(new Error(errors)):resolve({code,signal,output}));
+   });
+   const db=new Database(file,{readonly:true});
+   const frozen=db.prepare("SELECT expires_at,resolution_request_json,rail_quote_json FROM checkout_quotes").get();
+   const access=(db.prepare("SELECT (SELECT count(*) FROM course_entitlements)+(SELECT count(*) FROM lab_tickets) n").get() as {n:number}).n;
+   if(phase==="crash"){assert.equal(result.signal,"SIGKILL");saved=frozen;beforeAccess=access;assert.equal(access,scenario.includes("BEFORE")?0:1);}
+   else{assert.equal(result.code,0);assert.deepEqual(frozen,saved);assert.equal(access,1);const final=JSON.parse(result.output.trim().split("\n").at(-1)!);console.log(JSON.stringify({...final,details:{consumerSignal:"SIGKILL",beforeAccess,afterAccess:access,frozenCheckoutPreserved:true}}));}
+   db.close();
+  }
+ }finally{rmSync(dir,{recursive:true,force:true});}
+}
+const run=process.env.V9_E2E_SCENARIO?.startsWith("A_ACCESS_")&&!process.env.V9_E2E_ACCESS_PHASE?accessCrash:main;
+run().catch(error=>{console.error(error);process.exitCode=1;});
