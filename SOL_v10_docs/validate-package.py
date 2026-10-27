@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check this independent documentation package, never runtime/transport/provider E2E."""
+"""Check the reviewed SOL documentation package, never runtime/transport/provider E2E."""
 import argparse
 import hashlib
 import json
@@ -57,7 +57,10 @@ counts['verified_flexperiment_blobs'] = source_files(baseline['flexperiment'], R
 counts['refref_manifest_entries'] = source_files(baseline['refref'], args.refref_repo)
 counts['verified_refref_blobs'] = counts['refref_manifest_entries'] if args.refref_repo else 0
 require(baseline['independence']['otherAgentMaterialsRead'] is False and
-        baseline['independence']['otherAgentBranchesRead'] is False, 'Independent preparation scope changed')
+        baseline['independence']['otherAgentBranchesRead'] is False, 'Initial independent preparation scope changed')
+require(baseline['reviewProvenance']['comparisonAuthorized'] is True and
+        baseline['reviewProvenance']['otherAgentMaterialsReadAfterAuthorization'] is True,
+        'Post-comparison revision provenance missing')
 require(baseline['verificationScope']['transportE2E'] == 'NOT_RUN' and
         baseline['verificationScope']['providerEvidenceE2E'] == 'NOT_RUN', 'Design claims runtime proof')
 
@@ -111,10 +114,14 @@ counts['local_links'] = links
 counts['local_anchors'] = anchors
 
 scenarios = (BASE / '06-migration-and-e2e.md').read_text()
-ids = re.findall(r'^\| (FX10-(?:COM|LMS|LAB)-\d{3}) \|', scenarios, re.M)
+ids = re.findall(r'^\| (FX10-(?:COM|LMS|LAB|RES)-\d{3}) \|', scenarios, re.M)
 expected = manifest['plannedAcceptanceCaseIds']
 require(len(ids) == len(set(ids)) == len(expected) and set(ids) == set(expected), 'Acceptance case identities differ')
-require(len(ids) == 60, 'Acceptance count changed without explicit review')
+require(len(ids) == 80, 'Acceptance count changed without explicit review')
+for group, size in [('COM', 38), ('LMS', 12), ('LAB', 17), ('RES', 13)]:
+    require({item for item in ids if item.startswith('FX10-' + group + '-')} ==
+            {f'FX10-{group}-{number:03d}' for number in range(1, size + 1)},
+            'Acceptance group has a missing or unexpected identity: ' + group)
 counts['planned_acceptance_cases'] = len(ids)
 
 if args.refref_repo:

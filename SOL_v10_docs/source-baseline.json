@@ -5,7 +5,7 @@
   "independence": {
     "otherAgentMaterialsRead": false,
     "otherAgentBranchesRead": false,
-    "scope": "Only current main source, approved upstream Refref v10 and this SOL package; no OPUS comparison performed."
+    "scope": "Historical independent preparation at d25d8933d8f61e30fed89c6ee2869939e692f06a only; see reviewProvenance for this reviewed revision."
   },
   "flexperiment": {
     "repository": "ArtGurianov/flexperiment",
@@ -260,6 +260,11 @@
         "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/src/browser-context.ts"
       },
       {
+        "path": "commerce-v2/src/checkout-handoff.ts",
+        "sha256": "e0a645707c8ff923d4aebd98aecbf7b26bd64cbbbd5d944ea15ab49baef4b2fa",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/src/checkout-handoff.ts"
+      },
+      {
         "path": "commerce-v2/src/checkout-snapshot.ts",
         "sha256": "416ac3410bf37f8e91d7d079819d3a2cb5277d64480267bd21f4f108777a6874",
         "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/src/checkout-snapshot.ts"
@@ -373,6 +378,21 @@
         "path": "commerce-v2/src/storefront-switch.ts",
         "sha256": "a3187afe67d71fb4ba711df008bbf7cf6012d70c6c65116f8f55bc2501b90eb7",
         "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/src/storefront-switch.ts"
+      },
+      {
+        "path": "commerce-v2/test/checkout-handoff.test.ts",
+        "sha256": "09d3a469621f1ff0d0738ad3fb2c894766d89cb097c66c201a9572df5392d4be",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/test/checkout-handoff.test.ts"
+      },
+      {
+        "path": "commerce-v2/test/lab-guest-checkout.test.ts",
+        "sha256": "765991e81cd4e8aa4f2707f543084bd078e2769cbf32c3d21a0ab8e8af6e1689",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/test/lab-guest-checkout.test.ts"
+      },
+      {
+        "path": "commerce-v2/test/lab-guest-client-ip.test.ts",
+        "sha256": "16902f75ba8ce22fad1f46023a420f81605c3b170ce8e1ade85693f7801316d5",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/test/lab-guest-client-ip.test.ts"
       },
       {
         "path": "deploy/v2/frontends/README.md",
@@ -540,5 +560,12 @@
     "transportE2E": "NOT_RUN",
     "providerEvidenceE2E": "NOT_RUN",
     "publicFinancialActivation": "NOT_AUTHORIZED_BY_THIS_PACKAGE"
+  },
+  "reviewProvenance": {
+    "independentSeedCommit": "d25d8933d8f61e30fed89c6ee2869939e692f06a",
+    "comparisonAuthorized": true,
+    "otherAgentMaterialsReadAfterAuthorization": true,
+    "opusReviewCommit": "e0601509c97acb01d912ccab4367aa47d137d595",
+    "scope": "OWNER-authorized comparison, user-supplied GPT/OPUS reviews and focused documentation corrections; FX-C12 duration and closure policy remain OWNER_PENDING; no implementation or activation."
   }
 }

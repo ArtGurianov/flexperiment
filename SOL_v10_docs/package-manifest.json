@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "package": "FLEXPERIMENT_V10_SOL_INDEPENDENT_DESIGN",
+  "package": "FLEXPERIMENT_V10_SOL_REVIEWED_DESIGN",
   "date": "2026-10-27",
   "status": "DRAFT_FOR_OWNER_REVIEW_NOT_IMPLEMENTED",
   "artifactCount": 9,
@@ -11,35 +11,35 @@
     },
     {
       "path": "02-lms-profile.md",
-      "sha256": "2175c289d3df50696d6a0b382ebe137ceaf15d26d379bef80512611eb756ba81"
+      "sha256": "b99164db6e6a79688cde2adf24d5948788053bd3993b2d7c2cbee87b75bcf544"
     },
     {
       "path": "03-lab-profile.md",
-      "sha256": "21e4fdfbcadd1f98ec110027effd4771941f14dcb0519b20fcad396ae4850a79"
+      "sha256": "b7e27d8dcb7947176e928f66756e71ae737efc5ebfbbdf681f11b3dc2703f1d6"
     },
     {
       "path": "04-refref-integration.md",
-      "sha256": "5269f8741603828c5823d9f959f5dba8413c93e2bbcd04301ba137e969b63914"
+      "sha256": "ba7c003daa5280d5ce6ad42a25122f94543229e7b947aa35650192f092ca9bed"
     },
     {
       "path": "05-fiscal-legal-impact.md",
-      "sha256": "1eed946ed0178b3b33ad7a55c99e0e05833ddc12e808d857040cd41407ebc829"
+      "sha256": "1dc7c85ba09452bd09ca2e3313a1929ff4bf17a66feb8cbb46d979c64d52d7fa"
     },
     {
       "path": "06-migration-and-e2e.md",
-      "sha256": "c79179098066e12c8e5b379a046d71389d087f97c433e5de0cf5a0e321498cdb"
+      "sha256": "ddbbb5c951b635da7a13b2534272c4060a1995f2dd5c3363108ad3d749139037"
     },
     {
       "path": "README.md",
-      "sha256": "14f51aa7a2f65fa217162a75b11be5e7000aadd1b82c9048b97891f126d5b82e"
+      "sha256": "ed4246d39a212a0ba519f9f0ebf8c083b723f3b8ab327a08ef87c2a3c7d643c2"
     },
     {
       "path": "source-baseline.json",
-      "sha256": "34669b60eb56bb266713fefcc720d0e4e12e7939bfd70909daf3492ad49ac1ed"
+      "sha256": "7716fa964bf9caef2908a338474d8f50b1acc61797e072ebd7ae484e92f515fe"
     },
     {
       "path": "validate-package.py",
-      "sha256": "110ea3ff59a07f8e29745c25b102198ad99f65dc4fce32409e31d899ac6f4b63"
+      "sha256": "18cf1754115b6845137eac1ab4eecea9732904d6bd84909a9d0633a900593283"
     }
   ],
   "plannedAcceptanceCaseIds": [
@@ -75,6 +75,12 @@
     "FX10-COM-030",
     "FX10-COM-031",
     "FX10-COM-032",
+    "FX10-COM-033",
+    "FX10-COM-034",
+    "FX10-COM-035",
+    "FX10-COM-036",
+    "FX10-COM-037",
+    "FX10-COM-038",
     "FX10-LMS-001",
     "FX10-LMS-002",
     "FX10-LMS-003",
@@ -102,7 +108,21 @@
     "FX10-LAB-013",
     "FX10-LAB-014",
     "FX10-LAB-015",
-    "FX10-LAB-016"
+    "FX10-LAB-016",
+    "FX10-LAB-017",
+    "FX10-RES-001",
+    "FX10-RES-002",
+    "FX10-RES-003",
+    "FX10-RES-004",
+    "FX10-RES-005",
+    "FX10-RES-006",
+    "FX10-RES-007",
+    "FX10-RES-008",
+    "FX10-RES-009",
+    "FX10-RES-010",
+    "FX10-RES-011",
+    "FX10-RES-012",
+    "FX10-RES-013"
   ],
   "targetExecution": "NOT_RUN"
 }
