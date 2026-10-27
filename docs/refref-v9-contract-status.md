@@ -1,5 +1,12 @@
 # Refref v9 contract status — LMS and LAB
 
+**Historical target.** For the proposed merchant-native v10 transition of new
+LMS/LAB purchases, start with the [v10 architecture](refref-v10/README.md).
+That package retains pending profile decisions and separate implementation,
+transport, provider and activation gates. It does not reclassify existing
+RC.2/v9 history or change its original owner and applicable recovery rules.
+The dated v9 audit below is preserved as historical context, not a v10 contract.
+
 Audit snapshot: Flexperiment `4859f2ac6c61afa9d9693ceb4d32b89b1802606c`,
 Refref main `0e46c0ef982bafec2ab11d113ddada01fd214407`, 20 October 2026;
 target updated to [Draft ADR-140 revision 7](https://github.com/ArtGurianov/refref/pull/99)

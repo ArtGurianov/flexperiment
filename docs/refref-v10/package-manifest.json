@@ -1,0 +1,128 @@
+{
+  "schemaVersion": 1,
+  "package": "FLEXPERIMENT_REFREF_V10_ARCHITECTURE_DESIGN",
+  "date": "2026-10-27",
+  "status": "DRAFT_FOR_OWNER_REVIEW_NOT_IMPLEMENTED",
+  "artifactCount": 9,
+  "files": [
+    {
+      "path": "01-commerce-architecture.md",
+      "sha256": "652c846e295918e45046b5567e11137220270e055ff413291ef09fb615d5f6e7"
+    },
+    {
+      "path": "02-lms-profile.md",
+      "sha256": "8245a7fa9cfb6678ede6eb188dde9c36948c6db4c107e357678efa96e437423a"
+    },
+    {
+      "path": "03-lab-profile.md",
+      "sha256": "dd0143371f177bebc5f4f62a3cbedd90f09f5726897e5798e5e30bcbd1f855e2"
+    },
+    {
+      "path": "04-refref-integration.md",
+      "sha256": "dd65b19d7957e880ada60cde6c13cda821af2f3a55d8ab99e786990a058026c3"
+    },
+    {
+      "path": "05-fiscal-legal-impact.md",
+      "sha256": "6a309ec3e928fc85fad525b520dfb7004be3b573c19cedf2fbb51f8e07fea5b6"
+    },
+    {
+      "path": "06-migration-and-e2e.md",
+      "sha256": "c22a76f951b56a4e388062d1e668b714fc941ff9d7e72c22a2291925391dc5e3"
+    },
+    {
+      "path": "README.md",
+      "sha256": "50e8f87edd53235f6833a8b11ed8efcfda366611d2eb79324fd0389e803da486"
+    },
+    {
+      "path": "source-baseline.json",
+      "sha256": "109a122c1b6e13450629d1d25965af20b28d423646d67b3f6753dae12a2c902f"
+    },
+    {
+      "path": "validate-package.py",
+      "sha256": "c55924268bcf10dca2109d763bdf315737c9d6b7863d2940f56c70b665887182"
+    }
+  ],
+  "plannedAcceptanceCaseIds": [
+    "FX10-COM-001",
+    "FX10-COM-002",
+    "FX10-COM-003",
+    "FX10-COM-004",
+    "FX10-COM-005",
+    "FX10-COM-006",
+    "FX10-COM-007",
+    "FX10-COM-008",
+    "FX10-COM-009",
+    "FX10-COM-010",
+    "FX10-COM-011",
+    "FX10-COM-012",
+    "FX10-COM-013",
+    "FX10-COM-014",
+    "FX10-COM-015",
+    "FX10-COM-016",
+    "FX10-COM-017",
+    "FX10-COM-018",
+    "FX10-COM-019",
+    "FX10-COM-020",
+    "FX10-COM-021",
+    "FX10-COM-022",
+    "FX10-COM-023",
+    "FX10-COM-024",
+    "FX10-COM-025",
+    "FX10-COM-026",
+    "FX10-COM-027",
+    "FX10-COM-028",
+    "FX10-COM-029",
+    "FX10-COM-030",
+    "FX10-COM-031",
+    "FX10-COM-032",
+    "FX10-COM-033",
+    "FX10-COM-034",
+    "FX10-COM-035",
+    "FX10-COM-036",
+    "FX10-COM-037",
+    "FX10-COM-038",
+    "FX10-LMS-001",
+    "FX10-LMS-002",
+    "FX10-LMS-003",
+    "FX10-LMS-004",
+    "FX10-LMS-005",
+    "FX10-LMS-006",
+    "FX10-LMS-007",
+    "FX10-LMS-008",
+    "FX10-LMS-009",
+    "FX10-LMS-010",
+    "FX10-LMS-011",
+    "FX10-LMS-012",
+    "FX10-LAB-001",
+    "FX10-LAB-002",
+    "FX10-LAB-003",
+    "FX10-LAB-004",
+    "FX10-LAB-005",
+    "FX10-LAB-006",
+    "FX10-LAB-007",
+    "FX10-LAB-008",
+    "FX10-LAB-009",
+    "FX10-LAB-010",
+    "FX10-LAB-011",
+    "FX10-LAB-012",
+    "FX10-LAB-013",
+    "FX10-LAB-014",
+    "FX10-LAB-015",
+    "FX10-LAB-016",
+    "FX10-LAB-017",
+    "FX10-RES-001",
+    "FX10-RES-002",
+    "FX10-RES-003",
+    "FX10-RES-004",
+    "FX10-RES-005",
+    "FX10-RES-006",
+    "FX10-RES-007",
+    "FX10-RES-008",
+    "FX10-RES-009",
+    "FX10-RES-010",
+    "FX10-RES-011",
+    "FX10-RES-012",
+    "FX10-RES-013"
+  ],
+  "targetExecution": "NOT_RUN"
+}
