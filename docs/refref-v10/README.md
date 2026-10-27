@@ -1,6 +1,6 @@
 # Flexperiment LMS and LAB — Refref v10 architecture
 
-Date: **27 October 2026**. Status: **consolidated documentation draft for OWNER review**. This directory is the proposed architecture entry point for the transition. It does not approve pending profile parameters or establish implementation, deployment, published buyer terms, provider authority or public financial activation.
+Date: **27 October 2026**. Status: **consolidated architecture draft with recorded OWNER profile decisions**. This directory is the proposed architecture entry point for the transition. The decisions below do not establish implementation, deployment, published buyer terms, provider authority or public financial activation; the remaining qualification gates still apply.
 
 ## Reading order
 
@@ -43,26 +43,36 @@ Date: **27 October 2026**. Status: **consolidated documentation draft for OWNER 
 
 ## Profile decisions and qualification
 
-The following are prerequisites for the affected implementation/admission scopes. They do not revoke existing guarantees. Fixture amounts and periods are synthetic, not new commercial defaults.
+OWNER approved the first single-full-payment profile: FX-C12 seven-day limited continuation for both storefronts, its payment deadlines, LMS PAYMENT, LAB SCHEDULED_SERVICE, and Refref promo codes only. The approval and its scope are recorded in the existing [source baseline](source-baseline.json); no separate Decision Record is introduced. Other prerequisites below remain for their affected implementation/admission scopes and do not revoke existing guarantees. Fixture amounts remain synthetic; the approved seven-day period is now a profile rule, not a fixture-selected alternative.
 
 | ID | Select or qualify | Do not assume |
 |---|---|---|
 | FX-C01 | Actual Business/seller/qualified-agent roles, COURSES/LAB mapping and accepted campaign terms | A shared local customer permits cross-origin/person matching or partner reassignment |
 | FX-C02 | Native acquiring/refund provider, connection, credentials, evidence/read-back and fiscal responsibility | Old `PAYMENT_MODE=refref`, canary bank/KKT evidence or a V1 contract transfers native authority |
-| FX-C03 | Agreed `fullPaymentDueAt` and the profile's payment opportunity/quote policy | A 15-minute quote or cookie lifetime is the agreed payment deadline |
-| FX-C04 | LMS finality mode and an exact original scheduled anchor if that profile applies | Progress, last login or future course updates can create an indefinite anchor; fiscal ready-access alone chooses the mode |
-| FX-C05 | LAB finality mode and the eligible occurrence/programme end with provenance/time zone, fixed at BOUND | A PAYMENT window necessarily lasts until the event; a move automatically changes the anchor |
+| FX-C03 — OWNER_APPROVED for the initial profile | Single full payment: LMS `fullPaymentDueAt=addMoscowCalendarDates(purchaseCreatedAt,7)`; LAB the minimum of that instant and qualified salesCutoffAt. Qualify the actual payment-opportunity/quote implementation | Quote/session/cookie expiry selects the deadline, or early FULL can wait until day seven to be reported |
+| FX-C04 — OWNER_APPROVED | LMS uses PAYMENT; anchor is the first actual full payment | Progress, last login, fiscal tags or future course updates select another mode/anchor |
+| FX-C05 — OWNER_APPROVED | LAB uses SCHEDULED_SERVICE; anchor=`max(actualPaidInFullAt, serviceAnchorAtAtBound)`. Qualify the eligible occurrence/programme end with provenance/time zone, fixed at BOUND | A move automatically changes the anchor, or a closing receipt substitutes for the frozen service end |
 | FX-C06 | Scope of purchase changes, consent, effective times, line identity, LAB moves and price revisions; separately any desired mixed basket/group/staged-payment feature | Truthful history requires a universal basket, certificate ledger or mandatory group/deposit checkout |
 | FX-C07 | Storefront action/holder flow: 72 hours, R14.1, campaign TTL, Apply/qualified ORDER_SUBMIT and BOUND recovery | Old Arrival receipts/cookies or degraded delivery create v10 rights or merge storefront contexts |
 | FX-C08 | Snapshot/source-event intake, receipt recovery, later evidence, CAS versus append-only facts, R17.1 and calendar qualification | Unknown/unsuitable-revision intake can be redefined: its semantics are already pinned; this gate proves implementation |
 | FX-C09 | Buyer documents, acceptance/delivery, native fiscal mapping, personal data/retention/erasure and the actual advertising profile | Mandatory external counsel replaces the retained OWNER procedure, or changing provider cancels ready-material FULL_PAYMENT/dynamic access |
 | FX-C10 | Inventory, cutover and restore for actual V2 attempts, grants, tickets and refunds; safe recovery by their original owner | A source snapshot proves an empty database, completed canary operations or permission to delete them |
 | FX-C11 | Separate ONLINE_COURSE, COURSE_BUNDLE and LAB qualification and public admission | One course's acceptance opens bundle/LAB, or financial integration blocks independent free Stage A |
-| FX-C12 — OWNER_PENDING | Versioned continuation/final-termination policy for unpaid LMS/LAB purchases, including prior CANCELLED: period, objective grounds, recovery/requote and fixation before application to the purchase | Quote TTL, technical cancellation or UI reset proves an independent new contract; dueAt/touch expiry selects a period; the merchant may choose the partner's fate case by case. Late true FULL retains the old BOUND; prospective reopening is separate |
-| FX-C13 | Merchant-promotion/Refref-discount stacking, including a merchant code with an existing link touch | Distinguishing D_rule/D_applied selects stacking; a merchant discount changes the holder rather than first forming G |
+| FX-C12 — OWNER_APPROVED | LIMITED_CONTINUATION: both storefronts retain a genuinely continuing unpaid economic purchase for seven Moscow calendar dates from its first durable creation, without a retry/requote reset. LAB new payments additionally require capacity and precede sales cutoff. Policy version and objective termination grounds are fixed at creation | Seven days reserves a seat, UI reset is a buyer cancellation, or expiry cancels existing authorized bank operations. CANCELLED alone does not terminate a contract; true late FULL remains under the original BOUND |
+| FX-C13 — OWNER_APPROVED | Only Refref promo codes in the new profile. No Flexperiment-owned promo codes, local coupon engine, stacking option or merchant-code priority flow | The legacy merchant-prefix routing is a v10 feature, an invalid code removes a valid link/BOUND, or this choice revokes an already accepted legacy price. D_rule/D_applied and OWNER-02 remain unchanged |
 | FX-C14 | Payer account and responsibilities for registry preparation/execution, execution/remainder/correction reports and dispute response | Refref pays the partner for Flexperiment or UNKNOWN permits another transfer |
 
-The candidate recommendation is **PAYMENT for ready-access LMS** and **SCHEDULED_SERVICE for scheduled LAB**. FX-C04/05 remain OWNER/campaign choices, not adopted defaults. The scheduled anchor is `max(actualPaidInFullAt, serviceAnchorAtAtBound)`. FX-C12 selects neither a period nor a continuation/termination variant here and changes none of the accepted core commission rules.
+### Approved continuation and payment deadlines
+
+Let `sevenDayEnd=addMoscowCalendarDates(purchaseCreatedAt,7)`: add seven Moscow calendar dates while preserving time of day. Store the first durable economic-purchase creation time and policy version once. Preview, handoff, retry, requote and later BOUND do not restart this clock. This is a separate commercial period, not an extension or reuse of the consumed touch TTL.
+
+For the first single-full-payment profile, LMS `fullPaymentDueAt=sevenDayEnd`; LAB `fullPaymentDueAt=min(sevenDayEnd,salesCutoffAt)`. New payment instructions require `now < fullPaymentDueAt` and the applicable availability/consent/version/money checks. A temporary lack of LAB seats blocks a new instruction but does not by itself finally terminate the economic purchase. Expiry of an unconverted hold keeps its original maximum 15-minute limit; a PENDING/UNKNOWN operation and its necessary monetary/reservation fence are not released by this clock.
+
+Final termination follows predefined grounds: genuine explicit buyer cancellation, evidenced inability to provide the service with proper termination, or the end of the permitted continuation/sales period. Back, reload, closing a tab, clearing UI state and “Start new order” are not such buyer cancellation. A reported CANCELLED may coexist with a still-continuing purchase; resume then retains purchaseRef/BOUND/partner and uses a new agreed price. After genuine final termination, an independent new sale requires a new purchase identity and a new qualifying action/BOUND only for a new referral right.
+
+After the deadline, admit no new payment instructions. Continue callbacks/read-back/reconciliation/outbox for existing authorized operations; an operation lawfully started before expiry may settle later. Qualify true FULL against the effective obligation/revision and preserve its original BOUND/actual time. A transfer that does not fulfill an effective obligation is not FULL/C merely because money arrived. Do not postpone an early FULL report until the deadline: the existing next-Russian-business-day SLA after actual FULL remains. At dueAt report the appropriate known state; UNKNOWN requires honest diagnostics, not fabricated NOT_PAID/CANCELLED or an automatic pair of both reports.
+
+These profile choices do not alter the accepted core commission model, extend an old seat hold, change historical policy/accepted prices or grant new bank/provider authority. Other product, legal, calendar/R17.1, payer and transport qualifications remain open where not independently completed.
 
 ## Implementation sequence
 

@@ -1,6 +1,6 @@
 # Shared LMS/LAB → Refref v10 integration
 
-Revision: 27.10.2026. **Draft contract for OWNER review; not approved or live.** Inspected Flexperiment source: `c8bad757c9daa04385f9cf5e95bf6e07b185080a`; normative upstream: Refref `c932b656edbda1d47cfb57de08fd4a36536712f5` from [PR #130](https://github.com/ArtGurianov/refref/pull/130). The Refref branch/PR does not establish installed transport. Provenance is recorded in [source-baseline.json](source-baseline.json).
+Revision: 27.10.2026. **Contract incorporating OWNER-approved profile decisions; implementation is not qualified or live.** These decisions do not authorize financial activation. Inspected Flexperiment source: `c8bad757c9daa04385f9cf5e95bf6e07b185080a`; normative upstream: Refref `c932b656edbda1d47cfb57de08fd4a36536712f5` from [PR #130](https://github.com/ArtGurianov/refref/pull/130). The Refref branch/PR does not establish installed transport. Provenance is recorded in [source-baseline.json](source-baseline.json).
 
 Profiles: [LMS](02-lms-profile.md), [LAB](03-lab-profile.md). Shared architecture: [01](01-commerce-architecture.md); migration/acceptance: [06](06-migration-and-e2e.md). The new Flexperiment record names below are implementation proposals, not existing public routes.
 
@@ -27,7 +27,9 @@ Unlike Mikluha, [browser-context.ts](../../commerce-v2/src/browser-context.ts) a
 
 In v10 there is one active holder and no queue. Refref returns `touchRef`, versions, `protectedUntil` and `attributionExpiresAt`: 72-hour protection and the campaign TTL for a new BOUND (default 7, maximum 30 calendar days) are distinct from cookie lifetime. Refresh/retry does not extend them. During the 72 hours, a conflicting link/promo cannot replace the holder; after that, replacing a still-valid holder requires R14.1: display the current pair of offers and obtain a scoped confirmation with its version. Touch expiry does not terminate an already-BOUND purchase right.
 
-Permitted actions are `REFERRAL_NAVIGATION` and `PROMO_APPLY`. The latter requires `actionVariant=APPLY_BUTTON` or a qualified `ORDER_SUBMIT`: a visible code, a clear meaning that submitting the order applies it, deliberate submission, and server validation of intent/code/scope. SDK prefill/edit/background-save does not create a touch or apply a discount. A confirmed link and a retained valid AutoApply do not require another Apply; the promised price must be honoured. Merchant promotions and referrer promos are distinct: an old `checkoutCode`/prefix is not evidence of a Refref holder.
+Permitted actions are `REFERRAL_NAVIGATION` and `PROMO_APPLY`. The latter requires `actionVariant=APPLY_BUTTON` or a qualified `ORDER_SUBMIT`: a visible code, a clear meaning that submitting the order applies it, deliberate submission, and server validation of intent/code/scope. SDK prefill/edit/background-save does not create a touch or apply a discount. A confirmed link and a retained valid AutoApply do not require another Apply; the promised price must be honoured.
+
+OWNER selected **only Refref promo codes** for the target. Flexperiment has no planned merchant promo-code engine or merchant-code/Refref-code stacking variants. Refref validates submitted target promo codes; the old merchant prefix neither routes to local discount logic nor by itself makes a valid Refref code unsupported. An observed legacy `checkoutCode`/prefix remains a source fact, not evidence of a Refref holder or a target feature. Preserve old accepted contract prices/discounts. This scope leaves referral-link/AutoApply eligibility and OWNER-02 intact: not using a discount does not remove an otherwise valid commission right.
 
 ## 3. Initial BOUND and commands
 
@@ -47,7 +49,9 @@ The [canonical BOUND contract](https://github.com/ArtGurianov/refref/blob/c932b6
 | `GET /v10/commands/{commandId}` | Receipt and current processing of the original command | Does not create a duplicate payment or a new window |
 | `POST /v10/evidence` | Late specific context/material for a sourceReceipt and subject | Access/association are checked; a file/hash is not an independent bank fact |
 
-`fullPaymentDueAt` is mandatory even for a single 100% payment: the selected checkout profile sets the deadline, not an arbitrary current time or cookie lifetime. A new LAB profile with partial instalments requires a separate commercial decision; mandatory Mikluha prepayment does **not** become LAB or LMS policy. PAYMENT/SCHEDULED_SERVICE and the specific service anchor must be selected and published in the terms before BOUND; product type or a fiscal tag supplies no arbitrary default.
+`fullPaymentDueAt` is mandatory even for a single 100% payment. Under the OWNER-approved initial single-full-payment profile, LMS uses `sevenDayEnd`; LAB uses `min(sevenDayEnd, salesCutoffAt)`, as defined in §4. Neither an arbitrary current time nor cookie/quote lifetime sets this deadline. A new LAB profile with partial instalments requires a separate commercial decision; mandatory Mikluha prepayment does **not** become LAB or LMS policy.
+
+OWNER approved **FX-C04 PAYMENT for LMS** and **FX-C05 SCHEDULED_SERVICE for scheduled LAB**. Publish these modes and the exact original LAB service end in the applicable terms before BOUND. The LAB S5 anchor is `max(actualPaidInFullAt, serviceAnchorAtAtBound)`; freeze that service end at BOUND, and do not automatically move it with a later occurrence move. Product type or a fiscal tag does not independently select the mode or anchor. Implementation, campaign mapping and evidence qualification remain separate admission gates.
 
 ## 4. Contractual revisions and payment chronology
 
@@ -59,13 +63,23 @@ The first genuine FULL belongs to the contractual revision effective **when actu
 
 After the first genuine FULL, added products, a LAB participant, a new course edition or an additional payment do not increase/recalculate C; preserve the original purchase/BOUND/partner and S5 anchor. A technical ID or full refund/recharge does not turn an agreed continuation into a new purchase. A genuinely independent purchase needs a new action and BOUND before its first payment. Flexperiment manages access/tickets and actual service delivery separately from FINAL.
 
-Short quote expiry and a CANCELLED report neither remove BOUND nor establish a new contract by themselves. **FX-C12 remains pending.** Prospective resume/requote is subject to the policy to be approved for the affected profile before admission, then frozen/versioned before application to each purchase; see the [LMS lifecycle](02-lms-profile.md). Record local contractual continuity/genuine final termination separately from the reported outcome. Intake and history of a genuine late FULL for the original obligation remain required under the original BOUND, without a new touch, even while FX-C12 is pending. Accepting that fact does not authorize reopening payment for a genuinely terminated purchase. Do not bypass UNKNOWN through a new purchaseRef or change the partner by relabelling the sale.
+### 4.1. Approved FX-C12 continuation policy
+
+OWNER approved **LIMITED_CONTINUATION for both LMS and LAB**. At the first durable creation of the economic purchase, fix immutable `purchaseCreatedAt` and the approved policy version. Define `sevenDayEnd` by advancing that timestamp by **seven Moscow calendar dates while preserving its local time of day**. Retry, requote, resume, callback delivery, a new UI mount or a new technical order ID cannot reset the timestamp or restart this period. Apply the version fixed at creation prospectively; do not retroactively replace the policy or accepted rights of existing purchases.
+
+For the initial single-full-payment profile, `fullPaymentDueAt=sevenDayEnd` for LMS and `fullPaymentDueAt=min(sevenDayEnd, salesCutoffAt)` for LAB. A new LAB payment instruction is permitted only strictly before that minimum, with current availability and all existing admission checks. This period is not a seven-day seat reservation. Keep the existing hold of at most 15 minutes without extension from the continuation policy, and preserve PENDING/UNKNOWN money/seat fences. A short quote may expire and require a newly agreed quote/revision within the remaining period; it does not end the economic purchase or refresh the continuation deadline.
+
+Final termination requires one of the approved grounds: an actual explicit buyer cancellation; evidenced merchant inability together with termination; or the effective end of the continuation period. UI reset, navigation back or starting a new-order UI is not an explicit cancellation. Temporary absence of seats does not prove final merchant inability. Record contractual continuity or genuine final termination and its grounds separately from the reported outcome. A CANCELLED report alone neither proves final termination nor removes BOUND, releases the consumed touch or establishes a new contract. The [LMS lifecycle](02-lms-profile.md) also defines ownership-checked recovery for LMS/LAB.
+
+At `fullPaymentDueAt`, obtain and report the truthful state and an appropriate CANCELLED when its grounds apply. An UNKNOWN bank outcome requires diagnostics/read-back and continued fencing, not a false NOT_PAID assertion. No mandatory NOT_PAID+CANCELLED pair is introduced. After genuine termination, do not reopen the old purchase's payment instructions; a genuinely independent new sale needs its own purchase identity and qualifying action/BOUND for a new referral right.
+
+Previously authorized operations may settle after the deadline. Keep their read-back, callbacks, history and result outbox active, and accept a genuine late FULL fulfilling the original obligation under the original BOUND without a new touch. Deadline expiry or a prior CANCELLED report must not discard that fact. Receiving money that does not fulfil an effective obligation instead requires reconciliation/the applicable refund; the amount alone does not establish FULL/C. Accepting a historical or late authorized FULL does not authorize new instructions for a genuinely terminated purchase. Do not bypass UNKNOWN through a new purchaseRef or change the partner by relabelling the sale.
 
 ## 5. Money and mandatory FULL reporting
 
 | Value | Rule |
 |---|---|
-| `G` | Sum of eligible line totals after Flexperiment's own discounts and before the Refref discount; excludes ineligible services/delivery |
+| `G` | Sum of eligible line totals at accepted Flexperiment prices, after applicable merchant reductions and before the Refref discount; excludes ineligible services/delivery. Preserve actual old contract prices/discounts; this calculation does not introduce merchant promo codes or stacking options |
 | `D_rule` | Refref discount calculated under frozen terms, with percentage floor rounding; calculated by the Refref server |
 | `D_applied` | Discount actually granted, including actual rounding; honour the resulting buyer price |
 | `C` | Purchase-level FIXED or PERCENT of G with half-up rounding, gross RUB; one original C |
@@ -83,7 +97,7 @@ Save the source fact and outbox in the local transaction recording the genuine r
 - FULL: `actualPaidInFullAt`, a complete self-contained purchaseSnapshot of the effective revision, stable lines/quantity, prices/criteria and actual applied discounts. `buyerDiscountApplied` is a boolean price fact, not proof of Apply; false requires zero applied amounts, while true permits a rounded zero;
 - The sender does not assign receipt/actor/qualifiedAt/commissionAmount. Buyer email addresses, account IDs, guest capabilities, names and full bank statements must not enter ordinary payloads/notes.
 
-The FULL deadline is the end of the next Russian business day **after actual full payment**, not an arbitrarily delayed knownAt. Keep fulfilment time, knowledge time and source/received/qualified times separate. Obtain a reliable state/applicable result by fullPaymentDueAt; clarifying reporting does not terminate the BOUND right. Delivery order must not lose genuine late FULL facts or earlier timely claims; the exact R17.1/mixed-fault function remains a profile admission gate.
+The FULL reporting deadline is the end of the next Russian business day **after actual full payment**, independently of day seven or an arbitrarily delayed knownAt. Keep fulfilment time, knowledge time and source/received/qualified times separate. By fullPaymentDueAt, obtain the truthful state/applicable result under §4.1; this is a separate obligation from reporting a FULL that actually occurred. Do not substitute false NOT_PAID for UNKNOWN or require a NOT_PAID+CANCELLED pair. Clarifying reporting does not terminate the BOUND right. Delivery order must not lose genuine late FULL facts or earlier timely claims; the exact R17.1/mixed-fault function remains a profile admission gate.
 
 ## 6. FULL before revision registration: defined transport contract
 

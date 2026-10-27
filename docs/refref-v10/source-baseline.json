@@ -551,7 +551,7 @@
   },
   "authority": {
     "refrefCore": "Existing O1-O7 and R6.2/CW-022; technical intake clarified at pinned c932b65; profile/legal gates retained.",
-    "flexperiment": "Design for review. Preserve prior OWNER ready-material FULL_PAYMENT, dynamic access and no mandatory external counsel. No new business numeric defaults."
+    "flexperiment": "Direct OWNER approval recorded below for the initial single-full-payment profile: seven-day LIMITED_CONTINUATION for LMS/LAB, derived fullPaymentDueAt, LMS PAYMENT, LAB SCHEDULED_SERVICE, and Refref promo codes only. Existing ready-material FULL_PAYMENT/dynamic access and no mandatory external counsel remain. Other profile/provider/legal gates and historical rights remain; no unapproved additional defaults or activation authority."
   },
   "verificationScope": {
     "sourceAudit": "PERFORMED",
@@ -566,13 +566,78 @@
     "comparisonAuthorized": true,
     "otherAgentMaterialsReadAfterAuthorization": true,
     "opusReviewCommit": "e0601509c97acb01d912ccab4367aa47d137d595",
-    "scope": "OWNER-authorized comparison, user-supplied GPT/OPUS reviews and focused documentation corrections; FX-C12 duration and closure policy remain OWNER_PENDING; no implementation or activation.",
+    "scope": "Historical OWNER-authorized comparison and supplied GPT/OPUS reviews at reviewedSeedCommit; FX-C12 was then pending. Current later approval is recorded separately in ownerDecision.",
     "reviewedSeedCommit": "b519821245f58913e0a2853f8a265c9229b4263e",
     "consolidation": {
       "directory": "docs/refref-v10",
       "language": "en",
       "languageAuthority": "OWNER explicitly selected English in the current task on 2026-10-27.",
-      "scope": "Editorial relocation and English translation of the reviewed architecture; source pins, 80 case IDs and accepted/pending policy boundaries are preserved. FX-C12 duration and variant remain OWNER_PENDING."
+      "scope": "Historical editorial relocation and English translation: source pins and 80 case IDs retained. FX-C12 was pending at this commit; the later direct approval is recorded separately in ownerDecision.",
+      "commit": "a6df01df74fd519a2bfdd89efcd06de18ca4bba0"
     }
+  },
+  "ownerDecision": {
+    "status": "OWNER_APPROVED",
+    "recordedOn": "2026-10-27",
+    "sourceKind": "DIRECT_HUMAN_OWNER_MESSAGE",
+    "originalOwnerText": "собственные промокоды Flexperiment не планируются - только refref промокоды. остальное принимаю",
+    "approvalContext": "Acceptance of the supplied unified seven-day LMS/LAB continuation proposal, initial-profile payment deadlines and finality modes, amended to Refref-only promo codes. This does not assert an earlier approval of the previously proposed LAB 24-hour period.",
+    "evidenceBoundary": "Recorded from the direct OWNER message in this task; not an external signature, provider permission, legal publication or deployment authorization.",
+    "policyVersion": "fx-c12/1",
+    "FX-C03": {
+      "status": "OWNER_APPROVED_FOR_INITIAL_SINGLE_FULL_PAYMENT_PROFILE",
+      "LMS": "addMoscowCalendarDates(purchaseCreatedAt,7)",
+      "LAB": "min(addMoscowCalendarDates(purchaseCreatedAt,7),salesCutoffAt)",
+      "newInstructionsBoundary": "now < fullPaymentDueAt",
+      "reporting": "FULL by the end of the next Russian business day after actual FULL; truthful applicable state at due, no mandatory NOT_PAID/CANCELLED pair, no fabricated unpaid result for UNKNOWN"
+    },
+    "FX-C04": {
+      "status": "OWNER_APPROVED",
+      "LMS": "PAYMENT",
+      "anchor": "actualPaidInFullAt"
+    },
+    "FX-C05": {
+      "status": "OWNER_APPROVED",
+      "LAB": "SCHEDULED_SERVICE",
+      "anchor": "max(actualPaidInFullAt,serviceAnchorAtAtBound)",
+      "qualificationRetained": "Exact accepted eligible service end, source provenance, zone and precision"
+    },
+    "FX-C12": {
+      "status": "OWNER_APPROVED",
+      "mode": "LIMITED_CONTINUATION",
+      "calendarZone": "Europe/Moscow",
+      "calendarDates": {
+        "LMS": 7,
+        "LAB": 7
+      },
+      "preserveTimeOfDay": true,
+      "clockOrigin": "First durable creation of the economic purchase; persisted once",
+      "resetOnRetryRequoteHandoffOrBinding": false,
+      "policyFixedAtCreation": true,
+      "retrospectiveChangeAllowed": false,
+      "LABConstraints": "New instructions also require current availability and must precede qualified salesCutoffAt; no seven-day seat hold or renewal of the original <=15-minute unconverted hold; existing authorized-operation fences remain",
+      "terminalGrounds": [
+        "Genuine explicit buyer cancellation",
+        "Evidenced merchant inability with proper purchase termination",
+        "Expiry of the continuation/effective LAB sales period"
+      ],
+      "notTerminalByItself": [
+        "Quote expiry",
+        "Back/reload/tab close",
+        "UI reset or Start new order",
+        "CANCELLED report alone",
+        "Temporary lack of seats"
+      ],
+      "expiryEffect": "Stop new payment instructions; retain callbacks/read-back/reconciliation/outbox and monetary/reservation fences for existing authorized operations. Qualify genuine late FULL under original BOUND/time/effective revision; incidental transfers are not automatically FULL/C."
+    },
+    "FX-C13": {
+      "status": "OWNER_APPROVED",
+      "promoCodeScope": "REFREF_ONLY",
+      "flexperimentMerchantPromoCodesPlanned": false,
+      "localMerchantCouponEngineOrStackingPlanned": false,
+      "referralLinksAutoApplyAndOwner02Preserved": true,
+      "previouslyAcceptedPricesAndHistoryPreserved": true
+    },
+    "remainingScope": "Other FX-C01/02/06/07/08/09/10/11/14 qualifications, product admission, R17.1/calendar/transport/provider evidence, exact buyer documents and separate public/financial GO remain where not independently qualified. No new tariff, account, bank credentials or external authority assigned."
   }
 }

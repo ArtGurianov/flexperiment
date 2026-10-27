@@ -7,35 +7,35 @@
   "files": [
     {
       "path": "01-commerce-architecture.md",
-      "sha256": "a364b5709a239ec683a628bba9482d38ecd54cb17e1823374e47e1c1b6888ba5"
+      "sha256": "652c846e295918e45046b5567e11137220270e055ff413291ef09fb615d5f6e7"
     },
     {
       "path": "02-lms-profile.md",
-      "sha256": "3e62bd4f335bc24c2aacb5465bd8584362ae5c37ccb7d206c9e38ed73a7de409"
+      "sha256": "8245a7fa9cfb6678ede6eb188dde9c36948c6db4c107e357678efa96e437423a"
     },
     {
       "path": "03-lab-profile.md",
-      "sha256": "ee4a1849490b93988d52acdccc6db04f2b0144cba2a92d6638fa3533f8c7fdce"
+      "sha256": "dd0143371f177bebc5f4f62a3cbedd90f09f5726897e5798e5e30bcbd1f855e2"
     },
     {
       "path": "04-refref-integration.md",
-      "sha256": "40454ab63c6fec9713111c65c63009ff5873185d57510627ae49f420448e76a6"
+      "sha256": "dd65b19d7957e880ada60cde6c13cda821af2f3a55d8ab99e786990a058026c3"
     },
     {
       "path": "05-fiscal-legal-impact.md",
-      "sha256": "be889ee677dd6d1692d6fd8c08a1e3abc72869c1477e3077bbf3792a3e9832ae"
+      "sha256": "6a309ec3e928fc85fad525b520dfb7004be3b573c19cedf2fbb51f8e07fea5b6"
     },
     {
       "path": "06-migration-and-e2e.md",
-      "sha256": "1092aaac6cd2a17a3c6e21f4a29a5c687f0a3b4a2bee559910d89f97bfb68743"
+      "sha256": "c22a76f951b56a4e388062d1e668b714fc941ff9d7e72c22a2291925391dc5e3"
     },
     {
       "path": "README.md",
-      "sha256": "e861a47c443754c2a12bee8771397d1399ab10c281c79e5ec3f8db7e767ceab4"
+      "sha256": "50e8f87edd53235f6833a8b11ed8efcfda366611d2eb79324fd0389e803da486"
     },
     {
       "path": "source-baseline.json",
-      "sha256": "110c81b7a290ba9f7fb501d07fc30e2c791f22439e2066a65fe93b8769ad3c8b"
+      "sha256": "109a122c1b6e13450629d1d25965af20b28d423646d67b3f6753dae12a2c902f"
     },
     {
       "path": "validate-package.py",

@@ -1,10 +1,12 @@
 # LAB and LMS — Commerce architecture for Refref v10
 
-Revision: 27.10.2026. **Draft architecture for OWNER review; not approved or live.** This is not an adopted ADR or authorization for financial activation. Inspected Flexperiment source: `c8bad757c9daa04385f9cf5e95bf6e07b185080a`; Refref: `c932b656edbda1d47cfb57de08fd4a36536712f5`. Provenance and open decisions are in the [README](README.md).
+Revision: 27.10.2026. **Architecture incorporating OWNER-approved profile decisions; implementation is not qualified or live.** Approval of these documentation choices does not authorize financial activation. Inspected Flexperiment source: `c8bad757c9daa04385f9cf5e95bf6e07b185080a`; Refref: `c932b656edbda1d47cfb57de08fd4a36536712f5`. Provenance, approved choices and remaining qualification gates are in the [README](README.md).
 
 ## 1. One Commerce system, two profiles
 
 Flexperiment retains its catalogue, prices, contracts, buyers, LMS access, LAB tickets/seats and service fulfilment. Under the new profile, it also receives buyer funds and executes refunds through its own qualified adapter. Refref maintains attribution, BOUND, commission and the applicable cases/registers. Its v10 API is a target specification; a working endpoint has not been demonstrated.
+
+The target accepts only Refref promo codes. No Flexperiment promo-code engine or merchant-code/Refref-code stacking options are planned. Referral links, valid AutoApply and OWNER-02 remain applicable; observed legacy code behaviour and prices already accepted under old contracts remain historical facts rather than new target features.
 
 | Area | LMS / COURSES | LAB | Shared boundary |
 |---|---|---|---|
@@ -47,7 +49,7 @@ The v9 documents describe a historical target: commission after discounts, old r
 
 | Record | Contents | Required guarantee |
 |---|---|---|
-| Economic purchase | `purchaseRef`, storefront, product profile, payment owner/flow, legacy order link | The stable ID contains no email/user ID; retries do not select the profile again |
+| Economic purchase | `purchaseRef`, first durable `purchaseCreatedAt`, frozen continuation-policy version/deadline, storefront, product profile, payment owner/flow, legacy order link | The stable ID contains no email/user ID; retries do not select the profile again or reset creation time/deadlines |
 | Accepted revision | Contractual items/price/schedule, lineRef, documents/hash, consent and effective times | Corrections append a version; the previously accepted snapshot is never overwritten |
 | Native operation / cash fact | Provider connection/operation ID, key, purpose, amount/currency, stage/outcome, source evidence/time | UNKNOWN is not FAILED; callback/read-back/restart must not count the same amount twice |
 | Money allocation | Allocation to purchase/lines/refund; separate unknown scope | Never allocate more than the actual amount; a merchant flag cannot make ineligible lines eligible |
@@ -86,10 +88,14 @@ The local contract changes according to consent/authority, seats and actual mone
 
 The first genuine FULL fixes C once. Later course changes, an added LAB participant, an occurrence move or an additional payment do not increase C or move the original S5 anchor. An agreed continuation retains purchaseRef/BOUND even through refund/recharge; a genuinely independent new purchase requires a new action/BOUND. A rewritten technical order must not be presented as a new sale to obtain a different commission.
 
-PAYMENT/SCHEDULED_SERVICE and the precise scheduled end are contractual campaign/profile terms. The ONLINE_COURSE/LAB enum or fiscal method does not select them. With early payment, PAYMENT can close the ordinary window before the class. Immediate LMS access has no indefinite anchor based on the latest login/content update. Profile details are in [LMS](02-lms-profile.md) and [LAB](03-lab-profile.md).
+OWNER approved **PAYMENT for LMS (FX-C04)** and **SCHEDULED_SERVICE for scheduled LAB (FX-C05)**. These choices and the precise original scheduled end must be reflected in the campaign/profile terms before BOUND. LAB uses `max(actualPaidInFullAt, serviceAnchorAtAtBound)`, with the service end frozen at BOUND; a later move does not automatically change it. The ONLINE_COURSE/LAB enum or fiscal method does not select the mode. Immediate LMS access has no indefinite anchor based on the latest login/content update. Profile details are in [LMS](02-lms-profile.md) and [LAB](03-lab-profile.md).
+
+OWNER approved **FX-C12 LIMITED_CONTINUATION for both LMS and LAB**. Its seven-day end is the first durable `purchaseCreatedAt` advanced by seven Moscow calendar dates, preserving the local time of day. Fix the policy version at purchase creation; retry, requote, resume and a new UI mount cannot reset that timestamp or period. The initial single-full-payment profile sets `fullPaymentDueAt` to this end for LMS and to `min(sevenDayEnd, salesCutoffAt)` for LAB. New LAB payment instructions must be created strictly before that minimum and require current availability. The seven-day period does not reserve a seat or extend an existing hold of at most 15 minutes; PENDING/UNKNOWN money and seat fences remain in force.
+
+Final termination follows an actual explicit buyer cancellation, evidenced merchant inability with termination, or the effective end of the continuation period. A UI reset/back action/new-order action, a CANCELLED report or temporary lack of seats does not establish those grounds. At the applicable due time, record and report the truthful state and an appropriate CANCELLED where applicable; UNKNOWN requires diagnostics rather than false NOT_PAID, and no NOT_PAID+CANCELLED pair is mandatory. Previously authorized operations can still settle after the deadline: preserve their read-back/history and report a genuine FULL under the original BOUND. The FULL reporting deadline remains the next Russian business day after actual FULL, independent of day seven. Apply the approved policy prospectively under the version fixed at creation; do not rewrite existing rights retroactively. Detailed lifecycle and reporting rules are in the [integration contract](04-refref-integration.md).
 
 ## 7. Draft and implementation boundaries
 
-This package does not change the existing buyer terms, scoped owner decisions on ready-made materials/dynamic access, roles, sale-mode, host state or accepted referral policy. Unconfirmed provider/fiscal-receipt capabilities remain admission requirements. It introduces no mandatory external counsel approval in place of the accepted OWNER procedure; actual legal/tax authority still requires verification.
+The approved profile choices must be reflected in the applicable buyer/campaign terms before admission; this package does not publish those terms or rewrite existing acceptances. Scoped owner decisions on ready-made materials/dynamic access, roles, sale-mode, host state and accepted core referral policy remain in force. Unconfirmed provider/fiscal-receipt capabilities remain admission requirements. It introduces no mandatory external counsel approval in place of the accepted OWNER procedure; actual legal/tax authority still requires verification.
 
 Transition proceeds on a separate isolated local test environment with synthetic adapters, followed by separate source/contract, served-transport, provider/evidence and sector-specific admission checks. Positive CI must not conceal an incomplete contract or unknown outcome. The [migration plan and scenarios](06-migration-and-e2e.md) preserve old V2 financial operations and the V1 retirement boundary without restoring the public legacy runtime.
