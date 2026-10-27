@@ -1,45 +1,45 @@
 {
   "schemaVersion": 1,
-  "package": "FLEXPERIMENT_V10_SOL_REVIEWED_DESIGN",
+  "package": "FLEXPERIMENT_REFREF_V10_ARCHITECTURE_DESIGN",
   "date": "2026-10-27",
   "status": "DRAFT_FOR_OWNER_REVIEW_NOT_IMPLEMENTED",
   "artifactCount": 9,
   "files": [
     {
       "path": "01-commerce-architecture.md",
-      "sha256": "9ca256abc024036ef8545f7c3b88c1cecc7eb187ded8439cd7fbeb73cc0b5506"
+      "sha256": "a364b5709a239ec683a628bba9482d38ecd54cb17e1823374e47e1c1b6888ba5"
     },
     {
       "path": "02-lms-profile.md",
-      "sha256": "b99164db6e6a79688cde2adf24d5948788053bd3993b2d7c2cbee87b75bcf544"
+      "sha256": "3e62bd4f335bc24c2aacb5465bd8584362ae5c37ccb7d206c9e38ed73a7de409"
     },
     {
       "path": "03-lab-profile.md",
-      "sha256": "b7e27d8dcb7947176e928f66756e71ae737efc5ebfbbdf681f11b3dc2703f1d6"
+      "sha256": "ee4a1849490b93988d52acdccc6db04f2b0144cba2a92d6638fa3533f8c7fdce"
     },
     {
       "path": "04-refref-integration.md",
-      "sha256": "ba7c003daa5280d5ce6ad42a25122f94543229e7b947aa35650192f092ca9bed"
+      "sha256": "40454ab63c6fec9713111c65c63009ff5873185d57510627ae49f420448e76a6"
     },
     {
       "path": "05-fiscal-legal-impact.md",
-      "sha256": "1dc7c85ba09452bd09ca2e3313a1929ff4bf17a66feb8cbb46d979c64d52d7fa"
+      "sha256": "be889ee677dd6d1692d6fd8c08a1e3abc72869c1477e3077bbf3792a3e9832ae"
     },
     {
       "path": "06-migration-and-e2e.md",
-      "sha256": "ddbbb5c951b635da7a13b2534272c4060a1995f2dd5c3363108ad3d749139037"
+      "sha256": "1092aaac6cd2a17a3c6e21f4a29a5c687f0a3b4a2bee559910d89f97bfb68743"
     },
     {
       "path": "README.md",
-      "sha256": "ed4246d39a212a0ba519f9f0ebf8c083b723f3b8ab327a08ef87c2a3c7d643c2"
+      "sha256": "e861a47c443754c2a12bee8771397d1399ab10c281c79e5ec3f8db7e767ceab4"
     },
     {
       "path": "source-baseline.json",
-      "sha256": "7716fa964bf9caef2908a338474d8f50b1acc61797e072ebd7ae484e92f515fe"
+      "sha256": "110c81b7a290ba9f7fb501d07fc30e2c791f22439e2066a65fe93b8769ad3c8b"
     },
     {
       "path": "validate-package.py",
-      "sha256": "18cf1754115b6845137eac1ab4eecea9732904d6bd84909a9d0633a900593283"
+      "sha256": "c55924268bcf10dca2109d763bdf315737c9d6b7863d2940f56c70b665887182"
     }
   ],
   "plannedAcceptanceCaseIds": [

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "package": "FLEXPERIMENT_REFREF_V10_SOL_INDEPENDENT",
+  "package": "FLEXPERIMENT_REFREF_V10_ARCHITECTURE",
   "date": "2026-10-27",
   "independence": {
     "otherAgentMaterialsRead": false,
@@ -566,6 +566,13 @@
     "comparisonAuthorized": true,
     "otherAgentMaterialsReadAfterAuthorization": true,
     "opusReviewCommit": "e0601509c97acb01d912ccab4367aa47d137d595",
-    "scope": "OWNER-authorized comparison, user-supplied GPT/OPUS reviews and focused documentation corrections; FX-C12 duration and closure policy remain OWNER_PENDING; no implementation or activation."
+    "scope": "OWNER-authorized comparison, user-supplied GPT/OPUS reviews and focused documentation corrections; FX-C12 duration and closure policy remain OWNER_PENDING; no implementation or activation.",
+    "reviewedSeedCommit": "b519821245f58913e0a2853f8a265c9229b4263e",
+    "consolidation": {
+      "directory": "docs/refref-v10",
+      "language": "en",
+      "languageAuthority": "OWNER explicitly selected English in the current task on 2026-10-27.",
+      "scope": "Editorial relocation and English translation of the reviewed architecture; source pins, 80 case IDs and accepted/pending policy boundaries are preserved. FX-C12 duration and variant remain OWNER_PENDING."
+    }
   }
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check the reviewed SOL documentation package, never runtime/transport/provider E2E."""
+"""Check the Refref v10 architecture documentation package, never runtime/transport/provider E2E."""
 import argparse
 import hashlib
 import json
@@ -10,7 +10,7 @@ import sys
 from urllib.parse import unquote, urlsplit
 
 BASE = Path(__file__).resolve().parent
-REPO = BASE.parent
+REPO = BASE.parent.parent
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--refref-repo', type=Path,
                     help='Optional local Refref Git repository for exact pinned blob verification; no fetch')
@@ -143,7 +143,7 @@ if args.refref_repo:
             external_links += 1
     counts['verified_pinned_refref_links'] = external_links
 
-print(json.dumps({'status': 'FAIL' if failures else 'PASS', 'scope': 'SOL_DOCUMENTATION_PACKAGE_ONLY',
+print(json.dumps({'status': 'FAIL' if failures else 'PASS', 'scope': 'FLEXPERIMENT_V10_DOCUMENTATION_ONLY',
                   'flexperiment_commit': source, 'refref_commit': baseline['refref']['commit'],
                   'counts': counts, 'failures': failures,
                   'external_refref_bytes': 'VERIFIED' if args.refref_repo else 'NOT_REQUESTED_METADATA_ONLY',

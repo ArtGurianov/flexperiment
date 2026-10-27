@@ -1,0 +1,126 @@
+# LAB — meetings, seats, and guest purchases with Refref v10
+
+Date: 2026-10-27. Status: **Draft architecture for OWNER review**. This does not describe an already introduced v10 integration. The source audit examined Flexperiment `c8bad757c9daa04385f9cf5e95bf6e07b185080a`; the normative Refref baseline is [ADR-141 at c932b65](https://github.com/ArtGurianov/refref/blob/c932b656edbda1d47cfb57de08fd4a36536712f5/docs/v10/ADR-141-refref-core.md). Running servers, databases, bank accounts, and active sales were not inspected.
+
+## 1. Profile boundary and current state
+
+LAB sells participation in a specific meeting with a date, location, and limited capacity. Flexperiment Commerce owns the offer, buyer contract, seat, collection of money, ticket/QR, service delivery, and refund. Refref records the referral binding and calculates commission. A LAB guest does not have to register an account. An unverified email does not authorize access to all orders under that address.
+
+This profile does not impose immediate LMS access, lesson progress, or tourism-booking requirements. Mandatory prepayment followed by a balance payment was approved for Mikluha; it must not automatically be introduced into LAB. Current LAB checkout collects the entire frozen amount of one purchase. Additional payments, group tickets, or passes require a separate product decision and the corresponding money/ticket contract.
+
+| Inspected source | Behavior on the audited main baseline | Transition requirement |
+|---|---|---|
+| [Root AGENTS](../../AGENTS.md), [LAB V1 retirement](../evidence/2026-10-16-lab-v1-retirement/README.md) | V1 is physically stopped; old public hosts return 410. Old partner/referral surfaces are in retirement | Do not revive V1 or import its history as new V2 orders/BOUND. Historical tails require separately authorized original-provider recovery |
+| [apps/lab-v2](../../apps/lab-v2/components/LabV2Client.tsx), [LAB V2 image](../../Dockerfile.frontends-v2) | V2 is a separate static frontend. `apps/lab` contains the historical V1 UI, including the old CheckoutFlow | Build the new integration in `apps/lab-v2` and Commerce V2, not in old V1 token routes. An image/source does not prove public cutover |
+| [Catalogue](../../commerce-v2/src/lab-catalogue.ts), [contract](../../lib/lab-v2-contract.ts) | Public output includes a PUBLIC offer, a future LISTED/SCHEDULED meeting, price/time/location disclosure, and soldOut. Capacity/contact details are not published | The catalogue is a read model, not permission to pay; the server repeats its own checks. UNLISTED is not CLOSED. Direct-offer eligibility is checked separately |
+| [lab-occurrences.ts](../../commerce-v2/src/lab-occurrences.ts), [0029](../../commerce-v2/migrations/0029_lab_occurrence_lifecycle.sql) | A meeting has immutable identity, `version`/`material_revision`, and SCHEDULED/CANCELLED status. IN_PROGRESS/FINISHED are derived from time | Do not replace the location in the purchased contract with the current catalogue card. LAB uses meeting/contract revisions; course editions in the shared design concern LMS |
+| [checkout.ts](../../commerce-v2/src/checkout.ts), [0033](../../commerce-v2/migrations/0033_lab_seat_holds.sql) | The current LAB intent has one line/seat. A temporary hold belongs to the intent; confirmation atomically replaces it with the order's seat allocation | Preserve this guarantee with BOUND/native payment. A multi-seat basket is not already supported |
+| [Guest routes](../../commerce-v2/src/lab-guest-routes.ts), [lab-tickets.ts](../../commerce-v2/src/lab-tickets.ts), [0032](../../commerce-v2/migrations/0032_lab_guest_tickets.sql) | The capability is stored as SHA-256 and scoped to one orderPublicId. There is one ticket per order line; QR use is irreversible | A new purchaseRef retains linkage to the original order/ticket. Neither email, referral context, nor BOUND replaces the capability or check-in authority |
+| [Refref rail](../../commerce-v2/src/refref-payment-rail.ts), [payment-mode](../../commerce-v2/src/payment-mode.ts) | `PAYMENT_MODE=refref` means the previous Refref-owned checkout: resolution, attempt/session, payment/refund read-back, and fulfillment ACK | New v10 purchases require a merchant-owned acquiring/refund adapter and separate Refref reporting. A URL change alone does not change money ownership |
+| [LAB guest UI](../../apps/lab-v2/components/LabGuestCheckout.tsx) | Email/three consents and preview/confirm are present. The V2 component has no checkoutCode/Apply field. “Start new order” currently clears state on a general error | Implement proven promo intent and safe restart separately. Do not claim fixes from unintegrated branches/PRs are ready, or treat resetting UNKNOWN as permission for a new payment |
+
+This is a source audit at the stated SHA. Old launch/CI comments, closed-canary records, and mock results do not establish current production authority. See the [transition plan](06-migration-and-e2e.md).
+
+## 2. Purchase, guest, and ticket identity
+
+Each economic purchase receives a durable, non-personal `purchaseRef`, unique within the Flexperiment Business. Mapping it to one server-side `orderPublicId` is reasonable for the first new profile, but that mapping must be established by a migration and unique constraint. Matching strings alone do not create a referral right. `lineRef`, `occurrenceRef`, contract version, local intent, provider operation, BOUND, and ticketId are separate identities.
+
+The guest generates a random capability **before** the first request and retains it until the response arrives. Repeating `guest/start` with the same capability/email returns the same orderPublicId. An email change under a known capability is rejected. A lost response must not cause a new purchaseRef to be created for another payment. The current HTTP route charges source quota before calling replay logic, so replay must not be described as already quota-free. The target profile must distinguish a verified replay of an existing capability/email from order creation: after a lost first response, replay restores the same purchase even when the **creation** quota is exhausted, does not consume that quota again, and retains ownership/erasure/security guards. New capabilities, including those with the same email, remain subject to anti-abuse checks. Numeric quotas do not become new Refref monetary limits. This is a future implementation requirement, not a claim that current main is fixed.
+
+| Authority | Permitted scope | What it does not authorize |
+|---|---|---|
+| Guest order capability | Preview/confirm/read-back/ticket/request for its own order, with server guards | Other orders sharing the email, LMS access, or partner/campaign selection |
+| Email recovery | Proven delivery and explicit redemption of a recovery token for the guest's own orders | Knowing an address alone neither reveals history nor proves payment |
+| Verified owner account | History/reissue after ownership verification | Changing ticketId/usedAt or creating a new purchase or BOUND |
+| Entry QR | One check-in by an authorized operator for a specific meeting | Order/refund management, reading personal data, or referral attribution |
+| Browser referral context | Confirmed action/holder within its Refref origin/scope | A guest account, ticket entitlement, or cross-device matching |
+
+After explicit recovery, the current order capability and QR may be rotated; the fact of one-time ticket use is retained. Preserve current `used_at/used_by`, wrong-meeting, and repeat-scan guards. Links/capabilities are not sent to Refref or placed in query strings/logs/analytics. An ordinary Refref snapshot contains no email, full name, or QR. Guest personal data and consents remain in the [separate profile](05-fiscal-legal-impact.md).
+
+## 3. Offer, snapshot, and seats
+
+Before opening payment, freeze the offer, occurrence identity/version, exact start/end instants and zone, disclosed venue or explicitly accepted TBA terms, price/discounts, legal version/consents, lineRef, hold, and absolute deadlines. For TBA, the buyer sees the condition and announcement deadline. A confirmed address hidden from the public catalogue is provided to the buyer as part of the offer. Do not replace the purchased snapshot with the latest catalogue version.
+
+Current code guarantees the price through the issued intent. Eligibility ends at the earliest applicable deadline: the intent, meeting start, hold, applicable promotion, or another explicit terminating ground. A hold is created in one SQLite `BEGIN IMMEDIATE` transaction with a capacity check. It lasts no more than 15 minutes from the original intent and never beyond the meeting start. Replacing a live intent inherits the original absolute deadline rather than granting another 15 minutes. These numbers describe the current accepted contract, not a new v10 deposit schedule.
+
+Confirmation rechecks the same unexpired price/hold/consents and money safety in the transaction that creates the order/attempt and consumes the intent. A seat is not counted twice as both a hold and an order. In v10, this local boundary is supplemented by BOUND before the **first payment opportunity**, including an invoice, link, or operation creation. Do not hold a SQLite write lock during a network call. Coordination of hold/version/payment gate and command recovery requires qualification.
+
+If BOUND was persisted but the hold/applicable buyer terms expired before payment opened, BOUND does not authorize selling an occupied seat or silently extending the promised price. Close new instructions, recover unknown operations, and report the attributable outcome. Cancellation of an unpaid purchase does not release a consumed touch. It is not a reason to create a second identity and bind the same economic purchase again.
+
+After a payment operation starts, the seat remains committed during PENDING/UNKNOWN/REVIEW and an unfinished refund. Quote TTL does not release it. First obtain a reliable terminal outcome/proof that further execution is impossible from the operation owner, then apply the contract rule. A UI timeout, browser back, missing cookie, or absent Refref ACK is not such proof. A late successful payment is preserved and does not become a request to pay again.
+
+## 4. Arrival, Apply, and BOUND
+
+Unlike Mikluha, current Flexperiment [app.ts](../../commerce-v2/src/app.ts) **does** call `BrowserContexts.deliveryForBuy` on `/v1/checkout/preview`. [browser-context.ts](../../commerce-v2/src/browser-context.ts) persists contexts and temporary proofs in SQLite under [0034](../../commerce-v2/migrations/0034_browser_contexts.sql). The local in-memory map only coalesces concurrent network attempts. The prepared Buy exchange waits no more than 1500 ms and freezes `deliveryDegraded`. Do not repeat another merchant's claim of purely in-memory Arrival or an unused helper.
+
+The v10 transition requires separate qualification:
+
+1. LAB context is host-scoped and separate from COURSES. The current cookie Max-Age defaults to 30 days and is configurable. This is a locator lifetime, not a v10 touch lifetime. Refresh/replay does not create a new action, 72-hour protection period, or campaign TTL.
+2. Refref determines the holder, `protectedUntil`, and `attributionExpiresAt`: one active holder, 72 hours of protection, then the required R14.1 confirmation of a change; campaign TTL defaults to 7 and is capped at 30 calendar days. There is no hidden queue of previous touches. Old Arrival receipts do not automatically become a new v10 right. A qualified transition mapping or new qualifying action is required.
+3. A link and `PROMO_APPLY` are distinct qualifying actions. The V2 UI must explicitly implement Apply or a qualified, informed `ORDER_SUBMIT` with a visible code/condition. Population, entry, or editing does not create a promo-touch. Preserve previously confirmed link attribution and a promised, valid AutoApply price.
+4. `binding.create` sends the stable purchase/revision, server-side cart, selected finality mode/exact anchor, and **mandatory `fullPaymentDueAt`**. The guest does not select beneficiary, terms, or eligible=true. Guest-order identity and referral-action proof are checked independently.
+5. All payment opportunities remain closed until the first BOUND command has a durable result. `deliveryDegraded` after 1500 ms does not authorize payment for that same unresolved referral attempt. After a timeout, read the original command's result, including a refusal. Once the absence of BOUND is proven, honest ordinary checkout is possible without retroactive attribution.
+6. After BOUND is persisted, Refref unavailability does not block lawful local changes and safe execution of the purchase. Touch expiry does not cancel this purchase's right. Bank UNKNOWN independently continues to fence an overlapping repeat operation.
+
+The exact shared protocol, D_rule/D_applied, and OWNER-02 are in [04](04-refref-integration.md) and [Refref attribution](https://github.com/ArtGurianov/refref/blob/c932b656edbda1d47cfb57de08fd4a36536712f5/docs/v10/contracts/02-attribution-bound.md). Applying a buyer discount alone does not create BOUND/C. Not applying it does not itself deprive the partner of a reward when the other conditions are met.
+
+## 5. Payment, ticket, and actual service delivery
+
+The new profile collects buyer money through a separately qualified, merchant-owned Flexperiment adapter. Old Refref-owned attempts/read-back/refunds remain with their original owner until proven completion and do not become a new BOUND. Current `disabled/mock/refref` configuration values do not establish native v10 acquiring or grant provider authority.
+
+| Fact | LAB action | Refref action |
+|---|---|---|
+| An invoice/session was created or the browser returned | Preserve operation identity and await a verified outcome | Neither FULL nor C |
+| The accepted revision's entire monetary obligation is confirmed paid | Persist actual dates/amounts/source. Issue the required paid ticket once, independently of report-delivery outcome | For a persisted BOUND, send one PAID_IN_FULL with its own snapshot/outbox |
+| Refref accepted the report for processing | Do not issue another invoice or cancel an already paid ticket | `sourceReceipt` confirms fact intake, not C or bank verification |
+| Payment is unknown or does not match the accepted amount | Reconcile and retain the scoped fence. A success redirect alone does not issue a ticket | Do not invent FULL or a definitive NOT_PAID |
+| The participant checked in with QR | Irreversibly record check-in within the exact occurrence scope | Does not create FULL/C or move S5 |
+| The meeting actually took place | Record separate service-delivery/fiscal-closing facts under the selected profile | The original S5 anchor/window is not derived from scanning, a timer, or a receipt |
+| A buyer refund succeeded | Apply the contractual/ticket consequence and preserve evidence | Does not itself change C. A request to zero it requires separate S4 |
+
+Current ticket issuance requires an accepted payment for exactly the frozen total. Preserve this guarantee. In the new implementation, a qualified native provider becomes the source of payment truth, independently of Refref's commission projection. `FULFILLED` means internal completion of ticket/access issuance; it does not prove that the meeting took place.
+
+A new order is permitted as an independent purchase, not as recovery from an unknown old payment. It requires an explicit server result and a check that scopes do not overlap. A client reset of the capability/quote/payment key cannot bypass this. REFUND_PENDING, REVIEW_REQUIRED, transport unavailability, and an unknown outcome do not authorize discarding the original capability and starting again. An independently purchased second ticket remains a separate product scenario when a seat is available; it is not a second charge for the same unfinished order.
+
+## 6. Meeting changes and continuing purchases
+
+Current ordinary occurrence editing rejects schedule changes when seats are committed and changes to the accepted venue. Cancellation is also blocked for a meeting with started orders. These refusals are not a ready universal workflow for moving paid participants. A new implementation extends the supported workflow only after separate qualification of the contract/consents and seats; it does not weaken existing triggers.
+
+An agreed service move/replacement preserves `purchaseRef`, BOUND, the original partner, and linkage to all operations/documents. Do not UPDATE the old snapshot. Append a new contract revision with predecessor, hash, actual effective time, consents, and change classification. Switch local allocations for the old/new meetings in one transaction. An unavailable new seat does not release the old seat as though the move had completed. An issued QR must not admit the buyer to two meetings at once, and previous use must not be reset to permit another entry.
+
+Local revision acceptance and referral qualification are separate. After BOUND, a permitted change/safe additional payment does not wait for `purchase.revision.accept` ACK. Economic ineligibility or UNKNOWN does not roll back the buyer contract, delete BOUND, or zero previously accrued C. A full monetary refund and recharge during a documented replacement do not themselves turn continuation into an independent new purchase. A genuinely terminated purchase followed by an independent new sale requires a new identity/qualifying action/BOUND before its first payment.
+
+The first actual FULL belongs to the effective revision according to **actual time**, not the latest received ACK. If payment under the old revision completed before a contract change but its callback arrived later, preserve the original first-FULL scope. If an agreed price reduction before FULL first makes proven payment sufficient, FULL occurs when that revision actually takes effect, not at the old partial receipt's time. Adding a participant, changing price, or moving the meeting after first FULL does not increase C. Show this consequence to partners rather than promising a reward for every later order expansion.
+
+Report true FULL with its own snapshot even for an unregistered/economically ineligible revision. Under [Refref reporting §3.1](https://github.com/ArtGurianov/refref/blob/c932b656edbda1d47cfb57de08fd4a36536712f5/docs/v10/contracts/03-merchant-reporting.md#31-приём-full-независимо-от-предварительной-регистрации-ревизии), the fact is durably accepted, and a sufficient snapshot is qualified without prior CAS. Missing context is supplied through the existing evidence route. APPLIED does not promise positive C, and an eligibility refusal is not S4-zero. A late ACK for an old revision does not roll back the local contract or first-FULL hash/time.
+
+## 7. Cancellations, refunds, and finality
+
+The existing executable refund profile is **full-only**: [refunds.ts](../../commerce-v2/src/refunds.ts) and the [Refref rail](../../commerce-v2/src/refref-payment-rail.ts) reject partial amounts/repeated scope. This does not establish support for all LAB refund rules or automatically qualify native partial refunds. Until the relevant admission, do not open unsupported sales or hide a consumer obligation behind a missing button.
+
+A request, refund decision, provider submission, successful money outcome, cancellation of future entry, and Refref commission claim are separate events. S4 does not determine a buyer refund, and the refund does not wait for S4. An unverified refund projection does not erase ticket use or turn money UNKNOWN into a successful refund. Preserve existing envelope/recovery guards for old operations until completion. A new native operation has its own authority and stable provider identity.
+
+S4 requires all attributable receipts/refunds for one purchase, their temporal/baseline scope, and linkage to eligible services. Do not hide an additional payment, deduct an old refund twice after refund/recharge, or classify an ineligible addition as eligible. A buyer refund solely for a non-participating service does not reduce the eligible money remainder. Commission remains binary C/0 under canonical rules; LAB does not create its own partial-commission ledger.
+
+**Finality mode is a profile decision**, not a deduction from `product.kind=LAB`. For `SCHEDULED_SERVICE`, freeze the exact accepted end of the eligible meeting/program with zone/provenance before BOUND. With `PAYMENT`, early full payment can start the ordinary window long before the meeting. This consequence must be deliberately selected and disclosed in campaign terms. `fullPaymentDueAt` is a separate agreed full-payment deadline, not the service date or an automatically copied cookie/quote TTL. The immediate-purchase schedule requires qualification; the developer does not select new deposits or deferred payment.
+
+For a selected `SCHEDULED_SERVICE`, the anchor is `max(actualPaidInFullAt, serviceAnchorAtAtBound)`. Late callback receipt does not replace actualPaidInFullAt with delivery time. The frozen meeting end alone is not the anchor if actual full payment occurred later.
+
+An occurrence move, changed actual end, QR check-in, calendar FINISHED, or closing receipt does not automatically shift the frozen S5 anchor. Partner debt/direct-payout deadlines and dispute handling follow the [shared integration](04-refref-integration.md), independently of ticket status.
+
+## 8. Admission conditions and required profile checks
+
+| Area | Required result before launching the new profile |
+|---|---|
+| Identity/guest | Exact-order capability without email-wide authority. Lost ACK/recovery/reissue does not create a new purchase. No secret leakage. Existing trusted-proxy/erasure fences are preserved |
+| Seats and version | Last-seat concurrency, inherited hold deadline, hold→order without double counting, atomic move, and actual UNKNOWN/late payment without overselling |
+| Attribution | Separate LAB and COURSES origins/contexts, Apply/ORDER_SUBMIT proof, 72h/R14.1, campaign TTL, and first BOUND before any payment. Degraded delivery is not a bypass |
+| Payments/reporting | Qualified native acquiring/refunds, complete source/time/revision snapshot, sourceReceipt/status read-back, replay/conflict, and no second C |
+| Fulfillment/refund | Ticket issuance once, QR scope and irreversible use, distinct refund/entry cancellation/service delivery. Partial refunds only within a proven profile |
+| Contract/fiscal | LAB offer/consents, actual prices and times, service/participant model, and receipt/closing/refund. This is not a copy of Mikluha's or LMS's offer |
+| Finality | Explicitly selected mode/fullPaymentDueAt/service anchor. No automatic window shift following a new occurrence |
+| Migration/GO | No V1 restart or fabricated V2 import. Original history/owners/recovery are preserved. Separate source/transport/provider verdicts and explicit public GO |
+
+Profile-specific negative E2E must include: duplicate guest start after a lost ACK; restart with an open payment; a last-seat race; an expired hold after successful BOUND; an old callback after a local move; revision refusal/UNKNOWN during a lawful additional payment; FULL before CAS registration; ineligible FULL without positive C; stale ACK; a closed/expired meeting with an unfinished payment; QR after full refund and recovery; another guest's capability/another origin; an old V1 token; a discount without attribution/BOUND after payment; and purchase expansion after FULL without increased C, if that group profile is separately permitted.
+
+All these checks concern a future implementation and are `NOT_RUN_TARGET` in this preparation. Source audit and historical mock tests do not replace running authenticated transport, native provider/evidence E2E, legal acceptance of the new version, and separate permission to launch LAB. A historical closed canary/restore does not automatically activate v10.
