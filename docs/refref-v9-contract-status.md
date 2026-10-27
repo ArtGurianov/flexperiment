@@ -1,5 +1,7 @@
 # Refref v9 contract status — LMS and LAB
 
+> New referral rights are planned under Refref v10, see [LMS and LAB on Refref v10](refref-v10/README.md). This page stays the historical v9 target.
+
 Audit snapshot: Flexperiment `4859f2ac6c61afa9d9693ceb4d32b89b1802606c`,
 Refref main `0e46c0ef982bafec2ab11d113ddada01fd214407`, 20 October 2026;
 target updated to [Draft ADR-140 revision 7](https://github.com/ArtGurianov/refref/pull/99)

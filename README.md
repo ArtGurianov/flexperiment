@@ -15,6 +15,10 @@ cleanup have their own gates (ART-41 and ART-340). See the
 [publication protocol](docs/course-publication-protocol.md) and
 [Refref contract status](docs/refref-v9-contract-status.md).
 
+The transition of LMS and LAB to merchant-native Refref v10 is planned in
+[docs/refref-v10](docs/refref-v10/README.md); it is a documentation draft and
+does not change the running checkout.
+
 ## Local development
 
 Install the pinned workspace dependencies, then start the application you need:
