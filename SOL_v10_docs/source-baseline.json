@@ -1,0 +1,544 @@
+{
+  "schemaVersion": 1,
+  "package": "FLEXPERIMENT_REFREF_V10_SOL_INDEPENDENT",
+  "date": "2026-10-27",
+  "independence": {
+    "otherAgentMaterialsRead": false,
+    "otherAgentBranchesRead": false,
+    "scope": "Only current main source, approved upstream Refref v10 and this SOL package; no OPUS comparison performed."
+  },
+  "flexperiment": {
+    "repository": "ArtGurianov/flexperiment",
+    "ref": "origin/main",
+    "commit": "c8bad757c9daa04385f9cf5e95bf6e07b185080a",
+    "migrationLineage": "flexperiment-v2",
+    "migrationCount": 35,
+    "files": [
+      {
+        "path": ".github/workflows/test.yml",
+        "sha256": "977c26d4fbd3194b6cab247b3f3aca5120e890fd947f855c8a69df869766d5e0",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/.github/workflows/test.yml"
+      },
+      {
+        "path": "AGENTS.md",
+        "sha256": "d8aa009a498283f285d40d5cd154b5533fd420fcdcf7f8d6d59b4145af9471c4",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/AGENTS.md"
+      },
+      {
+        "path": "Dockerfile.frontends-v2",
+        "sha256": "447629742704a2cb539ec2eb247e0ca70b62c1397bd9355d5fa1f54247851e61",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/Dockerfile.frontends-v2"
+      },
+      {
+        "path": "README.md",
+        "sha256": "a2cf66b2d8477fe7d182453772e9e628fc563d9372227fb5a3d62f492fdf25f3",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/README.md"
+      },
+      {
+        "path": "apps/lab-v2/AGENTS.md",
+        "sha256": "63f2c50380ed6303237cce215ce27af1d620d094c215e28d1b1538a3c070e3bb",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/apps/lab-v2/AGENTS.md"
+      },
+      {
+        "path": "apps/lab-v2/components/LabGuestCheckout.tsx",
+        "sha256": "42ae028c73c2ffa94a7ee3c810a01bd10b6ec959b08276e0fa3fb9f1e8f4b435",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/apps/lab-v2/components/LabGuestCheckout.tsx"
+      },
+      {
+        "path": "apps/lab-v2/components/LabV2Client.tsx",
+        "sha256": "f0e38c97f16b4fdd2535c2fa8b19c03d5ceca994f5db0dc813b6ed891eee565c",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/apps/lab-v2/components/LabV2Client.tsx"
+      },
+      {
+        "path": "apps/platform/AGENTS.md",
+        "sha256": "63f2c50380ed6303237cce215ce27af1d620d094c215e28d1b1538a3c070e3bb",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/apps/platform/AGENTS.md"
+      },
+      {
+        "path": "apps/platform/components/checkout/CourseCheckout.tsx",
+        "sha256": "5fb9f1acaeb05c3143fe48fe66b7208f56861ef01b4ff9c5f9841cfe2b24b998",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/apps/platform/components/checkout/CourseCheckout.tsx"
+      },
+      {
+        "path": "commerce-v2/migrations/0001_v2_baseline.sql",
+        "sha256": "b47bd050284c75a4a0191b53c8dd0123c4bf5d322f6bb9b712109be53795f75d",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/migrations/0001_v2_baseline.sql"
+      },
+      {
+        "path": "commerce-v2/migrations/0002_checkout_price_review.sql",
+        "sha256": "33a3609ae0c78d521b5800d53b1fe911993bd51cfd00a55bea71d0871341c6a0",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/migrations/0002_checkout_price_review.sql"
+      },
+      {
+        "path": "commerce-v2/migrations/0003_merchant_promotions.sql",
+        "sha256": "e29c279020ceff0ba838ec5ebcd559b7c12429dad59d7d9e540195e97f4e5dfc",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/migrations/0003_merchant_promotions.sql"
+      },
+      {
+        "path": "commerce-v2/migrations/0004_refund_authority.sql",
+        "sha256": "8db79604f35b6f5bd9f4fd174f1f3dc70c5297f741c547fe873b7a44352ff4f8",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/migrations/0004_refund_authority.sql"
+      },
+      {
+        "path": "commerce-v2/migrations/0005_control_room_auth.sql",
+        "sha256": "6eb1f363f3f67157999dba483a1c9b52d579981ec686bbdd6db1536b1315d75e",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/migrations/0005_control_room_auth.sql"
+      },
+      {
+        "path": "commerce-v2/migrations/0006_control_room_versions.sql",
+        "sha256": "593126d05c73e2b42ae19b52071c55ade11d383409a517fcc2773bc7ed7c92e6",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/migrations/0006_control_room_versions.sql"
+      },
+      {
+        "path": "commerce-v2/migrations/0007_lab_offer_occurrence.sql",
+        "sha256": "106e907030910244bf324add5b1ebe5e5ceafee06c8a519d1c39f01009c0472b",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/migrations/0007_lab_offer_occurrence.sql"
+      },
+      {
+        "path": "commerce-v2/migrations/0008_playback_access_telemetry.sql",
+        "sha256": "9056e15784b0d4aa1d3f67d86c9e9327d5a2c25a589e28e5d1d120b4ad758ef1",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/migrations/0008_playback_access_telemetry.sql"
+      },
+      {
+        "path": "commerce-v2/migrations/0009_product_offer_cardinality.sql",
+        "sha256": "635731c36f47eef4347d15a6fbdffb160258ca8f62267537ac12c7ba76e18e3a",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/migrations/0009_product_offer_cardinality.sql"
+      },
+      {
+        "path": "commerce-v2/migrations/0010_consent_document_hashes.sql",
+        "sha256": "4ce473f80c72fd732f6a928c43d13bc997783292744e7810bcef461ee8eac419",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/migrations/0010_consent_document_hashes.sql"
+      },
+      {
+        "path": "commerce-v2/migrations/0011_canonical_order_snapshots.sql",
+        "sha256": "4821f5a727d03697762547e31e126f61d23ec32f305f4ac235fbe5ded4f388db",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/migrations/0011_canonical_order_snapshots.sql"
+      },
+      {
+        "path": "commerce-v2/migrations/0012_campaign_delivery_outbox.sql",
+        "sha256": "ee69394a189fe5faa60fbec58313ffcc127ea7e41462e1009b9590fcad669305",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/migrations/0012_campaign_delivery_outbox.sql"
+      },
+      {
+        "path": "commerce-v2/migrations/0013_product_identity_immutable.sql",
+        "sha256": "8d80366742ace140fe252479bb87a603932da0a745014fce7d5e1dbb6a8c7081",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/migrations/0013_product_identity_immutable.sql"
+      },
+      {
+        "path": "commerce-v2/migrations/0014_manifest_state_hash.sql",
+        "sha256": "e955c20f22964d0b6eb0de3603dad39a21cf88398660444bb1bc85560d9c796d",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/migrations/0014_manifest_state_hash.sql"
+      },
+      {
+        "path": "commerce-v2/migrations/0015_sales_activation_evidence.sql",
+        "sha256": "3dd832c6919e2eb3ea0ce69924e8b2067a5e517698f93ee0d411154c0bf069b9",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/migrations/0015_sales_activation_evidence.sql"
+      },
+      {
+        "path": "commerce-v2/migrations/0016_online_course_activation_fence.sql",
+        "sha256": "c036a3016d8695e565c2f19de5000f67bae236e3ede690dfbd68af5c949e3cc4",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/migrations/0016_online_course_activation_fence.sql"
+      },
+      {
+        "path": "commerce-v2/migrations/0017_fiscal_policy.sql",
+        "sha256": "dba0db6ae825269649f192a8454e1e36b8804ce9bb5181f56a524326504c4984",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/migrations/0017_fiscal_policy.sql"
+      },
+      {
+        "path": "commerce-v2/migrations/0018_refund_submission_envelope.sql",
+        "sha256": "908713d4eb74465e288a1f585dedd5e2489483c89dee2a2798a41b119e7112bb",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/migrations/0018_refund_submission_envelope.sql"
+      },
+      {
+        "path": "commerce-v2/migrations/0019_refund_envelope_purge.sql",
+        "sha256": "148fa8bc7a9ddcb22c59f62f2758c2ee023583a6d3956cb5064f03379337a0c5",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/migrations/0019_refund_envelope_purge.sql"
+      },
+      {
+        "path": "commerce-v2/migrations/0020_refund_terminal_refusal_purge.sql",
+        "sha256": "e933e7504abcb1daf1aabcca39237da52fe819348ea6bf1b877f28db0288f307",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/migrations/0020_refund_terminal_refusal_purge.sql"
+      },
+      {
+        "path": "commerce-v2/migrations/0021_offer_payment_purpose.sql",
+        "sha256": "0d77ad62a6a78aa47fc514adfa2be35671f32f14a40254fb551d2855e029eeb4",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/migrations/0021_offer_payment_purpose.sql"
+      },
+      {
+        "path": "commerce-v2/migrations/0022_deployment_durability.sql",
+        "sha256": "0ef210d1f47e87396df46f50a421d0a643f346a20cc306f60437f2662abb42bf",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/migrations/0022_deployment_durability.sql"
+      },
+      {
+        "path": "commerce-v2/migrations/0023_consent_attribution.sql",
+        "sha256": "5f1af9fa1d3d1c0ccf2b0794ff263a967afc77931267ab0e935dac245ca6d6f7",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/migrations/0023_consent_attribution.sql"
+      },
+      {
+        "path": "commerce-v2/migrations/0024_course_commercial_control.sql",
+        "sha256": "41156381ccae257b017785807559598f5c2e0a953fcfa912d36038d99203de47",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/migrations/0024_course_commercial_control.sql"
+      },
+      {
+        "path": "commerce-v2/migrations/0025_authenticated_consent_events.sql",
+        "sha256": "c77ae7a161e7c8d57adcd89d6a88cb2048757e4193b8aa210845f40351b4d769",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/migrations/0025_authenticated_consent_events.sql"
+      },
+      {
+        "path": "commerce-v2/migrations/0026_course_editorial_publication.sql",
+        "sha256": "ff73297e3f12b5f3e09651d98191da739f7e1be990762520bd7831d4e534ef4b",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/migrations/0026_course_editorial_publication.sql"
+      },
+      {
+        "path": "commerce-v2/migrations/0027_owner_legal_decisions.sql",
+        "sha256": "ec9b94919cae4ffda430e798b21ebf7d63cb48af421010a8a4fda1390152a451",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/migrations/0027_owner_legal_decisions.sql"
+      },
+      {
+        "path": "commerce-v2/migrations/0028_control_room_totp.sql",
+        "sha256": "2f08320cf208a94cfb862a05f7580e9aaed8aaadeffe6d33fd8c19abd45474f4",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/migrations/0028_control_room_totp.sql"
+      },
+      {
+        "path": "commerce-v2/migrations/0029_lab_occurrence_lifecycle.sql",
+        "sha256": "98e56de382782c05c7c60275c25e619dcba90e73f6ddd8934d2ae003d3348773",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/migrations/0029_lab_occurrence_lifecycle.sql"
+      },
+      {
+        "path": "commerce-v2/migrations/0030_checkout_intents.sql",
+        "sha256": "e7f8e3c0eb66b5e3f1e0c38cc4bf8ff7df87b6301ff0500f31b283e601564c70",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/migrations/0030_checkout_intents.sql"
+      },
+      {
+        "path": "commerce-v2/migrations/0031_lab_quote_invalidation.sql",
+        "sha256": "2878a82c78f99a75a64ee0bc2c38c9e326b3c5bc959a8682ccff4ad06beac8bd",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/migrations/0031_lab_quote_invalidation.sql"
+      },
+      {
+        "path": "commerce-v2/migrations/0032_lab_guest_tickets.sql",
+        "sha256": "234ef3a726969cb1306558fb42e7ab0863c4e360c45b04b47a7da991705a04a9",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/migrations/0032_lab_guest_tickets.sql"
+      },
+      {
+        "path": "commerce-v2/migrations/0033_lab_seat_holds.sql",
+        "sha256": "aace5461504487ad00da50d1fbf6f0dbe7514a1aadfe2e9910a6f9f8958e7391",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/migrations/0033_lab_seat_holds.sql"
+      },
+      {
+        "path": "commerce-v2/migrations/0034_browser_contexts.sql",
+        "sha256": "b7bd54cad4fc6882f0e91ec2237a2d3429678679d8f7489a723ce15fde270d80",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/migrations/0034_browser_contexts.sql"
+      },
+      {
+        "path": "commerce-v2/migrations/0035_storefront_switch.sql",
+        "sha256": "7b6ff1ab0127eb50e6c4db5bf2ee6fe87a611279785ec829fc65616e4668af58",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/migrations/0035_storefront_switch.sql"
+      },
+      {
+        "path": "commerce-v2/migrations/migration.lock",
+        "sha256": "eea99fa43aafbabcb3053fde33d3e2f37dfcdb982dbacd237b87785aca07d9a7",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/migrations/migration.lock"
+      },
+      {
+        "path": "commerce-v2/src/access-policy.ts",
+        "sha256": "802fbf1a1446abb71897ccb8b17f9c7a017c5a401bdc5987f0acf83335e45c10",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/src/access-policy.ts"
+      },
+      {
+        "path": "commerce-v2/src/app.ts",
+        "sha256": "ce462b1652458f282ee648b644631a2cf19373f4832cad21d7fc2c490faf3047",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/src/app.ts"
+      },
+      {
+        "path": "commerce-v2/src/authenticated-consents.ts",
+        "sha256": "195dc0e6a0cdc56b29634740a625a546a9bbc8b6f73f25298314cb6078d11d25",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/src/authenticated-consents.ts"
+      },
+      {
+        "path": "commerce-v2/src/browser-context.ts",
+        "sha256": "0001ed97032b9393c94f5ebb744bdb06a67b73d9165cc5616377cbfc03c5131e",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/src/browser-context.ts"
+      },
+      {
+        "path": "commerce-v2/src/checkout-snapshot.ts",
+        "sha256": "416ac3410bf37f8e91d7d079819d3a2cb5277d64480267bd21f4f108777a6874",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/src/checkout-snapshot.ts"
+      },
+      {
+        "path": "commerce-v2/src/checkout.ts",
+        "sha256": "2b52da97f15c58271386c815388d283cd43bf5c8a124692b5044cbb23124ba11",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/src/checkout.ts"
+      },
+      {
+        "path": "commerce-v2/src/db.ts",
+        "sha256": "76574ae89dc1cbf6543cc8f6e43c312de9b8755fd0f7be1ca8f6f0c54f725c1d",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/src/db.ts"
+      },
+      {
+        "path": "commerce-v2/src/entitlements.ts",
+        "sha256": "2141d5e42b0055042092f264237650e04c07142e8632ada2a5f27b6caabfbd1d",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/src/entitlements.ts"
+      },
+      {
+        "path": "commerce-v2/src/erasure-restore.ts",
+        "sha256": "78f59b50bca144c48a48e524522998d06916f8b3a2a224085f062a490d0eac01",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/src/erasure-restore.ts"
+      },
+      {
+        "path": "commerce-v2/src/fiscal-policy.ts",
+        "sha256": "14cdccdcec33b5ba85fdd8178ecc3636daa9903a12c5add97ba6102d65e3e5e7",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/src/fiscal-policy.ts"
+      },
+      {
+        "path": "commerce-v2/src/immediate-course-access.ts",
+        "sha256": "cca14b36d7817d37095c0ba926f4ea0219dc0d7a2db2cb6fefa62dcd989dcf09",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/src/immediate-course-access.ts"
+      },
+      {
+        "path": "commerce-v2/src/kinescope.ts",
+        "sha256": "e62a7c7f5bc395108e7799791d3c27499725726ed5b0ae9936c4528ea5e0eb18",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/src/kinescope.ts"
+      },
+      {
+        "path": "commerce-v2/src/lab-catalogue.ts",
+        "sha256": "a2b04eab7fee75e4d94cf6830c3c10616d7cbeb666c807d072626c017c07e8a0",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/src/lab-catalogue.ts"
+      },
+      {
+        "path": "commerce-v2/src/lab-guest-routes.ts",
+        "sha256": "6e3d25707ffb242d4410a3a1438e3762538e8026973bb71605caa181e50f7ff4",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/src/lab-guest-routes.ts"
+      },
+      {
+        "path": "commerce-v2/src/lab-occurrences.ts",
+        "sha256": "275d96aee87acbc05f61f75820942c82ab7231780ad87d0e67bb3466dbf6e6f5",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/src/lab-occurrences.ts"
+      },
+      {
+        "path": "commerce-v2/src/lab-tickets.ts",
+        "sha256": "132ce013b49ee93f7224b8d5f3c9c9c7837c4eae9714b094ea7e6411b882e2cd",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/src/lab-tickets.ts"
+      },
+      {
+        "path": "commerce-v2/src/migration-integrity.ts",
+        "sha256": "91452596353b65a1dabf864cfd4ef624db3bb0a516e461d810f6ad76598cf722",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/src/migration-integrity.ts"
+      },
+      {
+        "path": "commerce-v2/src/owner-legal-decision.ts",
+        "sha256": "389c72d1052fc0c659602237fa20af0e946c794141ee45820e5428b305374dca",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/src/owner-legal-decision.ts"
+      },
+      {
+        "path": "commerce-v2/src/payment-mode.ts",
+        "sha256": "c71aeeb1e0b79ecbbace835b141ac345566a5cf25ad7eb865d0978cdc4cbb36c",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/src/payment-mode.ts"
+      },
+      {
+        "path": "commerce-v2/src/playback-access.ts",
+        "sha256": "22214a8241a4081d4096d4d0e86c6b08cdfa584f81e36a50fea9dd065a0399f6",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/src/playback-access.ts"
+      },
+      {
+        "path": "commerce-v2/src/playback-auth.ts",
+        "sha256": "54f4cde5a0066f3e1bad74cae08e7dafc85e5895dc5d001cc07c9c52a054e173",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/src/playback-auth.ts"
+      },
+      {
+        "path": "commerce-v2/src/refref-payment-rail.ts",
+        "sha256": "98e5469baac8343077f671a92bfc9b5a2eef5085da7b1024217b8d2dfa0e3a36",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/src/refref-payment-rail.ts"
+      },
+      {
+        "path": "commerce-v2/src/refund-envelope.ts",
+        "sha256": "48158d1b3e4ca6c58180fa34afd9d2205a55731a1b8eedf53d5030d78fb49308",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/src/refund-envelope.ts"
+      },
+      {
+        "path": "commerce-v2/src/refunds.ts",
+        "sha256": "d25ec22efee335fc5ba51804fd375198f8003058dfe0e5d022351b84e5ba3589",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/src/refunds.ts"
+      },
+      {
+        "path": "commerce-v2/src/restore-reconciliation.ts",
+        "sha256": "19892e3267247d1987d0138ebd59dee4478df99e70a308ca277082eed9ee3484",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/src/restore-reconciliation.ts"
+      },
+      {
+        "path": "commerce-v2/src/start.ts",
+        "sha256": "d92307d60de85e08dd955b6ef7fa9a9e9339c2af0d3d5d8518761a4f5836c4c2",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/src/start.ts"
+      },
+      {
+        "path": "commerce-v2/src/storefront-switch.ts",
+        "sha256": "a3187afe67d71fb4ba711df008bbf7cf6012d70c6c65116f8f55bc2501b90eb7",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/commerce-v2/src/storefront-switch.ts"
+      },
+      {
+        "path": "deploy/v2/frontends/README.md",
+        "sha256": "575673103bf08a3239a3cb299d87e4cc19ed2ac45581c65c1ab81096525f613f",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/deploy/v2/frontends/README.md"
+      },
+      {
+        "path": "docs/course-publication-protocol.md",
+        "sha256": "6cc86a1690728baa7e580eb9af1f9e4348a49bbe498b9e8e723abdae3911465a",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/docs/course-publication-protocol.md"
+      },
+      {
+        "path": "docs/evidence/2026-10-16-lab-v1-retirement/README.md",
+        "sha256": "b998c921424dd2ae26beedb67b47a6c48a6647439ff80abcdc3937bcacb0b965",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/docs/evidence/2026-10-16-lab-v1-retirement/README.md"
+      },
+      {
+        "path": "docs/legal/OWNER_LEGAL_DECISIONS.md",
+        "sha256": "bea01417eadeb3cd3a2c4f30f929f22fb4903f391d14b36e530044d9d0159a8b",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/docs/legal/OWNER_LEGAL_DECISIONS.md"
+      },
+      {
+        "path": "docs/legal/closed-paid-test/2026-10-16-review-5/README.md",
+        "sha256": "991818b9e6c1862dfb161c30744a1b0203060d35caa51c2b10ed752e63b7d982",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/docs/legal/closed-paid-test/2026-10-16-review-5/README.md"
+      },
+      {
+        "path": "docs/legal/closed-paid-test/2026-10-16-review-5/approval-record.json",
+        "sha256": "65f5f3ccf6dd866ad7c5793699ba55ede4bba8e60452021204310649f7615812",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/docs/legal/closed-paid-test/2026-10-16-review-5/approval-record.json"
+      },
+      {
+        "path": "docs/legal/closed-paid-test/2026-10-16-review-5/publication-record.json",
+        "sha256": "e91470aec1f4c3157760dacf18a5da565af44c935ad379112738075c66425acb",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/docs/legal/closed-paid-test/2026-10-16-review-5/publication-record.json"
+      },
+      {
+        "path": "docs/plans/2026-10-16-owner-legal-decisions-design.md",
+        "sha256": "cac6c2008bf4407bbe76c711352a1005e25ca90d51dd7ad6ec54b4f2436feb7a",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/docs/plans/2026-10-16-owner-legal-decisions-design.md"
+      },
+      {
+        "path": "docs/plans/2026-10-18-commercial-admission-lab-editions-design.md",
+        "sha256": "58e8c47eb4af13d954e6e206247d5480877e436ad3996b9ad1cb688a028ce980",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/docs/plans/2026-10-18-commercial-admission-lab-editions-design.md"
+      },
+      {
+        "path": "docs/plans/2026-10-19-lab-guest-checkout-design.md",
+        "sha256": "7613898af36d36eed5281a4518e23ed8ecd4c310b97a1730ede2981aab6712a4",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/docs/plans/2026-10-19-lab-guest-checkout-design.md"
+      },
+      {
+        "path": "docs/plans/2026-10-20-lab-seat-hold-design.md",
+        "sha256": "13fb186bf76bfc3132c3d29aeefb2030b5d5f94e82297d114688aac347db491b",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/docs/plans/2026-10-20-lab-seat-hold-design.md"
+      },
+      {
+        "path": "docs/refref-checkout-protocol.md",
+        "sha256": "fae788124ce9718afb5066500cb7a537783b35a1cd715eb5eea118b3442d9360",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/docs/refref-checkout-protocol.md"
+      },
+      {
+        "path": "docs/v2-merchant-schema.md",
+        "sha256": "0779f02f2905ae25a29a0153daab732e563a49f91c3b0800d92e2280584f6381",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/docs/v2-merchant-schema.md"
+      },
+      {
+        "path": "lib/lab-v2-contract.ts",
+        "sha256": "2114da4a79eecf18512ac21a82d82a83e885a0e200a2ee81f75ae904a86bb605",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/lib/lab-v2-contract.ts"
+      },
+      {
+        "path": "package.json",
+        "sha256": "949d30393193028614e73e9615ff20af779d934fbad6e48708c2a3055d95167c",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/package.json"
+      },
+      {
+        "path": "pnpm-lock.yaml",
+        "sha256": "a93cb08734dc636880ee6616883e967ddcefcb155bc50c0564c2a845f0a37935",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/pnpm-lock.yaml"
+      },
+      {
+        "path": "vitest.config.mts",
+        "sha256": "1019d97cffd31426aeae81c4168959140674ee42d1164d679168d9c514833c2c",
+        "url": "https://github.com/ArtGurianov/flexperiment/blob/c8bad757c9daa04385f9cf5e95bf6e07b185080a/vitest.config.mts"
+      }
+    ]
+  },
+  "refref": {
+    "repository": "ArtGurianov/refref",
+    "pullRequest": 130,
+    "commit": "c932b656edbda1d47cfb57de08fd4a36536712f5",
+    "pullRequestStateAtInspection": "OPEN_NOT_MERGED",
+    "files": [
+      {
+        "path": "docs/plans/2026-10-26-refref-core-supersession.md",
+        "sha256": "1033914e4596cebc103c0d0fc317715b3108e7de64a1bd61714a1bc5506368cf",
+        "url": "https://github.com/ArtGurianov/refref/blob/c932b656edbda1d47cfb57de08fd4a36536712f5/docs/plans/2026-10-26-refref-core-supersession.md"
+      },
+      {
+        "path": "docs/v10/ADR-141-refref-core.md",
+        "sha256": "4b6e260d454689e0fd6dcfd783f436e4d57751c4deb281d905b715ae6a813de1",
+        "url": "https://github.com/ArtGurianov/refref/blob/c932b656edbda1d47cfb57de08fd4a36536712f5/docs/v10/ADR-141-refref-core.md"
+      },
+      {
+        "path": "docs/v10/GATES.md",
+        "sha256": "be0229ad67d213b0d5f7ef6ea0e8d7c7aa76dbd2381289e3b797b3d58adba498",
+        "url": "https://github.com/ArtGurianov/refref/blob/c932b656edbda1d47cfb57de08fd4a36536712f5/docs/v10/GATES.md"
+      },
+      {
+        "path": "docs/v10/README.md",
+        "sha256": "56675f71c2741c1ffd59f8566d13a0247e8d0716af82cfbadb1302a32a567fa4",
+        "url": "https://github.com/ArtGurianov/refref/blob/c932b656edbda1d47cfb57de08fd4a36536712f5/docs/v10/README.md"
+      },
+      {
+        "path": "docs/v10/contracts/01-common-contract.md",
+        "sha256": "100200647af1f0b8af584163ff0b067cdac939d1297265070d832e8e6d577ef4",
+        "url": "https://github.com/ArtGurianov/refref/blob/c932b656edbda1d47cfb57de08fd4a36536712f5/docs/v10/contracts/01-common-contract.md"
+      },
+      {
+        "path": "docs/v10/contracts/02-attribution-bound.md",
+        "sha256": "1972279f436da80dca4997199fad2e732a4e477a2ec98625db94dd8d61374402",
+        "url": "https://github.com/ArtGurianov/refref/blob/c932b656edbda1d47cfb57de08fd4a36536712f5/docs/v10/contracts/02-attribution-bound.md"
+      },
+      {
+        "path": "docs/v10/contracts/03-merchant-reporting.md",
+        "sha256": "cd8bc810e962130ad2bd26865c0f235f5028dc7e47e6434ef79d6af41ea13057",
+        "url": "https://github.com/ArtGurianov/refref/blob/c932b656edbda1d47cfb57de08fd4a36536712f5/docs/v10/contracts/03-merchant-reporting.md"
+      },
+      {
+        "path": "docs/v10/contracts/04-money-finality-claims.md",
+        "sha256": "231bf76f706bf817c78fe7fb61189867862d60bdb91e2b44609aa38413234417",
+        "url": "https://github.com/ArtGurianov/refref/blob/c932b656edbda1d47cfb57de08fd4a36536712f5/docs/v10/contracts/04-money-finality-claims.md"
+      },
+      {
+        "path": "docs/v10/contracts/05-payouts-s3-conformance.md",
+        "sha256": "3944f8938eb1255ac6914ebc0a619ad1e57d57bb77c084543c2c5d3deb5191be",
+        "url": "https://github.com/ArtGurianov/refref/blob/c932b656edbda1d47cfb57de08fd4a36536712f5/docs/v10/contracts/05-payouts-s3-conformance.md"
+      },
+      {
+        "path": "docs/v10/contracts/06-api-and-states.md",
+        "sha256": "cffe375491a614ce3242b098dc84ba3d3f1bd5d8abe235d01ee1fc49b223aadd",
+        "url": "https://github.com/ArtGurianov/refref/blob/c932b656edbda1d47cfb57de08fd4a36536712f5/docs/v10/contracts/06-api-and-states.md"
+      },
+      {
+        "path": "docs/v10/contracts/merchant-result.schema.json",
+        "sha256": "7d6d511792281f91b4533fb7959e43fb6597d36a8a09ab70b3392ed894f6c06d",
+        "url": "https://github.com/ArtGurianov/refref/blob/c932b656edbda1d47cfb57de08fd4a36536712f5/docs/v10/contracts/merchant-result.schema.json"
+      },
+      {
+        "path": "docs/v10/sources/owner-o7-2026-10-27.md",
+        "sha256": "90647cf491fb24b9cfa020374b0e06459eb0035497413aef225409cfd1af802e",
+        "url": "https://github.com/ArtGurianov/refref/blob/c932b656edbda1d47cfb57de08fd4a36536712f5/docs/v10/sources/owner-o7-2026-10-27.md"
+      }
+    ]
+  },
+  "authority": {
+    "refrefCore": "Existing O1-O7 and R6.2/CW-022; technical intake clarified at pinned c932b65; profile/legal gates retained.",
+    "flexperiment": "Design for review. Preserve prior OWNER ready-material FULL_PAYMENT, dynamic access and no mandatory external counsel. No new business numeric defaults."
+  },
+  "verificationScope": {
+    "sourceAudit": "PERFORMED",
+    "installedSchemaAndRuntime": "NOT_INSPECTED",
+    "implementationContractV10": "NOT_RUN",
+    "transportE2E": "NOT_RUN",
+    "providerEvidenceE2E": "NOT_RUN",
+    "publicFinancialActivation": "NOT_AUTHORIZED_BY_THIS_PACKAGE"
+  }
+}
