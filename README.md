@@ -32,8 +32,14 @@ pnpm admin:dev
 pnpm commerce-v2:dev
 ```
 
-The legacy `pnpm dev` script still targets `apps/lab` V1; it is not the current
-LAB V2 entry point and does not authorize restarting its public runtime. LAB V2
+For local work on the retained LAB V1 source, the legacy command remains:
+
+```bash
+pnpm dev
+```
+
+This starts `apps/lab` V1; it is not the current LAB V2 entry point and does
+not authorize restarting its public runtime. LAB V2
 is the separate `@flexperiment/lab-v2` workspace, built by
 [Dockerfile.frontends-v2](Dockerfile.frontends-v2). Public V1 hosts remain static
 410 responses; historical records are not imported as fabricated V2 orders.
@@ -50,7 +56,15 @@ pnpm test
 pnpm platform:test
 ```
 
-Legacy LAB type/build checks remain historical compatibility checks. Current
+Legacy LAB type/build checks remain historical compatibility checks. The
+existing [CI workflow](.github/workflows/test.yml) still builds the V1 static
+export with an exact 40-character source SHA and canonical origin:
+
+```bash
+SOURCE_COMMIT=<40-character-git-sha> LAB_ORIGIN=https://lab.flexperiment.ru pnpm build
+```
+
+This retained build command does not reopen the retired V1 public service. Current
 LAB V2 images carry an immutable source identity and the `lab-v2` service name
 through `Dockerfile.frontends-v2`; building either artifact is not deployment or
 activation authority.
