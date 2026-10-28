@@ -8,6 +8,55 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 
 <!-- END:nextjs-agent-rules -->
 
+## Mandatory task tracking — Plane only (2026-10-28)
+
+Agents and developers must use **Plane exclusively** for task tracking.
+Workspace: `art-workspace`.
+This repository uses project `FLEX` (`abb248d3-dfe2-48ed-ba97-cf07ed86d282`).
+Plane owns current task scope, planning, dependencies, acceptance evidence,
+comments and statuses. Keep architecture in canonical repository contracts.
+
+**Using Linear is prohibited.** Do not use its web UI, connector, API, CLI,
+integrations or scripts to read current tasks/statuses or to create, edit,
+comment on, transition, archive or delete tasks/projects. Do not mirror work,
+post updates or run synchronization/background tracking in Linear. If Plane is
+unavailable, report the blocker; do not fall back to Linear.
+
+Old Linear URLs, `ART-…` IDs, task text, repository documents and agent memories
+are historical references, not permission to use Linear. Resolve them through
+Plane's migrated provenance, mapping Page or saved exports. This rule applies
+to all contributors and agents and supersedes older tracker instructions.
+It does not assert that Linear access permissions are technically read-only.
+
+Resolve old `ART-…` references through the Plane title and the original Linear
+UUID in `external_id` with `external_source=linear`. The workspace Page
+`Linear → Plane · permanent ART map` (ID
+`2f3c4b6e-4484-449f-bba2-f63e7cc99dd2`) preserves the 324 imported mappings.
+Approved Mikluha v5 cards use `external_source=approved-plan` and keys
+`mikluha-native-v5:N…`; N labels are plan aliases, not new issue prefixes.
+Resolve actual Plane IDs before changing a parent or relation. Use the current
+Plane ID in new task references; preserve ART IDs in historical evidence.
+
+Project mapping: Mikluha → TOUR; Flexperiment → FLEX; Refref → REFREF;
+shared infrastructure → VPS; the imported task without a project → INBOX.
+Flexperiment has not yet been split into the empty LMS/LAB projects.
+Source milestones are existing Plane Modules on the Free plan.
+
+Plane can omit archived endpoints from an active issue's relations. For a
+dependency audit, include archived work items and read the relation from the
+archived endpoint when necessary. Consult the workspace Page
+`Linear migration — archived relationship ledger` for the 55 source-CSV
+relations omitted by the Linear connector. Do not infer a missing relationship
+from a one-sided list; do not treat an archived Done item as unfinished work.
+Original relation tables in provenance describe the migration snapshot;
+current Plane relations and subsequent approved changes govern today's plan.
+
+A Done/Canceled status, imported comment or tracker move is not a deployment,
+provider, recovery, legal-publication or sales-activation receipt. Preserve
+explicit CLOSED gates and their independently accepted prerequisites.
+Imported comments retain original author identities, including email addresses;
+review that provenance before any separately authorized public sharing.
+
 ## Production release safety
 
 Before modifying a release workflow, read
@@ -60,5 +109,5 @@ credential, encrypted external bundle, or this project's backup tool) and open
 or link an issue in the infrastructure project. Until that repository's drift
 check is clean and a fresh capture exists, report `CUSTODY_PENDING`. A
 successful deployment is not custody evidence. Never put plaintext secrets in
-Git, PRs, Linear or logs, and never rotate keys or change the host without
+Git, PRs, Plane, Linear or logs, and never rotate keys or change the host without
 explicit owner authorization.

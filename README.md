@@ -1,5 +1,16 @@
 # Flexperiment
 
+## Трекинг задач — только Plane
+
+Агенты и разработчики ведут задачи **исключительно в [Plane](https://app.plane.so/art-workspace)**:
+workspace `art-workspace`, проект `FLEX`.
+**Использование Linear запрещено**: нельзя читать там текущие задачи и статусы,
+создавать или изменять карточки, комментарии и связи, вести параллельный трекер
+или синхронизацию через UI, коннектор, API, CLI, интеграции и скрипты.
+Если Plane недоступен, сообщите о блокировке; не возвращайтесь к Linear.
+Старые ссылки и номера `ART-…` — исторические обозначения; ищите их в Plane
+или сохранённых выгрузках. Обязательные правила: [AGENTS.md](AGENTS.md).
+
 Flexperiment is a pnpm monorepo with separate storefront and service applications:
 
 - `apps/platform` — Next.js SSR course storefront;
