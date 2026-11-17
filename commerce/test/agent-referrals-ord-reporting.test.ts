@@ -546,11 +546,11 @@ describe("PROVIDER_SPECIAL_PERIOD fail-closed (L5)", () => {
 
     // Ordinary (non-zero-reward) ACTUAL reporting on the same basis is unaffected and never takes the flag.
     expect(() => fileOrdDistributionPeriodReport(db, admin, {
-      distribution_id: distributionId, reporting_period_key: "special-2027-01", statistics: { statistics_state: "ACTUAL", statistics_json: { views: 5 } }, evidence_ref: "ev",
+      distribution_id: distributionId, reporting_period_key: `special-${M2}`, statistics: { statistics_state: "ACTUAL", statistics_json: { views: 5 } }, evidence_ref: "ev",
     }, currentOrdDistributionPeriodReport(db, {
-      distribution_id: distributionId, reporting_period_key: "special-2027-01", statistics: { statistics_state: "ACTUAL", statistics_json: { views: 5 } }, evidence_ref: "ev",
+      distribution_id: distributionId, reporting_period_key: `special-${M2}`, statistics: { statistics_state: "ACTUAL", statistics_json: { views: 5 } }, evidence_ref: "ev",
     }.distribution_id, {
-      distribution_id: distributionId, reporting_period_key: "special-2027-01", statistics: { statistics_state: "ACTUAL", statistics_json: { views: 5 } }, evidence_ref: "ev",
+      distribution_id: distributionId, reporting_period_key: `special-${M2}`, statistics: { statistics_state: "ACTUAL", statistics_json: { views: 5 } }, evidence_ref: "ev",
     }.reporting_period_key)?.id ?? null)).not.toThrow();
   });
 
