@@ -83,7 +83,7 @@ export function quadContains(corners: ArrayLike<number>, px: number, py: number)
     if (sign !== 0 && next !== sign) return false;
     sign = next;
   }
-  return true;
+  return sign !== 0;
 }
 
 /**
@@ -94,7 +94,7 @@ export function quadContains(corners: ArrayLike<number>, px: number, py: number)
 export function magnetIndex(position: number, origin: number, count: number, intent = 0.14): number {
   const delta = position - origin;
   const distance = Math.abs(delta);
-  const target = distance > intent && distance < 0.5 ? origin + Math.sign(delta) : Math.round(position);
+  const target = distance > intent && distance <= 0.5 ? origin + Math.sign(delta) : Math.round(position);
   return clamp(target, 0, Math.max(count - 1, 0));
 }
 

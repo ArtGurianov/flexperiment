@@ -11,7 +11,7 @@ import {
 } from "motion/react";
 import { CircularGallery, type CircularGalleryHandle, type GalleryItem } from "@/components/ui/circular-gallery";
 import { clamp, magnetIndex, RESTING_VIEW, viewBesidePanel, type OrbitView } from "@/lib/course-orbit";
-import type { OrbitCourse } from "./dummy-courses";
+import type { OrbitCourse } from "./orbit-course";
 
 // Home page course carousel. The section is taller than the viewport and its stage is pinned, so
 // the page scroll position is the single source of truth for which card is in front: wheel, touch,
@@ -23,6 +23,7 @@ import type { OrbitCourse } from "./dummy-courses";
 
 // How long the scroll position has to stay still before the magnet engages.
 const IDLE_MS = 130;
+const SCROLL_INTENT_PX = 2;
 // How far (in cards) the ring may move off a settled card before the sheet closes.
 const LEAVE_THRESHOLD = 0.04;
 // How quickly the drawn ring catches up with the scroll position; evens out stepped wheel input.
@@ -53,18 +54,29 @@ type Engine = {
 
 type DragState = { id: number; x: number; scroll: number; moved: boolean; lastX: number; lastTime: number; velocity: number };
 
+type OrbitMetrics = { top: number; range: number; step: number };
+
+function inPinnedRange(metrics: OrbitMetrics | null): metrics is OrbitMetrics {
+  if (!metrics || metrics.range === 0) return false;
+  return window.scrollY >= metrics.top - SCROLL_INTENT_PX
+    && window.scrollY <= metrics.top + metrics.range + SCROLL_INTENT_PX;
+}
+
 const two = (value: number) => String(value).padStart(2, "0");
 
 /** `children` is rendered at the top of the pinned stage; the home page passes its navigation bar. */
 export default function CourseOrbit({ courses, children }: { courses: OrbitCourse[]; children?: ReactNode }) {
   const count = courses.length;
-  const steps = Math.max(count - 1, 1);
+  const lastIndex = Math.max(count - 1, 0);
+  const canNavigate = lastIndex > 0;
   const reducedMotion = useReducedMotion() ?? false;
 
   const sectionRef = useRef<HTMLElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const arenaRef = useRef<HTMLDivElement>(null);
   const sheetRef = useRef<HTMLElement>(null);
+  const controlsRef = useRef<HTMLDivElement>(null);
+  const fallbackCoverRef = useRef<HTMLDivElement>(null);
   const gallery = useRef<CircularGalleryHandle>(null);
   const drag = useRef<DragState | null>(null);
   const suppressClick = useRef(false);
@@ -91,7 +103,7 @@ export default function CourseOrbit({ courses, children }: { courses: OrbitCours
   const [unavailable, setUnavailable] = useState(false);
 
   const items = useMemo<GalleryItem[]>(() => courses.map((course) => ({
-    id: course.slug, title: course.title, caption: `${course.level} · ${course.lessons} уроков`, image: course.image,
+    id: course.slug, title: course.title, image: course.image,
   })), [courses]);
 
   const show = useCallback((value: boolean) => {
@@ -99,19 +111,19 @@ export default function CourseOrbit({ courses, children }: { courses: OrbitCours
     setOpen(value);
   }, []);
 
-  const metrics = useCallback(() => {
+  const metrics = useCallback((): OrbitMetrics | null => {
     const section = sectionRef.current;
     const stage = stageRef.current;
     if (!section || !stage) return null;
     const top = section.getBoundingClientRect().top + window.scrollY;
-    const range = Math.max(section.offsetHeight - stage.offsetHeight, 1);
-    return { top, range, step: range / steps };
-  }, [steps]);
+    const range = canNavigate ? Math.max(section.offsetHeight - stage.offsetHeight, 0) : 0;
+    return { top, range, step: range / Math.max(lastIndex, 1) };
+  }, [canNavigate, lastIndex]);
 
   const readTarget = useCallback(() => {
     const m = metrics();
-    return m ? clamp((window.scrollY - m.top) / m.step, 0, steps) : 0;
-  }, [metrics, steps]);
+    return m?.step ? clamp((window.scrollY - m.top) / m.step, 0, lastIndex) : 0;
+  }, [lastIndex, metrics]);
 
   const halt = useCallback(() => {
     const e = engine.current;
@@ -126,12 +138,12 @@ export default function CourseOrbit({ courses, children }: { courses: OrbitCours
     const e = engine.current;
     const m = metrics();
     if (!m) return;
-    const card = clamp(Math.round(index), 0, steps);
+    const card = clamp(Math.round(index), 0, lastIndex);
     const to = m.top + card * m.step;
     const from = window.scrollY;
     halt();
     e.arriving = card;
-    if (Math.abs(to - from) < 1) return;
+    if (!m.range || Math.abs(to - from) < 1) return;
     if (reducedMotion) {
       e.expected = to;
       window.scrollTo(0, to);
@@ -146,17 +158,20 @@ export default function CourseOrbit({ courses, children }: { courses: OrbitCours
       },
       onComplete: () => { e.magnet = null; },
     });
-  }, [halt, metrics, reducedMotion, steps]);
+  }, [halt, lastIndex, metrics, reducedMotion]);
 
-  const settleWhenIdle = useCallback(() => {
+  const settleWhenIdle = useCallback((afterResize = false) => {
     const e = engine.current;
     window.clearTimeout(e.idle);
     e.idle = window.setTimeout(() => {
-      if (e.dragging || e.touching || e.magnet || !e.moved) return;
+      if (!e.started || e.dragging || e.touching || e.magnet || !e.moved) return;
       const m = metrics();
       // Outside the pinned range the page scrolls freely.
-      if (!m || window.scrollY < m.top - 2 || window.scrollY > m.top + m.range + 2) return;
-      snapTo(magnetIndex(readTarget(), e.origin, count));
+      if (!inPinnedRange(m)) return;
+      const target = readTarget();
+      // Window scrolling already reflects deliberate movement. Measure its dead zone in pixels so
+      // small wheel steps can advance on any viewport. Drag throws have a separate threshold.
+      snapTo(afterResize ? Math.round(target) : magnetIndex(target, e.origin, count, SCROLL_INTENT_PX / m.step));
     }, IDLE_MS);
   }, [count, metrics, readTarget, snapTo]);
 
@@ -165,7 +180,7 @@ export default function CourseOrbit({ courses, children }: { courses: OrbitCours
     const e = engine.current;
     e.target = readTarget();
     // Until the ring is ready it waits a part-turn away, so its first frames are the turn into place.
-    if (!e.started) position.set(reducedMotion ? e.target : e.target - INTRO_TURN);
+    if (!e.started) position.set(reducedMotion || !canNavigate ? e.target : e.target - INTRO_TURN);
 
     const interrupt = () => {
       if (!e.magnet && !e.intro) return;
@@ -173,6 +188,11 @@ export default function CourseOrbit({ courses, children }: { courses: OrbitCours
       e.arriving = null;
       e.moved = true;
       settleWhenIdle();
+    };
+    const onWheel = (event: WheelEvent) => {
+      if (event.ctrlKey || event.deltaY === 0) return;
+      if (event.target instanceof Node && sheetRef.current?.contains(event.target)) return;
+      interrupt();
     };
     const onScroll = () => {
       const y = window.scrollY;
@@ -202,11 +222,11 @@ export default function CourseOrbit({ courses, children }: { courses: OrbitCours
       e.target = readTarget();
       if (!e.started || e.intro) return;
       e.moved = true;
-      settleWhenIdle();
+      settleWhenIdle(true);
     };
 
     window.addEventListener("scroll", onScroll, { passive: true });
-    window.addEventListener("wheel", interrupt, { passive: true });
+    window.addEventListener("wheel", onWheel, { passive: true });
     window.addEventListener("touchstart", onTouchStart, { passive: true });
     window.addEventListener("touchend", onTouchEnd, { passive: true });
     window.addEventListener("touchcancel", onTouchEnd, { passive: true });
@@ -214,7 +234,7 @@ export default function CourseOrbit({ courses, children }: { courses: OrbitCours
     window.addEventListener("resize", onResize);
     return () => {
       window.removeEventListener("scroll", onScroll);
-      window.removeEventListener("wheel", interrupt);
+      window.removeEventListener("wheel", onWheel);
       window.removeEventListener("touchstart", onTouchStart);
       window.removeEventListener("touchend", onTouchEnd);
       window.removeEventListener("touchcancel", onTouchEnd);
@@ -223,7 +243,7 @@ export default function CourseOrbit({ courses, children }: { courses: OrbitCours
       window.clearTimeout(e.idle);
       halt();
     };
-  }, [halt, position, readTarget, reducedMotion, settleWhenIdle, show]);
+  }, [canNavigate, halt, position, readTarget, reducedMotion, settleWhenIdle, show]);
 
   // Once the ring can be drawn it turns into place, then settles on the card under the scroll position.
   const start = useCallback(() => {
@@ -231,6 +251,11 @@ export default function CourseOrbit({ courses, children }: { courses: OrbitCours
     if (e.started) return;
     e.started = true;
     e.target = readTarget();
+    if (!canNavigate || !inPinnedRange(metrics())) {
+      position.set(e.target);
+      if (!canNavigate) snapTo(0);
+      return;
+    }
     if (reducedMotion) {
       position.set(e.target);
       snapTo(e.target);
@@ -240,10 +265,10 @@ export default function CourseOrbit({ courses, children }: { courses: OrbitCours
       duration: 1.5, ease: [0.16, 1, 0.3, 1],
       onComplete: () => {
         e.intro = null;
-        snapTo(e.target);
+        if (inPinnedRange(metrics())) snapTo(e.target);
       },
     });
-  }, [position, readTarget, reducedMotion, snapTo]);
+  }, [canNavigate, metrics, position, readTarget, reducedMotion, snapTo]);
 
   const onUnavailable = useCallback(() => {
     setUnavailable(true);
@@ -271,7 +296,7 @@ export default function CourseOrbit({ courses, children }: { courses: OrbitCours
   });
 
   useMotionValueEvent(position, "change", (value) => {
-    const nearest = clamp(Math.round(value), 0, steps);
+    const nearest = clamp(Math.round(value), 0, lastIndex);
     if (nearest === frontRef.current) return;
     frontRef.current = nearest;
     setFront(nearest);
@@ -289,25 +314,31 @@ export default function CourseOrbit({ courses, children }: { courses: OrbitCours
     return () => controls.stop();
   }, [open, openness, reducedMotion]);
 
+  useEffect(() => {
+    if (sheetRef.current) sheetRef.current.scrollTop = 0;
+  }, [active]);
+
   // The zoom-out depends on how much of the stage the sheet actually covers, so measure both.
   useEffect(() => {
     const arena = arenaRef.current;
     const sheet = sheetRef.current;
+    const controls = controlsRef.current;
     if (!arena || !sheet) return;
     const measure = () => {
       const side = window.matchMedia(DESKTOP_QUERY).matches ? "right" : "bottom";
       panelView.set(viewBesidePanel(
         { width: arena.clientWidth, height: arena.clientHeight },
-        { width: sheet.offsetWidth, height: sheet.offsetHeight },
+        { width: sheet.offsetWidth, height: sheet.offsetHeight + (side === "bottom" ? (controls?.offsetHeight ?? 0) : 0) },
         side,
       ));
     };
     const observer = new ResizeObserver(measure);
     observer.observe(arena);
     observer.observe(sheet);
+    if (controls) observer.observe(controls);
     measure();
     return () => observer.disconnect();
-  }, [panelView]);
+  }, [canNavigate, panelView]);
 
   const go = (direction: number) => {
     const e = engine.current;
@@ -315,11 +346,16 @@ export default function CourseOrbit({ courses, children }: { courses: OrbitCours
   };
 
   const onPointerDown = (event: PointerEvent<HTMLDivElement>) => {
-    if (event.pointerType === "mouse" && event.button !== 0) return;
+    if (!canNavigate || drag.current || !event.isPrimary || event.button !== 0) return;
     drag.current = {
       id: event.pointerId, x: event.clientX, scroll: window.scrollY, moved: false,
       lastX: event.clientX, lastTime: event.timeStamp, velocity: 0,
     };
+  };
+
+  const onPointerLeave = (event: PointerEvent<HTMLDivElement>) => {
+    const state = drag.current;
+    if (state?.id === event.pointerId && !state.moved) drag.current = null;
   };
 
   const onPointerMove = (event: PointerEvent<HTMLDivElement>) => {
@@ -372,7 +408,10 @@ export default function CourseOrbit({ courses, children }: { courses: OrbitCours
 
   const onClick = (event: MouseEvent<HTMLDivElement>) => {
     if (suppressClick.current) return;
-    const index = gallery.current?.pick(event.clientX, event.clientY);
+    const cover = fallbackCoverRef.current?.getBoundingClientRect();
+    const overCover = cover && event.clientX >= cover.left && event.clientX <= cover.right
+      && event.clientY >= cover.top && event.clientY <= cover.bottom;
+    const index = overCover ? frontRef.current : gallery.current?.pick(event.clientX, event.clientY);
     if (index === null || index === undefined) return;
     // The front card opens its description; any other card comes to the front first.
     engine.current.moved = true;
@@ -380,8 +419,8 @@ export default function CourseOrbit({ courses, children }: { courses: OrbitCours
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.key === "ArrowRight") go(1);
-    else if (event.key === "ArrowLeft") go(-1);
+    if (canNavigate && event.key === "ArrowRight") go(1);
+    else if (canNavigate && event.key === "ArrowLeft") go(-1);
     else if (event.key === "Enter") snapTo(Math.round(engine.current.target));
     else return;
     event.preventDefault();
@@ -396,7 +435,7 @@ export default function CourseOrbit({ courses, children }: { courses: OrbitCours
       ref={sectionRef}
       aria-labelledby="orbit-title"
       className="relative"
-      style={{ height: `calc(100svh + ${steps} * clamp(260px, 44svh, 460px))` }}
+      style={{ height: canNavigate ? `calc(100svh + ${lastIndex} * clamp(260px, 44svh, 460px))` : "100svh" }}
     >
       <div ref={stageRef} className="sticky top-0 flex h-svh flex-col overflow-hidden bg-paper text-ink [--p:0]">
         {children}
@@ -418,23 +457,31 @@ export default function CourseOrbit({ courses, children }: { courses: OrbitCours
             onUnavailable={onUnavailable}
             role="group"
             aria-roledescription="карусель"
-            aria-label={`Курсы: ${frontCourse.title}, ${front + 1} из ${count}. Стрелки влево и вправо переключают курс.`}
+            aria-label={canNavigate
+              ? `Курсы: ${frontCourse.title}, ${front + 1} из ${count}. Стрелки влево и вправо переключают курс.`
+              : frontCourse.title}
             tabIndex={0}
-            className={`absolute inset-0 select-none outline-none focus-visible:outline-2 focus-visible:-outline-offset-4 focus-visible:outline-ink ${grabbing ? "cursor-grabbing" : "cursor-grab"}`}
+            className={`absolute inset-0 select-none outline-none focus-visible:outline-2 focus-visible:-outline-offset-4 focus-visible:outline-ink ${canNavigate ? (grabbing ? "cursor-grabbing" : "cursor-grab") : ""}`}
             onPointerDown={onPointerDown}
+            onPointerLeave={onPointerLeave}
             onPointerMove={onPointerMove}
             onPointerUp={(event) => endDrag(event, false)}
             onPointerCancel={(event) => endDrag(event, true)}
+            onLostPointerCapture={(event) => endDrag(event, true)}
             onClick={onClick}
             onKeyDown={onKeyDown}
           />
 
           {unavailable ? (
-            <div
+            <motion.div
+              ref={fallbackCoverRef}
               aria-hidden
-              className="pointer-events-none absolute left-1/2 top-1/2 aspect-[3/4] h-[52%] max-h-[480px] -translate-x-1/2 -translate-y-1/2 bg-ink bg-cover bg-center"
-              style={{ backgroundImage: `url(${frontCourse.image})` }}
-            />
+              data-course-cover={frontCourse.slug}
+              className="pointer-events-none absolute left-1/2 top-1/2 flex aspect-[3/4] h-[min(52%,80vw,480px)] -translate-x-1/2 -translate-y-1/2 items-end rounded-md bg-ink bg-cover bg-center p-4 font-display text-paper"
+              style={{ x: offsetX, y: offsetY, scale: zoom, backgroundImage: frontCourse.image ? `url(${JSON.stringify(frontCourse.image)})` : undefined }}
+            >
+              <span className="bg-ink px-2 py-1">{frontCourse.title}</span>
+            </motion.div>
           ) : null}
 
           <header className="pointer-events-none absolute left-[4vw] right-[4vw] top-[clamp(1rem,3.5vh,2.5rem)] z-10 opacity-[calc(1-var(--p))] lg:opacity-100">
@@ -448,7 +495,10 @@ export default function CourseOrbit({ courses, children }: { courses: OrbitCours
             </h1>
           </header>
 
-          <div className="absolute bottom-[clamp(1rem,3.5vh,2.5rem)] left-[4vw] z-10 flex items-center gap-4">
+          {canNavigate ? <div
+            ref={controlsRef}
+            className="absolute inset-x-0 bottom-0 z-30 flex h-16 items-center gap-4 border-t border-ink/20 bg-paper px-[4vw] lg:inset-x-auto lg:bottom-[clamp(1rem,3.5vh,2.5rem)] lg:left-[4vw] lg:h-auto lg:border-0 lg:bg-transparent lg:px-0"
+          >
             <p aria-hidden className="m-0 font-display text-[.8rem] font-semibold tracking-[.08em]">
               <span className="text-[1.6rem] tracking-[-.04em]">{two(front + 1)}</span> / {two(count)}
             </p>
@@ -469,14 +519,14 @@ export default function CourseOrbit({ courses, children }: { courses: OrbitCours
             <p className="m-0 hidden text-[.72rem] font-bold uppercase tracking-[.14em] text-muted sm:block">
               Листайте страницу или тяните карусель
             </p>
-          </div>
+          </div> : null}
 
           <aside
             ref={sheetRef}
             aria-label="Описание курса"
             aria-live="polite"
             inert={!open}
-            className="absolute inset-x-0 bottom-0 z-20 translate-y-[calc((1-var(--p))*104%)] border-t-4 border-acid bg-ink text-paper will-change-transform lg:inset-x-auto lg:bottom-0 lg:right-0 lg:top-0 lg:w-[min(30rem,38vw)] lg:translate-x-[calc((1-var(--p))*104%)] lg:translate-y-0 lg:border-l-4 lg:border-t-0"
+            className={`absolute inset-x-0 z-20 translate-y-[calc((1-var(--p))*104%)] overflow-y-auto overscroll-y-contain border-t-4 border-acid bg-ink text-paper will-change-transform lg:inset-x-auto lg:bottom-0 lg:right-0 lg:top-0 lg:max-h-full lg:w-[min(30rem,38vw)] lg:translate-x-[calc((1-var(--p))*104%)] lg:translate-y-0 lg:border-l-4 lg:border-t-0 ${canNavigate ? "bottom-16 max-h-[min(60%,calc(100%_-_4rem))]" : "bottom-0 max-h-[60%]"}`}
           >
             {/* Keyed by course: new copy rises in while the sheet is still sliding into place. */}
             <motion.div
@@ -484,7 +534,7 @@ export default function CourseOrbit({ courses, children }: { courses: OrbitCours
               initial={reducedMotion ? false : { opacity: 0, y: 16 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.45, delay: 0.08, ease: [0.16, 1, 0.3, 1] }}
-              className="flex flex-col p-5 lg:h-full lg:p-10"
+              className="flex min-h-full flex-col gap-4 p-5 lg:gap-6 lg:p-10"
             >
               <div className="flex items-center justify-between gap-4">
                 <p className="m-0 font-display text-[.72rem] font-semibold uppercase tracking-[.08em] text-acid">
@@ -499,36 +549,17 @@ export default function CourseOrbit({ courses, children }: { courses: OrbitCours
                   <span aria-hidden>×</span>
                 </button>
               </div>
-              <h2 className="m-0 mt-4 font-display text-[clamp(1.5rem,2.6vw,2.5rem)] font-medium leading-none tracking-[-.05em] lg:mt-8">
+              <h2 className="m-0 font-display text-[clamp(1.5rem,2.6vw,2.5rem)] font-medium leading-none tracking-[-.05em] [overflow-wrap:anywhere]">
                 {course.title}
               </h2>
-              <p className="m-0 mt-3 line-clamp-3 text-[.98rem] leading-[1.55] text-paper/80 lg:mt-5 lg:line-clamp-none lg:text-[1.05rem]">
+              {course.summary ? <p className="m-0 text-[.98rem] leading-[1.55] text-paper/80 [overflow-wrap:anywhere] lg:text-[1.05rem]">
                 {course.summary}
-              </p>
-              <dl className="m-0 mt-4 grid grid-cols-3 gap-3 border-y border-paper/20 py-3 lg:mt-8 lg:py-5">
-                {[["Уровень", course.level], ["Уроков", String(course.lessons)], ["Длительность", course.duration]].map(([term, value]) => (
-                  <div key={term}>
-                    <dt className="text-[.64rem] font-bold uppercase tracking-[.12em] text-paper/55">{term}</dt>
-                    <dd className="m-0 mt-1 text-[.92rem] font-bold">{value}</dd>
-                  </div>
-                ))}
-              </dl>
-              <div className="hidden lg:mt-8 lg:block">
-                <p className="m-0 text-[.64rem] font-bold uppercase tracking-[.12em] text-paper/55">Внутри курса</p>
-                <ol className="m-0 mt-3 list-none p-0">
-                  {course.outline.map((line, index) => (
-                    <li key={line} className="flex gap-4 border-b border-paper/15 py-3 text-[.98rem]">
-                      <span className="font-display text-[.72rem] text-acid">{two(index + 1)}</span>
-                      {line}
-                    </li>
-                  ))}
-                </ol>
-              </div>
+              </p> : null}
               <Link
                 href={course.href}
-                className="mt-5 flex items-center justify-between gap-6 bg-acid px-5 py-4 text-[.95rem] font-bold uppercase text-ink! transition-[translate,background-color] duration-200 hover:-translate-x-1 hover:-translate-y-1 hover:bg-orange focus-visible:-translate-x-1 focus-visible:-translate-y-1 focus-visible:bg-orange lg:mt-auto"
+                className="mt-auto flex items-center justify-between gap-6 bg-acid px-5 py-4 text-[.95rem] font-bold uppercase text-ink! transition-colors duration-200 hover:bg-orange focus-visible:bg-orange"
               >
-                Записаться на курс <span aria-hidden>↗</span>
+                Открыть курс <span aria-hidden>↗</span>
               </Link>
             </motion.div>
           </aside>
@@ -541,7 +572,7 @@ export default function CourseOrbit({ courses, children }: { courses: OrbitCours
         <ol>
           {courses.map((item) => (
             <li key={item.slug}>
-              {item.title} — {item.level}, {item.lessons} уроков, {item.duration}. {item.summary}
+              {item.title}{item.summary ? ` — ${item.summary}` : ""}
             </li>
           ))}
         </ol>

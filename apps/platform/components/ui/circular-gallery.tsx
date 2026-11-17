@@ -15,7 +15,7 @@ export interface GalleryItem {
   /** Short line above the title, e.g. level and lesson count. */
   caption?: string;
   /** Cover image URL. Must be same-origin or CORS-enabled: it is drawn into a WebGL texture. */
-  image: string;
+  image?: string;
 }
 
 export interface CircularGalleryHandle {
@@ -37,7 +37,7 @@ interface CircularGalleryProps extends Omit<HTMLAttributes<HTMLDivElement>, "chi
   tilt?: number;
   handle?: Ref<CircularGalleryHandle>;
   onReady?: () => void;
-  /** Called instead of onReady when WebGL or Pixi cannot start. */
+  /** Called when the WebGL renderer cannot start or stops working. */
   onUnavailable?: () => void;
 }
 
@@ -86,6 +86,7 @@ async function loadImage(src: string): Promise<HTMLImageElement | null> {
   try {
     const image = new Image();
     image.decoding = "async";
+    image.crossOrigin = "anonymous";
     image.src = src;
     await image.decode();
     return image;
@@ -211,14 +212,37 @@ export function CircularGallery({
     const host = hostRef.current;
     if (!host || items.length === 0) return;
     let disposed = false;
-    let teardown = () => {};
+    let destroyApp: (() => void) | undefined;
+    let resizeObserver: ResizeObserver | undefined;
+    let intersectionObserver: IntersectionObserver | undefined;
+    let frame = 0;
+
+    const teardown = () => {
+      cancelAnimationFrame(frame);
+      resizeObserver?.disconnect();
+      intersectionObserver?.disconnect();
+      pickRef.current = () => null;
+      const destroy = destroyApp;
+      destroyApp = undefined;
+      destroy?.();
+    };
+
+    const fail = () => {
+      if (disposed) return;
+      disposed = true;
+      try {
+        teardown();
+      } finally {
+        callbacks.current.onUnavailable?.();
+      }
+    };
 
     void (async () => {
       try {
         const palette = readPalette(host);
         const [pixi, images] = await Promise.all([
           import("pixi.js"),
-          Promise.all(items.map((item) => loadImage(item.image))),
+          Promise.all(items.map((item) => item.image ? loadImage(item.image) : null)),
           fontsReady(items),
         ]);
         if (disposed) return;
@@ -232,12 +256,19 @@ export function CircularGallery({
           autoDensity: true,
           autoStart: false,
           resolution: Math.min(window.devicePixelRatio || 1, 2),
-          preference: "webgl",
+          // The course meshes require WebGL. A single name would allow Pixi to try Canvas 2D.
+          preference: ["webgl"],
         });
+        const canvas = app.canvas;
+        const destroy = () => {
+          canvas.removeEventListener("webglcontextlost", fail);
+          app.destroy(true, { children: true, texture: true, textureSource: true });
+        };
         if (disposed) {
-          app.destroy(true, true);
+          destroy();
           return;
         }
+        destroyApp = destroy;
 
         const texture = (canvas: HTMLCanvasElement) => new pixi.Texture({
           source: new pixi.CanvasSource({ resource: canvas, autoGenerateMipmaps: true, scaleMode: "linear", mipmapFilter: "linear" }),
@@ -246,6 +277,7 @@ export function CircularGallery({
         const floor = new pixi.Graphics();
         const ring = new pixi.Container();
         ring.sortableChildren = true;
+        app.stage.addChild(ring);
         ring.addChild(floor);
         floor.zIndex = -1e6;
 
@@ -257,9 +289,6 @@ export function CircularGallery({
           const projected: ProjectedCard = { corners: [0, 0, 0, 0, 0, 0, 0, 0], depth: 0 };
           return { shadow, face, projected, reveal: 0 };
         });
-        app.stage.addChild(ring);
-
-        const canvas = app.canvas;
         canvas.style.position = "absolute";
         canvas.style.inset = "0";
         canvas.style.display = "block";
@@ -267,6 +296,7 @@ export function CircularGallery({
         // touch scrolling of the page.
         canvas.style.pointerEvents = "none";
         canvas.setAttribute("aria-hidden", "true");
+        canvas.addEventListener("webglcontextlost", fail, { once: true });
         host.appendChild(canvas);
 
         const faceScale = (FACE_WIDTH + FACE_MARGIN * 2) / FACE_WIDTH;
@@ -355,13 +385,14 @@ export function CircularGallery({
             card.face.zIndex = depth + 0.5;
           }
           app.render();
-          if (!announced) {
+          if (!disposed && !announced) {
             announced = true;
             callbacks.current.onReady?.();
           }
         };
 
         pickRef.current = (clientX, clientY) => {
+          if (!announced) return null;
           const rect = host.getBoundingClientRect();
           const px = (clientX - rect.left - view.x) / view.scale;
           const py = (clientY - rect.top - view.y) / view.scale;
@@ -376,31 +407,27 @@ export function CircularGallery({
           return hit;
         };
 
-        const resizeObserver = new ResizeObserver(() => { layoutDirty = true; });
+        resizeObserver = new ResizeObserver(() => { layoutDirty = true; });
         resizeObserver.observe(host);
-        const intersectionObserver = new IntersectionObserver(([entry]) => { visible = entry.isIntersecting; });
+        intersectionObserver = new IntersectionObserver(([entry]) => { visible = entry.isIntersecting; });
         intersectionObserver.observe(host);
 
-        let frame = 0;
         let previous = performance.now();
         const tick = (now: number) => {
-          frame = requestAnimationFrame(tick);
           const seconds = Math.min((now - previous) / 1000, 0.05);
           previous = now;
           // Nothing is drawn while the section is off screen or nothing has changed.
-          if (visible) draw(seconds);
+          try {
+            if (visible) draw(seconds);
+          } catch {
+            fail();
+            return;
+          }
+          if (!disposed) frame = requestAnimationFrame(tick);
         };
         frame = requestAnimationFrame(tick);
-
-        teardown = () => {
-          cancelAnimationFrame(frame);
-          resizeObserver.disconnect();
-          intersectionObserver.disconnect();
-          pickRef.current = () => null;
-          app.destroy(true, { children: true, texture: true, textureSource: true });
-        };
       } catch {
-        if (!disposed) callbacks.current.onUnavailable?.();
+        fail();
       }
     })();
 

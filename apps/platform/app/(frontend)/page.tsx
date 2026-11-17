@@ -1,7 +1,7 @@
 import Link from "next/link";
 import type { Metadata } from "next";
-import CourseOrbit from "@/components/home/CourseOrbit";
-import { dummyCourses } from "@/components/home/dummy-courses";
+import { Suspense } from "react";
+import HomeCourseHero, { HomeHero } from "@/components/home/HomeCourseHero";
 
 export const metadata: Metadata = { alternates: { canonical: "/" } };
 
@@ -14,12 +14,7 @@ const principles = [
 export default function HomePage() {
   return (
     <main>
-      <CourseOrbit courses={dummyCourses}>
-        <nav className="nav" aria-label="Основная навигация">
-          <Link className="wordmark" href="/">FLEXPERIMENT<span>®</span></Link>
-          <div className="navLinks"><Link href="/courses">Курсы</Link><Link href="/account">Мои курсы</Link></div>
-        </nav>
-      </CourseOrbit>
+      <Suspense fallback={<HomeHero />}><HomeCourseHero /></Suspense>
       <section className="manifesto" aria-labelledby="method-title">
         <p className="sectionNumber">01 / метод</p>
         <h2 id="method-title">Не коллекция уроков.<br />Система внимания.</h2>
