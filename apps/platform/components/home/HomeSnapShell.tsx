@@ -10,6 +10,7 @@ const WHEEL_IDLE_MS = 150;
 const WHEEL_INTENT_PX = 6;
 const WHEEL_RESTART_PX = 24;
 const SWIPE_INTENT_PX = 48;
+const RETURN_SCROLL_TIMEOUT_MS = 1100;
 
 function isCoursePath(path: string) {
   return isOrbitArtwork(path.slice(1));
@@ -34,20 +35,64 @@ export default function HomeSnapShell({ children, course, bundle }: {
   const [routing, startRouting] = useTransition();
   const root = useRef<HTMLElement>(null);
   const pending = useRef<string | null>(null);
+  const cancelReturnScroll = useRef<(() => void) | null>(null);
   const previous = useRef(pathname);
 
   useEffect(() => {
     pending.current = null;
+    return () => cancelReturnScroll.current?.();
   }, [pathname]);
 
   useEffect(() => {
-    if (!routing) pending.current = null;
+    if (!routing && !cancelReturnScroll.current) pending.current = null;
   }, [routing]);
 
   const navigate = useCallback((path: string) => {
     if (path === pathname || (pending.current && pending.current !== pathname)) return false;
     pending.current = path;
-    startRouting(() => router.push(path, { scroll: false }));
+    const push = () => startRouting(() => router.push(path, { scroll: false }));
+    const element = root.current;
+    const carousel = path === "/" && element
+      ? Array.from(element.querySelectorAll<HTMLElement>('[data-home-path="/"]')).find((panel) => panel.offsetHeight > 0)
+      : undefined;
+
+    if (!element || !carousel || matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      push();
+      return true;
+    }
+
+    const offset = carousel.getBoundingClientRect().top - element.getBoundingClientRect().top;
+    if (Math.abs(offset) <= 1) {
+      push();
+      return true;
+    }
+
+    // The home URL clears the intercepted slots. Keep them mounted until the carousel is in view.
+    const top = element.scrollTop + offset;
+    const onScroll = () => {
+      if (Math.abs(element.scrollTop - top) <= 1) finish();
+    };
+    const cancel = () => {
+      element.removeEventListener("scroll", onScroll);
+      window.clearTimeout(timeout);
+      window.removeEventListener("popstate", cancel);
+      cancelReturnScroll.current = null;
+      if (pending.current === path) pending.current = null;
+    };
+    const finish = () => {
+      if (cancelReturnScroll.current !== cancel) return;
+      cancel();
+      pending.current = path;
+      push();
+    };
+    const timeout = window.setTimeout(() => {
+      element.scrollTo({ top, behavior: "instant" });
+      finish();
+    }, RETURN_SCROLL_TIMEOUT_MS);
+    cancelReturnScroll.current = cancel;
+    element.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("popstate", cancel);
+    element.scrollTo({ top, behavior: "smooth" });
     return true;
   }, [pathname, router]);
 

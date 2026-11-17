@@ -25,6 +25,18 @@ function sections(showBundle: boolean) {
   );
 }
 
+function setupReturnScroll() {
+  vi.stubGlobal("matchMedia", () => ({ matches: false }));
+  const { container } = render(sections(false));
+  const scroller = container.querySelector("main")!;
+  const carousel = container.querySelector('[data-home-path="/"]')!;
+  const scrollTo = vi.fn();
+  Object.defineProperty(scroller, "scrollTo", { value: scrollTo });
+  vi.spyOn(carousel, "getBoundingClientRect").mockImplementation(() => new DOMRect(0, -scroller.scrollTop, 1440, 900));
+  scroller.scrollTop = 900;
+  return { scroller, scrollTo };
+}
+
 beforeEach(() => {
   router.path = "/basics";
   router.segments = {};
@@ -38,6 +50,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -83,6 +96,62 @@ it("returns from the course to the carousel on a small wheel notch", () => {
   fireEvent.wheel(container.querySelector("main")!, { deltaY: -10 });
 
   expect(router.push).toHaveBeenCalledExactlyOnceWith("/", { scroll: false });
+});
+
+it("keeps the course route mounted until the return scroll reaches the carousel", () => {
+  const { scroller, scrollTo } = setupReturnScroll();
+
+  fireEvent.wheel(scroller, { deltaY: -80 });
+  expect(scrollTo).toHaveBeenCalledExactlyOnceWith({ top: 0, behavior: "smooth" });
+  expect(router.push).not.toHaveBeenCalled();
+
+  scroller.scrollTop = 450;
+  fireEvent.scroll(scroller);
+  fireEvent.wheel(scroller, { deltaY: -80 });
+  expect(scrollTo).toHaveBeenCalledTimes(1);
+  expect(router.push).not.toHaveBeenCalled();
+
+  scroller.scrollTop = 0;
+  fireEvent.scroll(scroller);
+  expect(router.push).toHaveBeenCalledExactlyOnceWith("/", { scroll: false });
+});
+
+it("lands instantly and commits once if the browser has not completed the return scroll by the deadline", () => {
+  vi.useFakeTimers();
+  const { scroller, scrollTo } = setupReturnScroll();
+  fireEvent.wheel(scroller, { deltaY: -80 });
+  scroller.scrollTop = 12;
+  fireEvent.scroll(scroller);
+
+  act(() => { vi.advanceTimersByTime(1099); });
+  expect(scrollTo).toHaveBeenCalledExactlyOnceWith({ top: 0, behavior: "smooth" });
+  expect(router.push).not.toHaveBeenCalled();
+
+  act(() => { vi.advanceTimersByTime(1); });
+  expect(scrollTo).toHaveBeenNthCalledWith(2, { top: 0, behavior: "instant" });
+  expect(router.push).toHaveBeenCalledExactlyOnceWith("/", { scroll: false });
+  expect(scrollTo.mock.invocationCallOrder[1]).toBeLessThan(router.push.mock.invocationCallOrder[0]);
+
+  scroller.scrollTop = 0;
+  fireEvent.scroll(scroller);
+  expect(router.push).toHaveBeenCalledTimes(1);
+});
+
+it("discards the deferred home navigation on popstate, even if the scroll later reaches the carousel", () => {
+  vi.useFakeTimers();
+  const { scroller, scrollTo } = setupReturnScroll();
+  fireEvent.wheel(scroller, { deltaY: -80 });
+  act(() => { window.dispatchEvent(new PopStateEvent("popstate")); });
+
+  scroller.scrollTop = 0;
+  fireEvent.scroll(scroller);
+  act(() => { vi.advanceTimersByTime(1100); });
+
+  expect(scrollTo).toHaveBeenCalledExactlyOnceWith({ top: 0, behavior: "smooth" });
+  expect(router.push).not.toHaveBeenCalled();
+
+  fireEvent.wheel(scroller, { deltaY: 80 });
+  expect(router.push).toHaveBeenCalledExactlyOnceWith("/all-courses", { scroll: false });
 });
 
 it("accepts the next strong upward notch after landing, without following the previous wheel momentum", () => {
