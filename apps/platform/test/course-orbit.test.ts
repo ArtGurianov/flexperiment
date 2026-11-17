@@ -3,7 +3,7 @@ import {
   magnetIndex,
   projectCard,
   projectFloor,
-  quadContains,
+  quadTransform,
   RESTING_VIEW,
   viewBesidePanel,
   type OrbitCamera,
@@ -83,18 +83,21 @@ describe("course carousel projection", () => {
     expect(projected).toEqual(projectCard(Math.PI / 3, view));
   });
 
-  it("hit-tests a projected card", () => {
-    const { corners } = projectCard(0, camera(10));
-    expect(quadContains(corners, 0, centreY(corners))).toBe(true);
-    expect(quadContains(corners, 400, centreY(corners))).toBe(false);
-    const mirrored = projectCard(Math.PI, camera(10)).corners;
-    expect(quadContains(mirrored, 0, centreY(mirrored))).toBe(true);
+  it.each([0, Math.PI / 4, Math.PI])("maps the DOM card onto all four projected corners at angle %s", (angle) => {
+    const view = camera(10);
+    const { corners } = projectCard(angle, view);
+    const transform = quadTransform(corners, view.cardWidth, view.cardHeight);
+    expect(transform).toMatch(/^matrix3d/);
+    const m = transform!.slice("matrix3d(".length, -1).split(",").map(Number);
+    const points = [[0, 0], [view.cardWidth, 0], [view.cardWidth, view.cardHeight], [0, view.cardHeight]];
+    expect(points.flatMap(([x, y]) => {
+      const w = m[3] * x + m[7] * y + m[15];
+      return [(m[0] * x + m[4] * y + m[12]) / w, (m[1] * x + m[5] * y + m[13]) / w];
+    })).toEqual(corners.map((value) => expect.closeTo(value)));
   });
 
-  it("rejects points on collapsed cards while accepting the edge of a visible card", () => {
-    expect(quadContains([0, 0, 0, 0, 0, 0, 0, 0], 50, 50)).toBe(false);
-    expect(quadContains([0, 0, 5, 5, 10, 10, 15, 15], 8, 8)).toBe(false);
-    expect(quadContains([0, 0, 10, 0, 10, 10, 0, 10], 5, 0)).toBe(true);
+  it("does not return a transform for a collapsed card", () => {
+    expect(quadTransform([0, 0, 5, 5, 10, 10, 15, 15], 300, 400)).toBeNull();
   });
 });
 

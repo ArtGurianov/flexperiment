@@ -11,20 +11,18 @@ import type { CircularGallery } from "../components/ui/circular-gallery";
 type Frame = (time: number, delta: number) => void;
 const timeline = vi.hoisted(() => ({
   ready: undefined as (() => void) | undefined,
-  unavailable: undefined as (() => void) | undefined,
   frame: undefined as Frame | undefined,
   animations: new Set<() => void>(),
 }));
 
 vi.mock("../components/ui/circular-gallery", () => ({
   CircularGallery: ({
-    onReady, onUnavailable, role, "aria-label": label, onKeyDown, onPointerDown, onPointerMove,
+    onReady, role, "aria-label": label, onKeyDown, onPointerDown, onPointerMove,
     onPointerUp, onPointerCancel, onLostPointerCapture,
   }: ComponentProps<typeof CircularGallery>) => {
     useEffect(() => {
       timeline.ready = onReady;
-      timeline.unavailable = onUnavailable;
-    }, [onReady, onUnavailable]);
+    }, [onReady]);
     return (
       <div
         role={role}
@@ -62,7 +60,7 @@ vi.mock("motion/react", async (importOriginal) => ({
 }));
 
 const courses: OrbitCourse[] = ["first", "second", "third"].map((slug) => ({
-  slug, title: `${slug} course`, summary: `About the ${slug} course`, href: `/courses/${slug}`, image: `/${slug}.jpg`,
+  slug, title: `${slug} course`, summary: `About the ${slug} course`, href: `/courses/${slug}`, artwork: slug,
 }));
 const sectionTop = 100;
 const stageHeight = 800;
@@ -88,11 +86,11 @@ function finishMotion() {
   });
 }
 
-function mount(y = sectionTop, visibleCourses = courses, renderer: "ready" | "unavailable" = "ready") {
+function mount(y = sectionTop, visibleCourses = courses) {
   scrollY = y;
   sectionHeight = stageHeight + cardStep * (visibleCourses.length - 1);
   const result = render(<CourseOrbit courses={visibleCourses} />);
-  act(() => timeline[renderer]?.());
+  act(() => timeline.ready?.());
   finishMotion();
   return result;
 }
@@ -122,7 +120,6 @@ afterEach(() => {
   cleanup();
   timeline.animations.clear();
   timeline.ready = undefined;
-  timeline.unavailable = undefined;
   timeline.frame = undefined;
   vi.useRealTimers();
   vi.unstubAllGlobals();
@@ -198,16 +195,13 @@ describe("course carousel interactions", () => {
     expect(screen.queryByRole("button", { name: "Следующий курс" })).not.toBeInTheDocument();
   });
 
-  it("shows the current course cover and link when the gallery reports renderer failure", () => {
-    const { container } = mount(sectionTop, courses, "unavailable");
-
-    expect(container.querySelector("[data-course-cover]")).toHaveAttribute("data-course-cover", "first");
+  it("opens the corresponding course link after arrow navigation", () => {
+    mount();
     expect(screen.getByRole("link", { name: "Открыть курс" })).toHaveAttribute("href", "/courses/first");
 
     fireEvent.click(screen.getByRole("button", { name: "Следующий курс" }));
     finishMotion();
 
-    expect(container.querySelector("[data-course-cover]")).toHaveAttribute("data-course-cover", "second");
     expect(screen.getByRole("link", { name: "Открыть курс" })).toHaveAttribute("href", "/courses/second");
   });
 });

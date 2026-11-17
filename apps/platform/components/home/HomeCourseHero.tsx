@@ -2,10 +2,12 @@ import Link from "next/link";
 import { connection } from "next/server";
 import { publicCourses } from "@/lib/content/public";
 import CourseOrbit from "./CourseOrbit";
-import type { OrbitCourse } from "./orbit-course";
+import { ORBIT_COURSE_ORDER, type OrbitCourse } from "./orbit-course";
 
-// Each featured card has its own canvas texture. The navigation links to the full catalogue.
-const FEATURED_COURSE_LIMIT = 10;
+const catalogueAliases: Partial<Record<(typeof ORBIT_COURSE_ORDER)[number], string>> = {
+  basics: "groove",
+  bonebreaking: "bone-breaking",
+};
 
 function HomeNavigation() {
   return (
@@ -45,14 +47,20 @@ export default async function HomeCourseHero() {
   // Read the current committed Commerce catalogue on the request, as on /courses.
   await connection();
   let courses: OrbitCourse[];
+  let catalogueEmpty = false;
   try {
-    courses = (await publicCourses()).slice(0, FEATURED_COURSE_LIMIT).map(({ course: { slug, title, summary } }) => ({
-      slug, title, summary, href: `/courses/${encodeURIComponent(slug)}`,
-    }));
+    const published = new Map((await publicCourses()).map(({ course }) => [course.slug, course]));
+    catalogueEmpty = published.size === 0;
+    courses = ORBIT_COURSE_ORDER.flatMap((artwork) => {
+      const course = published.get(artwork) ?? published.get(catalogueAliases[artwork] ?? artwork);
+      if (!course) return [];
+      const { slug, title, summary } = course;
+      return [{ artwork, slug, title, summary, href: `/courses/${encodeURIComponent(slug)}` }];
+    });
   } catch {
     return <HomeHero catalogueStatus="Каталог временно недоступен." />;
   }
-  if (courses.length === 0) return <HomeHero catalogueStatus="Первый курс готовится к публикации." />;
+  if (courses.length === 0) return <HomeHero catalogueStatus={catalogueEmpty ? "Первый курс готовится к публикации." : undefined} />;
 
   return <CourseOrbit courses={courses}><HomeNavigation /></CourseOrbit>;
 }

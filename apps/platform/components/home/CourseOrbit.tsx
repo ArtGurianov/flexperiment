@@ -9,7 +9,7 @@ import {
   animate, motion, useAnimationFrame, useMotionValue, useMotionValueEvent, useReducedMotion, useTransform,
   type AnimationPlaybackControls,
 } from "motion/react";
-import { CircularGallery, type CircularGalleryHandle, type GalleryItem } from "@/components/ui/circular-gallery";
+import { CircularGallery } from "@/components/ui/circular-gallery";
 import { clamp, magnetIndex, RESTING_VIEW, viewBesidePanel, type OrbitView } from "@/lib/course-orbit";
 import type { OrbitCourse } from "./orbit-course";
 
@@ -76,8 +76,6 @@ export default function CourseOrbit({ courses, children }: { courses: OrbitCours
   const arenaRef = useRef<HTMLDivElement>(null);
   const sheetRef = useRef<HTMLElement>(null);
   const controlsRef = useRef<HTMLDivElement>(null);
-  const fallbackCoverRef = useRef<HTMLDivElement>(null);
-  const gallery = useRef<CircularGalleryHandle>(null);
   const drag = useRef<DragState | null>(null);
   const suppressClick = useRef(false);
   const frontRef = useRef(0);
@@ -100,11 +98,8 @@ export default function CourseOrbit({ courses, children }: { courses: OrbitCours
   const [front, setFront] = useState(0);
   const [open, setOpen] = useState(false);
   const [grabbing, setGrabbing] = useState(false);
-  const [unavailable, setUnavailable] = useState(false);
 
-  const items = useMemo<GalleryItem[]>(() => courses.map((course) => ({
-    id: course.slug, title: course.title, image: course.image,
-  })), [courses]);
+  const items = useMemo(() => courses.map((course) => course.artwork), [courses]);
 
   const show = useCallback((value: boolean) => {
     engine.current.open = value;
@@ -270,11 +265,6 @@ export default function CourseOrbit({ courses, children }: { courses: OrbitCours
     });
   }, [canNavigate, metrics, position, readTarget, reducedMotion, snapTo]);
 
-  const onUnavailable = useCallback(() => {
-    setUnavailable(true);
-    start();
-  }, [start]);
-
   useAnimationFrame((_, delta) => {
     const e = engine.current;
     if (!e.started || e.intro) return;
@@ -408,11 +398,9 @@ export default function CourseOrbit({ courses, children }: { courses: OrbitCours
 
   const onClick = (event: MouseEvent<HTMLDivElement>) => {
     if (suppressClick.current) return;
-    const cover = fallbackCoverRef.current?.getBoundingClientRect();
-    const overCover = cover && event.clientX >= cover.left && event.clientX <= cover.right
-      && event.clientY >= cover.top && event.clientY <= cover.bottom;
-    const index = overCover ? frontRef.current : gallery.current?.pick(event.clientX, event.clientY);
-    if (index === null || index === undefined) return;
+    const card = event.target instanceof HTMLElement ? event.target.closest<HTMLElement>("[data-orbit-card]") : null;
+    if (!card) return;
+    const index = Number(card.dataset.orbitCard);
     // The front card opens its description; any other card comes to the front first.
     engine.current.moved = true;
     snapTo(index);
@@ -446,15 +434,12 @@ export default function CourseOrbit({ courses, children }: { courses: OrbitCours
           />
 
           <CircularGallery
-            handle={gallery}
             items={items}
             position={position}
             zoom={zoom}
             offsetX={offsetX}
             offsetY={offsetY}
-            tilt={10}
             onReady={start}
-            onUnavailable={onUnavailable}
             role="group"
             aria-roledescription="карусель"
             aria-label={canNavigate
@@ -471,18 +456,6 @@ export default function CourseOrbit({ courses, children }: { courses: OrbitCours
             onClick={onClick}
             onKeyDown={onKeyDown}
           />
-
-          {unavailable ? (
-            <motion.div
-              ref={fallbackCoverRef}
-              aria-hidden
-              data-course-cover={frontCourse.slug}
-              className="pointer-events-none absolute left-1/2 top-1/2 flex aspect-[3/4] h-[min(52%,80vw,480px)] -translate-x-1/2 -translate-y-1/2 items-end rounded-md bg-ink bg-cover bg-center p-4 font-display text-paper"
-              style={{ x: offsetX, y: offsetY, scale: zoom, backgroundImage: frontCourse.image ? `url(${JSON.stringify(frontCourse.image)})` : undefined }}
-            >
-              <span className="bg-ink px-2 py-1">{frontCourse.title}</span>
-            </motion.div>
-          ) : null}
 
           <header className="pointer-events-none absolute left-[4vw] right-[4vw] top-[clamp(1rem,3.5vh,2.5rem)] z-10 opacity-[calc(1-var(--p))] lg:opacity-100">
             <p className="eyebrow m-0">Онлайн-школа флексинга · Новосибирск / весь мир</p>
@@ -566,7 +539,7 @@ export default function CourseOrbit({ courses, children }: { courses: OrbitCours
         </div>
       </div>
 
-      {/* The canvas is decorative to assistive technology and crawlers; this is the same list as text. */}
+      {/* The gallery artwork is decorative to assistive technology and crawlers; this is the same list as text. */}
       <div className="sr-only">
         <h2>Курсы</h2>
         <ol>

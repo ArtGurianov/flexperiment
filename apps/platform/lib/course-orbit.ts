@@ -1,5 +1,4 @@
-// Pure geometry and interaction maths for the home page course carousel. Kept free of DOM, React and
-// Pixi so the projection, the magnet and the zoom-out rule can be unit-tested on their own.
+// Pure geometry and interaction maths for the home page course carousel.
 
 export const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
 
@@ -69,21 +68,35 @@ export function projectFloor(x: number, z: number, camera: OrbitCamera): [number
   return [x * scale, tiltedY * scale];
 }
 
-/** True when the point lies inside the convex quad described by `corners`. */
-export function quadContains(corners: ArrayLike<number>, px: number, py: number): boolean {
-  let sign = 0;
-  for (let index = 0; index < 4; index += 1) {
-    const ax = corners[index * 2];
-    const ay = corners[index * 2 + 1];
-    const bx = corners[((index + 1) % 4) * 2];
-    const by = corners[((index + 1) % 4) * 2 + 1];
-    const cross = (bx - ax) * (py - ay) - (by - ay) * (px - ax);
-    if (cross === 0) continue;
-    const next = cross > 0 ? 1 : -1;
-    if (sign !== 0 && next !== sign) return false;
-    sign = next;
-  }
-  return sign !== 0;
+/** Cross-fades the main face over the single card interval on either side of the front slot. */
+export function cardFaceOpacity(index: number, position: number): number {
+  return clamp(1 - Math.abs(index - position), 0, 1);
+}
+
+/** Maps a rectangular DOM card onto the four corners of its projected plane. */
+export function quadTransform(
+  [x0, y0, x1, y1, x2, y2, x3, y3]: ProjectedCard["corners"],
+  width: number,
+  height: number,
+): string | null {
+  const dx1 = x1 - x2;
+  const dx2 = x3 - x2;
+  const dy1 = y1 - y2;
+  const dy2 = y3 - y2;
+  const determinant = dx1 * dy2 - dx2 * dy1;
+  if (Math.abs(determinant) < 1e-8) return null;
+
+  // CSS divides by the homogeneous coordinate after applying the matrix.
+  const dx = x0 - x1 + x2 - x3;
+  const dy = y0 - y1 + y2 - y3;
+  const g = (dx * dy2 - dy * dx2) / determinant;
+  const h = (dx1 * dy - dy1 * dx) / determinant;
+  return `matrix3d(${[
+    (x1 - x0 + g * x1) / width, (y1 - y0 + g * y1) / width, 0, g / width,
+    (x3 - x0 + h * x3) / height, (y3 - y0 + h * y3) / height, 0, h / height,
+    0, 0, 1, 0,
+    x0, y0, 0, 1,
+  ].join(",")})`;
 }
 
 /**
