@@ -43,9 +43,9 @@ export default function CourseOrbit({ courses, children }: { courses: OrbitCours
   const suppressClick = useRef(false);
   const frontRef = useRef(0);
   const engine = useRef({
-    origin: 0,
     destination: null as number | null,
     animation: null as AnimationPlaybackControls | null,
+    wheel: null as { origin: number; direction: number } | null,
     idle: 0,
     started: false,
   });
@@ -71,6 +71,7 @@ export default function CourseOrbit({ courses, children }: { courses: OrbitCours
     state.animation?.stop();
     state.animation = null;
     state.destination = null;
+    state.wheel = null;
   }, []);
 
   const snapTo = useCallback((target: number) => {
@@ -80,7 +81,6 @@ export default function CourseOrbit({ courses, children }: { courses: OrbitCours
     state.destination = destination;
     const settle = () => {
       const index = orbitIndex(destination, count);
-      state.origin = index;
       state.destination = null;
       state.animation = null;
       position.set(index);
@@ -120,13 +120,18 @@ export default function CourseOrbit({ courses, children }: { courses: OrbitCours
 
       event.preventDefault();
       if (!canNavigate || drag.current?.axis) return;
+      const current = position.get();
+      const direction = Math.sign(delta);
+      const state = engine.current;
+      const origin = state.wheel?.direction === direction ? state.wheel.origin : current;
       stop();
+      state.wheel = { origin, direction };
       const pixels = delta * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? section.clientHeight : 1);
-      const target = position.get() + clamp(pixels / WHEEL_PIXELS_PER_CARD, -2, 2);
+      const target = current + clamp(pixels / WHEEL_PIXELS_PER_CARD, -2, 2);
       position.set(target);
-      if (Math.abs(target - engine.current.origin) > 0.04) setOpen(false);
-      engine.current.idle = window.setTimeout(() => {
-        snapTo(magnetIndex(position.get(), engine.current.origin, 2 / WHEEL_PIXELS_PER_CARD));
+      if (Math.abs(target - origin) > 0.04) setOpen(false);
+      state.idle = window.setTimeout(() => {
+        snapTo(magnetIndex(position.get(), origin, 2 / WHEEL_PIXELS_PER_CARD));
       }, IDLE_MS);
     };
     section.addEventListener("wheel", onWheel, { passive: false });

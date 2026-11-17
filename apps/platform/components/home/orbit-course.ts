@@ -10,7 +10,7 @@ export type OrbitCourse = {
   artwork: string;
 };
 
-type OrbitArtwork = (typeof ORBIT_COURSE_ORDER)[number];
+export type OrbitArtwork = (typeof ORBIT_COURSE_ORDER)[number];
 
 export function isOrbitArtwork(value: string): value is OrbitArtwork {
   return ORBIT_COURSE_ORDER.some((artwork) => artwork === value);

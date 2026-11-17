@@ -1,5 +1,11 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 import HomeChapter from "./HomeChapter";
+
+export const bundleChapterMetadata: Metadata = {
+  title: "Все курсы комплектом",
+  robots: { index: false, follow: true },
+};
 
 export default function HomeBundleChapter() {
   return (

@@ -115,7 +115,8 @@ export function quadTransform(
 export function magnetIndex(position: number, origin: number, intent = 0.14): number {
   const delta = position - origin;
   const distance = Math.abs(delta);
-  return distance > intent && distance <= 0.5 ? Math.round(origin) + Math.sign(delta) : Math.round(position);
+  if (distance <= intent || distance > 0.5) return Math.round(position);
+  return delta > 0 ? Math.floor(origin) + 1 : Math.ceil(origin) - 1;
 }
 
 export type OrbitView = { scale: number; x: number; y: number };

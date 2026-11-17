@@ -6,5 +6,5 @@ export default function ExperienceLayout({ children, course, bundle }: {
   course: ReactNode;
   bundle: ReactNode;
 }) {
-  return <HomeSnapShell>{children}{course}{bundle}</HomeSnapShell>;
+  return <HomeSnapShell course={course} bundle={bundle}>{children}</HomeSnapShell>;
 }

@@ -1,13 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useEffectEvent, useRef, useTransition, type ReactNode } from "react";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname, useRouter, useSelectedLayoutSegment } from "next/navigation";
 import { HomeSectionNavigation } from "./HomeSectionLink";
 import { isOrbitArtwork } from "./orbit-course";
 
 const BUNDLE_PATH = "/all-courses";
 const WHEEL_IDLE_MS = 150;
-const WHEEL_INTENT_PX = 24;
+const WHEEL_INTENT_PX = 6;
+const WHEEL_RESTART_PX = 24;
 const SWIPE_INTENT_PX = 48;
 
 function isCoursePath(path: string) {
@@ -18,9 +19,18 @@ function panelCanScroll(panel: HTMLElement, direction: number, top = panel.scrol
   return direction < 0 ? top > 1 : top + panel.clientHeight < panel.scrollHeight - 1;
 }
 
-export default function HomeSnapShell({ children }: { children: ReactNode }) {
+export default function HomeSnapShell({ children, course, bundle }: {
+  children: ReactNode;
+  course?: ReactNode;
+  bundle?: ReactNode;
+}) {
   const pathname = usePathname();
   const router = useRouter();
+  const mainSegment = useSelectedLayoutSegment();
+  const courseSegment = useSelectedLayoutSegment("course")?.replace(/^\(\.\)/, "");
+  const bundleSegment = useSelectedLayoutSegment("bundle")?.replace(/^\(\.\)/, "");
+  const duplicateCourse = mainSegment && isOrbitArtwork(mainSegment) && mainSegment === courseSegment;
+  const duplicateBundle = mainSegment === "all-courses" && mainSegment === bundleSegment;
   const [routing, startRouting] = useTransition();
   const root = useRef<HTMLElement>(null);
   const pending = useRef<string | null>(null);
@@ -65,8 +75,8 @@ export default function HomeSnapShell({ children }: { children: ReactNode }) {
     const align = () => {
       const panels = Array.from(element.querySelectorAll<HTMLElement>("[data-home-path]"));
       const target = panels.find((panel) => panel.offsetHeight > 0 && panel.dataset.homePath === pathname);
-      for (const panel of panels) panel.inert = panel !== target;
       if (!target) return false;
+      for (const panel of panels) panel.inert = panel !== target;
       if (changed) target.focus({ preventScroll: true });
       const offset = target.getBoundingClientRect().top - element.getBoundingClientRect().top;
       if (Math.abs(offset) > 1) {
@@ -76,17 +86,32 @@ export default function HomeSnapShell({ children }: { children: ReactNode }) {
       return true;
     };
 
-    const observer = new MutationObserver(() => {
-      if (align()) observer.disconnect();
-    });
-    const frame = requestAnimationFrame(() => {
-      // Next can restore a parallel slot by revealing an existing Activity subtree.
-      if (!align()) observer.observe(element, { childList: true, subtree: true, attributes: true, attributeFilter: ["hidden", "style"] });
-    });
+    let frame = 0;
+    const schedule = () => {
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        if (!align()) return;
+        observer.disconnect();
+        resize.disconnect();
+      });
+    };
+    // A restored Next.js slot may become visible without changing the DOM structure.
+    const resize = new ResizeObserver(schedule);
+    const observeTargets = () => {
+      for (const panel of element.querySelectorAll<HTMLElement>("[data-home-path]")) {
+        if (panel.dataset.homePath === pathname) resize.observe(panel);
+      }
+      schedule();
+    };
+    const observer = new MutationObserver(observeTargets);
+    observer.observe(element, { childList: true, subtree: true, attributes: true, attributeFilter: ["hidden"] });
+    observeTargets();
 
     return () => {
       cancelAnimationFrame(frame);
       observer.disconnect();
+      resize.disconnect();
     };
   }, [pathname]);
 
@@ -96,7 +121,7 @@ export default function HomeSnapShell({ children }: { children: ReactNode }) {
     let wheelAt = -Infinity;
     let wheelDirection = 0;
     let wheelDistance = 0;
-    let wheelUsed = false;
+    let wheelSnap: { path: string; pixels: number } | null = null;
     let touch: { id: number; x: number; y: number; path: string; panel: HTMLElement | null; top: number } | null = null;
     const panelAt = (event: Event, path: string) => {
       const panel = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-home-path]") : null;
@@ -107,7 +132,7 @@ export default function HomeSnapShell({ children }: { children: ReactNode }) {
       const { pathname: path, pending } = routeForGesture();
       if (event.ctrlKey) return;
       if (pending) {
-        if (wheelUsed && Math.sign(event.deltaY) === wheelDirection) wheelAt = performance.now();
+        if (wheelSnap && Math.sign(event.deltaY) === wheelDirection) wheelAt = performance.now();
         event.preventDefault();
         event.stopPropagation();
         return;
@@ -120,17 +145,26 @@ export default function HomeSnapShell({ children }: { children: ReactNode }) {
       event.preventDefault();
       event.stopPropagation();
 
+      const pixels = Math.abs(event.deltaY) * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? element.clientHeight : 1);
       const now = performance.now();
       if (direction !== wheelDirection || now - wheelAt > WHEEL_IDLE_MS) {
         wheelDistance = 0;
-        wheelUsed = false;
+        wheelSnap = null;
+      } else if (wheelSnap && path !== wheelSnap.path && pixels >= Math.max(WHEEL_RESTART_PX, wheelSnap.pixels)) {
+        // A new strong notch can advance once the previous snap has landed. Its weaker
+        // momentum events still belong to the previous gesture.
+        const active = panel ?? Array.from(element.querySelectorAll<HTMLElement>("[data-home-path]"))
+          .find((candidate) => candidate.offsetHeight > 0 && candidate.dataset.homePath === path);
+        if (active && Math.abs(active.getBoundingClientRect().top - element.getBoundingClientRect().top) < 3) {
+          wheelDistance = 0;
+          wheelSnap = null;
+        }
       }
       wheelAt = now;
       wheelDirection = direction;
-      if (wheelUsed) return;
-      const pixels = Math.abs(event.deltaY) * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? element.clientHeight : 1);
+      if (wheelSnap) return;
       wheelDistance += pixels;
-      if (wheelDistance >= WHEEL_INTENT_PX) wheelUsed = navigateFromGesture(direction);
+      if (wheelDistance >= WHEEL_INTENT_PX && navigateFromGesture(direction)) wheelSnap = { path, pixels };
     };
 
     const onTouchStart = (event: TouchEvent) => {
@@ -190,6 +224,8 @@ export default function HomeSnapShell({ children }: { children: ReactNode }) {
     <HomeSectionNavigation.Provider value={navigate}>
       <main ref={root} className="homeSnap fixed inset-0 z-0 h-dvh snap-y snap-mandatory overflow-hidden overscroll-contain bg-paper">
         {children}
+        {duplicateCourse ? null : course}
+        {duplicateBundle ? null : bundle}
       </main>
     </HomeSectionNavigation.Provider>
   );

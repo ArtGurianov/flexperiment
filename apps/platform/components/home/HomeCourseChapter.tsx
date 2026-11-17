@@ -1,31 +1,43 @@
 import Link from "next/link";
-import { notFound } from "next/navigation";
+import type { Metadata } from "next";
 import { connection } from "next/server";
 import { Suspense } from "react";
 import LexicalReadOnly from "@/components/courses/LexicalReadOnly";
 import { publicCourse } from "@/lib/content/public";
+import { coursePath } from "@/lib/seo";
 import HomeChapter, { chapterAction } from "./HomeChapter";
 import HomeSectionLink from "./HomeSectionLink";
-import { catalogueAlias, isOrbitArtwork, ORBIT_COURSE_ORDER } from "./orbit-course";
+import { catalogueAlias, type OrbitArtwork } from "./orbit-course";
 
-type Props = { params: Promise<{ artwork: string }> };
+export const courseChapterMetadata: Metadata = {
+  title: "О курсе",
+  robots: { index: false, follow: true },
+};
 
-export function generateStaticParams() {
-  return ORBIT_COURSE_ORDER.map((artwork) => ({ artwork }));
+async function findCourse(artwork: OrbitArtwork) {
+  const alternative = catalogueAlias(artwork);
+  if (!alternative) return publicCourse(artwork);
+
+  // Either slug can be published. Start both requests together and prefer the exact slug.
+  const [exact, alias] = await Promise.allSettled([publicCourse(artwork), publicCourse(alternative)]);
+  if (exact.status === "fulfilled" && exact.value) return exact.value;
+  if (alias.status === "fulfilled" && alias.value) return alias.value;
+  if (exact.status === "rejected") throw exact.reason;
+  if (alias.status === "rejected") throw alias.reason;
+  return null;
 }
 
-async function CourseChapterContent({ artwork }: { artwork: string }) {
+async function CourseChapterContent({ artwork }: { artwork: OrbitArtwork }) {
   await connection();
-  if (!isOrbitArtwork(artwork)) notFound();
-
   let course;
   try {
-    const alias = catalogueAlias(artwork);
-    course = await publicCourse(artwork) ?? (alias ? await publicCourse(alias) : null);
+    course = await findCourse(artwork);
   } catch {
     return <HomeChapter path={`/${artwork}`} title="Курс"><p>Курс временно недоступен.</p></HomeChapter>;
   }
-  if (!course) notFound();
+  if (!course) {
+    return <HomeChapter path={`/${artwork}`} title="Курс"><p>Этот курс сейчас недоступен.</p></HomeChapter>;
+  }
 
   return (
     <HomeChapter path={`/${artwork}`} title={course.course.title}>
@@ -44,23 +56,13 @@ async function CourseChapterContent({ artwork }: { artwork: string }) {
         </ul>
       )}
       <div className="flex flex-wrap items-center gap-x-7 gap-y-4">
-        <Link href={`/courses/${encodeURIComponent(course.course.slug)}`} className={chapterAction}>Программа курса <span aria-hidden>↗</span></Link>
+        <Link href={coursePath(course.course.slug)} className={chapterAction}>Программа курса <span aria-hidden>↗</span></Link>
         <HomeSectionLink href="/all-courses" className="w-fit font-bold underline underline-offset-4">Все курсы комплектом <span aria-hidden>↓</span></HomeSectionLink>
       </div>
     </HomeChapter>
   );
 }
 
-export function HomeCourseChapter({ artwork }: { artwork: string }) {
+export function HomeCourseChapter({ artwork }: { artwork: OrbitArtwork }) {
   return <Suspense fallback={null}><CourseChapterContent artwork={artwork} /></Suspense>;
-}
-
-async function CourseChapterRoute({ params }: Props) {
-  const { artwork } = await params;
-  if (!isOrbitArtwork(artwork)) notFound();
-  return <HomeCourseChapter artwork={artwork} />;
-}
-
-export default function HomeCoursePage(props: Props) {
-  return <Suspense fallback={null}><CourseChapterRoute {...props} /></Suspense>;
 }

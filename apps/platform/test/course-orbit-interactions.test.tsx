@@ -10,17 +10,19 @@ import type { CircularGallery } from "../components/ui/circular-gallery";
 
 const timeline = vi.hoisted(() => ({
   ready: undefined as (() => void) | undefined,
+  position: undefined as MotionValue<number> | undefined,
   animations: new Set<() => void>(),
 }));
 
 vi.mock("../components/ui/circular-gallery", () => ({
   CircularGallery: ({
-    onReady, role, "aria-label": label, onKeyDown, onPointerDown, onPointerMove,
+    onReady, position, role, "aria-label": label, onKeyDown, onPointerDown, onPointerMove,
     onPointerUp, onPointerCancel, onLostPointerCapture,
   }: ComponentProps<typeof CircularGallery>) => {
     useEffect(() => {
       timeline.ready = onReady;
-    }, [onReady]);
+      timeline.position = position;
+    }, [onReady, position]);
     return (
       <div
         role={role}
@@ -94,6 +96,7 @@ afterEach(() => {
   cleanup();
   timeline.animations.clear();
   timeline.ready = undefined;
+  timeline.position = undefined;
   vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -125,6 +128,16 @@ describe("course carousel interactions", () => {
     for (let index = 0; index < 7; index += 1) wheel(0, -40);
     expect(gallery()).toHaveAccessibleName(/1 из 3/);
     expect(window.scrollTo).not.toHaveBeenCalled();
+  });
+
+  it("honors a small reverse wheel gesture during a forward snap", () => {
+    mount();
+    fireEvent.click(screen.getByRole("button", { name: "Следующий курс" }));
+    act(() => timeline.position?.set(0.3));
+    wheel(0, -3);
+
+    expect(timeline.position?.get()).toBe(0);
+    expect(screen.getByRole("link", { name: "Подробнее" })).toHaveAttribute("href", "/first");
   });
 
   it("keeps the first drag when a second pointer arrives and settles after capture is lost", () => {
