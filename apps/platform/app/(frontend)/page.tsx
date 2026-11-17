@@ -1,5 +1,7 @@
 import Link from "next/link";
 import type { Metadata } from "next";
+import CourseOrbit from "@/components/home/CourseOrbit";
+import { dummyCourses } from "@/components/home/dummy-courses";
 
 export const metadata: Metadata = { alternates: { canonical: "/" } };
 
@@ -12,19 +14,12 @@ const principles = [
 export default function HomePage() {
   return (
     <main>
-      <nav className="nav" aria-label="Основная навигация">
-        <Link className="wordmark" href="/">FLEXPERIMENT<span>®</span></Link>
-        <div className="navLinks"><Link href="/courses">Курсы</Link><Link href="/account">Мои курсы</Link></div>
-      </nav>
-      <section className="hero">
-        <p className="eyebrow">Онлайн-школа флексинга · Новосибирск / весь мир</p>
-        <h1>Тело знает.<br /><em>Дай ему язык.</em></h1>
-        <div className="heroFoot">
-          <p>Авторские видео-курсы Арта Гурьянова — от точной базы до собственного способа двигаться.</p>
-          <Link className="primary" href="/courses">Смотреть курсы <span aria-hidden>↗</span></Link>
-        </div>
-        <div className="orbit" aria-hidden><span>F</span></div>
-      </section>
+      <CourseOrbit courses={dummyCourses}>
+        <nav className="nav" aria-label="Основная навигация">
+          <Link className="wordmark" href="/">FLEXPERIMENT<span>®</span></Link>
+          <div className="navLinks"><Link href="/courses">Курсы</Link><Link href="/account">Мои курсы</Link></div>
+        </nav>
+      </CourseOrbit>
       <section className="manifesto" aria-labelledby="method-title">
         <p className="sectionNumber">01 / метод</p>
         <h2 id="method-title">Не коллекция уроков.<br />Система внимания.</h2>
