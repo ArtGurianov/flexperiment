@@ -1,26 +1,25 @@
 import Link from "next/link";
 import { connection } from "next/server";
 import { publicCourses } from "@/lib/content/public";
+import HomePolicyLinks from "./HomePolicyLinks";
 import CourseOrbit from "./CourseOrbit";
-import { ORBIT_COURSE_ORDER, type OrbitCourse } from "./orbit-course";
-
-const catalogueAliases: Partial<Record<(typeof ORBIT_COURSE_ORDER)[number], string>> = {
-  basics: "groove",
-  bonebreaking: "bone-breaking",
-};
+import { catalogueAlias, ORBIT_COURSE_ORDER, type OrbitCourse } from "./orbit-course";
 
 function HomeNavigation() {
   return (
-    <nav className="nav" aria-label="Основная навигация">
-      <Link className="wordmark" href="/">FLEXPERIMENT<span>®</span></Link>
-      <div className="navLinks"><Link href="/courses">Курсы</Link><Link href="/account">Мои курсы</Link></div>
-    </nav>
+    <>
+      <nav className="nav" aria-label="Основная навигация">
+        <Link className="wordmark" href="/">FLEXPERIMENT<span>®</span></Link>
+        <div className="navLinks"><Link href="/courses">Курсы</Link><Link href="/account">Мои курсы</Link></div>
+      </nav>
+      <HomePolicyLinks className="shrink-0 justify-end px-[4vw] pt-2" />
+    </>
   );
 }
 
 export function HomeHero({ catalogueStatus }: { catalogueStatus?: string }) {
   return (
-    <>
+    <div data-home-path="/" tabIndex={-1} className="h-full snap-start snap-always overflow-y-auto outline-none">
       <HomeNavigation />
       <section className="relative isolate grid min-h-[calc(100svh-78px)] content-between overflow-hidden px-[4vw] pt-[7vh] pb-[5vh]" aria-labelledby="home-title">
         <p className="eyebrow">Онлайн-школа флексинга · Новосибирск / весь мир</p>
@@ -39,7 +38,7 @@ export function HomeHero({ catalogueStatus }: { catalogueStatus?: string }) {
         </div>
         <div aria-hidden className="pointer-events-none absolute -right-[13vw] -bottom-[17vw] -z-10 size-[48vw] rounded-full bg-acid" />
       </section>
-    </>
+    </div>
   );
 }
 
@@ -52,10 +51,10 @@ export default async function HomeCourseHero() {
     const published = new Map((await publicCourses()).map(({ course }) => [course.slug, course]));
     catalogueEmpty = published.size === 0;
     courses = ORBIT_COURSE_ORDER.flatMap((artwork) => {
-      const course = published.get(artwork) ?? published.get(catalogueAliases[artwork] ?? artwork);
+      const course = published.get(artwork) ?? published.get(catalogueAlias(artwork) ?? artwork);
       if (!course) return [];
       const { slug, title, summary } = course;
-      return [{ artwork, slug, title, summary, href: `/courses/${encodeURIComponent(slug)}` }];
+      return [{ artwork, slug, title, summary }];
     });
   } catch {
     return <HomeHero catalogueStatus="Каталог временно недоступен." />;

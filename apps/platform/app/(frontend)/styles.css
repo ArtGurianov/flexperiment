@@ -25,9 +25,7 @@ a { color: inherit; text-decoration: none; }
 .primary { justify-self: end; display: inline-flex; gap: 2rem; align-items: center; background: var(--ink); color: var(--paper); padding: 1rem 1.2rem; font-weight: 700; text-transform: uppercase; transition: transform .2s ease, background .2s ease; }
 .primary:hover, .primary:focus-visible { background: var(--orange); transform: translate(-4px, -4px); }
 
-.manifesto { background: var(--ink); color: var(--paper); padding: 8rem 4vw; }
 .sectionNumber { color: var(--acid); font-weight: 700; text-transform: uppercase; letter-spacing: .1em; }
-.manifesto h2 { font: 500 clamp(2.8rem, 7vw, 7rem)/.98 "Unbounded", sans-serif; letter-spacing: -.06em; margin: 2rem 0 6rem; max-width: 12ch; }
 .listing, .courseDetail, .lessonPage, .accountPage { min-height: 100vh; background: var(--paper); color: var(--ink); }
 .listingHeader, .courseHero { padding: 8rem 4vw 5rem; border-bottom: 1px solid var(--line); }
 .listingHeader h1, .courseHero h1 { font: 500 clamp(4rem, 13vw, 11rem)/.82 "Unbounded", sans-serif; letter-spacing: -.075em; margin: 1.5rem 0 3rem; }
@@ -119,12 +117,6 @@ a { color: inherit; text-decoration: none; }
 .authForm .primary:disabled { cursor: wait; opacity: .55; }
 .smartCaptcha { min-height: 100px; }
 @media (max-width: 720px) { .courseCard { grid-template-columns: 2rem 1fr; } .courseArrow { display: none; } .syllabusSection { grid-template-columns: 1fr; } }
-.principles { display: grid; grid-template-columns: repeat(3, 1fr); border-top: 1px solid #55564e; }
-.principles article { padding: 2rem 3rem 3rem 0; border-right: 1px solid #55564e; }
-.principles article + article { padding-left: 3rem; }
-.principles span { color: var(--acid); font-family: "Unbounded", sans-serif; }
-.principles h3 { font: 500 2rem/1 "Unbounded", sans-serif; margin: 4rem 0 1.5rem; }
-.principles p { color: #c9c6bb; line-height: 1.6; max-width: 30ch; }
 footer { display: flex; justify-content: space-between; padding: 2rem 4vw; font-size: .8rem; text-transform: uppercase; }
 .analyticsSettings { border: 0; border-bottom: 1px solid currentColor; padding: 0; background: transparent; color: inherit; font: inherit; text-transform: inherit; cursor: pointer; }
 .consentDialog { position: fixed; z-index: 120; left: 1rem; right: 1rem; bottom: 1rem; max-width: 64rem; margin: auto; border: 2px solid var(--acid); background: var(--ink); color: var(--paper); padding: 1.25rem; box-shadow: 6px 6px 0 var(--orange); }
@@ -137,10 +129,10 @@ footer { display: flex; justify-content: space-between; padding: 2rem 4vw; font-
 @media (max-width: 720px) {
   .navLinks { gap: 1rem; }
   .primary { justify-self: start; }
-  .principles { grid-template-columns: 1fr; }
-  .principles article, .principles article + article { padding: 2rem 0; border-right: 0; border-bottom: 1px solid #55564e; }
   .accountCourses article { grid-template-columns: 1fr; }
   .accountCourses li { grid-template-columns: 1fr; gap: .35rem; }
   .purchaseHistory li { grid-template-columns: 1fr; }
   .purchaseHistory div:last-child { text-align: left; }
 }
+
+body:has(.homeSnap) > footer { display: none; }

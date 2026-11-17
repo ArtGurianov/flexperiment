@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  cardFaceOpacity,
   magnetIndex,
+  orbitDistance,
+  orbitIndex,
   projectCard,
   projectFloor,
   quadTransform,
@@ -103,40 +106,49 @@ describe("course carousel projection", () => {
 
 describe("course carousel magnet", () => {
   it("returns to the settled card after a negligible movement", () => {
-    expect(magnetIndex(3.08, 3, 10)).toBe(3);
-    expect(magnetIndex(2.95, 3, 10)).toBe(3);
+    expect(magnetIndex(3.08, 3)).toBe(3);
+    expect(magnetIndex(2.95, 3)).toBe(3);
   });
 
   it("advances one card on a deliberate movement short of halfway", () => {
-    expect(magnetIndex(3.25, 3, 10)).toBe(4);
-    expect(magnetIndex(2.7, 3, 10)).toBe(2);
+    expect(magnetIndex(3.25, 3)).toBe(4);
+    expect(magnetIndex(2.7, 3)).toBe(2);
   });
 
   it("requires movement strictly greater than the intent threshold in either direction", () => {
-    expect(magnetIndex(3.25, 3, 10, 0.25)).toBe(3);
-    expect(magnetIndex(2.75, 3, 10, 0.25)).toBe(3);
-    expect(magnetIndex(3.26, 3, 10, 0.25)).toBe(4);
-    expect(magnetIndex(2.74, 3, 10, 0.25)).toBe(2);
+    expect(magnetIndex(3.25, 3, 0.25)).toBe(3);
+    expect(magnetIndex(2.75, 3, 0.25)).toBe(3);
+    expect(magnetIndex(3.26, 3, 0.25)).toBe(4);
+    expect(magnetIndex(2.74, 3, 0.25)).toBe(2);
   });
 
   it("picks the nearest card once the ring has travelled further", () => {
-    expect(magnetIndex(5.4, 3, 10)).toBe(5);
-    expect(magnetIndex(5.6, 3, 10)).toBe(6);
+    expect(magnetIndex(5.4, 3)).toBe(5);
+    expect(magnetIndex(5.6, 3)).toBe(6);
   });
 
   it("follows travel direction at exactly half a card from the settled index", () => {
-    expect(magnetIndex(2.5, 3, 10)).toBe(2);
-    expect(magnetIndex(3.5, 3, 10)).toBe(4);
+    expect(magnetIndex(2.5, 3)).toBe(2);
+    expect(magnetIndex(3.5, 3)).toBe(4);
   });
 
-  it("never leaves the list", () => {
-    expect(magnetIndex(-0.3, 0, 10)).toBe(0);
-    expect(magnetIndex(9.3, 9, 10)).toBe(9);
-    expect(magnetIndex(14, 9, 10)).toBe(9);
+  it("keeps the destination on the continuous orbit across either end", () => {
+    expect(magnetIndex(-0.3, 0)).toBe(-1);
+    expect(magnetIndex(9.3, 9)).toBe(10);
+    expect(orbitIndex(-1, 10)).toBe(9);
+    expect(orbitIndex(10, 10)).toBe(0);
+    expect(orbitIndex(32, 10)).toBe(2);
   });
 
-  it.each([0, 1])("returns index zero with %i available cards", (count) => {
-    expect(magnetIndex(4.2, 0, count)).toBe(0);
+  it("cross-fades the last and first cards in both directions", () => {
+    for (const position of [-0.25, 9.75, 19.75]) {
+      expect(orbitDistance(0, position, 10)).toBe(0.25);
+      expect(cardFaceOpacity(0, position, 10)).toBe(0.75);
+      expect(cardFaceOpacity(9, position, 10)).toBe(0.25);
+      expect(cardFaceOpacity(1, position, 10)).toBe(0);
+    }
+    expect(orbitIndex(4, 0)).toBe(0);
+    expect(cardFaceOpacity(0, 0, 1)).toBe(1);
   });
 });
 

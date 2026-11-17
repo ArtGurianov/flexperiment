@@ -69,8 +69,16 @@ export function projectFloor(x: number, z: number, camera: OrbitCamera): [number
 }
 
 /** Cross-fades the main face over the single card interval on either side of the front slot. */
-export function cardFaceOpacity(index: number, position: number): number {
-  return clamp(1 - Math.abs(index - position), 0, 1);
+export function orbitIndex(index: number, count: number): number {
+  return count > 0 ? ((index % count) + count) % count : 0;
+}
+
+export function orbitDistance(index: number, position: number, count: number): number {
+  return count > 1 ? orbitIndex(index - position + count / 2, count) - count / 2 : 0;
+}
+
+export function cardFaceOpacity(index: number, position: number, count: number): number {
+  return clamp(1 - Math.abs(orbitDistance(index, position, count)), 0, 1);
 }
 
 /** Maps a rectangular DOM card onto the four corners of its projected plane. */
@@ -104,11 +112,10 @@ export function quadTransform(
  * short of it, a movement larger than `intent` still advances one card in the direction of travel,
  * so a single wheel notch or a short drag is not pulled back to where it started.
  */
-export function magnetIndex(position: number, origin: number, count: number, intent = 0.14): number {
+export function magnetIndex(position: number, origin: number, intent = 0.14): number {
   const delta = position - origin;
   const distance = Math.abs(delta);
-  const target = distance > intent && distance <= 0.5 ? origin + Math.sign(delta) : Math.round(position);
-  return clamp(target, 0, Math.max(count - 1, 0));
+  return distance > intent && distance <= 0.5 ? Math.round(origin) + Math.sign(delta) : Math.round(position);
 }
 
 export type OrbitView = { scale: number; x: number; y: number };

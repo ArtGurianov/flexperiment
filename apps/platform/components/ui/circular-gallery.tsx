@@ -3,7 +3,7 @@
 import Image from "next/image";
 import { useCallback, useEffect, useRef, type HTMLAttributes } from "react";
 import { useMotionValueEvent, type MotionValue } from "motion/react";
-import { cardFaceOpacity, clamp, projectCard, projectFloor, quadTransform, type OrbitCamera } from "@/lib/course-orbit";
+import { cardFaceOpacity, clamp, orbitDistance, projectCard, projectFloor, quadTransform, type OrbitCamera } from "@/lib/course-orbit";
 
 interface CircularGalleryProps extends Omit<HTMLAttributes<HTMLDivElement>, "children"> {
   items: string[];
@@ -39,13 +39,13 @@ export function CircularGallery({
     items.forEach((_, index) => {
       const card = cards.current[index];
       if (!card) return;
-      const angle = (index - front) * (2 * Math.PI / items.length);
+      const angle = orbitDistance(index, front, items.length) * (2 * Math.PI / items.length);
       const { corners, depth } = projectCard(angle, camera.current);
       const transform = quadTransform(corners, CARD_WIDTH, CARD_HEIGHT);
       card.style.visibility = transform ? "" : "hidden";
       if (transform) card.style.transform = transform;
       card.style.zIndex = String(Math.round(depth * 1000));
-      card.style.setProperty("--course-main-opacity", String(cardFaceOpacity(index, front)));
+      card.style.setProperty("--course-main-opacity", String(cardFaceOpacity(index, front, items.length)));
     });
   }, [items, offsetX, offsetY, position, zoom]);
 

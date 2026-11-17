@@ -8,10 +8,8 @@ import CourseOrbit from "../components/home/CourseOrbit";
 import type { OrbitCourse } from "../components/home/orbit-course";
 import type { CircularGallery } from "../components/ui/circular-gallery";
 
-type Frame = (time: number, delta: number) => void;
 const timeline = vi.hoisted(() => ({
   ready: undefined as (() => void) | undefined,
-  frame: undefined as Frame | undefined,
   animations: new Set<() => void>(),
 }));
 
@@ -38,11 +36,10 @@ vi.mock("../components/ui/circular-gallery", () => ({
   },
 }));
 
-// Keep MotionValues real and control when the carousel's intro and scroll springs finish.
+// Keep MotionValues real and control when the carousel springs finish.
 vi.mock("motion/react", async (importOriginal) => ({
   ...await importOriginal<typeof import("motion/react")>(),
   useReducedMotion: () => false,
-  useAnimationFrame: (frame: Frame) => { timeline.frame = frame; },
   animate: (
     from: number | MotionValue<number>,
     to: number,
@@ -60,101 +57,74 @@ vi.mock("motion/react", async (importOriginal) => ({
 }));
 
 const courses: OrbitCourse[] = ["first", "second", "third"].map((slug) => ({
-  slug, title: `${slug} course`, summary: `About the ${slug} course`, href: `/courses/${slug}`, artwork: slug,
+  slug, title: `${slug} course`, summary: `About the ${slug} course`, artwork: slug,
 }));
-const sectionTop = 100;
-const stageHeight = 800;
-const cardStep = 300;
-
-let scrollY: number;
-let sectionHeight: number;
-
 const gallery = () => screen.getByRole("group", { name: /Курсы:/ });
-
-function scrollPage(y: number) {
-  scrollY = y;
-  window.dispatchEvent(new Event("scroll"));
-}
 
 function finishMotion() {
   act(() => {
-    // The intro may start a separate snap animation when it completes.
     for (let batch = 0; batch < 2; batch += 1) {
       for (const complete of Array.from(timeline.animations)) complete();
     }
-    for (let frame = 1; frame <= 24; frame += 1) timeline.frame?.(frame * 50, 50);
   });
 }
 
-function mount(y = sectionTop, visibleCourses = courses) {
-  scrollY = y;
-  sectionHeight = stageHeight + cardStep * (visibleCourses.length - 1);
-  const result = render(<CourseOrbit courses={visibleCourses} />);
+function mount(visibleCourses = courses) {
+  render(<CourseOrbit courses={visibleCourses} />);
   act(() => timeline.ready?.());
   finishMotion();
-  return result;
 }
 
-function waitForMagnet() {
-  act(() => vi.advanceTimersByTime(200));
+function wheel(deltaX: number, deltaY: number) {
+  act(() => {
+    expect(fireEvent.wheel(gallery(), { deltaX, deltaY })).toBe(false);
+    vi.advanceTimersByTime(200);
+  });
   finishMotion();
 }
 
 beforeEach(() => {
   vi.useFakeTimers();
-  vi.spyOn(window, "scrollY", "get").mockImplementation(() => scrollY);
-  vi.stubGlobal("scrollTo", vi.fn((left: number | ScrollToOptions, top?: number) => {
-    scrollPage(typeof left === "number" ? top ?? scrollY : left.top ?? scrollY);
-  }));
+  vi.stubGlobal("scrollTo", vi.fn());
   vi.stubGlobal("matchMedia", () => ({ matches: false, addListener() {}, removeListener() {} }));
   vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
-  vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
-    return this.tagName === "SECTION" ? sectionHeight : stageHeight;
-  });
-  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
-    return this.tagName === "SECTION" ? new DOMRect(0, sectionTop - scrollY, 800, sectionHeight) : new DOMRect();
-  });
 });
 
 afterEach(() => {
   cleanup();
   timeline.animations.clear();
   timeline.ready = undefined;
-  timeline.frame = undefined;
   vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
 
 describe("course carousel interactions", () => {
-  it("leaves a restored scroll position below the pinned section in place when the gallery becomes ready", () => {
-    const restoredPosition = sectionTop + cardStep * 3;
-    mount(restoredPosition);
+  it("reveals the details link only after the drawer finishes moving", () => {
+    const { container } = render(<CourseOrbit courses={courses} />);
+    const stage = container.querySelector<HTMLElement>("[data-home-path] > div")!;
+    act(() => timeline.ready?.());
 
-    expect(window.scrollTo).not.toHaveBeenCalled();
-    expect(window.scrollY).toBe(restoredPosition);
+    expect(stage.style.getPropertyValue("--course-action-visibility")).toBe("hidden");
+    finishMotion();
+    expect(stage.style.getPropertyValue("--course-action-visibility")).toBe("visible");
   });
 
-  it("advances once for a burst of small wheel events and can advance again after settling", () => {
+  it("wraps indefinitely in both wheel directions without scrolling the page", () => {
     mount();
-    const wheel = (deltaY: number) => act(() => {
-      if (fireEvent.wheel(gallery(), { deltaY })) scrollPage(scrollY + deltaY);
-    });
-
-    wheel(1);
-    waitForMagnet();
+    wheel(0, 1);
     expect(gallery()).toHaveAccessibleName(/1 из 3/);
 
-    wheel(12);
-    wheel(12);
-    waitForMagnet();
-    expect(window.scrollY).toBe(sectionTop + cardStep);
-    expect(gallery()).toHaveAccessibleName(/2 из 3/);
-
-    wheel(12);
-    waitForMagnet();
-    expect(window.scrollY).toBe(sectionTop + cardStep * 2);
+    wheel(-40, 0);
     expect(gallery()).toHaveAccessibleName(/3 из 3/);
+    wheel(0, 40);
+    expect(gallery()).toHaveAccessibleName(/1 из 3/);
+
+    for (let index = 0; index < 7; index += 1) wheel(0, 40);
+    expect(gallery()).toHaveAccessibleName(/2 из 3/);
+    for (let index = 0; index < 7; index += 1) wheel(0, -40);
+    expect(gallery()).toHaveAccessibleName(/1 из 3/);
+    expect(window.scrollTo).not.toHaveBeenCalled();
   });
 
   it("keeps the first drag when a second pointer arrives and settles after capture is lost", () => {
@@ -166,42 +136,37 @@ describe("course carousel interactions", () => {
 
     fireEvent.pointerDown(arena, { ...primary, clientX: 200 });
     fireEvent.pointerMove(arena, { ...primary, clientX: 155 });
-    const firstPosition = scrollY;
-    expect(firstPosition).toBeGreaterThan(sectionTop);
 
     fireEvent.pointerDown(arena, { ...secondary, clientX: 400 });
     fireEvent.pointerMove(arena, { ...secondary, clientX: 200 });
     fireEvent.pointerUp(arena, { ...secondary, clientX: 200 });
-    expect(scrollY).toBe(firstPosition);
-    fireEvent.pointerMove(arena, { ...primary, clientX: 140 });
-    expect(scrollY).toBeGreaterThan(firstPosition);
+    fireEvent.pointerMove(arena, { ...primary, clientX: 110 });
 
     fireEvent(arena, new PointerEvent("lostpointercapture", { ...primary, bubbles: true }));
-    waitForMagnet();
-    expect(window.scrollY).toBe(sectionTop + cardStep);
+    finishMotion();
+    expect(arena.setPointerCapture).toHaveBeenCalledExactlyOnceWith(1);
     expect(gallery()).toHaveAccessibleName(/2 из 3/);
   });
 
-  it("keeps the only course selected and leaves page scroll alone on next-card navigation", () => {
-    mount(sectionTop, courses.slice(0, 1));
+  it("keeps the only course selected", () => {
+    mount(courses.slice(0, 1));
     const card = screen.getByRole("group", { name: "first course" });
-
     fireEvent.keyDown(card, { key: "ArrowRight" });
     finishMotion();
-
-    expect(window.scrollTo).not.toHaveBeenCalled();
     expect(card).toHaveAccessibleName("first course");
-    expect(screen.queryByRole("button", { name: "Предыдущий курс" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Следующий курс" })).not.toBeInTheDocument();
   });
 
-  it("opens the corresponding course link after arrow navigation", () => {
+  it("uses the artwork name for the details route and wraps via arrow controls", () => {
     mount();
-    expect(screen.getByRole("link", { name: "Открыть курс" })).toHaveAttribute("href", "/courses/first");
+    expect(screen.getByRole("link", { name: "Подробнее" })).toHaveAttribute("href", "/first");
+
+    fireEvent.click(screen.getByRole("button", { name: "Предыдущий курс" }));
+    finishMotion();
+    expect(screen.getByRole("link", { name: "Подробнее" })).toHaveAttribute("href", "/third");
 
     fireEvent.click(screen.getByRole("button", { name: "Следующий курс" }));
     finishMotion();
-
-    expect(screen.getByRole("link", { name: "Открыть курс" })).toHaveAttribute("href", "/courses/second");
+    expect(screen.getByRole("link", { name: "Подробнее" })).toHaveAttribute("href", "/first");
   });
 });

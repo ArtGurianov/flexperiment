@@ -1,0 +1,196 @@
+"use client";
+
+import { useCallback, useEffect, useEffectEvent, useRef, useTransition, type ReactNode } from "react";
+import { usePathname, useRouter } from "next/navigation";
+import { HomeSectionNavigation } from "./HomeSectionLink";
+import { isOrbitArtwork } from "./orbit-course";
+
+const BUNDLE_PATH = "/all-courses";
+const WHEEL_IDLE_MS = 150;
+const WHEEL_INTENT_PX = 24;
+const SWIPE_INTENT_PX = 48;
+
+function isCoursePath(path: string) {
+  return isOrbitArtwork(path.slice(1));
+}
+
+function panelCanScroll(panel: HTMLElement, direction: number, top = panel.scrollTop) {
+  return direction < 0 ? top > 1 : top + panel.clientHeight < panel.scrollHeight - 1;
+}
+
+export default function HomeSnapShell({ children }: { children: ReactNode }) {
+  const pathname = usePathname();
+  const router = useRouter();
+  const [routing, startRouting] = useTransition();
+  const root = useRef<HTMLElement>(null);
+  const pending = useRef<string | null>(null);
+  const previous = useRef(pathname);
+
+  useEffect(() => {
+    pending.current = null;
+  }, [pathname]);
+
+  useEffect(() => {
+    if (!routing) pending.current = null;
+  }, [routing]);
+
+  const navigate = useCallback((path: string) => {
+    if (path === pathname || (pending.current && pending.current !== pathname)) return false;
+    pending.current = path;
+    startRouting(() => router.push(path, { scroll: false }));
+    return true;
+  }, [pathname, router]);
+
+  const navigateFromGesture = useEffectEvent((direction: number) => {
+    if (isCoursePath(pathname)) return navigate(direction > 0 ? BUNDLE_PATH : "/");
+    if (pathname === BUNDLE_PATH && direction < 0) {
+      const course = Array.from(root.current?.querySelectorAll<HTMLElement>("[data-home-path]") ?? [])
+        .find((panel) => panel.offsetHeight > 0 && isCoursePath(panel.dataset.homePath ?? ""));
+      return navigate(course?.dataset.homePath ?? "/");
+    }
+    return false;
+  });
+
+  const routeForGesture = useEffectEvent(() => ({
+    pathname,
+    pending: pending.current !== null && pending.current !== pathname,
+  }));
+
+  useEffect(() => {
+    const element = root.current;
+    if (!element) return;
+    const changed = previous.current !== pathname;
+    previous.current = pathname;
+
+    const align = () => {
+      const panels = Array.from(element.querySelectorAll<HTMLElement>("[data-home-path]"));
+      const target = panels.find((panel) => panel.offsetHeight > 0 && panel.dataset.homePath === pathname);
+      for (const panel of panels) panel.inert = panel !== target;
+      if (!target) return false;
+      if (changed) target.focus({ preventScroll: true });
+      const offset = target.getBoundingClientRect().top - element.getBoundingClientRect().top;
+      if (Math.abs(offset) > 1) {
+        const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+        element.scrollTo({ top: element.scrollTop + offset, behavior: changed && !reduce ? "smooth" : "instant" });
+      }
+      return true;
+    };
+
+    const observer = new MutationObserver(() => {
+      if (align()) observer.disconnect();
+    });
+    const frame = requestAnimationFrame(() => {
+      // Next can restore a parallel slot by revealing an existing Activity subtree.
+      if (!align()) observer.observe(element, { childList: true, subtree: true, attributes: true, attributeFilter: ["hidden", "style"] });
+    });
+
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, [pathname]);
+
+  useEffect(() => {
+    const element = root.current;
+    if (!element) return;
+    let wheelAt = -Infinity;
+    let wheelDirection = 0;
+    let wheelDistance = 0;
+    let wheelUsed = false;
+    let touch: { id: number; x: number; y: number; path: string; panel: HTMLElement | null; top: number } | null = null;
+    const panelAt = (event: Event, path: string) => {
+      const panel = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-home-path]") : null;
+      return panel?.dataset.homePath === path ? panel : null;
+    };
+
+    const onWheel = (event: WheelEvent) => {
+      const { pathname: path, pending } = routeForGesture();
+      if (event.ctrlKey) return;
+      if (pending) {
+        if (wheelUsed && Math.sign(event.deltaY) === wheelDirection) wheelAt = performance.now();
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+      if (path === "/" || !event.deltaY || Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
+
+      const direction = Math.sign(event.deltaY);
+      const panel = panelAt(event, path);
+      if (panel && panelCanScroll(panel, direction)) return;
+      event.preventDefault();
+      event.stopPropagation();
+
+      const now = performance.now();
+      if (direction !== wheelDirection || now - wheelAt > WHEEL_IDLE_MS) {
+        wheelDistance = 0;
+        wheelUsed = false;
+      }
+      wheelAt = now;
+      wheelDirection = direction;
+      if (wheelUsed) return;
+      const pixels = Math.abs(event.deltaY) * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? element.clientHeight : 1);
+      wheelDistance += pixels;
+      if (wheelDistance >= WHEEL_INTENT_PX) wheelUsed = navigateFromGesture(direction);
+    };
+
+    const onTouchStart = (event: TouchEvent) => {
+      const { pathname: path, pending } = routeForGesture();
+      if (path === "/" || pending || event.touches.length !== 1) {
+        touch = null;
+        return;
+      }
+      const [point] = event.touches;
+      const panel = panelAt(event, path);
+      touch = { id: point.identifier, x: point.clientX, y: point.clientY, path, panel, top: panel?.scrollTop ?? 0 };
+    };
+    const onTouchEnd = (event: TouchEvent) => {
+      const start = touch;
+      touch = null;
+      if (!start || start.path !== routeForGesture().pathname || event.touches.length) return;
+      const point = Array.from(event.changedTouches).find(({ identifier }) => identifier === start.id);
+      if (!point) return;
+      const dy = start.y - point.clientY;
+      if (Math.abs(dy) < SWIPE_INTENT_PX || Math.abs(dy) <= Math.abs(point.clientX - start.x)) return;
+      const direction = Math.sign(dy);
+      if (!start.panel || !panelCanScroll(start.panel, direction, start.top)) navigateFromGesture(direction);
+    };
+    const onTouchCancel = () => { touch = null; };
+
+    const onKey = (event: KeyboardEvent) => {
+      const { pathname: path, pending } = routeForGesture();
+      if (path === "/" || pending || event.altKey || event.ctrlKey || event.metaKey) return;
+      const target = event.target instanceof Element ? event.target : null;
+      if (target?.closest("input, textarea, select, [contenteditable=true]")) return;
+      const direction = event.key === " " && !target?.closest("a, button")
+        ? event.shiftKey ? -1 : 1
+        : { ArrowUp: -1, PageUp: -1, ArrowDown: 1, PageDown: 1 }[event.key];
+      if (!direction) return;
+      const panel = panelAt(event, path);
+      if (panel && panelCanScroll(panel, direction)) return;
+      if (!navigateFromGesture(direction)) return;
+      event.preventDefault();
+      event.stopPropagation();
+    };
+
+    element.addEventListener("wheel", onWheel, { capture: true, passive: false });
+    element.addEventListener("touchstart", onTouchStart, { passive: true });
+    element.addEventListener("touchend", onTouchEnd, { passive: true });
+    element.addEventListener("touchcancel", onTouchCancel, { passive: true });
+    element.addEventListener("keydown", onKey, true);
+    return () => {
+      element.removeEventListener("wheel", onWheel, true);
+      element.removeEventListener("touchstart", onTouchStart);
+      element.removeEventListener("touchend", onTouchEnd);
+      element.removeEventListener("touchcancel", onTouchCancel);
+      element.removeEventListener("keydown", onKey, true);
+    };
+  }, []);
+
+  return (
+    <HomeSectionNavigation.Provider value={navigate}>
+      <main ref={root} className="homeSnap fixed inset-0 z-0 h-dvh snap-y snap-mandatory overflow-hidden overscroll-contain bg-paper">
+        {children}
+      </main>
+    </HomeSectionNavigation.Provider>
+  );
+}

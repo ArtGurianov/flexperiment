@@ -26,7 +26,7 @@ describe("home course hero", () => {
   beforeEach(() => {
     vi.stubEnv("COMMERCE_INTERNAL_ORIGIN", "http://isolated-commerce:3002");
     courseOrbit.mockImplementation(({ courses, children }: { courses: OrbitCourse[]; children: ReactNode }) => (
-      <>{children}<ol>{courses.map((course) => <li key={course.slug}><a href={course.href}>{course.title}</a></li>)}</ol></>
+      <>{children}<ol>{courses.map((course) => <li key={course.slug}><a href={`/${course.artwork}`}>{course.title}</a></li>)}</ol></>
     ));
   });
 
@@ -36,7 +36,7 @@ describe("home course hero", () => {
     vi.clearAllMocks();
   });
 
-  it("orders featured artwork explicitly and keeps links to the real published courses", async () => {
+  it("orders featured artwork explicitly and keeps links for the published artwork", async () => {
     const entries = ["gliding", "unfeatured", "waving", "bone-breaking", "groove"].map(entry);
     const ordered = [["basics", entries[4]], ["bonebreaking", entries[3]], ["waving", entries[2]], ["gliding", entries[0]]] as const;
     const fetcher = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ courses: entries }));
@@ -48,9 +48,9 @@ describe("home course hero", () => {
     expect(String(fetcher.mock.calls[0]?.[0])).toBe("http://isolated-commerce:3002/v1/courses");
     expect(fetcher.mock.calls[0]?.[1]).toMatchObject({ cache: "no-store" });
     expect(courseOrbit.mock.calls[0]?.[0].courses).toEqual(ordered.map(([artwork, { course }]) => ({
-      artwork, slug: course.slug, title: course.title, summary: course.summary, href: `/courses/${course.slug}`,
+      artwork, slug: course.slug, title: course.title, summary: course.summary,
     })));
-    expect(html).toContain('href="/courses/groove"');
+    expect(html).toContain('href="/basics"');
     expect(html).toContain('href="/courses"');
   });
 
@@ -59,11 +59,11 @@ describe("home course hero", () => {
       .mockResolvedValueOnce(Response.json({ courses: [entry("groove")] }))
       .mockResolvedValueOnce(Response.json({ courses: [] }));
 
-    expect(renderToStaticMarkup(await HomeCourseHero())).toContain('href="/courses/groove"');
+    expect(renderToStaticMarkup(await HomeCourseHero())).toContain('href="/basics"');
     const html = renderToStaticMarkup(await HomeCourseHero());
     expect(html).toContain("Первый курс готовится к публикации.");
     expect(html).toContain('href="/courses"');
-    expect(html).not.toContain('href="/courses/groove"');
+    expect(html).not.toContain('href="/basics"');
     expect(courseOrbit).toHaveBeenCalledOnce();
   });
 
