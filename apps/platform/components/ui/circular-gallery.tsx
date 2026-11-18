@@ -110,13 +110,13 @@ export function CircularGallery({
             <Image
               src={`/course-covers/course-main-${id}.webp`}
               alt="" fill unoptimized loading="eager" draggable={false}
-              className="pointer-events-none object-cover"
+              className="pointer-events-none object-contain"
               style={{ opacity: "var(--course-main-opacity, 0)" }}
             />
             <Image
               src={`/course-covers/course-shadow-${id}.webp`}
               alt="" fill unoptimized loading="eager" draggable={false}
-              className="pointer-events-none object-cover"
+              className="pointer-events-none object-contain"
               style={{ opacity: "calc(1 - var(--course-main-opacity, 0))", mixBlendMode: "plus-lighter" }}
             />
           </div>

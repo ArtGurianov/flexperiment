@@ -17,7 +17,7 @@ it("cross-fades named local WebP layers across exactly one card interval", () =>
   const position = motionValue(0);
   const { container } = render(
     <CircularGallery
-      items={["basics", "bonebreaking", "waving"]}
+      items={["basics", "bonebreaking", "brukup"]}
       position={position}
       zoom={motionValue(1)}
       offsetX={motionValue(0)}

@@ -18,3 +18,17 @@ it("keeps canonical and intercepted course paths in sync with the artwork list",
     expect(readFileSync(new URL(`(.)${artwork}/page.tsx`, courseSlot), "utf8")).toContain(`artwork="${artwork}"`);
   }
 });
+
+it("provides both WebP layers for every configured course", () => {
+  const covers = new URL("../public/course-covers/", import.meta.url);
+  const expectedFiles = ORBIT_COURSE_ORDER.flatMap((artwork) => [
+    `course-main-${artwork}.webp`,
+    `course-shadow-${artwork}.webp`,
+  ]);
+  expect(readdirSync(covers).sort()).toEqual(expectedFiles.sort());
+  for (const file of expectedFiles) {
+    const content = readFileSync(new URL(file, covers));
+    expect(content.toString("ascii", 0, 4)).toBe("RIFF");
+    expect(content.toString("ascii", 8, 12)).toBe("WEBP");
+  }
+});

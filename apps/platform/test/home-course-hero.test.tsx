@@ -37,8 +37,8 @@ describe("home course hero", () => {
   });
 
   it("orders featured artwork explicitly and keeps links for the published artwork", async () => {
-    const entries = ["gliding", "unfeatured", "waving", "bone-breaking", "groove"].map(entry);
-    const ordered = [["basics", entries[4]], ["bonebreaking", entries[3]], ["waving", entries[2]], ["gliding", entries[0]]] as const;
+    const entries = ["gliding", "unfeatured", "brukup", "bone-breaking", "groove"].map(entry);
+    const ordered = [["basics", entries[4]], ["bonebreaking", entries[3]], ["brukup", entries[2]], ["gliding", entries[0]]] as const;
     const fetcher = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ courses: entries }));
 
     const html = renderToStaticMarkup(await HomeCourseHero());
