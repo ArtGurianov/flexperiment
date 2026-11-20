@@ -1,0 +1,39 @@
+{
+  "schema": "flexperiment.my-identity.surfaces/1",
+  "origins": {
+    "MY": "https://my.flexperiment.ru",
+    "LMS": "https://flexperiment.ru",
+    "LAB": "https://lab.flexperiment.ru"
+  },
+  "note": "LAB origin is illustrative (LAB_ORIGIN is unchanged by this contract).",
+  "proxyMustDelete": ["host", "content-length", "connection", "forwarded", "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "x-forwarded-port", "x-real-ip"],
+  "proxyMustSet": { "x-forwarded-host": "<own public host>", "x-forwarded-proto": "https" },
+  "proxyMustRefuse": [
+    { "case": "Set-Cookie with Domain attribute from Commerce", "code": "COMMERCE_COOKIE_REFUSED", "status": 502 },
+    { "case": "Location outside the proxy's own origin", "code": "COMMERCE_REDIRECT_REFUSED", "status": 502 }
+  ],
+  "proxyMustStrip": ["access-control-*"],
+  "admittedSessionKinds": {
+    "off": { "MY": [], "LMS": ["LEGACY"], "LAB": ["LEGACY"] },
+    "on":  { "MY": ["MY"], "LMS": ["LMS"], "LAB": ["LEGACY"] }
+  },
+  "cookies": {
+    "MY": { "name": "__Secure-better-auth.session_token", "host": "my.flexperiment.ru", "attributes": { "Path": "/", "HttpOnly": true, "Secure": true, "SameSite": "Lax", "Domain": null } },
+    "LMS": { "name": "__Host-flx-lms", "host": "flexperiment.ru", "attributes": { "Path": "/", "HttpOnly": true, "Secure": true, "SameSite": "Lax", "Domain": null, "MaxAge": "remaining lifetime, <= 43200" } },
+    "LMS_EXCHANGE_STATE": { "name": "__Host-flx-lms-x", "host": "flexperiment.ru", "attributes": { "Path": "/", "HttpOnly": true, "Secure": true, "SameSite": "Lax", "Domain": null, "MaxAge": 600 } }
+  },
+  "lifetimes": {
+    "mySessionSeconds": 604800,
+    "mySessionUpdateAgeSeconds": 86400,
+    "lmsSessionMaxSeconds": 43200,
+    "lmsSessionCap": "min(parent.expires_at, now + lmsSessionMaxSeconds)",
+    "exchangeSeconds": 600,
+    "exchangeCodeSeconds": 60,
+    "exchangeRecentFailureSeconds": 30
+  },
+  "forgedHeaderCases": [
+    { "via": "LMS proxy", "clientSends": { "x-forwarded-host": "my.flexperiment.ru" }, "commerceSees": "flexperiment.ru", "surface": "LMS" },
+    { "via": "MY proxy", "clientSends": { "forwarded": "host=flexperiment.ru" }, "commerceSees": "my.flexperiment.ru", "surface": "MY" },
+    { "via": "direct (internal network only)", "clientSends": { "x-forwarded-host": "evil.example" }, "commerceSees": "evil.example", "surface": null, "expect": "every session-bearing route answers as signed out" }
+  ]
+}

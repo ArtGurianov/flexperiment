@@ -1,0 +1,10 @@
+{
+  "schema": "flexperiment.my-identity.profile/1",
+  "recipient": "FLEX-123",
+  "MY": { "route": "GET /v1/my/profile", "fields": ["email", "displayName", "consents", "marketing", "createdAt"],
+    "example": { "email": "buyer@example.test", "displayName": null, "consents": { "personal_data": { "status": "CURRENT", "version": "<v>" }, "account_terms": { "status": "CURRENT", "version": "<v>" } }, "marketing": false, "createdAt": "2026-11-20T10:00:00.000Z" } },
+  "LMS": { "route": "GET /v1/me", "fields": ["signedIn", "displayName", "emailMasked", "entitlements"],
+    "example": { "signedIn": true, "displayName": null, "emailMasked": "b***@e***.test", "entitlements": [{ "scope": "COURSE", "courseRef": "flex-basics" }] },
+    "signedOut": { "signedIn": false } },
+  "neverOnLmsOrLab": ["customerId", "authUserId", "sessionId", "email", "orders", "refunds"]
+}

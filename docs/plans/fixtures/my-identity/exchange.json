@@ -1,0 +1,51 @@
+{
+  "schema": "flexperiment.my-identity.exchange/1",
+  "ids": { "tx": "^[A-Za-z0-9_-]{22}$", "state": "256-bit base64url (43 chars)", "code": "256-bit base64url (43 chars)", "lmsToken": "256-bit base64url (43 chars)" },
+  "transitions": [
+    { "from": null, "to": "STARTED", "by": "POST /v1/lms/exchange/start" },
+    { "from": "STARTED", "to": "ISSUED", "by": "POST /v1/my/exchange/:tx/issue" },
+    { "from": "ISSUED", "to": "ISSUED", "by": "POST /v1/my/exchange/:tx/issue", "effect": "new code; previous code invalid; binding = current MY session and customer" },
+    { "from": "ISSUED", "to": "REDEEMED", "by": "POST /v1/lms/exchange/redeem" },
+    { "from": "ISSUED", "to": "FAILED", "by": "POST /v1/lms/exchange/redeem", "effect": "any check failure burns the exchange" },
+    { "from": "STARTED", "to": "CANCELED", "by": "POST /v1/my/exchange/:tx/cancel" },
+    { "from": "ISSUED", "to": "CANCELED", "by": "POST /v1/my/exchange/:tx/cancel" }
+  ],
+  "terminal": ["REDEEMED", "FAILED", "CANCELED"],
+  "happyPath": [
+    { "step": "start", "request": { "method": "GET", "url": "https://flexperiment.ru/auth/lms/start?next=/courses/flex-basics/lessons/intro" },
+      "response": { "status": 303, "location": "https://my.flexperiment.ru/continue?tx=Zx3n0c9Q2mJr8YtL1aBcDe", "setCookie": ["__Host-flx-lms-x=<state>; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=600"] } },
+    { "step": "continue", "request": { "method": "GET", "url": "https://my.flexperiment.ru/continue?tx=Zx3n0c9Q2mJr8YtL1aBcDe", "cookies": ["MY"] },
+      "response": { "status": 200, "renders": "auto-submit form", "headers": { "Referrer-Policy": "no-referrer", "Cache-Control": "no-store" },
+        "form": { "method": "POST", "action": "https://flexperiment.ru/auth/lms/redeem", "fields": ["tx", "code"] } } },
+    { "step": "redeem", "request": { "method": "POST", "url": "https://flexperiment.ru/auth/lms/redeem", "headers": { "Origin": "https://my.flexperiment.ru", "Content-Type": "application/x-www-form-urlencoded" }, "cookies": ["__Host-flx-lms-x"] },
+      "response": { "status": 303, "location": "/courses/flex-basics/lessons/intro",
+        "setCookie": ["__Host-flx-lms=<token>; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=43200", "__Host-flx-lms-x=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0"] } }
+  ],
+  "failures": [
+    { "name": "no state cookie", "at": "redeem", "code": "EXCHANGE_STATE_MISSING", "status": "FAILED" },
+    { "name": "other browser (state of another start)", "at": "redeem", "code": "EXCHANGE_STATE_MISMATCH", "status": "FAILED" },
+    { "name": "wrong code", "at": "redeem", "code": "EXCHANGE_CODE_MISMATCH", "status": "FAILED" },
+    { "name": "replayed code after success", "at": "redeem", "code": "EXCHANGE_CLOSED", "status": "REDEEMED (unchanged)" },
+    { "name": "parallel double redeem", "at": "redeem", "expect": "exactly one REDEEMED + one lms_sessions row; the other EXCHANGE_CLOSED" },
+    { "name": "exchange expired (600 s)", "at": "issue|redeem", "code": "EXCHANGE_EXPIRED", "status": "unchanged (treated closed)" },
+    { "name": "code expired (60 s)", "at": "redeem", "code": "EXCHANGE_CODE_EXPIRED", "status": "FAILED" },
+    { "name": "redeem Origin not MY", "at": "redeem", "code": "ORIGIN_FORBIDDEN", "httpStatus": 403, "status": "unchanged" },
+    { "name": "redeem via MY surface", "at": "redeem", "code": "NOT_FOUND", "httpStatus": 404, "status": "unchanged" },
+    { "name": "MY signed out between issue and redeem", "at": "redeem", "code": "EXCHANGE_CLOSED", "status": "row deleted by cascade" },
+    { "name": "MY session expired between issue and redeem", "at": "redeem", "code": "PARENT_SESSION_INVALID", "status": "FAILED" },
+    { "name": "account switched on my before issue", "at": "issue", "expect": "binding = new account; old account never reachable" },
+    { "name": "account switched on my after issue", "at": "redeem", "code": "EXCHANGE_CLOSED", "status": "row deleted by cascade of the old MY session" },
+    { "name": "binding mismatch (customer rebound)", "at": "redeem", "code": "ACCOUNT_BINDING_MISMATCH", "status": "FAILED" },
+    { "name": "issue without MY session", "at": "issue", "code": "SIGN_IN_REQUIRED", "httpStatus": 401, "status": "unchanged" },
+    { "name": "issue on terminal exchange", "at": "issue", "code": "EXCHANGE_CLOSED", "httpStatus": 409 },
+    { "name": "start right after a failure (< 30 s)", "at": "start", "code": "EXCHANGE_RECENTLY_FAILED", "httpStatus": 409, "expect": "manual retry button, no redirect" },
+    { "name": "start with invalid next", "at": "start", "expect": "next replaced by surface default (see return-targets.json)" }
+  ],
+  "afterRedeem": [
+    { "event": "sign-out on my", "expect": "LMS session unusable immediately (row deleted by cascade)" },
+    { "event": "LMS Navbar sign-out", "expect": "parent MY session deleted; all sibling LMS sessions and open exchanges deleted; LMS cookie cleared" },
+    { "event": "parent expiry", "expect": "LMS session unusable even if its own expires_at is later" },
+    { "event": "LMS expiry (12 h)", "expect": "protected access restarts exchange; no OTP while MY live" },
+    { "event": "revokeLmsSession(id) (internal)", "expect": "only that LMS row deleted; MY session untouched" }
+  ]
+}
