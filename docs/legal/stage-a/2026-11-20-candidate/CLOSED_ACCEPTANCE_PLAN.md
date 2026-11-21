@@ -65,6 +65,7 @@ FLEX-96/29 (Coolify, erasure/restore). Подготовлено 2026-11-20 от 
 1. Для каждого из трёх: `/identity` (или `release.json`) → `source_commit` = SHA кандидата.
 2. С хоста (read-only, по GO): `docker inspect` контейнера → image digest и label commit; совпадение с Coolify deployment.
 3. LAB-образы не входят в эту проверку.
+4. Platform собирается **отдельно для каждого окружения** с его `PLATFORM_ORIGIN` (build ARG `Dockerfile.platform`, по умолчанию `https://flexperiment.ru`; F · #290): `/` и `/courses` пререндерятся при сборке, их canonical/og:url берутся из этого значения. Проверка: на canary `canonical` и `og:url` указывают на origin canary, на production — на `https://flexperiment.ru`. Один и тот же digest Platform для canary и production — **FAIL** (canonical canary укажет на production). Значит, для Platform критерий «тот же образ» заменяется на «тот же commit, отдельная сборка на окружение» (G-17).
 **Известный разрыв:** G-11 (readout не покрывает V2), G-12 (сборка не публикует образы; digest
 сопоставляется по хосту). Без решения D-06 этот сценарий принимается в форме «commit + digest read-back с хоста».
 
