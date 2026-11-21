@@ -4,7 +4,9 @@ export type AccessDecision =
   | "CONSENT_REQUIRED"
   | "DENY"
   | "PURCHASE_REQUIRED"
-  | "NOT_FOR_SALE";
+  | "NOT_FOR_SALE"
+  /** FLEX-128: a FREE course opens only after the customer's explicit enrollment. */
+  | "ENROLLMENT_REQUIRED";
 
 export type LessonAccessInput = {
   readonly customerId?: string;
@@ -41,8 +43,10 @@ export function decideLessonAccess(input: LessonAccessInput): AccessDecision {
   if (entitled) return "ALLOW";
   if (input.projectionStale) return "DENY";
   if (input.lesson.effectiveVisibility === "UNLISTED" || input.activeDenyNonEntitledOverride) return "DENY";
+  // An explicit FREE enrollment keeps its course access after FREE→PAID (FLEX-128).
   if (input.retainedFreeEnrollment) return "ALLOW";
-  if (input.courseProduct.accessModel === "FREE") return "ALLOW";
+  // Previews inside a FREE course also require the enrollment: a grant never enrolls by itself.
+  if (input.courseProduct.accessModel === "FREE") return "ENROLLMENT_REQUIRED";
   if (input.lesson.freePreview) return "ALLOW";
   return input.courseProduct.saleMode === "CLOSED" ? "NOT_FOR_SALE" : "PURCHASE_REQUIRED";
 }

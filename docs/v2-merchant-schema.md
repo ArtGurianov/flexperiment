@@ -602,3 +602,33 @@ identity/use. Financial erasure holds and offline retention remain explicit.
 
 The guest flow, API authority and qualification boundaries are described in
 [the ART-384 design](plans/2026-10-19-lab-guest-checkout-design.md).
+
+## Explicit FREE enrollment and start of learning (FLEX-128; migration 0036, reserve 0037)
+
+Stage A opens a FREE course only after the customer's explicit "Записаться бесплатно"
+action. `POST /v1/me/free-enrollments` (`{ courseSlug, lessonSlug? }`, LMS origin only,
+own session) runs one IMMEDIATE transaction that checks the verified account binding,
+the current required COURSES consents and a published, listed, Commerce-authored FREE
+course with at least one listed lesson, then records the right in the existing
+`free_course_enrollments` and the start fact in `course_learning_starts`. A repeat
+returns the original timestamps (`created: false`). `GET /v1/me/free-enrollments/:courseSlug`
+reads the account's own status. Neither creates an order, payment, entitlement or
+`course_access_starts` row, and neither infers viewing or completion; Stage A shows 0%
+and FLEX-129 owns completion facts and progress.
+
+A playback grant never enrolls. Before enrollment every lesson of a FREE course,
+including lessons flagged as preview, answers `ENROLLMENT_REQUIRED` (playback 403 and
+the DRM callback). Free previews of a PAID course stay open to a consented account
+without any enrollment. An enrollment taken while FREE keeps course access after
+FREE→PAID under the general restrictions (consent, visibility, overrides, withdrawal);
+enrollment after the change is refused with `FREE_COURSE_REQUIRED`.
+
+| Surface | Data and identity classification | Recovery and deletion behavior |
+| --- | --- | --- |
+| `course_learning_starts` (customer FK, product FK, `course_ref`, `source='FREE_ENROLLMENT'`, `started_at`; PK customer–course; insert requires the matching enrollment; immutable) | Subject-linked, nonfinancial, nonmarketing learning fact. | Erasure and isolated restore delete it with the subject. Offline retention keeps it, like `course_access_starts`, and it keeps an otherwise unbound profile. |
+| Existing `free_course_enrollments` rows recorded by an earlier implicit grant | Unchanged right. | No start fact is backfilled; the API reports `startedAt: null`. |
+
+Retention and erasure restore both admit the reviewed 0001–0036 schema with hashed
+journal, `f0b2205a43d7a733a96cbc3b40f7b57e4850dc0f8082dfc5449f1a95bee21e13`. The
+fingerprint is computed over `sqlite_master` only, so a final renumbering to 0037 does
+not change it; integration on a newer `main` recomputes it.

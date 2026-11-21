@@ -1,7 +1,11 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import AuthenticatedConsentGate from "./AuthenticatedConsentGate";
+import FreeEnrollmentContinuation from "./FreeEnrollmentContinuation";
+import MarketingPreference from "./MarketingPreference";
+import type { EnrollmentFacts, EnrollmentIntent } from "../courses/freeEnrollment";
 import { RefundContact } from "../../../../packages/customer-support/RefundContact";
 
 type Me = {
@@ -14,6 +18,8 @@ type AccountCourse = {
   title: string;
   url: string;
   access: "ENTITLED" | "FREE" | "PREVIEW";
+  /** FLEX-128: present only for the account's explicit FREE enrollment. */
+  enrollment?: EnrollmentFacts | null;
   lessons: Array<{
     lessonRef: string;
     title: string;
@@ -37,7 +43,8 @@ type AccountOrder = {
 type LegalDocument = { kind: string; version: string; sha256: string; url: string };
 type LegalRelease = { version: string; manifest: { stage: "A" | "B"; documents: LegalDocument[] } };
 
-const accessLabel = (access: AccountCourse["access"]) => access === "ENTITLED" ? "Ваш доступ" : access === "FREE" ? "Бесплатно" : "Превью";
+const accessLabel = (access: AccountCourse["access"]) => access === "ENTITLED" ? "Ваш доступ" : access === "FREE" ? "Вы записаны" : "Превью";
+const courseLabel = (course: AccountCourse) => course.access === "FREE" && course.enrollment ? "Вы записаны · прогресс 0%" : accessLabel(course.access);
 const money = (kopecks: number) => new Intl.NumberFormat("ru-RU", { style: "currency", currency: "RUB", maximumFractionDigits: 0 }).format(kopecks / 100);
 const date = (value: string) => new Intl.DateTimeFormat("ru-RU", { dateStyle: "medium" }).format(new Date(value));
 
@@ -47,7 +54,9 @@ declare global {
   }
 }
 
-export default function AccountClient({ nextPath, captchaSiteKey }: { nextPath: string; captchaSiteKey?: string }) {
+export default function AccountClient({ nextPath, captchaSiteKey, enrollIntent }: {
+  nextPath: string; captchaSiteKey?: string; enrollIntent?: EnrollmentIntent;
+}) {
   const [me, setMe] = useState<Me | null>(null);
   const [captchaToken, setCaptchaToken] = useState("");
   const [legalRelease, setLegalRelease] = useState<LegalRelease | null>(null);
@@ -151,7 +160,10 @@ export default function AccountClient({ nextPath, captchaSiteKey }: { nextPath: 
       <p>Запросить удаление данных или задать вопрос об аккаунте: <a href="mailto:art@flexperiment.ru">art@flexperiment.ru</a>.</p>
       {message && <p role="status">{message}</p>}
     </section>
-    <AuthenticatedConsentGate key={me.customer.id}><AccountLibrary /></AuthenticatedConsentGate>
+    <AuthenticatedConsentGate key={me.customer.id}>
+      {enrollIntent && <FreeEnrollmentContinuation intent={enrollIntent} />}
+      <AccountLibrary /><MarketingPreference />
+    </AuthenticatedConsentGate>
     <AccountHistory key={me.customer.id} /><RefundContact /></section>;
 
   const legalByKind = new Map(legalRelease?.manifest.documents.map((item) => [item.kind, item]));
@@ -160,7 +172,9 @@ export default function AccountClient({ nextPath, captchaSiteKey }: { nextPath: 
   const accountTerms = legalByKind.get("account_terms");
   const marketing = legalByKind.get("marketing_consent");
   const legalReady = Boolean(privacy && personalData && accountTerms && marketing);
-  return <section className="accountPanel"><p className="eyebrow">Вход без пароля</p><h1>Мои курсы</h1><form className="authForm" onSubmit={submit}>
+  return <section className="accountPanel"><p className="eyebrow">Вход без пароля</p><h1>Мои курсы</h1>
+    {enrollIntent && <p className="enrollmentStatus" role="note">Войдите по ссылке из письма — после входа запись на выбранный бесплатный курс завершится и откроется {enrollIntent.lessonSlug ? "выбранный урок" : "первый урок"}.</p>}
+    <form className="authForm" onSubmit={submit}>
     <label>Электронная почта<input required name="email" type="email" autoComplete="email" /></label>
     <p>Как используются данные: <a href={privacy?.url} target="_blank" rel="noreferrer">политика конфиденциальности</a>.</p>
     <label className="check"><input required name="personalDataConsent" type="checkbox" />Согласен с <a href={personalData?.url} target="_blank" rel="noreferrer">обработкой персональных данных</a></label>
@@ -187,9 +201,9 @@ function AccountLibrary() {
     return () => controller.abort();
   }, []);
   return <section className="accountSection" aria-labelledby="available-lessons"><header><span>01</span><h2 id="available-lessons">Можно открыть сейчас</h2></header>
-    {courses.length > 0 ? <div className="accountCourses">{courses.map(course => <article key={course.courseRef}><div><p>{accessLabel(course.access)}</p><h3><a href={course.url}>{course.title}</a></h3></div>
+    {courses.length > 0 ? <div className="accountCourses">{courses.map(course => <article key={course.courseRef}><div><p>{courseLabel(course)}</p><h3><a href={course.url}>{course.title}</a></h3></div>
       <ol>{course.lessons.map(lesson => <li key={lesson.lessonRef}><span>{lesson.sectionTitle}</span><a href={lesson.url}>{lesson.title}</a><small>{accessLabel(lesson.access)}</small></li>)}</ol></article>)}</div>
-      : <p className="emptyState">Доступных уроков пока нет. Бесплатные и preview-уроки появятся здесь после публикации.</p>}
+      : <p className="emptyState">Доступных уроков пока нет. Запишитесь на бесплатный курс в <Link href="/courses">каталоге</Link> — он появится здесь; превью платных курсов тоже показываются здесь.</p>}
     </section>;
 }
 

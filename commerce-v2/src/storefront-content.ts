@@ -146,6 +146,7 @@ export function listCustomerStorefrontLibrary(db: Database.Database, customerId:
       const lessons = new Map(graph.lessons.map(lesson => [lesson.lessonRef, lesson]));
       const sections = new Map(graph.sections.map(section => [section.sectionRef, section]));
       return [{ courseRef: item.courseRef, title: row.title, url: `/courses/${row.slug}`, access: item.access,
+        enrollment: item.enrollment,
         lessons: item.lessons.flatMap(allowed => {
           const lesson = lessons.get(allowed.lessonRef);
           const section = lesson && sections.get(lesson.sectionRef);

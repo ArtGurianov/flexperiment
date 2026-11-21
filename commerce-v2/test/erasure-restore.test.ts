@@ -43,6 +43,7 @@ beforeEach(() => {
   }
   db.exec(`INSERT INTO products(id,product_ref,kind,access_model,course_ref) VALUES ('product','synthetic-course','ONLINE_COURSE','FREE','synthetic-course');
     INSERT INTO free_course_enrollments(customer_id,product_id,product_version,enrolled_at) VALUES ('deleted-customer','product',1,'2026-10-11');
+    INSERT INTO course_learning_starts(customer_id,course_ref,product_id,source,started_at) VALUES ('deleted-customer','synthetic-course','product','FREE_ENROLLMENT','2026-10-11');
     INSERT INTO notification_campaigns(id,course_ref,payload_json,state) VALUES ('campaign','synthetic-course','{}','DRAFT');
     INSERT INTO notification_campaign_recipients(id,campaign_id,customer_id,state) VALUES ('recipient','campaign','deleted-customer','PENDING');`);
 });
@@ -65,6 +66,9 @@ describe("real isolated old SQLite backup + independent latest erasure journal",
     db.prepare(`INSERT INTO lesson_video_bindings(lesson_ref,active_video_id,bound_at,updated_at) VALUES (?,?,?,?)`)
       .run("synthetic-lesson", "synthetic-video", now.toISOString(), now.toISOString());
     const published = getEditorialPublished(db, "synthetic-course");
+    // FLEX-128 (G-01): an unrelated subject's explicit enrollment and start fact survive the restore.
+    db.exec(`INSERT INTO free_course_enrollments(customer_id,product_id,product_version,enrolled_at) VALUES ('other-customer','product',1,'2026-10-12');
+      INSERT INTO course_learning_starts(customer_id,course_ref,product_id,source,started_at) VALUES ('other-customer','synthetic-course','product','FREE_ENROLLMENT','2026-10-12');`);
     const archive = join(root, "before-erasure.sqlite"); await db.backup(archive); // Genuine SQLite online backup with WAL.
     tombstone(); const proof = await verified();
     const restored = new Database(archive); restored.pragma("foreign_keys=ON");
@@ -73,7 +77,10 @@ describe("real isolated old SQLite backup + independent latest erasure journal",
       expect(result).toMatchObject({ erasedAccounts: 1, sequence: 1, runtimeAdmission: "PENDING", processorDeletion: "PENDING" });
       expect(restored.prepare("SELECT id FROM customers ORDER BY id").all()).toEqual([{ id: "other-customer" }]);
       expect(rowCount(restored, '"user"')).toBe(1);
-      for (const table of ['"session"', "verification", "free_course_enrollments", "notification_campaign_recipients"]) expect(rowCount(restored, table)).toBe(0);
+      for (const table of ['"session"', "verification", "notification_campaign_recipients"]) expect(rowCount(restored, table)).toBe(0);
+      for (const table of ["free_course_enrollments", "course_learning_starts"]) {
+        expect(restored.prepare(`SELECT customer_id FROM ${table}`).all()).toEqual([{ customer_id: "other-customer" }]);
+      }
       expect(restored.prepare("SELECT customer_id FROM authenticated_consent_actions").all()).toEqual([{ customer_id: "other-customer" }]);
       expect(rowCount(restored, "authenticated_consent_events")).toBe(3);
       for (const table of ["lesson_resume_positions", "playback_grant_rate_limits", "playback_access_events"]) {
@@ -88,7 +95,7 @@ describe("real isolated old SQLite backup + independent latest erasure journal",
         .get() as { document_json: string; content_hash: string };
       expect(createHash("sha256").update(version.document_json).digest("hex")).toBe(version.content_hash);
       expect(restored.pragma("integrity_check", { simple: true })).toBe("ok"); expect(restored.pragma("foreign_key_check")).toEqual([]);
-      const count = rowCount(restored, "schema_migrations"); expect(count).toBe(35);
+      const count = rowCount(restored, "schema_migrations"); expect(count).toBe(36);
       expect(applyIsolatedRestoreErasure(restored, await verified(), keys, "canary", now).erasedAccounts).toBe(0);
       // Original source has not been erased by the isolated proof.
       expect(rowCount(db, "customers")).toBe(2); expect(rowCount(db, '"session"')).toBe(2);
@@ -107,7 +114,7 @@ describe("real isolated old SQLite backup + independent latest erasure journal",
     expect(rowCount(db, "lab_ticket_recoveries")).toBe(0);
   });
   it("keeps a genuinely new same-email identity, but cannot revive old marketing authority", async () => {
-    tombstone(); db.exec(`DELETE FROM free_course_enrollments;
+    tombstone(); db.exec(`DELETE FROM course_learning_starts; DELETE FROM free_course_enrollments;
       DELETE FROM authenticated_consent_actions WHERE customer_id='deleted-customer';
       DELETE FROM notification_campaign_recipients; DELETE FROM lesson_resume_positions WHERE customer_id='deleted-customer';
       DELETE FROM playback_grant_rate_limits WHERE customer_id='deleted-customer';

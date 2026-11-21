@@ -111,6 +111,10 @@ describe("Stage A auth → FREE access isolated preparation", () => {
     expect(confirmation.status).toBe(200);
     expect(db.prepare("SELECT COUNT(*) n FROM authenticated_consent_events").get()).toEqual({ n: 3 });
     expect(db.prepare("SELECT DISTINCT evidence_status FROM account_consents").all()).toEqual([{ evidence_status: "UNVERIFIED_INTENT" }]);
+    // FLEX-128: FREE needs the explicit enrollment (no paid grant); a grant decision never enrolls.
+    expect(resolvePlaybackAccess(db, access).decision).toBe("ENROLLMENT_REQUIRED");
+    db.prepare(`INSERT INTO free_course_enrollments(customer_id,product_id,product_version,enrolled_at)
+      VALUES (?,'isolated-free',1,?)`).run(customerId, now.toISOString());
     expect(resolvePlaybackAccess(db, access).decision).toBe("ALLOW");
     expect(resolvePlaybackAccess(db, { ...access, lessonRef: "unknown" }).decision).toBe("DENY");
     expect(resolvePlaybackAccess(db, { ...access, now: new Date(now.getTime() + 60_001) }).decision).toBe("DENY");

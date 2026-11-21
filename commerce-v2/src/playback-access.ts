@@ -18,7 +18,6 @@ type ProjectionRow = {
   product_withdrawn_at: string | null;
   sale_mode: "CLOSED" | "ACCEPTANCE_ONLY" | "PUBLIC";
   product_id: string | null;
-  product_version: number | null;
 };
 
 type Grant = { scope: "COURSE" | "ALL_COURSES"; course_ref: string | null; revoked_at: string | null };
@@ -31,20 +30,22 @@ export type PlaybackAccessResolution = {
   resumeAt: number;
 };
 
+/**
+ * Read-only access decision for a lesson grant. FLEX-128: a grant never records an enrollment; a FREE
+ * course answers ENROLLMENT_REQUIRED until the explicit `enrollInFreeCourse` command has run.
+ * One deferred read transaction keeps the decision on a single snapshot.
+ */
 export function resolvePlaybackAccess(db: Database.Database, input: {
   customerId: string;
   lessonRef: string;
   now: Date;
   leaseMs: number;
-  recordFreeEnrollment?: boolean;
 }): PlaybackAccessResolution {
-  // Serialize eligibility/enrollment with FREE→PAID changes, including other SQLite connections.
-  if (input.recordFreeEnrollment) return db.transaction(() => resolvePlaybackAccessLocked(db, input)).immediate();
-  return resolvePlaybackAccessLocked(db, input);
+  return db.transaction(() => resolvePlaybackAccessSnapshot(db, input)).deferred();
 }
 
-function resolvePlaybackAccessLocked(db: Database.Database, input: {
-  customerId: string; lessonRef: string; now: Date; leaseMs: number; recordFreeEnrollment?: boolean;
+function resolvePlaybackAccessSnapshot(db: Database.Database, input: {
+  customerId: string; lessonRef: string; now: Date; leaseMs: number;
 }): PlaybackAccessResolution {
   if (!hasRequiredAccountConsents(db, input.customerId, "COURSES")) {
     return { decision: "CONSENT_REQUIRED", paidEntitled: false, resumeAt: 0 };
@@ -54,7 +55,7 @@ function resolvePlaybackAccessLocked(db: Database.Database, input: {
     lesson.free_preview, lesson.withdrawn_at AS lesson_withdrawn_at,
     section.visibility AS section_visibility, course.visibility AS course_visibility,
     course.last_reconciled_at, course.authoring_source, product.access_model, product.withdrawn_at AS product_withdrawn_at,
-    COALESCE(offer.sale_mode, 'CLOSED') AS sale_mode, product.id AS product_id, product.version AS product_version
+    COALESCE(offer.sale_mode, 'CLOSED') AS sale_mode, product.id AS product_id
     FROM catalog_lesson_projection lesson
     JOIN catalog_section_projection section ON section.section_ref = lesson.section_ref
     JOIN catalog_course_projection course ON course.course_ref = lesson.course_ref
@@ -92,12 +93,6 @@ function resolvePlaybackAccessLocked(db: Database.Database, input: {
   const binding = db.prepare("SELECT active_video_id,duration_seconds FROM lesson_video_bindings WHERE lesson_ref=?")
     .get(input.lessonRef) as { active_video_id: string; duration_seconds: number | null } | undefined;
   if (!binding) return { decision, courseRef: row?.course_ref, paidEntitled, resumeAt: 0 };
-  if (input.recordFreeEnrollment && row?.access_model === "FREE" && db.prepare(`SELECT 1 FROM customers c
-    JOIN "user" u ON u.id=c.auth_user_id WHERE c.id=? AND u.email_verified=1 AND lower(trim(u.email))=c.email_normalized`)
-    .get(input.customerId)) {
-    db.prepare(`INSERT OR IGNORE INTO free_course_enrollments(customer_id,product_id,product_version,enrolled_at)
-      VALUES (?,?,?,?)`).run(input.customerId, row.product_id, row.product_version, input.now.toISOString());
-  }
   const resume = db.prepare("SELECT seconds FROM lesson_resume_positions WHERE customer_id=? AND lesson_ref=?")
     .get(input.customerId, input.lessonRef) as { seconds: number } | undefined;
   return {
