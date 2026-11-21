@@ -29,3 +29,17 @@ export function safeAnalyticsLocation(pathname: string, search: string) {
   const query = params.toString();
   return query ? `${pathname}?${query}` : pathname;
 }
+
+/**
+ * The referrer Metrika receives, passed explicitly so it never falls back to the raw document.referrer.
+ * Only origin and path survive: no query (tokens, emails, return URLs) and no fragment. Private paths
+ * are reduced to the bare origin, and anything that is not an http(s) URL is dropped.
+ */
+export function safeAnalyticsReferrer(referrer: string): string | undefined {
+  if (!referrer) return undefined;
+  let url: URL;
+  try { url = new URL(referrer); } catch { return undefined; }
+  if (url.protocol !== "https:" && url.protocol !== "http:") return undefined;
+  if (url.pathname.startsWith("/account") || url.pathname.startsWith("/admin")) return `${url.origin}/`;
+  return `${url.origin}${url.pathname}`;
+}

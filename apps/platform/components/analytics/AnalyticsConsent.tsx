@@ -1,11 +1,13 @@
 "use client";
 
+import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import {
   analyticsConsentFromCookie,
   analyticsConsentSetCookie,
   safeAnalyticsLocation,
+  safeAnalyticsReferrer,
   type AnalyticsConsent,
   type StoredAnalyticsConsent,
 } from "@/lib/analytics-consent";
@@ -53,6 +55,8 @@ export default function AnalyticsConsentManager() {
   const [prompt, setPrompt] = useState(false);
   const [settings, setSettings] = useState(false);
   const initialized = useRef(false);
+  // The previous hit's page becomes the next hit's referrer; the first hit uses the sanitized document.referrer.
+  const previousPage = useRef<string | null>(null);
 
   useEffect(() => {
     const open = () => setSettings(true);
@@ -83,11 +87,17 @@ export default function AnalyticsConsentManager() {
       document.head.append(script);
     }
     if (!initialized.current) {
-      ym(id, "init", { clickmap: true, trackLinks: true, accurateTrackBounce: true, defer: true });
+      // Minimized per privacy §4: no click map, no link/download tracking, no session replay (webvisor).
+      // Re-enabling clickmap/trackLinks is an owner decision (D-12) that needs a privacy disclosure first.
+      ym(id, "init", { clickmap: false, trackLinks: false, accurateTrackBounce: true, defer: true });
       initialized.current = true;
     }
     const location = safeAnalyticsLocation(pathname, window.location.search);
-    if (location) ym(id, "hit", location, { title: document.title });
+    if (location) {
+      const referer = previousPage.current ?? safeAnalyticsReferrer(document.referrer);
+      ym(id, "hit", location, referer ? { title: document.title, referer } : { title: document.title });
+      previousPage.current = `${window.location.origin}${pathname}`;
+    }
   }, [consent, pathname]);
 
   const choose = (choice: StoredAnalyticsConsent) => {
@@ -99,7 +109,7 @@ export default function AnalyticsConsentManager() {
   const visible = prompt || settings;
   return visible ? <section className="consentDialog" role="dialog" aria-modal={settings || undefined} aria-label="Настройки аналитики">
     <strong>{settings ? "Настройки cookies" : "Необязательная аналитика отключена"}</strong>
-    <p>Яндекс Метрика не загружается без вашего разрешения. Выбор можно изменить в любое время.</p>
+    <p>Яндекс Метрика не загружается без вашего разрешения. Выбор можно изменить в любое время. <Link href="/legal/privacy">Подробнее в политике конфиденциальности</Link>.</p>
     <div><button type="button" aria-pressed={consent === "DENIED"} onClick={() => choose("DENIED")}>Только необходимые</button><button type="button" aria-pressed={consent === "ALLOWED"} onClick={() => choose("ALLOWED")}>Разрешить аналитику</button>{settings && <button type="button" onClick={() => setSettings(false)}>Закрыть</button>}</div>
   </section> : null;
 }
