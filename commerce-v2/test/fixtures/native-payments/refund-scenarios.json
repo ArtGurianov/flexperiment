@@ -1,0 +1,558 @@
+{
+  "schema": "flexperiment.native-refund-fixtures/1",
+  "contract": "flexperiment.native-payment-contract/1",
+  "binding": {
+    "providerPaymentId": "fake-pay-1",
+    "amountKopecks": 490000,
+    "currency": "RUB",
+    "refundRef": "refund:rr-0001"
+  },
+  "begin": {
+    "expect": {
+      "state": "SUBMITTING",
+      "effects": [
+        "PROVIDER_REFUND_SUBMIT"
+      ]
+    }
+  },
+  "admission": [
+    {
+      "id": "A01",
+      "input": {
+        "contour": "NATIVE",
+        "paymentState": "PAID",
+        "lineAmountKopecks": 490000,
+        "approvedAmountKopecks": 490000,
+        "alreadyRefundedKopecks": 0,
+        "finalSettlementState": null
+      },
+      "expect": {
+        "admitted": true
+      }
+    },
+    {
+      "id": "A02",
+      "input": {
+        "contour": "REFREF_RC2",
+        "paymentState": "PAID",
+        "lineAmountKopecks": 490000,
+        "approvedAmountKopecks": 490000,
+        "alreadyRefundedKopecks": 0,
+        "finalSettlementState": null
+      },
+      "expect": {
+        "admitted": false,
+        "code": "REFUND_ROUTED_TO_ORIGINAL_CONTOUR"
+      }
+    },
+    {
+      "id": "A03",
+      "input": {
+        "contour": "NATIVE",
+        "paymentState": "CREATE_UNKNOWN",
+        "lineAmountKopecks": 490000,
+        "approvedAmountKopecks": 490000,
+        "alreadyRefundedKopecks": 0,
+        "finalSettlementState": null
+      },
+      "expect": {
+        "admitted": false,
+        "code": "REFUND_PAYMENT_NOT_PAID"
+      }
+    },
+    {
+      "id": "A04",
+      "input": {
+        "contour": "NATIVE",
+        "paymentState": "PAID",
+        "lineAmountKopecks": 490000,
+        "approvedAmountKopecks": 100000,
+        "alreadyRefundedKopecks": 0,
+        "finalSettlementState": null
+      },
+      "expect": {
+        "admitted": false,
+        "code": "REFUND_FULL_ONLY"
+      }
+    },
+    {
+      "id": "A05",
+      "input": {
+        "contour": "NATIVE",
+        "paymentState": "PAID",
+        "lineAmountKopecks": 490000,
+        "approvedAmountKopecks": 490000,
+        "alreadyRefundedKopecks": 490000,
+        "finalSettlementState": null
+      },
+      "expect": {
+        "admitted": false,
+        "code": "REFUND_FULL_ONLY"
+      }
+    },
+    {
+      "id": "A06",
+      "input": {
+        "contour": "NATIVE",
+        "paymentState": "PAID",
+        "lineAmountKopecks": 490000,
+        "approvedAmountKopecks": 490000,
+        "alreadyRefundedKopecks": 0,
+        "finalSettlementState": "REGISTERED"
+      },
+      "expect": {
+        "admitted": false,
+        "code": "REFUND_AFTER_FINAL_SETTLEMENT_NOT_SUPPORTED"
+      }
+    },
+    {
+      "id": "A07",
+      "input": {
+        "contour": "NATIVE",
+        "paymentState": "PAID",
+        "lineAmountKopecks": 490000,
+        "approvedAmountKopecks": 490000,
+        "alreadyRefundedKopecks": 0,
+        "finalSettlementState": "SUBMIT_UNKNOWN"
+      },
+      "expect": {
+        "admitted": false,
+        "code": "REFUND_AFTER_FINAL_SETTLEMENT_NOT_SUPPORTED"
+      }
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "R01",
+      "title": "Happy full refund; repeated read-back is idempotent",
+      "fiscalizationMode": "MERCHANT",
+      "steps": [
+        {
+          "observe": {
+            "source": "SUBMIT_RESPONSE",
+            "outcome": "ACCEPTED",
+            "providerRefundId": "fake-refund-1"
+          },
+          "expect": {
+            "state": "PROCESSING",
+            "effects": [
+              "READ_BACK"
+            ]
+          }
+        },
+        {
+          "observe": {
+            "source": "READ_BACK",
+            "outcome": "FOUND",
+            "providerRefundId": "fake-refund-1",
+            "status": "PROCESSING",
+            "providerPaymentId": "fake-pay-1",
+            "amountKopecks": 490000,
+            "currency": "RUB",
+            "refundRef": "refund:rr-0001"
+          },
+          "expect": {
+            "state": "PROCESSING",
+            "effects": []
+          }
+        },
+        {
+          "observe": {
+            "source": "READ_BACK",
+            "outcome": "FOUND",
+            "providerRefundId": "fake-refund-1",
+            "status": "SUCCEEDED",
+            "providerPaymentId": "fake-pay-1",
+            "amountKopecks": 490000,
+            "currency": "RUB",
+            "refundRef": "refund:rr-0001"
+          },
+          "expect": {
+            "state": "SUCCEEDED",
+            "effects": [
+              "REVOKE_ACCESS",
+              "ISSUE_REFUND_RECEIPT",
+              "PURGE_ENVELOPE"
+            ]
+          }
+        },
+        {
+          "observe": {
+            "source": "READ_BACK",
+            "outcome": "FOUND",
+            "providerRefundId": "fake-refund-1",
+            "status": "SUCCEEDED",
+            "providerPaymentId": "fake-pay-1",
+            "amountKopecks": 490000,
+            "currency": "RUB",
+            "refundRef": "refund:rr-0001"
+          },
+          "expect": {
+            "state": "SUCCEEDED",
+            "effects": []
+          }
+        }
+      ],
+      "totals": {
+        "REVOKE_ACCESS": 1
+      }
+    },
+    {
+      "id": "R02",
+      "title": "Submit answer lost, provider had accepted",
+      "fiscalizationMode": "MERCHANT",
+      "steps": [
+        {
+          "observe": {
+            "source": "SUBMIT_RESPONSE",
+            "outcome": "LOST"
+          },
+          "expect": {
+            "state": "SUBMIT_UNKNOWN",
+            "effects": [
+              "READ_BACK"
+            ]
+          }
+        },
+        {
+          "observe": {
+            "source": "READ_BACK",
+            "outcome": "FOUND",
+            "providerRefundId": "fake-refund-1",
+            "status": "SUCCEEDED",
+            "providerPaymentId": "fake-pay-1",
+            "amountKopecks": 490000,
+            "currency": "RUB",
+            "refundRef": "refund:rr-0001"
+          },
+          "expect": {
+            "state": "SUCCEEDED",
+            "effects": [
+              "REVOKE_ACCESS",
+              "ISSUE_REFUND_RECEIPT",
+              "PURGE_ENVELOPE"
+            ]
+          }
+        }
+      ],
+      "totals": {
+        "REVOKE_ACCESS": 1
+      }
+    },
+    {
+      "id": "R03",
+      "title": "Submit answer lost, nothing at provider: replay same sealed envelope and key",
+      "fiscalizationMode": "MERCHANT",
+      "steps": [
+        {
+          "observe": {
+            "source": "SUBMIT_RESPONSE",
+            "outcome": "LOST"
+          },
+          "expect": {
+            "state": "SUBMIT_UNKNOWN",
+            "effects": [
+              "READ_BACK"
+            ]
+          }
+        },
+        {
+          "observe": {
+            "source": "READ_BACK",
+            "outcome": "NOT_FOUND"
+          },
+          "expect": {
+            "state": "SUBMIT_UNKNOWN",
+            "effects": [
+              "REPLAY_REFUND_SAME_KEY"
+            ]
+          }
+        },
+        {
+          "observe": {
+            "source": "SUBMIT_RESPONSE",
+            "outcome": "ACCEPTED",
+            "providerRefundId": "fake-refund-1"
+          },
+          "expect": {
+            "state": "PROCESSING",
+            "effects": [
+              "READ_BACK"
+            ]
+          }
+        },
+        {
+          "observe": {
+            "source": "READ_BACK",
+            "outcome": "FOUND",
+            "providerRefundId": "fake-refund-1",
+            "status": "SUCCEEDED",
+            "providerPaymentId": "fake-pay-1",
+            "amountKopecks": 490000,
+            "currency": "RUB",
+            "refundRef": "refund:rr-0001"
+          },
+          "expect": {
+            "state": "SUCCEEDED",
+            "effects": [
+              "REVOKE_ACCESS",
+              "ISSUE_REFUND_RECEIPT",
+              "PURGE_ENVELOPE"
+            ]
+          }
+        }
+      ],
+      "totals": {
+        "REVOKE_ACCESS": 1,
+        "REPLAY_REFUND_SAME_KEY": 1
+      }
+    },
+    {
+      "id": "R04",
+      "title": "Proven terminal refusal: envelope purged, access stays",
+      "fiscalizationMode": "MERCHANT",
+      "steps": [
+        {
+          "observe": {
+            "source": "SUBMIT_RESPONSE",
+            "outcome": "REFUSED",
+            "code": "REFUND_DECLINED",
+            "proven": true
+          },
+          "expect": {
+            "state": "FAILED",
+            "effects": [
+              "PURGE_ENVELOPE",
+              "ALERT"
+            ],
+            "reason": "REFUND_DECLINED"
+          }
+        }
+      ],
+      "totals": {
+        "REVOKE_ACCESS": 0
+      }
+    },
+    {
+      "id": "R05",
+      "title": "Unproven refusal: review, envelope kept for replay",
+      "fiscalizationMode": "MERCHANT",
+      "steps": [
+        {
+          "observe": {
+            "source": "SUBMIT_RESPONSE",
+            "outcome": "REFUSED",
+            "code": "HTTP_409",
+            "proven": false
+          },
+          "expect": {
+            "state": "REVIEW_REQUIRED",
+            "effects": [
+              "ALERT"
+            ],
+            "reason": "HTTP_409"
+          }
+        }
+      ],
+      "totals": {
+        "REVOKE_ACCESS": 0,
+        "PURGE_ENVELOPE": 0
+      }
+    },
+    {
+      "id": "R06",
+      "title": "Late success after provider FAILED: review, no automatic revoke",
+      "fiscalizationMode": "MERCHANT",
+      "steps": [
+        {
+          "observe": {
+            "source": "SUBMIT_RESPONSE",
+            "outcome": "ACCEPTED",
+            "providerRefundId": "fake-refund-1"
+          },
+          "expect": {
+            "state": "PROCESSING",
+            "effects": [
+              "READ_BACK"
+            ]
+          }
+        },
+        {
+          "observe": {
+            "source": "READ_BACK",
+            "outcome": "FOUND",
+            "providerRefundId": "fake-refund-1",
+            "status": "FAILED",
+            "providerPaymentId": "fake-pay-1",
+            "amountKopecks": 490000,
+            "currency": "RUB",
+            "refundRef": "refund:rr-0001"
+          },
+          "expect": {
+            "state": "FAILED",
+            "effects": [
+              "PURGE_ENVELOPE",
+              "ALERT"
+            ],
+            "reason": "REFUND_FAILED_AT_PROVIDER"
+          }
+        },
+        {
+          "observe": {
+            "source": "READ_BACK",
+            "outcome": "FOUND",
+            "providerRefundId": "fake-refund-1",
+            "status": "SUCCEEDED",
+            "providerPaymentId": "fake-pay-1",
+            "amountKopecks": 490000,
+            "currency": "RUB",
+            "refundRef": "refund:rr-0001"
+          },
+          "expect": {
+            "state": "REVIEW_REQUIRED",
+            "effects": [
+              "ALERT"
+            ],
+            "reason": "LATE_REFUND_AFTER_FAILURE"
+          }
+        }
+      ],
+      "totals": {
+        "REVOKE_ACCESS": 0
+      }
+    },
+    {
+      "id": "R07",
+      "title": "Refund fact with a different amount: review, access stays",
+      "fiscalizationMode": "MERCHANT",
+      "steps": [
+        {
+          "observe": {
+            "source": "SUBMIT_RESPONSE",
+            "outcome": "ACCEPTED",
+            "providerRefundId": "fake-refund-1"
+          },
+          "expect": {
+            "state": "PROCESSING",
+            "effects": [
+              "READ_BACK"
+            ]
+          }
+        },
+        {
+          "observe": {
+            "source": "READ_BACK",
+            "outcome": "FOUND",
+            "providerRefundId": "fake-refund-1",
+            "status": "SUCCEEDED",
+            "providerPaymentId": "fake-pay-1",
+            "amountKopecks": 1,
+            "currency": "RUB",
+            "refundRef": "refund:rr-0001"
+          },
+          "expect": {
+            "state": "REVIEW_REQUIRED",
+            "effects": [
+              "ALERT"
+            ],
+            "reason": "REFUND_BINDING_MISMATCH"
+          }
+        }
+      ],
+      "totals": {
+        "REVOKE_ACCESS": 0
+      }
+    },
+    {
+      "id": "R08",
+      "title": "Forged callback ignored; valid callback only schedules a read-back",
+      "fiscalizationMode": "MERCHANT",
+      "steps": [
+        {
+          "observe": {
+            "source": "SUBMIT_RESPONSE",
+            "outcome": "ACCEPTED",
+            "providerRefundId": "fake-refund-1"
+          },
+          "expect": {
+            "state": "PROCESSING",
+            "effects": [
+              "READ_BACK"
+            ]
+          }
+        },
+        {
+          "observe": {
+            "source": "CALLBACK",
+            "signatureValid": false,
+            "providerRefundId": "fake-refund-1"
+          },
+          "expect": {
+            "state": "PROCESSING",
+            "effects": [],
+            "reason": "CALLBACK_SIGNATURE_INVALID"
+          }
+        },
+        {
+          "observe": {
+            "source": "CALLBACK",
+            "signatureValid": true,
+            "providerRefundId": "fake-refund-1"
+          },
+          "expect": {
+            "state": "PROCESSING",
+            "effects": [
+              "READ_BACK"
+            ]
+          }
+        }
+      ],
+      "totals": {
+        "REVOKE_ACCESS": 0
+      }
+    },
+    {
+      "id": "R09",
+      "title": "PROVIDER-fiscalized rail: no merchant refund receipt",
+      "fiscalizationMode": "PROVIDER",
+      "steps": [
+        {
+          "observe": {
+            "source": "SUBMIT_RESPONSE",
+            "outcome": "ACCEPTED",
+            "providerRefundId": "fake-refund-1"
+          },
+          "expect": {
+            "state": "PROCESSING",
+            "effects": [
+              "READ_BACK"
+            ]
+          }
+        },
+        {
+          "observe": {
+            "source": "READ_BACK",
+            "outcome": "FOUND",
+            "providerRefundId": "fake-refund-1",
+            "status": "SUCCEEDED",
+            "providerPaymentId": "fake-pay-1",
+            "amountKopecks": 490000,
+            "currency": "RUB",
+            "refundRef": "refund:rr-0001"
+          },
+          "expect": {
+            "state": "SUCCEEDED",
+            "effects": [
+              "REVOKE_ACCESS",
+              "PURGE_ENVELOPE"
+            ]
+          }
+        }
+      ],
+      "totals": {
+        "REVOKE_ACCESS": 1,
+        "ISSUE_REFUND_RECEIPT": 0
+      }
+    }
+  ]
+}

@@ -1,0 +1,648 @@
+{
+  "schema": "flexperiment.native-fiscal-fixtures/1",
+  "contract": "flexperiment.native-payment-contract/1",
+  "begin": [
+    {
+      "mode": "MERCHANT",
+      "expect": {
+        "state": "SUBMITTING",
+        "effects": [
+          "FISCAL_SUBMIT"
+        ]
+      }
+    },
+    {
+      "mode": "PROVIDER",
+      "expect": {
+        "state": "NOT_REQUIRED",
+        "effects": []
+      }
+    }
+  ],
+  "receiptMethod": [
+    {
+      "kind": "ONLINE_COURSE",
+      "policy": "FULL_PAYMENT",
+      "expect": "FULL_PAYMENT"
+    },
+    {
+      "kind": "LAB",
+      "policy": "FULL_PREPAYMENT",
+      "expect": "FULL_PREPAYMENT"
+    },
+    {
+      "kind": "LAB",
+      "policy": "FULL_PAYMENT",
+      "error": "FISCAL_POLICY_LAB_REQUIRES_FULL_PREPAYMENT"
+    },
+    {
+      "kind": "ONLINE_COURSE",
+      "policy": "FULL_PREPAYMENT",
+      "error": "FISCAL_POLICY_COURSE_REQUIRES_FULL_PAYMENT"
+    }
+  ],
+  "serviceRenderedFact": {
+    "schema": "flexperiment.service-rendered/1",
+    "orderLineId": "line-lab-0001",
+    "occurrenceRef": "occ-2026-12-05",
+    "renderedAt": "2026-12-05T18:00:00Z",
+    "evidenceRef": "lab-lifecycle:attendance-close:occ-2026-12-05",
+    "recordedBy": "operator:lab"
+  },
+  "finalSettlementAdmission": [
+    {
+      "id": "S01",
+      "input": {
+        "kind": "LAB",
+        "paymentState": "PAID",
+        "paymentReceiptState": "REGISTERED",
+        "refundOpenOrSucceeded": false,
+        "occurrenceCancelled": false,
+        "fact": {
+          "schema": "flexperiment.service-rendered/1",
+          "orderLineId": "line-lab-0001",
+          "occurrenceRef": "occ-2026-12-05",
+          "renderedAt": "2026-12-05T18:00:00Z",
+          "evidenceRef": "lab-lifecycle:attendance-close:occ-2026-12-05",
+          "recordedBy": "operator:lab"
+        },
+        "orderLineId": "line-lab-0001",
+        "occurrenceRef": "occ-2026-12-05",
+        "capabilities": {
+          "finalSettlementWithoutPayment": true,
+          "refundReceipt": true
+        }
+      },
+      "expect": {
+        "admitted": true,
+        "eventRef": "fiscal:FINAL_SETTLEMENT:line-lab-0001",
+        "paymentMethod": "FULL_PAYMENT"
+      }
+    },
+    {
+      "id": "S02",
+      "input": {
+        "kind": "LAB",
+        "paymentState": "PAID",
+        "paymentReceiptState": "REGISTERED",
+        "refundOpenOrSucceeded": false,
+        "occurrenceCancelled": false,
+        "fact": {
+          "schema": "flexperiment.service-rendered/1",
+          "orderLineId": "line-lab-0001",
+          "occurrenceRef": "occ-2026-12-05",
+          "renderedAt": "2026-12-05T18:00:00Z",
+          "evidenceRef": "lab-lifecycle:attendance-close:occ-2026-12-05",
+          "recordedBy": "operator:lab"
+        },
+        "orderLineId": "line-lab-0001",
+        "occurrenceRef": "occ-2026-12-05",
+        "capabilities": {
+          "finalSettlementWithoutPayment": false,
+          "refundReceipt": true
+        }
+      },
+      "expect": {
+        "admitted": false,
+        "code": "FISCAL_ADAPTER_CANNOT_SETTLE_WITHOUT_PAYMENT"
+      }
+    },
+    {
+      "id": "S03",
+      "input": {
+        "kind": "LAB",
+        "paymentState": "PAID",
+        "paymentReceiptState": "REGISTERED",
+        "refundOpenOrSucceeded": false,
+        "occurrenceCancelled": false,
+        "fact": null,
+        "orderLineId": "line-lab-0001",
+        "occurrenceRef": "occ-2026-12-05",
+        "capabilities": {
+          "finalSettlementWithoutPayment": true,
+          "refundReceipt": true
+        }
+      },
+      "expect": {
+        "admitted": false,
+        "code": "SERVICE_RENDERED_FACT_REQUIRED"
+      }
+    },
+    {
+      "id": "S04",
+      "input": {
+        "kind": "LAB",
+        "paymentState": "PAID",
+        "paymentReceiptState": "REGISTERED",
+        "refundOpenOrSucceeded": false,
+        "occurrenceCancelled": false,
+        "fact": {
+          "schema": "flexperiment.service-rendered/1",
+          "orderLineId": "line-lab-OTHER",
+          "occurrenceRef": "occ-2026-12-05",
+          "renderedAt": "2026-12-05T18:00:00Z",
+          "evidenceRef": "lab-lifecycle:attendance-close:occ-2026-12-05",
+          "recordedBy": "operator:lab"
+        },
+        "orderLineId": "line-lab-0001",
+        "occurrenceRef": "occ-2026-12-05",
+        "capabilities": {
+          "finalSettlementWithoutPayment": true,
+          "refundReceipt": true
+        }
+      },
+      "expect": {
+        "admitted": false,
+        "code": "SERVICE_RENDERED_FACT_REQUIRED"
+      }
+    },
+    {
+      "id": "S05",
+      "input": {
+        "kind": "LAB",
+        "paymentState": "PAID",
+        "paymentReceiptState": "REGISTERED",
+        "refundOpenOrSucceeded": false,
+        "occurrenceCancelled": true,
+        "fact": {
+          "schema": "flexperiment.service-rendered/1",
+          "orderLineId": "line-lab-0001",
+          "occurrenceRef": "occ-2026-12-05",
+          "renderedAt": "2026-12-05T18:00:00Z",
+          "evidenceRef": "lab-lifecycle:attendance-close:occ-2026-12-05",
+          "recordedBy": "operator:lab"
+        },
+        "orderLineId": "line-lab-0001",
+        "occurrenceRef": "occ-2026-12-05",
+        "capabilities": {
+          "finalSettlementWithoutPayment": true,
+          "refundReceipt": true
+        }
+      },
+      "expect": {
+        "admitted": false,
+        "code": "OCCURRENCE_CANCELLED"
+      }
+    },
+    {
+      "id": "S06",
+      "input": {
+        "kind": "LAB",
+        "paymentState": "PAID",
+        "paymentReceiptState": "SUBMIT_UNKNOWN",
+        "refundOpenOrSucceeded": false,
+        "occurrenceCancelled": false,
+        "fact": {
+          "schema": "flexperiment.service-rendered/1",
+          "orderLineId": "line-lab-0001",
+          "occurrenceRef": "occ-2026-12-05",
+          "renderedAt": "2026-12-05T18:00:00Z",
+          "evidenceRef": "lab-lifecycle:attendance-close:occ-2026-12-05",
+          "recordedBy": "operator:lab"
+        },
+        "orderLineId": "line-lab-0001",
+        "occurrenceRef": "occ-2026-12-05",
+        "capabilities": {
+          "finalSettlementWithoutPayment": true,
+          "refundReceipt": true
+        }
+      },
+      "expect": {
+        "admitted": false,
+        "code": "PREPAYMENT_RECEIPT_NOT_REGISTERED"
+      }
+    },
+    {
+      "id": "S07",
+      "input": {
+        "kind": "LAB",
+        "paymentState": "PAID",
+        "paymentReceiptState": "REGISTERED",
+        "refundOpenOrSucceeded": true,
+        "occurrenceCancelled": false,
+        "fact": {
+          "schema": "flexperiment.service-rendered/1",
+          "orderLineId": "line-lab-0001",
+          "occurrenceRef": "occ-2026-12-05",
+          "renderedAt": "2026-12-05T18:00:00Z",
+          "evidenceRef": "lab-lifecycle:attendance-close:occ-2026-12-05",
+          "recordedBy": "operator:lab"
+        },
+        "orderLineId": "line-lab-0001",
+        "occurrenceRef": "occ-2026-12-05",
+        "capabilities": {
+          "finalSettlementWithoutPayment": true,
+          "refundReceipt": true
+        }
+      },
+      "expect": {
+        "admitted": false,
+        "code": "REFUND_OPEN_OR_SUCCEEDED"
+      }
+    },
+    {
+      "id": "S08",
+      "input": {
+        "kind": "LAB",
+        "paymentState": "REVIEW_REQUIRED",
+        "paymentReceiptState": "REGISTERED",
+        "refundOpenOrSucceeded": false,
+        "occurrenceCancelled": false,
+        "fact": {
+          "schema": "flexperiment.service-rendered/1",
+          "orderLineId": "line-lab-0001",
+          "occurrenceRef": "occ-2026-12-05",
+          "renderedAt": "2026-12-05T18:00:00Z",
+          "evidenceRef": "lab-lifecycle:attendance-close:occ-2026-12-05",
+          "recordedBy": "operator:lab"
+        },
+        "orderLineId": "line-lab-0001",
+        "occurrenceRef": "occ-2026-12-05",
+        "capabilities": {
+          "finalSettlementWithoutPayment": true,
+          "refundReceipt": true
+        }
+      },
+      "expect": {
+        "admitted": false,
+        "code": "PAYMENT_NOT_PAID"
+      }
+    },
+    {
+      "id": "S09",
+      "input": {
+        "kind": "ONLINE_COURSE",
+        "paymentState": "PAID",
+        "paymentReceiptState": "REGISTERED",
+        "refundOpenOrSucceeded": false,
+        "occurrenceCancelled": false,
+        "fact": {
+          "schema": "flexperiment.service-rendered/1",
+          "orderLineId": "line-lab-0001",
+          "occurrenceRef": "occ-2026-12-05",
+          "renderedAt": "2026-12-05T18:00:00Z",
+          "evidenceRef": "lab-lifecycle:attendance-close:occ-2026-12-05",
+          "recordedBy": "operator:lab"
+        },
+        "orderLineId": "line-lab-0001",
+        "occurrenceRef": "occ-2026-12-05",
+        "capabilities": {
+          "finalSettlementWithoutPayment": true,
+          "refundReceipt": true
+        }
+      },
+      "expect": {
+        "admitted": false,
+        "code": "FINAL_SETTLEMENT_LAB_ONLY"
+      }
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "F01",
+      "title": "Course FULL_PAYMENT receipt registered",
+      "binding": {
+        "eventRef": "fiscal:PAYMENT_RECEIPT:line-course-0001",
+        "amountKopecks": 490000,
+        "paymentMethod": "FULL_PAYMENT"
+      },
+      "steps": [
+        {
+          "observe": {
+            "source": "SUBMIT_RESPONSE",
+            "outcome": "ACCEPTED",
+            "providerReceiptId": "fake-receipt-1"
+          },
+          "expect": {
+            "state": "PENDING",
+            "effects": [
+              "FISCAL_READ_BACK"
+            ]
+          }
+        },
+        {
+          "observe": {
+            "source": "READ_BACK",
+            "outcome": "FOUND",
+            "providerReceiptId": "fake-receipt-1",
+            "status": "REGISTERED",
+            "eventRef": "fiscal:PAYMENT_RECEIPT:line-course-0001",
+            "amountKopecks": 490000,
+            "paymentMethod": "FULL_PAYMENT"
+          },
+          "expect": {
+            "state": "REGISTERED",
+            "effects": []
+          }
+        },
+        {
+          "observe": {
+            "source": "READ_BACK",
+            "outcome": "FOUND",
+            "providerReceiptId": "fake-receipt-1",
+            "status": "REGISTERED",
+            "eventRef": "fiscal:PAYMENT_RECEIPT:line-course-0001",
+            "amountKopecks": 490000,
+            "paymentMethod": "FULL_PAYMENT"
+          },
+          "expect": {
+            "state": "REGISTERED",
+            "effects": []
+          }
+        }
+      ]
+    },
+    {
+      "id": "F02",
+      "title": "Receipt submit answer lost, provider registered it",
+      "binding": {
+        "eventRef": "fiscal:PAYMENT_RECEIPT:line-course-0001",
+        "amountKopecks": 490000,
+        "paymentMethod": "FULL_PAYMENT"
+      },
+      "steps": [
+        {
+          "observe": {
+            "source": "SUBMIT_RESPONSE",
+            "outcome": "LOST"
+          },
+          "expect": {
+            "state": "SUBMIT_UNKNOWN",
+            "effects": [
+              "FISCAL_READ_BACK"
+            ]
+          }
+        },
+        {
+          "observe": {
+            "source": "READ_BACK",
+            "outcome": "FOUND",
+            "providerReceiptId": "fake-receipt-1",
+            "status": "REGISTERED",
+            "eventRef": "fiscal:PAYMENT_RECEIPT:line-course-0001",
+            "amountKopecks": 490000,
+            "paymentMethod": "FULL_PAYMENT"
+          },
+          "expect": {
+            "state": "REGISTERED",
+            "effects": []
+          }
+        }
+      ]
+    },
+    {
+      "id": "F03",
+      "title": "Receipt submit lost, nothing at provider: replay same key",
+      "binding": {
+        "eventRef": "fiscal:PAYMENT_RECEIPT:line-course-0001",
+        "amountKopecks": 490000,
+        "paymentMethod": "FULL_PAYMENT"
+      },
+      "steps": [
+        {
+          "observe": {
+            "source": "SUBMIT_RESPONSE",
+            "outcome": "LOST"
+          },
+          "expect": {
+            "state": "SUBMIT_UNKNOWN",
+            "effects": [
+              "FISCAL_READ_BACK"
+            ]
+          }
+        },
+        {
+          "observe": {
+            "source": "READ_BACK",
+            "outcome": "NOT_FOUND"
+          },
+          "expect": {
+            "state": "SUBMIT_UNKNOWN",
+            "effects": [
+              "REPLAY_FISCAL_SAME_KEY"
+            ]
+          }
+        },
+        {
+          "observe": {
+            "source": "SUBMIT_RESPONSE",
+            "outcome": "ACCEPTED",
+            "providerReceiptId": "fake-receipt-1"
+          },
+          "expect": {
+            "state": "PENDING",
+            "effects": [
+              "FISCAL_READ_BACK"
+            ]
+          }
+        },
+        {
+          "observe": {
+            "source": "READ_BACK",
+            "outcome": "FOUND",
+            "providerReceiptId": "fake-receipt-1",
+            "status": "REGISTERED",
+            "eventRef": "fiscal:PAYMENT_RECEIPT:line-course-0001",
+            "amountKopecks": 490000,
+            "paymentMethod": "FULL_PAYMENT"
+          },
+          "expect": {
+            "state": "REGISTERED",
+            "effects": []
+          }
+        }
+      ],
+      "totals": {
+        "REPLAY_FISCAL_SAME_KEY": 1
+      }
+    },
+    {
+      "id": "F04",
+      "title": "LAB FULL_PREPAYMENT receipt registered",
+      "binding": {
+        "eventRef": "fiscal:PAYMENT_RECEIPT:line-lab-0001",
+        "amountKopecks": 350000,
+        "paymentMethod": "FULL_PREPAYMENT"
+      },
+      "steps": [
+        {
+          "observe": {
+            "source": "SUBMIT_RESPONSE",
+            "outcome": "ACCEPTED",
+            "providerReceiptId": "fake-receipt-1"
+          },
+          "expect": {
+            "state": "PENDING",
+            "effects": [
+              "FISCAL_READ_BACK"
+            ]
+          }
+        },
+        {
+          "observe": {
+            "source": "READ_BACK",
+            "outcome": "FOUND",
+            "providerReceiptId": "fake-receipt-1",
+            "status": "REGISTERED",
+            "eventRef": "fiscal:PAYMENT_RECEIPT:line-lab-0001",
+            "amountKopecks": 350000,
+            "paymentMethod": "FULL_PREPAYMENT"
+          },
+          "expect": {
+            "state": "REGISTERED",
+            "effects": []
+          }
+        }
+      ]
+    },
+    {
+      "id": "F05",
+      "title": "LAB FINAL_SETTLEMENT after SERVICE_RENDERED, no new payment",
+      "binding": {
+        "eventRef": "fiscal:FINAL_SETTLEMENT:line-lab-0001",
+        "amountKopecks": 350000,
+        "paymentMethod": "FULL_PAYMENT"
+      },
+      "steps": [
+        {
+          "observe": {
+            "source": "SUBMIT_RESPONSE",
+            "outcome": "ACCEPTED",
+            "providerReceiptId": "fake-receipt-1"
+          },
+          "expect": {
+            "state": "PENDING",
+            "effects": [
+              "FISCAL_READ_BACK"
+            ]
+          }
+        },
+        {
+          "observe": {
+            "source": "READ_BACK",
+            "outcome": "FOUND",
+            "providerReceiptId": "fake-receipt-1",
+            "status": "REGISTERED",
+            "eventRef": "fiscal:FINAL_SETTLEMENT:line-lab-0001",
+            "amountKopecks": 350000,
+            "paymentMethod": "FULL_PAYMENT"
+          },
+          "expect": {
+            "state": "REGISTERED",
+            "effects": []
+          }
+        }
+      ]
+    },
+    {
+      "id": "F06",
+      "title": "Rejected receipt alerts; no financial effect exists in the fiscal table",
+      "binding": {
+        "eventRef": "fiscal:PAYMENT_RECEIPT:line-course-0001",
+        "amountKopecks": 490000,
+        "paymentMethod": "FULL_PAYMENT"
+      },
+      "steps": [
+        {
+          "observe": {
+            "source": "SUBMIT_RESPONSE",
+            "outcome": "REJECTED",
+            "code": "OFD_REJECTED"
+          },
+          "expect": {
+            "state": "REJECTED",
+            "effects": [
+              "ALERT"
+            ],
+            "reason": "OFD_REJECTED"
+          }
+        }
+      ]
+    },
+    {
+      "id": "F07",
+      "title": "Receipt registered with a different payment method: review",
+      "binding": {
+        "eventRef": "fiscal:FINAL_SETTLEMENT:line-lab-0001",
+        "amountKopecks": 350000,
+        "paymentMethod": "FULL_PAYMENT"
+      },
+      "steps": [
+        {
+          "observe": {
+            "source": "SUBMIT_RESPONSE",
+            "outcome": "ACCEPTED",
+            "providerReceiptId": "fake-receipt-1"
+          },
+          "expect": {
+            "state": "PENDING",
+            "effects": [
+              "FISCAL_READ_BACK"
+            ]
+          }
+        },
+        {
+          "observe": {
+            "source": "READ_BACK",
+            "outcome": "FOUND",
+            "providerReceiptId": "fake-receipt-1",
+            "status": "REGISTERED",
+            "eventRef": "fiscal:FINAL_SETTLEMENT:line-lab-0001",
+            "amountKopecks": 350000,
+            "paymentMethod": "FULL_PREPAYMENT"
+          },
+          "expect": {
+            "state": "REVIEW_REQUIRED",
+            "effects": [
+              "ALERT"
+            ],
+            "reason": "FISCAL_BINDING_MISMATCH"
+          }
+        }
+      ]
+    },
+    {
+      "id": "F08",
+      "title": "Late registration after rejection: review",
+      "binding": {
+        "eventRef": "fiscal:PAYMENT_RECEIPT:line-course-0001",
+        "amountKopecks": 490000,
+        "paymentMethod": "FULL_PAYMENT"
+      },
+      "steps": [
+        {
+          "observe": {
+            "source": "SUBMIT_RESPONSE",
+            "outcome": "REJECTED",
+            "code": "OFD_REJECTED"
+          },
+          "expect": {
+            "state": "REJECTED",
+            "effects": [
+              "ALERT"
+            ],
+            "reason": "OFD_REJECTED"
+          }
+        },
+        {
+          "observe": {
+            "source": "READ_BACK",
+            "outcome": "FOUND",
+            "providerReceiptId": "fake-receipt-1",
+            "status": "REGISTERED",
+            "eventRef": "fiscal:PAYMENT_RECEIPT:line-course-0001",
+            "amountKopecks": 490000,
+            "paymentMethod": "FULL_PAYMENT"
+          },
+          "expect": {
+            "state": "REVIEW_REQUIRED",
+            "effects": [
+              "ALERT"
+            ],
+            "reason": "LATE_REGISTRATION_AFTER_REJECTION"
+          }
+        }
+      ]
+    }
+  ]
+}
