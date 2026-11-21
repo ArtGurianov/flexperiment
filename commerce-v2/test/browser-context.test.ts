@@ -10,6 +10,8 @@ import {
   RefrefArrivalExchange, type ArrivalClaimInput, type ArrivalClaimOutcome, type ArrivalExchange, type ContextCloseOutcome,
 } from "../src/refref-arrival-exchange";
 import { stageALegalManifestJson, stageBLegalManifestJson } from "./fixtures/legal";
+import { startLabGuest } from "../src/lab-tickets";
+import { confirmLabBuyer } from "./fixtures/lab-purchase";
 import { openTestStorefront, qualifyTestFiscalPolicies, testCheckoutConfig } from "./fixtures/sales";
 
 // ART-378 (B2): storefront arrival endpoints, first-party context lifecycle, 30-minute exchange and
@@ -106,7 +108,7 @@ const frozenRequest = (key: string) => (JSON.parse((db.prepare("SELECT resolutio
 
 const addLab = () => {
   db.prepare(`INSERT INTO legal_releases(id,storefront,version,manifest_json,effective_at,active)
-    VALUES ('lab-legal','LAB','lab-stage-a-v1',?,'2026-09-30T00:00:00Z',1)`).run(stageALegalManifestJson);
+    VALUES ('lab-legal','LAB','lab-stage-b-v1',?,'2026-09-30T00:00:00Z',1)`).run(stageBLegalManifestJson);
   db.prepare("INSERT INTO cities(id,slug,title) VALUES ('city','nsk','Новосибирск')").run();
   db.prepare(`INSERT INTO lab_occurrences(id,occurrence_ref,city_id,title,starts_at,ends_at,timezone,capacity,venue_status,venue_name,venue_address)
     VALUES ('occurrence','lab:november','city','LAB в ноябре','2026-11-01T09:00:00Z','2026-11-01T17:00:00Z','Asia/Novosibirsk',20,'CONFIRMED','Студия','Красный проспект, 1')`).run();
@@ -125,6 +127,7 @@ beforeEach(() => {
   alerts = [];
   rail = new MockPaymentRail();
   for (const id of ["A", "B"]) db.prepare("INSERT INTO customers(id,email_normalized) VALUES (?,?)").run(id, `${id.toLowerCase()}@example.com`);
+  for (const id of ["A", "B"]) confirmLabBuyer(db, id); // FLEX-60: a LAB purchase needs a confirmed account.
   db.prepare(`INSERT INTO legal_releases(id,storefront,version,manifest_json,effective_at,active)
     VALUES ('legal','COURSES','stage-a-v1',?,'2026-09-30T00:00:00Z',1)`).run(stageALegalManifestJson);
   db.prepare("INSERT INTO products(id,product_ref,kind,access_model,course_ref) VALUES ('product','course:one','ONLINE_COURSE','PAID','course-one')").run();
@@ -529,8 +532,8 @@ describe("one context per storefront origin", () => {
   });
 });
 
-describe("LAB guest Buy (ART-384 guest checkout)", () => {
-  it("freezes the guest's LAB context, origin and delivery state; a repeat on the order sends what it froze", async () => {
+describe("LAB guest Buy (ART-384 guest checkout, closed by FLEX-60)", () => {
+  it("refuses guest start and a guest Buy before any context exchange, resolution or hold", async () => {
     db.prepare("INSERT INTO legal_releases(id,storefront,version,manifest_json,effective_at,active) VALUES ('lab-b','LAB','lab-b',?,?,1)")
       .run(stageBLegalManifestJson, T0.toISOString());
     db.prepare("INSERT INTO cities(id,slug,title) VALUES ('city','nsk','Новосибирск')").run();
@@ -552,22 +555,15 @@ describe("LAB guest Buy (ART-384 guest checkout)", () => {
       "content-type": "application/json", "idempotency-key": key, authorization: `Bearer ${token}` });
     const started = await app.request("/v1/lab/guest/start", { method: "POST", headers: guestHeaders("start"),
       body: JSON.stringify({ email: "guest@example.com", accessToken: token }) });
-    expect(started.status).toBe(201);
-    const preview = () => app.request("/v1/checkout/preview", { method: "POST", headers: guestHeaders("guest-preview"),
+    expect(started.status).toBe(403);
+    // A capability issued before the closure still buys nothing new.
+    startLabGuest(db, { email: "guest@example.com", accessToken: token }, T0.toISOString());
+    const claims = exchange.claims.length;
+    const preview = await app.request("/v1/checkout/preview", { method: "POST", headers: guestHeaders("guest-preview"),
       body: JSON.stringify({ offerRef: "lab:one" }) });
-    expect((await preview()).status).toBe(200);
-    const request = (JSON.parse((db.prepare("SELECT resolution_request_json FROM checkout_quotes").get() as { resolution_request_json: string })
-      .resolution_request_json) as PaymentResolveInput).request;
-    expect(request).toMatchObject({ storefrontOrigin: "http://localhost:3000", browserContextId: browser.context("LAB"),
-      deliveryDegraded: { degraded: true, reason: "TIMEOUT" } });
-    expect(JSON.stringify(request)).not.toContain("guest@example.com");
-    exchange.script.length = 0;
-    advance(3_000);
-    await browser.get("/v1/lab/catalogue");
-    await tasks.drain();
-    expect(arrivals()[0]).toMatchObject({ state: "CONFIRMED" });
-    expect((await preview()).status).toBe(200);
-    expect(db.prepare("SELECT COUNT(*) AS n FROM checkout_quotes").get()).toEqual({ n: 1 });
+    expect(preview.status).toBe(403); expect(await preview.json()).toEqual({ code: "LAB_ACCOUNT_CONFIRMATION_REQUIRED" });
+    expect(exchange.claims).toHaveLength(claims);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM checkout_quotes").get()).toEqual({ n: 0 });
   });
 });
 

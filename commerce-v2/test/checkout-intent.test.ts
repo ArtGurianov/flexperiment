@@ -15,7 +15,8 @@ import {
 } from "../src/checkout";
 import { applyV2Migration, migrateV2 } from "../src/db";
 import { saveMerchantPromotion } from "../src/promotions";
-import { stageALegalManifestJson } from "./fixtures/legal";
+import { stageALegalManifestJson, stageBLegalManifestJson } from "./fixtures/legal";
+import { confirmAllLabBuyers, labAcceptanceIfActive } from "./fixtures/lab-purchase";
 import { openTestStorefront, qualifyTestFiscalPolicies, setTestStorefronts, testCheckoutConfig } from "./fixtures/sales";
 
 // ART-373: the durable purchase intent and payment-safe replay (design 2026-10-18 §2).
@@ -29,7 +30,7 @@ const customer = { customerId: "customer", customerEmail: "student@example.com" 
 const preview = (key: string, extra: Partial<Parameters<typeof prepareCheckout>[3]> = {}, now = T0) =>
   prepareCheckout(db, rail, testCheckoutConfig, { ...customer, offerRef: "course:one", previewIdempotencyKey: key, ...extra }, now);
 const confirm = (quoteId: string, key: string, now = at(1), who = customer) =>
-  confirmCheckout(db, rail, testCheckoutConfig, { ...who, quoteId, idempotencyKey: key }, now);
+  confirmCheckout(db, rail, testCheckoutConfig, { ...who, quoteId, idempotencyKey: key, labAcceptance: labAcceptanceIfActive(db) }, now);
 const quoted = async (result: Awaited<ReturnType<typeof prepareCheckout>>) => {
   if (result.state !== "PRICE_REVIEW_REQUIRED") throw new Error(`expected a quote, got ${result.state}`);
   return result;
@@ -41,7 +42,7 @@ const count = (table: string) => (db.prepare(`SELECT COUNT(*) AS n FROM ${table}
 
 const addLab = (startsAt = "2026-11-01T09:00:00Z") => {
   db.prepare(`INSERT INTO legal_releases(id,storefront,version,manifest_json,effective_at,active)
-    VALUES ('lab-legal','LAB','lab-stage-a-v1',?,'2026-09-30T00:00:00Z',1)`).run(stageALegalManifestJson);
+    VALUES ('lab-legal','LAB','lab-stage-b-v1',?,'2026-09-30T00:00:00Z',1)`).run(stageBLegalManifestJson);
   db.prepare("INSERT INTO cities(id,slug,title) VALUES ('city','nsk','Новосибирск')").run();
   db.prepare(`INSERT INTO lab_occurrences(id,occurrence_ref,city_id,title,starts_at,ends_at,timezone,capacity,venue_status,venue_name,venue_address)
     VALUES ('occurrence','lab:november','city','LAB в ноябре',?,'2026-11-01T17:00:00Z','Asia/Novosibirsk',20,'CONFIRMED','Студия','Красный проспект, 1')`).run(startsAt);
@@ -49,6 +50,7 @@ const addLab = (startsAt = "2026-11-01T09:00:00Z") => {
   db.prepare("INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode) VALUES ('lab-offer','lab:november','lab-product',250000,'PUBLIC')").run();
   qualifyTestFiscalPolicies(db);
   openTestStorefront(db, "LAB");
+  confirmAllLabBuyers(db); // FLEX-60: a LAB purchase needs a confirmed account.
 };
 
 function setupDatabase(beforeVersion?: string) {
@@ -432,7 +434,7 @@ describe("issued quote guarantee", () => {
       { ...customer, offerRef: "course:one", previewIdempotencyKey: "promo", checkoutCode: "FX-LAUNCH" }, T0));
     db.prepare("UPDATE merchant_promotion SET discount_value=3000").run();
     db.prepare("UPDATE offers SET price_kopecks=12000").run();
-    expect(await confirmCheckout(db, rail, config, { ...customer, quoteId: quote.quoteId, idempotencyKey: "pay" }, at(1)))
+    expect(await confirmCheckout(db, rail, config, { ...customer, quoteId: quote.quoteId, idempotencyKey: "pay", labAcceptance: labAcceptanceIfActive(db) }, at(1)))
       .toMatchObject({ state: "PAID" });
     expect(db.prepare("SELECT total_kopecks FROM orders").get()).toEqual({ total_kopecks: 9_000 });
   });
@@ -503,7 +505,7 @@ describe("HTTP", () => {
   it("refuses the second last-seat preview with HTTP 409 while the held quote remains confirmable", async () => {
     addLab();
     db.exec("UPDATE lab_occurrences SET capacity=1");
-    db.prepare("INSERT INTO customers(id,email_normalized) VALUES ('second','second@example.com')").run();
+    db.prepare("INSERT INTO customers(id,email_normalized) VALUES ('second','second@example.com')").run(); confirmAllLabBuyers(db);
     const one = await (await post("/v1/checkout/preview", "seat-one", { offerRef: "lab:november" })).json() as { quoteId: string };
     const create = vi.spyOn(rail, "create");
     for (let repeat = 0; repeat < 2; repeat++) {
@@ -512,7 +514,7 @@ describe("HTTP", () => {
       expect(refused.headers.get("cache-control")).toBe("no-store");
       expect(await refused.json()).toEqual({ code: "LAB_OCCURRENCE_SOLD_OUT" });
     }
-    expect((await post("/v1/checkout", "pay-one", { quoteId: one.quoteId })).status).toBe(201);
+    expect((await post("/v1/checkout", "pay-one", { quoteId: one.quoteId, labAcceptance: labAcceptanceIfActive(db) })).status).toBe(201);
     expect(create).toHaveBeenCalledTimes(1);
     expect(count("orders")).toBe(1);
     expect(count("checkout_attempts")).toBe(1);
@@ -664,7 +666,7 @@ describe("review regressions", () => {
     const q = await quoted(await prepareCheckout(db, real, testCheckoutConfig,
       { ...customer, offerRef: "course:one", previewIdempotencyKey: "deadline", handoffToken: "h".repeat(32) }, T0));
     expect(q.expiresAt).toBe(at(5));
-    await expect(confirmCheckout(db, real, testCheckoutConfig, { ...customer, quoteId: q.quoteId, idempotencyKey: "pay" }, at(6)))
+    await expect(confirmCheckout(db, real, testCheckoutConfig, { ...customer, quoteId: q.quoteId, idempotencyKey: "pay", labAcceptance: labAcceptanceIfActive(db) }, at(6)))
       .rejects.toThrow("CHECKOUT_QUOTE_EXPIRED");
     expect(count("orders")).toBe(0);
     expect(http).toHaveBeenCalledTimes(1);
@@ -690,7 +692,7 @@ describe("review regressions", () => {
       ? Response.json({ error: { code: "ORDER_NOT_FOUND" } }, { status: 404 })
       : Response.json({ error: { code: "REFERRAL_RESOLUTION_NOT_USABLE" } }, { status: 422 }));
     const real = new RefrefPaymentRail({ apiBaseUrl: "https://synthetic.test", apiKey: "test", merchantId: "test", fetch: http });
-    await expect(confirmCheckout(db, real, testCheckoutConfig, { ...customer, quoteId: q.quoteId, idempotencyKey: "pay" }, at(1)))
+    await expect(confirmCheckout(db, real, testCheckoutConfig, { ...customer, quoteId: q.quoteId, idempotencyKey: "pay", labAcceptance: labAcceptanceIfActive(db) }, at(1)))
       .rejects.toThrow("REFREF_REFERRAL_RESOLUTION_NOT_USABLE");
     expect(intent().state).toBe("DECLINED");
     expect(db.prepare("SELECT state FROM orders").get()).toEqual({ state: "CANCELLED" });
@@ -757,7 +759,7 @@ describe("ART-200 merchant-local LAB holds", () => {
     addLab(); db.exec("UPDATE lab_occurrences SET capacity=1");
     const old = await quoted(await lab("old"));
     expect(inventory(at(15))).toMatchObject({ held: 0, available: 1 });
-    db.prepare("INSERT INTO customers(id,email_normalized) VALUES ('second','second@example.com')").run();
+    db.prepare("INSERT INTO customers(id,email_normalized) VALUES ('second','second@example.com')").run(); confirmAllLabBuyers(db);
     await quoted(await lab("second", at(15), { customerId: "second", customerEmail: "second@example.com" }));
     await expect(confirm(old.quoteId, "old-pay", at(16))).rejects.toThrow("CHECKOUT_QUOTE_EXPIRED");
     expect(count("orders")).toBe(0);
@@ -794,7 +796,7 @@ describe("ART-200 merchant-local LAB holds", () => {
     expect(replacement.expiresAt).toBe(at(15));
     expect(inventory(at(14))).toMatchObject({ held: 1, available: 0 });
     expect(inventory(at(15))).toMatchObject({ held: 0, available: 1 });
-    db.prepare("INSERT INTO customers(id,email_normalized) VALUES ('second','second@example.com')").run();
+    db.prepare("INSERT INTO customers(id,email_normalized) VALUES ('second','second@example.com')").run(); confirmAllLabBuyers(db);
     const second = await quoted(await lab("second", at(15), { customerId: "second", customerEmail: "second@example.com" }));
     expect(second.expiresAt).toBe(at(30));
     await expect(confirm(original.quoteId, "old-pay", at(15))).rejects.toThrow("CHECKOUT_INTENT_REPLACED");
@@ -812,7 +814,7 @@ describe("ART-200 merchant-local LAB holds", () => {
     expect(replacement.expiresAt).toBe(at(15));
     expect(await confirm(replacement.quoteId, "pay", at(14))).toMatchObject({ state: "CREATE_UNKNOWN" });
     expect(inventory(at(16))).toMatchObject({ held: 0, pending: 1, available: 0 });
-    db.prepare("INSERT INTO customers(id,email_normalized) VALUES ('second','second@example.com')").run();
+    db.prepare("INSERT INTO customers(id,email_normalized) VALUES ('second','second@example.com')").run(); confirmAllLabBuyers(db);
     await expect(lab("second", at(16), { customerId: "second", customerEmail: "second@example.com" }))
       .rejects.toThrow("LAB_OCCURRENCE_SOLD_OUT");
     expect(await confirm(replacement.quoteId, "retry", at(16))).toMatchObject({ state: "PAID" });
@@ -874,7 +876,7 @@ describe("ART-200 merchant-local LAB holds", () => {
       for (const version of readdirSync(directory).filter(name => name.endsWith(".sql") && name < "0033").sort()) {
         applyV2Migration(legacy, version, readFileSync(join(directory, version), "utf8"));
       }
-      for (const table of ["customers", "legal_releases", "cities", "lab_occurrences", "products", "offers"]) {
+      for (const table of ['"user"', "customers", "legal_releases", "cities", "lab_occurrences", "products", "offers"]) {
         for (const row of db.prepare(`SELECT * FROM ${table}`).all() as Record<string, unknown>[]) {
           const columns = Object.keys(row);
           legacy.prepare(`INSERT INTO ${table} (${columns.join(",")}) VALUES (${columns.map(() => "?").join(",")})`).run(...Object.values(row));
@@ -904,7 +906,7 @@ describe("ART-200 merchant-local LAB holds", () => {
 
   it("serializes two independent SQLite processes quoting the last seat", async () => {
     addLab(); db.exec("UPDATE lab_occurrences SET capacity=1");
-    db.prepare("INSERT INTO customers(id,email_normalized) VALUES ('second','second@example.com')").run();
+    db.prepare("INSERT INTO customers(id,email_normalized) VALUES ('second','second@example.com')").run(); confirmAllLabBuyers(db);
     const directory = mkdtempSync(join(tmpdir(), "lab-hold-race-"));
     const filename = join(directory, "commerce.sqlite");
     const children: ReturnType<typeof fork>[] = [];

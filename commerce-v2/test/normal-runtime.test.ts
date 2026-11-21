@@ -107,11 +107,13 @@ describe("ART-162 / ART-179 normal production server, payment disabled", () => {
   });
   it("keeps anonymous LAB creation/mail closed when the real server has no trusted socket metadata", async () => {
     await boot();
-    for (const path of ["/v1/lab/guest/start", "/v1/lab/guest/recover"]) {
-      const response = await request(path, post({ email: "guest@example.test", accessToken: "a".repeat(43) },
-        { origin: "https://lab.synthetic.invalid", "x-real-ip": "192.0.2.1", "x-forwarded-for": "192.0.2.2" }));
-      expect(response.status).toBe(503); expect(await response.json()).toEqual({ code: "LAB_SOURCE_UNAVAILABLE" });
-    }
+    const send = (path: string) => request(path, post({ email: "guest@example.test", accessToken: "a".repeat(43) },
+      { origin: "https://lab.synthetic.invalid", "x-real-ip": "192.0.2.1", "x-forwarded-for": "192.0.2.2" }));
+    const recover = await send("/v1/lab/guest/recover");
+    expect(recover.status).toBe(503); expect(await recover.json()).toEqual({ code: "LAB_SOURCE_UNAVAILABLE" });
+    // FLEX-60: guest creation is closed outright, before any source accounting.
+    const start = await send("/v1/lab/guest/start");
+    expect(start.status).toBe(403); expect(await start.json()).toEqual({ code: "LAB_ACCOUNT_CONFIRMATION_REQUIRED" });
     expect(db().prepare("SELECT COUNT(*) AS n FROM lab_guest_access").get()).toEqual({ n: 0 });
   });
   it("rejects a broad LAB proxy configuration in the real server composition", async () => {

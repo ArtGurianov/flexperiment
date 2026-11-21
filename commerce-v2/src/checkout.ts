@@ -1,4 +1,5 @@
-import { acceptLabPurchase, issueLabTicket, type LabAcceptance } from "./lab-tickets";
+import { issueLabTicket, type LabAcceptance } from "./lab-tickets";
+import { assertLabPurchaseAuthority, recordLabPurchaseAcceptance } from "./lab-lifecycle";
 import { CheckoutConflictError } from "./checkout-conflict";
 export { CheckoutConflictError } from "./checkout-conflict";
 import { readyImmediateCourseAccess } from "./immediate-course-access";
@@ -837,6 +838,7 @@ export async function prepareCheckout(
     const candidate = offerByRef(db, input.offerRef);
     let inheritedHoldExpiry: string | null = null;
     if (candidate?.kind === "LAB") {
+      assertLabPurchaseAuthority(db, input.customerId, orderPublicId); // FLEX-60: no hold before account confirmation.
       const scope = paymentAdmissionScope(db, input.customerId, candidate.offer_id, orderPublicId);
       assertNoOpenPayment(db, scope);
       // Re-acquiring a replacement must not renew the live reservation's clock.
@@ -1004,6 +1006,7 @@ export async function confirmCheckout(
     if (current.state !== "REVIEW") throw new Error("CHECKOUT_QUOTE_UNAVAILABLE");
     if (current.expires_at! <= now) throw new CheckoutConflictError("CHECKOUT_QUOTE_EXPIRED");
     assertIssuedIntentAdmissible(db, config, current, input.customerEmail, now, "CONFIRM");
+    if (offer.kind === "LAB") assertLabPurchaseAuthority(db, input.customerId, publicId); // FLEX-60, under the order's lock.
     if (offer.kind === "ONLINE_COURSE" && offer.course_ref && customerCanAccessCourse(db, input.customerId, offer.course_ref)) throw new CheckoutConflictError("ALREADY_OWNED");
     if (offer.kind === "COURSE_BUNDLE" && customerCanAccessCourse(db, input.customerId, "__any_future_course__")) throw new CheckoutConflictError("ALREADY_OWNED");
     assertNoOpenPayment(db, admissionScope);
@@ -1031,9 +1034,6 @@ export async function confirmCheckout(
         JSON.stringify({ quoteId: pending.id, legalReleaseVersion: current.releaseVersion, legalManifestSha256: current.manifestSha256,
           receiptEmailSha256: buyerEmailSha256(current.receiptEmail), source: "AUTHENTICATED_CHECKOUT_CONFIRM" }), now);
     }
-    if (offer.kind === "LAB" && db.prepare("SELECT 1 FROM lab_guest_access WHERE order_public_id=?").get(publicId)) {
-      acceptLabPurchase(db, publicId, input.customerId, input.labAcceptance, now);
-    }
     db.prepare(`INSERT INTO orders(id,public_id,customer_id,state,total_kopecks,checkout_snapshot_json,snapshot_hash,legal_release_id,created_at,updated_at)
       VALUES (?,?,?,'PAYMENT_PENDING',?,?,?,?,?,?)`).run(orderId, publicId, input.customerId, pending.final_amount_kopecks, snapshotJson, snapshotHashHex, pending.legal_release_id, now, now);
     db.prepare(`INSERT INTO order_lines(id,order_id,product_id,offer_ref_snapshot,title_snapshot,unit_amount_kopecks,legal_terms_ref,created_at,
@@ -1046,6 +1046,9 @@ export async function confirmCheckout(
       frozenLine.occurrence ? JSON.stringify(frozenLine.occurrence) : null, frozenLine.fiscal.policyId,
       initialAccessEvidence ? JSON.stringify(initialAccessEvidence) : null,
     );
+    if (offer.kind === "LAB") recordLabPurchaseAcceptance(db, { orderId, orderPublicId: publicId, customerId: input.customerId,
+      quoteId: pending.id, legalReleaseId: pending.legal_release_id, acceptance: input.labAcceptance, orderSnapshotHash: snapshotHashHex,
+      occurrenceSnapshotJson: JSON.stringify(frozenLine.occurrence) }, now);
     db.prepare(`INSERT INTO checkout_attempts(id,order_id,idempotency_key,request_payload_json,state,created_at,updated_at)
       VALUES (?,?,?,?,'CREATING',?,?)`).run(attemptId, orderId, input.idempotencyKey, JSON.stringify(railInput), now, now);
     const consumed = db.prepare("UPDATE checkout_quotes SET state='PAYMENT_CREATING',consumed_at=?,updated_at=? WHERE id=? AND state='REVIEW'")
@@ -1094,7 +1097,8 @@ export async function checkout(
   db: Database.Database,
   rail: PaymentRail,
   config: CheckoutPolicyConfig,
-  input: { customerId: string; customerEmail: string; offerRef: string; idempotencyKey: string; scenario?: string; handoffToken?: string; checkoutCode?: string; orderPublicId?: string },
+  input: { customerId: string; customerEmail: string; offerRef: string; idempotencyKey: string; scenario?: string; handoffToken?: string; checkoutCode?: string; orderPublicId?: string;
+    labAcceptance?: LabAcceptance },
   now = new Date().toISOString(),
 ) {
   const prepared = await prepareCheckout(db, rail, config, {
@@ -1113,6 +1117,7 @@ export async function checkout(
     customerEmail: input.customerEmail,
     quoteId: prepared.quoteId,
     idempotencyKey: input.idempotencyKey,
+    labAcceptance: input.labAcceptance,
   }, now);
 }
 

@@ -42,6 +42,11 @@ const REVIEWED_SCHEMA_SHA256 = new Set([
   // 0035: owner storefront-switch observations (no subject data), the quote's opening generation in
   // checkout_quotes, and sales_activation frozen as history; no new identity store. Hashed journal.
   "6ef1be23e4d713fa77e81a1cb0391fcb1292d18634b3d2270751bec6ab58a728",
+  // FLEX-57–62/85 (D; branch number 0036, registry 0040): minimum LAB purchase acceptance, occurrence
+  // cancellation, the authoritative SERVICE_RENDERED fact and the ticket QR generation. Append-only order
+  // evidence: document hashes/versions and choices, no email, IP or free text. Every row hangs off an
+  // order, which already stops erasure (ERASURE_FINANCIAL_REVIEW_REQUIRED); no new erasure target or key.
+  "77c168f56d6689d98e1c6662ab4e563b7a78272b66ddb4bae7f26b397915b35a",
 ]);
 export function assertReviewedRestoreSchema(db: Database.Database) {
   const schema = db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").all();
