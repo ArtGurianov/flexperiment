@@ -36,6 +36,7 @@ export type FreeEnrollmentResult = FreeEnrollment & {
 export type FreeEnrollmentStatus = {
   readonly courseRef: string;
   readonly courseSlug: string;
+  readonly courseTitle: string;
   readonly accessModel: "FREE" | "PAID";
   readonly enrollment: FreeEnrollment | null;
   /** Only a published listed FREE course with lessons can be enrolled now. */
@@ -45,12 +46,12 @@ export type FreeEnrollmentStatus = {
 const SLUG = /^[a-z0-9](?:[a-z0-9-]{0,126}[a-z0-9])?$/;
 
 type CourseRow = {
-  course_ref: string; slug: string; visibility: "LISTED" | "UNLISTED"; authoring_source: string;
+  course_ref: string; slug: string; title: string; visibility: "LISTED" | "UNLISTED"; authoring_source: string;
   product_id: string; product_version: number; access_model: "FREE" | "PAID"; product_withdrawn_at: string | null;
 };
 type LessonRow = { slug: string };
 
-const courseRow = (db: Database.Database, slug: string) => db.prepare(`SELECT course.course_ref,course.slug,course.visibility,
+const courseRow = (db: Database.Database, slug: string) => db.prepare(`SELECT course.course_ref,course.slug,course.title,course.visibility,
     course.authoring_source,product.id AS product_id,product.version AS product_version,product.access_model,
     product.withdrawn_at AS product_withdrawn_at
   FROM catalog_course_projection course
@@ -89,7 +90,7 @@ export function freeEnrollmentStatus(db: Database.Database, customerId: string, 
     const enrollment = readEnrollment(db, customerId, course);
     // An unlisted course is visible only to those already enrolled in it.
     if (!enrollment && course.visibility !== "LISTED") return null;
-    return { courseRef: course.course_ref, courseSlug: course.slug, accessModel: course.access_model, enrollment,
+    return { courseRef: course.course_ref, courseSlug: course.slug, courseTitle: course.title, accessModel: course.access_model, enrollment,
       enrollable: enrollable(course) && courseLessons(db, course.course_ref).length > 0 };
   });
   return read.deferred();

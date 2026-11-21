@@ -116,7 +116,7 @@ describe("FLEX-128 explicit FREE enrollment", () => {
     const server = app();
     const status = await server.request("/v1/me/free-enrollments/free", { headers: { authorization: "Session student" } });
     expect(status.headers.get("cache-control")).toBe("private, no-store");
-    expect(await status.json()).toEqual({ courseRef: "free", courseSlug: "free", accessModel: "FREE", enrollment: null, enrollable: true });
+    expect(await status.json()).toEqual({ courseRef: "free", courseSlug: "free", courseTitle: "Course free", accessModel: "FREE", enrollment: null, enrollable: true });
     const first = await enroll(server, { courseSlug: "free" });
     expect(first.status).toBe(201);
     const expected = { courseRef: "free", courseSlug: "free", enrolledAt: at.toISOString(), startedAt: at.toISOString(), progressPercent: 0 };

@@ -8,6 +8,7 @@ import { publicCourse } from "@/lib/content/public";
 import { viewerCourse } from "@/lib/content/entitled";
 import CourseCheckout from "@/components/checkout/CourseCheckout";
 import LexicalReadOnly from "@/components/courses/LexicalReadOnly";
+import FreeEnrollmentAction from "@/components/courses/FreeEnrollmentAction";
 import { lessonAccessLabel } from "@/lib/course-access-labels";
 import { courseJsonLd, courseMetadata, jsonLdScript } from "@/lib/seo";
 import { platformOrigin } from "@/lib/origins";
@@ -42,7 +43,8 @@ async function CourseContent({ params }: Props) {
   return (
     <main className="courseDetail">
       <nav className="nav" aria-label="Основная навигация"><Link className="wordmark" href="/">FLEXPERIMENT<span>®</span></Link><Link href="/courses">← Все курсы</Link></nav>
-      <header className="courseHero"><p className="eyebrow">{state}</p><h1>{result.course.title}</h1><p>{result.course.summary}</p></header>
+      <header className="courseHero"><p className="eyebrow">{state}</p><h1>{result.course.title}</h1><p>{result.course.summary}</p>
+        <FreeEnrollmentAction courseSlug={result.course.slug} accessModel={commercial.accessModel} /></header>
       {commercial.accessModel === "PAID" && <CourseCheckout courseRef={result.course.courseRef} offerRef={commercial.offerRef} saleMode={commercial.saleMode} priceKopecks={commercial.priceKopecks} />}
       {courseDescription != null && <section className="richCopy courseDescription" aria-label="О курсе"><LexicalReadOnly data={courseDescription} /></section>}
       <section className="syllabus" aria-labelledby="syllabus-title">

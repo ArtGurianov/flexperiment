@@ -2,6 +2,8 @@ import { publicCourse, publicLesson, type CourseDetail, type LessonDetail } from
 
 export type AccountLibraryCourse = {
   courseRef: string; title: string; url: string; access: "ENTITLED" | "FREE" | "PREVIEW";
+  /** FLEX-128: the explicit FREE enrollment; startedAt is null for a historical implicit one. */
+  enrollment: { enrolledAt: string; startedAt: string | null; progressPercent: 0 } | null;
   lessons: Array<{ lessonRef: string; title: string; sectionTitle: string; url: string;
     access: "ENTITLED" | "FREE" | "PREVIEW" }>;
 };
