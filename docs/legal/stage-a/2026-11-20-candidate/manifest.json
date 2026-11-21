@@ -8,7 +8,8 @@
     "G-07",
     "G-08",
     "D-04",
-    "D-05"
+    "D-05",
+    "D-12"
   ],
   "activation": "PROHIBITED_UNTIL_ADMISSION",
   "documents": [
@@ -19,7 +20,7 @@
         "path": "docs/legal/stage-a/2026-10-11-candidate/privacy.md"
       },
       "candidate": {
-        "sha256": "e55a20a98397c9f5a7dd1bdc4afea2f5256fa8e86058814c5a9de01c3667be02",
+        "sha256": "b215d786e0d043055ef36984e8d5191db0c00d2b18436ab6eea1287779328ed2",
         "path": "docs/legal/stage-a/2026-11-20-candidate/privacy.md"
       }
     },
