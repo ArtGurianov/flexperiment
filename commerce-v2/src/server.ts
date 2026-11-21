@@ -25,6 +25,7 @@ import { ErasureInstallationEvidence, readErasureInstallation } from "./erasure-
 import { AfterResponseTasks } from "./after-response";
 import { BrowserContexts, loadBrowserContextConfig } from "./browser-context";
 import { RefrefArrivalExchange } from "./refref-arrival-exchange";
+import { nativePaymentsFromConfig, startNativeSweeps } from "./native-payment-runtime";
 
 async function startServer() {
 const installation=readErasureInstallation(process.env);
@@ -89,7 +90,10 @@ const kinescopeDrmAuth = kinescopeDrmKeyring && kinescopeDrmUsername && kinescop
 // The refund envelope keyring (ART-174): Refref's rail does not start without one, and an invalid one never starts.
 const refundEnvelopeKeys = refundEnvelopeKeyringFromEnvironment(process.env);
 if (config.paymentMode === "refref" && !refundEnvelopeKeys) throw new Error("REFUND_ENVELOPE_KEYS_REQUIRED");
-const paymentRail = config.paymentMode === "mock" ? new MockPaymentRail()
+// FLEX-119 · the direct native contour (PAYMENT_MODE=native): quote rail, ledger context and sweeps.
+// payment-mode.ts already refused the fake provider outside local/test.
+const native = nativePaymentsFromConfig(db, config, refundEnvelopeKeys);
+const paymentRail = native ? native.quoteRail : config.paymentMode === "mock" ? new MockPaymentRail()
   : config.paymentMode === "refref" && config.refref ? new RefrefPaymentRail({
     apiBaseUrl: config.refref.apiBaseUrl,
     apiKey: config.refref.apiKey,
@@ -171,6 +175,11 @@ const app = createCommerceV2App({
   } : undefined,
   erasureFence,
   browserContexts,
+  nativePayments: native?.ledger,
+});
+if (native) startNativeSweeps(db, native, {
+  intervalMs: Number(process.env.CHECKOUT_POLL_INTERVAL_MS ?? 30_000),
+  run: (task) => (erasureFence ? erasureFence.run("WORKER", task) : task()),
 });
 
 if (browserContexts) {
@@ -208,7 +217,7 @@ if (marketingBroadcastsEnabled && campaignUnsubscribeSecret && sendCampaignEmail
   void campaignDispatch();
 }
 
-if (paymentRail) {
+if (paymentRail && !native) {
   let checkoutPollRunning = false;
   const checkoutPoll = async () => {
     if (checkoutPollRunning) return;

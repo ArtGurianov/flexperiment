@@ -42,6 +42,11 @@ const REVIEWED_SCHEMA_SHA256 = new Set([
   // 0035: owner storefront-switch observations (no subject data), the quote's opening generation in
   // checkout_quotes, and sales_activation frozen as history; no new identity store. Hashed journal.
   "6ef1be23e4d713fa77e81a1cb0391fcb1292d18634b3d2270751bec6ab58a728",
+  // FLEX-119 native payments/refunds/fiscal events (registered as 0039; carried as the next contiguous
+  // number): financial and fiscal rows are retained; identity only via the classified orders/customers;
+  // sealed envelopes/contacts are purged at a terminal state, and erasure refuses while any of the
+  // subject's operations is unfinished (ERASURE_FINANCIAL_REVIEW_REQUIRED). Hashed journal.
+  "4be2beb7ccfcc10e3a3167c42f37aa07b7fe07190d773498820b4012e77b321b",
 ]);
 export function assertReviewedRestoreSchema(db: Database.Database) {
   const schema = db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").all();
