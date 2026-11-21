@@ -1,6 +1,6 @@
 import { labGuestClientIp } from "./lab-guest-client-ip";
 import { registerLabGuestRoutes, labBearer } from "./lab-guest-routes";
-import { checkInLabTicket, prepareLabRecovery, labAccess, labLegalReview, LabTicketError, readOwnedLabTicket, reissueOwnedLabQr, type LabAcceptance, type LabTicketEmail } from "./lab-tickets";
+import { checkInLabTicket, prepareLabRecovery, labAccess, labLegalReview, LabTicketError, listOwnedLabTickets, readOwnedLabTicket, reissueOwnedLabQr, type LabAcceptance, type LabTicketEmail } from "./lab-tickets";
 import QRCode from "qrcode";
 import type Database from "better-sqlite3";
 import { assertRegistrationChoices } from "./registration-choices";
@@ -39,7 +39,7 @@ import { loadCommerceOrigins, storefrontOrigin, type CommerceOrigins, type Store
 import { databaseReady, READINESS_DEADLINE_MS, withinDeadline, type RefrefReadiness } from "./readiness";
 import { storefrontSwitchStatus } from "./storefront-switch";
 import { publicLabCatalogue } from "./lab-catalogue";
-import { beginLabOccurrenceCancellation, completeLabOccurrenceCancellation, labOccurrenceOrders,
+import { assertLabPurchaseAuthority, beginLabOccurrenceCancellation, completeLabOccurrenceCancellation, labOccurrenceOrders,
   LabLifecycleError, reconcileLabOccurrenceAttempts, type LabRouteContour } from "./lab-lifecycle";
 import { attestLabAttendance, labServiceRenderedBacklog, recordCheckedInServiceRendered, serviceRenderedFact,
   ServiceRenderedError } from "./service-rendered";
@@ -65,6 +65,8 @@ type Dependencies = {
   readonly labRailContour?: string;
   /** FLEX-60/123: ≥32-byte secret for account-owned LAB QR; absent keeps the owned ticket route closed. */
   readonly labTicketQrSecret?: Buffer;
+  /** The my storefront origin until B's MY_ORIGIN lands in origins.ts (#286); then taken from loadCommerceOrigins. */
+  readonly myOrigin?: string;
   readonly authHandler?: (request: Request) => Promise<Response>;
   readonly prepareMagicLinkInitiation?: (input: {
     email: string; storefront: "COURSES" | "LAB"; personalDataConsent: boolean; personalDataVersion: string; personalDataSha256: string;
@@ -901,10 +903,23 @@ export function createCommerceV2App(deps: Dependencies) {
   };
   app.get("/v1/me/lab/tickets/:orderPublicId", context => ownedTicket(context, false));
   app.post("/v1/me/lab/tickets/:orderPublicId/qr/reissue", async context => {
-    if (context.req.header("origin") !== origins.lab && context.req.header("origin") !== origins.platform) {
+    const origin = context.req.header("origin");
+    if (!origin || ![origins.lab, origins.platform, deps.myOrigin].includes(origin)) {
       return context.json({ code: "ORIGIN_FORBIDDEN" }, 403, noStore);
     }
     return ownedTicket(context, true);
+  });
+  // FLEX-123 "Мои билеты": a confirmed account's LAB tickets without any QR, token or capability.
+  app.get("/v1/my/tickets", async context => {
+    const customerId = await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;
+    if (!customerId) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
+    try {
+      assertLabPurchaseAuthority(deps.db, customerId, null);
+      return context.json({ tickets: listOwnedLabTickets(deps.db, customerId) }, 200, { "Cache-Control": "private, no-store" });
+    } catch (error) {
+      if (error instanceof LabLifecycleError) return context.json({ code: error.message }, 403, noStore);
+      return context.json({ code: "LAB_TICKETS_UNAVAILABLE" }, 503, noStore);
+    }
   });
   // ── end FLEX-59/60/85 (D) ──
 

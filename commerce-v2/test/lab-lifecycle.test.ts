@@ -6,7 +6,7 @@ import { migrateV2 } from "../src/db";
 import { beginLabOccurrenceCancellation, completeLabOccurrenceCancellation, labOccurrenceOrders, reconcileLabOccurrenceAttempts,
   type LabRouteContour } from "../src/lab-lifecycle";
 import { labSeatInventory } from "../src/lab-occurrences";
-import { checkInLabTicket, readOwnedLabTicket, reissueOwnedLabQr } from "../src/lab-tickets";
+import { checkInLabTicket, labTicketQrSecretFromEnv, readOwnedLabTicket, reissueOwnedLabQr } from "../src/lab-tickets";
 import { decideRefund, executeApprovedRefund, requestRefund } from "../src/refunds";
 import { stageBLegalManifestJson } from "./fixtures/legal";
 import { confirmLabBuyer, labAcceptanceFor } from "./fixtures/lab-purchase";
@@ -261,5 +261,65 @@ describe("historical purchases keep their original contour (C's routeContour)", 
     const done = completeLabOccurrenceCancellation(db, { occurrenceRef: REF, actor: "owner" }, routeContour, at(3));
     expect(done.obligations.map(obligation => [obligation.orderPublicId, obligation.contour]))
       .toEqual(expect.arrayContaining([[orderOf(historical), "REFREF_RC2"], [orderOf(unknown), null]]));
+  });
+});
+
+describe("MY contracts (FLEX-122 R4, FLEX-123 R2)", () => {
+  let signedIn: string | null = null;
+  const MY = "http://localhost:3002";
+  beforeEach(() => { signedIn = null; });
+  const make = (qrSecret: Buffer | null = secret) => createCommerceV2App({ db, config: testCheckoutConfig, sourceCommit: "a".repeat(40),
+    serviceToken: "synthetic", paymentRail: rail, now: () => new Date(NOW), authenticateCustomer: async () => signedIn, labTicketQrSecret: qrSecret ?? undefined, myOrigin: MY });
+  const post = (app: ReturnType<typeof make>, path: string, body: unknown, origin = MY, key = "k") => app.request(path, { method: "POST",
+    headers: { origin, "Content-Type": "application/json", "Idempotency-Key": key }, body: JSON.stringify(body) });
+
+  it("answers preview and confirm with 403 LAB_ACCOUNT_CONFIRMATION_REQUIRED for an unconfirmed account; confirmed takes the same labAcceptance body", async () => {
+    const app = make();
+    const unconfirmed = buyer(false); signedIn = unconfirmed.customerId;
+    const preview = await post(app, "/v1/checkout/preview", { offerRef: REF });
+    expect(preview.status).toBe(403); expect(await preview.json()).toEqual({ code: "LAB_ACCOUNT_CONFIRMATION_REQUIRED" });
+    const confirmed = buyer(); signedIn = confirmed.customerId;
+    const quote = await (await post(app, "/v1/checkout/preview", { offerRef: REF }, MY, "q")).json() as { quoteId: string };
+    const { auth_user_id: userId } = db.prepare("SELECT auth_user_id FROM customers WHERE id=?").get(confirmed.customerId) as { auth_user_id: string };
+    db.prepare("UPDATE customers SET auth_user_id=NULL WHERE id=?").run(confirmed.customerId); // Lost between preview and confirm.
+    const refused = await post(app, "/v1/checkout", { quoteId: quote.quoteId, labAcceptance: labAcceptanceFor(db) }, MY, "p");
+    expect(refused.status).toBe(403); expect(await refused.json()).toEqual({ code: "LAB_ACCOUNT_CONFIRMATION_REQUIRED" });
+    db.prepare("UPDATE customers SET auth_user_id=? WHERE id=?").run(userId, confirmed.customerId);
+    const noAcceptance = await post(app, "/v1/checkout", { quoteId: quote.quoteId }, MY, "p2");
+    expect(noAcceptance.status).toBe(403); expect(await noAcceptance.json()).toEqual({ code: "LAB_CONSENT_REQUIRED" });
+    const paid = await post(app, "/v1/checkout", { quoteId: quote.quoteId, labAcceptance: labAcceptanceFor(db) }, MY, "p3");
+    expect(paid.status).toBe(201); expect(await paid.json()).toMatchObject({ state: "PAID" });
+    expect(count("lab_purchase_acceptances")).toBe(1);
+  });
+
+  it("lists a confirmed account's tickets without QR, token or capability, private and no-store", async () => {
+    const app = make();
+    expect((await app.request("/v1/my/tickets")).status).toBe(401);
+    const who = buyer(); await buy(who);
+    const order = db.prepare("SELECT public_id FROM orders").get() as { public_id: string };
+    signedIn = who.customerId;
+    const response = await app.request("/v1/my/tickets");
+    expect(response.status).toBe(200); expect(response.headers.get("cache-control")).toBe("private, no-store");
+    const body = await response.json();
+    expect(body).toEqual({ tickets: [{ orderPublicId: order.public_id, title: "LAB", startsAt: "2026-11-01T09:00:00Z", endsAt: "2026-11-01T17:00:00Z",
+      timezone: "Asia/Novosibirsk", venueName: "Студия", status: "VALID", viewPath: `/tickets/${order.public_id}` }] });
+    expect(JSON.stringify(body)).not.toMatch(/qr|token|capability/i);
+    expect(db.prepare("SELECT qr_sha256 FROM lab_tickets").get()).toEqual({ qr_sha256: null }); // Listing issues no QR.
+    const other = buyer(false); signedIn = other.customerId;
+    const refused = await app.request("/v1/my/tickets");
+    expect(refused.status).toBe(403); expect(await refused.json()).toEqual({ code: "LAB_ACCOUNT_CONFIRMATION_REQUIRED" });
+  });
+
+  it("reissues an owned QR only from a known origin and stays closed without the env secret", async () => {
+    const who = buyer(); await buy(who); signedIn = who.customerId;
+    const { public_id } = db.prepare("SELECT public_id FROM orders").get() as { public_id: string };
+    const path = `/v1/me/lab/tickets/${public_id}/qr/reissue`;
+    expect((await post(make(), path, {}, "https://foreign.test")).status).toBe(403);
+    expect((await post(make(), path, {})).status).toBe(200);
+    expect((await post(make(null), path, {})).status).toBe(503);
+    expect(labTicketQrSecretFromEnv({})).toBeUndefined();
+    expect(labTicketQrSecretFromEnv({ LAB_TICKET_QR_SECRET: Buffer.alloc(16, 1).toString("base64url") })).toBeUndefined();
+    expect(labTicketQrSecretFromEnv({ LAB_TICKET_QR_SECRET: "not base64url!" })).toBeUndefined();
+    expect(labTicketQrSecretFromEnv({ LAB_TICKET_QR_SECRET: Buffer.alloc(32, 1).toString("base64url") })).toEqual(Buffer.alloc(32, 1));
   });
 });

@@ -1,4 +1,5 @@
 import { serve } from "@hono/node-server";
+import { labTicketQrSecretFromEnv } from "./lab-tickets";
 import { createCommerceV2App } from "./app";
 import { migrateV2, openV2Database } from "./db";
 import { loadCommerceRuntimeConfig } from "./payment-mode";
@@ -138,6 +139,8 @@ const app = createCommerceV2App({
   authHandler: auth.auth.handler,
   prepareMagicLinkInitiation: auth.prepareMagicLinkInitiation,
   authenticateCustomer: auth.authenticateCustomer,
+  // FLEX-60/123: owned LAB ticket QR; absent or short LAB_TICKET_QR_SECRET keeps the route closed.
+  labTicketQrSecret: labTicketQrSecretFromEnv(process.env),
   verifyCaptcha: smartCaptchaSecret ? (token, ip) => verifySmartCaptcha(token, ip, smartCaptchaSecret) : undefined,
   kinescopeClient,
   kinescopeLessonsFolderId: process.env.KINESCOPE_LESSONS_FOLDER_ID,

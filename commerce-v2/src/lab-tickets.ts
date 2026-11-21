@@ -196,3 +196,40 @@ export function reissueOwnedLabQr(db: Database.Database, secret: Buffer, custome
     return readOwnedLabTicket(db, secret, customerId, orderPublicId);
   }).immediate();
 }
+
+/** Server env only: base64url of ≥32 bytes. Anything else leaves owned-ticket QR closed (fail-closed). */
+export function labTicketQrSecretFromEnv(env: Record<string, string | undefined>): Buffer | undefined {
+  const raw = env.LAB_TICKET_QR_SECRET?.trim();
+  if (!raw || !/^[A-Za-z0-9_-]+$/.test(raw)) return undefined;
+  const secret = Buffer.from(raw, "base64url");
+  return secret.length >= 32 ? secret : undefined;
+}
+
+export type MyLabTicket = { orderPublicId: string; title: string; startsAt: string; endsAt: string; timezone: string;
+  venueName: string | null; status: "VALID" | "USED" | "VOID" | "NOT_ISSUED"; viewPath: string | null };
+
+/**
+ * FLEX-123 "Мои билеты" for a confirmed account: the frozen promise of each LAB order and its ticket
+ * status. No QR, token or capability. A historical guest order bound to the account is listed without a
+ * view path: its ticket stays behind its own capability.
+ */
+export function listOwnedLabTickets(db: Database.Database, customerId: string): MyLabTicket[] {
+  const rows = db.prepare(`SELECT orders.public_id,orders.state,line.occurrence_snapshot_json,occurrence.lifecycle,
+      ticket.id AS ticket_id,ticket.used_at,
+      EXISTS (SELECT 1 FROM lab_guest_access access WHERE access.order_public_id=orders.public_id) AS guest_scoped
+    FROM orders JOIN order_lines line ON line.order_id=orders.id JOIN products product ON product.id=line.product_id
+    JOIN lab_occurrences occurrence ON occurrence.occurrence_ref=product.occurrence_ref
+    LEFT JOIN lab_tickets ticket ON ticket.order_line_id=line.id
+    WHERE orders.customer_id=? AND product.kind='LAB' AND orders.state NOT IN ('EXPIRED','CANCELLED','DRAFT')
+    ORDER BY json_extract(line.occurrence_snapshot_json,'$.startsAt') DESC,orders.public_id`).all(customerId) as Array<{
+      public_id: string; state: string; occurrence_snapshot_json: string; lifecycle: string; ticket_id: string | null; used_at: string | null; guest_scoped: number }>;
+  return rows.map(row => {
+    const promised = JSON.parse(row.occurrence_snapshot_json) as { title: string; startsAt: string; endsAt: string; timezone: string;
+      venue: { status: string; name?: string } | null };
+    const status = !row.ticket_id ? "NOT_ISSUED" as const
+      : statusFor({ state: row.state, lifecycle: row.lifecycle, used_at: row.used_at } as NonNullable<ReturnType<typeof ticketRow>>);
+    return { orderPublicId: row.public_id, title: promised.title, startsAt: promised.startsAt, endsAt: promised.endsAt, timezone: promised.timezone,
+      venueName: promised.venue?.status === "CONFIRMED" ? promised.venue.name ?? null : null, status,
+      viewPath: row.guest_scoped ? null : `/tickets/${encodeURIComponent(row.public_id)}` };
+  });
+}
