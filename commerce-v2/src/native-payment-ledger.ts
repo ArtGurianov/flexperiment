@@ -20,9 +20,14 @@ export type NativeLedgerContext = {
   readonly provider: NativePaymentProvider;
   readonly keyring: RefundEnvelopeKeyring;
   readonly fiscalizationMode: FiscalizationMode;
-  /** Sales admission (storefront switch + FLEX-90), evaluated at the moment of each new-money send. */
-  readonly mayInitiate: () => boolean;
+  /** Sales admission (storefront switch + FLEX-90) for the order's storefront, read at each new-money send. */
+  readonly mayInitiate: (kind: ProductKind) => boolean;
   readonly now?: () => string;
+};
+
+const INTENT_STATE: Record<NativePaymentState, string> = {
+  CREATING: "PAYMENT_CREATING", CREATE_UNKNOWN: "UNCERTAIN", PENDING: "PENDING", PAID: "PAID", DECLINED: "DECLINED", EXPIRED: "EXPIRED",
+  REVIEW_REQUIRED: "REVIEW_REQUIRED",
 };
 
 /** A CREATING row younger than this may still be in flight in another request; the sweep leaves it. */
@@ -114,7 +119,8 @@ export async function startNativePayment(db: Database.Database, ctx: NativeLedge
     return { payment: paymentById(db, id)!, created: true };
   }).immediate();
   if (!begun.created) return { orderPublicId, state: begun.payment.state, paymentUrl: begun.payment.payment_url };
-  const start = beginPayment({ mayInitiate: ctx.mayInitiate() });
+  const kind = orderContext(db, orderPublicId)!.kind;
+  const start = beginPayment({ mayInitiate: ctx.mayInitiate(kind) });
   if (start.effects.includes("PROVIDER_CREATE")) await sendCreate(db, ctx, begun.payment.id);
   const current = paymentById(db, begun.payment.id)!;
   return { orderPublicId, state: current.state, paymentUrl: current.payment_url };
@@ -157,7 +163,7 @@ export async function driveNativePayment(db: Database.Database, ctx: NativeLedge
   for (let step = 0; step < MAX_DRIVE_STEPS; step += 1) {
     if (decision.effects.includes("REPLAY_CREATE_SAME_KEY")) {
       // Admission is read again at the moment of sending; a stop since the decision keeps it unknown.
-      if (!ctx.mayInitiate()) return decision;
+      if (!ctx.mayInitiate(orderOfPayment(db, paymentById(db, paymentId)!).kind)) return decision;
       await sendCreate(db, ctx, paymentId);
       return { ...decision, effects: [] };
     }
@@ -177,7 +183,7 @@ export function applyNativePaymentObservation(db: Database.Database, ctx: Native
     const order = orderOfPayment(db, payment);
     const decision = applyPaymentObservation({ state: payment.state, providerPaymentId: payment.provider_payment_id },
       { merchantOrderRef: order.public_id, amountKopecks: payment.amount_kopecks, currency: "RUB", snapshotHash: payment.snapshot_hash },
-      observation, { mayInitiate: ctx.mayInitiate(), kind: order.kind, fiscalizationMode: ctx.fiscalizationMode });
+      observation, { mayInitiate: ctx.mayInitiate(order.kind), kind: order.kind, fiscalizationMode: ctx.fiscalizationMode });
     const terminal = decision.state === "PAID" || decision.state === "DECLINED" || decision.state === "EXPIRED";
     const envelope = terminal && payment.request_envelope && payment.envelope_key_id
       ? openPayload<FrozenNativePaymentRequest>(ctx.keyring, "native-payment-envelope", payment.envelope_key_id, payment.id, payment.request_envelope)
@@ -220,6 +226,10 @@ export function applyNativePaymentObservation(db: Database.Database, ctx: Native
       db.prepare("UPDATE orders SET state=?,updated_at=? WHERE id=? AND state='PAYMENT_PENDING'")
         .run(decision.state === "EXPIRED" ? "EXPIRED" : "CANCELLED", now, order.order_id);
     }
+    // The consumed purchase intent mirrors the payment, as applyRailProjection does on the RC.2 contour,
+    // so checkout's open-payment admission and intent replacement see the native outcome.
+    db.prepare("UPDATE checkout_quotes SET state=?,updated_at=? WHERE order_public_id=? AND consumed_at IS NOT NULL AND state<>'PAID'")
+      .run(INTENT_STATE[decision.state], now, order.public_id);
     if (decision.state === "REVIEW_REQUIRED" && payment.state !== "REVIEW_REQUIRED") {
       db.prepare("UPDATE orders SET state='REVIEW_REQUIRED',updated_at=? WHERE id=? AND state<>'REFUNDED'").run(now, order.order_id);
     }
@@ -282,4 +292,15 @@ export function nativeErasureAdmission(db: Database.Database, customerId: string
     fiscalEvents: pick<FiscalEventState>(`SELECT event.state FROM fiscal_events event JOIN order_lines line ON line.id=event.order_line_id
       JOIN orders ON orders.id=line.order_id WHERE orders.customer_id=?`),
   });
+}
+
+/** The confirm hook checkout.ts takes on the native contour (structural NativeConfirm). */
+export function nativeConfirm(db: Database.Database, ctx: NativeLedgerContext) {
+  const status = (orderPublicId: string) => {
+    const order = orderContext(db, orderPublicId);
+    const payment = order && paymentOfOrder(db, order.order_id);
+    if (!payment) throw new Error("NATIVE_PAYMENT_NOT_FOUND");
+    return { orderPublicId, state: payment.state as string, paymentUrl: payment.state === "PENDING" ? payment.payment_url : null };
+  };
+  return { start: (orderPublicId: string) => startNativePayment(db, ctx, orderPublicId), status };
 }

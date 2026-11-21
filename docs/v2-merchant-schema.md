@@ -602,3 +602,47 @@ identity/use. Financial erasure holds and offline retention remain explicit.
 
 The guest flow, API authority and qualification boundaries are described in
 [the ART-384 design](plans/2026-10-19-lab-guest-checkout-design.md).
+
+## Native payments, refunds and fiscal events (FLEX-119; registered 0039, carried as 0036)
+
+The direct native contour (`PAYMENT_MODE=native`) keeps its own records next to the
+classified orders. It adds new tables only; no existing table is altered. The contract,
+its fixtures and the failure-scenario map are in
+[the FLEX-119 contract](plans/2026-11-20-native-payment-refund-contract.md).
+
+- `native_payments`: one per order (`order_id` UNIQUE, key `native-pay:{order}:1`). It holds the
+  frozen amount and snapshot hash, the provider payment id, and the sealed frozen request. The
+  sealed request carries the receipt e-mail and is purged in the same statement that sets the
+  terminal state.
+- `native_payment_observations`: append-only record of every create/submit answer, callback hint
+  and read-back, with the decided state and reason. No e-mail.
+- `native_callback_inbox`: deduplicated provider callbacks. Only a body hash is kept, never the
+  raw body. Proposed retention is 90 days, pending the owner and E.
+- `native_refunds`: one per approved refund request, with the sealed frozen refund request. The
+  envelope is purged at a terminal state.
+- `fiscal_events`: one per required receipt (`event_ref` UNIQUE). It holds the frozen fiscal lines,
+  the payment method and the mode. A sealed receipt contact is purged at a terminal state or at
+  cancellation. A LAB `FINAL_SETTLEMENT` is reserved `AWAITING_SERVICE` at payment time and is
+  issued only against D's `SERVICE_RENDERED` fact (`lab_service_renditions`, D's migration).
+
+Authority:
+- A payment or refund is a fact only from an authenticated provider read-back bound to the frozen
+  order. A callback only schedules that read-back.
+- Access and tickets follow the PAID transition once; revocation follows a bound refund SUCCEEDED
+  once.
+- Fiscal reconciliation never moves money.
+- An order's contour is what it stored: a `native_payments` row or a historical RC.2
+  `checkout_attempts.refref_attempt_id`, never both. Historical orders stay with their original
+  executor.
+
+Triggers refuse a sealed envelope or contact on a terminal row, and refuse leaving a terminal
+state except into `REVIEW_REQUIRED`.
+
+Retention and erasure:
+- Financial and fiscal rows are retained.
+- Identity is reached only through the classified `orders`/`customers`.
+- Erasure purges sealed envelopes and contacts only when every payment, refund and fiscal event of
+  the subject is terminal. Otherwise it refuses with `ERASURE_FINANCIAL_REVIEW_REQUIRED`.
+
+Both schema fingerprints (`pd-retention.ts`, `erasure-restore.ts`) list the resulting schema; an
+unknown schema is still refused.

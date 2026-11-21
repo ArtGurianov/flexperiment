@@ -1,4 +1,6 @@
 import { labGuestClientIp } from "./lab-guest-client-ip";
+import { receiveNativeCallback } from "./native-payment-callbacks";
+import { nativeConfirm, type NativeLedgerContext } from "./native-payment-ledger";
 import { registerLabGuestRoutes, labBearer } from "./lab-guest-routes";
 import { checkInLabTicket, prepareLabRecovery, labAccess, labLegalReview, LabTicketError, type LabAcceptance, type LabTicketEmail } from "./lab-tickets";
 import type Database from "better-sqlite3";
@@ -91,6 +93,8 @@ type Dependencies = {
   readonly erasureFence?: ErasureRuntimeFence;
   /** Arrival endpoints and browser contexts (ART-378); absent while the feature is off. */
   readonly browserContexts?: BrowserContexts;
+  /** FLEX-119 · the direct native contour; present only with PAYMENT_MODE=native. */
+  readonly nativePayments?: NativeLedgerContext;
 };
 
 type AppBindings = { Variables: { controlRoomAdminId?: string; controlRoomSessionId?: string } };
@@ -900,6 +904,7 @@ export function createCommerceV2App(deps: Dependencies) {
         successUrl: guest ? `${origins.lab}/ticket` : successUrl?.toString(),
         legalAcceptance: body.legalAcceptance,
         labAcceptance: body.labAcceptance,
+        ...(deps.nativePayments ? { native: nativeConfirm(deps.db, deps.nativePayments) } : {}),
       }, now().toISOString());
       if (guest && result.state === "PAID" && deps.sendLabTicketEmail) {
         const claimed = deps.db.prepare("UPDATE lab_guest_access SET initial_email_attempted_at=? WHERE order_public_id=? AND initial_email_attempted_at IS NULL")
@@ -1015,6 +1020,18 @@ export function createCommerceV2App(deps: Dependencies) {
       return context.json({ code: error instanceof Error ? error.message : "KINESCOPE_WEBHOOK_FAILED" }, 422, noStore);
     }
   });
+
+  // FLEX-119 · native provider callbacks: registered only on the native contour (404 otherwise). The
+  // event is stored durably before 2xx and only schedules a read-back (native-payment-callbacks.ts).
+  if (deps.config.paymentMode === "native" && deps.nativePayments) {
+    const nativePayments = deps.nativePayments;
+    app.post("/v1/native-payments/callback", async (context) => {
+      const rawBody = new Uint8Array(await context.req.arrayBuffer());
+      const headers = Object.fromEntries(context.req.raw.headers.entries());
+      const result = await receiveNativeCallback(deps.db, nativePayments, headers, rawBody);
+      return context.json(result, result.accepted ? 200 : 401, noStore);
+    });
+  }
 
   app.post("/v1/kinescope/drm/authorize", async (context) => {
     const expected = deps.kinescopeDrmAuth;
