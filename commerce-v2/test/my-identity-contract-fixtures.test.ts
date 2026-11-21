@@ -38,6 +38,22 @@ describe("my identity contract fixtures", () => {
     expect(admittedSessionKinds.on.LMS).toEqual(["LMS"]);
   });
 
+  it("same-site pairs follow the two-label rule", () => {
+    const { sameSite } = load("surfaces.json") as { sameSite: { pairs: Array<{ my: string; platform: string; accept: boolean }> } };
+    const site = (origin: string) => {
+      const url = new URL(origin);
+      return url.hostname === "localhost" ? `${url.protocol}localhost` : `${url.protocol}${url.hostname.split(".").slice(-2).join(".")}`;
+    };
+    for (const pair of sameSite.pairs) expect([pair.my, site(pair.my) === site(pair.platform)]).toEqual([pair.my, pair.accept]);
+  });
+
+  it("only a matching browser state can burn an exchange", () => {
+    const { burnRule, failures } = load("exchange.json") as { burnRule: { noStatusChange: string[]; burnsToFailed: string[] };
+      failures: Array<{ code?: string; status?: string }> };
+    expect(burnRule.noStatusChange.filter((code) => burnRule.burnsToFailed.includes(code))).toEqual([]);
+    for (const failure of failures) if (failure.code && burnRule.noStatusChange.includes(failure.code)) expect(failure.status ?? "").not.toBe("FAILED");
+  });
+
   it("LMS and LAB profile examples carry no forbidden identifiers", () => {
     const profile = load("profile.json") as { LMS: { example: Record<string, unknown> }; neverOnLmsOrLab: string[] };
     for (const field of profile.neverOnLmsOrLab) expect(Object.keys(profile.LMS.example)).not.toContain(field);

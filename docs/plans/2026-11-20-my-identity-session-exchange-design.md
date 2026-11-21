@@ -44,6 +44,17 @@ the review must say so.
    `MY_IDENTITY_MODE` must be `off`; Commerce refuses to start with `MY_IDENTITY_MODE=on` and no
    `MY_ORIGIN`, or with `MY_ORIGIN` equal to any other origin. Better Auth `trustedOrigins` gains
    `MY_ORIGIN` only when it is configured.
+5. **Same-site invariant.** The exchange state cookie is `SameSite=Lax` and still reaches the
+   cross-origin `POST /auth/lms/redeem` sent from my. That works **only** because `MY_ORIGIN` and
+   `PLATFORM_ORIGIN` are same-site: same scheme and the same registrable domain (eTLD+1, e.g.
+   `my.flexperiment.ru` / `flexperiment.ru`, canary `canary-my.flexperiment.ru` /
+   `canary-platform.flexperiment.ru`). With `MY_IDENTITY_MODE=on` Commerce refuses to start
+   (`MY_ORIGIN_NOT_SAME_SITE`) unless both origins use the same scheme and their hosts have the
+   same last two DNS labels (or both are `localhost` in development). Commerce ships no Public
+   Suffix List. The two-label rule is correct for `.ru`, which is a single-label public suffix.
+   A deployment under a multi-label public suffix (such as `co.uk`) must not enable mode `on`
+   without revisiting this check. A config test pins the accepted and refused pairs (fixture
+   `surfaces.json` → `sameSite`).
 
 ### Cutover mode
 
@@ -162,8 +173,12 @@ edition (C/D), not by this flow.
 | Verify per IP | 10 / min | Better Auth rate limit |
 
 Worst case online guessing per address ≤ 10 × 5 = 50 guesses / 24 h against 10⁶ codes.
-Better Auth's rate-limit store is in-process memory (single Commerce instance); a restart resets
-only the per-IP layer; the per-e-mail layer is durable.
+**Invariant: one Commerce instance.** Better Auth's per-IP rate-limit store is in-process memory.
+The guarantee relies on the release contract (E) running exactly one Commerce process per
+environment. A restart resets only the per-IP layer; the per-e-mail layer (`my_otp_outbox`) is
+durable. Before Commerce is scaled out, the per-IP layer must move to durable storage
+(Better Auth `rateLimit.storage: "database"` or a Commerce table). Until then, scaling out is a
+contract break, not a configuration change.
 
 Expired or wrong code ⇒ `400 OTP_INVALID_OR_EXPIRED` (one code for both; no hint whether the
 account exists) and the UI offers "Отправить код ещё раз" respecting the cooldown.
@@ -244,9 +259,18 @@ exact `better-auth` version.
    The handler calls Commerce `POST /v1/lms/exchange/start {next}` (LMS surface). Commerce
    validates `next` (§7 return targets), creates `session_exchanges` with a 128-bit id `tx`,
    `state = 256-bit random`, `state_sha256`, `return_path`, `expires_at = now + 600 s`.
-   Response sets `__Host-flx-lms-x=<state>` (`Path=/`, `HttpOnly`, `Secure`, `SameSite=Lax`,
-   `Max-Age=600`, no `Domain`) and `303 Location: <MY_ORIGIN>/continue?tx=<tx>`.
-   Anti-loop: if the browser presents a state cookie whose exchange ended `FAILED`/`CANCELED`
+   Response sets a **per-exchange** state cookie `__Host-flx-lms-x-<tx>=<state>` (`Path=/`,
+   `HttpOnly`, `Secure`, `SameSite=Lax`, `Max-Age=600`, no `Domain`) and
+   `303 Location: <MY_ORIGIN>/continue?tx=<tx>`.
+   **Concurrent exchanges in one browser:** each start gets its own cookie, so two tabs opening
+   protected lessons at nearly the same moment each finish their own exchange. A forced
+   cross-site start also cannot overwrite the victim's state; it only adds a cookie. At most
+   **3** state cookies are kept. When a start would make a fourth, the start response expires
+   the cookie of the oldest presented exchange (by `created_at`, unknown ids first) with
+   `Max-Age=0`. An attacker who forces starts can therefore make the victim's in-flight exchange
+   fail the state check. Under the burn rule below that costs only a retry, never a burned
+   exchange or access to another account. The cookie header stays bounded (3 × ~90 bytes).
+   Anti-loop: if the browser presents any state cookie whose exchange ended `FAILED`/`CANCELED`
    less than 30 s ago, start answers `409 EXCHANGE_RECENTLY_FAILED` and the LMS shows a manual
    "Попробовать снова" button instead of redirecting.
 2. **Continue (my).** `apps/my` `/continue?tx=` (server component) reads
@@ -267,15 +291,25 @@ exact `better-auth` version.
    requires LMS surface and `Origin` = `MY_ORIGIN` exactly (the form posts from my), then in one
    `BEGIN IMMEDIATE` transaction:
    1. exchange exists, `status='ISSUED'`, `expires_at > now`, `code_expires_at > now`;
-   2. `sha256(state cookie)` = `state_sha256` and `sha256(code)` = `code_sha256` (constant time);
+   2. `sha256(__Host-flx-lms-x-<tx>)` = `state_sha256` and `sha256(code)` = `code_sha256` (constant time);
    3. parent `session` row exists, `audience='MY'`, unexpired; binding of §2 holds for
       `customer_id`;
    4. `UPDATE … SET status='REDEEMED' … WHERE id=? AND status='ISSUED'` changes exactly 1 row;
    5. delete the LMS row of the presented `__Host-flx-lms` (account switch in this browser);
    6. insert `lms_sessions` (`expires_at = min(parent.expires_at, now + 12 h)`).
-   On any failure of 1–3 for an existing exchange the row becomes `FAILED` with a code (burned;
-   the code is single-use even when wrong). Response on success: LMS cookie set, state cookie
-   cleared (`Max-Age=0`), `303 Location: <return_path>` (relative, same LMS origin). On failure:
+   **What burns an exchange.** `tx` is not a secret: it appears in the `/continue?tx=` URL and in
+   history, and outside a browser `Origin` can be forged. So:
+   * The state cookie `__Host-flx-lms-x-<tx>` is missing or does not match ⇒ refusal
+     (`EXCHANGE_STATE_MISSING` / `EXCHANGE_STATE_MISMATCH`) **without any status change**. The code
+     is written to the diagnostics log (code only, no ids or secrets). Per-IP redeem limit: 20 per
+     minute.
+   * The state matches but the code is wrong or expired, or the check gives
+     `PARENT_SESSION_INVALID` / `ACCOUNT_BINDING_MISMATCH` ⇒ the row becomes `FAILED` with that
+     code (burned; a code is single-use even when wrong). Only the holder of the browser state
+     can trigger this.
+   * Exchange not `ISSUED` or expired ⇒ `EXCHANGE_CLOSED` / `EXCHANGE_EXPIRED`, no write.
+
+   Response on success: LMS cookie set, that exchange's state cookie cleared (`Max-Age=0`), `303 Location: <return_path>` (relative, same LMS origin). On failure:
    `303` to `/auth/lms/failed?reason=<code>` (no secrets), which renders a manual retry; no
    automatic redirect.
 5. **Entitlement** is not decided by the exchange. The lesson route keeps checking the current
@@ -497,12 +531,17 @@ Local (vitest, temp SQLite, fake mail transport, `MY_IDENTITY_MODE` both values)
 * Audience: MY token on LMS routes, LMS token on MY routes, legacy token on LMS in mode `on`,
   each route group against the wrong surface — directly against the Hono app and through the
   platform and my proxy functions with forged `x-forwarded-host`/`forwarded` headers.
-* Exchange: happy path; missing state cookie; other browser (different state); state mismatch;
+* Config: same-site check of `MY_ORIGIN` / `PLATFORM_ORIGIN` (fixture pairs).
+* Exchange: two tabs in one browser completing concurrently; a 4th start evicts the oldest;
+  missing/mismatched state leaves `ISSUED` intact and a later correct redeem succeeds;
+  happy path; missing state cookie; other browser (different state); state mismatch;
   code replay; parallel double redeem; expired tx; expired code; wrong `Origin`; wrong surface;
   account switch between start and issue and between issue and redeem; MY sign-out before
   redeem; parent expiry after redeem; LMS sign-out revokes parent and siblings; invalid `next`
   values from the fixture.
 * Schema: fingerprints for retention and erasure; isolated restore drops all credentials;
+  restore of an older snapshot followed by the erasure ledger re-deletes `my_otp_outbox` rows of
+  an erased address (explicit test);
   erasure cascades; retention classifier accepts OTP rows and still refuses unknown rows.
 
 Requires an admitted environment (not claimed by local tests): real mail delivery and spam
@@ -530,5 +569,11 @@ canary proxies, Kinescope protected playback right after payment and denial afte
    editing.
 3. **Better Auth hook context:** whether `session.create.before` sees the request in 1.7.6 is
    verified in the first implementation commit; the AsyncLocalStorage fallback is specified above.
-4. **Owner GO** is required for `MY_IDENTITY_MODE=on` in any environment, for the my DNS/route
+4. **Owner policy decisions to confirm at acceptance** (FLEX-121/123): (a) "Выйти" in the LMS
+   (or LAB) Navbar deletes the parent MY session, so signing out on the LMS **also signs the user
+   out of my** and of every other derived LMS session; (b) another account signing in on my
+   revokes the previous MY session in that browser; (c) the LMS session lifetime is 12 h, capped
+   by the MY session. These are the card's stated policy; the owner confirms them explicitly
+   during acceptance.
+5. **Owner GO** is required for `MY_IDENTITY_MODE=on` in any environment, for the my DNS/route
    and for production; nothing here changes the host.
