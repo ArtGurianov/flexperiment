@@ -74,6 +74,27 @@ describe("guest LAB browser flow", () => {
       headers: expect.objectContaining({ "Idempotency-Key": "persisted-payment" }),
     })));
   });
+  it("shows the FLEX-60 account requirement instead of failing, creating nothing to replay", async () => {
+    const fetcher = vi.fn(async () => response({ code: "LAB_ACCOUNT_CONFIRMATION_REQUIRED" }, 403)); vi.stubGlobal("fetch", fetcher);
+    render(<LabGuestCheckout offerRef="lab:one" displayedAmountKopecks={10000} />);
+    fireEvent.change(screen.getByLabelText("Email для билета и чека"), { target: { value: "guest@example.com" } });
+    fireEvent.click(screen.getByRole("button", { name: "Проверить условия" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/подтверждённый аккаунт.*Оплата не начиналась/);
+    expect(screen.getByRole("link", { name: "Открыть купленный билет" })).toHaveAttribute("href", "/ticket");
+    expect(fetcher.mock.calls.map(([path]) => path)).toEqual(["/v1/lab/guest/start"]);
+    expect(sessionStorage.getItem("lab-guest-v1:lab:one")).toBeNull(); expect(sessionStorage.getItem("lab-ticket-v1")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Подтвердить и оплатить" })).not.toBeInTheDocument();
+  });
+  it("shows the account requirement when a restored legacy quote is refused at confirmation", async () => {
+    const fetcher = vi.fn(async (path: string) => path === "/v1/checkout" ? response({ code: "LAB_ACCOUNT_CONFIRMATION_REQUIRED" }, 403)
+      : response(path.endsWith("/start") ? { orderPublicId: "order" } : quote)); vi.stubGlobal("fetch", fetcher);
+    render(<LabGuestCheckout offerRef="lab:one" displayedAmountKopecks={10000} />);
+    fireEvent.change(screen.getByLabelText("Email для билета и чека"), { target: { value: "guest@example.com" } });
+    fireEvent.click(screen.getByRole("button", { name: "Проверить условия" })); await screen.findByText("LAB Тест");
+    for (const checkbox of screen.getAllByRole("checkbox")) fireEvent.click(checkbox);
+    fireEvent.click(screen.getByRole("button", { name: "Подтвердить и оплатить" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/подтверждённый аккаунт/);
+  });
   it("does not redeem a recovery link on GET/page load; sends tokens in POST and retains replay after failure", async () => {
     history.replaceState(null, "", `/ticket#recover=${"r".repeat(43)}`);
     const fetcher = vi.fn(async () => response({ code: "TEMPORARY" }, 503)); vi.stubGlobal("fetch", fetcher);

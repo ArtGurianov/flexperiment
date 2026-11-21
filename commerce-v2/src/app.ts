@@ -1,6 +1,7 @@
 import { labGuestClientIp } from "./lab-guest-client-ip";
 import { registerLabGuestRoutes, labBearer } from "./lab-guest-routes";
-import { checkInLabTicket, prepareLabRecovery, labAccess, labLegalReview, LabTicketError, type LabAcceptance, type LabTicketEmail } from "./lab-tickets";
+import { checkInLabTicket, prepareLabRecovery, labAccess, labLegalReview, LabTicketError, readOwnedLabTicket, reissueOwnedLabQr, type LabAcceptance, type LabTicketEmail } from "./lab-tickets";
+import QRCode from "qrcode";
 import type Database from "better-sqlite3";
 import { assertRegistrationChoices } from "./registration-choices";
 import { Hono, type Context } from "hono";
@@ -38,6 +39,10 @@ import { loadCommerceOrigins, storefrontOrigin, type CommerceOrigins, type Store
 import { databaseReady, READINESS_DEADLINE_MS, withinDeadline, type RefrefReadiness } from "./readiness";
 import { storefrontSwitchStatus } from "./storefront-switch";
 import { publicLabCatalogue } from "./lab-catalogue";
+import { beginLabOccurrenceCancellation, completeLabOccurrenceCancellation, labOccurrenceOrders,
+  LabLifecycleError, reconcileLabOccurrenceAttempts, type LabRouteContour } from "./lab-lifecycle";
+import { attestLabAttendance, labServiceRenderedBacklog, recordCheckedInServiceRendered, serviceRenderedFact,
+  ServiceRenderedError } from "./service-rendered";
 import { getCustomerStorefrontCourse, getCustomerStorefrontLesson, getStorefrontCourse, getStorefrontLesson, listCustomerStorefrontLibrary, listStorefrontCourses } from "./storefront-content";
 import { authenticatedConsentStatus, hasRequiredAccountConsents, recordAuthenticatedConsents, type AuthenticatedConsentInput } from "./authenticated-consents";
 import { ErasureLedgerError } from "./erasure-ledger";
@@ -52,6 +57,14 @@ type Dependencies = {
   readonly foundationMode?: boolean;
   readonly probeRefref?: () => Promise<RefrefReadiness>;
   readonly authenticateCustomer?: (headers: Headers) => Promise<string | null>;
+  /**
+   * FLEX-59/62: C's routeContour(order) (FLEX-119) and the contour this process's payment rail reads back.
+   * Absent until C is integrated: cancellation read-back/completion answer 503 rather than guess a contour.
+   */
+  readonly labRouteContour?: LabRouteContour;
+  readonly labRailContour?: string;
+  /** FLEX-60/123: ≥32-byte secret for account-owned LAB QR; absent keeps the owned ticket route closed. */
+  readonly labTicketQrSecret?: Buffer;
   readonly authHandler?: (request: Request) => Promise<Response>;
   readonly prepareMagicLinkInitiation?: (input: {
     email: string; storefront: "COURSES" | "LAB"; personalDataConsent: boolean; personalDataVersion: string; personalDataSha256: string;
@@ -102,6 +115,8 @@ const secureEqual = (left: string, right: string) => {
 };
 
 const noStore = { "Cache-Control": "no-store" };
+/** FLEX-60 (owner decision 18.11.2026): new LAB guest purchases are closed; the domain refuses them too. */
+const LAB_GUEST_PURCHASE_CLOSED: boolean = true;
 
 /** Checkout refusals that a retry with the same request cannot change (ART-373): answered 409. */
 const CHECKOUT_CONFLICTS = new Set(["IDEMPOTENCY_KEY_REUSED", "CHECKOUT_HANDOFF_REUSED", "CHECKOUT_PAYMENT_IN_PROGRESS",
@@ -112,14 +127,16 @@ const checkoutError = (context: Context, error: unknown, fallback: string) => {
   const consent = message === "CONSENT_REQUIRED" || message === "LAB_CONSENT_REQUIRED";
   // Configuration codes are authored locally; never publish dynamic config details or unknown messages.
   const configurationCode = error instanceof CommerceConfigurationError && /^[A-Z][A-Z0-9_]*$/.test(error.code) ? error.code : undefined;
-  const code = conflict || consent || error instanceof LabTicketError ? message! : configurationCode ?? fallback;
+  const labLifecycle = error instanceof LabLifecycleError; // FLEX-60: authored LAB lifecycle refusals.
+  const code = conflict || consent || labLifecycle || error instanceof LabTicketError ? message! : configurationCode ?? fallback;
   const orderPublicId = !labBearer(context) && error instanceof CheckoutConflictError ? error.orderPublicId : undefined;
   if (!conflict && !consent && !configurationCode) {
     // Redacted operational signal only: no SQL, upstream body, token, stack, cause or customer data.
     try { console.error(JSON.stringify({ event: "CHECKOUT_FAILURE", code: fallback, errorKind: error instanceof Error ? "ERROR" : "NON_ERROR" })); }
     catch { /* Diagnostic transport must not replace the sanitized checkout response. */ }
   }
-  return context.json({ code, ...(orderPublicId ? { orderPublicId } : {}) }, consent ? 403 : conflict ? 409 : 503, noStore);
+  return context.json({ code, ...(orderPublicId ? { orderPublicId } : {}) },
+    consent || code === "LAB_ACCOUNT_CONFIRMATION_REQUIRED" ? 403 : conflict || labLifecycle ? 409 : 503, noStore);
 };
 const CONTROL_ROOM_SESSION_SECONDS = CONTROL_ROOM_SESSION_TTL_MS / 1000;
 
@@ -794,11 +811,110 @@ export function createCommerceV2App(deps: Dependencies) {
     }
   });
 
+  // ── FLEX-59/60/85 (D): occurrence cancellation with committed seats, SERVICE_RENDERED, closing receipt ──
+  const labLifecycleError = (context: Context, error: unknown) => {
+    if (error instanceof LabLifecycleError || error instanceof ServiceRenderedError || error instanceof CheckoutConflictError) {
+      return context.json({ error: { code: error.message } }, error.message.endsWith("_NOT_FOUND") ? 404 : 409, noStore);
+    }
+    const code = error instanceof Error && LAB_COMMAND_VALIDATION.has(error.message) ? error.message : undefined;
+    if (code) return context.json({ error: { code } }, 422, noStore);
+    try { console.error(JSON.stringify({ event: "LAB_LIFECYCLE_FAILURE", errorKind: error instanceof Error ? "ERROR" : "NON_ERROR" })); } catch { /* sanitized */ }
+    return context.json({ error: { code: "LAB_LIFECYCLE_UNAVAILABLE" } }, 503, noStore);
+  };
+  const labAdminAudit = (actor: string, action: string, entityId: string, details: Record<string, unknown>, at: string) =>
+    auditControlRoom(deps.db, { adminId: actor, action, entityType: "lab_occurrence", entityId, details }, at);
+  app.post("/v1/admin/v2/lab/occurrences/:occurrenceRef/cancellation", async (context) => {
+    try {
+      const input = await labCommandBody<{ reason: string }>(context);
+      const actor = context.get("controlRoomAdminId")!, at = now().toISOString(), ref = context.req.param("occurrenceRef");
+      const result = beginLabOccurrenceCancellation(deps.db, { occurrenceRef: ref, actor, reason: input.reason }, at);
+      if (!result.replayed) labAdminAudit(actor, "LAB_OCCURRENCE_CANCELLATION_REQUESTED", ref, {}, at);
+      return context.json(result, 200, noStore);
+    } catch (error) { return labLifecycleError(context, error); }
+  });
+  app.get("/v1/admin/v2/lab/occurrences/:occurrenceRef/cancellation", (context) => {
+    try {
+      const ref = context.req.param("occurrenceRef");
+      const cancellation = deps.db.prepare("SELECT state,requested_at AS requestedAt,completed_at AS completedAt FROM lab_occurrence_cancellations WHERE occurrence_ref=?").get(ref);
+      const orders = labOccurrenceOrders(deps.db, ref).map(order => ({ ...order, orderId: undefined }));
+      return context.json({ occurrenceRef: ref, cancellation: cancellation ?? null, orders }, 200, noStore);
+    } catch (error) { return labLifecycleError(context, error); }
+  });
+  app.post("/v1/admin/v2/lab/occurrences/:occurrenceRef/cancellation/reconcile", async (context) => {
+    try {
+      const rail = deps.paymentRail, routeContour = deps.labRouteContour, railContour = deps.labRailContour;
+      if (!rail || !routeContour || !railContour) return context.json({ error: { code: "LAB_ROUTE_CONTOUR_UNAVAILABLE" } }, 503, noStore);
+      const at = now().toISOString();
+      // Read-back only (no admission): an order of another contour stays open and is reported.
+      return context.json(await reconcileLabOccurrenceAttempts(deps.db, context.req.param("occurrenceRef"), routeContour,
+        { [railContour]: (orderPublicId: string) => reconcileCheckout(deps.db, rail, orderPublicId, at) }), 200, noStore);
+    } catch (error) { return labLifecycleError(context, error); }
+  });
+  app.post("/v1/admin/v2/lab/occurrences/:occurrenceRef/cancellation/complete", async (context) => {
+    try {
+      if (!deps.labRouteContour) return context.json({ error: { code: "LAB_ROUTE_CONTOUR_UNAVAILABLE" } }, 503, noStore);
+      const actor = context.get("controlRoomAdminId")!, at = now().toISOString(), ref = context.req.param("occurrenceRef");
+      const result = completeLabOccurrenceCancellation(deps.db, { occurrenceRef: ref, actor }, deps.labRouteContour, at);
+      if (!result.replayed) labAdminAudit(actor, "LAB_OCCURRENCE_CANCELLED", ref, { obligations: result.obligations.length }, at);
+      return context.json(result, 200, noStore);
+    } catch (error) { return labLifecycleError(context, error); }
+  });
+  // SERVICE_RENDERED (FLEX-85): checked-in lines of an ended occurrence; one-line attendance attestation.
+  app.post("/v1/admin/v2/lab/occurrences/:occurrenceRef/service-rendered", (context) => {
+    try {
+      const actor = context.get("controlRoomAdminId")!, at = now().toISOString(), ref = context.req.param("occurrenceRef");
+      const result = recordCheckedInServiceRendered(deps.db, { occurrenceRef: ref, recordedBy: actor }, at);
+      if (result.recorded.length) labAdminAudit(actor, "LAB_SERVICE_RENDERED", ref, { recorded: result.recorded.length, review: result.review.length }, at);
+      return context.json(result, 200, noStore);
+    } catch (error) { return labLifecycleError(context, error); }
+  });
+  app.post("/v1/admin/v2/lab/order-lines/:orderLineId/attendance", async (context) => {
+    try {
+      const input = await labCommandBody<{ reason: string }>(context);
+      const actor = context.get("controlRoomAdminId")!, at = now().toISOString();
+      const result = attestLabAttendance(deps.db, { orderLineId: context.req.param("orderLineId"), reason: input.reason, recordedBy: actor }, at);
+      if (!result.replayed) labAdminAudit(actor, "LAB_ATTENDANCE_ATTESTED", result.fact.occurrenceRef, { orderLineId: result.fact.orderLineId, reason: input.reason }, at);
+      return context.json(result, 200, noStore);
+    } catch (error) { return labLifecycleError(context, error); }
+  });
+  app.get("/v1/admin/v2/lab/order-lines/:orderLineId/service-rendered", (context) => {
+    const fact = serviceRenderedFact(deps.db, context.req.param("orderLineId"));
+    return fact ? context.json(fact, 200, noStore) : context.json({ error: { code: "LAB_SERVICE_RENDERED_NOT_FOUND" } }, 404, noStore);
+  });
+  app.get("/v1/admin/v2/lab/service-rendered/backlog", (context) => context.json({ lines: labServiceRenderedBacklog(deps.db, now().toISOString()) }, 200, noStore));
+  // Account-owned ticket and QR (FLEX-60/123): the order's owner on a confirmed session only.
+  const ownedTicket = async (context: Context, reissue: boolean) => {
+    const customerId = await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;
+    if (!customerId) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
+    if (!deps.labTicketQrSecret) return context.json({ code: "LAB_TICKET_SECRET_UNAVAILABLE" }, 503, noStore);
+    try {
+      const ref = context.req.param("orderPublicId")!;
+      const ticket = reissue ? reissueOwnedLabQr(deps.db, deps.labTicketQrSecret, customerId, ref, now().toISOString())
+        : readOwnedLabTicket(deps.db, deps.labTicketQrSecret, customerId, ref);
+      const qrImage = "qrToken" in ticket && ticket.qrToken
+        ? await QRCode.toDataURL(ticket.qrToken, { errorCorrectionLevel: "M", margin: 4, width: 320 }) : undefined;
+      return context.json({ ...ticket, ...(qrImage ? { qrImage } : {}) }, 200, { "Cache-Control": "private, no-store" });
+    } catch (error) {
+      const code = error instanceof LabTicketError ? error.message : "LAB_TICKET_UNAVAILABLE";
+      return context.json({ code }, code === "LAB_TICKET_NOT_FOUND" ? 404 : error instanceof LabTicketError ? 409 : 503, noStore);
+    }
+  };
+  app.get("/v1/me/lab/tickets/:orderPublicId", context => ownedTicket(context, false));
+  app.post("/v1/me/lab/tickets/:orderPublicId/qr/reissue", async context => {
+    if (context.req.header("origin") !== origins.lab && context.req.header("origin") !== origins.platform) {
+      return context.json({ code: "ORIGIN_FORBIDDEN" }, 403, noStore);
+    }
+    return ownedTicket(context, true);
+  });
+  // ── end FLEX-59/60/85 (D) ──
+
   app.post("/v1/checkout/preview", async (context) => {
     try {
       assertPaymentCreationEnabled(deps.config);
       const guest = labBearer(context) ? labAccess(deps.db, labBearer(context)) : undefined;
       if (guest && context.req.header("origin") !== origins.lab) return context.json({ code: "ORIGIN_FORBIDDEN" }, 403, noStore);
+      // FLEX-60: a guest capability opens no new hold, context exchange or resolution; read-back stays on GET.
+      if (guest && LAB_GUEST_PURCHASE_CLOSED) return context.json({ code: "LAB_ACCOUNT_CONFIRMATION_REQUIRED" }, 403, noStore);
       const customerId = guest?.customer_id ?? await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;
       if (!customerId) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
       if (!deps.paymentRail) return context.json({ code: "PAYMENT_RAIL_UNAVAILABLE" }, 503, noStore);

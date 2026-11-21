@@ -20,6 +20,10 @@ export async function labRequest(path: string, body?: unknown, token?: string, k
 }
 type Session = { accessToken: string; previewKey: string; paymentKey: string; email: string; orderPublicId?: string };
 const money = (kopecks: number) => (kopecks / 100).toLocaleString("ru-RU") + " ₽";
+/** FLEX-60: the server sells LAB only to a confirmed account; a guest order can no longer be started. */
+export const LAB_ACCOUNT_CONFIRMATION_REQUIRED = "LAB_ACCOUNT_CONFIRMATION_REQUIRED";
+const accountRequiredMessage = "Новые покупки LAB оформляются через подтверждённый аккаунт: гостевая покупка закрыта. "
+  + "Оплата не начиналась. Уже купленный билет доступен по ссылке на билет или через восстановление по email.";
 export default function LabGuestCheckout({ offerRef, displayedAmountKopecks }: { offerRef: string; displayedAmountKopecks: number }) {
   const router = useRouter();
   const [ticketLink, setTicketLink] = useState<string | null>(null);
@@ -29,6 +33,7 @@ export default function LabGuestCheckout({ offerRef, displayedAmountKopecks }: {
   const accepted = personalData && terms && receiptContact;
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const [accountRequired, setAccountRequired] = useState(false);
   const session = useRef<Session | null>(null);
   const lock = useRef(false);
   const storageKey = `lab-guest-v1:${offerRef}`;
@@ -52,7 +57,14 @@ export default function LabGuestCheckout({ offerRef, displayedAmountKopecks }: {
       if (result.state === "RESOLUTION_PENDING") { setMessage("Уточняем условия. Повторите проверку — повторной оплаты не будет."); return; }
       if (result.state === "PAID") { router.push(`/ticket#access=${current.accessToken}`); return; }
       setQuote(labGuestQuoteSchema.parse(result)); setPersonalData(false); setTerms(false); setReceiptContact(false);
-    } catch { setMessage("Не удалось подготовить заказ. Повторите с тем же email. Условия или доступность встречи могли измениться."); }
+    } catch (error) {
+      if (error instanceof Error && error.message === LAB_ACCOUNT_CONFIRMATION_REQUIRED) {
+        // Nothing was created: forget the would-be guest session instead of offering a replay.
+        sessionStorage.removeItem(storageKey); session.current = null; setTicketLink(null); setQuote(null); setAccountRequired(true);
+        return;
+      }
+      setMessage("Не удалось подготовить заказ. Повторите с тем же email. Условия или доступность встречи могли измениться.");
+    }
     finally { lock.current = false; setBusy(false); }
   };
   const pay = async () => {
@@ -64,9 +76,14 @@ export default function LabGuestCheckout({ offerRef, displayedAmountKopecks }: {
         termsAccepted: true, receiptContactAccepted: true, releaseVersion: quote.labLegal.releaseVersion, manifestSha256: quote.labLegal.manifestSha256 } }, current.accessToken, current.paymentKey);
       if (result.checkoutUrl && new URL(result.checkoutUrl).protocol === "https:") window.location.assign(result.checkoutUrl);
       else router.push(`/ticket#access=${current.accessToken}`);
-    } catch { setMessage("Не удалось получить результат оплаты. Проверьте заказ по ссылке на билет; повторное нажатие использует тот же заказ."); }
+    } catch (error) {
+      if (error instanceof Error && error.message === LAB_ACCOUNT_CONFIRMATION_REQUIRED) { setQuote(null); setAccountRequired(true); return; }
+      setMessage("Не удалось получить результат оплаты. Проверьте заказ по ссылке на билет; повторное нажатие использует тот же заказ.");
+    }
     finally { lock.current = false; setBusy(false); }
   };
+  if (accountRequired) return <div className="guestCheckout"><p role="alert">{accountRequiredMessage}</p>
+    <Link href="/ticket">Открыть купленный билет</Link></div>;
   return <div className="guestCheckout">
     <p>Билет без регистрации. Email нужен для билета, чека и восстановления.</p>
     {!quote ? <form onSubmit={preview}><label>Email для билета и чека<input required type="email" maxLength={254} autoComplete="email" value={email} onChange={event => setEmail(event.target.value)} /></label>

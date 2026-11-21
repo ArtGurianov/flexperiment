@@ -602,3 +602,43 @@ identity/use. Financial erasure holds and offline retention remain explicit.
 
 The guest flow, API authority and qualification boundaries are described in
 [the ART-384 design](plans/2026-10-19-lab-guest-checkout-design.md).
+
+## LAB lifecycle on a confirmed account (FLEX-57–62, FLEX-85; branch migration 0036, registry 0040)
+
+Owner decision 18.11.2026: a new LAB hold, order or payment requires a confirmed account
+(`customers.auth_user_id`, bound by a verified sign-in). `assertLabPurchaseAuthority` refuses with
+`LAB_ACCOUNT_CONFIRMATION_REQUIRED` before a hold (prepare) and again under the order's write lock
+(confirm); `/v1/lab/guest/start` and a guest-bearer preview answer 403 before any context exchange or
+resolution. Existing guest orders keep read-back, replay of their own attempt, ticket, recovery and
+refunds through their capability (migration 0032 rows are unchanged).
+
+`lab_purchase_acceptances` is the minimum acceptance evidence, written in the order-confirmation
+transaction: the active LAB Stage B release id/version/manifest hash, the document kinds, versions and
+hashes, the three explicit choices, the order snapshot hash and the occurrence snapshot hash, time and
+the confirmed customer. It holds no email, IP, free text or marketing choice; the receipt contact is
+C's sealed record. Append-only by trigger.
+
+`lab_occurrence_cancellations` is the two-step cancellation with committed seats (FLEX-59): REQUESTED
+closes the offer, expires unconfirmed holds and refuses new admission (`LAB_OCCURRENCE_CANCELLING`);
+started payments keep their seats and are read back through their own contour (C's
+`routeContour(order)`, injected, never derived here). COMPLETED is reachable only when no order can
+still settle; it cancels the occurrence (tickets become VOID, a use record stays) and freezes the
+refund obligations with each order's contour, a missing contour left for a person. Forward-only.
+
+`lab_service_renditions` is the single authoritative SERVICE_RENDERED fact per paid order line
+(`flexperiment.service-rendered/1`: orderLineId, occurrenceRef, renderedAt, evidenceRef, recordedBy,
+basis, attestationReason). CHECKED_IN cites the ticket's irreversible use; ATTENDED_ATTESTED is one
+Control Room action per line after the end with a reason from a closed list. Cancelled, cancelling,
+moved, unpaid, refund-open and no-show lines get no fact (review). C's FINAL_SETTLEMENT issuance reads
+`listServiceRenderedFacts`, `labOccurrenceCancellationState` and `closingEligibility`; it owns the
+closing-receipt outbox and key `fiscal:FINAL_SETTLEMENT:{orderLineId}`. A REFREF_RC2 prepayment is
+never closed natively. Append-only by trigger.
+
+`lab_tickets.qr_generation` serves an account-owned ticket: the QR is HMAC(server secret, ticket,
+generation); a view keeps it, an explicit reissue moves the generation and revokes the old QR.
+
+Retention and erasure: all of it is order evidence retained with the order; there is no new erasure
+target. A subject with an order already stops at `ERASURE_FINANCIAL_REVIEW_REQUIRED` with every row
+intact (`lab-lifecycle-restore.test.ts`). The partial-erasure procedure for such a subject (account,
+progress, sessions and marketing removed with suppression, the minimum financial record kept, an
+answer with its basis) is not implemented here. Both schema fingerprints include this migration.
