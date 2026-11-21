@@ -7,9 +7,10 @@ import type Database from "better-sqlite3";
  * enables it at public opening: INDEXNOW_ENABLED=true, DEPLOY_ENV=production, a valid INDEXNOW_KEY and
  * an https platform origin are all required. It is best effort and never proves indexing.
  *
- * It plugs into the existing `invalidatePlatformCache` hook, which app.ts already awaits after each
- * editorial and commercial change. The returned function therefore never throws and never waits on
- * the network, so a slow or failing IndexNow can neither delay nor fail an owner command.
+ * Not wired yet: the signature matches app.ts' post-change hook, but that hook is the retired platform
+ * revalidation seam guarded by apps/platform/test/local-api-boundary.test.ts, so wiring waits for a
+ * dedicated hook. The returned function never throws and never waits on the network, so a slow or
+ * failing IndexNow can neither delay nor fail an owner command.
  */
 
 const KEY_PATTERN = /^[a-zA-Z0-9-]{8,128}$/;
