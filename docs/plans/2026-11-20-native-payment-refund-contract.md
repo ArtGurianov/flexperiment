@@ -338,7 +338,14 @@ read-back unavailable, a late success after expiry, an amount or id mismatch, an
 regression. It counts provider-side debits and returns, so tests can assert "exactly one money
 movement" and not just local state.
 
-## 11. Persistence: proposed DDL 0039 (registered with the coordinator before integration)
+## 11. Persistence: DDL registered as 0039, carried in the branch as `0036_native_payments_fiscal_events.sql`
+
+`readV2MigrationLock` requires contiguous numbering, so the branch carries the migration as the next
+number after its base. The registry number 0039 only marks the order; the coordinator renames the
+file and recomputes `migration.lock` at integration, in merge order. The schema fingerprint does not
+depend on the file name. Schema fingerprint of base + this migration:
+`4be2beb7ccfcc10e3a3167c42f37aa07b7fe07190d773498820b4012e77b321b`. It is added, as this work's own
+entry, to `pd-retention.ts` and `erasure-restore.ts`.
 
 Phase 2 adds only new tables. No `ALTER` touches existing ones, and 0001–0035 (and #279's 0036)
 stay byte-identical.
@@ -456,7 +463,7 @@ refused.
 |---|---|---|
 | Decision tables vs fixtures (87 cases), mutation spot-check | ✔ | — |
 | Root typecheck, targeted lint | ✔ | — |
-| Durable ledger, crash/restart, concurrency, Refref down | phase 2, local SQLite + fake provider | — |
+| Durable ledger, crash/restart, callbacks, refunds, LAB settlement, erasure, Refref down (`native-payments.test.ts`, 21 cases) | ✔ phase 2, local SQLite file + fake bank and fake fiscal adapter | — |
 | Real provider idempotency, read-back, callback signature, expiry | — | provider qualification (FLEX-82/84) |
 | Real receipts: course FULL_PAYMENT, refund receipt, LAB prepayment + closing | — | FLEX-76, FLEX-85 (D assembles) |
-| Backup / isolated restore with DDL 0039, both fingerprints | phase 2, local | exact environment identity |
+| Both fingerprints for the final schema; full Commerce V2 suite | ✔ local; 3 migration-count tests turn green after #288 | exact environment identity, backup and isolated restore |
