@@ -6,6 +6,7 @@ import {
   analyticsConsentFromCookie,
   analyticsConsentSetCookie,
   safeAnalyticsLocation,
+  safeAnalyticsReferrer,
   type AnalyticsConsent,
   type StoredAnalyticsConsent,
 } from "@/lib/analytics-consent";
@@ -53,6 +54,8 @@ export default function AnalyticsConsentManager() {
   const [prompt, setPrompt] = useState(false);
   const [settings, setSettings] = useState(false);
   const initialized = useRef(false);
+  // The previous hit's page becomes the next hit's referrer; the first hit uses the sanitized document.referrer.
+  const previousPage = useRef<string | null>(null);
 
   useEffect(() => {
     const open = () => setSettings(true);
@@ -87,7 +90,11 @@ export default function AnalyticsConsentManager() {
       initialized.current = true;
     }
     const location = safeAnalyticsLocation(pathname, window.location.search);
-    if (location) ym(id, "hit", location, { title: document.title });
+    if (location) {
+      const referer = previousPage.current ?? safeAnalyticsReferrer(document.referrer);
+      ym(id, "hit", location, referer ? { title: document.title, referer } : { title: document.title });
+      previousPage.current = `${window.location.origin}${pathname}`;
+    }
   }, [consent, pathname]);
 
   const choose = (choice: StoredAnalyticsConsent) => {
