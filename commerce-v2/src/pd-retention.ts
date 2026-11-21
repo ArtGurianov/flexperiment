@@ -64,6 +64,9 @@ const supportedSchemaSha256 = new Set([
   // 0035: owner storefront-switch observations (no subject data), the quote's opening generation in
   // checkout_quotes, and sales_activation frozen as history; no new identity store. Hashed journal.
   "6ef1be23e4d713fa77e81a1cb0391fcb1292d18634b3d2270751bec6ab58a728",
+  // FLEX-128 (local 0036, coordinator reserve 0037): course_learning_starts, a subject-linked nonfinancial
+  // start fact written only with an explicit FREE enrollment. Erased with the subject; kept by retention.
+  "f0b2205a43d7a733a96cbc3b40f7b57e4850dc0f8082dfc5449f1a95bee21e13",
 ]);
 const parse = <T>(schema: z.ZodType<T>, value: unknown): T => {
   const result = schema.safeParse(value); return result.success ? result.data : refuse("RETENTION_POLICY_OR_HOLD_INVALID");
@@ -186,7 +189,7 @@ export function cleanupOfflinePersonalData(db: Database.Database, input: {
       // unbound. Cleanup is not erasure admission and cannot invent a legal hold.
       if (["orders", "refund_requests", "course_entitlements", "free_course_enrollments", "checkout_quotes",
         "authenticated_consent_actions", "notification_campaign_recipients", "lesson_resume_positions",
-        "course_access_starts", "playback_grant_rate_limits", "playback_access_events"]
+        "course_access_starts", "course_learning_starts", "playback_grant_rate_limits", "playback_access_events"]
         .some(table => !!db.prepare(`SELECT 1 FROM ${table} WHERE customer_id=? LIMIT 1`).get(customer.id))) continue;
       if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='lab_guest_access'").get()
         && db.prepare("SELECT 1 FROM lab_guest_access WHERE customer_id=?").get(customer.id)) continue;

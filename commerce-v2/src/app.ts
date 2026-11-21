@@ -43,6 +43,7 @@ import { authenticatedConsentStatus, hasRequiredAccountConsents, recordAuthentic
 import { ErasureLedgerError } from "./erasure-ledger";
 import { assertClosedPaidTestAccountConsents } from "./closed-paid-test";
 import type { ErasureRuntimeFence } from "./erasure-fence";
+import { registerFreeEnrollmentRoutes } from "./free-enrollment-routes";
 
 type Dependencies = {
   readonly db: Database.Database;
@@ -1233,7 +1234,7 @@ export function createCommerceV2App(deps: Dependencies) {
     const lessonRef = context.req.param("lessonRef");
     const observedAt = now().toISOString();
     const resolution = resolvePlaybackAccess(deps.db, {
-      customerId, lessonRef, now: now(), leaseMs: Number(process.env.CATALOG_LEASE_MS ?? 24 * 60 * 60 * 1000), recordFreeEnrollment: true,
+      customerId, lessonRef, now: now(), leaseMs: Number(process.env.CATALOG_LEASE_MS ?? 24 * 60 * 60 * 1000),
     });
     if (resolution.decision !== "ALLOW") {
       recordPlaybackAccessEvent(deps.db, {
@@ -1283,6 +1284,10 @@ export function createCommerceV2App(deps: Dependencies) {
       return context.json({ code: "KINESCOPE_GRANT_UNAVAILABLE" }, 503, noStore);
     }
   });
+
+  // FLEX-128 (A): explicit FREE enrollment and start of learning.
+  registerFreeEnrollmentRoutes(app, { db: deps.db, coursesOrigin: storefrontOrigin(origins, "COURSES"), now,
+    authenticateCustomer: deps.authenticateCustomer });
 
   return app;
 }

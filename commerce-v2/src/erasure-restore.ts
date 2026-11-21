@@ -42,6 +42,9 @@ const REVIEWED_SCHEMA_SHA256 = new Set([
   // 0035: owner storefront-switch observations (no subject data), the quote's opening generation in
   // checkout_quotes, and sales_activation frozen as history; no new identity store. Hashed journal.
   "6ef1be23e4d713fa77e81a1cb0391fcb1292d18634b3d2270751bec6ab58a728",
+  // FLEX-128 (local 0036, coordinator reserve 0037): course_learning_starts, a subject-linked nonfinancial
+  // start fact written only with an explicit FREE enrollment. Erased with the subject; kept by retention.
+  "f0b2205a43d7a733a96cbc3b40f7b57e4850dc0f8082dfc5449f1a95bee21e13",
 ]);
 export function assertReviewedRestoreSchema(db: Database.Database) {
   const schema = db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").all();
@@ -144,7 +147,7 @@ function applyErasure(db: Database.Database, ledger: VerifiedErasureLedger, keys
             .get(customer.id, customer.id, customer.email_normalized);
           if (audit || adminAudit || ownerLegalEvidenceMentions(db, [customer.id, customer.email_normalized])) throw new ErasureLedgerError("ERASURE_AUDIT_REVIEW_REQUIRED");
           for (const table of ["authenticated_consent_actions", "account_consents", "marketing_consents",
-            "notification_campaign_recipients", "free_course_enrollments", "checkout_quotes", "course_access_starts",
+            "notification_campaign_recipients", "course_learning_starts", "free_course_enrollments", "checkout_quotes", "course_access_starts",
             "lesson_resume_positions", "playback_grant_rate_limits", "playback_access_events", "lab_guest_access"]) {
             if (table !== "lab_guest_access" || db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table)) {
               db.prepare(`DELETE FROM ${table} WHERE customer_id=?`).run(customer.id);
