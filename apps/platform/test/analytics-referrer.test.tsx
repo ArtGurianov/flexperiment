@@ -43,10 +43,12 @@ describe("AnalyticsConsentManager hits", () => {
     expect(commands()).toEqual([]);
 
     act(() => { screen.getByText("Настройки cookies").click(); });
+    expect(screen.getByRole("link", { name: "Подробнее в политике конфиденциальности" }))
+      .toHaveAttribute("href", "/legal/privacy");
     act(() => { screen.getByText("Разрешить аналитику").click(); });
     expect(document.getElementById("flexperiment-metrika")).toHaveAttribute("src", "https://mc.yandex.ru/metrika/tag.js");
     const init = commands().find((command) => command[1] === "init")!;
-    expect(init[2]).toEqual({ clickmap: true, trackLinks: true, accurateTrackBounce: true, defer: true });
+    expect(init[2]).toEqual({ clickmap: false, trackLinks: false, accurateTrackBounce: true, defer: true });
     expect(JSON.stringify(init)).not.toContain("webvisor");
     expect(commands().filter((command) => command[1] === "hit")).toEqual([
       [12345, "hit", "/courses/one?utm_source=vk", { title: document.title, referer: "https://mail.example/inbox" }],

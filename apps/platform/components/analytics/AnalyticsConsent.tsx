@@ -86,7 +86,9 @@ export default function AnalyticsConsentManager() {
       document.head.append(script);
     }
     if (!initialized.current) {
-      ym(id, "init", { clickmap: true, trackLinks: true, accurateTrackBounce: true, defer: true });
+      // Minimized per privacy §4: no click map, no link/download tracking, no session replay (webvisor).
+      // Re-enabling clickmap/trackLinks is an owner decision (D-12) that needs a privacy disclosure first.
+      ym(id, "init", { clickmap: false, trackLinks: false, accurateTrackBounce: true, defer: true });
       initialized.current = true;
     }
     const location = safeAnalyticsLocation(pathname, window.location.search);
@@ -106,7 +108,7 @@ export default function AnalyticsConsentManager() {
   const visible = prompt || settings;
   return visible ? <section className="consentDialog" role="dialog" aria-modal={settings || undefined} aria-label="Настройки аналитики">
     <strong>{settings ? "Настройки cookies" : "Необязательная аналитика отключена"}</strong>
-    <p>Яндекс Метрика не загружается без вашего разрешения. Выбор можно изменить в любое время.</p>
+    <p>Яндекс Метрика не загружается без вашего разрешения. Выбор можно изменить в любое время. <a href="/legal/privacy">Подробнее в политике конфиденциальности</a>.</p>
     <div><button type="button" aria-pressed={consent === "DENIED"} onClick={() => choose("DENIED")}>Только необходимые</button><button type="button" aria-pressed={consent === "ALLOWED"} onClick={() => choose("ALLOWED")}>Разрешить аналитику</button>{settings && <button type="button" onClick={() => setSettings(false)}>Закрыть</button>}</div>
   </section> : null;
 }
