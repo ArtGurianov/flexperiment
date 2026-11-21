@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { migrateV2 } from "../src/db";
+import { readV2Migrations } from "../src/migration-integrity";
 import { confirmSyntheticAccount } from "./fixtures/confirmed-account";
 import { recordAuthenticatedConsents } from "../src/authenticated-consents";
 import { currentLegalRelease, legalManifestHash } from "../src/legal-control";
@@ -88,7 +89,7 @@ describe("real isolated old SQLite backup + independent latest erasure journal",
         .get() as { document_json: string; content_hash: string };
       expect(createHash("sha256").update(version.document_json).digest("hex")).toBe(version.content_hash);
       expect(restored.pragma("integrity_check", { simple: true })).toBe("ok"); expect(restored.pragma("foreign_key_check")).toEqual([]);
-      const count = rowCount(restored, "schema_migrations"); expect(count).toBe(35);
+      const count = rowCount(restored, "schema_migrations"); expect(count).toBe(readV2Migrations().length);
       expect(applyIsolatedRestoreErasure(restored, await verified(), keys, "canary", now).erasedAccounts).toBe(0);
       // Original source has not been erased by the isolated proof.
       expect(rowCount(db, "customers")).toBe(2); expect(rowCount(db, '"session"')).toBe(2);

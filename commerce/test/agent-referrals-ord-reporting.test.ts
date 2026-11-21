@@ -522,35 +522,35 @@ describe("PROVIDER_SPECIAL_PERIOD fail-closed (L5)", () => {
 
     // The flag must actually match the claimed reason - a mismatched assertion is refused, never silently accepted.
     expect(() => fileOrdDistributionPeriodReport(db, admin, {
-      distribution_id: distributionId, reporting_period_key: "special-2026-11", statistics: { statistics_state: "ACTUAL", statistics_json: { views: 1 } }, evidence_ref: "ev",
+      distribution_id: distributionId, reporting_period_key: `special-${M2}`, statistics: { statistics_state: "ACTUAL", statistics_json: { views: 1 } }, evidence_ref: "ev",
       statistics_reason: "CONTINUING_STATISTICS", special_period_is_service_period: true,
     }, currentOrdDistributionPeriodReport(db, {
-      distribution_id: distributionId, reporting_period_key: "special-2026-11", statistics: { statistics_state: "ACTUAL", statistics_json: { views: 1 } }, evidence_ref: "ev",
+      distribution_id: distributionId, reporting_period_key: `special-${M2}`, statistics: { statistics_state: "ACTUAL", statistics_json: { views: 1 } }, evidence_ref: "ev",
       statistics_reason: "CONTINUING_STATISTICS", special_period_is_service_period: true,
     }.distribution_id, {
-      distribution_id: distributionId, reporting_period_key: "special-2026-11", statistics: { statistics_state: "ACTUAL", statistics_json: { views: 1 } }, evidence_ref: "ev",
+      distribution_id: distributionId, reporting_period_key: `special-${M2}`, statistics: { statistics_state: "ACTUAL", statistics_json: { views: 1 } }, evidence_ref: "ev",
       statistics_reason: "CONTINUING_STATISTICS", special_period_is_service_period: true,
     }.reporting_period_key)?.id ?? null)).toThrow(/AGENT_REFERRALS_ORD_REPORTING_CONTINUING_STATISTICS_NOT_LATER/);
 
     // The flag is required once confirmed - omitting it is refused, never silently defaulted.
     expect(() => fileOrdDistributionPeriodReport(db, admin, {
-      distribution_id: distributionId, reporting_period_key: "special-2026-12", statistics: { statistics_state: "ACTUAL", statistics_json: { views: 1 } }, evidence_ref: "ev",
+      distribution_id: distributionId, reporting_period_key: `special-${M2}`, statistics: { statistics_state: "ACTUAL", statistics_json: { views: 1 } }, evidence_ref: "ev",
       statistics_reason: "CONTINUING_STATISTICS",
     }, currentOrdDistributionPeriodReport(db, {
-      distribution_id: distributionId, reporting_period_key: "special-2026-12", statistics: { statistics_state: "ACTUAL", statistics_json: { views: 1 } }, evidence_ref: "ev",
+      distribution_id: distributionId, reporting_period_key: `special-${M2}`, statistics: { statistics_state: "ACTUAL", statistics_json: { views: 1 } }, evidence_ref: "ev",
       statistics_reason: "CONTINUING_STATISTICS",
     }.distribution_id, {
-      distribution_id: distributionId, reporting_period_key: "special-2026-12", statistics: { statistics_state: "ACTUAL", statistics_json: { views: 1 } }, evidence_ref: "ev",
+      distribution_id: distributionId, reporting_period_key: `special-${M2}`, statistics: { statistics_state: "ACTUAL", statistics_json: { views: 1 } }, evidence_ref: "ev",
       statistics_reason: "CONTINUING_STATISTICS",
     }.reporting_period_key)?.id ?? null)).toThrow(/AGENT_REFERRALS_ORD_REPORTING_SPECIAL_PERIOD_ORDER_REQUIRED/);
 
     // Ordinary (non-zero-reward) ACTUAL reporting on the same basis is unaffected and never takes the flag.
     expect(() => fileOrdDistributionPeriodReport(db, admin, {
-      distribution_id: distributionId, reporting_period_key: "special-2027-01", statistics: { statistics_state: "ACTUAL", statistics_json: { views: 5 } }, evidence_ref: "ev",
+      distribution_id: distributionId, reporting_period_key: `special-${M2}`, statistics: { statistics_state: "ACTUAL", statistics_json: { views: 5 } }, evidence_ref: "ev",
     }, currentOrdDistributionPeriodReport(db, {
-      distribution_id: distributionId, reporting_period_key: "special-2027-01", statistics: { statistics_state: "ACTUAL", statistics_json: { views: 5 } }, evidence_ref: "ev",
+      distribution_id: distributionId, reporting_period_key: `special-${M2}`, statistics: { statistics_state: "ACTUAL", statistics_json: { views: 5 } }, evidence_ref: "ev",
     }.distribution_id, {
-      distribution_id: distributionId, reporting_period_key: "special-2027-01", statistics: { statistics_state: "ACTUAL", statistics_json: { views: 5 } }, evidence_ref: "ev",
+      distribution_id: distributionId, reporting_period_key: `special-${M2}`, statistics: { statistics_state: "ACTUAL", statistics_json: { views: 5 } }, evidence_ref: "ev",
     }.reporting_period_key)?.id ?? null)).not.toThrow();
   });
 
