@@ -156,8 +156,8 @@ edition (C/D), not by this flow.
 | --- | --- | --- |
 | Code lifetime | 600 s | Better Auth `verification.expires_at` |
 | Wrong attempts per code | 5, then code burned (`TOO_MANY_ATTEMPTS` → "request a new code") | plugin counter |
-| Resend cooldown per e-mail | 60 s | `auth_otp_deliveries` |
-| Codes per e-mail | 3 / 15 min, 10 / 24 h | `auth_otp_deliveries` |
+| Resend cooldown per e-mail | 60 s | `my_otp_outbox` |
+| Codes per e-mail | 3 / 15 min, 10 / 24 h | `my_otp_outbox` |
 | Send per IP | 5 / min | Better Auth rate limit (`customRules`) |
 | Verify per IP | 10 / min | Better Auth rate limit |
 
@@ -172,7 +172,7 @@ account exists) and the UI offers "Отправить код ещё раз" resp
 
 `sendVerificationOTP` reuses the configured mail transport (`auth-email-delivery.ts`). The
 **code is never persisted outside Better Auth's hash**: Commerce records only a delivery fact
-in `auth_otp_deliveries` (recipient, state, attempt count, sanitized error) for throttling and
+in `my_otp_outbox` (recipient, state, attempt count, sanitized error) for throttling and
 Control Room e-mail operations. This differs deliberately from the magic-link outbox, which
 stores an encrypted URL.
 
@@ -355,6 +355,10 @@ Fixture `legacy-links.json`. In mode `on`:
   if it validates.
 * A legacy LMS session is ignored; protected access starts the exchange; the `customer_id` is
   the same after OTP because the e-mail binding is unchanged.
+* This section is the **return and link-migration contract handed to FLEX-127**. B does not
+  implement the `/account` switch: it belongs to FLEX-127 after Stage A. In `apps/platform`, B
+  adds only the exchange handlers `/auth/lms/start` and `/auth/lms/redeem` (the "exchange
+  receiver") and the `lms` root in `commerce-proxy.ts`, both behind `MY_IDENTITY_MODE`.
 * Free enrolment uses the same exchange with `next` = the course page and the explicit enrol
   action on return (FLEX-127 owns the action and its acceptance).
 
@@ -382,7 +386,7 @@ fingerprints (retention and erasure allowlists) and the isolated restore proof.
 ```sql
 ALTER TABLE "session" ADD COLUMN audience TEXT CHECK (audience IS NULL OR audience = 'MY');
 
-CREATE TABLE auth_otp_deliveries (
+CREATE TABLE my_otp_outbox (
   id TEXT PRIMARY KEY,
   recipient_normalized TEXT NOT NULL,
   state TEXT NOT NULL CHECK (state IN ('PENDING','SENT','FAILED')),
@@ -391,7 +395,7 @@ CREATE TABLE auth_otp_deliveries (
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
-CREATE INDEX auth_otp_deliveries_recipient ON auth_otp_deliveries(recipient_normalized, created_at);
+CREATE INDEX my_otp_outbox_recipient ON my_otp_outbox(recipient_normalized, created_at);
 
 CREATE TABLE session_exchanges (
   id TEXT PRIMARY KEY CHECK (length(id) = 22),
@@ -428,10 +432,32 @@ CREATE INDEX lms_sessions_parent ON lms_sessions(parent_session_id);
 CREATE INDEX lms_sessions_expiry ON lms_sessions(expires_at);
 ```
 
+### `session.audience`: default, existing rows, adapter impact
+
+* **DDL:** `ALTER TABLE "session" ADD COLUMN audience TEXT CHECK (audience IS NULL OR audience = 'MY')`.
+  SQLite adds a nullable column with a constant `NULL` default in place, so the table is not
+  rebuilt and existing rows and indexes are untouched. There is no `DEFAULT` clause, so the value
+  is `NULL`.
+* **Existing rows:** every Stage A session (and every session created while the mode is `off`)
+  keeps `audience IS NULL` and is classified `LEGACY`. No backfill. A `NULL` row is never
+  promoted to `MY`: the only writer of `'MY'` is the session-create hook on the MY surface.
+* **Better Auth adapter (1.7.6):** the Kysely/SQLite adapter reads and writes only the fields in
+  its schema (`db/schema.mjs` merges `session.additionalFields`). Declared as
+  `session.additionalFields.audience = { type: "string", required: false, input: false }`, the
+  adapter inserts the hook-stamped value and returns it from `getSession`. `input:false` means
+  no client body can set it. Without the declaration the adapter ignores the column and inserts
+  `NULL` (fail-closed: such a session is `LEGACY`, never `MY`). `/v1/auth/get-session` echoes the
+  field to the session's own browser, which is harmless because it is not a credential.
+* **Mode `off` equivalence:** with `MY_IDENTITY_MODE=off` the hook writes nothing, every new
+  session is `NULL` as today, and the audience-aware resolver returns exactly what
+  `authenticateCustomer` returns today on LMS and LAB. The resolver switch lands as a **separate
+  commit** with an equivalence test over all `/v1/me*`, lessons, checkout and refunds routes,
+  A's new `POST /v1/me/free-enrollments` included, run after rebasing on A.
+
 | Surface | Classification | Retention | Erasure | Restore |
 | --- | --- | --- | --- | --- |
 | `session.audience` | credential metadata, no new identity | with `session` (existing `EXPIRED_CREDENTIALS`) | cascade from `user` | all sessions deleted (existing) |
-| `auth_otp_deliveries` | e-mail address + delivery fact; no code | new rule: delete after `authOutboxMaxAgeSeconds` and ≥ 600 s, unless held (`AUTH_OUTBOX`, e-mail refs) | delete by e-mail | kept (no credential); erased e-mails re-applied by ledger |
+| `my_otp_outbox` | e-mail address + delivery fact; no code | new rule: delete after `authOutboxMaxAgeSeconds` and ≥ 600 s, unless held (`AUTH_OUTBOX`, e-mail refs) | delete by e-mail | kept (no credential); erased e-mails re-applied by ledger |
 | `session_exchanges` | credential hashes, customer FK, return path (no PD) | `EXPIRED_CREDENTIALS` after grace, refs = customer/user | cascade from `customers` / `session` | `DELETE` all |
 | `lms_sessions` | credential hash, customer FK | `EXPIRED_CREDENTIALS` after grace | cascade | `DELETE` all |
 | `verification` rows of `emailOTP` | e-mail in identifier, hashed code | extended classifier (§4) | extended classifier | all deleted (existing) |
@@ -493,11 +519,14 @@ canary proxies, Kinescope protected playback right after payment and denial afte
    (table rebuilds, E/coordinator) or an owner decision that the account documents of an existing
    release are authoritative for my. OTP send stays blocked (`LEGAL_RELEASE_NOT_FOUND`) until
    decided; local tests use a fixture release.
-2. **Shared files:** `pd-retention.ts`, `erasure-restore.ts` (classifier, fingerprints, restore
-   delete), `origins.ts` (`MY_ORIGIN`), `app.ts`/`server.ts` (route registration, resolver
+2. **Shared files** (coordinator's integration order: after A's 0037; each PR recomputes both
+   fingerprints on its own base, and a hash conflict is resolved only by recomputing):
+   `pd-retention.ts`, `erasure-restore.ts` (B's own classification block: OTP verification rows,
+   0038 tables, restore delete), `origins.ts` in commerce-v2 and `apps/platform/lib` (additive optional `MY_ORIGIN`;
+   byte-for-byte unchanged behaviour in mode `off`), `app.ts`/`server.ts` (route registration, resolver
    wiring), `apps/platform` `/auth/lms/*` handlers and `/account` redirect (A), `commerce-proxy.ts`
    (root `lms`; mode-`on` narrowing of `checkout`/`refunds` on LMS), `package.json`/lockfile
-   (workspace `apps/my`), `test.yml` job. Each goes to the coordinator as a concrete diff before
+   (workspace `apps/my`; on conflict the lockfile is regenerated after rebase, never merged by hand), `test.yml` job. Each goes to the coordinator as a concrete diff before
    editing.
 3. **Better Auth hook context:** whether `session.create.before` sees the request in 1.7.6 is
    verified in the first implementation commit; the AsyncLocalStorage fallback is specified above.
