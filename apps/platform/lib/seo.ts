@@ -1,6 +1,7 @@
 import type { Metadata, MetadataRoute } from "next";
 import type { CourseCommercialSummary } from "./commerce-summary";
 import type { CourseDetail, LessonDetail, StorefrontCourse } from "./content/public";
+import { parseCourseImage, type CourseImage } from "./public-media";
 
 type Breadcrumb = { readonly name: string; readonly path: string };
 
@@ -49,6 +50,18 @@ export function lessonIsAccessibleForFree(
 }
 
 /**
+ * The activated FLEX-63 image, if Commerce publishes one. Invalid or foreign data degrades to `null`;
+ * a misconfigured media origin must not turn a course page into a 500.
+ */
+export function courseImage(course: object): CourseImage | null {
+  try { return parseCourseImage((course as { image?: unknown }).image); } catch { return null; }
+}
+
+const openGraphImages = (image: CourseImage | null) => image
+  ? [{ url: image.og.url, width: image.og.width, height: image.og.height, alt: image.alt, type: "image/webp" }]
+  : undefined;
+
+/**
  * Page metadata is read from the public Commerce projection on each request. A course that is absent there
  * (unlisted, withdrawn or never published) is not indexable, even when an entitled viewer can still read it.
  */
@@ -58,11 +71,13 @@ export function courseMetadata(detail: CourseDetail | null): Metadata {
   const title = course.seo?.title || course.title;
   const description = course.seo?.description || course.summary;
   const path = coursePath(course.slug);
+  const images = openGraphImages(courseImage(course));
   return {
     title,
     description,
     alternates: { canonical: path },
-    openGraph: { title, description, type: "website", url: path, locale: "ru_RU" },
+    openGraph: { title, description, type: "website", url: path, locale: "ru_RU", siteName: "Flexperiment", ...(images ? { images } : {}) },
+    ...(images ? { twitter: { card: "summary_large_image" as const, images: images.map(({ url, alt }) => ({ url, alt })) } } : {}),
   };
 }
 
@@ -72,19 +87,22 @@ export function lessonMetadata(detail: LessonDetail | null): Metadata {
   const { course, lesson } = detail;
   const description = lesson.seo?.description || `${lesson.title} — урок курса «${course.title}».`;
   const path = lessonPath(course.slug, lesson.slug);
+  const images = openGraphImages(courseImage(course));
   return {
     title: lesson.seo?.title || lesson.title,
     description,
     robots: lesson.description ? undefined : { index: false, follow: true },
     alternates: { canonical: path },
-    openGraph: { title: lesson.title, description, type: "video.other", url: path, locale: "ru_RU" },
+    openGraph: { title: lesson.title, description, type: "video.other", url: path, locale: "ru_RU", siteName: "Flexperiment", ...(images ? { images } : {}) },
   };
 }
 
 export function courseJsonLd(origin: string, { course, commercial }: Pick<CourseDetail, "course" | "commercial">) {
+  const image = courseImage(course);
   return [{
     "@context": "https://schema.org", "@type": "Course",
     name: course.title, description: course.summary,
+    ...(image ? { image: [image.hero.url, image.og.url, image.card.url] } : {}),
     provider: { "@type": "Organization", name: "Flexperiment" },
     offers: courseOfferJsonLd(commercial),
   }, breadcrumbJsonLd(origin, [
@@ -110,7 +128,11 @@ export function lessonJsonLd(origin: string, { course, commercial, lesson }: Pic
 /** Serializes JSON-LD for an inline script without letting content close the element. */
 export const jsonLdScript = (value: unknown) => JSON.stringify(value).replace(/</g, "\\u003c");
 
-/** Only listed, non-withdrawn courses reach this list; lesson pages are noindex and stay out of it. */
+/**
+ * Only listed, non-withdrawn courses reach this list. Public lesson responses never carry the lesson
+ * description (it is revealed to entitled viewers only), so every public lesson page is
+ * `noindex, follow` and correctly stays out of the sitemap.
+ */
 export function publicSitemap(
   origin: string,
   courses: ReadonlyArray<{ readonly course: Pick<StorefrontCourse, "slug" | "publicContentUpdatedAt"> }>,
@@ -118,12 +140,16 @@ export function publicSitemap(
   return [
     { url: origin, changeFrequency: "weekly", priority: 1 },
     { url: `${origin}/courses`, changeFrequency: "daily", priority: 0.9 },
-    ...courses.map(({ course }) => ({
-      url: new URL(coursePath(course.slug), origin).toString(),
-      lastModified: course.publicContentUpdatedAt,
-      changeFrequency: "weekly" as const,
-      priority: 0.8,
-    })),
+    ...courses.map(({ course }) => {
+      const image = courseImage(course);
+      return {
+        url: new URL(coursePath(course.slug), origin).toString(),
+        lastModified: course.publicContentUpdatedAt,
+        changeFrequency: "weekly" as const,
+        priority: 0.8,
+        ...(image ? { images: [image.hero.url] } : {}),
+      };
+    }),
   ];
 }
 
@@ -135,4 +161,25 @@ export function robotsTxt(origin: string, deployEnv: string | undefined) {
     "Clean-param: utm_source&utm_medium&utm_campaign&utm_content&utm_term&yclid&gclid /courses",
     `Sitemap: ${origin}/sitemap.xml`, "",
   ].join("\n");
+}
+
+/**
+ * The IndexNow notification for a publish, unlist or withdrawal (FLEX-70). Only canonical public
+ * course/lesson URLs on the platform origin are sent; it is best effort and never proves indexing.
+ * Returns `null` when IndexNow is not configured or nothing qualifies.
+ */
+export function indexNowRequest(origin: string, key: string | undefined, paths: readonly string[]) {
+  if (!key || !/^[a-zA-Z0-9-]{8,128}$/.test(key)) return null;
+  const host = new URL(origin).host;
+  const urlList = [...new Set(paths.filter((path) => /^\/courses\/[a-z0-9-]+(\/lessons\/[a-z0-9-]+)?$/.test(path))
+    .map((path) => new URL(path, origin).toString()))].slice(0, 10_000);
+  if (!urlList.length) return null;
+  return {
+    url: "https://yandex.com/indexnow",
+    init: {
+      method: "POST", redirect: "error" as const,
+      headers: { "content-type": "application/json; charset=utf-8" },
+      body: JSON.stringify({ host, key, keyLocation: new URL("/indexnow-key.txt", origin).toString(), urlList }),
+    },
+  };
 }
