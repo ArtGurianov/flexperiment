@@ -254,7 +254,7 @@ describe("course media routes", () => {
   };
   const post = (hono: Hono<never>, body: Uint8Array, type = "image/png", cookie = "session=ok") =>
     hono.request("/v1/admin/v2/courses/course/media", {
-      method: "POST", body, headers: { cookie, "content-type": type, "x-media-alt": encodeURIComponent("Обложка") },
+      method: "POST", body: new Blob([body as Uint8Array<ArrayBuffer>]), headers: { cookie, "content-type": type, "x-media-alt": encodeURIComponent("Обложка") },
     });
 
   beforeEach(() => {

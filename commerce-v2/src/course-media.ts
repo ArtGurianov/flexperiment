@@ -116,7 +116,6 @@ const normalizedMime = (value: string | null | undefined) => {
 export function validateAltText(value: unknown): string {
   if (typeof value !== "string") throw new CourseMediaError("MEDIA_ALT_INVALID");
   const alt = value.normalize("NFC").replace(/\s+/g, " ").trim();
-  // eslint-disable-next-line no-control-regex
   if (!alt || alt.length > COURSE_MEDIA_LIMITS.maxAltLength || /[\u0000-\u001f\u007f<>]/.test(alt)) {
     throw new CourseMediaError("MEDIA_ALT_INVALID");
   }

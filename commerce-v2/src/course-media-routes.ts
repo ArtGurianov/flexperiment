@@ -27,6 +27,9 @@ const tokenMatches = (presented: string, expected: string) => {
   return a.length === b.length && timingSafeEqual(a, b);
 };
 
+/** Set by app.ts' Control Room session middleware for every /v1/admin/* request. */
+const adminId = (context: Context) => (context as unknown as Context<Bindings>).get("controlRoomAdminId")!;
+
 const failure = (context: Context, error: unknown) => {
   if (error instanceof CourseMediaError) {
     const status = error.code === "MEDIA_TOO_LARGE" ? 413
@@ -61,7 +64,7 @@ export function registerCourseMediaRoutes<E extends Bindings>(app: Hono<E>, deps
         // Source first: a crash after this leaves an unreferenced object for orphan cleanup, never a row
         // pointing at missing bytes. The key is content-addressed, so a retry rewrites the same object.
         await deps.sourceStore.put(courseMediaSourceKey(courseRef, image.sourceSha256), bytes, image.mime);
-        const result = registerCourseMediaUpload(deps.db, image, context.get("controlRoomAdminId")!, now().toISOString());
+        const result = registerCourseMediaUpload(deps.db, image, adminId(context), now().toISOString());
         return context.json({ asset: result.asset, replayed: result.replayed }, result.replayed ? 200 : 202, noStore);
       } catch (error) { return failure(context, error); }
     });
@@ -73,7 +76,7 @@ export function registerCourseMediaRoutes<E extends Bindings>(app: Hono<E>, deps
 
   app.post("/v1/admin/v2/course-media/:assetId/activate", (context) => {
     try {
-      const asset = activateCourseMedia(deps.db, context.req.param("assetId"), context.get("controlRoomAdminId")!, now().toISOString());
+      const asset = activateCourseMedia(deps.db, context.req.param("assetId"), adminId(context), now().toISOString());
       return context.json({ asset }, 200, noStore);
     } catch (error) {
       if (error instanceof CourseMediaError) return context.json({ error: { code: "MEDIA_NOT_READY" } }, 409, noStore);
