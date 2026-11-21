@@ -25,6 +25,7 @@ import { ErasureInstallationEvidence, readErasureInstallation } from "./erasure-
 import { AfterResponseTasks } from "./after-response";
 import { BrowserContexts, loadBrowserContextConfig } from "./browser-context";
 import { RefrefArrivalExchange } from "./refref-arrival-exchange";
+import { createIndexNowNotifier } from "./indexnow";
 
 async function startServer() {
 const installation=readErasureInstallation(process.env);
@@ -156,6 +157,9 @@ const app = createCommerceV2App({
   campaignUnsubscribeSecret,
   marketingBroadcastsEnabled,
   origins,
+  // FLEX-70: off unless INDEXNOW_ENABLED=true in production (owner decision at public opening).
+  invalidatePlatformCache: createIndexNowNotifier({ db, environment: process.env, deployEnvironment: config.deployEnvironment,
+    platformOrigin: origins.platform, log: event => console.log(JSON.stringify({ ...event, observedAt: new Date().toISOString() })) }),
   sendCampaignEmail,
   labGuestTrustedProxyIps: labGuestTrustedProxyIps(process.env.LAB_GUEST_TRUSTED_PROXY_IPS),
   sendLabTicketEmail: labTicketDelivery.configured ? async message => {
