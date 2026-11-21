@@ -404,7 +404,7 @@ Mode `off`: unchanged Stage A behaviour (FLEX-128 acceptance, no payment effects
 
 | Route | Surface | Fields (closed set) |
 | --- | --- | --- |
-| `GET /v1/my/profile` | MY | `email`, `displayName`, `consents` (status per kind and edition), `marketing`, `createdAt` |
+| `GET /v1/my/profile` | MY | `email`, `displayName`, `createdAt`, `consentRequired`, `marketing` (per-document status after the FLEX-125 decision) |
 | `GET /v1/me` | LMS (mode `on`) | `signedIn`, `displayName`, `emailMasked` (`a***@d***.ru`), `entitlements[{scope,courseRef}]` |
 | `GET /v1/me` | LAB | unchanged until FLEX-123 |
 
@@ -553,11 +553,61 @@ canary proxies, Kinescope protected playback right after payment and denial afte
 
 ## 14. Open conditions
 
-1. **FLEX-125 legal edition for my.** `legal_releases.storefront` is `CHECK IN ('COURSES','LAB')`
-   in 0001/0025/0030/0034. The single account edition for my needs either a new storefront value
-   (table rebuilds, E/coordinator) or an owner decision that the account documents of an existing
-   release are authoritative for my. OTP send stays blocked (`LEGAL_RELEASE_NOT_FOUND`) until
-   decided; local tests use a fixture release.
+1. **FLEX-125 legal edition for my (owner decision pending).** `legal_releases.storefront` is
+   `CHECK IN ('COURSES','LAB')` (0001/0025/0030/0034), and authenticated consent binds to the
+   `manifest_sha256` of a whole storefront release, so changing a purchase document resets
+   account consent. E recommends **variant C** (`docs/legal/my-account/2026-11-21-legal-release-storefront.md`,
+   #287): a separate, additive account edition. Until the owner decides, MY OTP send answers
+   `LEGAL_RELEASE_NOT_FOUND` (`MY_ACCOUNT_LEGAL_STOREFRONT` unset), and tests use a fixture
+   release. The sketch below shows the scope of C. **Conditional DDL, not implemented**; if chosen,
+   it joins this migration (registry reservation B/0038) before integration.
+
+   ```sql
+   -- Account documents only: privacy, personal_data, account_terms, marketing_consent.
+   CREATE TABLE account_legal_releases (
+     id TEXT PRIMARY KEY,
+     version TEXT NOT NULL UNIQUE,
+     manifest_json TEXT NOT NULL CHECK (json_valid(manifest_json)),
+     manifest_sha256 TEXT NOT NULL CHECK (length(manifest_sha256) = 64),
+     active INTEGER NOT NULL DEFAULT 0 CHECK (active IN (0,1)),
+     activated_at TEXT, actor TEXT NOT NULL,
+     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+   );
+   CREATE UNIQUE INDEX one_active_account_legal_release ON account_legal_releases(active) WHERE active = 1;
+   -- Same evidence shape as 0025, bound to the account edition instead of a storefront release.
+   CREATE TABLE account_consent_actions (
+     id TEXT PRIMARY KEY,
+     customer_id TEXT NOT NULL REFERENCES customers(id),
+     auth_user_id TEXT NOT NULL REFERENCES "user"(id),
+     account_release_id TEXT NOT NULL REFERENCES account_legal_releases(id),
+     release_version TEXT NOT NULL,
+     manifest_sha256 TEXT NOT NULL CHECK (length(manifest_sha256) = 64),
+     entry_point TEXT NOT NULL CHECK (entry_point IN ('MY_NAVBAR','LMS_CHECKOUT','LAB_CHECKOUT')),
+     action_key TEXT NOT NULL,
+     request_sha256 TEXT NOT NULL CHECK (length(request_sha256) = 64),
+     recorded_at TEXT NOT NULL CHECK (datetime(recorded_at) IS NOT NULL),
+     UNIQUE (customer_id, action_key)
+   );
+   CREATE TABLE account_consent_events (
+     sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+     action_id TEXT NOT NULL REFERENCES account_consent_actions(id) ON DELETE CASCADE,
+     kind TEXT NOT NULL CHECK (kind IN ('personal_data','account_terms','marketing_consent')),
+     granted INTEGER NOT NULL CHECK (granted IN (0,1)),
+     document_version TEXT NOT NULL,
+     document_sha256 TEXT NOT NULL CHECK (length(document_sha256) = 64),
+     UNIQUE (action_id, kind)
+   );
+   -- Plus two BEFORE INSERT authority triggers mirroring 0025 (verified bound user, active account
+   -- edition, exact document version/hash from its manifest; required kinds granted = 1).
+   -- Storefront releases keep only purchase documents and name the account edition by id + sha256
+   -- inside their manifest JSON; no existing table, CHECK or trigger changes.
+   ```
+
+   Classification if adopted: `account_legal_releases` holds operator-authored legal text (no subject
+   data; kept by backup, never erased); `account_consent_*` hold subject-linked evidence, handled
+   exactly like `authenticated_consent_*` in erasure (delete by customer) and retained by
+   retention. 0025 events stay as history, read-only, and are never migrated into the new tables.
+   Both fingerprints and the restore proof are recomputed for the combined schema.
 2. **Shared files** (coordinator's integration order: after A's 0037; each PR recomputes both
    fingerprints on its own base, and a hash conflict is resolved only by recomputing):
    `pd-retention.ts`, `erasure-restore.ts` (B's own classification block: OTP verification rows,
