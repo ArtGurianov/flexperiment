@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -108,7 +109,7 @@ export default function AnalyticsConsentManager() {
   const visible = prompt || settings;
   return visible ? <section className="consentDialog" role="dialog" aria-modal={settings || undefined} aria-label="Настройки аналитики">
     <strong>{settings ? "Настройки cookies" : "Необязательная аналитика отключена"}</strong>
-    <p>Яндекс Метрика не загружается без вашего разрешения. Выбор можно изменить в любое время. <a href="/legal/privacy">Подробнее в политике конфиденциальности</a>.</p>
+    <p>Яндекс Метрика не загружается без вашего разрешения. Выбор можно изменить в любое время. <Link href="/legal/privacy">Подробнее в политике конфиденциальности</Link>.</p>
     <div><button type="button" aria-pressed={consent === "DENIED"} onClick={() => choose("DENIED")}>Только необходимые</button><button type="button" aria-pressed={consent === "ALLOWED"} onClick={() => choose("ALLOWED")}>Разрешить аналитику</button>{settings && <button type="button" onClick={() => setSettings(false)}>Закрыть</button>}</div>
   </section> : null;
 }
