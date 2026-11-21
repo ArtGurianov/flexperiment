@@ -43,4 +43,7 @@ FLEX-75 · FLEX-128 (юридическая часть) · FLEX-16 · база `
 
 Проверка: `cd docs/legal/stage-a/2026-11-20-candidate && sha256sum -c SHA256SUMS`.
 
+Формулировку условия записи A пришлёт через координатора; её точный текст будет сведён в
+`account_terms.md` §3–4 отдельным коммитом с пересчётом хешей и redline.
+
 `candidate.1`, `draft` и их approval-записи не изменены. Закрытый Stage B (`closed-paid-test/`) не затронут.

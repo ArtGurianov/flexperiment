@@ -13,7 +13,7 @@
 | `authenticated_consent_actions` / `_events` (0025) | customer_id, auth_user_id, release id/version, manifest sha, document version/sha, выбор | `recordAuthenticatedConsents` (`authenticated-consents.ts`) | Да | Не очищается автоматически (пока аккаунт активен) | personal_data §6; account_terms §2 |
 | `account_consents`, `marketing_consents`, `registration intents` (до 0025) | исторические отметки до подтверждения email | устаревший поток | Да | `UNBOUND_INTENTS` — D-05 | account_terms §2 («не считаются согласием») |
 | `free_course_enrollments` (0024) | customer_id, product_id/version, `enrolled_at` | запись FREE (A · FLEX-128) | Да | — (пока аккаунт активен) | account_terms §3 |
-| **факт «Начат» (0037, резерв A)** | customer_id, course, время | A · FLEX-128 | **Нет — таблицы ещё нет; G-01** | **G-01** | account_terms §3; privacy §2 |
+| **`course_learning_starts` (0037, A · FLEX-128, ещё не в `main`)** | customer_id, курс, время начала; прогресс 0% | запись FREE (A) | **Назначено A: добавить в список erasure** (G-01) | **Назначено A: классификация + оба fingerprint** (G-01) | account_terms §3; privacy §2 |
 | `course_access_starts` (0004) | customer_id, course_ref, first_lesson_ref, first_accessed_at | платный доступ (возврат). FLEX-128: не менять из клика записи | Да | — | платные условия, не Stage A |
 | `lesson_resume_positions` (0001) | customer_id, lesson_ref, seconds, client_seq, client_ts, updated_at; одна строка на урок | `saveResumePosition` (`resume.ts`) ← `/v1/lessons/:ref/resume` (интервал + `sendBeacon`) | Да (и FK cascade) | — (пока аккаунт активен) | privacy §2 «Данные просмотра» |
 | `playback_access_events` (0008) | customer_id (без FK), lesson_ref, video_id, event_type, reason, occurred_at | `recordPlaybackAccessEvent` при grant/DRM callback | Да, по customer_id | `PLAYBACK_TELEMETRY` — D-05 | privacy §2, §5 |
@@ -61,4 +61,4 @@
 | FREE→PAID сохраняет запись | FLEX-128 (A) | **G-02** |
 | Уведомление за 30 дней о снятии курса | механизм служебного письма о курсе не найден | **G-04** |
 | Отписка в аккаунте | `recordAuthenticatedConsents(marketingConsent=false)`; UI — проверить | **G-05** |
-| Удаление включает все данные просмотра | список `erasure-restore.ts:146-148` | совпадает для существующих таблиц; новая таблица — G-01 |
+| Удаление включает все данные просмотра | список `erasure-restore.ts:146-148` | совпадает для существующих таблиц; `course_learning_starts` — назначено A (G-01) |
