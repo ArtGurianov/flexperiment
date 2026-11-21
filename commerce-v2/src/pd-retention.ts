@@ -3,6 +3,7 @@ import type Database from "better-sqlite3";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { classifyV2Database } from "./db";
+import { hasTable, verificationSubjectEmail } from "./my-session-storage";
 
 const categories = ["EXPIRED_CREDENTIALS", "AUTH_OUTBOX", "PLAYBACK_TELEMETRY", "UNBOUND_INTENTS", "BACKUP_ARCHIVES"] as const;
 const categorySchema = z.enum(categories);
@@ -64,6 +65,8 @@ const supportedSchemaSha256 = new Set([
   // 0035: owner storefront-switch observations (no subject data), the quote's opening generation in
   // checkout_quotes, and sales_activation frozen as history; no new identity store. Hashed journal.
   "6ef1be23e4d713fa77e81a1cb0391fcb1292d18634b3d2270751bec6ab58a728",
+  // FLEX-120/121 (B, reserved 0038): session.audience, my_otp_outbox, session_exchanges, lms_sessions.
+  "a82a7ceca9c5508d5a97aa3b7135f90271ce8aeacc6a46740879f1fa40489ca8",
 ]);
 const parse = <T>(schema: z.ZodType<T>, value: unknown): T => {
   const result = schema.safeParse(value); return result.success ? result.data : refuse("RETENTION_POLICY_OR_HOLD_INVALID");
@@ -143,9 +146,7 @@ export function cleanupOfflinePersonalData(db: Database.Database, input: {
     }
     for (const row of rows("verification")) {
       if (!older(row.expires_at, policy.expiredCredentialsGraceSeconds)) continue;
-      let value: unknown; try { value = JSON.parse(String(row.value)); } catch { refuse("RETENTION_VERIFICATION_CLASSIFICATION_REQUIRED"); }
-      if (!value || typeof value !== "object" || typeof (value as { email?: unknown }).email !== "string") refuse("RETENTION_VERIFICATION_CLASSIFICATION_REQUIRED");
-      const email = (value as { email: string }).email.trim().toLocaleLowerCase("en-US");
+      const email = verificationSubjectEmail(row) ?? refuse("RETENTION_VERIFICATION_CLASSIFICATION_REQUIRED");
       const refs = emailRefs(email);
       if (!held("EXPIRED_CREDENTIALS", refs)) result.expiredCredentials += db.prepare("DELETE FROM verification WHERE id=?").run(row.id).changes;
     }
@@ -155,6 +156,31 @@ export function cleanupOfflinePersonalData(db: Database.Database, input: {
       // Require last-update age AND actual link expiry. No ambiguous-send replay.
       if (older(row.updated_at, policy.authOutboxMaxAgeSeconds) && older(row.created_at, 600) && !held("AUTH_OUTBOX", refs)) {
         result.authOutbox += db.prepare("DELETE FROM auth_email_outbox WHERE id=?").run(row.id).changes;
+      }
+    }
+    // FLEX-120/121: OTP delivery facts follow the auth outbox policy; exchange and derived LMS
+    // credentials expire with the other credentials. Older reviewed schemas lack these tables.
+    if (hasTable(db, "my_otp_outbox")) for (const row of rows("my_otp_outbox")) {
+      const refs = emailRefs(String(row.recipient_normalized));
+      if (older(row.updated_at, policy.authOutboxMaxAgeSeconds) && older(row.created_at, 600) && !held("AUTH_OUTBOX", refs)) {
+        result.authOutbox += db.prepare("DELETE FROM my_otp_outbox WHERE id=?").run(row.id).changes;
+      }
+    }
+    if (hasTable(db, "session_exchanges")) {
+      const customerRefs = (id: unknown) => {
+        const customer = customers.find(candidate => candidate.id === id);
+        return customer ? subjectRefs(customer) : id ? [{ kind: "CUSTOMER" as const, value: String(id) }] : [];
+      };
+      for (const row of rows("lms_sessions")) {
+        if (older(row.expires_at, policy.expiredCredentialsGraceSeconds) && !held("EXPIRED_CREDENTIALS", customerRefs(row.customer_id))) {
+          result.expiredCredentials += db.prepare("DELETE FROM lms_sessions WHERE id=?").run(row.id).changes;
+        }
+      }
+      for (const row of rows("session_exchanges")) {
+        if (older(row.expires_at, policy.expiredCredentialsGraceSeconds) && !held("EXPIRED_CREDENTIALS", customerRefs(row.customer_id))
+          && !db.prepare("SELECT 1 FROM lms_sessions WHERE exchange_id=?").get(row.id)) {
+          result.expiredCredentials += db.prepare("DELETE FROM session_exchanges WHERE id=?").run(row.id).changes;
+        }
       }
     }
     for (const row of rows("playback_access_events")) {
@@ -177,9 +203,8 @@ export function cleanupOfflinePersonalData(db: Database.Database, input: {
       if (db.prepare("SELECT 1 FROM auth_email_outbox WHERE recipient_normalized=? LIMIT 1").get(customer.email_normalized)) continue;
       let pendingLink = false;
       for (const verification of rows("verification")) {
-        let body: unknown; try { body = JSON.parse(String(verification.value)); } catch { refuse("RETENTION_VERIFICATION_CLASSIFICATION_REQUIRED"); }
-        if (!body || typeof body !== "object" || typeof (body as { email?: unknown }).email !== "string") refuse("RETENTION_VERIFICATION_CLASSIFICATION_REQUIRED");
-        if ((body as { email: string }).email.trim().toLocaleLowerCase("en-US") === customer.email_normalized) pendingLink = true;
+        const email = verificationSubjectEmail(verification) ?? refuse("RETENTION_VERIFICATION_CLASSIFICATION_REQUIRED");
+        if (email === customer.email_normalized) pendingLink = true;
       }
       if (pendingLink) continue;
       // Preserve every grant/order/quote/recipient/access/progress fact, even if

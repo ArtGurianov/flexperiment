@@ -3,6 +3,8 @@ import { createCommerceV2App } from "./app";
 import { migrateV2, openV2Database } from "./db";
 import { loadCommerceRuntimeConfig } from "./payment-mode";
 import { createAuthRuntime } from "./auth";
+import { loadMyIdentityConfig } from "./my-session";
+import { createMyOtp, myAccountLegalStorefront } from "./my-session-otp";
 import { verifySmartCaptcha } from "./smartcaptcha";
 import { playbackKeyringFromEnvironment } from "./playback-auth";
 import { HttpKinescopeClient } from "./kinescope";
@@ -18,7 +20,7 @@ import { labGuestTrustedProxyIps } from "./lab-guest-client-ip";
 import { controlRoomTrustedProxyIps } from "./control-room-client-ip";
 import { controlRoomTotpKey } from "./control-room-totp";
 import { dispatchPendingCampaigns, type CampaignEmail } from "./campaigns";
-import { createLabTicketEmailDelivery, createMagicLinkEmailDelivery } from "./auth-email-delivery";
+import { createLabTicketEmailDelivery, createMagicLinkEmailDelivery, createMyOtpEmailDelivery } from "./auth-email-delivery";
 import { dirname } from "node:path";
 import { prepareErasureRuntime } from "./erasure-runtime";
 import { ErasureInstallationEvidence, readErasureInstallation } from "./erasure-installation";
@@ -64,9 +66,14 @@ if (config.deployEnvironment === "production" && (!controlRoomSessionSecret || !
   throw new Error("CONTROL_ROOM_AUTH_CONFIGURATION_REQUIRED");
 }
 
+// FLEX-120/121 (B block): MY identity. MY_IDENTITY_MODE defaults to `off` (Stage A unchanged).
+const myIdentity = loadMyIdentityConfig(process.env, origins);
+const myOtpDelivery = createMyOtpEmailDelivery();
 const auth = createAuthRuntime({
   db,
   sendMagicLinkEmail: magicLinkDelivery.send,
+  sendMyOtpEmail: myOtpDelivery.send,
+  myIdentity,
   erasureFence,
 });
 const smartCaptchaSecret = process.env.SMARTCAPTCHA_SERVER_KEY;
@@ -138,6 +145,12 @@ const app = createCommerceV2App({
   authHandler: auth.auth.handler,
   prepareMagicLinkInitiation: auth.prepareMagicLinkInitiation,
   authenticateCustomer: auth.authenticateCustomer,
+  myIdentity,
+  myOtp: createMyOtp({ db, api: auth.auth.api, erasureFence,
+    accountLegalStorefront: myAccountLegalStorefront(process.env.MY_ACCOUNT_LEGAL_STOREFRONT),
+    verifyCaptcha: smartCaptchaSecret ? (token, ip) => verifySmartCaptcha(token, ip, smartCaptchaSecret) : undefined }),
+  resolveSession: auth.resolveSession,
+  signOutMySession: (headers) => auth.auth.api.signOut({ headers, asResponse: true }),
   verifyCaptcha: smartCaptchaSecret ? (token, ip) => verifySmartCaptcha(token, ip, smartCaptchaSecret) : undefined,
   kinescopeClient,
   kinescopeLessonsFolderId: process.env.KINESCOPE_LESSONS_FOLDER_ID,

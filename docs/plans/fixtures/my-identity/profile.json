@@ -1,0 +1,53 @@
+{
+  "schema": "flexperiment.my-identity.profile/1",
+  "recipient": "FLEX-123",
+  "MY": {
+    "route": "GET /v1/my/profile",
+    "fields": [
+      "email",
+      "displayName",
+      "createdAt",
+      "consentRequired",
+      "marketing"
+    ],
+    "example": {
+      "email": "buyer@example.test",
+      "displayName": null,
+      "createdAt": "2026-11-20 10:00:00",
+      "consentRequired": false,
+      "marketing": false
+    },
+    "note": "Per-document consent status follows the FLEX-125 decision (account edition); until then consentRequired summarises it."
+  },
+  "LMS": {
+    "route": "GET /v1/me",
+    "fields": [
+      "signedIn",
+      "displayName",
+      "emailMasked",
+      "entitlements"
+    ],
+    "example": {
+      "signedIn": true,
+      "displayName": null,
+      "emailMasked": "b***@e***.test",
+      "entitlements": [
+        {
+          "scope": "COURSE",
+          "courseRef": "flex-basics"
+        }
+      ]
+    },
+    "signedOut": {
+      "signedIn": false
+    }
+  },
+  "neverOnLmsOrLab": [
+    "customerId",
+    "authUserId",
+    "sessionId",
+    "email",
+    "orders",
+    "refunds"
+  ]
+}

@@ -35,6 +35,9 @@ import { resolvePlaybackAccess } from "./playback-access";
 import { issuePlaybackToken, verifyPlaybackToken, type PlaybackKeyring } from "./playback-auth";
 import { recordPlaybackAccessEvent } from "./playback-telemetry";
 import { loadCommerceOrigins, storefrontOrigin, type CommerceOrigins, type Storefront } from "./origins";
+import type { MyIdentityConfig, ResolvedSession } from "./my-session";
+import type { createMyOtp } from "./my-session-otp";
+import { registerMySessionRoutes } from "./my-session-routes";
 import { databaseReady, READINESS_DEADLINE_MS, withinDeadline, type RefrefReadiness } from "./readiness";
 import { storefrontSwitchStatus } from "./storefront-switch";
 import { publicLabCatalogue } from "./lab-catalogue";
@@ -91,6 +94,11 @@ type Dependencies = {
   readonly erasureFence?: ErasureRuntimeFence;
   /** Arrival endpoints and browser contexts (ART-378); absent while the feature is off. */
   readonly browserContexts?: BrowserContexts;
+  // FLEX-120/121 (B block): MY identity. Absent ⇒ mode `off` with the configured origins.
+  readonly myIdentity?: MyIdentityConfig;
+  readonly myOtp?: ReturnType<typeof createMyOtp>;
+  readonly resolveSession?: (headers: Headers) => Promise<ResolvedSession | null>;
+  readonly signOutMySession?: (headers: Headers) => Promise<Response>;
 };
 
 type AppBindings = { Variables: { controlRoomAdminId?: string; controlRoomSessionId?: string } };
@@ -719,6 +727,10 @@ export function createCommerceV2App(deps: Dependencies) {
     if (!presented || !secureEqual(presented, deps.serviceToken)) return context.json({ code: "UNAUTHORIZED" }, 401, noStore);
     await next();
   });
+
+  // FLEX-120/121 (B block): audience guard and MY routes, ahead of the public auth router.
+  registerMySessionRoutes(app as unknown as Hono, { db: deps.db, config: deps.myIdentity ?? { mode: "off", origins },
+    otp: deps.myOtp, resolveSession: deps.resolveSession, signOut: deps.signOutMySession });
 
   if (deps.authHandler) {
     app.post("/v1/auth/sign-in/magic-link", async (context) => {
