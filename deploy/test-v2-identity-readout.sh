@@ -3,7 +3,7 @@
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 script="$here/release/read-v2-identity.sh"
-tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/v2-identity-readout.XXXXXX")"; trap 'rm -rf "$tmp"' EXIT
 A=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 B=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 
