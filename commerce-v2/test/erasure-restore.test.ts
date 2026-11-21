@@ -88,7 +88,7 @@ describe("real isolated old SQLite backup + independent latest erasure journal",
         .get() as { document_json: string; content_hash: string };
       expect(createHash("sha256").update(version.document_json).digest("hex")).toBe(version.content_hash);
       expect(restored.pragma("integrity_check", { simple: true })).toBe("ok"); expect(restored.pragma("foreign_key_check")).toEqual([]);
-      const count = rowCount(restored, "schema_migrations"); expect(count).toBe(35);
+      const count = rowCount(restored, "schema_migrations"); expect(count).toBe(36);
       expect(applyIsolatedRestoreErasure(restored, await verified(), keys, "canary", now).erasedAccounts).toBe(0);
       // Original source has not been erased by the isolated proof.
       expect(rowCount(db, "customers")).toBe(2); expect(rowCount(db, '"session"')).toBe(2);
@@ -166,5 +166,29 @@ describe("real isolated old SQLite backup + independent latest erasure journal",
     await expect(VerifiedErasureLedger.read({ scope: "canary", bundle: ledger.export(), keys,
       readCurrentCheckpoint: async () => { throw new Error("unavailable"); } })).rejects.toThrow("ERASURE_CHECKPOINT_UNAVAILABLE");
     expect(db.serialize()).toEqual(before);
+  });
+
+  // FLEX-120/121 (B): MY OTP rows, delivery facts, exchanges and derived LMS sessions after restore.
+  it("re-applies erasure to MY OTP deliveries and drops every exchange and LMS session on restore", async () => {
+    const otpHash = "A".repeat(43);
+    for (const id of ["deleted-customer", "other-customer"]) {
+      db.prepare("INSERT INTO verification(id,identifier,value,expires_at) VALUES (?,?,?,?)")
+        .run(`otp-${id}`, `sign-in-otp-${id}@example.test`, `${otpHash}:0`, "2027-01-01");
+      db.prepare("INSERT INTO my_otp_outbox(id,recipient_normalized,state) VALUES (?,?,'SENT')").run(`otp-outbox-${id}`, `${id}@example.test`);
+      db.prepare(`UPDATE "session" SET audience='MY' WHERE id=?`).run(`session-${id}`);
+      db.prepare(`INSERT INTO session_exchanges(id,audience,return_path,state_sha256,status,my_session_id,customer_id,code_sha256,
+        code_expires_at,created_at,expires_at,issued_at,closed_at) VALUES (?,'LMS','/courses/x',?,'REDEEMED',?,?,?,?,?,?,?,?)`)
+        .run(`tx-${id}`.padEnd(22, "x").slice(0, 22), "b".repeat(64), `session-${id}`, id, createHash("sha256").update(id).digest("hex"),
+          "2027-01-01", "2026-10-11", "2027-01-01", "2026-10-11", "2026-10-11");
+      db.prepare("INSERT INTO lms_sessions(id,token_sha256,parent_session_id,customer_id,exchange_id,created_at,expires_at) VALUES (?,?,?,?,?,?,?)")
+        .run(`lms-${id}`, createHash("sha256").update(`lms-${id}`).digest("hex"), `session-${id}`, id, `tx-${id}`.padEnd(22, "x").slice(0, 22), "2026-10-11", "2027-01-01");
+    }
+    db.prepare(`INSERT INTO session_exchanges(id,audience,return_path,state_sha256,status,created_at,expires_at)
+      VALUES ('started-exchange-00000','LMS','/courses/x',?,'STARTED','2026-10-11','2027-01-01')`).run("c".repeat(64));
+    tombstone();
+    applyIsolatedRestoreErasure(db, await verified(), keys, "canary", now);
+    expect(db.prepare("SELECT recipient_normalized FROM my_otp_outbox").all()).toEqual([{ recipient_normalized: "other-customer@example.test" }]);
+    for (const table of ['"session"', "verification", "session_exchanges", "lms_sessions"]) expect([table, rowCount(db, table)]).toEqual([table, 0]);
+    expect(db.pragma("foreign_key_check")).toEqual([]);
   });
 });
