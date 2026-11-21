@@ -828,6 +828,68 @@
       "totals": {
         "GRANT": 0
       }
+    },
+    {
+      "id": "P15",
+      "title": "LAB paid: ticket once, prepayment receipt, closing receipt reserved with the sealed contact",
+      "binding": "lab",
+      "kind": "LAB",
+      "fiscalizationMode": "MERCHANT",
+      "steps": [
+        {
+          "observe": {
+            "source": "CREATE_RESPONSE",
+            "outcome": "ACCEPTED",
+            "providerPaymentId": "fake-pay-1"
+          },
+          "expect": {
+            "state": "PENDING",
+            "effects": [
+              "READ_BACK"
+            ]
+          }
+        },
+        {
+          "observe": {
+            "source": "READ_BACK",
+            "outcome": "FOUND",
+            "providerPaymentId": "fake-pay-1",
+            "status": "PAID",
+            "merchantOrderRef": "ord-lab-0001",
+            "amountKopecks": 350000,
+            "currency": "RUB",
+            "snapshotHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "expect": {
+            "state": "PAID",
+            "effects": [
+              "GRANT",
+              "ISSUE_PAYMENT_RECEIPT",
+              "RESERVE_FINAL_SETTLEMENT"
+            ]
+          }
+        },
+        {
+          "observe": {
+            "source": "READ_BACK",
+            "outcome": "FOUND",
+            "providerPaymentId": "fake-pay-1",
+            "status": "PAID",
+            "merchantOrderRef": "ord-lab-0001",
+            "amountKopecks": 350000,
+            "currency": "RUB",
+            "snapshotHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "expect": {
+            "state": "PAID",
+            "effects": []
+          }
+        }
+      ],
+      "totals": {
+        "GRANT": 1,
+        "RESERVE_FINAL_SETTLEMENT": 1
+      }
     }
   ]
 }

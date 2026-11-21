@@ -3,7 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
-  admitFinalSettlement, admitRefund, applyFiscalObservation, applyPaymentObservation, applyRefundObservation, beginFiscalEvent, beginPayment,
+  admitErasure, admitFinalSettlement, admitRefund, cancelReservedSettlement, applyFiscalObservation, applyPaymentObservation, applyRefundObservation, beginFiscalEvent, beginPayment,
   beginRefund, buyerPaymentStatus, buyerRefundStatus, NATIVE_CONTRACT_VERSION, paymentReceiptMethod, routeContour,
   type FiscalBinding, type FiscalObservation, type FiscalRecord, type FiscalizationMode, type PaymentBinding, type PaymentObservation,
   type PaymentRecord, type ProductKind, type RefundBinding, type RefundObservation, type RefundRecord,
@@ -32,8 +32,11 @@ const fiscal = load<{
   contract: string; begin: { mode: FiscalizationMode; expect: Expect }[];
   receiptMethod: { kind: ProductKind; policy: string; expect?: string; error?: string }[];
   finalSettlementAdmission: { id: string; input: Parameters<typeof admitFinalSettlement>[0]; expect: unknown }[];
+  reservedSettlementCancellation: { id: string; state: Parameters<typeof cancelReservedSettlement>[0];
+    cause: Parameters<typeof cancelReservedSettlement>[1]; expect: unknown }[];
   scenarios: (Scenario<FiscalObservation> & { binding: FiscalBinding })[];
 }>("fiscal-scenarios.json");
+const erasure = load<{ contract: string; cases: { id: string; subject: Parameters<typeof admitErasure>[0]; expect: unknown }[] }>("erasure-scenarios.json");
 const buyer = load<{
   contract: string;
   payment: { state: Parameters<typeof buyerPaymentStatus>[0]; kind: ProductKind; expect: string }[];
@@ -53,7 +56,7 @@ const decided = (d: { state: string; effects: readonly string[]; reason?: string
 
 describe("native payment contract fixtures", () => {
   it("all fixtures name this contract version", () => {
-    for (const file of [payments, refunds, fiscal, buyer]) expect(file.contract).toBe(NATIVE_CONTRACT_VERSION);
+    for (const file of [payments, refunds, fiscal, erasure, buyer]) expect(file.contract).toBe(NATIVE_CONTRACT_VERSION);
   });
 
   it("begins a payment only under sales admission", () => {
@@ -130,6 +133,10 @@ describe("fiscal port contract fixtures", () => {
     expect(admitFinalSettlement(c.input)).toEqual(c.expect);
   });
 
+  it.each(fiscal.reservedSettlementCancellation.map((c) => [c.id, c] as const))("reserved settlement cancellation %s", (_id, c) => {
+    expect(cancelReservedSettlement(c.state, c.cause)).toEqual(c.expect);
+  });
+
   describe.each(fiscal.scenarios.map((s) => [s.id, s] as const))("fiscal %s", (_id, scenario) => {
     it(scenario.title, () => {
       let record: FiscalRecord = { state: "SUBMITTING", providerReceiptId: null };
@@ -144,6 +151,12 @@ describe("fiscal port contract fixtures", () => {
       }
       for (const [effect, count] of Object.entries(scenario.totals ?? {})) expect(counted(all)[effect] ?? 0, effect).toBe(count);
     });
+  });
+});
+
+describe("erasure with unfinished financial operations", () => {
+  it.each(erasure.cases.map((c) => [c.id, c] as const))("erasure %s", (_id, c) => {
+    expect(admitErasure(c.subject)).toEqual(c.expect);
   });
 });
 

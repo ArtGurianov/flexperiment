@@ -39,7 +39,7 @@ lifecycle (D); Refref v10 (FLEX-124); public sales switches (owner; FLEX-90); pa
 | I4 | Retries resend the **same** request under the **same** idempotency key. Keys are deterministic: `native-pay:{orderPublicId}:1`, `native-refund:{refundRequestPublicId}:1`, and the fiscal `eventRef` (§6). The request body is frozen before the first send and never rebuilt. The refund body stays in the existing sealed envelope (`refund-envelope.ts`). |
 | I5 | `GRANT` happens once, on the transition into `PAID`. `REVOKE_ACCESS` happens once, on the transition of a full-line refund into `SUCCEEDED`. Effects are applied in the same SQLite transaction as the state change, so a crash either keeps both or neither. |
 | I6 | A contradiction (a late success after a terminal status, a regression such as PAID→DECLINED, a foreign provider id, or a known payment the provider no longer finds) goes to `REVIEW_REQUIRED` with `ALERT`. No automatic grant, revoke or refund follows. |
-| I7 | New money (`PROVIDER_CREATE`, `REPLAY_CREATE_SAME_KEY`) requires sales admission at the moment of sending: the storefront switch and the FLEX-90 emergency stop. Read-back, fulfilment of money already received, refunds and fiscal reconciliation never wait for admission. |
+| I7 | New money (`PROVIDER_CREATE`, `REPLAY_CREATE_SAME_KEY`) requires sales admission at the moment of sending: the storefront switch and the FLEX-90 emergency stop. Read-back, fulfilment of money already received, refunds and fiscal reconciliation never wait for admission. This means the FLEX-90 emergency stop does **not** stop refund execution. The coordinator has put that to the owner as an explicit decision; until the owner answers, this is the default. |
 | I8 | A fiscal event never creates, blocks or reverses a financial effect. A missing or rejected receipt alerts an operator. Access already granted on a confirmed payment stays. |
 | I9 | Each order's contour (`NATIVE` or `REFREF_RC2`) is decided by what is stored with the order, never by current configuration. |
 
@@ -65,6 +65,10 @@ The full table is `applyPaymentObservation`. In summary:
 | read-back `PAID` | DECLINED, EXPIRED | REVIEW_REQUIRED | ALERT (`LATE_PAYMENT_AFTER_TERMINAL`) |
 | read-back `DECLINED` / `EXPIRED` | CREATING, CREATE_UNKNOWN, PENDING | same as provider | RELEASE_HOLD (LAB) |
 | read-back `DECLINED` / `EXPIRED` / `PENDING` | PAID | REVIEW_REQUIRED | ALERT; access stays |
+
+On `PAID` for a LAB line, `RESERVE_FINAL_SETTLEMENT` creates the line's `FINAL_SETTLEMENT` fiscal event in `AWAITING_SERVICE` with the sealed receipt contact, in the same transaction (§6.1).
+
+**One payment per order.** A payment is unique per order: `native_payments.order_id` is UNIQUE and the key ends in `:1`. After `DECLINED` or `EXPIRED`, buying again means a **new order with a new snapshot**. A second payment on the same order is impossible by construction.
 
 The provider payment request carries `merchantOrderRef`, the amount and currency, the payment
 purpose (`payment-purpose.ts`, already frozen in the v2 snapshot) and `snapshotHash` as merchant
@@ -148,6 +152,27 @@ Modes (`fiscalizationMode`, already part of the snapshot):
   `finalSettlementWithoutPayment`. Today's Точка «Чеки» path does not (FLEX-85), so LAB stays
   closed. The capability is checked, never assumed (fixture S02).
 
+### 6.1 Receipt contact for the later closing receipt
+
+The payment envelope (with the e-mail) is purged when the payment reaches `PAID`. D stores only
+`receipt_contact_sha256`. The contact for a `FINAL_SETTLEMENT` issued after the occurrence ends
+therefore comes from its own reservation:
+
+- On `PAID` for a LAB line, the `RESERVE_FINAL_SETTLEMENT` effect inserts `fiscal_events`
+  (`FINAL_SETTLEMENT`, state `AWAITING_SERVICE`). It is written in the same transaction as the
+  ticket, and the receipt contact is copied, sealed, from the payment envelope before that envelope
+  is purged. The frozen lines and amount come from `order_lines.fiscal_item_json`.
+- The issuance job moves it `AWAITING_SERVICE → SUBMITTING` only when `admitFinalSettlement` admits
+  it (§7). The contact is purged when the event reaches a terminal state (`REGISTERED`, `REJECTED`).
+- **Cancellation** (`cancelReservedSettlement`): a successful refund of the line, or a cancellation
+  of the occurrence, before issuance moves the event to `CANCELLED` and purges the contact. Once
+  issuance has started it cannot be cancelled; that case alerts (fixture C04).
+- **Retention ceiling:** the sealed contact is kept at most until the occurrence's `ends_at` plus 30
+  days (proposal). If no `SERVICE_RENDERED` fact has arrived by then, the event goes to
+  `REVIEW_REQUIRED` with an alert, and the contact stays only while that review is open. Retention
+  ends with a decision, never silently.
+- Refund admission treats `AWAITING_SERVICE` and `CANCELLED` as "settlement not started" (A08, A09).
+
 The adapter port (`fiscal-adapter.ts`, with a fake in tests):
 
 ```ts
@@ -162,11 +187,12 @@ interface FiscalAdapter {
 
 Proposed single contract, to be agreed with D through the coordinator:
 
-- **D owns** an authoritative, append-only fact per order line:
+- **D owns** an authoritative, append-only fact per order line, in D's own table `lab_service_renditions` (D's migration 0040, not 0039):
 
   ```json
   { "schema": "flexperiment.service-rendered/1", "orderLineId": "…", "occurrenceRef": "…",
-    "renderedAt": "ISO-8601", "evidenceRef": "lab-lifecycle:…", "recordedBy": "operator:…" }
+    "renderedAt": "ISO-8601", "evidenceRef": "lab-lifecycle:…", "recordedBy": "operator:…",
+    "basis": "CHECKED_IN" | "ATTENDED_ATTESTED" }
   ```
 
   It is written once, by the LAB lifecycle (`lab-lifecycle*.ts` / `service-rendered*.ts`), when the
@@ -176,6 +202,7 @@ Proposed single contract, to be agreed with D through the coordinator:
 - **C owns** admission and issuance. `admitFinalSettlement` admits exactly one `FINAL_SETTLEMENT`
   per line when all of these hold:
   - kind `LAB`;
+  - the line's settlement is `AWAITING_SERVICE` (reserved at PAID, §6.1);
   - the adapter can settle without payment;
   - the fact matches the line and the occurrence;
   - the occurrence is not cancelled;
@@ -188,9 +215,14 @@ Proposed single contract, to be agreed with D through the coordinator:
   `eventRef`, then replay under that key. A refund request arriving while settlement is in any state
   except `NOT_REQUIRED` is refused (`REFUND_AFTER_FINAL_SETTLEMENT_NOT_SUPPORTED`) and goes to a
   person.
-- **Interface.** C exposes `recordServiceRendered(db, fact)`, which validates the fact and
-  enqueues the fiscal event in one transaction, and `reconcilePendingFiscalEvents(db, adapter)`.
-  D calls the first and does not touch fiscal tables.
+- **Interface (coordinator decision of 21.11.2026).**
+  - D writes the fact through its own `recordServiceRendered(fact)` into `lab_service_renditions`
+    and exposes a read function for one order line.
+  - C's issuance job (`reconcilePendingFiscalEvents(db, adapter)`) scans `AWAITING_SERVICE`
+    settlements, reads the fact through D's function, applies `admitFinalSettlement` and submits.
+  - D never touches fiscal tables, and C never writes D's table. There is no FK between 0040 and
+    0039.
+  - C exports `routeContour` for D.
 
 ### 7.1 Reconciliation with D's proposed `LabFinalSettlementPort` (20.11.2026)
 
@@ -254,7 +286,7 @@ redirect:
 | CREATING, CREATE_UNKNOWN | `CONFIRMING` | `CONFIRMING` |
 | PENDING | `AWAITING_PAYMENT` (with the provider payment URL) | same |
 | PAID | `ACCESS_GRANTED` | `TICKET_ISSUED` |
-| DECLINED / EXPIRED | `DECLINED` / `EXPIRED` (a new purchase may start) | same; the hold is released |
+| DECLINED / EXPIRED | `DECLINED` / `EXPIRED`; trying again creates a new order and snapshot, never a second payment on this one | same; the hold is released |
 | REVIEW_REQUIRED | `SUPPORT_REVIEW` (the order and support reference are shown) | same |
 
 Refund: `REFUND_PROCESSING` (SUBMITTING, SUBMIT_UNKNOWN, PROCESSING), `REFUNDED`, and
@@ -317,15 +349,21 @@ stay byte-identical.
 | `native_payment_observations` | append-only: `native_payment_id`, `source`, `observation_json` (redacted, no e-mail), `decided_state`, `reason`, `observed_at` | none | retained with the payment |
 | `native_callback_inbox` | `provider`, `provider_event_id` UNIQUE, `body_sha256`, `signature_valid`, `received_at`, `processed_at` | none (raw body not stored; hash only) | short operational retention (proposal: 90 days) |
 | `native_refunds` | `refund_request_id` UNIQUE FK, `native_payment_id` FK, `idempotency_key` UNIQUE, `amount_kopecks`, `state`, `provider_refund_id` UNIQUE, sealed envelope | sealed e-mail only, purged at terminal state | retained; envelope purged |
-| `fiscal_events` | `event_ref` UNIQUE, `kind`, `order_line_id` FK, `refund_request_id` NULL FK, `payment_method`, `amount_kopecks`, `items_json` (frozen), `mode`, `state`, `provider_receipt_id`, sealed contact | sealed contact only, purged at terminal state | retained (fiscal) |
-| `service_rendered_facts` | `order_line_id` UNIQUE FK, `occurrence_ref`, `rendered_at`, `evidence_ref`, `recorded_by` | none | retained; **owner of the writer is D**. The table may move to D's 0040 if the coordinator prefers |
+| `fiscal_events` | `event_ref` UNIQUE, `kind`, `order_line_id` FK, `refund_request_id` NULL FK, `payment_method`, `amount_kopecks`, `items_json` (frozen), `mode`, `state` (incl. `AWAITING_SERVICE`, `CANCELLED`), `provider_receipt_id`, sealed contact | sealed contact only; purged at terminal state or cancellation; for `AWAITING_SERVICE`, at most `ends_at` + 30 days, then review (§6.1) | retained (fiscal) |
+
+The service-rendered fact is **not** in 0039: it is D's `lab_service_renditions` in 0040.
 
 All finality is enforced in SQL as well as in code: CHECK on states, and triggers that refuse
 leaving a terminal state and refuse a sealed envelope on a terminal row (pattern of 0020).
 
 Erasure and restore impact: customer identity is reached only through `orders`, which is already
-classified. New tables hold no plaintext identity. Erasure keeps financial and fiscal rows and
-clears sealed envelopes. Both schema fingerprints must be extended for the final schema:
+classified. New tables hold no plaintext identity. Erasure keeps financial and fiscal rows. A sealed
+envelope or contact is the only way to replay an unfinished operation with the same body, so
+erasure purges them **only when every payment, refund and fiscal event of the subject is terminal**
+(`admitErasure`). A subject with any unfinished operation is refused with
+`ERASURE_FINANCIAL_REVIEW_REQUIRED`, listing the open operations. Unfinished means `CREATE_UNKNOWN`,
+`PENDING`, `REVIEW_REQUIRED`, `SUBMIT_UNKNOWN`, `PROCESSING` or `AWAITING_SERVICE`. The refusal is
+a block, not a partial purge (fixtures E01–E09). Both schema fingerprints must be extended for the final schema:
 `supportedSchemaSha256` in `pd-retention.ts` and `REVIEWED_SCHEMA_SHA256` in `erasure-restore.ts`.
 Those are not my files, so their edits go through a coordinator request. The isolated
 encrypted-restore scenario must be re-run on the final schema, and an unknown schema must still be
@@ -372,6 +410,10 @@ refused.
 | final settlement admission, including "rail cannot settle" | S01–S09 |
 | refund after rendered service / wrong contour / partial | A02–A07 |
 | historical RC.2 routing | buyer-states `routing` |
+| LAB paid: ticket, prepayment receipt, settlement reserved | P15 |
+| settlement not awaiting / already started / cancelled | S10–S12, C01–C04 |
+| refund before the service (settlement reserved or cancelled) | A08–A10 |
+| erasure with an unfinished payment, refund or fiscal event | E01–E09 |
 
 ## 14. Phase 2 (same branch, after review)
 
@@ -404,13 +446,15 @@ refused.
 - **Q6 late success.** Should a `LATE_PAYMENT_AFTER_TERMINAL` for an `ONLINE_COURSE` stay a manual
   review (current contract), or auto-grant, since a course has no seat? The conservative default is
   manual.
-- Retention period for `native_callback_inbox` (proposal: 90 days).
+- Retention period for `native_callback_inbox` (proposal: 90 days): with E and the owner.
+- Retention ceiling of the sealed contact for an `AWAITING_SERVICE` settlement (proposal: `ends_at` + 30 days, §6.1).
+- I7 / FLEX-90: does the emergency stop also stop refund execution? Default: no (with the owner).
 
 ## 16. Verification
 
 | | Local (this PR) | Requires an admitted environment |
 |---|---|---|
-| Decision tables vs fixtures (67 cases), mutation spot-check | ✔ | — |
+| Decision tables vs fixtures (87 cases), mutation spot-check | ✔ | — |
 | Root typecheck, targeted lint | ✔ | — |
 | Durable ledger, crash/restart, concurrency, Refref down | phase 2, local SQLite + fake provider | — |
 | Real provider idempotency, read-back, callback signature, expiry | — | provider qualification (FLEX-82/84) |

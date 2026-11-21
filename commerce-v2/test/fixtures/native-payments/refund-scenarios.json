@@ -119,6 +119,49 @@
         "admitted": false,
         "code": "REFUND_AFTER_FINAL_SETTLEMENT_NOT_SUPPORTED"
       }
+    },
+    {
+      "id": "A08",
+      "input": {
+        "contour": "NATIVE",
+        "paymentState": "PAID",
+        "lineAmountKopecks": 490000,
+        "approvedAmountKopecks": 490000,
+        "alreadyRefundedKopecks": 0,
+        "finalSettlementState": "AWAITING_SERVICE"
+      },
+      "expect": {
+        "admitted": true
+      }
+    },
+    {
+      "id": "A09",
+      "input": {
+        "contour": "NATIVE",
+        "paymentState": "PAID",
+        "lineAmountKopecks": 490000,
+        "approvedAmountKopecks": 490000,
+        "alreadyRefundedKopecks": 0,
+        "finalSettlementState": "CANCELLED"
+      },
+      "expect": {
+        "admitted": true
+      }
+    },
+    {
+      "id": "A10",
+      "input": {
+        "contour": "NATIVE",
+        "paymentState": "PAID",
+        "lineAmountKopecks": 490000,
+        "approvedAmountKopecks": 490000,
+        "alreadyRefundedKopecks": 0,
+        "finalSettlementState": "REVIEW_REQUIRED"
+      },
+      "expect": {
+        "admitted": false,
+        "code": "REFUND_AFTER_FINAL_SETTLEMENT_NOT_SUPPORTED"
+      }
     }
   ],
   "scenarios": [

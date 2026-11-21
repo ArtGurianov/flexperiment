@@ -47,7 +47,8 @@
     "occurrenceRef": "occ-2026-12-05",
     "renderedAt": "2026-12-05T18:00:00Z",
     "evidenceRef": "lab-lifecycle:attendance-close:occ-2026-12-05",
-    "recordedBy": "operator:lab"
+    "recordedBy": "operator:lab",
+    "basis": "CHECKED_IN"
   },
   "finalSettlementAdmission": [
     {
@@ -64,14 +65,16 @@
           "occurrenceRef": "occ-2026-12-05",
           "renderedAt": "2026-12-05T18:00:00Z",
           "evidenceRef": "lab-lifecycle:attendance-close:occ-2026-12-05",
-          "recordedBy": "operator:lab"
+          "recordedBy": "operator:lab",
+          "basis": "CHECKED_IN"
         },
         "orderLineId": "line-lab-0001",
         "occurrenceRef": "occ-2026-12-05",
         "capabilities": {
           "finalSettlementWithoutPayment": true,
           "refundReceipt": true
-        }
+        },
+        "finalSettlementState": "AWAITING_SERVICE"
       },
       "expect": {
         "admitted": true,
@@ -93,14 +96,16 @@
           "occurrenceRef": "occ-2026-12-05",
           "renderedAt": "2026-12-05T18:00:00Z",
           "evidenceRef": "lab-lifecycle:attendance-close:occ-2026-12-05",
-          "recordedBy": "operator:lab"
+          "recordedBy": "operator:lab",
+          "basis": "CHECKED_IN"
         },
         "orderLineId": "line-lab-0001",
         "occurrenceRef": "occ-2026-12-05",
         "capabilities": {
           "finalSettlementWithoutPayment": false,
           "refundReceipt": true
-        }
+        },
+        "finalSettlementState": "AWAITING_SERVICE"
       },
       "expect": {
         "admitted": false,
@@ -121,7 +126,8 @@
         "capabilities": {
           "finalSettlementWithoutPayment": true,
           "refundReceipt": true
-        }
+        },
+        "finalSettlementState": "AWAITING_SERVICE"
       },
       "expect": {
         "admitted": false,
@@ -142,14 +148,16 @@
           "occurrenceRef": "occ-2026-12-05",
           "renderedAt": "2026-12-05T18:00:00Z",
           "evidenceRef": "lab-lifecycle:attendance-close:occ-2026-12-05",
-          "recordedBy": "operator:lab"
+          "recordedBy": "operator:lab",
+          "basis": "CHECKED_IN"
         },
         "orderLineId": "line-lab-0001",
         "occurrenceRef": "occ-2026-12-05",
         "capabilities": {
           "finalSettlementWithoutPayment": true,
           "refundReceipt": true
-        }
+        },
+        "finalSettlementState": "AWAITING_SERVICE"
       },
       "expect": {
         "admitted": false,
@@ -170,14 +178,16 @@
           "occurrenceRef": "occ-2026-12-05",
           "renderedAt": "2026-12-05T18:00:00Z",
           "evidenceRef": "lab-lifecycle:attendance-close:occ-2026-12-05",
-          "recordedBy": "operator:lab"
+          "recordedBy": "operator:lab",
+          "basis": "CHECKED_IN"
         },
         "orderLineId": "line-lab-0001",
         "occurrenceRef": "occ-2026-12-05",
         "capabilities": {
           "finalSettlementWithoutPayment": true,
           "refundReceipt": true
-        }
+        },
+        "finalSettlementState": "AWAITING_SERVICE"
       },
       "expect": {
         "admitted": false,
@@ -198,14 +208,16 @@
           "occurrenceRef": "occ-2026-12-05",
           "renderedAt": "2026-12-05T18:00:00Z",
           "evidenceRef": "lab-lifecycle:attendance-close:occ-2026-12-05",
-          "recordedBy": "operator:lab"
+          "recordedBy": "operator:lab",
+          "basis": "CHECKED_IN"
         },
         "orderLineId": "line-lab-0001",
         "occurrenceRef": "occ-2026-12-05",
         "capabilities": {
           "finalSettlementWithoutPayment": true,
           "refundReceipt": true
-        }
+        },
+        "finalSettlementState": "AWAITING_SERVICE"
       },
       "expect": {
         "admitted": false,
@@ -226,14 +238,16 @@
           "occurrenceRef": "occ-2026-12-05",
           "renderedAt": "2026-12-05T18:00:00Z",
           "evidenceRef": "lab-lifecycle:attendance-close:occ-2026-12-05",
-          "recordedBy": "operator:lab"
+          "recordedBy": "operator:lab",
+          "basis": "CHECKED_IN"
         },
         "orderLineId": "line-lab-0001",
         "occurrenceRef": "occ-2026-12-05",
         "capabilities": {
           "finalSettlementWithoutPayment": true,
           "refundReceipt": true
-        }
+        },
+        "finalSettlementState": "AWAITING_SERVICE"
       },
       "expect": {
         "admitted": false,
@@ -254,14 +268,16 @@
           "occurrenceRef": "occ-2026-12-05",
           "renderedAt": "2026-12-05T18:00:00Z",
           "evidenceRef": "lab-lifecycle:attendance-close:occ-2026-12-05",
-          "recordedBy": "operator:lab"
+          "recordedBy": "operator:lab",
+          "basis": "CHECKED_IN"
         },
         "orderLineId": "line-lab-0001",
         "occurrenceRef": "occ-2026-12-05",
         "capabilities": {
           "finalSettlementWithoutPayment": true,
           "refundReceipt": true
-        }
+        },
+        "finalSettlementState": "AWAITING_SERVICE"
       },
       "expect": {
         "admitted": false,
@@ -282,18 +298,110 @@
           "occurrenceRef": "occ-2026-12-05",
           "renderedAt": "2026-12-05T18:00:00Z",
           "evidenceRef": "lab-lifecycle:attendance-close:occ-2026-12-05",
-          "recordedBy": "operator:lab"
+          "recordedBy": "operator:lab",
+          "basis": "CHECKED_IN"
         },
         "orderLineId": "line-lab-0001",
         "occurrenceRef": "occ-2026-12-05",
         "capabilities": {
           "finalSettlementWithoutPayment": true,
           "refundReceipt": true
-        }
+        },
+        "finalSettlementState": "AWAITING_SERVICE"
       },
       "expect": {
         "admitted": false,
         "code": "FINAL_SETTLEMENT_LAB_ONLY"
+      }
+    },
+    {
+      "id": "S10",
+      "input": {
+        "kind": "LAB",
+        "paymentState": "PAID",
+        "paymentReceiptState": "REGISTERED",
+        "refundOpenOrSucceeded": false,
+        "occurrenceCancelled": false,
+        "fact": {
+          "schema": "flexperiment.service-rendered/1",
+          "orderLineId": "line-lab-0001",
+          "occurrenceRef": "occ-2026-12-05",
+          "renderedAt": "2026-12-05T18:00:00Z",
+          "evidenceRef": "lab-lifecycle:attendance-close:occ-2026-12-05",
+          "recordedBy": "operator:lab",
+          "basis": "CHECKED_IN"
+        },
+        "orderLineId": "line-lab-0001",
+        "occurrenceRef": "occ-2026-12-05",
+        "capabilities": {
+          "finalSettlementWithoutPayment": true,
+          "refundReceipt": true
+        },
+        "finalSettlementState": "SUBMIT_UNKNOWN"
+      },
+      "expect": {
+        "admitted": false,
+        "code": "FINAL_SETTLEMENT_NOT_AWAITING_SERVICE"
+      }
+    },
+    {
+      "id": "S11",
+      "input": {
+        "kind": "LAB",
+        "paymentState": "PAID",
+        "paymentReceiptState": "REGISTERED",
+        "refundOpenOrSucceeded": false,
+        "occurrenceCancelled": false,
+        "fact": {
+          "schema": "flexperiment.service-rendered/1",
+          "orderLineId": "line-lab-0001",
+          "occurrenceRef": "occ-2026-12-05",
+          "renderedAt": "2026-12-05T18:00:00Z",
+          "evidenceRef": "lab-lifecycle:attendance-close:occ-2026-12-05",
+          "recordedBy": "operator:lab",
+          "basis": "CHECKED_IN"
+        },
+        "orderLineId": "line-lab-0001",
+        "occurrenceRef": "occ-2026-12-05",
+        "capabilities": {
+          "finalSettlementWithoutPayment": true,
+          "refundReceipt": true
+        },
+        "finalSettlementState": "CANCELLED"
+      },
+      "expect": {
+        "admitted": false,
+        "code": "FINAL_SETTLEMENT_NOT_AWAITING_SERVICE"
+      }
+    },
+    {
+      "id": "S12",
+      "input": {
+        "kind": "LAB",
+        "paymentState": "PAID",
+        "paymentReceiptState": "REGISTERED",
+        "refundOpenOrSucceeded": false,
+        "occurrenceCancelled": false,
+        "fact": {
+          "schema": "flexperiment.service-rendered/1",
+          "orderLineId": "line-lab-0001",
+          "occurrenceRef": "occ-2026-12-05",
+          "renderedAt": "2026-12-05T18:00:00Z",
+          "evidenceRef": "lab-lifecycle:attendance-close:occ-2026-12-05",
+          "recordedBy": "operator:lab",
+          "basis": "CHECKED_IN"
+        },
+        "orderLineId": "line-lab-0001",
+        "occurrenceRef": "occ-2026-12-05",
+        "capabilities": {
+          "finalSettlementWithoutPayment": true,
+          "refundReceipt": true
+        },
+        "finalSettlementState": null
+      },
+      "expect": {
+        "admitted": false,
+        "code": "FINAL_SETTLEMENT_NOT_AWAITING_SERVICE"
       }
     }
   ],
@@ -643,6 +751,54 @@
           }
         }
       ]
+    }
+  ],
+  "reservedSettlementCancellation": [
+    {
+      "id": "C01",
+      "state": "AWAITING_SERVICE",
+      "cause": "REFUND_SUCCEEDED",
+      "expect": {
+        "state": "CANCELLED",
+        "effects": [
+          "PURGE_CONTACT"
+        ],
+        "reason": "REFUND_SUCCEEDED"
+      }
+    },
+    {
+      "id": "C02",
+      "state": "AWAITING_SERVICE",
+      "cause": "OCCURRENCE_CANCELLED",
+      "expect": {
+        "state": "CANCELLED",
+        "effects": [
+          "PURGE_CONTACT"
+        ],
+        "reason": "OCCURRENCE_CANCELLED"
+      }
+    },
+    {
+      "id": "C03",
+      "state": "CANCELLED",
+      "cause": "REFUND_SUCCEEDED",
+      "expect": {
+        "state": "CANCELLED",
+        "effects": [],
+        "reason": "REFUND_SUCCEEDED"
+      }
+    },
+    {
+      "id": "C04",
+      "state": "SUBMIT_UNKNOWN",
+      "cause": "OCCURRENCE_CANCELLED",
+      "expect": {
+        "state": "SUBMIT_UNKNOWN",
+        "effects": [
+          "ALERT"
+        ],
+        "reason": "SETTLEMENT_ALREADY_STARTED"
+      }
     }
   ]
 }

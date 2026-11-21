@@ -65,7 +65,9 @@ export type PaymentObservation =
   };
 
 export type PaymentEffect =
-  | "PROVIDER_CREATE" | "REPLAY_CREATE_SAME_KEY" | "READ_BACK" | "GRANT" | "RELEASE_HOLD" | "ISSUE_PAYMENT_RECEIPT" | "ALERT";
+  | "PROVIDER_CREATE" | "REPLAY_CREATE_SAME_KEY" | "READ_BACK" | "GRANT" | "RELEASE_HOLD" | "ISSUE_PAYMENT_RECEIPT"
+  /** LAB only: in the same transaction as PAID, the FINAL_SETTLEMENT event is created AWAITING_SERVICE with the sealed receipt contact. */
+  | "RESERVE_FINAL_SETTLEMENT" | "ALERT";
 
 export type PaymentRecord = {
   readonly state: NativePaymentState;
@@ -152,8 +154,9 @@ export function applyPaymentObservation(
       // Late success after the provider itself said DECLINED/EXPIRED: money exists, the order was closed
       // (a LAB hold may be gone). A person decides grant or refund; nothing is granted automatically.
       if (TERMINAL_PAYMENT_STATES.includes(record.state)) return { state: "REVIEW_REQUIRED", providerPaymentId, effects: ["ALERT"], reason: "LATE_PAYMENT_AFTER_TERMINAL" };
-      return { state: "PAID", providerPaymentId,
-        effects: context.fiscalizationMode === "MERCHANT" ? ["GRANT", "ISSUE_PAYMENT_RECEIPT"] : ["GRANT"] };
+      return { state: "PAID", providerPaymentId, effects: [
+        "GRANT", ...(context.fiscalizationMode === "MERCHANT" ? ["ISSUE_PAYMENT_RECEIPT" as const] : []),
+        ...(context.kind === "LAB" ? ["RESERVE_FINAL_SETTLEMENT" as const] : [])] };
     case "DECLINED":
     case "EXPIRED":
       if (record.state === observation.status) return { state: record.state, providerPaymentId, effects: [] };
@@ -203,7 +206,10 @@ export function admitRefund(input: {
   if (input.contour !== "NATIVE") return { admitted: false, code: "REFUND_ROUTED_TO_ORIGINAL_CONTOUR" };
   if (input.paymentState !== "PAID") return { admitted: false, code: "REFUND_PAYMENT_NOT_PAID" };
   if (input.approvedAmountKopecks !== input.lineAmountKopecks || input.alreadyRefundedKopecks !== 0) return { admitted: false, code: "REFUND_FULL_ONLY" };
-  if (input.finalSettlementState && input.finalSettlementState !== "NOT_REQUIRED") return { admitted: false, code: "REFUND_AFTER_FINAL_SETTLEMENT_NOT_SUPPORTED" };
+  // Before the service a reserved settlement is cancelled by the refund; once issuance began, compensation is not supported.
+  if (input.finalSettlementState && !SETTLEMENT_NOT_STARTED.includes(input.finalSettlementState)) {
+    return { admitted: false, code: "REFUND_AFTER_FINAL_SETTLEMENT_NOT_SUPPORTED" };
+  }
   return { admitted: true };
 }
 
@@ -277,7 +283,21 @@ export function applyRefundObservation(
 export type FiscalizationMode = "PROVIDER" | "MERCHANT";
 export type FiscalEventKind = "PAYMENT_RECEIPT" | "REFUND_RECEIPT" | "FINAL_SETTLEMENT";
 export type FiscalPaymentMethod = "FULL_PAYMENT" | "FULL_PREPAYMENT";
-export type FiscalEventState = "PENDING" | "SUBMITTING" | "SUBMIT_UNKNOWN" | "REGISTERED" | "REJECTED" | "REVIEW_REQUIRED" | "NOT_REQUIRED";
+export type FiscalEventState = "AWAITING_SERVICE" | "PENDING" | "SUBMITTING" | "SUBMIT_UNKNOWN" | "REGISTERED" | "REJECTED" | "REVIEW_REQUIRED"
+  | "NOT_REQUIRED" | "CANCELLED";
+/** A FINAL_SETTLEMENT in these states has not been sent to any adapter. */
+export const SETTLEMENT_NOT_STARTED: readonly FiscalEventState[] = ["NOT_REQUIRED", "AWAITING_SERVICE", "CANCELLED"];
+
+/**
+ * A reserved FINAL_SETTLEMENT that will never be issued: the line was refunded, or the occurrence was
+ * cancelled, before the service. Its sealed contact is purged with the cancellation.
+ */
+export function cancelReservedSettlement(state: FiscalEventState, cause: "REFUND_SUCCEEDED" | "OCCURRENCE_CANCELLED"):
+  { readonly state: FiscalEventState; readonly effects: readonly ("PURGE_CONTACT" | "ALERT")[]; readonly reason: string } {
+  if (state === "AWAITING_SERVICE") return { state: "CANCELLED", effects: ["PURGE_CONTACT"], reason: cause };
+  if (state === "CANCELLED") return { state, effects: [], reason: cause };
+  return { state, effects: ["ALERT"], reason: "SETTLEMENT_ALREADY_STARTED" };
+}
 
 export type FiscalAdapterCapabilities = {
   /** A closing receipt that offsets an earlier advance with no new payment (FLEX-85). */
@@ -303,15 +323,20 @@ export type ServiceRenderedFact = {
   readonly renderedAt: string;
   readonly evidenceRef: string;
   readonly recordedBy: string;
+  /** From the LAB attendance position (E): a check-in record, or an operator's attested attendance. */
+  readonly basis: "CHECKED_IN" | "ATTENDED_ATTESTED";
 };
 
 export function admitFinalSettlement(input: {
   readonly kind: ProductKind; readonly paymentState: NativePaymentState; readonly paymentReceiptState: FiscalEventState | null;
   readonly refundOpenOrSucceeded: boolean; readonly occurrenceCancelled: boolean; readonly fact: ServiceRenderedFact | null;
   readonly orderLineId: string; readonly occurrenceRef: string; readonly capabilities: FiscalAdapterCapabilities;
+  /** The event reserved at PAID; anything but AWAITING_SERVICE was already started, cancelled or never reserved. */
+  readonly finalSettlementState: FiscalEventState | null;
 }): { readonly admitted: true; readonly eventRef: string; readonly paymentMethod: "FULL_PAYMENT" } | { readonly admitted: false; readonly code: string } {
   const refuse = (code: string) => ({ admitted: false as const, code });
   if (input.kind !== "LAB") return refuse("FINAL_SETTLEMENT_LAB_ONLY");
+  if (input.finalSettlementState !== "AWAITING_SERVICE") return refuse("FINAL_SETTLEMENT_NOT_AWAITING_SERVICE");
   if (!input.capabilities.finalSettlementWithoutPayment) return refuse("FISCAL_ADAPTER_CANNOT_SETTLE_WITHOUT_PAYMENT");
   if (!input.fact || input.fact.orderLineId !== input.orderLineId || input.fact.occurrenceRef !== input.occurrenceRef) return refuse("SERVICE_RENDERED_FACT_REQUIRED");
   if (input.occurrenceCancelled) return refuse("OCCURRENCE_CANCELLED");
@@ -374,6 +399,29 @@ export function applyFiscalObservation(record: FiscalRecord, binding: FiscalBind
   }
   if (record.state === "REGISTERED") return review("PROVIDER_STATE_REGRESSION");
   return { state: "REJECTED", providerReceiptId: observation.providerReceiptId, effects: ["ALERT"], reason: "RECEIPT_REJECTED" };
+}
+
+// ─── Erasure ────────────────────────────────────────────────────────────────────────────────────────
+
+const PAYMENT_SETTLED: readonly NativePaymentState[] = ["PAID", "DECLINED", "EXPIRED"];
+const REFUND_SETTLED: readonly NativeRefundState[] = ["SUCCEEDED", "FAILED"];
+const FISCAL_SETTLED: readonly FiscalEventState[] = ["REGISTERED", "REJECTED", "NOT_REQUIRED", "CANCELLED"];
+
+/**
+ * A subject's sealed envelopes and contacts are the only way to replay an unfinished operation with the
+ * same body. Erasure is therefore refused while any payment, refund or fiscal event of the subject is
+ * not settled (unknown, in flight, under review, or a LAB settlement awaiting its service); it proceeds
+ * only once every one is terminal. Financial and fiscal rows themselves are retained either way.
+ */
+export function admitErasure(subject: {
+  readonly payments: readonly NativePaymentState[]; readonly refunds: readonly NativeRefundState[]; readonly fiscalEvents: readonly FiscalEventState[];
+}): { readonly admitted: true; readonly effects: readonly ["PURGE_SEALED_ENVELOPES"] } | { readonly admitted: false; readonly code: "ERASURE_FINANCIAL_REVIEW_REQUIRED"; readonly open: readonly string[] } {
+  const open = [
+    ...subject.payments.filter((s) => !PAYMENT_SETTLED.includes(s)).map((s) => `payment:${s}`),
+    ...subject.refunds.filter((s) => !REFUND_SETTLED.includes(s)).map((s) => `refund:${s}`),
+    ...subject.fiscalEvents.filter((s) => !FISCAL_SETTLED.includes(s)).map((s) => `fiscal:${s}`),
+  ];
+  return open.length ? { admitted: false, code: "ERASURE_FINANCIAL_REVIEW_REQUIRED", open } : { admitted: true, effects: ["PURGE_SEALED_ENVELOPES"] };
 }
 
 // ─── Routing and buyer projection (checkout / LAB / my) ─────────────────────────────────────────────

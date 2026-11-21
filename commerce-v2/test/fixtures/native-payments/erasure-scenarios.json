@@ -1,0 +1,179 @@
+{
+  "schema": "flexperiment.native-erasure-fixtures/1",
+  "contract": "flexperiment.native-payment-contract/1",
+  "note": "Sealed envelopes/contacts are purged only once every operation of the subject is terminal; financial and fiscal rows are retained.",
+  "cases": [
+    {
+      "id": "E01",
+      "subject": {
+        "payments": [
+          "PAID"
+        ],
+        "refunds": [
+          "SUCCEEDED"
+        ],
+        "fiscalEvents": [
+          "REGISTERED",
+          "REGISTERED"
+        ]
+      },
+      "expect": {
+        "admitted": true,
+        "effects": [
+          "PURGE_SEALED_ENVELOPES"
+        ]
+      }
+    },
+    {
+      "id": "E02",
+      "subject": {
+        "payments": [
+          "CREATE_UNKNOWN"
+        ],
+        "refunds": [],
+        "fiscalEvents": []
+      },
+      "expect": {
+        "admitted": false,
+        "code": "ERASURE_FINANCIAL_REVIEW_REQUIRED",
+        "open": [
+          "payment:CREATE_UNKNOWN"
+        ]
+      }
+    },
+    {
+      "id": "E03",
+      "subject": {
+        "payments": [
+          "PAID"
+        ],
+        "refunds": [
+          "SUBMIT_UNKNOWN"
+        ],
+        "fiscalEvents": [
+          "REGISTERED"
+        ]
+      },
+      "expect": {
+        "admitted": false,
+        "code": "ERASURE_FINANCIAL_REVIEW_REQUIRED",
+        "open": [
+          "refund:SUBMIT_UNKNOWN"
+        ]
+      }
+    },
+    {
+      "id": "E04",
+      "subject": {
+        "payments": [
+          "PAID"
+        ],
+        "refunds": [
+          "PROCESSING"
+        ],
+        "fiscalEvents": [
+          "REGISTERED"
+        ]
+      },
+      "expect": {
+        "admitted": false,
+        "code": "ERASURE_FINANCIAL_REVIEW_REQUIRED",
+        "open": [
+          "refund:PROCESSING"
+        ]
+      }
+    },
+    {
+      "id": "E05",
+      "subject": {
+        "payments": [
+          "PAID"
+        ],
+        "refunds": [],
+        "fiscalEvents": [
+          "REGISTERED",
+          "AWAITING_SERVICE"
+        ]
+      },
+      "expect": {
+        "admitted": false,
+        "code": "ERASURE_FINANCIAL_REVIEW_REQUIRED",
+        "open": [
+          "fiscal:AWAITING_SERVICE"
+        ]
+      }
+    },
+    {
+      "id": "E06",
+      "subject": {
+        "payments": [
+          "PAID"
+        ],
+        "refunds": [],
+        "fiscalEvents": [
+          "SUBMIT_UNKNOWN"
+        ]
+      },
+      "expect": {
+        "admitted": false,
+        "code": "ERASURE_FINANCIAL_REVIEW_REQUIRED",
+        "open": [
+          "fiscal:SUBMIT_UNKNOWN"
+        ]
+      }
+    },
+    {
+      "id": "E07",
+      "subject": {
+        "payments": [
+          "REVIEW_REQUIRED"
+        ],
+        "refunds": [],
+        "fiscalEvents": []
+      },
+      "expect": {
+        "admitted": false,
+        "code": "ERASURE_FINANCIAL_REVIEW_REQUIRED",
+        "open": [
+          "payment:REVIEW_REQUIRED"
+        ]
+      }
+    },
+    {
+      "id": "E08",
+      "subject": {
+        "payments": [
+          "EXPIRED",
+          "PAID"
+        ],
+        "refunds": [
+          "FAILED"
+        ],
+        "fiscalEvents": [
+          "NOT_REQUIRED",
+          "CANCELLED"
+        ]
+      },
+      "expect": {
+        "admitted": true,
+        "effects": [
+          "PURGE_SEALED_ENVELOPES"
+        ]
+      }
+    },
+    {
+      "id": "E09",
+      "subject": {
+        "payments": [],
+        "refunds": [],
+        "fiscalEvents": []
+      },
+      "expect": {
+        "admitted": true,
+        "effects": [
+          "PURGE_SEALED_ENVELOPES"
+        ]
+      }
+    }
+  ]
+}
