@@ -20,10 +20,10 @@ const read = async (actionKey?: string) => {
 };
 
 /**
- * G-05: the account's own marketing choice for COURSES. A change is one new authenticated consent action for
- * the current release (required choices are re-affirmed as already confirmed, never changed here), guarded by
- * the action sequence and confirmed only by read-back. A one-click email unsubscribe stays in force: this
- * switch does not lift it.
+ * G-05 / G-18: the account's own marketing choice for COURSES. A change is one marketing-only authenticated action
+ * for the current release (`POST /v1/me/consents/marketing`): it records only this choice and never re-records the
+ * required ones. Guarded by the action sequence and confirmed only by read-back. A one-click email unsubscribe
+ * stays in force: this switch does not lift it.
  */
 export default function MarketingPreference() {
   const [status, setStatus] = useState<Status | null>(null);
@@ -53,11 +53,10 @@ export default function MarketingPreference() {
     busy.current = true; setPhase("saving"); setMessage("");
     actionKey.current = crypto.randomUUID();
     try {
-      await fetch("/v1/me/consents", { method: "POST", credentials: "same-origin", cache: "no-store",
+      await fetch("/v1/me/consents/marketing", { method: "POST", credentials: "same-origin", cache: "no-store",
         headers: { "content-type": "application/json" }, body: JSON.stringify({ storefront: "COURSES",
           releaseVersion: status.releaseVersion, manifestSha256: status.manifestSha256, actionKey: actionKey.current,
-          expectedActionSequence: status.actionSequence, personalDataConsent: true, accountTermsAccepted: true,
-          marketingConsent: !subscribed }) });
+          expectedActionSequence: status.actionSequence, marketingConsent: !subscribed }) });
     } catch { /* the read-back below decides; an unknown outcome is never replayed */ }
     busy.current = false;
     await confirm();

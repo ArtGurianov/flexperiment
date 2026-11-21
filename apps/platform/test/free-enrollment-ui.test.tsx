@@ -126,15 +126,16 @@ describe("FLEX-128 enrollment UI", () => {
       ...(action ? { action } : {}) });
     let posted: Record<string, unknown> | null = null;
     global.fetch = vi.fn(async (input, init) => {
-      if (init?.method === "POST") { posted = JSON.parse(String(init.body)); return json({}); }
+      if (init?.method === "POST") { expect(String(input)).toBe("/v1/me/consents/marketing"); posted = JSON.parse(String(init.body)); return json({}); }
       const key = new URL(String(input), "http://x").searchParams.get("actionKey");
       return posted ? json(consent(false, 2, { key, outcome: "COMMITTED" })) : json(consent(true, 1));
     });
     render(<MarketingPreference />);
     fireEvent.click(await screen.findByRole("button", { name: "Отказаться от рассылки" }));
     expect(await screen.findByText("Рассылка отключена.")).toBeInTheDocument();
-    expect(posted).toMatchObject({ storefront: "COURSES", releaseVersion: "r1", expectedActionSequence: 1,
-      personalDataConsent: true, accountTermsAccepted: true, marketingConsent: false });
+    // G-18: only the marketing choice is sent; required choices are never re-recorded from here.
+    expect(posted).toEqual({ storefront: "COURSES", releaseVersion: "r1", manifestSha256: "a".repeat(64),
+      actionKey: expect.any(String), expectedActionSequence: 1, marketingConsent: false });
     expect(screen.getByRole("button", { name: "Получать рассылку" })).toBeInTheDocument();
   });
 });

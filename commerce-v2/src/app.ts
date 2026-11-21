@@ -39,7 +39,7 @@ import { databaseReady, READINESS_DEADLINE_MS, withinDeadline, type RefrefReadin
 import { storefrontSwitchStatus } from "./storefront-switch";
 import { publicLabCatalogue } from "./lab-catalogue";
 import { getCustomerStorefrontCourse, getCustomerStorefrontLesson, getStorefrontCourse, getStorefrontLesson, listCustomerStorefrontLibrary, listStorefrontCourses } from "./storefront-content";
-import { authenticatedConsentStatus, hasRequiredAccountConsents, recordAuthenticatedConsents, type AuthenticatedConsentInput } from "./authenticated-consents";
+import { authenticatedConsentStatus, hasRequiredAccountConsents, recordAuthenticatedConsents, recordAuthenticatedMarketingChoice, type AuthenticatedConsentInput, type AuthenticatedMarketingChoiceInput } from "./authenticated-consents";
 import { ErasureLedgerError } from "./erasure-ledger";
 import { assertClosedPaidTestAccountConsents } from "./closed-paid-test";
 import type { ErasureRuntimeFence } from "./erasure-fence";
@@ -1105,6 +1105,31 @@ export function createCommerceV2App(deps: Dependencies) {
     } catch (error) {
       const allowed = ["VERIFIED_ACCOUNT_REQUIRED", "LEGAL_RELEASE_NOT_FOUND", "LEGAL_RELEASE_INCOMPLETE", "LEGAL_RELEASE_STALE",
         "AUTHENTICATED_CONSENT_INPUT_INVALID", "CONSENT_ACTION_KEY_CONFLICT", "CONSENT_STATE_STALE"];
+      const code = error instanceof Error && allowed.includes(error.message) ? error.message : "CONSENT_WRITE_UNCONFIRMED";
+      return context.json({ code }, 409, noStore);
+    }
+  });
+
+  // FLEX-128 G-05 / G-18 (A): marketing-only account action; never re-records the required choices.
+  app.post("/v1/me/consents/marketing", bodyLimit({ maxSize: 4096,
+    onError: context => context.json({ code: "CONSENT_INPUT_TOO_LARGE" }, 413, noStore) }), async (context) => {
+    const customerId = await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;
+    if (!customerId) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
+    try {
+      const body = await context.req.json<AuthenticatedMarketingChoiceInput>();
+      if (!body || typeof body !== "object" || Array.isArray(body)) return context.json({ code: "AUTHENTICATED_CONSENT_INPUT_INVALID" }, 422, noStore);
+      if (body.storefront !== "COURSES" && body.storefront !== "LAB") return context.json({ code: "STOREFRONT_INVALID" }, 422, noStore);
+      if (context.req.header("origin") !== storefrontOrigin(origins, body.storefront)) return context.json({ code: "ORIGIN_FORBIDDEN" }, 403, noStore);
+      if (!Number.isSafeInteger(body.expectedActionSequence) || body.expectedActionSequence < 0) {
+        return context.json({ code: "CONSENT_PRECONDITION_REQUIRED" }, 422, noStore);
+      }
+      return context.json(recordAuthenticatedMarketingChoice(deps.db, customerId, {
+        storefront: body.storefront, releaseVersion: body.releaseVersion, manifestSha256: body.manifestSha256,
+        actionKey: body.actionKey, marketingConsent: body.marketingConsent, expectedActionSequence: body.expectedActionSequence,
+      }, now().toISOString()), 200, noStore);
+    } catch (error) {
+      const allowed = ["VERIFIED_ACCOUNT_REQUIRED", "LEGAL_RELEASE_NOT_FOUND", "LEGAL_RELEASE_INCOMPLETE", "LEGAL_RELEASE_STALE",
+        "AUTHENTICATED_CONSENT_INPUT_INVALID", "CONSENT_ACTION_KEY_CONFLICT", "CONSENT_STATE_STALE", "REQUIRED_CHOICES_UNCONFIRMED"];
       const code = error instanceof Error && allowed.includes(error.message) ? error.message : "CONSENT_WRITE_UNCONFIRMED";
       return context.json({ code }, 409, noStore);
     }
