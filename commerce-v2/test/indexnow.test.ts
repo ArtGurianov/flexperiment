@@ -36,8 +36,8 @@ describe("IndexNow notifier", () => {
 
   it("sends one canonical course URL per course within the dedupe window", async () => {
     const { notify, fetcher, advance } = notifier();
-    await notify!("swr", "course-one");
-    await notify!("immediate", "course-one", "WITHDRAWN");
+    notify!("course-one");
+    notify!("course-one");
     expect(fetcher).toHaveBeenCalledTimes(1);
     const [url, init] = fetcher.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe(INDEXNOW_ENDPOINT);
@@ -46,15 +46,15 @@ describe("IndexNow notifier", () => {
       urlList: ["https://flexperiment.ru/courses/one"],
     });
     advance(10 * 60_000 + 1);
-    await notify!("immediate", "course-one", "WITHDRAWN");
+    notify!("course-one");
     expect(fetcher).toHaveBeenCalledTimes(2);
   });
 
   it("ignores unknown, slugless or absent courses", async () => {
     const { notify, fetcher } = notifier();
-    await notify!("swr");
-    await notify!("swr", "missing");
-    await notify!("swr", "course-draft");
+    notify!("");
+    notify!("missing");
+    notify!("course-draft");
     expect(fetcher).not.toHaveBeenCalled();
   });
 
@@ -62,7 +62,7 @@ describe("IndexNow notifier", () => {
     let release!: () => void;
     const hanging = vi.fn(() => new Promise<Response>((_resolve, reject) => { release = () => reject(new Error("down")); }));
     const { notify, log } = notifier({ fetcher: hanging as unknown as typeof fetch });
-    await expect(notify!("swr", "course-one")).resolves.toBeUndefined();
+    expect(notify!("course-one")).toBeUndefined();
     release();
     await flush();
     expect(log).toHaveBeenCalledWith({ event: "indexnow.failed", courseRef: "course-one" });

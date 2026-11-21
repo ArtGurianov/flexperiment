@@ -7,10 +7,9 @@ import type Database from "better-sqlite3";
  * enables it at public opening: INDEXNOW_ENABLED=true, DEPLOY_ENV=production, a valid INDEXNOW_KEY and
  * an https platform origin are all required. It is best effort and never proves indexing.
  *
- * Not wired yet: the signature matches app.ts' post-change hook, but that hook is the retired platform
- * revalidation seam guarded by apps/platform/test/local-api-boundary.test.ts, so wiring waits for a
- * dedicated hook. The returned function never throws and never waits on the network, so a slow or
- * failing IndexNow can neither delay nor fail an owner command.
+ * Wired through app.ts' dedicated `notifyPublicCourseChange` dependency (not the retired platform
+ * revalidation hook). The returned function never throws and never waits on the network, so a slow
+ * or failing IndexNow can neither delay nor fail an owner command.
  */
 
 const KEY_PATTERN = /^[a-zA-Z0-9-]{8,128}$/;
@@ -39,9 +38,9 @@ export type IndexNowConfig = {
   readonly log?: (event: Record<string, unknown>) => void;
 };
 
-export type PlatformInvalidation = (mode: "swr" | "immediate", courseRef?: string, reason?: "WITHDRAWN") => Promise<void>;
+export type PublicCourseChangeNotifier = (courseRef: string) => void;
 
-export function createIndexNowNotifier(config: IndexNowConfig): PlatformInvalidation | undefined {
+export function createIndexNowNotifier(config: IndexNowConfig): PublicCourseChangeNotifier | undefined {
   const key = config.environment.INDEXNOW_KEY?.trim() ?? "";
   if (config.environment.INDEXNOW_ENABLED !== "true" || config.deployEnvironment !== "production") return undefined;
   if (!indexNowPayload(config.platformOrigin, key, ["probe"])) {
@@ -55,7 +54,7 @@ export function createIndexNowNotifier(config: IndexNowConfig): PlatformInvalida
   // Any visibility: an unlisted or withdrawn course still needs its URL re-crawled to drop it.
   const slugOf = config.db.prepare("SELECT slug FROM catalog_course_projection WHERE course_ref=?");
 
-  return async (_mode, courseRef) => {
+  return (courseRef) => {
     try {
       if (!courseRef) return;
       const at = now();
