@@ -1,7 +1,15 @@
 import Link from "next/link";
 import type { Metadata } from "next";
 
-export const metadata: Metadata = { alternates: { canonical: "/" } };
+// A page-level openGraph replaces the layout's entirely, so the shared fields are repeated with og:url.
+export const metadata: Metadata = {
+  alternates: { canonical: "/" },
+  openGraph: {
+    type: "website", locale: "ru_RU", siteName: "Flexperiment", url: "/",
+    title: "Flexperiment — курсы по флексингу",
+    description: "Видео-курсы Арта Гурьянова: техника, музыкальность и личная пластика во флексинге.",
+  },
+};
 
 const principles = [
   ["Техника", "Разбираем механику движения до ясного телесного ощущения."],
