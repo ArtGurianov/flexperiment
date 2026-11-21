@@ -30,7 +30,7 @@ FLEX-96/29 (Coolify, erasure/restore). Подготовлено 2026-11-20 от 
 4. Cookie сессии: `HttpOnly`, `Secure`, host-only (без `Domain=.flexperiment.ru`).
 5. После входа без согласий: запись и плеер недоступны; показана форма согласий
    (ПД и правила — пустые обязательные, реклама — пустая необязательная).
-6. Переключатель рекламы на /account (A · #291, `MarketingPreference`): создаёт действие согласия, в котором есть событие **только** `marketing_consent` (G-18); после отписки по ссылке включение переключателя рассылку не возобновляет.
+6. Переключатель рекламы на /account (A · #291, `MarketingPreference` → `POST /v1/me/consents/marketing`): read-only SQL — новое действие содержит ровно одно событие `marketing_consent` с текущими release/manifest/document hash, без событий `personal_data`/`account_terms`; аккаунт без собственных обязательных выборов получает `REQUIRED_CHOICES_UNCONFIRMED`; после one-click отписки по ссылке включение переключателя рассылку не возобновляет (G-18).
 7. После отметки: в БД событие с точными `release_version`/`manifest_sha256`/`document_sha256`
    (read-only SQL `SELECT kind,granted,document_version,document_sha256 …` по тестовому customer_id).
 **Ожидание:** все пункты PASS. Доказательство: HAR без тел/cookies, заголовки, SQL-счётчики.

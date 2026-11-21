@@ -32,3 +32,14 @@
 6. CI-шаги, которые E отслеживает: `docker-build` (все Dockerfile), «Recovery backup contract»,
    «V2 identity readout contract», `seo-audit-ci.sh` F (после `pnpm platform:build`, `PLATFORM_ORIGIN=https://build.invalid`,
    loopback, 3 мин).
+
+## Custody-ресурсы V2 (создание и изменение — только по OWNER GO, CUSTODY_IMPACT: YES)
+
+| Ресурс | Владелец кода | Где хранится | Восстановление | Статус |
+| --- | --- | --- | --- | --- |
+| `labTicketQrSecret` — ключ QR билета аккаунт-заказа LAB (D · #292) | D | Coolify env Commerce V2; копия — SOPS host credential / encrypted external bundle (по `adman-vps-infrastructure`) | Восстанавливается из custody, **не** генерируется заново: смена ключа делает выданные QR недействительными (ротация — только через `qr_generation`, отдельным решением) | Не создан; ждёт OWNER GO и issue в инфраструктурном проекте; до свежего capture — `CUSTODY_PENDING` |
+| `KINESCOPE_DRM_TOKEN_KEYS` (существует) | A | Coolify env Commerce V2 | Не восстанавливается, а перевыпускается (docs/kinescope-playback-signing.md) | Без изменений |
+| `PLATFORM_ORIGIN` build ARG на ресурс Platform (G-17) | E/F | Coolify build config | Конфигурация, не секрет | Задать по GO D-07 |
+
+DDL D: `ALTER TABLE lab_tickets ADD qr_generation` — регистрируется у координатора до интеграции; оба fingerprint
+(retention, erasure) и restore-сценарий для итоговой схемы.
