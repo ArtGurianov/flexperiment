@@ -68,6 +68,11 @@ export function createMyOtp(dependencies: {
   };
 
   return {
+    /** The account edition that governs my, exactly as `send` checks it (FLEX-125). */
+    accountRelease() {
+      const storefront = dependencies.accountLegalStorefront;
+      return storefront ? currentLegalRelease(db, storefront) : null;
+    },
     /** Always resolves to the generic answer once the request itself is valid (no enumeration). */
     async send(input: MyOtpSendInput, clientIp: string | undefined): Promise<typeof OTP_SENT> {
       try { assertRegistrationChoices(input); }

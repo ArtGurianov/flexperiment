@@ -60,6 +60,11 @@ export function registerMySessionRoutes(app: Hono, dependencies: {
     } catch (error) { return refusal(context, error); }
   });
 
+  app.get("/v1/my/legal", (context) => {
+    const release = dependencies.otp?.accountRelease();
+    return release ? context.json(release, 200, noStore) : context.json({ code: "LEGAL_RELEASE_NOT_FOUND" }, 404, noStore);
+  });
+
   // Navbar/background read: never redirects, never an error for a signed-out browser.
   app.get("/v1/my/session", async (context) => {
     const session = await mySession(context);

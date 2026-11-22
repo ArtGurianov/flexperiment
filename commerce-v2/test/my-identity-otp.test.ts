@@ -164,6 +164,15 @@ describe("FLEX-120 MY OTP sign-in", () => {
     expect(mail).toEqual([]);
   });
 
+  it("serves the governing account edition to the sign-in form, or nothing while FLEX-125 is open", async () => {
+    const { app } = build();
+    const legal = await call(app, MY, "/v1/my/legal");
+    expect(legal.status).toBe(200);
+    expect((await legal.json() as { version: string }).version).toBe("isolated-fixture-only");
+    expect((await call(build({}, { legal: false }).app, MY, "/v1/my/legal")).status).toBe(404);
+    expect((await call(app, LMS, "/v1/my/legal")).status).toBe(404);
+  });
+
   it("sign-out revokes the MY session on the server", async () => {
     const { app } = build();
     const { cookie } = await signIn(app, "buyer@example.test");
