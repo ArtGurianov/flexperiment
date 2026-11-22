@@ -4,8 +4,7 @@ name: Production runtime identity readout
 # runtime surface actually running, and what does durable release state say.
 #
 # It exists because `production-deploy` can assert a runtime that was never
-# deployed — see docs/release/DEPLOYMENT_INVARIANTS.md, "Authority and
-# observation are different things". Establishing the
+# deployed — see docs/release/DEPLOY_POINTER_CONVERGENCE.md. Establishing the
 # truth needs credentials that live here and must not be copied anywhere else,
 # so the read happens inside the production environment and only non-secret
 # derived facts are reported.
@@ -16,12 +15,7 @@ name: Production runtime identity readout
 # either: it reports, and a human decides.
 
 on:
-  workflow_dispatch:
-    inputs:
-      expected_commit:
-        description: Optional 40-hex candidate SHA to compare the V2 surfaces against (reported, not enforced).
-        required: false
-        type: string
+  workflow_dispatch: {}
 
 permissions:
   contents: read
@@ -85,28 +79,6 @@ jobs:
 
       # One plain read. The response is never printed whole: only the fields
       # below are emitted, so nothing incidental in it can leak into a log.
-      # V2 surfaces (G-11). Repository variables name the public /identity URLs;
-      # unset means "not configured". Commit only: the image digest is not
-      # visible from here and is read on the host separately (G-12).
-      # Placed before the V1 step below, which exits on an unreachable V1 API.
-      - name: Read what the V2 surfaces attest
-        env:
-          V2_COMMERCE_IDENTITY_URL: ${{ vars.V2_COMMERCE_IDENTITY_URL }}
-          V2_PLATFORM_IDENTITY_URL: ${{ vars.V2_PLATFORM_IDENTITY_URL }}
-          V2_ADMIN_IDENTITY_URL: ${{ vars.V2_ADMIN_IDENTITY_URL }}
-          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
-        run: |
-          set -euo pipefail
-          lines="$(bash deploy/release/read-v2-identity.sh "$EXPECTED_COMMIT")"
-          {
-            echo "## V2 surfaces (build identity)"
-            echo '```'
-            echo "$lines"
-            echo '```'
-            echo "_Observed commit only; not an image digest, not a deployment receipt._"
-          } >> "$GITHUB_STEP_SUMMARY"
-          echo "$lines"
-
       - name: Read durable release state and the commerce runtime
         run: |
           set -euo pipefail
