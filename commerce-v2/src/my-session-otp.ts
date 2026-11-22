@@ -68,6 +68,8 @@ export function createMyOtp(dependencies: {
   };
 
   return {
+    /** The legal storefront whose account documents govern my until FLEX-125 is decided. */
+    accountLegalStorefront: dependencies.accountLegalStorefront,
     /** The account edition that governs my, exactly as `send` checks it (FLEX-125). */
     accountRelease() {
       const storefront = dependencies.accountLegalStorefront;

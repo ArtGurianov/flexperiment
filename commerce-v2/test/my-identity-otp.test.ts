@@ -173,6 +173,53 @@ describe("FLEX-120 MY OTP sign-in", () => {
     expect((await call(app, LMS, "/v1/my/legal")).status).toBe(404);
   });
 
+  it("/v1/my/legal is exactly the edition OTP send enforces; a stale edition is refused before persistence", async () => {
+    const { app } = build();
+    const legal = await (await call(app, MY, "/v1/my/legal")).json() as { version: string; manifestSha256: string;
+      manifest: { documents: Array<{ kind: string; version: string; sha256: string }> } };
+    const byKind = Object.fromEntries(legal.manifest.documents.map((document) => [document.kind, document]));
+    expect([byKind.personal_data.version, byKind.account_terms.version, byKind.marketing_consent.version])
+      .toEqual([consent.personalDataVersion, consent.accountTermsVersion, consent.marketingDocumentVersion]);
+    expect(legal.manifestSha256).toMatch(/^[a-f0-9]{64}$/);
+    const stale = await call(app, MY, "/v1/my/otp/send", { body: { email: "a@example.test", ...consent, accountTermsVersion: "account_terms-v0" } });
+    expect([stale.status, await stale.json()]).toEqual([422, { code: "LEGAL_RELEASE_STALE" }]);
+    for (const table of ["customers", "account_consents", "verification", "my_otp_outbox"]) {
+      expect([table, db.prepare(`SELECT COUNT(*) n FROM ${table}`).get()]).toEqual([table, { n: 0 }]);
+    }
+  });
+
+  it("records the user's exact choices as an authenticated consent action; never a UI flag", async () => {
+    const { app } = build();
+    const { cookie } = await signIn(app, "buyer@example.test");
+    expect((await (await call(app, MY, "/v1/my/session", { cookie })).json() as { consentRequired: boolean }).consentRequired).toBe(true);
+    expect(db.prepare("SELECT DISTINCT evidence_status FROM account_consents").all()).toEqual([{ evidence_status: "UNVERIFIED_INTENT" }]);
+    const legal = await (await call(app, MY, "/v1/my/legal")).json() as { version: string; manifestSha256: string };
+    const status = await (await call(app, MY, "/v1/my/consents", { cookie })).json() as { actionSequence: number };
+    const action = { releaseVersion: legal.version, manifestSha256: legal.manifestSha256, actionKey: "my-sign-in-action-0001",
+      expectedActionSequence: status.actionSequence, personalDataConsent: true, accountTermsAccepted: true, marketingConsent: true };
+    expect((await call(app, MY, "/v1/my/consents", { body: action, cookie, origin: "https://flexperiment.test" })).status).toBe(403);
+    expect((await call(app, MY, "/v1/my/consents", { body: { ...action, expectedActionSequence: undefined }, cookie })).status).toBe(422);
+    const stale = await call(app, MY, "/v1/my/consents", { body: { ...action, manifestSha256: "f".repeat(64) }, cookie });
+    expect([stale.status, await stale.json()]).toEqual([409, { code: "LEGAL_RELEASE_STALE" }]);
+    expect((await call(app, MY, "/v1/my/consents", { body: action, cookie })).status).toBe(200);
+    expect(db.prepare(`SELECT e.kind,e.granted FROM authenticated_consent_events e JOIN authenticated_consent_actions a ON a.id=e.action_id
+      WHERE a.action_key=? ORDER BY e.kind`).all(action.actionKey)).toEqual([
+      { kind: "account_terms", granted: 1 }, { kind: "marketing_consent", granted: 1 }, { kind: "personal_data", granted: 1 }]);
+    expect(await (await call(app, MY, "/v1/my/session", { cookie })).json()).toMatchObject({ consentRequired: false });
+    expect(await (await call(app, MY, "/v1/my/profile", { cookie })).json()).toMatchObject({ marketing: true, consentRequired: false });
+    expect((await call(app, MY, "/v1/my/consents", { body: action })).status).toBe(401);
+  });
+
+  it("binds the MY session to the confirmed customer: a rebound or unverified account resolves to nothing", async () => {
+    const { app } = build();
+    const { cookie } = await signIn(app, "buyer@example.test");
+    expect((await call(app, MY, "/v1/my/profile", { cookie })).status).toBe(200);
+    db.prepare('UPDATE "user" SET email_verified=0').run();
+    expect((await call(app, MY, "/v1/my/profile", { cookie })).status).toBe(401);
+    db.prepare('UPDATE "user" SET email_verified=1, email=\'other@example.test\'').run();
+    expect((await call(app, MY, "/v1/my/profile", { cookie })).status).toBe(401);
+  });
+
   it("sign-out revokes the MY session on the server", async () => {
     const { app } = build();
     const { cookie } = await signIn(app, "buyer@example.test");
@@ -222,6 +269,15 @@ describe("FLEX-120 session audience isolation (mode on)", () => {
 });
 
 describe("FLEX-120 mode off is today's behaviour", () => {
+  it("keeps Stage A /account sign-in (magic link) working on the LMS until the MY cutover", async () => {
+    const { app } = build({ MY_IDENTITY_MODE: "off" });
+    const response = await call(app, LMS, "/v1/auth/sign-in/magic-link", { body: { email: "stage-a@example.test",
+      callbackURL: "https://flexperiment.test/account", metadata: { storefront: "COURSES" }, storefront: "COURSES", ...consent } });
+    expect(response.status).toBe(200);
+    expect(db.prepare('SELECT audience FROM "session"').all()).toEqual([]);
+    expect((await call(build().app, LMS, "/v1/auth/sign-in/magic-link", { body: {} })).status).toBe(410);
+  });
+
   it("hides /v1/my and the OTP plugin", async () => {
     const { app } = build({ MY_IDENTITY_MODE: "off" });
     expect((await call(app, MY, "/v1/my/otp/send", { body: { email: "a@example.test", ...consent } })).status).toBe(404);
