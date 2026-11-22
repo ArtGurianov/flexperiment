@@ -145,12 +145,13 @@ export function sessionAudienceGuard(config: MyIdentityConfig) {
       await next(); return;
     }
     const surface = surfaceForRequest(config.origins, context.req.raw.headers);
+    // A surface's own namespace does not exist anywhere else.
+    if (surface !== "MY" && /^\/v1\/my(?:\/|$)/.test(path)) return context.json({ code: "NOT_FOUND" }, 404, noStore);
+    if (surface !== "LMS" && /^\/v1\/lms(?:\/|$)/.test(path)) return context.json({ code: "NOT_FOUND" }, 404, noStore);
     const forbidden = surface === "LMS" ? MY_ONLY.some(rule => rule.test(path))
       || MY_ONLY_METHOD.some(([method, rule]) => method === context.req.method && rule.test(path))
       : surface === "MY" ? LMS_ONLY.some(rule => rule.test(path)) : false;
     if (forbidden) return context.json({ code: "SESSION_AUDIENCE_FORBIDDEN" }, 403, noStore);
-    if (surface !== "MY" && /^\/v1\/my(?:\/|$)/.test(path)) return context.json({ code: "NOT_FOUND" }, 404, noStore);
-    if (surface !== "LMS" && /^\/v1\/lms(?:\/|$)/.test(path)) return context.json({ code: "NOT_FOUND" }, 404, noStore);
     if (/^\/v1\/auth(?:\/|$)/.test(path)) {
       // MY signs in only through /v1/my/*; the LMS retires Stage A magic links (contract §1, §9).
       if (surface === "LMS" && /^\/v1\/auth\/(?:sign-in\/magic-link|magic-link\/)/.test(path)) {
