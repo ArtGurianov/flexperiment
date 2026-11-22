@@ -8,7 +8,7 @@ no real SmartCaptcha keys, no real Commerce behind the proxy.
 - Runtime: `MY_ORIGIN=http://127.0.0.1:3997`, `COMMERCE_INTERNAL_ORIGIN` pointed at `fake-commerce.mjs`,
   which answers only `/v1/my/legal`, `/v1/my/otp/send`, `/v1/my/otp/verify` (code `123456`) and
   `/v1/my/consents`, and logs what reached it through the real my proxy.
-- Driver: `sign-in-playwright.cjs` (Chromium via Playwright, 420×820 @2x). Output: `run.log`.
+- Driver: `sign-in-playwright.mjs` (Chromium via Playwright, 420×820 @2x). Output: `run.log`.
 
 | Step | Screenshot | Checked |
 | --- | --- | --- |
