@@ -194,7 +194,8 @@ export async function dispatchLabSalesOpenedNotices(db: Database.Database,
         ON CONFLICT DO NOTHING`).run(notice.signupId, notice.noticeKey, now().toISOString()).changes === 1;
     }).immediate();
     if (!claimed) { result.skipped++; continue; }
-    const { signupId: _signupId, ...message } = notice;
+    const message: LabInterestEmail = { kind: notice.kind, email: notice.email, noticeKey: notice.noticeKey, subject: notice.subject,
+      message: notice.message, storefrontUrl: notice.storefrontUrl, withdrawUrl: notice.withdrawUrl, headers: notice.headers };
     try {
       await send(message);
       db.prepare("UPDATE lab_interest_notices SET state='SENT',sent_at=? WHERE signup_id=? AND notice_key=?")

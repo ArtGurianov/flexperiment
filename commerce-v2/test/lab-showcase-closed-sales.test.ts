@@ -50,7 +50,7 @@ const call = (app: ReturnType<typeof appWith>, path: string, body?: unknown, tok
  * A historical guest capability, as an order started before the closure would hold. Seeded directly:
  * the public guest-start route is closed by D (#292) and is not part of this slice.
  */
-const historicalGuest = async (_app: ReturnType<typeof appWith>) => {
+const historicalGuest = async () => {
   const token = capability();
   db.prepare("INSERT INTO customers(id,email_normalized) VALUES ('history-customer','history@example.test')").run();
   db.prepare(`INSERT INTO lab_guest_access(order_public_id,customer_id,token_sha256,acceptance_json,created_at,updated_at)
@@ -65,7 +65,7 @@ describe("FLEX-8: LAB closed while COURSES stays open", () => {
     ["LAB switch CLOSED, offer PUBLIC", () => setTestStorefronts(db, { LAB: "CLOSED", COURSES: "OPEN" }), "SALES_STOPPED"],
     ["offer CLOSED, switch OPEN", () => db.prepare("UPDATE offers SET sale_mode='CLOSED'").run(), "OFFER_CLOSED"],
   ])("refuses a new LAB quote with %s, without any money-side row or rail call", async (_label, close, code) => {
-    const app = appWith(); const token = await historicalGuest(app);
+    const app = appWith(); const token = await historicalGuest();
     close();
     const create = vi.spyOn(rail, "create"), resolve = vi.spyOn(rail, "resolve");
     const before = moneyState();
@@ -85,7 +85,7 @@ describe("FLEX-8: LAB closed while COURSES stays open", () => {
   });
 
   it("keeps a historical paid ticket and its refund request working after the closure", async () => {
-    const app = appWith(); const token = await historicalGuest(app);
+    const app = appWith(); const token = await historicalGuest();
     const quote = await (await call(app, "/v1/checkout/preview", { offerRef: "lab:one" }, token, "preview")).json();
     expect((await call(app, "/v1/checkout", { quoteId: quote.quoteId, labAcceptance: acceptance() }, token, "pay")).status).toBeLessThan(300);
     expect(count("lab_tickets")).toBe(1);
