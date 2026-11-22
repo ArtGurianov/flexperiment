@@ -1,43 +1,148 @@
 {
   "schema": "flexperiment.my-identity.return-targets/1",
   "LMS": {
-    "accept": ["^/courses/[a-z0-9-]{1,80}(/lessons/[a-z0-9-]{1,120})?$", "^/account$"],
+    "accept": [
+      "^/courses/[a-z0-9-]{1,80}(/lessons/[a-z0-9-]{1,120})?$",
+      "^/account$"
+    ],
     "maxLength": 256,
     "default": "/",
     "cases": [
-      { "input": "/courses/flex-basics", "result": "/courses/flex-basics" },
-      { "input": "/courses/flex-basics/lessons/intro", "result": "/courses/flex-basics/lessons/intro" },
-      { "input": "/account", "result": "/account" },
-      { "input": "/", "result": "/" },
-      { "input": "https://evil.example/courses/x", "result": "/" },
-      { "input": "//evil.example/courses/x", "result": "/" },
-      { "input": "/\\evil.example", "result": "/" },
-      { "input": "/courses/%2f%2fevil", "result": "/" },
-      { "input": "/courses/../v1/me", "result": "/" },
-      { "input": "/courses/flex-basics?x=1", "result": "/" },
-      { "input": "/courses/flex-basics#a", "result": "/" },
-      { "input": "/auth/lms/start", "result": "/" },
-      { "input": "/v1/me", "result": "/" },
-      { "input": "/arrive", "result": "/" },
-      { "input": "/courses/Flex-Basics", "result": "/" },
-      { "input": "/courses/flex-basics/lessons/intro\n", "result": "/" },
-      { "input": "", "result": "/" }
+      {
+        "input": "/courses/flex-basics",
+        "result": "/courses/flex-basics"
+      },
+      {
+        "input": "/courses/flex-basics/lessons/intro",
+        "result": "/courses/flex-basics/lessons/intro"
+      },
+      {
+        "input": "/account",
+        "result": "/account"
+      },
+      {
+        "input": "/",
+        "result": "/"
+      },
+      {
+        "input": "https://evil.example/courses/x",
+        "result": "/"
+      },
+      {
+        "input": "//evil.example/courses/x",
+        "result": "/"
+      },
+      {
+        "input": "/\\evil.example",
+        "result": "/"
+      },
+      {
+        "input": "/courses/%2f%2fevil",
+        "result": "/"
+      },
+      {
+        "input": "/courses/../v1/me",
+        "result": "/"
+      },
+      {
+        "input": "/courses/flex-basics?x=1",
+        "result": "/"
+      },
+      {
+        "input": "/courses/flex-basics#a",
+        "result": "/"
+      },
+      {
+        "input": "/auth/lms/start",
+        "result": "/"
+      },
+      {
+        "input": "/v1/me",
+        "result": "/"
+      },
+      {
+        "input": "/arrive",
+        "result": "/"
+      },
+      {
+        "input": "/courses/Flex-Basics",
+        "result": "/"
+      },
+      {
+        "input": "/courses/flex-basics/lessons/intro\n",
+        "result": "/"
+      },
+      {
+        "input": "",
+        "result": "/"
+      }
     ]
   },
   "MY": {
-    "accept": ["^/$", "^/continue\\?tx=[A-Za-z0-9_-]{22}$", "^/orders$", "^/profile$", "^/checkout/[A-Za-z0-9_-]{16,64}$"],
+    "accept": [
+      "^/$",
+      "^/continue\\?tx=[A-Za-z0-9_-]{22}$",
+      "^/orders$",
+      "^/profile$",
+      "^/courses$",
+      "^/tickets$",
+      "^/checkout/[A-Za-z0-9_-]{16,64}$"
+    ],
     "maxLength": 256,
     "default": "/",
     "cases": [
-      { "input": "/", "result": "/" },
-      { "input": "/continue?tx=Zx3n0c9Q2mJr8YtL1aBcDe", "result": "/continue?tx=Zx3n0c9Q2mJr8YtL1aBcDe" },
-      { "input": "/continue?tx=short", "result": "/" },
-      { "input": "/continue?tx=Zx3n0c9Q2mJr8YtL1aBcDe&next=//evil", "result": "/" },
-      { "input": "/orders", "result": "/orders" },
-      { "input": "/checkout/abcdefghijklmnop", "result": "/checkout/abcdefghijklmnop" },
-      { "input": "https://flexperiment.ru/", "result": "/" },
-      { "input": "//my.flexperiment.ru/orders", "result": "/" },
-      { "input": "/profile/../orders", "result": "/" }
+      {
+        "input": "/",
+        "result": "/"
+      },
+      {
+        "input": "/continue?tx=Zx3n0c9Q2mJr8YtL1aBcDe",
+        "result": "/continue?tx=Zx3n0c9Q2mJr8YtL1aBcDe"
+      },
+      {
+        "input": "/continue?tx=short",
+        "result": "/"
+      },
+      {
+        "input": "/continue?tx=Zx3n0c9Q2mJr8YtL1aBcDe&next=//evil",
+        "result": "/"
+      },
+      {
+        "input": "/orders",
+        "result": "/orders"
+      },
+      {
+        "input": "/checkout/abcdefghijklmnop",
+        "result": "/checkout/abcdefghijklmnop"
+      },
+      {
+        "input": "https://flexperiment.ru/",
+        "result": "/"
+      },
+      {
+        "input": "//my.flexperiment.ru/orders",
+        "result": "/"
+      },
+      {
+        "input": "/profile/../orders",
+        "result": "/"
+      },
+      {
+        "input": "/courses",
+        "result": "/courses"
+      },
+      {
+        "input": "/tickets",
+        "result": "/tickets"
+      },
+      {
+        "input": "/courses/x",
+        "result": "/"
+      },
+      {
+        "input": "/tickets?x=1",
+        "result": "/"
+      }
     ]
   },
   "constants": {
