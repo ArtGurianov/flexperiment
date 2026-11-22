@@ -5,7 +5,7 @@ import { useEffect, useState, type FormEvent } from "react";
 /** FLEX-120 sign-in on my: e-mail → code. All calls are same-origin `/v1/my/*`; the browser never
  * sees a session token (only the host-only cookie). No analytics, no logging of input. */
 type LegalDocument = { kind: string; version: string; sha256: string; url: string };
-type LegalRelease = { version: string; manifest: { documents: LegalDocument[] } };
+type LegalRelease = { version: string; manifestSha256: string; manifest: { documents: LegalDocument[] } };
 declare global {
   interface Window {
     smartCaptcha?: { render: (container: HTMLElement, input: { sitekey: string; hl: "ru"; callback: (token: string) => void }) => number;
@@ -23,6 +23,8 @@ const MESSAGES: Record<string, string> = {
   PERSONAL_DATA_CONSENT_REQUIRED: "Нужно согласие на обработку персональных данных.",
   ACCOUNT_TERMS_ACCEPTANCE_REQUIRED: "Нужно принять условия аккаунта.",
   EMAIL_INVALID: "Проверьте адрес почты.",
+  CONSENT_STATE_STALE: "Согласия изменились в другой вкладке. Обновите страницу.",
+  CONSENT_WRITE_UNCONFIRMED: "Не удалось подтвердить согласия. Повторите вход.",
 };
 const message = (code: string) => MESSAGES[code] ?? "Не удалось выполнить запрос. Попробуйте ещё раз.";
 
@@ -98,13 +100,29 @@ export default function SignInForm({ next, captchaSiteKey }: { next: string; cap
     setResendAfter(Number(payload.resendAfterSeconds) || 60);
   }
 
+  async function recordConsents(): Promise<string> {
+    const status = await fetch("/v1/my/consents", { credentials: "same-origin", cache: "no-store" });
+    if (!status.ok) return "CONSENT_WRITE_UNCONFIRMED";
+    const { actionSequence } = await status.json() as { actionSequence: number };
+    const key = new Uint8Array(24); crypto.getRandomValues(key);
+    const actionKey = btoa(String.fromCharCode(...key)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    const { ok, payload } = await post("/v1/my/consents", {
+      releaseVersion: release!.version, manifestSha256: release!.manifestSha256, actionKey, expectedActionSequence: actionSequence,
+      personalDataConsent: personalData, accountTermsAccepted: accountTerms, marketingConsent: marketing,
+    });
+    return ok ? "OK" : String(payload.code ?? "CONSENT_WRITE_UNCONFIRMED");
+  }
+
   async function verify(event: FormEvent) {
     event.preventDefault();
     setBusy(true); setError("");
     const { ok, payload } = await post("/v1/my/otp/verify", { email, otp: code, next })
       .catch(() => ({ ok: false, payload: {} as Record<string, unknown> }));
-    setBusy(false);
-    if (!ok) { setError(message(String(payload.code ?? ""))); return; }
+    if (!ok) { setError(message(String(payload.code ?? ""))); setBusy(false); return; }
+    // Record the user's actual, separate choices as an authenticated consent action against the
+    // exact edition shown in this form (Commerce refuses a stale edition) before leaving.
+    const recorded = await recordConsents().catch(() => "CONSENT_WRITE_UNCONFIRMED");
+    if (recorded !== "OK") { setError(message(recorded)); setBusy(false); return; }
     // `next` is re-validated by Commerce; only a local my path comes back.
     window.location.assign(typeof payload.next === "string" && payload.next.startsWith("/") && !payload.next.startsWith("//") ? payload.next : "/");
   }

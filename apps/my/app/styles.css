@@ -1,3 +1,8 @@
 :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
 body { margin: 0; }
 .my-main { max-width: 40rem; margin: 0 auto; padding: 2rem 1rem; }
+form label { display: block; margin: 0.75rem 0; line-height: 1.4; }
+form input[type="email"], form input[name="otp"] { display: block; width: 100%; box-sizing: border-box; margin-top: 0.25rem; padding: 0.5rem; font-size: 1rem; }
+form input[name="otp"] { letter-spacing: 0.3em; max-width: 12rem; }
+form button { margin: 0.5rem 0.5rem 0 0; padding: 0.5rem 1rem; font-size: 1rem; }
+[role="alert"] { color: #b00020; }
