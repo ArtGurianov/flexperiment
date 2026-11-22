@@ -259,3 +259,23 @@ describe("LAB occurrence display", () => {
     expect(t.controller.current).toMatchObject({ phase: "REVIEW", review: { occurrence: { title: "LAB · ноябрь", timezone: "Europe/Moscow", venue: "Адрес сообщим до 25.11" } } });
   });
 });
+
+describe("LAB codes from D (#292 fc7f326a)", () => {
+  it("confirm answered 403 LAB_ACCOUNT_CONFIRMATION_REQUIRED → account confirmation, key released", async () => {
+    const commerce = new FakeCommerce().on(PREVIEW, ok(lab.preview)).on(CONFIRM, lab.refusals.accountConfirmation);
+    const t = setup(lab.offerRef, { commerce });
+    await t.controller.start();
+    await t.controller.confirm({ termsAccepted: true, personalDataConsent: true, receiptContactAccepted: true });
+    expect(t.controller.current.phase).toBe("ACCOUNT_CONFIRMATION");
+    expect(JSON.parse([...t.storage.data.values()][0]).paymentKey).toBeUndefined();
+  });
+
+  it("confirm answered 403 LAB_CONSENT_REQUIRED → new quote and documents shown again for acceptance", async () => {
+    const commerce = new FakeCommerce().on(PREVIEW, ok(lab.preview)).on(CONFIRM, { status: 403, body: { code: "LAB_CONSENT_REQUIRED" } });
+    const t = setup(lab.offerRef, { commerce });
+    await t.controller.start();
+    await t.controller.confirm({ termsAccepted: true, personalDataConsent: true, receiptContactAccepted: true });
+    expect(t.controller.current).toMatchObject({ phase: "REVIEW", notice: "DOCUMENTS_CHANGED" });
+    expect(commerce.count(CONFIRM)).toBe(1);
+  });
+});
