@@ -5,6 +5,7 @@ import { loadCommerceRuntimeConfig } from "./payment-mode";
 import { createAuthRuntime } from "./auth";
 import { loadMyIdentityConfig } from "./my-session";
 import { createMyOtp, myAccountLegalStorefront } from "./my-session-otp";
+import { createSessionExchange } from "./session-exchange";
 import { verifySmartCaptcha } from "./smartcaptcha";
 import { playbackKeyringFromEnvironment } from "./playback-auth";
 import { HttpKinescopeClient } from "./kinescope";
@@ -151,6 +152,7 @@ const app = createCommerceV2App({
     verifyCaptcha: smartCaptchaSecret ? (token, ip) => verifySmartCaptcha(token, ip, smartCaptchaSecret) : undefined }),
   resolveSession: auth.resolveSession,
   signOutMySession: (headers) => auth.auth.api.signOut({ headers, asResponse: true }),
+  sessionExchange: createSessionExchange({ db }),
   verifyCaptcha: smartCaptchaSecret ? (token, ip) => verifySmartCaptcha(token, ip, smartCaptchaSecret) : undefined,
   kinescopeClient,
   kinescopeLessonsFolderId: process.env.KINESCOPE_LESSONS_FOLDER_ID,

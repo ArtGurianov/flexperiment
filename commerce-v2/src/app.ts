@@ -38,6 +38,7 @@ import { loadCommerceOrigins, storefrontOrigin, type CommerceOrigins, type Store
 import type { MyIdentityConfig, ResolvedSession } from "./my-session";
 import type { createMyOtp } from "./my-session-otp";
 import { registerMySessionRoutes } from "./my-session-routes";
+import type { createSessionExchange } from "./session-exchange";
 import { databaseReady, READINESS_DEADLINE_MS, withinDeadline, type RefrefReadiness } from "./readiness";
 import { storefrontSwitchStatus } from "./storefront-switch";
 import { publicLabCatalogue } from "./lab-catalogue";
@@ -99,6 +100,7 @@ type Dependencies = {
   readonly myOtp?: ReturnType<typeof createMyOtp>;
   readonly resolveSession?: (headers: Headers) => Promise<ResolvedSession | null>;
   readonly signOutMySession?: (headers: Headers) => Promise<Response>;
+  readonly sessionExchange?: ReturnType<typeof createSessionExchange>;
 };
 
 type AppBindings = { Variables: { controlRoomAdminId?: string; controlRoomSessionId?: string } };
@@ -730,7 +732,7 @@ export function createCommerceV2App(deps: Dependencies) {
 
   // FLEX-120/121 (B block): audience guard and MY routes, ahead of the public auth router.
   registerMySessionRoutes(app as unknown as Hono, { db: deps.db, config: deps.myIdentity ?? { mode: "off", origins },
-    otp: deps.myOtp, resolveSession: deps.resolveSession, signOut: deps.signOutMySession });
+    otp: deps.myOtp, resolveSession: deps.resolveSession, signOut: deps.signOutMySession, exchange: deps.sessionExchange });
 
   if (deps.authHandler) {
     app.post("/v1/auth/sign-in/magic-link", async (context) => {
