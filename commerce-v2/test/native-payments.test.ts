@@ -167,6 +167,20 @@ describe("native payment ledger on the fake bank (FLEX-119)", () => {
     expect(count("SELECT COUNT(*) n FROM native_callback_inbox")).toBe(3);
   });
 
+  it("confirmed payment whose access grant fails: the sweep completes the grant later, with no second debit", async () => {
+    const id = order("ORD-G", "ONLINE_COURSE", 490000);
+    await startNativePayment(db, ctx(), id);
+    bank.buyerPays(id);
+    // The grant fails inside the PAID transaction (e.g. a constraint or I/O error): the whole transition rolls back.
+    db.exec("CREATE TRIGGER fail_grant BEFORE INSERT ON course_entitlements BEGIN SELECT RAISE(ABORT,'GRANT_FAILED'); END;");
+    expect(await reconcilePendingNativePayments(db, ctx())).toMatchObject({ failed: 1 });
+    expect([paymentState(id), entitlements(), count("SELECT COUNT(*) n FROM fiscal_events")]).toEqual(["PENDING", 0, 0]);
+    db.exec("DROP TRIGGER fail_grant");
+    await reconcilePendingNativePayments(db, ctx());
+    expect([paymentState(id), entitlements(), bank.debits, bank.calls.create.length]).toEqual(["PAID", 1, 1, 1]);
+    expect(count("SELECT COUNT(*) n FROM fiscal_events WHERE kind='PAYMENT_RECEIPT'")).toBe(1);
+  });
+
   it("a paid fact with another amount goes to review, never access", async () => {
     const id = order("ORD-7", "ONLINE_COURSE", 490000);
     await startNativePayment(db, ctx(), id);

@@ -259,3 +259,82 @@ describe("native dispatch in the refund and order read routes; historical RC.2 p
     expect(bank.calls.readPayment).toBe(0);
   });
 });
+
+describe("owner directive v4.8 item 4: COURSES=OPEN, LAB=CLOSED, PAYMENT_MODE=native leaves zero LAB payment side effects", () => {
+  let db: Database.Database;
+  let bank: FakeNativeBank;
+  const config = withTestStorefrontSwitch(loadCommerceRuntimeConfig(nativeEnv));
+  const rail = new NativeQuoteRail({ merchantId: "flexperiment-native", fiscalizationMode: "PROVIDER" });
+  const sideEffects = () => ({
+    quotes: (db.prepare("SELECT COUNT(*) n FROM checkout_quotes WHERE offer_id='offer-lab'").get() as { n: number }).n,
+    orders: (db.prepare("SELECT COUNT(*) n FROM order_lines WHERE product_id='p-lab'").get() as { n: number }).n,
+    nativePayments: (db.prepare("SELECT COUNT(*) n FROM native_payments").get() as { n: number }).n,
+    fiscalEvents: (db.prepare("SELECT COUNT(*) n FROM fiscal_events").get() as { n: number }).n,
+    tickets: (db.prepare("SELECT COUNT(*) n FROM lab_tickets").get() as { n: number }).n,
+    providerCalls: bank.calls.create.length + bank.calls.readPayment + bank.calls.submitRefund.length + bank.calls.readRefund,
+  });
+  const none = { quotes: 0, orders: 0, nativePayments: 0, fiscalEvents: 0, tickets: 0, providerCalls: 0 };
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    migrateV2(db);
+    bank = new FakeNativeBank();
+    db.prepare("INSERT INTO customers(id,email_normalized) VALUES ('customer','student@example.com')").run();
+    for (const storefront of ["COURSES", "LAB"]) db.prepare(`INSERT INTO legal_releases(id,storefront,version,manifest_json,effective_at,active)
+      VALUES (?,?,'v1',?,'2026-09-30T00:00:00Z',1)`).run(`legal-${storefront}`, storefront, stageALegalManifestJson);
+    db.exec(`INSERT INTO cities(id,slug,title) VALUES ('city','msk','Москва');
+      INSERT INTO lab_occurrences(id,occurrence_ref,city_id,title,starts_at,ends_at,timezone,capacity,venue_status,venue_name,venue_address)
+        VALUES ('occ','occ-1','city','Мастер-класс','2026-12-05T15:00:00Z','2026-12-05T18:00:00Z','Europe/Moscow',10,'CONFIRMED','Студия','Москва, 1');
+      INSERT INTO products(id,product_ref,kind,access_model,occurrence_ref) VALUES ('p-lab','lab-a','LAB','PAID','occ-1');
+      INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode,payment_purpose) VALUES ('offer-lab','lab:a','p-lab',350000,'PUBLIC','Мастер-класс');`);
+    const { policyId } = draftFiscalPolicy(db, { offerRef: "lab:a", kind: "LAB", itemName: "Мастер-класс", taxSystem: "USN_INCOME",
+      vatCode: "NONE", paymentMethod: "FULL_PREPAYMENT", paymentObject: "SERVICE", actor: "owner" }, "2026-09-29T00:00:00Z");
+    qualifyTestFiscalPolicy(db, policyId, "owner", "2026-09-29T00:00:00Z");
+    openTestStorefront(db, "LAB");
+    setTestStorefronts(db, { COURSES: "OPEN", LAB: "CLOSED" });
+  });
+
+  const ledger = (): NativeLedgerContext => {
+    const runtime = nativePaymentsFromConfig(db, config, keyring)!;
+    return { ...runtime.ledger, provider: bank };
+  };
+
+  it("API: a LAB preview is refused and writes nothing", async () => {
+    const app = createCommerceV2App({ db, config, sourceCommit: "a".repeat(40), serviceToken: "synthetic", refundEnvelopeKeys: keyring,
+      paymentRail: rail, nativePayments: ledger(), authenticateCustomer: async () => "customer" });
+    const response = await app.request("/v1/checkout/preview", { method: "POST",
+      headers: { "content-type": "application/json", "x-forwarded-host": "localhost:3000", "idempotency-key": "lab-preview-1" },
+      body: JSON.stringify({ offerRef: "lab:a" }) });
+    expect(response.status).toBeGreaterThanOrEqual(400);
+    expect(JSON.stringify(await response.json())).toContain("SALES_STOPPED");
+    expect(sideEffects()).toEqual(none);
+  });
+
+  it("checkout: a LAB quote issued while LAB was open cannot be confirmed after the close", async () => {
+    setTestStorefronts(db, { COURSES: "OPEN", LAB: "OPEN" });
+    const prepared = await prepareCheckout(db, rail, config, { customerId: "customer", customerEmail: "student@example.com", offerRef: "lab:a",
+      previewIdempotencyKey: "lab-open", storefront: "LAB" }, "2026-09-30T10:00:00Z");
+    if (prepared.state !== "PRICE_REVIEW_REQUIRED") throw new Error("expected a quote");
+    setTestStorefronts(db, { COURSES: "OPEN", LAB: "CLOSED" });
+    const before = sideEffects();
+    await expect(confirmCheckout(db, rail, config, { customerId: "customer", customerEmail: "student@example.com", quoteId: prepared.quoteId,
+      idempotencyKey: "lab-confirm", native: nativeConfirm(db, ledger()) }, "2026-09-30T10:01:00Z")).rejects.toThrow("SALES_STOPPED");
+    // The quote issued while LAB was open is the only row; the close lets nothing further through.
+    expect(sideEffects()).toEqual({ ...none, quotes: 1 });
+    expect(before).toEqual({ ...none, quotes: 1 });
+    expect(db.prepare("SELECT consumed_at FROM checkout_quotes").get()).toEqual({ consumed_at: null });
+  });
+
+  it("ledger: a LAB order can never start a native payment while LAB is closed", async () => {
+    const snapshot = JSON.stringify({ schema: "flexperiment.test-native-order/1", paymentPurpose: "Мастер-класс" });
+    db.prepare(`INSERT INTO orders(id,public_id,customer_id,state,total_kopecks,checkout_snapshot_json,snapshot_hash,legal_release_id,created_at,updated_at)
+      VALUES ('o','LAB-X','customer','PAYMENT_PENDING',350000,?,?,'legal-LAB','2026-09-30T10:00:00Z','2026-09-30T10:00:00Z')`).run(snapshot, "d".repeat(64));
+    db.prepare(`INSERT INTO order_lines(id,order_id,product_id,offer_ref_snapshot,title_snapshot,unit_amount_kopecks,legal_terms_ref,fiscal_item_json,created_at)
+      VALUES ('l','o','p-lab','lab:a','Мастер-класс',350000,'v1',?,'2026-09-30T10:00:00Z')`).run(JSON.stringify({ name: "Мастер-класс", quantity: 1,
+      amountKopecks: 350000, vatCode: "NONE", paymentMethod: "FULL_PREPAYMENT", paymentObject: "SERVICE" }));
+    await expect(startNativePayment(db, ledger(), "LAB-X")).rejects.toThrow("NATIVE_PAYMENT_INITIATION_STOPPED");
+    await reconcilePendingNativePayments(db, ledger());
+    expect({ ...sideEffects(), orders: 0 }).toEqual(none);
+  });
+});
