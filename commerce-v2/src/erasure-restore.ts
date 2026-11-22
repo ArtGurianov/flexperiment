@@ -141,7 +141,8 @@ function applyErasure(db: Database.Database, ledger: VerifiedErasureLedger, keys
           // Generic audit JSON is not assumed anonymous or safely discardable.
           // A classified legal/security hold must be implemented before such a
           // subject can be admitted; no invented retention deadline here.
-          const audit = db.prepare(`SELECT 1 FROM audit_log WHERE actor=? OR subject_ref=?
+          // An actor may embed the subject (e.g. `customer:<id>`); any mention stops erasure (fail closed).
+          const audit = db.prepare(`SELECT 1 FROM audit_log WHERE instr(actor,?)>0 OR subject_ref=?
             OR instr(evidence_json,?)>0 OR instr(evidence_json,?)>0 LIMIT 1`)
             .get(customer.id, customer.id, customer.id, customer.email_normalized);
           const adminAudit = db.prepare(`SELECT 1 FROM control_room_audit_log WHERE entity_id=?

@@ -165,3 +165,19 @@ describe("isolated restore never re-admits a revoked owned QR (E review blocker 
     } finally { restored.close(); }
   });
 });
+
+describe("erasure sees a subject embedded in an audit actor (E review blocker 2)", () => {
+  it("stops at ERASURE_AUDIT_REVIEW_REQUIRED for actor customer:<id>, as written by an owned QR reissue", async () => {
+    db.prepare("INSERT INTO customers(id,email_normalized) VALUES ('subject','subject@example.test')").run();
+    const userId = confirmLabBuyer(db, "subject");
+    // The exact row reissueOwnedLabQr writes; the subject has no order, so only the audit check can stop it.
+    db.prepare(`INSERT INTO audit_log(id,actor,action,subject_type,subject_ref,evidence_json,created_at)
+      VALUES (?, 'customer:subject','LAB_TICKET_QR_REISSUED','LAB_TICKET','ticket-x','{"generation":1}',?)`).run(randomUUID(), now.toISOString());
+    ledger.append({ requestId: randomUUID(), kind: "ERASURE", subject: erasureSubject(keys, "subject-1", "canary",
+      { email: "subject@example.test", customerId: "subject", userId }) }, now);
+    const verified = await VerifiedErasureLedger.read({ scope: "canary", bundle: ledger.export(), keys,
+      readCurrentCheckpoint: async nonce => issueErasureCheckpoint(ledger.export(), nonce, signer, keys, now), now: () => now });
+    expect(() => applyIsolatedRestoreErasure(db, verified, keys, "canary", now)).toThrow("ERASURE_AUDIT_REVIEW_REQUIRED");
+    expect(db.prepare("SELECT COUNT(*) AS n FROM customers WHERE id='subject'").get()).toEqual({ n: 1 });
+  });
+});
