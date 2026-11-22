@@ -53,10 +53,11 @@ must not be retargeted implicitly to this schema.
 
 Flexperiment stores its own customers, catalogue projection, prices, sale
 policy, orders, fulfilment, entitlements, playback state and audit evidence.
-Refref owns payment and refund execution. Flexperiment stores only identifiers,
-idempotency keys and the latest observed Refref projection needed to reconcile
-its own obligations. Provider credentials and provider-native payment state do
-not belong in this database.
+Historical Refref orders continue to use their original provider path for
+payment read-back and refunds. The native path makes Commerce responsible for
+payment, refund and fiscal reconciliation. Each order retains the execution
+and fiscal profile selected at purchase. Provider credentials stay outside
+the merchant database.
 
 Current source uses Commerce-owned editorial drafts and immutable published
 version snapshots, introduced by migration 0026. Control Room publishes directly
@@ -66,6 +67,41 @@ readers; ART-337 records the closed-canary cut. That evidence does not authorize
 public launch. The separate Payload SQLite and manifest path were historical
 pre-cutover authorities; their retained archives are not active writers.
 See the [publication protocol](course-publication-protocol.md).
+
+### Native launch and fiscal profiles (owner decision, 2026-11-22)
+
+- **Free LMS Stage A** keeps `PAYMENT_MODE=disabled`. **First paid LMS** uses
+  Tochka internet acquiring and Tochka Cheki for qualified `ONLINE_COURSE`
+  offers. Checkout admits ready, published materials that the buyer receives
+  automatically after confirmed payment. The approved offer must describe
+  that initial grant as delivery of the purchased access. Courses with a
+  future delivery obligation, such as live sessions or instructor assessment,
+  require separate qualification. Use one sale receipt with `FULL_PAYMENT`
+  and verify the separate return receipt on a full refund. Reconcile a
+  confirmed payment whose access grant fails or is delayed.
+- **Public LAB** can show city listings, workshop dates and prices and take
+  notification requests. Pre-registration records interest. A request creates
+  zero orders, seat holds, payment attempts or tickets. Keep LAB sales and
+  server-side checkout admission `CLOSED` on the initial provider profile.
+- **Target fiscal provider after launch** is OFD.ru Ferma, with Tochka still
+  handling acquiring. Plan the fiscal cutover several months after the first
+  paid LMS release. LAB sales require a qualified `FULL_PREPAYMENT` receipt
+  when a paid booking creates a ticket and a separate `FULL_PAYMENT` receipt
+  for the advance offset after actual service delivery. An authorized Control
+  Room operator explicitly initiates settlement after the workshop ends.
+  Reconcile the result against the frozen order snapshot and make retries
+  idempotent. The closing receipt creates zero new bank charges. Qualify
+  this flow before LAB payment acceptance and the separate public-sales GO.
+  Confirm the cutover leaves exactly one issuer for each fiscal event and
+  preserves reconciliation and refunds on earlier orders.
+
+The [October closed-canary purchase and refund](evidence/2026-10-16-paid-checkout-financial-e2e/README.md)
+recorded a real Tochka transaction, a `FULL_PAYMENT` sale receipt and return
+receipt, and protected access followed by revocation. That test used the
+historical Refref execution path. The direct V2 release requires its own bank,
+fiscal, access and recovery acceptance. The
+[course fiscal evidence](legal/ART-234_FULL_PAYMENT_RESEARCH.md) records the
+initial ready-access model and its qualification conditions.
 
 ## Migration 0026 schema and recovery review (ART-332)
 
