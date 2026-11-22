@@ -182,6 +182,13 @@ function applyErasure(db: Database.Database, ledger: VerifiedErasureLedger, keys
         db.exec('DELETE FROM "session"; DELETE FROM verification;');
         if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='lab_guest_access'").get()) {
           db.exec("DELETE FROM lab_ticket_recoveries; UPDATE lab_tickets SET qr_sha256=NULL;");
+          // FLEX-60 (E review): an owned QR is HMAC(secret, ticket, qr_generation). The snapshot may predate
+          // several reissues, so +1 could land on a generation already revoked live. Jump past any counter
+          // value instead (reissue counts from 0 by 1; restore time in seconds is far above it and grows).
+          if ((db.prepare("PRAGMA table_info(lab_tickets)").all() as Array<{ name: string }>).some(column => column.name === "qr_generation")) {
+            db.prepare("UPDATE lab_tickets SET qr_generation=MAX(qr_generation+1,?) WHERE used_at IS NULL")
+              .run(Math.floor(Math.max(Date.now(), now.getTime()) / 1000));
+          }
           for (const row of db.prepare("SELECT order_public_id FROM lab_guest_access").all() as Array<{order_public_id:string}>) {
             db.prepare("UPDATE lab_guest_access SET token_sha256=? WHERE order_public_id=?").run(randomBytes(32).toString("hex"), row.order_public_id);
           }

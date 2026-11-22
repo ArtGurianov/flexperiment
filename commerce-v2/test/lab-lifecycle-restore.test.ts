@@ -129,3 +129,39 @@ describe("migration 0037 rebuilds SERVICE_RENDERED without losing or inventing a
     } finally { legacy.close(); }
   });
 });
+
+describe("isolated restore never re-admits a revoked owned QR (E review blocker 1)", () => {
+  it("snapshot → two reissues live → restore: every earlier QR stays refused, a fresh view gives a new QR", async () => {
+    db.prepare("INSERT INTO legal_releases(id,storefront,version,manifest_json,effective_at,active) VALUES ('lab-legal','LAB','lab-b',?,?,1)")
+      .run(stageBLegalManifestJson, "2026-10-19T09:00:00.000Z");
+    db.exec(`INSERT INTO cities(id,slug,title) VALUES ('city','nsk','City');
+      INSERT INTO lab_occurrences(id,occurrence_ref,city_id,title,starts_at,ends_at,timezone,capacity,venue_status,venue_name,venue_address)
+        VALUES ('event','lab:one','city','LAB','2026-11-01T09:00:00Z','2026-11-01T17:00:00Z','Asia/Novosibirsk',20,'CONFIRMED','Studio','Address');
+      INSERT INTO products(id,product_ref,kind,access_model,occurrence_ref) VALUES ('product','lab:one','LAB','PAID','lab:one');
+      INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode) VALUES ('offer','lab:one','product',10000,'PUBLIC');
+      INSERT INTO customers(id,email_normalized) VALUES ('buyer','buyer@example.test');`);
+    qualifyTestFiscalPolicies(db); openTestStorefront(db, "LAB"); confirmLabBuyer(db, "buyer");
+    const paid = await checkout(db, new MockPaymentRail(), testCheckoutConfig, { customerId: "buyer", customerEmail: "buyer@example.test",
+      offerRef: "lab:one", idempotencyKey: "pay", labAcceptance: labAcceptanceFor(db) }, "2026-10-19T10:00:00.000Z");
+    const key = randomBytes(32); // Synthetic only.
+    const qr = (ticket: ReturnType<typeof readOwnedLabTicket>) => "qrToken" in ticket ? ticket.qrToken! : "";
+    const q0 = qr(readOwnedLabTicket(db, key, "buyer", paid.orderPublicId));
+    const snapshot = db.serialize();
+    const q1 = qr(reissueOwnedLabQr(db, key, "buyer", paid.orderPublicId, "2026-10-20T10:00:00.000Z"));
+    const q2 = qr(reissueOwnedLabQr(db, key, "buyer", paid.orderPublicId, "2026-10-21T10:00:00.000Z"));
+    const restored = new Database(snapshot); restored.pragma("foreign_keys=ON");
+    try {
+      ledger.append({ requestId: randomUUID(), kind: "MARKETING_SUPPRESSION", subject: erasureSubject(keys, "subject-1", "canary",
+        { email: "nobody@example.test", customerId: "nobody", userId: "nobody" }) }, now);
+      const verified = await VerifiedErasureLedger.read({ scope: "canary", bundle: ledger.export(), keys,
+        readCurrentCheckpoint: async nonce => issueErasureCheckpoint(ledger.export(), nonce, signer, keys, now), now: () => now });
+      applyIsolatedRestoreErasure(restored, verified, keys, "canary", now);
+      const fresh = qr(readOwnedLabTicket(restored, key, "buyer", paid.orderPublicId));
+      expect([q0, q1, q2]).not.toContain(fresh);
+      for (const revoked of [q0, q1, q2]) {
+        expect(() => checkInLabTicket(restored, { qrToken: revoked, occurrenceRef: "lab:one", actor: "door" }, "2026-11-01T09:00:00.000Z")).toThrow("LAB_QR_INVALID");
+      }
+      expect(checkInLabTicket(restored, { qrToken: fresh, occurrenceRef: "lab:one", actor: "door" }, "2026-11-01T09:00:00.000Z")).toMatchObject({ status: "USED" });
+    } finally { restored.close(); }
+  });
+});
