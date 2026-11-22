@@ -234,6 +234,10 @@ export class CheckoutController {
     if (!answer.ok) {
       // 503 or no answer after send: the outcome is unknown. Keep key and body; a retry resends them.
       if (answer.status === 0 || answer.status >= 500) {
+        // After a refresh the acceptance is not in memory. Today Commerce redacts a missing paid
+        // acceptance to 503, so the probe cannot tell "never arrived" from "unavailable": show the
+        // same quote for explicit acceptance; the stored payment key is kept and reused (R5).
+        if (probe && answer.status >= 500) return this.preview("CONFIRM_AGAIN");
         return this.set({ phase: "UNAVAILABLE", code: "CONFIRM_OUTCOME_UNKNOWN", retryable: true, kind: this.kind });
       }
       this.deps.store.update({ paymentKey: undefined });
