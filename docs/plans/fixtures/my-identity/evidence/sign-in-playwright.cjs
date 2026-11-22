@@ -1,0 +1,36 @@
+const { chromium } = require("playwright");
+(async () => {
+  const out = process.argv[2];
+  const browser = await chromium.launch();
+  const context = await browser.newContext({ viewport: { width: 420, height: 820 }, deviceScaleFactor: 2 });
+  await context.tracing.start({ screenshots: true, snapshots: true });
+  const page = await context.newPage();
+  const errors = []; page.on("pageerror", (e) => errors.push(String(e))); page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
+  const headers = (await page.goto("http://127.0.0.1:3997/sign-in?next=/orders")).headers();
+  console.log("csp:", headers["content-security-policy"]); console.log("referrer-policy:", headers["referrer-policy"]);
+  try { await page.getByLabel("Почта").waitFor({ timeout: 10000 }); } catch (e) { console.log("BODY:", await page.locator("body").innerText()); console.log("errors:", errors); throw e; }
+  await page.screenshot({ path: `${out}/01-email.png` });
+  await page.getByLabel("Почта").fill("buyer@example.test");
+  const button = page.getByRole("button", { name: "Получить код" });
+  console.log("submit disabled before consent:", await button.isDisabled());
+  await page.getByLabel(/персональных данных/).check();
+  await page.getByLabel(/условия аккаунта/).check();
+  console.log("submit disabled after consent:", await button.isDisabled());
+  await button.click();
+  await page.getByLabel("Код из письма").waitFor();
+  await page.screenshot({ path: `${out}/02-code.png` });
+  await page.getByLabel("Код из письма").fill("000000");
+  await page.getByRole("button", { name: "Войти" }).click();
+  await page.getByRole("alert").filter({ hasText: /./ }).waitFor();
+  console.log("alert:", await page.locator("p[role=alert]").textContent());
+  await page.screenshot({ path: `${out}/03-wrong-code.png` });
+  await page.getByLabel("Код из письма").fill("123456");
+  await Promise.all([page.waitForURL((url) => url.pathname === "/orders"), page.getByRole("button", { name: "Войти" }).click()]);
+  console.log("url after sign-in:", page.url());
+  await page.screenshot({ path: `${out}/04-orders.png` });
+  await context.tracing.stop({ path: `${out}/sign-in-trace.zip` });
+  const log = await (await fetch("http://127.0.0.1:3998/__log")).json();
+  for (const e of log.filter((e) => e.path !== "/__log")) console.log(e.path, "host=" + e.host, e.body ? JSON.stringify(Object.fromEntries(Object.entries(e.body).map(([k, v]) => [k, k === "email" || k === "otp" || k === "actionKey" ? "<redacted>" : v]))) : "");
+  console.log("errors:", JSON.stringify(errors));
+  await browser.close();
+})().catch((e) => { console.error(String(e)); process.exit(1); });
