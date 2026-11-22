@@ -1,6 +1,7 @@
 import { labGuestClientIp } from "./lab-guest-client-ip";
 import { receiveNativeCallback } from "./native-payment-callbacks";
-import { nativeConfirm, type NativeLedgerContext } from "./native-payment-ledger";
+import { contourOfOrder, nativeConfirm, nativeOrderStatus, type NativeLedgerContext } from "./native-payment-ledger";
+import { executeApprovedNativeRefund } from "./native-payment-refunds";
 import { registerLabGuestRoutes, labBearer } from "./lab-guest-routes";
 import { checkInLabTicket, prepareLabRecovery, labAccess, labLegalReview, LabTicketError, type LabAcceptance, type LabTicketEmail } from "./lab-tickets";
 import type Database from "better-sqlite3";
@@ -24,7 +25,7 @@ import { currentLegalRelease } from "./legal-control";
 import { issueCheckoutHandoffState, issueCheckoutPaymentReturnState, verifyCheckoutHandoffState, verifyCheckoutNavigationState } from "./checkout-handoff";
 import { listMerchantPromotions, saveMerchantPromotion } from "./promotions";
 import type { RefundEnvelopeKeyring } from "./refund-envelope";
-import { decideRefund, executeApprovedRefund, listCustomerRefunds, listRefundCases, recordCourseAccessStart, registerEmailRefund, requestRefund, type RefundDecisionInput, type RefundReason } from "./refunds";
+import { decideRefund, executeApprovedRefund, executeApprovedRefundOnContour, listCustomerRefunds, listRefundCases, recordCourseAccessStart, registerEmailRefund, requestRefund, type RefundDecisionInput, type RefundReason } from "./refunds";
 import { grantManualEntitlement, revokeManualEntitlement } from "./entitlements";
 import { listCustomerLibrary, listCustomerOrderHistory } from "./library";
 import { controlRoomAttention, controlRoomAudit, controlRoomCatalogue, controlRoomCities, controlRoomCustomers, controlRoomEmailOperations, controlRoomEntitlements, controlRoomIncidents, controlRoomIntegrationSummary, controlRoomLabOccurrences, controlRoomOrders } from "./control-room";
@@ -706,6 +707,24 @@ export function createCommerceV2App(deps: Dependencies) {
     }
   });
   app.post("/v1/admin/v2/refunds/:requestPublicId/execute", async (context) => {
+    // FLEX-119 · on the native contour a NATIVE order's refund goes to the native ledger; every other
+    // order (historical RC.2) and every other payment mode keep the unchanged path below.
+    const nativePayments = deps.nativePayments;
+    if (nativePayments) {
+      const requestPublicId = context.req.param("requestPublicId");
+      try {
+        const routed = await executeApprovedRefundOnContour(deps.db, requestPublicId, {
+          native: async () => executeApprovedNativeRefund(deps.db, nativePayments, requestPublicId), original: async () => undefined,
+        });
+        if (routed) {
+          auditControlRoom(deps.db, { adminId: context.get("controlRoomAdminId")!, action: "REFUND_EXECUTION_REQUESTED",
+            entityType: "refund_request", entityId: requestPublicId, details: { state: routed.state, contour: "NATIVE" } }, now().toISOString());
+          return context.json(routed, 200, noStore);
+        }
+      } catch (error) {
+        return context.json({ error: { code: error instanceof Error ? error.message : "REFUND_EXECUTION_FAILED" } }, 409, noStore);
+      }
+    }
     if (!deps.paymentRail) return context.json({ error: { code: "PAYMENT_RAIL_UNAVAILABLE" } }, 503, noStore);
     if (!deps.refundEnvelopeKeys) return context.json({ error: { code: "REFUND_ENVELOPE_KEYS_UNAVAILABLE" } }, 503, noStore);
     try {
@@ -971,6 +990,10 @@ export function createCommerceV2App(deps: Dependencies) {
     const owned = deps.db.prepare("SELECT 1 FROM orders WHERE public_id=? AND customer_id=?").get(context.req.param("orderPublicId"), customerId);
     if (!owned) return context.json({ code: "ORDER_NOT_FOUND" }, 404, noStore);
     try {
+      // FLEX-119 · a NATIVE order is read from the native ledger (its sweep owns provider read-back).
+      if (deps.nativePayments && contourOfOrder(deps.db, context.req.param("orderPublicId")) === "NATIVE") {
+        return context.json(nativeOrderStatus(deps.db, context.req.param("orderPublicId")), 200, noStore);
+      }
       return context.json(await reconcileCheckout(deps.db, deps.paymentRail, context.req.param("orderPublicId"), now().toISOString(), deps.config), 200, noStore);
     } catch (error) {
       return context.json({ code: error instanceof Error ? error.message : "RECONCILE_FAILED" }, 409, noStore);

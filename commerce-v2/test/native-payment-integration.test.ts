@@ -1,15 +1,18 @@
 import Database from "better-sqlite3";
+import { scryptSync } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createCommerceV2App } from "../src/app";
 import { controlRoomIntegrationSummary } from "../src/control-room";
-import { confirmCheckout, prepareCheckout } from "../src/checkout";
+import { confirmCheckout, prepareCheckout, type PaymentRail } from "../src/checkout";
 import { migrateV2 } from "../src/db";
 import { applyCourseManifest, withManifestHash } from "../src/manifest";
 import { draftFiscalPolicy } from "../src/fiscal-policy";
-import { nativeConfirm, reconcilePendingNativePayments, type NativeLedgerContext } from "../src/native-payment-ledger";
+import { nativeConfirm, reconcilePendingNativePayments, startNativePayment, type NativeLedgerContext } from "../src/native-payment-ledger";
 import { NativeQuoteRail } from "../src/native-payment-rail";
 import { nativePaymentsFromConfig } from "../src/native-payment-runtime";
 import { CommerceConfigurationError, loadCommerceRuntimeConfig } from "../src/payment-mode";
+import { decideRefund, requestRefund } from "../src/refunds";
+import { enrolledTotp, testTotpKey } from "./fixtures/control-room-totp";
 import { stageALegalManifestJson } from "./fixtures/legal";
 import { FakeNativeBank } from "./fixtures/native-fake-provider";
 import { openTestStorefront, qualifyTestFiscalPolicy, setTestStorefronts, withTestStorefrontSwitch } from "./fixtures/sales";
@@ -153,5 +156,106 @@ describe("native checkout confirm and callback route (FLEX-119)", () => {
     const accepted = await app("native").request("/v1/native-payments/callback", { method: "POST", body: signed.body, headers: signed.headers });
     expect([accepted.status, await accepted.json()]).toEqual([200, { accepted: true, duplicate: false }]);
     expect(db.prepare("SELECT COUNT(*) n FROM native_callback_inbox").get()).toEqual({ n: 2 });
+  });
+});
+
+describe("native dispatch in the refund and order read routes; historical RC.2 preserved (FLEX-119)", () => {
+  const T = new Date("2026-09-30T12:00:00.000Z");
+  const salt = Buffer.alloc(16, 7);
+  const password = "correct horse battery staple";
+  const passwordScrypt = ["scrypt", "v1", "16384", "8", "1", salt.toString("base64url"),
+    scryptSync(password, salt, 64, { N: 16_384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 }).toString("base64url")].join(":");
+  let db: Database.Database;
+  let bank: FakeNativeBank;
+  let totp: () => string;
+  const originalCalls: string[] = [];
+  // The historical executor: only records that the original contour was used.
+  const originalRail = new Proxy({} as PaymentRail, { get: (_target, method: string) => method === "checkoutSnapshotConfig"
+    ? { merchantId: "historical", fiscalizationMode: "PROVIDER" }
+    : async () => { originalCalls.push(method); throw new Error("ORIGINAL_CONTOUR_REACHED"); } });
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    migrateV2(db);
+    totp = enrolledTotp(db, T).next;
+    originalCalls.length = 0;
+    bank = new FakeNativeBank();
+    db.exec(`INSERT INTO legal_releases(id,storefront,version,manifest_json,effective_at,active) VALUES ('lr','COURSES','v1','{}','2026-01-01T00:00:00Z',1);
+      INSERT INTO customers(id,email_normalized) VALUES ('customer','student@example.com');
+      INSERT INTO products(id,product_ref,kind,access_model,course_ref) VALUES ('p','course-a','ONLINE_COURSE','PAID','course-a');`);
+    for (const [publicId, contour] of [["NATIVE-1", "native"], ["RC2-1", "rc2"]] as const) {
+      const snapshot = JSON.stringify({ schema: "flexperiment.test-native-order/1", paymentPurpose: `Оплата ${publicId}` });
+      db.prepare(`INSERT INTO orders(id,public_id,customer_id,state,total_kopecks,checkout_snapshot_json,snapshot_hash,legal_release_id,created_at,updated_at)
+        VALUES (?,?,'customer','PAYMENT_PENDING',10000,?,?,'lr',?,?)`).run(`o-${publicId}`, publicId, snapshot, "c".repeat(64), T.toISOString(), T.toISOString());
+      db.prepare(`INSERT INTO order_lines(id,order_id,product_id,offer_ref_snapshot,title_snapshot,unit_amount_kopecks,legal_terms_ref,fiscal_item_json,created_at)
+        VALUES (?,?,'p','course:a','Курс',10000,'v1',?,?)`).run(`l-${publicId}`, `o-${publicId}`, JSON.stringify({ name: "Курс", quantity: 1,
+        amountKopecks: 10000, vatCode: "NONE", paymentMethod: "FULL_PAYMENT", paymentObject: "SERVICE" }), T.toISOString());
+      if (contour === "rc2") {
+        db.prepare(`INSERT INTO checkout_attempts(id,order_id,idempotency_key,request_payload_json,state,refref_attempt_id,created_at,updated_at)
+          VALUES ('a','o-RC2-1','k','{}','PAID','rc2-historical',?,?)`).run(T.toISOString(), T.toISOString());
+        db.prepare("UPDATE orders SET state='FULFILLED' WHERE public_id='RC2-1'").run();
+      }
+    }
+  });
+
+  const ledger = (): NativeLedgerContext => ({ provider: bank, keyring, fiscalizationMode: "MERCHANT", mayInitiate: () => true, now: () => T.toISOString() });
+  const server = (native: boolean) => createCommerceV2App({
+    db, config: native ? withTestStorefrontSwitch(loadCommerceRuntimeConfig(nativeEnv))
+      : withTestStorefrontSwitch(loadCommerceRuntimeConfig({ DEPLOY_ENV: "test", PAYMENT_MODE: "mock", MERCHANT_PROMOTION_PREFIX: "FX-" })),
+    sourceCommit: "a".repeat(40), serviceToken: "synthetic", refundEnvelopeKeys: keyring, paymentRail: originalRail,
+    ...(native ? { nativePayments: ledger() } : {}),
+    authenticateCustomer: async (headers) => (headers.get("authorization") === "Session customer" ? "customer" : null),
+    now: () => T,
+    controlRoomAuth: { origin: "https://admin.flexperiment.ru", sessionSecret: "s", passwordScrypt, trustedProxyIps: ["127.0.0.1"], totpKey: testTotpKey },
+    controlRoomPeerAddress: () => "127.0.0.1",
+  });
+  const admin = async (app: ReturnType<typeof server>) => {
+    const login = await app.request("/v1/admin/login", { method: "POST",
+      headers: { origin: "https://admin.flexperiment.ru", "content-type": "application/json", "x-real-ip": "203.0.113.10" },
+      body: JSON.stringify({ password, code: totp() }) });
+    expect(login.status).toBe(200);
+    return login.headers.get("set-cookie")!;
+  };
+  const post = (cookie: string) => ({ method: "POST", headers: { cookie, origin: "https://admin.flexperiment.ru", "content-type": "application/json" }, body: "{}" });
+  const approved = (publicId: string) => {
+    const request = requestRefund(db, { customerId: "customer", orderPublicId: publicId, idempotencyKey: `r-${publicId}`, reasonCode: "CUSTOMER_REQUEST" }, T.toISOString());
+    decideRefund(db, request.requestPublicId, { outcome: "APPROVE", amountKopecks: 10000, policyBasis: "full", rationale: "t", actor: "op" }, T.toISOString());
+    return request.requestPublicId;
+  };
+
+  it("refunds a NATIVE order through the native ledger and an RC.2 order through its original executor", async () => {
+    await startNativePayment(db, ledger(), "NATIVE-1");
+    bank.buyerPays("NATIVE-1");
+    await reconcilePendingNativePayments(db, ledger());
+    const app = server(true);
+    const cookie = await admin(app);
+    const native = await app.request(`/v1/admin/v2/refunds/${approved("NATIVE-1")}/execute`, post(cookie));
+    expect([native.status, await native.json()]).toEqual([200, expect.objectContaining({ state: "PROCESSING" })]);
+    expect(bank.calls.submitRefund).toHaveLength(1);
+    const historical = await app.request(`/v1/admin/v2/refunds/${approved("RC2-1")}/execute`, post(cookie));
+    expect(historical.status).toBe(409);
+    expect(originalCalls).toContain("prepareRefund");
+    expect(bank.calls.submitRefund).toHaveLength(1);
+  });
+
+  it("reads a NATIVE order from the ledger and an RC.2 order through its original executor", async () => {
+    await startNativePayment(db, ledger(), "NATIVE-1");
+    const app = server(true);
+    const headers = { authorization: "Session customer" };
+    const native = await app.request("/v1/checkout/NATIVE-1", { headers });
+    expect([native.status, await native.json()]).toEqual([200, expect.objectContaining({ contour: "NATIVE", payment: "AWAITING_PAYMENT" })]);
+    const historical = await app.request("/v1/checkout/RC2-1", { headers });
+    expect(historical.status).toBe(409);
+    expect(originalCalls).toContain("reconcile");
+    expect(bank.calls.readPayment).toBe(1);
+  });
+
+  it("outside PAYMENT_MODE=native every order keeps the original path", async () => {
+    const app = server(false);
+    const read = await app.request("/v1/checkout/RC2-1", { headers: { authorization: "Session customer" } });
+    expect(read.status).toBe(409);
+    expect(originalCalls).toEqual(["reconcile"]);
+    expect(bank.calls.readPayment).toBe(0);
   });
 });
