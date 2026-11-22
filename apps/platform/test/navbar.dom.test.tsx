@@ -9,7 +9,6 @@ import fixtures from "./fixtures/navbar-sessions.json";
 
 vi.mock("next/navigation", () => ({ usePathname: () => "/courses/flex-basics" }));
 
-const LMS = fixtures.config.LMS as NavbarConfig;
 const LAB_LATER = fixtures.config.LAB_ATTACHED_LATER as NavbarConfig;
 const MY = "https://my.flexperiment.test";
 const json = (body: unknown, status = 200) => Response.json(body, { status });
