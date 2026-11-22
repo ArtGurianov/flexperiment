@@ -3,8 +3,9 @@ import type { Context, Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { authenticatedConsentStatus, authenticatedMarketingChoice, hasRequiredAccountConsents, recordAuthenticatedConsents } from "./authenticated-consents";
 import { legalManifestHash } from "./legal-control";
-import { clientIpOf, maskEmail, sessionAudienceGuard, validReturnTarget, type MyIdentityConfig, type ResolvedSession } from "./my-session";
-import { MyOtpRefusal, type createMyOtp } from "./my-session-otp";
+import { clientIpOf, maskEmail, sessionAudienceGuard, surfaceForRequest, validReturnTarget, type MyIdentityConfig, type ResolvedSession } from "./my-session";
+import { IpWindowLimiter, MyOtpRefusal, type createMyOtp } from "./my-session-otp";
+import { ExchangeRefusal, type createSessionExchange } from "./session-exchange";
 
 /** FLEX-120 MY routes (contract §4, fixture route-audience.json). Registered by app.ts in one block,
  * before the public /v1/auth router so the audience guard runs first. */
@@ -17,6 +18,7 @@ export function registerMySessionRoutes(app: Hono, dependencies: {
   readonly otp?: ReturnType<typeof createMyOtp>;
   readonly resolveSession?: (headers: Headers) => Promise<ResolvedSession | null>;
   readonly signOut?: (headers: Headers) => Promise<Response>;
+  readonly exchange?: ReturnType<typeof createSessionExchange>;
 }) {
   const { db, config } = dependencies;
   app.use("/v1/*", sessionAudienceGuard(config));
@@ -120,6 +122,76 @@ export function registerMySessionRoutes(app: Hono, dependencies: {
     return context.json({ ...customer, consentRequired: consentRequired(session.customerId),
       marketing: authenticatedMarketingChoice(db, session.customerId) === true }, 200,
       { "Cache-Control": "private, no-store" });
+  });
+
+  // ---- FLEX-121 exchange (contract §6). ----
+  const platformOrigin = config.origins.platform;
+  const redeemLimiter = new IpWindowLimiter(20, 60_000);
+  const exchangeRefusal = (context: Context, error: unknown) => {
+    if (!(error instanceof ExchangeRefusal)) return context.json({ code: "EXCHANGE_UNAVAILABLE" }, 503, noStore);
+    // Code only: never the exchange id, state, code, cookie or customer.
+    if (["EXCHANGE_STATE_MISSING", "EXCHANGE_STATE_MISMATCH"].includes(error.code)) {
+      try { console.warn(JSON.stringify({ event: "LMS_EXCHANGE_REFUSED", code: error.code })); } catch { /* diagnostics only */ }
+    }
+    return context.json({ code: error.code }, error.status, noStore);
+  };
+  const lmsSurface = (context: Context) => surfaceForRequest(config.origins, context.req.raw.headers) === "LMS";
+
+  app.get("/v1/my/exchange/:tx", async (context) => {
+    if (!dependencies.exchange) return context.json({ code: "NOT_FOUND" }, 404, noStore);
+    try {
+      const signedIn = !!await mySession(context);
+      return context.json({ ...dependencies.exchange.describe(context.req.param("tx")), signedIn }, 200, noStore);
+    } catch (error) { return exchangeRefusal(context, error); }
+  });
+  app.post("/v1/my/exchange/:tx/issue", async (context) => {
+    const refused = sameOrigin(context); if (refused) return refused;
+    if (!dependencies.exchange) return context.json({ code: "NOT_FOUND" }, 404, noStore);
+    const session = await mySession(context);
+    if (!session) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
+    try {
+      const { code } = dependencies.exchange.issue(context.req.param("tx"), session);
+      return context.json({ code, redeemUrl: new URL("/auth/lms/redeem", platformOrigin).toString() }, 200, noStore);
+    } catch (error) { return exchangeRefusal(context, error); }
+  });
+  app.post("/v1/my/exchange/:tx/cancel", (context) => {
+    const refused = sameOrigin(context); if (refused) return refused;
+    if (!dependencies.exchange) return context.json({ code: "NOT_FOUND" }, 404, noStore);
+    try { dependencies.exchange.cancel(context.req.param("tx")); return context.body(null, 204, noStore); }
+    catch (error) { return exchangeRefusal(context, error); }
+  });
+
+  // Called server-to-server by the platform `/auth/lms/start` handler (no browser Origin; §7 exception).
+  app.post("/v1/lms/exchange/start", json8k, async (context) => {
+    if (!lmsSurface(context) || !dependencies.exchange) return context.json({ code: "NOT_FOUND" }, 404, noStore);
+    const input = await body(context) ?? {};
+    try {
+      const { tx, cookies } = dependencies.exchange.start({ next: input.next, headers: context.req.raw.headers });
+      for (const cookie of cookies) context.header("Set-Cookie", cookie, { append: true });
+      return context.json({ location: `${myOrigin}/continue?tx=${tx}` }, 200, noStore);
+    } catch (error) { return exchangeRefusal(context, error); }
+  });
+  // The auto-submitting form on my posts here through the platform `/auth/lms/redeem` handler.
+  app.post("/v1/lms/exchange/redeem", json8k, async (context) => {
+    if (!lmsSurface(context) || !dependencies.exchange) return context.json({ code: "NOT_FOUND" }, 404, noStore);
+    const origin = context.req.header("origin");
+    if (!origin) return context.json({ code: "ORIGIN_REQUIRED" }, 403, noStore);
+    if (origin !== myOrigin) return context.json({ code: "ORIGIN_FORBIDDEN" }, 403, noStore);
+    if (!redeemLimiter.consume(clientIpOf(context.req.raw.headers), Date.now())) return context.json({ code: "RATE_LIMITED" }, 429, noStore);
+    const input = await body(context) ?? {};
+    try {
+      const { location, cookies } = dependencies.exchange.redeem({ tx: input.tx, code: input.code, headers: context.req.raw.headers });
+      for (const cookie of cookies) context.header("Set-Cookie", cookie, { append: true });
+      return context.json({ location }, 200, noStore);
+    } catch (error) { return exchangeRefusal(context, error); }
+  });
+  app.post("/v1/lms/sign-out", (context) => {
+    if (!lmsSurface(context) || !dependencies.exchange) return context.json({ code: "NOT_FOUND" }, 404, noStore);
+    const origin = context.req.header("origin");
+    if (!origin) return context.json({ code: "ORIGIN_REQUIRED" }, 403, noStore);
+    if (origin !== platformOrigin) return context.json({ code: "ORIGIN_FORBIDDEN" }, 403, noStore);
+    for (const cookie of dependencies.exchange.signOutLms(context.req.raw.headers)) context.header("Set-Cookie", cookie, { append: true });
+    return context.body(null, 204, noStore);
   });
 
   app.post("/v1/my/sign-out", async (context) => {
