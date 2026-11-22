@@ -326,6 +326,18 @@ describe("owner directive v4.8 item 4: COURSES=OPEN, LAB=CLOSED, PAYMENT_MODE=na
     expect(db.prepare("SELECT consumed_at FROM checkout_quotes").get()).toEqual({ consumed_at: null });
   });
 
+  it("the public LAB catalogue is served under native, while LAB sales stay refused server-side", async () => {
+    const app = createCommerceV2App({ db, config, sourceCommit: "a".repeat(40), serviceToken: "synthetic", refundEnvelopeKeys: keyring,
+      paymentRail: rail, nativePayments: ledger(), now: () => new Date("2026-11-22T10:00:00Z") });
+    db.prepare("UPDATE lab_occurrences SET visibility='LISTED'").run();
+    const catalogue = await app.request("/v1/lab/catalogue");
+    expect(catalogue.status).toBe(200);
+    expect(await catalogue.json()).toMatchObject({ paymentMode: "native", occurrences: [expect.objectContaining({ offerRef: "lab:a" })] });
+    await expect(prepareCheckout(db, rail, config, { customerId: "customer", customerEmail: "student@example.com", offerRef: "lab:a",
+      previewIdempotencyKey: "after-catalogue", storefront: "LAB" }, "2026-11-22T10:00:00Z")).rejects.toThrow("SALES_STOPPED");
+    expect(sideEffects()).toEqual(none);
+  });
+
   it("ledger: a LAB order can never start a native payment while LAB is closed", async () => {
     const snapshot = JSON.stringify({ schema: "flexperiment.test-native-order/1", paymentPurpose: "Мастер-класс" });
     db.prepare(`INSERT INTO orders(id,public_id,customer_id,state,total_kopecks,checkout_snapshot_json,snapshot_hash,legal_release_id,created_at,updated_at)
