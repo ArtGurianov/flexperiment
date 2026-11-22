@@ -81,7 +81,7 @@ export function registerLabInterestRoutes(parent: Hono, deps: {
     if (token === undefined && c.req.header("content-type")?.startsWith("application/json")) {
       try { token = (await c.req.json<{ token?: unknown }>())?.token; } catch { return c.json({ code: "LAB_INPUT_INVALID" }, 422, noStore); }
     }
-    return c.json(withdrawLabInterest(deps.db, token, deps.secret), 200, noStore);
+    return c.json(withdrawLabInterest(deps.db, token, deps.secret, deps.now().toISOString()), 200, noStore);
   });
 
   parent.route("/", app);

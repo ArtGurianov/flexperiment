@@ -46,11 +46,11 @@ const config = (env: Record<string, string> = { PAYMENT_MODE: "disabled" }) =>
 const server = (options: { mail?: false | ((message: LabInterestEmail) => Promise<void>); runtime?: CommerceRuntimeConfig } = {}) =>
   createCommerceV2App({
     db, config: options.runtime ?? config(), sourceCommit: "a".repeat(40), serviceToken: "isolated-fixture", now: () => clock,
-    campaignUnsubscribeSecret: SECRET, labGuestPeerAddress: () => "203.0.113.10",
+    campaignUnsubscribeSecret: SECRET, labGuestTrustedProxyIps: ["10.0.5.4"], labGuestPeerAddress: () => "10.0.5.4",
     sendLabInterestEmail: options.mail === false ? undefined : options.mail ?? (async (message) => { sent.push(message); }),
   });
 const post = (app: ReturnType<typeof server>, path: string, body: unknown, origin: string | null = LAB) => app.request(path, {
-  method: "POST", headers: { "content-type": "application/json", ...(origin ? { origin } : {}) }, body: JSON.stringify(body),
+  method: "POST", headers: { "content-type": "application/json", "x-real-ip": "203.0.113.10", ...(origin ? { origin } : {}) }, body: JSON.stringify(body),
 });
 const cityId = (slug: string) => (db.prepare("SELECT id FROM cities WHERE slug=?").get(slug) as { id: string }).id;
 const count = (table: string) => (db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
@@ -168,7 +168,12 @@ describe("FLEX-8 interest signup (double opt-in)", () => {
     expect((await app.request(`/v1/lab/interest/withdraw?token=${encodeURIComponent(withdraw)}`, {
       method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: "List-Unsubscribe=One-Click" })).status).toBe(200);
     expect(count("lab_interest_signups")).toBe(0);
+    expect(db.prepare("SELECT email_normalized,reason,removed_at FROM email_suppressions").all())
+      .toEqual([{ email_normalized: "visitor@example.test", reason: "LAB_INTEREST_WITHDRAWN", removed_at: null }]);
     expect((await post(app, "/v1/lab/interest/withdraw", { token: withdraw }, null)).status).toBe(200);
+    // A later signup of the withdrawn address is acknowledged but stores and sends nothing.
+    await post(app, "/v1/lab/interest", { email: "visitor@example.test", consent });
+    expect(count("lab_interest_signups")).toBe(0); expect(sent).toHaveLength(1);
   });
 
   it("expires an unconfirmed token", async () => {
@@ -208,6 +213,9 @@ describe("FLEX-8 notices stay inside their purpose", () => {
     expect(await dispatchLabSalesOpenedNotices(db, prepared, async () => { throw new Error("must not resend"); }, () => clock))
       .toEqual({ sent: 0, skipped: 2, unknown: 0 });
     expect(prepareLabSalesOpenedNotices(db, { ...notice, labSwitch: "OPEN", cityId: cityId("fixture-city") }, deps)).toEqual([]);
+    // The consent covers one notice: a different notice key does not reach the same signups again.
+    expect(prepareLabSalesOpenedNotices(db, { ...notice, noticeKey: "lab-sales-opened:2027-01", labSwitch: "OPEN" }, deps).map((m) => m.email))
+      .toEqual(["other@example.test"]);
   });
 
   it("never retries an unknown provider outcome and skips a signup withdrawn after preparation", async () => {
@@ -228,16 +236,29 @@ describe("FLEX-8 notices stay inside their purpose", () => {
   });
 });
 
-describe("FLEX-8 retention", () => {
-  it("has no default policy and deletes expired pending and aged confirmed signups", async () => {
+describe("FLEX-8 retention (E proposal, owner decision D-I2 pending)", () => {
+  const policy = { pendingMaxAgeSeconds: 7 * 24 * 3600, deliveredMaxAgeSeconds: 30 * 24 * 3600, confirmedMaxAgeSeconds: 365 * 24 * 3600 };
+  const confirmLast = () => confirmLabInterest(db, tokenFrom((sent.at(-1) as { confirmUrl: string }).confirmUrl, "confirm"), clock.toISOString());
+
+  it("has no default policy", () => {
     expect(() => purgeLabInterest(db, {} as never, clock)).toThrow("LAB_INTEREST_RETENTION_POLICY_INVALID");
+    expect(() => purgeLabInterest(db, { ...policy, confirmedMaxAgeSeconds: 2 * 366 * 24 * 3600 }, clock)).toThrow("LAB_INTEREST_RETENTION_POLICY_INVALID");
+  });
+
+  it("deletes PENDING after its link expires, delivered after 30 days and any CONFIRMED after 12 months", async () => {
     await post(server(), "/v1/lab/interest", { email: "pending@example.test", consent });
-    await post(server(), "/v1/lab/interest", { email: "kept@example.test", consent });
-    confirmLabInterest(db, tokenFrom((sent[1] as { confirmUrl: string }).confirmUrl, "confirm"), clock.toISOString());
-    const policy = { pendingMaxAgeSeconds: 7 * 24 * 3600, confirmedMaxAgeSeconds: 365 * 24 * 3600 };
-    expect(purgeLabInterest(db, policy, new Date("2026-11-23T10:00:00Z"))).toEqual({ pending: 0, confirmed: 0 });
-    expect(purgeLabInterest(db, policy, new Date("2026-11-25T10:00:00Z"))).toEqual({ pending: 1, confirmed: 0 });
-    expect(purgeLabInterest(db, policy, new Date("2027-11-23T10:00:00Z"))).toEqual({ pending: 0, confirmed: 1 });
-    expect(count("lab_interest_signups")).toBe(0);
+    await post(server(), "/v1/lab/interest", { email: "delivered@example.test", consent }); confirmLast();
+    await post(server(), "/v1/lab/interest", { email: "undelivered@example.test", consent }); confirmLast();
+    const deps = { origin: LAB, secret: SECRET, commerceOrigin: "http://localhost:4000" };
+    const prepared = prepareLabSalesOpenedNotices(db, { noticeKey: "opened", labSwitch: "OPEN", subject: "Продажи открыты", message: "Билеты на сайте." }, deps);
+    await dispatchLabSalesOpenedNotices(db, prepared, async (message) => {
+      if (message.email === "undelivered@example.test") throw new Error("timeout");
+    }, () => clock);
+    expect(purgeLabInterest(db, policy, new Date("2026-11-23T10:00:00Z"))).toEqual({ pending: 0, delivered: 0, expired: 0 });
+    expect(purgeLabInterest(db, policy, new Date("2026-11-24T10:00:01Z"))).toEqual({ pending: 1, delivered: 0, expired: 0 });
+    expect(purgeLabInterest(db, policy, new Date("2026-12-22T10:00:01Z"))).toEqual({ pending: 0, delivered: 1, expired: 0 });
+    expect(db.prepare("SELECT email_normalized FROM lab_interest_signups").all()).toEqual([{ email_normalized: "undelivered@example.test" }]);
+    expect(purgeLabInterest(db, policy, new Date("2027-11-23T10:00:01Z"))).toEqual({ pending: 0, delivered: 0, expired: 1 });
+    expect(count("lab_interest_signups") + count("lab_interest_notices")).toBe(0);
   });
 });

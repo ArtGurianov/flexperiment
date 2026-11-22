@@ -14,14 +14,24 @@ import { labEmail } from "./lab-tickets";
 
 export const LAB_INTEREST_PURPOSE = "LAB_SALES_NOTICE" as const;
 /**
- * DRAFT consent wording pending legal review (agent E / FLEX-8). Its version and SHA-256 are stored
- * with every signup, so a later approved text is a new version, never a silent rewrite.
+ * Consent text proposed by E (docs/legal/lab-stage-b/2026-11-22-lab-interest-consent.md, §1, PR #287 at
+ * 11b74be1), with the single-city variant. REQUIRES OWNER APPROVAL (D-I3) and publication as the LAB
+ * `lab_interest_consent` document (D-I1) before any public use. Its version and SHA-256 are stored with
+ * every signup, so an approved text is a new version, never a silent rewrite.
  */
 export const LAB_INTEREST_CONSENT = {
-  version: "draft-2026-11-22",
-  text: "Я соглашаюсь получать на указанный email одно уведомление о старте продаж Flexperiment LAB"
-    + " (и о встречах в выбранном городе). Предзапись не резервирует место и не является покупкой билета."
-    + " Согласие можно отозвать по ссылке в любом письме; после отзыва адрес удаляется из списка предзаписи.",
+  version: "e-draft-2026-11-22",
+  text: "Согласие на уведомление о старте продаж Flexperiment LAB\n\n"
+    + "Я прошу ИП Гурьянова Арта Артуровича (ИНН 420539506224, 650023, г. Кемерово, пр. Московский, д. 17, кв. 360,"
+    + " art@flexperiment.ru) один раз сообщить мне на указанный email о начале продаж мероприятий Flexperiment LAB"
+    + " в выбранном городе и даю согласие на обработку моего email, выбранного города, времени и версии этого"
+    + " согласия для этой цели. Письма отправляет ООО «НотиСенд» (ИНН 7017463828) по поручению оператора.\n\n"
+    + "Согласие действует до отправки этого уведомления, но не дольше 12 месяцев со дня подтверждения email. Сначала"
+    + " на email придёт письмо со ссылкой для подтверждения; без подтверждения уведомление не отправляется, а заявка"
+    + " удаляется через 7 дней.\n\n"
+    + "Отозвать согласие можно в любой момент по ссылке в письме или написав на art@flexperiment.ru. После отзыва"
+    + " заявка удаляется; чтобы не написать повторно, сохраняется только отметка об отказе для этого email."
+    + " Подробнее — в Политике обработки персональных данных Flexperiment LAB (/legal/privacy).",
 } as const;
 export const labInterestConsentSha256 = createHash("sha256").update(LAB_INTEREST_CONSENT.text, "utf8").digest("hex");
 
@@ -115,7 +125,7 @@ export function confirmLabInterest(db: Database.Database, token: unknown, now: s
 }
 
 /** Withdrawal is idempotent and deletes the signup with its notice history. */
-export function withdrawLabInterest(db: Database.Database, token: unknown, secret: string) {
+export function withdrawLabInterest(db: Database.Database, token: unknown, secret: string, now: string) {
   if (typeof token !== "string" || token.length > 256) fail("LAB_INTEREST_TOKEN_INVALID");
   const [encoded = "", presented = ""] = (token as string).split(".");
   const signupId = Buffer.from(encoded, "base64url").toString("utf8");
@@ -123,7 +133,15 @@ export function withdrawLabInterest(db: Database.Database, token: unknown, secre
   const expected = Buffer.from(labInterestWithdrawToken(signupId, secret).split(".")[1]);
   const actual = Buffer.from(presented);
   if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) fail("LAB_INTEREST_TOKEN_INVALID");
-  db.prepare("DELETE FROM lab_interest_signups WHERE id=?").run(signupId);
+  // E (§2): stop at once, delete the signup, keep only the refusal mark for this email.
+  db.transaction(() => {
+    const row = db.prepare("SELECT email_normalized FROM lab_interest_signups WHERE id=?").get(signupId) as { email_normalized: string } | undefined;
+    if (!row) return;
+    db.prepare(`INSERT INTO email_suppressions(email_normalized,reason,created_at,removed_at) VALUES (?,'LAB_INTEREST_WITHDRAWN',?,NULL)
+      ON CONFLICT(email_normalized) DO UPDATE SET reason=CASE WHEN removed_at IS NULL THEN reason ELSE excluded.reason END,
+        created_at=CASE WHEN removed_at IS NULL THEN created_at ELSE excluded.created_at END,removed_at=NULL`).run(row.email_normalized, now);
+    db.prepare("DELETE FROM lab_interest_signups WHERE id=?").run(signupId);
+  }).immediate();
   return { withdrawn: true as const };
 }
 
@@ -146,8 +164,9 @@ export function prepareLabSalesOpenedNotices(db: Database.Database, notice: LabS
   const rows = db.prepare(`SELECT signup.id,signup.email_normalized FROM lab_interest_signups signup
     WHERE signup.state='CONFIRMED' AND (? IS NULL OR signup.city_id IS NULL OR signup.city_id=?)
       AND NOT EXISTS (SELECT 1 FROM email_suppressions s WHERE s.email_normalized=signup.email_normalized AND s.removed_at IS NULL)
-      AND NOT EXISTS (SELECT 1 FROM lab_interest_notices n WHERE n.signup_id=signup.id AND n.notice_key=?)
-    ORDER BY signup.confirmed_at,signup.id LIMIT ?`).all(notice.cityId ?? null, notice.cityId ?? null, notice.noticeKey, limit) as Array<{ id: string; email_normalized: string }>;
+      -- The consent covers ONE notice: any earlier attempt, of any notice key, ends the purpose.
+      AND NOT EXISTS (SELECT 1 FROM lab_interest_notices n WHERE n.signup_id=signup.id)
+    ORDER BY signup.confirmed_at,signup.id LIMIT ?`).all(notice.cityId ?? null, notice.cityId ?? null, limit) as Array<{ id: string; email_normalized: string }>;
   return rows.map((row) => {
     const token = labInterestWithdrawToken(row.id, deps.secret);
     return { kind: "NOTICE" as const, signupId: row.id, email: row.email_normalized, noticeKey: notice.noticeKey, subject, message,
@@ -170,6 +189,7 @@ export async function dispatchLabSalesOpenedNotices(db: Database.Database,
       const live = db.prepare(`SELECT 1 FROM lab_interest_signups s WHERE s.id=? AND s.state='CONFIRMED'
         AND NOT EXISTS (SELECT 1 FROM email_suppressions x WHERE x.email_normalized=s.email_normalized AND x.removed_at IS NULL)`).get(notice.signupId);
       if (!live) return false;
+      if (db.prepare("SELECT 1 FROM lab_interest_notices WHERE signup_id=?").get(notice.signupId)) return false;
       return db.prepare(`INSERT INTO lab_interest_notices(signup_id,notice_key,state,attempted_at,sent_at) VALUES (?,?,'ATTEMPTED',?,NULL)
         ON CONFLICT DO NOTHING`).run(notice.signupId, notice.noticeKey, now().toISOString()).changes === 1;
     }).immediate();
@@ -185,19 +205,28 @@ export async function dispatchLabSalesOpenedNotices(db: Database.Database,
   return result;
 }
 
-/** Reviewed retention policy; there are deliberately no default durations (E/owner approve them). */
-export type LabInterestRetentionPolicy = { pendingMaxAgeSeconds: number; confirmedMaxAgeSeconds: number };
+/**
+ * Reviewed retention policy; there are deliberately no default durations. E's proposal (pending owner
+ * decision D-I2): PENDING at most 7 days (the link itself lives 48 h); CONFIRMED deleted within 30 days
+ * of the delivered notice and never kept beyond 12 months from confirmation. An undelivered (ATTEMPTED)
+ * notice is not the purpose achieved; such a row waits for the 12-month bound.
+ */
+export type LabInterestRetentionPolicy = { pendingMaxAgeSeconds: number; deliveredMaxAgeSeconds: number; confirmedMaxAgeSeconds: number };
 
 export function purgeLabInterest(db: Database.Database, policy: LabInterestRetentionPolicy, now: Date) {
-  const valid = (value: unknown) => Number.isSafeInteger(value) && (value as number) >= 600 && (value as number) <= 3 * 366 * 24 * 3600;
-  if (!valid(policy?.pendingMaxAgeSeconds) || !valid(policy?.confirmedMaxAgeSeconds)) fail("LAB_INTEREST_RETENTION_POLICY_INVALID");
+  const valid = (value: unknown) => Number.isSafeInteger(value) && (value as number) >= 600 && (value as number) <= 366 * 24 * 3600;
+  if (!valid(policy?.pendingMaxAgeSeconds) || !valid(policy?.deliveredMaxAgeSeconds) || !valid(policy?.confirmedMaxAgeSeconds)) {
+    fail("LAB_INTEREST_RETENTION_POLICY_INVALID");
+  }
   const time = now.getTime();
   if (!Number.isFinite(time)) fail("LAB_INTEREST_RETENTION_CLOCK_INVALID");
   const before = (seconds: number) => new Date(time - seconds * 1000).toISOString();
   return db.transaction(() => ({
     pending: db.prepare("DELETE FROM lab_interest_signups WHERE state='PENDING' AND (created_at<? OR confirm_expires_at<=?)")
       .run(before(policy.pendingMaxAgeSeconds), new Date(time).toISOString()).changes,
-    confirmed: db.prepare("DELETE FROM lab_interest_signups WHERE state='CONFIRMED' AND confirmed_at<?")
+    delivered: db.prepare(`DELETE FROM lab_interest_signups WHERE state='CONFIRMED'
+      AND id IN (SELECT signup_id FROM lab_interest_notices WHERE state='SENT' AND sent_at<?)`).run(before(policy.deliveredMaxAgeSeconds)).changes,
+    expired: db.prepare("DELETE FROM lab_interest_signups WHERE state='CONFIRMED' AND confirmed_at<?")
       .run(before(policy.confirmedMaxAgeSeconds)).changes,
   })).immediate();
 }
