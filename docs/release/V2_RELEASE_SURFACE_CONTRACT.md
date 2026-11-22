@@ -37,7 +37,7 @@
 
 | Ресурс | Владелец кода | Где хранится | Восстановление | Статус |
 | --- | --- | --- | --- | --- |
-| `labTicketQrSecret` — ключ QR билета аккаунт-заказа LAB (D · #292) | D | Coolify env Commerce V2; копия — SOPS host credential / encrypted external bundle (по `adman-vps-infrastructure`) | Восстанавливается из custody, **не** генерируется заново: смена ключа делает выданные QR недействительными (ротация — только через `qr_generation`, отдельным решением) | Не создан; ждёт OWNER GO и issue в инфраструктурном проекте; до свежего capture — `CUSTODY_PENDING` |
+| `labTicketQrSecret` — ключ QR билета аккаунт-заказа LAB (D · #292) | D | Coolify env Commerce V2; копия — SOPS host credential / encrypted external bundle (по `adman-vps-infrastructure`) | Восстанавливается из custody, **не** генерируется заново: смена ключа делает выданные QR недействительными (ротация — только через `qr_generation`, отдельным решением) | **Отложен решением владельца (Q-QR, v4.8, 22.11):** постоянный секрет не создаётся; тесты D — на синтетическом ключе. Возобновление — новое решение владельца, затем OWNER GO, issue в инфраструктурном проекте и `CUSTODY_PENDING` до свежего capture |
 | `KINESCOPE_DRM_TOKEN_KEYS` (существует) | A | Coolify env Commerce V2 | Не восстанавливается, а перевыпускается (docs/kinescope-playback-signing.md) | Без изменений |
 | `PLATFORM_ORIGIN` build ARG на ресурс Platform (G-17) | E/F | Coolify build config | Конфигурация, не секрет | Задать по GO D-07 |
 

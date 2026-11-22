@@ -9,8 +9,7 @@
     "G-08",
     "D-04",
     "D-05",
-    "D-12",
-    "D-13"
+    "D-12"
   ],
   "activation": "PROHIBITED_UNTIL_ADMISSION",
   "documents": [
@@ -43,7 +42,7 @@
         "path": "docs/legal/stage-a/2026-10-11-candidate/account_terms.md"
       },
       "candidate": {
-        "sha256": "95fbd69abc2cc750a0324a83e11493921c645ca546989386bc42eda8f3801a16",
+        "sha256": "1128c18396ef84376089da4ae827f939cd68851767b6c22f5ac49972e8001b9b",
         "path": "docs/legal/stage-a/2026-11-20-candidate/account_terms.md"
       }
     },
