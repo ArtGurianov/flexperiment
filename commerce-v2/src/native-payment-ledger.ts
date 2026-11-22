@@ -100,6 +100,8 @@ export async function startNativePayment(db: Database.Database, ctx: NativeLedge
     const existing = paymentOfOrder(db, order.order_id);
     if (existing) return { payment: existing, created: false };
     if (order.order_state !== "PAYMENT_PENDING") throw new Error("NATIVE_PAYMENT_ORDER_NOT_PAYABLE");
+    // A closed storefront leaves no payment row and calls no provider (owner directive v4.8, item 4).
+    if (!ctx.mayInitiate(order.kind)) throw new Error("NATIVE_PAYMENT_INITIATION_STOPPED");
     if (order.total_kopecks <= 0 || order.unit_amount_kopecks !== order.total_kopecks) throw new Error("NATIVE_PAYMENT_AMOUNT_INVALID");
     const item = fiscalItemOf(order);
     // Refused before any money: a combination the contract cannot fiscalize never becomes a payment (I8).
@@ -126,7 +128,15 @@ export async function startNativePayment(db: Database.Database, ctx: NativeLedge
   return { orderPublicId, state: current.state, paymentUrl: current.payment_url };
 }
 
-async function sendCreate(db: Database.Database, ctx: NativeLedgerContext, paymentId: string) {
+/**
+ * One drive of a payment may replay an unanswered create at most this many times; further retries
+ * belong to the sweep. Without a shared budget a provider that keeps losing answers would recurse
+ * create → LOST → NOT_FOUND → replay forever inside one request.
+ */
+type ReplayBudget = { replays: number };
+const replayBudget = (): ReplayBudget => ({ replays: 1 });
+
+async function sendCreate(db: Database.Database, ctx: NativeLedgerContext, paymentId: string, budget: ReplayBudget = replayBudget()) {
   const row = paymentById(db, paymentId)!;
   if (!row.request_envelope || !row.envelope_key_id) throw new Error("NATIVE_PAYMENT_ENVELOPE_MISSING");
   const request = openPayload<FrozenNativePaymentRequest>(ctx.keyring, "native-payment-envelope", row.envelope_key_id, row.id, row.request_envelope);
@@ -142,7 +152,7 @@ async function sendCreate(db: Database.Database, ctx: NativeLedgerContext, payme
   } catch {
     observation = { source: "CREATE_RESPONSE", outcome: "LOST" };
   }
-  await driveNativePayment(db, ctx, paymentId, applyNativePaymentObservation(db, ctx, paymentId, observation));
+  await driveNativePayment(db, ctx, paymentId, applyNativePaymentObservation(db, ctx, paymentId, observation), budget);
 }
 
 async function readBack(ctx: NativeLedgerContext, merchantOrderRef: string): Promise<PaymentObservation> {
@@ -158,13 +168,16 @@ async function readBack(ctx: NativeLedgerContext, merchantOrderRef: string): Pro
 }
 
 /** Performs the external effects of a decision (read-back, replay) until none remain. */
-export async function driveNativePayment(db: Database.Database, ctx: NativeLedgerContext, paymentId: string, first: PaymentDecision) {
+export async function driveNativePayment(db: Database.Database, ctx: NativeLedgerContext, paymentId: string, first: PaymentDecision,
+  budget: ReplayBudget = replayBudget()) {
   let decision = first;
   for (let step = 0; step < MAX_DRIVE_STEPS; step += 1) {
     if (decision.effects.includes("REPLAY_CREATE_SAME_KEY")) {
       // Admission is read again at the moment of sending; a stop since the decision keeps it unknown.
       if (!ctx.mayInitiate(orderOfPayment(db, paymentById(db, paymentId)!).kind)) return decision;
-      await sendCreate(db, ctx, paymentId);
+      if (budget.replays <= 0) return decision;
+      budget.replays -= 1;
+      await sendCreate(db, ctx, paymentId, budget);
       return { ...decision, effects: [] };
     }
     if (!decision.effects.includes("READ_BACK")) return decision;

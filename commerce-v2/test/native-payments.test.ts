@@ -132,8 +132,11 @@ describe("native payment ledger on the fake bank (FLEX-119)", () => {
 
   it("restart from the same SQLite file between commit and send resolves without a second payment", async () => {
     const id = order("ORD-5", "ONLINE_COURSE", 490000);
-    admitted = false; // commit the CREATING row, then "crash" before anything is sent
+    // Commit the CREATING row, then "crash" before anything is sent: the process dies inside the call.
+    bank.createPayment = async () => { throw new Error("PROCESS_KILLED"); };
     await startNativePayment(db, ctx(), id);
+    db.prepare("UPDATE native_payments SET state='CREATING'").run(); // the LOST answer was never recorded
+    bank.createPayment = FakeNativeBank.prototype.createPayment.bind(bank);
     expect([paymentState(id), bank.calls.create.length]).toEqual(["CREATING", 0]);
     db.close();
     db = open();
@@ -191,7 +194,8 @@ describe("native payment ledger on the fake bank (FLEX-119)", () => {
 
   it("the database refuses a terminal payment that still carries its sealed request", async () => {
     const id = order("ORD-8", "ONLINE_COURSE", 490000);
-    admitted = false;
+    bank.faults.create.push("LOSE_BEFORE_COMMIT");
+    bank.faults.readPayment.push("UNAVAILABLE");
     await startNativePayment(db, ctx(), id);
     expect(() => db.prepare("UPDATE native_payments SET state='PAID'").run()).toThrow("NATIVE_PAYMENT_TERMINAL_REQUIRES_PURGE");
   });

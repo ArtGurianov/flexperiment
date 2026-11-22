@@ -73,7 +73,9 @@ export async function executeApprovedNativeRefund(db: Database.Database, ctx: Na
   return { requestPublicId, state: refundRow(db, begun.refund.id)!.state };
 }
 
-async function sendRefund(db: Database.Database, ctx: NativeLedgerContext, refundId: string) {
+type ReplayBudget = { replays: number };
+
+async function sendRefund(db: Database.Database, ctx: NativeLedgerContext, refundId: string, budget: ReplayBudget = { replays: 1 }) {
   const row = refundRow(db, refundId)!;
   if (!row.request_envelope || !row.envelope_key_id) throw new Error("NATIVE_REFUND_ENVELOPE_MISSING");
   const request = openPayload<FrozenNativeRefundRequest>(ctx.keyring, "native-refund-envelope", row.envelope_key_id, row.id, row.request_envelope);
@@ -86,7 +88,7 @@ async function sendRefund(db: Database.Database, ctx: NativeLedgerContext, refun
   } catch {
     observation = { source: "SUBMIT_RESPONSE", outcome: "LOST" };
   }
-  await driveNativeRefund(db, ctx, refundId, applyNativeRefundObservation(db, ctx, refundId, observation));
+  await driveNativeRefund(db, ctx, refundId, applyNativeRefundObservation(db, ctx, refundId, observation), budget);
 }
 
 async function readBackRefund(ctx: NativeLedgerContext, refundRef: string): Promise<RefundObservation> {
@@ -101,11 +103,18 @@ async function readBackRefund(ctx: NativeLedgerContext, refundRef: string): Prom
   }
 }
 
-export async function driveNativeRefund(db: Database.Database, ctx: NativeLedgerContext, refundId: string, first: RefundDecision) {
+export async function driveNativeRefund(db: Database.Database, ctx: NativeLedgerContext, refundId: string, first: RefundDecision,
+  budget: ReplayBudget = { replays: 1 }) {
   let decision = first;
   for (let step = 0; step < 6; step += 1) {
     // No admission gate on refunds (contract I7): the same sealed request under the same key.
-    if (decision.effects.includes("REPLAY_REFUND_SAME_KEY")) { await sendRefund(db, ctx, refundId); return { ...decision, effects: [] }; }
+    // At most one replay per drive (shared with nested sends); further retries belong to the sweep.
+    if (decision.effects.includes("REPLAY_REFUND_SAME_KEY")) {
+      if (budget.replays <= 0) return decision;
+      budget.replays -= 1;
+      await sendRefund(db, ctx, refundId, budget);
+      return { ...decision, effects: [] };
+    }
     if (!decision.effects.includes("READ_BACK")) return decision;
     decision = applyNativeRefundObservation(db, ctx, refundId, await readBackRefund(ctx, refundRow(db, refundId)!.refund_ref));
   }
