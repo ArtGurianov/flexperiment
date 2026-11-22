@@ -68,6 +68,14 @@ describe("FLEX-60: confirmed account before any hold, order or payment", () => {
       .rejects.toThrow("LAB_ACCOUNT_CONFIRMATION_REQUIRED");
     expect(create).not.toHaveBeenCalled(); expect(count("orders")).toBe(0);
   });
+  it("never records a marketing choice in the purchase acceptance (regression, E 21.11.2026)", async () => {
+    const who = buyer(); await buy(who);
+    const row = db.prepare("SELECT consents_json FROM lab_purchase_acceptances").get() as { consents_json: string };
+    const consents = JSON.parse(row.consents_json) as { documents: Array<{ kind: string }> } & Record<string, unknown>;
+    expect(Object.keys(consents).sort()).toEqual(["documents", "personalDataConsent", "receiptContactAccepted", "termsAccepted"]);
+    expect(consents.documents.map(document => document.kind)).not.toContain("marketing_consent");
+    expect(row.consents_json).not.toMatch(/marketing/i);
+  });
   it("requires the current Stage B acceptance and stores it with the customer and order snapshot in the confirm transaction", async () => {
     const who = buyer(), quote = await preview(who);
     if (quote.state !== "PRICE_REVIEW_REQUIRED") throw new Error("quote expected");
@@ -164,20 +172,33 @@ describe("FLEX-60/123: the owner's ticket and QR, single check-in", () => {
     expect(readOwnedLabTicket(db, secret, who.customerId, orderPublicId)).toMatchObject({ status: "USED", usedAt: at(2) });
     expect(readOwnedLabTicket(db, secret, who.customerId, orderPublicId)).not.toHaveProperty("qrToken");
   });
-  it("serves the owned ticket only on a confirmed session and the configured secret", async () => {
+  it("serves the owned ticket only on an MY session of the confirmed owner and the configured secret", async () => {
     const { who, orderPublicId } = await paidTicket();
-    let signedIn: string | null = null;
-    const make = (labTicketQrSecret?: Buffer) => createCommerceV2App({ db, config: testCheckoutConfig, sourceCommit: "a".repeat(40), serviceToken: "synthetic",
-      paymentRail: rail, now: () => new Date(NOW), authenticateCustomer: async () => signedIn, labTicketQrSecret });
-    const get = (app: ReturnType<typeof make>) => app.request(`/v1/me/lab/tickets/${orderPublicId}`);
+    let session: { customerId: string; audience: "MY" | "LMS" | "LEGACY" } | null = null;
+    const make = (labTicketQrSecret?: Buffer, withResolver = true) => createCommerceV2App({ db, config: testCheckoutConfig, sourceCommit: "a".repeat(40),
+      serviceToken: "synthetic", paymentRail: rail, now: () => new Date(NOW), labTicketQrSecret,
+      // A legacy authenticator alone never opens an MY route.
+      authenticateCustomer: async () => who.customerId, resolveSessionAudience: withResolver ? async () => session : undefined });
+    const get = (app: ReturnType<typeof make>) => app.request(`/v1/my/tickets/${orderPublicId}`);
+    expect((await get(make(secret, false))).status).toBe(503);
     expect((await get(make(secret))).status).toBe(401);
-    signedIn = who.customerId;
+    for (const audience of ["LMS", "LEGACY"] as const) {
+      session = { customerId: who.customerId, audience };
+      const refused = await get(make(secret));
+      expect(refused.status).toBe(403); expect(await refused.json()).toEqual({ code: "SESSION_AUDIENCE_FORBIDDEN" });
+    }
+    session = { customerId: who.customerId, audience: "MY" };
     expect((await get(make())).status).toBe(503);
     const response = await get(make(secret));
     expect(response.status).toBe(200); expect(response.headers.get("cache-control")).toBe("private, no-store");
     expect(await response.json()).toMatchObject({ status: "VALID", qrImage: expect.stringMatching(/^data:image\/png;base64,/) });
-    signedIn = buyer().customerId;
+    session = { customerId: buyer().customerId, audience: "MY" }; // A foreign confirmed customer.
     expect((await get(make(secret))).status).toBe(404);
+    // An unverified email is not a confirmed account, even with an MY session.
+    db.prepare('UPDATE "user" SET email_verified=0 WHERE id=(SELECT auth_user_id FROM customers WHERE id=?)').run(who.customerId);
+    session = { customerId: who.customerId, audience: "MY" };
+    const unverified = await get(make(secret));
+    expect(unverified.status).toBe(403); expect(await unverified.json()).toEqual({ code: "LAB_ACCOUNT_CONFIRMATION_REQUIRED" });
   });
 });
 
@@ -269,7 +290,8 @@ describe("MY contracts (FLEX-122 R4, FLEX-123 R2)", () => {
   const MY = "http://localhost:3002";
   beforeEach(() => { signedIn = null; });
   const make = (qrSecret: Buffer | null = secret) => createCommerceV2App({ db, config: testCheckoutConfig, sourceCommit: "a".repeat(40),
-    serviceToken: "synthetic", paymentRail: rail, now: () => new Date(NOW), authenticateCustomer: async () => signedIn, labTicketQrSecret: qrSecret ?? undefined, myOrigin: MY });
+    serviceToken: "synthetic", paymentRail: rail, now: () => new Date(NOW), authenticateCustomer: async () => signedIn, labTicketQrSecret: qrSecret ?? undefined, myOrigin: MY,
+    resolveSessionAudience: async () => signedIn ? { customerId: signedIn, audience: "MY" as const } : null });
   const post = (app: ReturnType<typeof make>, path: string, body: unknown, origin = MY, key = "k") => app.request(path, { method: "POST",
     headers: { origin, "Content-Type": "application/json", "Idempotency-Key": key }, body: JSON.stringify(body) });
 
@@ -313,7 +335,7 @@ describe("MY contracts (FLEX-122 R4, FLEX-123 R2)", () => {
   it("reissues an owned QR only from a known origin and stays closed without the env secret", async () => {
     const who = buyer(); await buy(who); signedIn = who.customerId;
     const { public_id } = db.prepare("SELECT public_id FROM orders").get() as { public_id: string };
-    const path = `/v1/me/lab/tickets/${public_id}/qr/reissue`;
+    const path = `/v1/my/tickets/${public_id}/qr/reissue`;
     expect((await post(make(), path, {}, "https://foreign.test")).status).toBe(403);
     expect((await post(make(), path, {})).status).toBe(200);
     expect((await post(make(null), path, {})).status).toBe(503);

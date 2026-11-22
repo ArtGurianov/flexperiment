@@ -66,8 +66,10 @@ describe("FLEX-85: prepayment → SERVICE_RENDERED → one closing receipt, no n
     const recorded = recordCheckedInServiceRendered(db, { occurrenceRef: REF, recordedBy: "owner" }, AFTER);
     expect(recorded).toEqual({ occurrenceRef: REF, recorded: [seat.lineId], replayed: [], review: [] });
     const fact = serviceRenderedFact(db, seat.lineId);
-    expect(fact).toEqual({ schema: SERVICE_RENDERED_SCHEMA, orderLineId: seat.lineId, occurrenceRef: REF, renderedAt: "2026-11-01T09:05:00.000Z",
-      evidenceRef: `lab-ticket:${seat.ticketId}:used`, recordedBy: "owner", basis: "CHECKED_IN", attestationReason: null, recordedAt: AFTER });
+    // The check-in time is the basis, kept apart; rendering is recorded after the end.
+    expect(fact).toEqual({ schema: SERVICE_RENDERED_SCHEMA, orderLineId: seat.lineId, occurrenceRef: REF, renderedAt: AFTER,
+      checkedInAt: "2026-11-01T09:05:00.000Z", evidenceRef: `lab-ticket:${seat.ticketId}:used`, recordedBy: "owner", basis: "CHECKED_IN",
+      attestationReason: null, recordedAt: AFTER });
     expect(recordCheckedInServiceRendered(db, { occurrenceRef: REF, recordedBy: "owner" }, AFTER)).toMatchObject({ recorded: [], replayed: [seat.lineId] });
     expect(listServiceRenderedFacts(db)).toEqual([fact]);
 
@@ -154,12 +156,43 @@ describe("SERVICE_RENDERED basis (E position 21.11.2026; owner decision on no-sh
     expect(() => attestLabAttendance(db, { orderLineId: attended.lineId, reason: "QR_SCAN_FAILED", recordedBy: "owner" }, "2026-11-01T16:00:00.000Z"))
       .toThrow("LAB_ATTESTATION_REFUSED_SERVICE_NOT_FINISHED");
     const attestation = attestLabAttendance(db, { orderLineId: attended.lineId, reason: "QR_SCAN_FAILED", recordedBy: "owner" }, AFTER);
-    expect(attestation).toMatchObject({ replayed: false, fact: { basis: "ATTENDED_ATTESTED", attestationReason: "QR_SCAN_FAILED", renderedAt: ENDS, recordedBy: "owner" } });
+    expect(attestation).toMatchObject({ replayed: false, fact: { basis: "ATTENDED_ATTESTED", attestationReason: "QR_SCAN_FAILED", renderedAt: AFTER, checkedInAt: null, recordedBy: "owner",
+      evidenceRef: "control-room-attestation:QR_SCAN_FAILED" } });
     expect(attestLabAttendance(db, { orderLineId: attended.lineId, reason: "QR_SCAN_FAILED", recordedBy: "owner" }, AFTER)).toMatchObject({ replayed: true });
     expect(() => attestLabAttendance(db, { orderLineId: attended.lineId, reason: "SCANNER_UNAVAILABLE", recordedBy: "owner" }, AFTER)).toThrow("LAB_SERVICE_RENDERED_ALREADY_RECORDED");
     expect(serviceRenderedFact(db, noShow.lineId)).toBeNull();
     expect(() => db.prepare(`INSERT INTO lab_service_renditions(order_line_id,occurrence_ref,basis,attestation_reason,rendered_at,evidence_ref,recorded_by,recorded_at)
       VALUES (?,?, 'ATTENDED_ATTESTED',NULL,?,?,?,?)`).run(noShow.lineId, REF, AFTER, "x", "owner", AFTER)).toThrow();
+  });
+  it("references an attendance list only by protected storage id and content hash, never inline", async () => {
+    const seat = await paidSeat(false), other = await paidSeat(false);
+    const confirm = (evidence?: { storageId: string; sha256: string }, line = seat.lineId) =>
+      attestLabAttendance(db, { orderLineId: line, reason: "ATTENDANCE_LIST_CONFIRMED", recordedBy: "owner", evidence }, AFTER);
+    expect(() => confirm()).toThrow("LAB_ATTENDANCE_EVIDENCE_REQUIRED");
+    expect(() => confirm({ storageId: "Иванов И.И., Петров П.П.", sha256: "a".repeat(64) })).toThrow("LAB_ATTENDANCE_EVIDENCE_REQUIRED");
+    expect(() => confirm({ storageId: "protected/lab-one", sha256: "short" })).toThrow("LAB_ATTENDANCE_EVIDENCE_REQUIRED");
+    expect(() => attestLabAttendance(db, { orderLineId: other.lineId, reason: "QR_SCAN_FAILED", recordedBy: "owner",
+      evidence: { storageId: "x", sha256: "a".repeat(64) } }, AFTER)).toThrow("LAB_ATTENDANCE_EVIDENCE_UNEXPECTED");
+    const sha = "c".repeat(64);
+    expect(confirm({ storageId: "protected/lab-one", sha256: sha }).fact.evidenceRef).toBe(`attendance-list:protected/lab-one#sha256:${sha}`);
+    expect(confirm({ storageId: "protected/lab-one", sha256: sha })).toMatchObject({ replayed: true });
+    // The schema refuses an inline list or a missing hash even outside this code path.
+    const insert = (evidenceRef: string, renderedAt = AFTER) => db.prepare(`INSERT INTO lab_service_renditions(order_line_id,occurrence_ref,basis,
+      checked_in_at,attestation_reason,rendered_at,evidence_ref,recorded_by,recorded_at) VALUES (?,?, 'ATTENDED_ATTESTED',NULL,'ATTENDANCE_LIST_CONFIRMED',?,?,'owner',?)`)
+      .run(other.lineId, REF, renderedAt, evidenceRef, AFTER);
+    expect(() => insert("Иванов, Петров, Сидоров")).toThrow(/CHECK constraint/);
+    expect(() => insert("attendance-list:protected/x#sha256:zz")).toThrow(/CHECK constraint/);
+    expect(() => insert(`attendance-list:protected/x#sha256:${sha}`, "2026-11-01T16:00:00.000Z")).toThrow("LAB_SERVICE_RENDERED_BEFORE_END");
+  });
+  it("never records rendering before the end, even with an early check-in, and keeps the check-in time apart", async () => {
+    const seat = await paidSeat(true);
+    expect(() => recordCheckedInServiceRendered(db, { occurrenceRef: REF, recordedBy: "owner" }, "2026-11-01T09:30:00.000Z")).toThrow("LAB_SERVICE_NOT_FINISHED");
+    expect(() => db.prepare(`INSERT INTO lab_service_renditions(order_line_id,occurrence_ref,basis,checked_in_at,attestation_reason,rendered_at,
+      evidence_ref,recorded_by,recorded_at) VALUES (?,?, 'CHECKED_IN',?,NULL,?,'x','owner',?)`).run(seat.lineId, REF, "2026-11-01T09:05:00.000Z",
+      "2026-11-01T09:05:00.000Z", AFTER)).toThrow("LAB_SERVICE_RENDERED_BEFORE_END");
+    expect(count("lab_service_renditions")).toBe(0);
+    expect(recordCheckedInServiceRendered(db, { occurrenceRef: REF, recordedBy: "owner" }, ENDS).recorded).toEqual([seat.lineId]);
+    expect(serviceRenderedFact(db, seat.lineId)).toMatchObject({ renderedAt: ENDS, checkedInAt: "2026-11-01T09:05:00.000Z" });
   });
   it("treats a moved occurrence as not rendered (review), never attestable", async () => {
     const seat = await paidSeat(false);
@@ -167,8 +200,8 @@ describe("SERVICE_RENDERED basis (E position 21.11.2026; owner decision on no-sh
     db.prepare("UPDATE lab_occurrences SET starts_at='2026-11-01T10:00:00Z' WHERE occurrence_ref=?").run(REF);
     expect(recordCheckedInServiceRendered(db, { occurrenceRef: REF, recordedBy: "owner" }, AFTER).review)
       .toEqual([{ orderPublicId: seat.orderPublicId, orderLineId: seat.lineId, code: "OCCURRENCE_MOVED_REVIEW" }]);
-    expect(() => attestLabAttendance(db, { orderLineId: seat.lineId, reason: "ATTENDANCE_LIST_CONFIRMED", recordedBy: "owner" }, AFTER))
-      .toThrow("LAB_ATTESTATION_REFUSED_OCCURRENCE_MOVED_REVIEW");
+    expect(() => attestLabAttendance(db, { orderLineId: seat.lineId, reason: "ATTENDANCE_LIST_CONFIRMED", recordedBy: "owner",
+      evidence: { storageId: "protected/lab-one", sha256: "b".repeat(64) } }, AFTER)).toThrow("LAB_ATTESTATION_REFUSED_OCCURRENCE_MOVED_REVIEW");
   });
   it("alerts when an ended occurrence still has paid lines without a fact after 24 hours", async () => {
     const recorded = await paidSeat(true), open = await paidSeat(false);

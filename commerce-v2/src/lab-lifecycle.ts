@@ -28,8 +28,10 @@ export type LabRouteContour = (order: { orderId: string; orderPublicId: string }
  * Call before a hold is written (preview) and again under the order's write lock (confirm).
  */
 export function assertLabPurchaseAuthority(db: Database.Database, customerId: string, orderPublicId: string | null | undefined) {
-  const customer = db.prepare("SELECT auth_user_id FROM customers WHERE id=?").get(customerId) as { auth_user_id: string | null } | undefined;
-  if (!customer?.auth_user_id) fail("LAB_ACCOUNT_CONFIRMATION_REQUIRED");
+  // Confirmed = a verified sign-in bound this customer to a user whose email was verified, for this email.
+  const confirmed = db.prepare(`SELECT 1 FROM customers customer JOIN "user" account ON account.id=customer.auth_user_id
+    WHERE customer.id=? AND account.email_verified=1 AND lower(account.email)=customer.email_normalized`).get(customerId);
+  if (!confirmed) fail("LAB_ACCOUNT_CONFIRMATION_REQUIRED");
   // A guest-scoped order stays guest-scoped: its capability is not an account, even after sign-in.
   if (orderPublicId && db.prepare("SELECT 1 FROM lab_guest_access WHERE order_public_id=?").get(orderPublicId)) {
     fail("LAB_ACCOUNT_CONFIRMATION_REQUIRED");

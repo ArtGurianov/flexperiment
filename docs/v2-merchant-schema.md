@@ -626,13 +626,22 @@ still settle; it cancels the occurrence (tickets become VOID, a use record stays
 refund obligations with each order's contour, a missing contour left for a person. Forward-only.
 
 `lab_service_renditions` is the single authoritative SERVICE_RENDERED fact per paid order line
-(`flexperiment.service-rendered/1`: orderLineId, occurrenceRef, renderedAt, evidenceRef, recordedBy,
-basis, attestationReason). CHECKED_IN cites the ticket's irreversible use; ATTENDED_ATTESTED is one
-Control Room action per line after the end with a reason from a closed list. Cancelled, cancelling,
-moved, unpaid, refund-open and no-show lines get no fact (review). C's FINAL_SETTLEMENT issuance reads
-`listServiceRenderedFacts`, `labOccurrenceCancellationState` and `closingEligibility`; it owns the
-closing-receipt outbox and key `fiscal:FINAL_SETTLEMENT:{orderLineId}`. A REFREF_RC2 prepayment is
-never closed natively. Append-only by trigger.
+(`flexperiment.service-rendered/1`: orderLineId, occurrenceRef, renderedAt, checkedInAt, evidenceRef,
+recordedBy, basis, attestationReason). `renderedAt` is when rendering was recorded and is never earlier
+than the occurrence end (CHECK plus a BEFORE INSERT trigger); a check-in time is kept apart in
+`checked_in_at` as the CHECKED_IN basis only. ATTENDED_ATTESTED is one Control Room action per line after
+the end, with a reason from the closed list QR_SCAN_FAILED | SCANNER_UNAVAILABLE |
+ATTENDANCE_LIST_CONFIRMED (no "other", no free text). ATTENDANCE_LIST_CONFIRMED cites a protected document
+as `attendance-list:<storage id>#sha256:<content hash>` (CHECK); the list itself is never stored here, its
+retention is E's. Cancelled, cancelling, moved, unpaid, refund-open and no-show lines get no fact
+(review). C's FINAL_SETTLEMENT issuance reads `listServiceRenderedFacts`,
+`labOccurrenceCancellationState` and `closingEligibility`; it owns the closing-receipt outbox and key
+`fiscal:FINAL_SETTLEMENT:{orderLineId}`. A REFREF_RC2 prepayment is never closed natively. Append-only.
+
+MY routes of this block (`GET /v1/my/tickets`, `GET /v1/my/tickets/:orderPublicId`,
+`POST /v1/my/tickets/:orderPublicId/qr/reissue`) accept only an MY-audience session (B's resolver,
+injected; absent → 503) of a confirmed account (`user.email_verified` for the customer's email). The
+list carries no QR, token or capability.
 
 `lab_tickets.qr_generation` serves an account-owned ticket: the QR is HMAC(server secret, ticket,
 generation); a view keeps it, an explicit reissue moves the generation and revokes the old QR.

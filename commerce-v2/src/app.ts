@@ -67,6 +67,11 @@ type Dependencies = {
   readonly labTicketQrSecret?: Buffer;
   /** The my storefront origin until B's MY_ORIGIN lands in origins.ts (#286); then taken from loadCommerceOrigins. */
   readonly myOrigin?: string;
+  /**
+   * B's audience-aware session resolver (FLEX-120, #286 §3). MY-surface routes of D accept only an MY
+   * session; absent until B is integrated, those routes stay closed (503) rather than accept any session.
+   */
+  readonly resolveSessionAudience?: (headers: Headers) => Promise<{ customerId: string; audience: "MY" | "LMS" | "LEGACY" } | null>;
   readonly authHandler?: (request: Request) => Promise<Response>;
   readonly prepareMagicLinkInitiation?: (input: {
     email: string; storefront: "COURSES" | "LAB"; personalDataConsent: boolean; personalDataVersion: string; personalDataSha256: string;
@@ -872,9 +877,10 @@ export function createCommerceV2App(deps: Dependencies) {
   });
   app.post("/v1/admin/v2/lab/order-lines/:orderLineId/attendance", async (context) => {
     try {
-      const input = await labCommandBody<{ reason: string }>(context);
+      const input = await labCommandBody<{ reason: string; evidence?: { storageId: string; sha256: string } }>(context);
       const actor = context.get("controlRoomAdminId")!, at = now().toISOString();
-      const result = attestLabAttendance(deps.db, { orderLineId: context.req.param("orderLineId"), reason: input.reason, recordedBy: actor }, at);
+      const result = attestLabAttendance(deps.db, { orderLineId: context.req.param("orderLineId"), reason: input.reason,
+        evidence: input.evidence, recordedBy: actor }, at);
       if (!result.replayed) labAdminAudit(actor, "LAB_ATTENDANCE_ATTESTED", result.fact.occurrenceRef, { orderLineId: result.fact.orderLineId, reason: input.reason }, at);
       return context.json(result, 200, noStore);
     } catch (error) { return labLifecycleError(context, error); }
@@ -885,11 +891,24 @@ export function createCommerceV2App(deps: Dependencies) {
   });
   app.get("/v1/admin/v2/lab/service-rendered/backlog", (context) => context.json({ lines: labServiceRenderedBacklog(deps.db, now().toISOString()) }, 200, noStore));
   // Account-owned ticket and QR (FLEX-60/123): the order's owner on a confirmed session only.
+  /** MY surface only: an MY-audience session of a confirmed account (FLEX-60). */
+  const myCustomer = async (context: Context): Promise<string | Response> => {
+    if (!deps.resolveSessionAudience) return context.json({ code: "MY_SESSION_UNAVAILABLE" }, 503, noStore);
+    const session = await deps.resolveSessionAudience(context.req.raw.headers);
+    if (!session) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
+    if (session.audience !== "MY") return context.json({ code: "SESSION_AUDIENCE_FORBIDDEN" }, 403, noStore);
+    try { assertLabPurchaseAuthority(deps.db, session.customerId, null); }
+    catch (error) {
+      if (error instanceof LabLifecycleError) return context.json({ code: error.message }, 403, noStore);
+      throw error;
+    }
+    return session.customerId;
+  };
   const ownedTicket = async (context: Context, reissue: boolean) => {
-    const customerId = await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;
-    if (!customerId) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
-    if (!deps.labTicketQrSecret) return context.json({ code: "LAB_TICKET_SECRET_UNAVAILABLE" }, 503, noStore);
     try {
+      const customerId = await myCustomer(context);
+      if (typeof customerId !== "string") return customerId;
+      if (!deps.labTicketQrSecret) return context.json({ code: "LAB_TICKET_SECRET_UNAVAILABLE" }, 503, noStore);
       const ref = context.req.param("orderPublicId")!;
       const ticket = reissue ? reissueOwnedLabQr(deps.db, deps.labTicketQrSecret, customerId, ref, now().toISOString())
         : readOwnedLabTicket(deps.db, deps.labTicketQrSecret, customerId, ref);
@@ -901,25 +920,21 @@ export function createCommerceV2App(deps: Dependencies) {
       return context.json({ code }, code === "LAB_TICKET_NOT_FOUND" ? 404 : error instanceof LabTicketError ? 409 : 503, noStore);
     }
   };
-  app.get("/v1/me/lab/tickets/:orderPublicId", context => ownedTicket(context, false));
-  app.post("/v1/me/lab/tickets/:orderPublicId/qr/reissue", async context => {
-    const origin = context.req.header("origin");
-    if (!origin || ![origins.lab, origins.platform, deps.myOrigin].includes(origin)) {
+  app.get("/v1/my/tickets/:orderPublicId", context => ownedTicket(context, false));
+  app.post("/v1/my/tickets/:orderPublicId/qr/reissue", async context => {
+    // An MY action from the MY host only (B's host check complements the audience check).
+    if (!deps.myOrigin || context.req.header("origin") !== deps.myOrigin) {
       return context.json({ code: "ORIGIN_FORBIDDEN" }, 403, noStore);
     }
     return ownedTicket(context, true);
   });
   // FLEX-123 "Мои билеты": a confirmed account's LAB tickets without any QR, token or capability.
   app.get("/v1/my/tickets", async context => {
-    const customerId = await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;
-    if (!customerId) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
     try {
-      assertLabPurchaseAuthority(deps.db, customerId, null);
+      const customerId = await myCustomer(context);
+      if (typeof customerId !== "string") return customerId;
       return context.json({ tickets: listOwnedLabTickets(deps.db, customerId) }, 200, { "Cache-Control": "private, no-store" });
-    } catch (error) {
-      if (error instanceof LabLifecycleError) return context.json({ code: error.message }, 403, noStore);
-      return context.json({ code: "LAB_TICKETS_UNAVAILABLE" }, 503, noStore);
-    }
+    } catch { return context.json({ code: "LAB_TICKETS_UNAVAILABLE" }, 503, noStore); }
   });
   // ── end FLEX-59/60/85 (D) ──
 

@@ -5,10 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { checkout, MockPaymentRail } from "../src/checkout";
-import { migrateV2 } from "../src/db";
+import { applyV2Migration, migrateV2 } from "../src/db";
+import { readFileSync, readdirSync } from "node:fs";
 import { ErasureLedgerStore, VerifiedErasureLedger, erasureSubject, issueErasureCheckpoint, type ErasureKeys } from "../src/erasure-ledger";
 import { applyIsolatedRestoreErasure, assertReviewedRestoreSchema } from "../src/erasure-restore";
-import { checkInLabTicket, readOwnedLabTicket } from "../src/lab-tickets";
+import { checkInLabTicket, readOwnedLabTicket, reissueOwnedLabQr } from "../src/lab-tickets";
 import { recordCheckedInServiceRendered } from "../src/service-rendered";
 import { stageBLegalManifestJson } from "./fixtures/legal";
 import { confirmLabBuyer, labAcceptanceFor } from "./fixtures/lab-purchase";
@@ -32,6 +33,32 @@ beforeEach(() => {
 afterEach(() => { db.close(); ledger.close(); rmSync(root, { recursive: true, force: true }); });
 
 describe("LAB lifecycle evidence across restore and erasure", () => {
+  it("restores qr_generation: the reissued QR stays valid and the revoked one stays revoked (synthetic key only)", async () => {
+    db.prepare("INSERT INTO legal_releases(id,storefront,version,manifest_json,effective_at,active) VALUES ('lab-legal','LAB','lab-b',?,?,1)")
+      .run(stageBLegalManifestJson, "2026-10-19T09:00:00.000Z");
+    db.exec(`INSERT INTO cities(id,slug,title) VALUES ('city','nsk','City');
+      INSERT INTO lab_occurrences(id,occurrence_ref,city_id,title,starts_at,ends_at,timezone,capacity,venue_status,venue_name,venue_address)
+        VALUES ('event','lab:one','city','LAB','2026-11-01T09:00:00Z','2026-11-01T17:00:00Z','Asia/Novosibirsk',20,'CONFIRMED','Studio','Address');
+      INSERT INTO products(id,product_ref,kind,access_model,occurrence_ref) VALUES ('product','lab:one','LAB','PAID','lab:one');
+      INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode) VALUES ('offer','lab:one','product',10000,'PUBLIC');
+      INSERT INTO customers(id,email_normalized) VALUES ('buyer','buyer@example.test');`);
+    qualifyTestFiscalPolicies(db); openTestStorefront(db, "LAB"); confirmLabBuyer(db, "buyer");
+    const paid = await checkout(db, new MockPaymentRail(), testCheckoutConfig, { customerId: "buyer", customerEmail: "buyer@example.test",
+      offerRef: "lab:one", idempotencyKey: "pay", labAcceptance: labAcceptanceFor(db) }, "2026-10-19T10:00:00.000Z");
+    const key = randomBytes(32); // Synthetic; no persistent labTicketQrSecret exists (owner decision Q-QR pending).
+    const first = readOwnedLabTicket(db, key, "buyer", paid.orderPublicId);
+    const second = reissueOwnedLabQr(db, key, "buyer", paid.orderPublicId, "2026-10-20T10:00:00.000Z");
+    const restored = new Database(db.serialize()); restored.pragma("foreign_keys=ON");
+    try {
+      assertReviewedRestoreSchema(restored);
+      expect(restored.prepare("SELECT qr_generation FROM lab_tickets").get()).toEqual({ qr_generation: 1 });
+      expect(readOwnedLabTicket(restored, key, "buyer", paid.orderPublicId)).toEqual(second);
+      expect(() => checkInLabTicket(restored, { qrToken: "qrToken" in first ? first.qrToken! : "", occurrenceRef: "lab:one", actor: "door" },
+        "2026-11-01T09:00:00.000Z")).toThrow("LAB_QR_INVALID");
+      expect(checkInLabTicket(restored, { qrToken: "qrToken" in second ? second.qrToken! : "", occurrenceRef: "lab:one", actor: "door" },
+        "2026-11-01T09:00:00.000Z")).toMatchObject({ status: "USED" });
+    } finally { restored.close(); }
+  });
   it("is in the reviewed restore schema and keeps acceptance, ticket use and SERVICE_RENDERED under financial review", async () => {
     assertReviewedRestoreSchema(db);
     db.prepare("INSERT INTO legal_releases(id,storefront,version,manifest_json,effective_at,active) VALUES ('lab-legal','LAB','lab-b',?,?,1)")
@@ -63,5 +90,42 @@ describe("LAB lifecycle evidence across restore and erasure", () => {
       const acceptance = JSON.stringify(restored.prepare("SELECT * FROM lab_purchase_acceptances").get());
       expect(acceptance).not.toContain("buyer@example.test");
     } finally { restored.close(); }
+  });
+});
+
+describe("migration 0037 rebuilds SERVICE_RENDERED without losing or inventing a fact", () => {
+  const directory = join(process.cwd(), "commerce-v2/migrations");
+  const upTo0036 = () => {
+    const legacy = new Database(":memory:"); legacy.pragma("foreign_keys=ON");
+    for (const version of readdirSync(directory).filter(name => name.endsWith(".sql") && name < "0037").sort()) {
+      applyV2Migration(legacy, version, readFileSync(join(directory, version), "utf8"));
+    }
+    legacy.exec(`INSERT INTO cities(id,slug,title) VALUES ('city','nsk','City');
+      INSERT INTO lab_occurrences(id,occurrence_ref,city_id,title,starts_at,ends_at,timezone,capacity,venue_status,venue_name,venue_address)
+        VALUES ('event','lab:one','city','LAB','2026-11-01T09:00:00Z','2026-11-01T17:00:00Z','Asia/Novosibirsk',20,'CONFIRMED','Studio','Address');
+      INSERT INTO products(id,product_ref,kind,access_model,occurrence_ref) VALUES ('product','lab:one','LAB','PAID','lab:one');`);
+    legacy.pragma("foreign_keys=OFF"); // The 0036-era fact under test; its order line is not.
+    return legacy;
+  };
+  const v0037 = "0037_lab_service_rendered_semantics.sql";
+  it("moves a 0036 check-in time to checked_in_at and records rendering at recorded_at", () => {
+    const legacy = upTo0036();
+    try {
+      legacy.prepare(`INSERT INTO lab_service_renditions(order_line_id,occurrence_ref,basis,attestation_reason,rendered_at,evidence_ref,recorded_by,recorded_at)
+        VALUES ('line','lab:one','CHECKED_IN',NULL,'2026-11-01T09:05:00Z','lab-ticket:t:used','owner','2026-11-01T18:00:00Z')`).run();
+      applyV2Migration(legacy, v0037, readFileSync(join(directory, v0037), "utf8"));
+      expect(legacy.prepare("SELECT basis,checked_in_at,rendered_at,recorded_at FROM lab_service_renditions").get())
+        .toEqual({ basis: "CHECKED_IN", checked_in_at: "2026-11-01T09:05:00Z", rendered_at: "2026-11-01T18:00:00Z", recorded_at: "2026-11-01T18:00:00Z" });
+      expect(() => legacy.prepare("DELETE FROM lab_service_renditions").run()).toThrow("LAB_SERVICE_RENDERED_IMMUTABLE");
+    } finally { legacy.close(); }
+  });
+  it("aborts on a 0036 attendance-list fact without a protected document reference", () => {
+    const legacy = upTo0036();
+    try {
+      legacy.prepare(`INSERT INTO lab_service_renditions(order_line_id,occurrence_ref,basis,attestation_reason,rendered_at,evidence_ref,recorded_by,recorded_at)
+        VALUES ('line','lab:one','ATTENDED_ATTESTED','ATTENDANCE_LIST_CONFIRMED','2026-11-01T17:00:00Z','control-room:owner','owner','2026-11-01T18:00:00Z')`).run();
+      expect(() => applyV2Migration(legacy, v0037, readFileSync(join(directory, v0037), "utf8"))).toThrow(/CHECK constraint/);
+      expect(legacy.prepare("SELECT COUNT(*) AS n FROM lab_service_renditions").get()).toEqual({ n: 1 });
+    } finally { legacy.close(); }
   });
 });

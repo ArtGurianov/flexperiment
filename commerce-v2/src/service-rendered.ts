@@ -7,6 +7,9 @@ import type Database from "better-sqlite3";
  * C owns the closing-receipt outbox, its key `fiscal:FINAL_SETTLEMENT:{orderLineId}`, the contour of
  * the prepayment and the sealed receipt contact. Nothing here charges, issues or stores a contact.
  *
+ * `renderedAt` is when rendering was recorded, never before the occurrence ended (DB trigger too); a
+ * check-in time is kept apart in `checkedInAt` as the CHECKED_IN basis, never as the rendering moment.
+ *
  * Basis (E position, 21.11.2026): CHECKED_IN, from the ticket's irreversible use record, is primary.
  * ATTENDED_ATTESTED is one explicit Control Room action per line after the end, with a reason from a
  * closed list, never in bulk, never for a cancelled or moved occurrence. A no-show, a partial or moved
@@ -25,7 +28,7 @@ export type ServiceRenderedBasis = "CHECKED_IN" | "ATTENDED_ATTESTED";
 export type ServiceRenderedFact = {
   schema: typeof SERVICE_RENDERED_SCHEMA;
   orderLineId: string; occurrenceRef: string; renderedAt: string; evidenceRef: string; recordedBy: string;
-  basis: ServiceRenderedBasis; attestationReason: AttendanceAttestationReason | null; recordedAt: string;
+  basis: ServiceRenderedBasis; checkedInAt: string | null; attestationReason: AttendanceAttestationReason | null; recordedAt: string;
 };
 export type ServiceRenderedReview = { orderPublicId: string; orderLineId: string; code: string };
 
@@ -62,7 +65,7 @@ function refusal(line: LineFacts, now: string): string | null {
 
 const rowToFact = (row: Record<string, string | null>): ServiceRenderedFact => ({
   schema: SERVICE_RENDERED_SCHEMA, orderLineId: row.order_line_id!, occurrenceRef: row.occurrence_ref!, renderedAt: row.rendered_at!,
-  evidenceRef: row.evidence_ref!, recordedBy: row.recorded_by!, basis: row.basis as ServiceRenderedBasis,
+  evidenceRef: row.evidence_ref!, recordedBy: row.recorded_by!, basis: row.basis as ServiceRenderedBasis, checkedInAt: row.checked_in_at,
   attestationReason: row.attestation_reason as AttendanceAttestationReason | null, recordedAt: row.recorded_at!,
 });
 
@@ -102,8 +105,8 @@ export function closingEligibility(fact: ServiceRenderedFact | null, contour: st
 }
 
 function insertFact(db: Database.Database, fact: Omit<ServiceRenderedFact, "schema">) {
-  db.prepare(`INSERT INTO lab_service_renditions(order_line_id,occurrence_ref,basis,attestation_reason,rendered_at,evidence_ref,recorded_by,recorded_at)
-    VALUES (?,?,?,?,?,?,?,?)`).run(fact.orderLineId, fact.occurrenceRef, fact.basis, fact.attestationReason, fact.renderedAt,
+  db.prepare(`INSERT INTO lab_service_renditions(order_line_id,occurrence_ref,basis,checked_in_at,attestation_reason,rendered_at,evidence_ref,recorded_by,recorded_at)
+    VALUES (?,?,?,?,?,?,?,?,?)`).run(fact.orderLineId, fact.occurrenceRef, fact.basis, fact.checkedInAt, fact.attestationReason, fact.renderedAt,
     fact.evidenceRef, fact.recordedBy, fact.recordedAt);
   db.prepare("INSERT INTO audit_log(id,actor,action,subject_type,subject_ref,evidence_json,created_at) VALUES (?,?, 'LAB_SERVICE_RENDERED','ORDER_LINE',?,?,?)")
     .run(randomUUID(), fact.recordedBy, fact.orderLineId, JSON.stringify({ occurrenceRef: fact.occurrenceRef, basis: fact.basis,
@@ -129,8 +132,8 @@ export function recordCheckedInServiceRendered(db: Database.Database, command: {
       if (["EXPIRED", "CANCELLED", "REFUNDED"].includes(line.order_state)) continue; // Nothing paid or kept.
       const code = refusal(line, now) ?? (line.ticket_used_at ? null : "NO_SHOW_REVIEW");
       if (code) { review.push({ orderPublicId: line.order_public_id, orderLineId: line.line_id, code }); continue; }
-      insertFact(db, { orderLineId: line.line_id, occurrenceRef: line.occurrence_ref, basis: "CHECKED_IN", attestationReason: null,
-        renderedAt: line.ticket_used_at!, evidenceRef: `lab-ticket:${line.ticket_id}:used`, recordedBy, recordedAt: now });
+      insertFact(db, { orderLineId: line.line_id, occurrenceRef: line.occurrence_ref, basis: "CHECKED_IN", checkedInAt: line.ticket_used_at,
+        attestationReason: null, renderedAt: now, evidenceRef: `lab-ticket:${line.ticket_id}:used`, recordedBy, recordedAt: now });
       recorded.push(line.line_id);
     }
     return { occurrenceRef: command.occurrenceRef, recorded, replayed, review };
@@ -141,13 +144,27 @@ export function recordCheckedInServiceRendered(db: Database.Database, command: {
  * One explicit attendance attestation for one line whose ticket was not scanned. Idempotent for the
  * same reason; a different later attestation never rewrites the first.
  */
-export function attestLabAttendance(db: Database.Database, command: { orderLineId: string; reason: string; recordedBy: string }, now: string) {
+export type AttendanceListEvidence = { storageId: string; sha256: string };
+/** A protected attendance document is referenced by storage id and content hash, never stored here. */
+export const attendanceListEvidenceRef = (evidence: AttendanceListEvidence | undefined) => {
+  if (!evidence || typeof evidence.storageId !== "string" || !/^[A-Za-z0-9._:/-]{1,100}$/.test(evidence.storageId)
+    || typeof evidence.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(evidence.sha256)) return fail("LAB_ATTENDANCE_EVIDENCE_REQUIRED");
+  return `attendance-list:${evidence.storageId}#sha256:${evidence.sha256}`;
+};
+
+export function attestLabAttendance(db: Database.Database, command: {
+  orderLineId: string; reason: string; recordedBy: string; evidence?: AttendanceListEvidence;
+}, now: string) {
   const recordedBy = command.recordedBy?.trim() || fail("LAB_COMMAND_INVALID");
   if (!(ATTENDANCE_ATTESTATION_REASONS as readonly string[]).includes(command.reason)) fail("LAB_ATTESTATION_REASON_INVALID");
+  const evidenceRef = command.reason === "ATTENDANCE_LIST_CONFIRMED" ? attendanceListEvidenceRef(command.evidence)
+    : command.evidence === undefined ? `control-room-attestation:${command.reason}` : fail("LAB_ATTENDANCE_EVIDENCE_UNEXPECTED");
   return db.transaction(() => {
     const existing = serviceRenderedFact(db, command.orderLineId);
     if (existing) {
-      if (existing.basis === "ATTENDED_ATTESTED" && existing.attestationReason === command.reason) return { fact: existing, replayed: true };
+      if (existing.basis === "ATTENDED_ATTESTED" && existing.attestationReason === command.reason && existing.evidenceRef === evidenceRef) {
+        return { fact: existing, replayed: true };
+      }
       return fail("LAB_SERVICE_RENDERED_ALREADY_RECORDED");
     }
     const line = db.prepare(`${LINE_FACTS} AND line.id=?`).get(command.orderLineId) as LineFacts | undefined;
@@ -156,9 +173,8 @@ export function attestLabAttendance(db: Database.Database, command: { orderLineI
     if (code) fail(`LAB_ATTESTATION_REFUSED_${code}`);
     // A scanned ticket is CHECKED_IN, recorded from its own evidence, never attested over.
     if (line!.ticket_used_at) fail("LAB_ATTESTATION_REFUSED_CHECKED_IN");
-    const fact = { orderLineId: line!.line_id, occurrenceRef: line!.occurrence_ref, basis: "ATTENDED_ATTESTED" as const,
-      attestationReason: command.reason as AttendanceAttestationReason, renderedAt: line!.ends_at,
-      evidenceRef: `control-room:${recordedBy}:${now}`, recordedBy, recordedAt: now };
+    const fact = { orderLineId: line!.line_id, occurrenceRef: line!.occurrence_ref, basis: "ATTENDED_ATTESTED" as const, checkedInAt: null,
+      attestationReason: command.reason as AttendanceAttestationReason, renderedAt: now, evidenceRef, recordedBy, recordedAt: now };
     insertFact(db, fact);
     return { fact: { schema: SERVICE_RENDERED_SCHEMA, ...fact }, replayed: false };
   }).immediate();

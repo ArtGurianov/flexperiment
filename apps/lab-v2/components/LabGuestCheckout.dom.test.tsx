@@ -75,7 +75,7 @@ describe("guest LAB browser flow", () => {
     })));
   });
   it("shows the FLEX-60 account requirement instead of failing, creating nothing to replay", async () => {
-    const fetcher = vi.fn(async () => response({ code: "LAB_ACCOUNT_CONFIRMATION_REQUIRED" }, 403)); vi.stubGlobal("fetch", fetcher);
+    const fetcher = vi.fn<(path: string) => Promise<Response>>(async () => response({ code: "LAB_ACCOUNT_CONFIRMATION_REQUIRED" }, 403)); vi.stubGlobal("fetch", fetcher);
     render(<LabGuestCheckout offerRef="lab:one" displayedAmountKopecks={10000} />);
     fireEvent.change(screen.getByLabelText("Email для билета и чека"), { target: { value: "guest@example.com" } });
     fireEvent.click(screen.getByRole("button", { name: "Проверить условия" }));
