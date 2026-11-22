@@ -250,3 +250,12 @@ describe("LAB checkout", () => {
     expect(t.controller.current).toMatchObject({ status: { supportReference: "SUP-7788" } });
   });
 });
+
+describe("LAB occurrence display", () => {
+  it("renders venue disclosure text, never the raw object", async () => {
+    const preview = { ...lab.preview, occurrence: { ...lab.preview.occurrence, venue: { status: "TO_BE_ANNOUNCED", disclosureText: "Адрес сообщим до 25.11", announceBy: "2026-11-25" } } };
+    const t = setup(lab.offerRef, { commerce: new FakeCommerce().on(PREVIEW, ok(preview)) });
+    await t.controller.start();
+    expect(t.controller.current).toMatchObject({ phase: "REVIEW", review: { occurrence: { title: "LAB · ноябрь", timezone: "Europe/Moscow", venue: "Адрес сообщим до 25.11" } } });
+  });
+});

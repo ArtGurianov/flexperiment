@@ -17,23 +17,54 @@
       "checkoutCodeOutcome": "APPLIED",
       "expiresAt": "2026-11-22T12:15:00.000Z",
       "occurrence": null,
-      "priceNotice": { "code": "PRICE_CHANGED_SINCE_DISPLAY", "quotedAmountKopecks": 890000, "displayedAmountKopecks": 990000 },
+      "priceNotice": {
+        "code": "PRICE_CHANGED_SINCE_DISPLAY",
+        "quotedAmountKopecks": 890000,
+        "displayedAmountKopecks": 990000
+      },
       "legalAcceptance": {
         "releaseVersion": "courses-2026-11-b1",
         "manifestSha256": "1111111111111111111111111111111111111111111111111111111111111111",
         "receiptEmail": "buyer@example.test",
         "documents": [
-          { "kind": "course_offer", "version": "1", "url": "/legal/courses/course_offer" },
-          { "kind": "refund_terms", "version": "1", "url": "/legal/courses/refund_terms" },
-          { "kind": "personal_data", "version": "1", "url": "/legal/courses/personal_data" },
-          { "kind": "receipt_contact", "version": "1", "url": "javascript:alert(1)" }
+          {
+            "kind": "course_offer",
+            "version": "1",
+            "url": "/legal/courses/course_offer"
+          },
+          {
+            "kind": "refund_terms",
+            "version": "1",
+            "url": "/legal/courses/refund_terms"
+          },
+          {
+            "kind": "personal_data",
+            "version": "1",
+            "url": "/legal/courses/personal_data"
+          },
+          {
+            "kind": "receipt_contact",
+            "version": "1",
+            "url": "javascript:alert(1)"
+          }
         ]
       }
     },
-    "confirm": { "orderPublicId": "ord-course-0001", "state": "PENDING", "checkoutUrl": "https://pay.fake-provider.test/session/ord-course-0001" },
+    "confirm": {
+      "orderPublicId": "ord-course-0001",
+      "state": "PENDING",
+      "checkoutUrl": "https://pay.fake-provider.test/session/ord-course-0001"
+    },
     "statusSequence": [
-      { "orderPublicId": "ord-course-0001", "state": "CREATE_UNKNOWN" },
-      { "orderPublicId": "ord-course-0001", "contour": "NATIVE", "payment": "ACCESS_GRANTED" }
+      {
+        "orderPublicId": "ord-course-0001",
+        "state": "CREATE_UNKNOWN"
+      },
+      {
+        "orderPublicId": "ord-course-0001",
+        "contour": "NATIVE",
+        "payment": "ACCESS_GRANTED"
+      }
     ]
   },
   "lab": {
@@ -51,36 +82,119 @@
       "merchantPromotionCode": null,
       "checkoutCodeOutcome": "NONE",
       "expiresAt": "2026-11-22T12:15:00.000Z",
-      "occurrence": { "title": "LAB · ноябрь", "startsAt": "2026-11-28T16:00:00.000Z", "venue": "Площадка", "city": "Москва" },
+      "occurrence": {
+        "occurrenceRef": "lab-nov-1",
+        "title": "LAB · ноябрь",
+        "startsAt": "2026-11-28T16:00:00.000Z",
+        "endsAt": "2026-11-28T19:00:00.000Z",
+        "timezone": "Europe/Moscow",
+        "cityId": "msk",
+        "venue": {
+          "status": "CONFIRMED",
+          "name": "Площадка",
+          "address": "ул. Пример, 1"
+        }
+      },
       "priceNotice": null,
       "labLegal": {
         "releaseVersion": "lab-2026-11-b1",
         "manifestSha256": "2222222222222222222222222222222222222222222222222222222222222222",
         "documents": [
-          { "kind": "course_offer", "url": "/legal/lab/course_offer" },
-          { "kind": "refund_terms", "url": "/legal/lab/refund_terms" },
-          { "kind": "personal_data", "url": "/legal/lab/personal_data" },
-          { "kind": "receipt_contact", "url": "/legal/lab/receipt_contact" }
+          {
+            "kind": "course_offer",
+            "url": "/legal/lab/course_offer"
+          },
+          {
+            "kind": "refund_terms",
+            "url": "/legal/lab/refund_terms"
+          },
+          {
+            "kind": "personal_data",
+            "url": "/legal/lab/personal_data"
+          },
+          {
+            "kind": "receipt_contact",
+            "url": "/legal/lab/receipt_contact"
+          }
         ]
       }
     },
-    "confirm": { "orderPublicId": "ord-lab-0001", "contour": "NATIVE", "payment": "AWAITING_PAYMENT", "paymentUrl": "https://pay.fake-provider.test/session/ord-lab-0001" },
+    "confirm": {
+      "orderPublicId": "ord-lab-0001",
+      "contour": "NATIVE",
+      "payment": "AWAITING_PAYMENT",
+      "paymentUrl": "https://pay.fake-provider.test/session/ord-lab-0001"
+    },
     "statusSequence": [
-      { "orderPublicId": "ord-lab-0001", "contour": "NATIVE", "payment": "CONFIRMING" },
-      { "orderPublicId": "ord-lab-0001", "contour": "NATIVE", "payment": "TICKET_ISSUED" }
+      {
+        "orderPublicId": "ord-lab-0001",
+        "contour": "NATIVE",
+        "payment": "CONFIRMING"
+      },
+      {
+        "orderPublicId": "ord-lab-0001",
+        "contour": "NATIVE",
+        "payment": "TICKET_ISSUED"
+      }
     ],
     "refusals": {
-      "accountConfirmation": { "status": 403, "body": { "code": "LAB_ACCOUNT_CONFIRMATION_REQUIRED" } },
-      "salesClosed": { "status": 409, "body": { "code": "SALES_STOPPED" } }
+      "accountConfirmation": {
+        "status": 403,
+        "body": {
+          "code": "LAB_ACCOUNT_CONFIRMATION_REQUIRED"
+        }
+      },
+      "salesClosed": {
+        "status": 409,
+        "body": {
+          "code": "SALES_STOPPED"
+        }
+      }
     }
   },
   "refusals": {
-    "signIn": { "status": 401, "body": { "code": "SIGN_IN_REQUIRED" } },
-    "audience": { "status": 403, "body": { "code": "SESSION_AUDIENCE_FORBIDDEN" } },
-    "foreignOrder": { "status": 404, "body": { "code": "ORDER_NOT_FOUND" } },
-    "quoteExpired": { "status": 409, "body": { "code": "CHECKOUT_QUOTE_EXPIRED" } },
-    "paymentInProgress": { "status": 409, "body": { "code": "CHECKOUT_PAYMENT_IN_PROGRESS", "orderPublicId": "ord-course-0000" } },
-    "unknownOutcome": { "status": 503, "body": { "code": "CHECKOUT_UNAVAILABLE" } },
-    "acceptanceRequired": { "status": 403, "body": { "code": "PAID_CHECKOUT_TERMS_ACCEPTANCE_REQUIRED" } }
+    "signIn": {
+      "status": 401,
+      "body": {
+        "code": "SIGN_IN_REQUIRED"
+      }
+    },
+    "audience": {
+      "status": 403,
+      "body": {
+        "code": "SESSION_AUDIENCE_FORBIDDEN"
+      }
+    },
+    "foreignOrder": {
+      "status": 404,
+      "body": {
+        "code": "ORDER_NOT_FOUND"
+      }
+    },
+    "quoteExpired": {
+      "status": 409,
+      "body": {
+        "code": "CHECKOUT_QUOTE_EXPIRED"
+      }
+    },
+    "paymentInProgress": {
+      "status": 409,
+      "body": {
+        "code": "CHECKOUT_PAYMENT_IN_PROGRESS",
+        "orderPublicId": "ord-course-0000"
+      }
+    },
+    "unknownOutcome": {
+      "status": 503,
+      "body": {
+        "code": "CHECKOUT_UNAVAILABLE"
+      }
+    },
+    "acceptanceRequired": {
+      "status": 403,
+      "body": {
+        "code": "PAID_CHECKOUT_TERMS_ACCEPTANCE_REQUIRED"
+      }
+    }
   }
 }

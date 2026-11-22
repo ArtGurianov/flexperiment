@@ -60,6 +60,12 @@ const statusText = (kind: CheckoutKind, status: BuyerStatus) => {
 const REFUND_TEXT = { REFUND_PROCESSING: "Возврат обрабатывается.", REFUNDED: "Деньги возвращены.",
   SUPPORT_REVIEW: "Возврат требует проверки поддержкой." } as const;
 
+/** LAB times are shown in the event's own time zone (frozen occurrence), never the browser's. */
+const eventTimeZone = (zone: string | undefined) => {
+  try { return zone ? { timeZone: new Intl.DateTimeFormat("ru-RU", { timeZone: zone }).resolvedOptions().timeZone } : { timeZone: "Europe/Moscow" }; }
+  catch { return { timeZone: "Europe/Moscow" }; }
+};
+
 function Review({ review, busy, notice, onConfirm }: { review: CheckoutReview; busy: boolean; notice?: CheckoutNotice;
   onConfirm: CheckoutActions["confirm"] }) {
   const [terms, setTerms] = useState(false);
@@ -72,7 +78,7 @@ function Review({ review, busy, notice, onConfirm }: { review: CheckoutReview; b
       <h1 id="checkout-title">{lab ? "Билет на событие" : "Покупка курса"}</h1>
       {notice && <p role="status">{NOTICE_TEXT[notice]}</p>}
       {lab && review.occurrence && <p>{[review.occurrence.title, review.occurrence.startsAt && new Date(review.occurrence.startsAt)
-        .toLocaleString("ru-RU", { dateStyle: "long", timeStyle: "short" }), review.occurrence.venue, review.occurrence.city]
+        .toLocaleString("ru-RU", { dateStyle: "long", timeStyle: "short", ...(eventTimeZone(review.occurrence.timezone)) }), review.occurrence.venue]
         .filter(Boolean).join(" · ")}</p>}
       <dl>
         {review.discountKopecks > 0 && <><dt>Цена</dt><dd>{formatRub(review.baseAmountKopecks)}</dd>

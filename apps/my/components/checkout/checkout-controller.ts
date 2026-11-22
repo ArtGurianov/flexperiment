@@ -18,7 +18,7 @@ export type CheckoutReview = {
   discountKopecks: number;
   finalAmountKopecks: number;
   expiresAt: string;
-  occurrence: { startsAt?: string; title?: string; venue?: string; city?: string } | null;
+  occurrence: { startsAt?: string; timezone?: string; title?: string; venue?: string } | null;
   priceNotice: { code: string; quotedAmountKopecks: number; displayedAmountKopecks?: number; currentAmountKopecks?: number } | null;
   documents: LegalDocument[];
   releaseVersion: string;
@@ -71,6 +71,23 @@ const UNAVAILABLE_FINAL = new Set(["OFFER_NOT_AVAILABLE", "OFFER_CLOSED", "FREE_
 type Answer = { ok: boolean; status: number; body: Record<string, unknown> };
 
 export const offerKind = (offerRef: string): CheckoutKind => offerRef.startsWith("lab:") ? "LAB" : "COURSE";
+
+const text = (value: unknown) => typeof value === "string" && value.trim() ? value.trim().slice(0, 200) : undefined;
+
+/** The frozen LAB occurrence (Commerce `freezeLine`): only display strings reach the view. The venue
+ * is `BuyerVenueDisclosure`: confirmed name and address, or the to-be-announced disclosure text. */
+function displayOccurrence(raw: Record<string, unknown>): NonNullable<CheckoutReview["occurrence"]> {
+  const venue = raw.venue && typeof raw.venue === "object" ? raw.venue as Record<string, unknown> : undefined;
+  const venueText = venue?.status === "CONFIRMED" ? [text(venue.name), text(venue.address)].filter(Boolean).join(", ")
+    : venue?.status === "TO_BE_ANNOUNCED" ? text(venue.disclosureText) : undefined;
+  const result: NonNullable<CheckoutReview["occurrence"]> = {};
+  const title = text(raw.title); const startsAt = text(raw.startsAt); const timezone = text(raw.timezone);
+  if (title) result.title = title;
+  if (startsAt && !Number.isNaN(Date.parse(startsAt))) result.startsAt = startsAt;
+  if (timezone) result.timezone = timezone;
+  if (venueText) result.venue = venueText;
+  return result;
+}
 
 const isCount = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
 
@@ -167,7 +184,7 @@ export class CheckoutController {
   private toReview(body: Record<string, unknown>): CheckoutReview | "MISMATCH" | null {
     if (body.offerRef !== undefined && body.offerRef !== this.deps.offerRef) return "MISMATCH";
     const serverKind = body.kind === "LAB" ? "LAB" : body.kind === "ONLINE_COURSE" || body.kind === "COURSE_BUNDLE" ? "COURSE" : undefined;
-    const occurrence = body.occurrence && typeof body.occurrence === "object" ? body.occurrence as CheckoutReview["occurrence"] : null;
+    const occurrence = body.occurrence && typeof body.occurrence === "object" ? displayOccurrence(body.occurrence as Record<string, unknown>) : null;
     const kind = serverKind ?? (occurrence ? "LAB" : "COURSE");
     if (kind !== this.kind) return "MISMATCH";
     if (body.state !== "PRICE_REVIEW_REQUIRED" || typeof body.quoteId !== "string" || !isCount(body.finalAmountKopecks)) return null;
