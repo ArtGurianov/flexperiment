@@ -42,6 +42,9 @@ const REVIEWED_SCHEMA_SHA256 = new Set([
   // 0035: owner storefront-switch observations (no subject data), the quote's opening generation in
   // checkout_quotes, and sales_activation frozen as history; no new identity store. Hashed journal.
   "6ef1be23e4d713fa77e81a1cb0391fcb1292d18634b3d2270751bec6ab58a728",
+  // FLEX-8 (G; branch number 0036, final number at integration): LAB interest signups keyed only by
+  // email for the LAB_SALES_NOTICE purpose; erasure deletes them by email pseudonym and suppresses.
+  "9dbea1cf537be77bf6ace1f3be6e87a81b30aac8bf8ed88372787befebb5de94",
 ]);
 export function assertReviewedRestoreSchema(db: Database.Database) {
   const schema = db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").all();
@@ -111,6 +114,9 @@ function applyErasure(db: Database.Database, ledger: VerifiedErasureLedger, keys
           ...users.filter(user => matches("email", user.email)).map(user => user.email.trim().toLocaleLowerCase("en-US")),
           ...(db.prepare("SELECT DISTINCT recipient_normalized FROM auth_email_outbox").all() as Array<{ recipient_normalized: string }>)
             .filter(row => matches("email", row.recipient_normalized)).map(row => row.recipient_normalized),
+          // FLEX-8 (G): an interest-only subject has no customer row; its email is the only identifier.
+          ...(db.prepare("SELECT DISTINCT email_normalized FROM lab_interest_signups").all() as Array<{ email_normalized: string }>)
+            .filter(row => matches("email", row.email_normalized)).map(row => row.email_normalized),
         ]);
         for (const email of emails) {
           db.prepare(`INSERT INTO email_suppressions(email_normalized,reason,created_at,removed_at) VALUES (?,'INDEPENDENT_ERASURE_LEDGER',?,NULL)
@@ -162,6 +168,8 @@ function applyErasure(db: Database.Database, ledger: VerifiedErasureLedger, keys
           db.prepare('DELETE FROM "user" WHERE id=?').run(user.id);
         }
         for (const email of emails) db.prepare("DELETE FROM auth_email_outbox WHERE recipient_normalized=?").run(email);
+        // FLEX-8 (G): LAB interest signups (and their notice rows, by cascade) of the erased email.
+        for (const email of emails) db.prepare("DELETE FROM lab_interest_signups WHERE email_normalized=?").run(email);
         if(!resetAllCredentials) {
           for(const row of db.prepare("SELECT id,value FROM verification").all() as Array<{id:string;value:string}>) {
             let value:unknown; try {value=JSON.parse(row.value);} catch {throw new ErasureLedgerError("ERASURE_VERIFICATION_UNCLASSIFIED");}

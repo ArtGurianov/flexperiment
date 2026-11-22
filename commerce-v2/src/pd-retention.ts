@@ -64,6 +64,9 @@ const supportedSchemaSha256 = new Set([
   // 0035: owner storefront-switch observations (no subject data), the quote's opening generation in
   // checkout_quotes, and sales_activation frozen as history; no new identity store. Hashed journal.
   "6ef1be23e4d713fa77e81a1cb0391fcb1292d18634b3d2270751bec6ab58a728",
+  // FLEX-8 (G; branch number 0036): LAB interest signups. Retention is purgeLabInterest's explicit
+  // reviewed policy in lab-interest.ts; existing retention targets are unchanged.
+  "9dbea1cf537be77bf6ace1f3be6e87a81b30aac8bf8ed88372787befebb5de94",
 ]);
 const parse = <T>(schema: z.ZodType<T>, value: unknown): T => {
   const result = schema.safeParse(value); return result.success ? result.data : refuse("RETENTION_POLICY_OR_HOLD_INVALID");

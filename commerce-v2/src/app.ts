@@ -1,5 +1,7 @@
 import { labGuestClientIp } from "./lab-guest-client-ip";
 import { registerLabGuestRoutes, labBearer } from "./lab-guest-routes";
+import { registerLabInterestRoutes } from "./lab-interest-routes";
+import type { LabInterestEmail } from "./lab-interest";
 import { checkInLabTicket, prepareLabRecovery, labAccess, labLegalReview, LabTicketError, type LabAcceptance, type LabTicketEmail } from "./lab-tickets";
 import type Database from "better-sqlite3";
 import { assertRegistrationChoices } from "./registration-choices";
@@ -83,6 +85,8 @@ type Dependencies = {
   readonly labGuestPeerAddress?: (context: Context) => string | undefined;
   readonly sendLabTicketEmail?: (message: LabTicketEmail) => Promise<void>;
   readonly sendCampaignEmail?: (message: CampaignEmail) => Promise<void>;
+  /** FLEX-8 LAB interest (confirmation and sales-opened notice). Absent: signups are refused, never stored. */
+  readonly sendLabInterestEmail?: (message: LabInterestEmail) => Promise<void>;
   readonly controlRoomAuth?: ControlRoomAuthConfig;
   /** In-process transport adapter for tests; production uses Node's socket metadata. */
   readonly controlRoomPeerAddress?: (context: Context) => string | undefined;
@@ -778,6 +782,16 @@ export function createCommerceV2App(deps: Dependencies) {
 
   registerLabGuestRoutes(app as unknown as Hono, { db: deps.db, origin: origins.lab, now,
     authenticateCustomer: deps.authenticateCustomer, sendLabTicketEmail: deps.sendLabTicketEmail, erasureFence: deps.erasureFence,
+    requestSource: context => {
+      let peer: string | undefined;
+      try { peer = deps.labGuestPeerAddress ? deps.labGuestPeerAddress(context) : getConnInfo(context).remote.address; }
+      catch { /* Missing transport is never replaced by request headers. */ }
+      return labGuestClientIp(context.req.raw.headers, peer, deps.labGuestTrustedProxyIps ?? []);
+    },
+  });
+  // FLEX-8 (G): public LAB showcase and interest signups; no order, hold, ticket or payment state.
+  registerLabInterestRoutes(app as unknown as Hono, { db: deps.db, config: deps.config, origin: origins.lab, now,
+    secret: deps.campaignUnsubscribeSecret, sendLabInterestEmail: deps.sendLabInterestEmail, erasureFence: deps.erasureFence,
     requestSource: context => {
       let peer: string | undefined;
       try { peer = deps.labGuestPeerAddress ? deps.labGuestPeerAddress(context) : getConnInfo(context).remote.address; }
