@@ -194,6 +194,27 @@ describe("SERVICE_RENDERED basis (E position 21.11.2026; owner decision on no-sh
     expect(recordCheckedInServiceRendered(db, { occurrenceRef: REF, recordedBy: "owner" }, ENDS).recorded).toEqual([seat.lineId]);
     expect(serviceRenderedFact(db, seat.lineId)).toMatchObject({ renderedAt: ENDS, checkedInAt: "2026-11-01T09:05:00.000Z" });
   });
+  it("guards the fact in the schema: its own line's occurrence, recorded after the end (0038)", async () => {
+    const seat = await paidSeat(true);
+    db.prepare(`INSERT INTO lab_occurrences(id,occurrence_ref,city_id,title,starts_at,ends_at,timezone,capacity,venue_status,venue_name,venue_address)
+      VALUES ('event-2','lab:two','city','LAB 2','2026-10-01T09:00:00Z','2026-10-01T17:00:00Z','Asia/Novosibirsk',20,'CONFIRMED','Студия','Адрес')`).run();
+    const insert = (occurrenceRef: string, recordedAt = AFTER) => db.prepare(`INSERT INTO lab_service_renditions(order_line_id,occurrence_ref,basis,
+      checked_in_at,attestation_reason,rendered_at,evidence_ref,recorded_by,recorded_at) VALUES (?,?, 'CHECKED_IN','2026-11-01T09:05:00Z',NULL,?,'x','owner',?)`)
+      .run(seat.lineId, occurrenceRef, recordedAt, recordedAt);
+    // Another, already ended occurrence cannot be used to close this line early.
+    expect(() => insert("lab:two")).toThrow("LAB_SERVICE_RENDERED_OCCURRENCE_MISMATCH");
+    expect(() => insert(REF, "2026-11-01T16:00:00.000Z")).toThrow("LAB_SERVICE_RENDERED_BEFORE_END");
+    expect(count("lab_service_renditions")).toBe(0);
+  });
+  it("fails closed on an occurrence time without a zone instead of reading it in the process TZ", async () => {
+    const seat = await paidSeat(true);
+    db.pragma("foreign_keys=OFF");
+    db.prepare("UPDATE lab_occurrences SET ends_at='2026-11-01T17:00:00' WHERE occurrence_ref=?").run(REF);
+    expect(() => recordCheckedInServiceRendered(db, { occurrenceRef: REF, recordedBy: "owner" }, AFTER)).toThrow("LAB_OCCURRENCE_TIME_ZONE_MISSING");
+    expect(() => attestLabAttendance(db, { orderLineId: seat.lineId, reason: "QR_SCAN_FAILED", recordedBy: "owner" }, AFTER))
+      .toThrow("LAB_ATTESTATION_REFUSED_OCCURRENCE_TIME_ZONE_MISSING");
+    expect(count("lab_service_renditions")).toBe(0);
+  });
   it("treats a moved occurrence as not rendered (review), never attestable", async () => {
     const seat = await paidSeat(false);
     // A move outside the workflow (direct DB edit) after the sale.

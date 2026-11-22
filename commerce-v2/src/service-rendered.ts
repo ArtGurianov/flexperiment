@@ -49,8 +49,11 @@ const LINE_FACTS = `SELECT orders.public_id AS order_public_id,orders.state AS o
   WHERE product.kind='LAB'`;
 
 /** Why a line cannot have a SERVICE_RENDERED fact now; null when it can. Order matters: the first applies. */
+/** An instant with an explicit zone; a zone-less value would be read in the process TZ (E item 8). */
+const ZONED = /(Z|[+-]\d{2}:\d{2})$/;
 function refusal(line: LineFacts, now: string): string | null {
   if (line.lifecycle === "CANCELLED" || line.cancelling) return "OCCURRENCE_CANCELLED";
+  if (!ZONED.test(line.starts_at) || !ZONED.test(line.ends_at) || !ZONED.test(now)) return "OCCURRENCE_TIME_ZONE_MISSING";
   if (Date.parse(line.ends_at) > Date.parse(now)) return "SERVICE_NOT_FINISHED";
   // A move after the sale means the promised service was not the one held (E, Q3).
   const promised = line.occurrence_snapshot_json ? JSON.parse(line.occurrence_snapshot_json) as { startsAt?: string; endsAt?: string } : null;
@@ -124,6 +127,7 @@ export function recordCheckedInServiceRendered(db: Database.Database, command: {
       { lifecycle: string; ends_at: string } | undefined;
     if (!occurrence) fail("LAB_OCCURRENCE_NOT_FOUND");
     if (labOccurrenceCancellationState(db, command.occurrenceRef) !== "NONE") fail("LAB_OCCURRENCE_CANCELLED");
+    if (!ZONED.test(occurrence!.ends_at) || !ZONED.test(now)) fail("LAB_OCCURRENCE_TIME_ZONE_MISSING");
     if (Date.parse(occurrence!.ends_at) > Date.parse(now)) fail("LAB_SERVICE_NOT_FINISHED");
     const lines = db.prepare(`${LINE_FACTS} AND product.occurrence_ref=? ORDER BY orders.created_at,line.id`).all(command.occurrenceRef) as LineFacts[];
     const recorded: string[] = [], replayed: string[] = [], review: ServiceRenderedReview[] = [];

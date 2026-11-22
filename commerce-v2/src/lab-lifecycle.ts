@@ -100,7 +100,8 @@ const audit = (db: Database.Database, actor: string, action: string, subjectRef:
 export function beginLabOccurrenceCancellation(db: Database.Database, command: { occurrenceRef: string; actor: string; reason: string }, now: string) {
   const actor = command.actor?.trim(), reason = command.reason?.trim();
   if (!actor) fail("LAB_COMMAND_INVALID");
-  if (!reason || reason.length > 500) fail("LAB_CHANGE_REASON_REQUIRED");
+  // An operational reason, shown to buyers: no personal data, short (E review item 6).
+  if (!reason || reason.length > 200) fail("LAB_CHANGE_REASON_REQUIRED");
   return db.transaction(() => {
     const occurrence = occurrenceFor(db, command.occurrenceRef) ?? fail("LAB_OCCURRENCE_NOT_FOUND");
     if (occurrence.lifecycle === "CANCELLED") fail("LAB_OCCURRENCE_CANCELLED");

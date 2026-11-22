@@ -244,6 +244,13 @@ describe("FLEX-59: occurrence cancellation with committed seats", () => {
   });
 });
 
+describe("cancellation reason (E review item 6)", () => {
+  it("accepts a short operational reason and refuses a long one", () => {
+    expect(() => beginLabOccurrenceCancellation(db, { occurrenceRef: REF, actor: "owner", reason: "x".repeat(201) }, at(1))).toThrow("LAB_CHANGE_REASON_REQUIRED");
+    expect(beginLabOccurrenceCancellation(db, { occurrenceRef: REF, actor: "owner", reason: "Площадка недоступна" }, at(1))).toMatchObject({ state: "REQUESTED" });
+  });
+});
+
 describe("FLEX-62: refund and a late result", () => {
   it("refunds a cancelled seat, voids entry and a later PAID read-back cannot revive it", async () => {
     const who = buyer(); await buy(who);
