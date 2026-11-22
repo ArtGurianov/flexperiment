@@ -5,12 +5,13 @@ import { describe, expect, it, vi } from "vitest";
 import {
   cabinetLinks, createNavbarSession, parseNavbarSession, safeLmsReturnPath, signInHref,
   type NavbarConfig, type NavbarState,
-} from "../components/navbar/navbar-core";
+} from "../../../lib/navbar/navbar-core";
 import fixtures from "./fixtures/navbar-sessions.json";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const LMS = fixtures.config.LMS as NavbarConfig;
 const LAB = fixtures.config.LAB as NavbarConfig;
+const LAB_LATER = fixtures.config.LAB_ATTACHED_LATER as NavbarConfig;
 const json = (body: unknown, status = 200) => Response.json(body, { status });
 
 function deferred<T>() {
@@ -77,7 +78,7 @@ describe("FLEX-123 Navbar core", () => {
 
   it("drops the profile when a re-check finds the session revoked or the check fails", async () => {
     let answer: () => Promise<Response> = async () => json(fixtures.answers.labUnnamed);
-    const session = createNavbarSession(LAB, { fetcher: () => answer(), pageOrigin: "https://lab.flexperiment.test", onChange: () => {} });
+    const session = createNavbarSession(LAB_LATER, { fetcher: () => answer(), pageOrigin: "https://lab.flexperiment.test", onChange: () => {} });
     await session.check();
     expect(session.current().kind).toBe("signed-in");
     answer = async () => json({ code: "SIGN_IN_REQUIRED" }, 401);
@@ -90,17 +91,23 @@ describe("FLEX-123 Navbar core", () => {
     expect(session.current()).toEqual({ kind: "unavailable" });
   });
 
-  it("sends credentials cross-origin only to the configured my endpoint, with the CSRF header on POST", async () => {
-    const fetcher = vi.fn(async (_url: string, init: RequestInit) => init.method === "POST" ? new Response(null, { status: 204 }) : json(fixtures.answers.labUnnamed));
-    const lab = createNavbarSession(LAB, { fetcher, pageOrigin: "https://lab.flexperiment.test", onChange: () => {} });
-    await lab.check(); await lab.signOut();
-    expect(fetcher.mock.calls[0]).toEqual([LAB.sessionUrl, expect.objectContaining({ credentials: "include", cache: "no-store", method: "GET" })]);
-    expect(fetcher.mock.calls[1]).toEqual([LAB.signOutUrl, expect.objectContaining({ credentials: "include", method: "POST", headers: { "X-Flex-Navbar": "1" } })]);
-    fetcher.mockClear();
+  it("LMS stays same-origin: no cross-origin credentials, no extra headers", async () => {
+    const fetcher = vi.fn(async (_url: string, init: RequestInit) => init.method === "POST" ? new Response(null, { status: 204 }) : json(fixtures.answers.lmsNamed));
     const lms = createNavbarSession(LMS, { fetcher, pageOrigin: "https://flexperiment.test", onChange: () => {} });
     await lms.check(); await lms.signOut();
-    expect(fetcher.mock.calls.map(([, init]) => init.credentials)).toEqual(["same-origin", "same-origin"]);
+    expect(fetcher.mock.calls.map(([url, init]) => [url, init.method, init.credentials])).toEqual([
+      ["/v1/me", "GET", "same-origin"], ["/v1/lms/sign-out", "POST", "same-origin"]]);
+    expect(fetcher.mock.calls[0][1]).toEqual(expect.objectContaining({ cache: "no-store" }));
     expect(fetcher.mock.calls[1][1].headers).toEqual({});
+  });
+
+  it("LAB guest-only mode makes no request and offers no sign-out", async () => {
+    const fetcher = vi.fn();
+    const lab = createNavbarSession(LAB, { fetcher, pageOrigin: "https://lab.flexperiment.test", onChange: () => {} });
+    await lab.check();
+    expect(lab.current()).toEqual({ kind: "guest" });
+    await expect(lab.signOut()).resolves.toBe(false);
+    expect(fetcher).not.toHaveBeenCalled();
   });
 
   it("reports a failed sign-out without showing the old profile", async () => {
@@ -114,16 +121,16 @@ describe("FLEX-123 Navbar core", () => {
   });
 
   it("never persists or logs profile data", () => {
-    for (const file of ["navbar-core.ts", "Navbar.tsx"]) {
-      const source = readFileSync(path.join(here, "../components/navbar", file), "utf8");
+    for (const file of ["../../../lib/navbar/navbar-core.ts", "../../../lib/navbar/NavbarProfile.tsx",
+      "../components/navbar/Navbar.tsx", "../../lab-v2/components/navbar/Navbar.tsx"]) {
+      const source = readFileSync(path.join(here, file), "utf8");
       expect(source).not.toMatch(/localStorage|sessionStorage|document\.cookie|console\.|sendBeacon|ym\(|dataLayer|indexedDB/);
     }
   });
 
-  it("keeps the lab-v2 copy byte-identical", () => {
-    for (const file of ["navbar-core.ts", "Navbar.tsx", "navbar.module.css"]) {
-      expect(readFileSync(path.join(here, "../../lab-v2/components/navbar", file), "utf8"))
-        .toBe(readFileSync(path.join(here, "../components/navbar", file), "utf8"));
+  it("shared core never binds to one app's Next.js instance", () => {
+    for (const file of ["navbar-core.ts", "NavbarProfile.tsx"]) {
+      expect(readFileSync(path.join(here, "../../../lib/navbar", file), "utf8")).not.toMatch(/from "next\//);
     }
   });
 });

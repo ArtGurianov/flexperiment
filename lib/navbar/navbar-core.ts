@@ -1,5 +1,7 @@
-/* FLEX-123 Navbar core: one file, copied byte-for-byte into apps/lab-v2/components/navbar/.
- * A drift test (apps/platform/test/navbar-core-drift.test.ts) keeps the copies identical.
+/* FLEX-123 Navbar core, shared by apps/platform (LMS) and apps/lab-v2 (LAB).
+ * Coordinator decision: no CORS. LMS reads its own same-origin `/v1/me` limited view (#286 §10)
+ * and signs out via same-origin `/v1/lms/sign-out`; LAB runs guest-only (sessionUrl null) until
+ * LAB moves to my. The config shape stays so LAB can attach later without a rewrite.
  *
  * Privacy rules enforced here (contract #286 §10, FLEX-123):
  * - The Navbar reads only {signedIn, displayName, emailMasked}. Any other field in the answer
@@ -23,9 +25,9 @@ export type NavbarConfig = {
   readonly variant: NavbarVariant;
   /** Origin of my.flexperiment.ru for this environment (links in the popover). */
   readonly myOrigin: string;
-  /** Read-only session endpoint (same-origin `/v1/me` limited view, or the my Navbar endpoint). */
-  readonly sessionUrl: string;
-  /** Sign-out endpoint (`/v1/lms/sign-out` on LMS, or the my Navbar endpoint). Null: no sign-out in the menu. */
+  /** Read-only session endpoint (same-origin `/v1/me` limited view on LMS). Null: guest-only mode. */
+  readonly sessionUrl: string | null;
+  /** Sign-out endpoint (`/v1/lms/sign-out` on LMS). Null: no sign-out in the menu. */
   readonly signOutUrl: string | null;
 };
 
@@ -95,14 +97,16 @@ export function createNavbarSession(config: NavbarConfig, options: {
   const set = (next: NavbarState) => { state = next; options.onChange(next); };
 
   async function check(): Promise<void> {
+    const sessionUrl = config.sessionUrl;
+    if (!sessionUrl) { generation += 1; if (state.kind !== "guest") set({ kind: "guest" }); return; }
     if (inFlight) return inFlight;
     const issued = ++generation;
     const pending: Promise<void> = (async () => {
       let next: NavbarState;
       try {
-        const response = await fetcher(config.sessionUrl, {
+        const response = await fetcher(sessionUrl, {
           method: "GET", cache: "no-store", redirect: "error",
-          credentials: crossOrigin(config.sessionUrl) ? "include" : "same-origin",
+          credentials: crossOrigin(sessionUrl) ? "include" : "same-origin",
           headers: { Accept: "application/json" },
         });
         if (response.status === 401) next = { kind: "guest" };
