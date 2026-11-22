@@ -6,7 +6,7 @@ import { createCommerceV2App } from "../src/app";
 import { createAuthRuntime } from "../src/auth";
 import { migrateV2 } from "../src/db";
 import { activateLegalRelease } from "../src/legal-control";
-import { loadMyIdentityConfig, sameSite } from "../src/my-session";
+import { loadMyIdentityConfig, sameSite, validReturnTarget } from "../src/my-session";
 import { createMyOtp } from "../src/my-session-otp";
 import { verificationSubjectEmail } from "../src/my-session-storage";
 import { loadCommerceOrigins } from "../src/origins";
@@ -323,5 +323,15 @@ describe("FLEX-121 same-site invariant", () => {
     expect(() => loadMyIdentityConfig({ MY_IDENTITY_MODE: "maybe" }, origins)).toThrow("MY_IDENTITY_MODE_INVALID");
     expect(() => loadCommerceOrigins({ ...environment, MY_ORIGIN: environment.PLATFORM_ORIGIN })).toThrow("MY_ORIGIN_INVALID");
     expect(loadCommerceOrigins({ ...environment, MY_ORIGIN: undefined })).not.toHaveProperty("my");
+  });
+});
+
+describe("return targets", () => {
+  it("Commerce validates exactly the normative fixture for MY and LMS", () => {
+    const fixture = JSON.parse(readFileSync(join(__dirname, "../../docs/plans/fixtures/my-identity/return-targets.json"), "utf8")) as
+      Record<"MY" | "LMS", { cases: Array<{ input: string; result: string }> }>;
+    for (const surface of ["MY", "LMS"] as const) {
+      for (const sample of fixture[surface].cases) expect([surface, sample.input, validReturnTarget(surface, sample.input)]).toEqual([surface, sample.input, sample.result]);
+    }
   });
 });
