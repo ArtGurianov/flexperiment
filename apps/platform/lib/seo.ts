@@ -1,7 +1,7 @@
 import type { Metadata, MetadataRoute } from "next";
 import type { CourseCommercialSummary } from "./commerce-summary";
 import type { CourseDetail, LessonDetail, StorefrontCourse } from "./content/public";
-import { parseCourseImage, type CourseImage } from "./public-media";
+import { courseImageFor, type CourseImage } from "./public-media";
 
 type Breadcrumb = { readonly name: string; readonly path: string };
 
@@ -49,16 +49,12 @@ export function lessonIsAccessibleForFree(
   return commercial?.accessModel === "FREE" || freePreview;
 }
 
-/**
- * The activated FLEX-63 image, if Commerce publishes one. Invalid or foreign data degrades to `null`;
- * a misconfigured media origin must not turn a course page into a 500.
- */
-export function courseImage(course: object): CourseImage | null {
-  try { return parseCourseImage((course as { image?: unknown }).image); } catch { return null; }
-}
+/** The FLEX-63 Stage A static image bound to this courseRef, or `null` for the text-only fallback. */
+export const courseImage = (course: Pick<StorefrontCourse, "courseRef" | "title">): CourseImage | null => courseImageFor(course);
 
+// Relative URL: Next resolves it against the layout's metadataBase (the platform origin).
 const openGraphImages = (image: CourseImage | null) => image
-  ? [{ url: image.og.url, width: image.og.width, height: image.og.height, alt: image.alt, type: "image/webp" }]
+  ? [{ url: image.path, width: image.width, height: image.height, alt: image.alt, type: "image/webp" }]
   : undefined;
 
 /**
@@ -102,7 +98,7 @@ export function courseJsonLd(origin: string, { course, commercial }: Pick<Course
   return [{
     "@context": "https://schema.org", "@type": "Course",
     name: course.title, description: course.summary,
-    ...(image ? { image: [image.hero.url, image.og.url, image.card.url] } : {}),
+    ...(image ? { image: new URL(image.path, origin).toString() } : {}),
     provider: { "@type": "Organization", name: "Flexperiment" },
     offers: courseOfferJsonLd(commercial),
   }, breadcrumbJsonLd(origin, [
@@ -135,7 +131,7 @@ export const jsonLdScript = (value: unknown) => JSON.stringify(value).replace(/<
  */
 export function publicSitemap(
   origin: string,
-  courses: ReadonlyArray<{ readonly course: Pick<StorefrontCourse, "slug" | "publicContentUpdatedAt"> }>,
+  courses: ReadonlyArray<{ readonly course: Pick<StorefrontCourse, "courseRef" | "title" | "slug" | "publicContentUpdatedAt"> }>,
 ): MetadataRoute.Sitemap {
   return [
     { url: origin, changeFrequency: "weekly", priority: 1 },
@@ -147,7 +143,7 @@ export function publicSitemap(
         lastModified: course.publicContentUpdatedAt,
         changeFrequency: "weekly" as const,
         priority: 0.8,
-        ...(image ? { images: [image.hero.url] } : {}),
+        ...(image ? { images: [new URL(image.path, origin).toString()] } : {}),
       };
     }),
   ];

@@ -1,67 +1,48 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { parseCourseImage } from "../lib/public-media";
+import { describe, expect, it } from "vitest";
+import { COURSE_IMAGE_MANIFEST, courseImageFor } from "../lib/public-media";
 import { courseJsonLd, courseMetadata, indexNowRequest, lessonMetadata, publicSitemap, robotsTxt } from "../lib/seo";
 import { analyticsConsentFromCookie, analyticsConsentSetCookie, safeAnalyticsLocation } from "../lib/analytics-consent";
 import type { CourseDetail, LessonDetail } from "../lib/content/public";
 
-const media = "https://flexperiment.s3.cloud.ru/course-media/public/course-one/abc";
-const image = (patch: (variants: Array<Record<string, unknown>>) => void = () => {}) => {
-  const variants: Array<Record<string, unknown>> = [
-    { name: "card", url: `${media}/card.webp`, width: 960, height: 640 },
-    { name: "hero", url: `${media}/hero.webp`, width: 1920, height: 1080 },
-    { name: "og", url: `${media}/og.webp`, width: 1200, height: 630 },
-  ];
-  patch(variants);
-  return { alt: "Танцор в стойке", variants };
-};
-const detail = (courseImage?: unknown): CourseDetail => ({
-  course: { courseRef: "course-one", version: 1, title: "Курс", slug: "one", summary: "Описание", description: null,
-    seo: null, publicContentUpdatedAt: "2026-11-20T10:00:00.000Z", ...(courseImage === undefined ? {} : { image: courseImage }) },
-  commercial: { courseRef: "course-one", offerRef: null, accessModel: "FREE", saleMode: "CLOSED", priceKopecks: null, withdrawn: false },
+const origin = "https://flexperiment.ru";
+const detail = (courseRef: string, title = "Основы флексинга"): CourseDetail => ({
+  course: { courseRef, version: 1, title, slug: "one", summary: "Описание", description: null,
+    seo: null, publicContentUpdatedAt: "2026-11-20T10:00:00.000Z" },
+  commercial: { courseRef, offerRef: null, accessModel: "FREE", saleMode: "CLOSED", priceKopecks: null, withdrawn: false },
   outline: { sections: [], lessons: [] },
 } as unknown as CourseDetail);
 
-beforeEach(() => vi.stubEnv("S3_PUBLIC_URL", "https://flexperiment.s3.cloud.ru"));
-afterEach(() => vi.unstubAllEnvs());
-
-describe("FLEX-63 course image on public surfaces", () => {
-  it("publishes the 1200×630 OG variant with alt, and hero/card in Course JSON-LD and the sitemap", () => {
-    const withImage = detail(image());
+describe("FLEX-63 Stage A static course image on public surfaces", () => {
+  it("publishes the prepared WebP at its honest size with title-derived alt", () => {
+    const withImage = detail("basics");
     expect(courseMetadata(withImage).openGraph).toMatchObject({
-      images: [{ url: `${media}/og.webp`, width: 1200, height: 630, alt: "Танцор в стойке", type: "image/webp" }],
+      images: [{ url: "/course-covers/course-main-basics.webp", width: 1126, height: 1397,
+        alt: "Обложка курса «Основы флексинга»", type: "image/webp" }],
     });
     expect(courseMetadata(withImage).twitter).toMatchObject({ card: "summary_large_image" });
-    expect(courseJsonLd("https://flexperiment.ru", withImage)[0]).toMatchObject({
-      image: [`${media}/hero.webp`, `${media}/og.webp`, `${media}/card.webp`],
-    });
-    expect(publicSitemap("https://flexperiment.ru", [withImage])[2]).toMatchObject({ images: [`${media}/hero.webp`] });
+    expect(courseJsonLd(origin, withImage)[0]).toMatchObject({ image: `${origin}/course-covers/course-main-basics.webp` });
+    expect(publicSitemap(origin, [withImage])[2]).toMatchObject({ images: [`${origin}/course-covers/course-main-basics.webp`] });
     const lesson = { ...withImage, section: { sectionRef: "s", title: "Раздел", position: 0 },
       lesson: { lessonRef: "l", sectionRef: "s", title: "Урок", slug: "intro", position: 0, freePreview: false, description: null } };
-    expect(lessonMetadata(lesson as LessonDetail).openGraph).toMatchObject({ images: [{ url: `${media}/og.webp` }] });
+    expect(lessonMetadata(lesson as LessonDetail).openGraph).toMatchObject({ images: [{ url: "/course-covers/course-main-basics.webp" }] });
   });
 
   it.each([
-    ["no image", undefined],
-    ["null image", null],
-    ["foreign origin", image((v) => { v[2].url = "https://evil.test/og.webp"; })],
-    ["outside the media path", image((v) => { v[2].url = "https://flexperiment.s3.cloud.ru.evil.test/og.webp"; })],
-    ["wrong size", image((v) => { v[1].width = 1280; })],
-    ["missing variant", image((v) => { v.pop(); })],
-    ["signed URL", image((v) => { v[0].url = `${media}/card.webp?X-Amz-Signature=abc`; })],
-    ["non-WebP", image((v) => { v[0].url = `${media}/card.png`; })],
-    ["empty alt", { ...image(), alt: " " }],
-  ])("falls back to a text-only page for %s", (_name, value) => {
-    const withoutImage = detail(value);
+    ["an unmapped courseRef", "course-without-artwork", "Курс"],
+    ["a slug that only resembles an artwork name", "Basics", "Курс"],
+    ["an empty title (no honest alt)", "basics", "   "],
+  ])("falls back to a text-only page for %s", (_name, courseRef, title) => {
+    const withoutImage = detail(courseRef, title);
+    expect(courseImageFor(withoutImage.course)).toBeNull();
     expect(courseMetadata(withoutImage).openGraph).not.toHaveProperty("images");
     expect(courseMetadata(withoutImage)).not.toHaveProperty("twitter");
-    expect(courseJsonLd("https://flexperiment.ru", withoutImage)[0]).not.toHaveProperty("image");
-    expect(publicSitemap("https://flexperiment.ru", [withoutImage])[2]).not.toHaveProperty("images");
+    expect(courseJsonLd(origin, withoutImage)[0]).not.toHaveProperty("image");
+    expect(publicSitemap(origin, [withoutImage])[2]).not.toHaveProperty("images");
   });
 
-  it("does not fail a page render when the media origin is misconfigured", () => {
-    vi.stubEnv("S3_PUBLIC_URL", "http://insecure.test");
-    expect(() => parseCourseImage(image())).toThrow("S3_PUBLIC_URL_INVALID");
-    expect(courseMetadata(detail(image())).openGraph).not.toHaveProperty("images");
+  it("binds each artwork to exactly one courseRef and path", () => {
+    expect(new Set(COURSE_IMAGE_MANIFEST.map((entry) => entry.courseRef)).size).toBe(COURSE_IMAGE_MANIFEST.length);
+    expect(new Set(COURSE_IMAGE_MANIFEST.map((entry) => entry.path)).size).toBe(COURSE_IMAGE_MANIFEST.length);
   });
 });
 

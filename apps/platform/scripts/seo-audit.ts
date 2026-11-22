@@ -30,7 +30,18 @@ async function main(argv: string[]) {
     const response = await fetch(new URL(path, base), { redirect: "manual" });
     if (response.status !== 200) { issues.push(`${path}: HTTP ${response.status}`); continue; }
     const url = new URL(path, origin ?? base).toString();
-    issues.push(...auditRenderedPage(await response.text(), { url, indexable: flag !== "noindex" }).map((issue) => `${path}: ${issue}`));
+    const html = await response.text();
+    issues.push(...auditRenderedPage(html, { url, indexable: flag !== "noindex" }).map((issue) => `${path}: ${issue}`));
+    // Read-back: a same-origin og:image must actually be served by this build as WebP.
+    for (const match of html.matchAll(/<meta property="og:image" content="([^"]+)"/g)) {
+      const image = new URL(match[1]);
+      if (image.origin !== new URL(origin ?? base).origin) continue;
+      const served = await fetch(new URL(image.pathname, base), { redirect: "manual" });
+      await served.arrayBuffer();
+      if (served.status !== 200 || served.headers.get("content-type") !== "image/webp") {
+        issues.push(`${path}: og:image ${image.pathname} is not served as image/webp (HTTP ${served.status})`);
+      }
+    }
   }
   for (const issue of issues) console.error(issue);
   console.log(issues.length ? `SEO audit failed: ${issues.length} issue(s)` : `SEO audit passed for ${paths.length} page(s)`);
