@@ -4,6 +4,8 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { applyV2Migration, migrateV2 } from "../src/db";
+import { assertReviewedRestoreSchema } from "../src/erasure-restore";
+import { readV2Migrations } from "../src/migration-integrity";
 import { draftFiscalPolicy, qualifiedFiscalPolicy, qualifyFiscalPolicy, retireFiscalPolicy } from "../src/fiscal-policy";
 import { activateLegalRelease, legalManifestHash } from "../src/legal-control";
 import { recordOwnerLegalDecision, ownerLegalEvidenceMentions } from "../src/owner-legal-decision";
@@ -127,8 +129,12 @@ describe("OwnerLegalDecision authority without an external counsel dependency", 
     expect(db.prepare("SELECT count(*) n FROM owner_legal_decisions").get()).toEqual({ n: 0 });
     retireFiscalPolicy(db, { policyId, actor: "owner" }, now);
     expect((db.prepare("SELECT legal_basis_json FROM fiscal_policy_versions WHERE id=?").get(policyId) as { legal_basis_json: string }).legal_basis_json).toBe(raw);
-    expect(db.prepare("SELECT count(*) n FROM schema_migrations").get()).toEqual({ n: 36 });
-    const hash = createHash("sha256").update(JSON.stringify(db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").all())).digest("hex");
-    expect(hash).toBe("f0b2205a43d7a733a96cbc3b40f7b57e4850dc0f8082dfc5449f1a95bee21e13");
+    expect(db.prepare("SELECT count(*) n FROM schema_migrations").get()).toEqual({ n: readV2Migrations().length });
+    const schemaHash = (target: Database.Database) => createHash("sha256").update(JSON.stringify(target.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").all())).digest("hex");
+    // The upgraded database must converge on exactly the schema a fresh install produces, and that schema must be
+    // one the erasure/retention reviews already accept; a new migration updates the reviewed allowlists, not this test.
+    const fresh = new Database(":memory:");
+    try { migrateV2(fresh); expect(schemaHash(db)).toBe(schemaHash(fresh)); } finally { fresh.close(); }
+    expect(() => assertReviewedRestoreSchema(db)).not.toThrow();
   });
 });
