@@ -237,6 +237,35 @@ describe("FLEX-128 access, grant and library", () => {
     expect(decision("free", "student", "l2")).toBe("ALLOW");
   });
 
+  it("D-13 (owner, variant A): after FREE→PAID the enrolled keep every current published lesson, including later ones", () => {
+    publish("free", "FREE");
+    enrollInFreeCourse(db, { customerId: "student", courseSlug: "free" }, at.toISOString());
+    toPaid("free");
+    // Sale opening is out of scope here; the offer's mode is set directly so the non-enrolled answer is PURCHASE_REQUIRED.
+    db.exec("UPDATE offers SET sale_mode='PUBLIC' WHERE offer_ref='course:free'");
+    saveEditorialDraft(db, { expectedRevision: 1, actor: "control-room", document: {
+      courseRef: "free", title: "Course free", slug: "free", summary: "", visibility: "LISTED",
+      sections: [{ sectionRef: "free-s2", title: "Second", position: 1, visibility: "LISTED" },
+        { sectionRef: "free-s1", title: "First", position: 0, visibility: "LISTED" }],
+      lessons: [
+        { lessonRef: "free-l2", sectionRef: "free-s2", title: "Two", slug: "two", position: 0, visibility: "LISTED", freePreview: false },
+        { lessonRef: "free-l1", sectionRef: "free-s1", title: "One", slug: "one", position: 0, visibility: "LISTED", freePreview: false },
+        { lessonRef: "free-l3", sectionRef: "free-s2", title: "Three", slug: "three", position: 1, visibility: "LISTED", freePreview: false },
+      ],
+    } }, at.toISOString());
+    publishEditorialDraft(db, { courseRef: "free", expectedRevision: 2, expectedPublishedVersion: 1, idempotencyKey: "publish-free-2",
+      actor: "control-room" }, at.toISOString());
+    db.prepare("INSERT INTO lesson_video_bindings(lesson_ref,active_video_id,bound_at,updated_at) VALUES ('free-l3','free-l3-video',?,?)")
+      .run(at.toISOString(), at.toISOString());
+    expect(decision("free", "student", "l3")).toBe("ALLOW");
+    expect(decision("free", "other", "l3")).toBe("PURCHASE_REQUIRED");
+    expect(listCustomerLibrary(db, "student", at).courses[0]!.lessons.map(lesson => lesson.lessonRef)).toEqual(["free-l1", "free-l2", "free-l3"]);
+    // The usual restrictions still apply to the later lesson.
+    db.exec("UPDATE catalog_lesson_projection SET visibility='UNLISTED' WHERE lesson_ref='free-l3'");
+    expect(decision("free", "student", "l3")).toBe("DENY");
+    for (const table of NON_FINANCIAL) expect(count(table)).toBe(0);
+  });
+
   it("keeps a historical implicit enrollment valid without inventing a start fact", () => {
     publish("free", "FREE");
     // As an old playback grant recorded it before FLEX-128: enrollment only, no start row.
