@@ -20,7 +20,10 @@ const stubFetch = (fetcher: Fetcher, interestAvailable = true) => vi.stubGlobal(
   return response({ schema: "flexperiment.lab-showcase/1", sales: open ? { state: "OPEN", reason: null } : { state: "CLOSED", reason: "PAYMENTS_DISABLED" },
     interest: { available: interestAvailable, consent }, cities: model.cities,
     occurrences: model.occurrences.map((event: Record<string, unknown>) => {
-      const published = { ...event, sales: open ? "OPEN" : "CLOSED" }; delete published.offerRef; delete published.soldOut; return published;
+      const published: Record<string, unknown> = { ...event, sales: open ? "OPEN" : "CLOSED" };
+      delete published.offerRef;
+      delete published.soldOut;
+      return published;
     }) });
 });
 beforeEach(() => sessionStorage.clear());
@@ -46,6 +49,28 @@ describe("separate LAB V2 entrypoint", () => {
     stubFetch(vi.fn(async (path: string) => response(path === "/v1/me" ? { customer: null } : { ...catalogue, occurrences: [event] })));
     render(<LabV2Client />);await screen.findByText(event.title);expect(screen.getByRole("button", { name: "Продажи закрыты" })).toBeDisabled();
     expect(screen.getByText("Адрес сообщим участникам")).toBeInTheDocument();
+  });
+  it("shows the closed-sales showcase when the checkout catalogue and session are unavailable", async () => {
+    const event = {
+      occurrenceRef: "fixture-event", cityId: "nsk", title: "Открытая афиша LAB",
+      startsAt: "2026-12-01T10:00:00Z", endsAt: "2026-12-01T12:00:00Z", timezone: "Asia/Novosibirsk",
+      amountKopecks: 250000, currency: "RUB", venue: { status: "CONFIRMED", name: null, address: null }, sales: "CLOSED",
+    };
+    vi.stubGlobal("fetch", vi.fn(async (path: string) => path === "/v1/lab/showcase"
+      ? response({
+          schema: "flexperiment.lab-showcase/1", sales: { state: "CLOSED", reason: "STOREFRONT_CLOSED" },
+          interest: { available: true, consent }, cities: [{ cityId: "nsk", slug: "nsk", title: "Новосибирск" }],
+          occurrences: [event],
+        })
+      : response({ code: "UNAVAILABLE" }, 503)));
+
+    render(<LabV2Client />);
+
+    expect(await screen.findByText(event.title)).toBeInTheDocument();
+    expect(screen.getByText(/2\s*500,00\s*₽/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Продажи закрыты" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /предзапис/i })).toBeInTheDocument();
+    expect(screen.queryByLabelText("Email для билета и чека")).not.toBeInTheDocument();
   });
   it("shows a TBA disclosure and a sold-out occurrence without a buy action", async () => {
     const event = { occurrenceRef: "fixture-event", offerRef: "lab:fixture", cityId: "fixture", title: "Isolated sold-out fixture", startsAt: "2026-11-01T10:00:00Z", endsAt: "2026-11-01T12:00:00Z", timezone: "Europe/Moscow", amountKopecks: 12345, currency: "RUB",
