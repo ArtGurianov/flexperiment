@@ -1,3 +1,4 @@
+import { hasRequiredAccountConsents } from "./authenticated-consents";
 import { issueLabTicket, type LabAcceptance } from "./lab-tickets";
 import { assertLabPurchaseAuthority, recordLabPurchaseAcceptance } from "./lab-lifecycle";
 import { CheckoutConflictError } from "./checkout-conflict";
@@ -795,7 +796,7 @@ export async function prepareCheckout(
   config: CheckoutPolicyConfig,
   input: {
     customerId: string; customerEmail: string; offerRef: string; previewIdempotencyKey: string; scenario?: string;
-    handoffToken?: string; checkoutCode?: string; orderPublicId?: string; storefront?: Storefront; displayedAmountKopecks?: number; nativeMy?: boolean;
+    handoffToken?: string; checkoutCode?: string; orderPublicId?: string; storefront?: Storefront; displayedAmountKopecks?: number; nativeMy?: boolean; nativeMyAccountStorefront?: Storefront;
   } & ResolutionContext,
   now = new Date().toISOString(),
 ) {
@@ -837,6 +838,9 @@ export async function prepareCheckout(
   const lineRef = randomUUID();
   // New-quote admission and the intent's frozen facts, in one write transaction (design §2).
   const draft = db.transaction(() => {
+    if (input.nativeMy && !hasRequiredAccountConsents(db, input.customerId, input.nativeMyAccountStorefront)) {
+      throw new Error("CONSENT_REQUIRED");
+    }
     // A concurrent prepare may have committed while read-back was awaiting Refref.
     const existing = intentBy(db, "preview_idempotency_key", input.previewIdempotencyKey)
       ?? (input.orderPublicId ? intentBy(db, "order_public_id", input.orderPublicId) : undefined);
@@ -944,7 +948,7 @@ export async function confirmCheckout(
     legalAcceptance?: PaidCheckoutAcceptance;
     labAcceptance?: LabAcceptance;
     native?: NativeConfirm;
-    nativeMy?: boolean;
+    nativeMy?: boolean; nativeMyAccountStorefront?: Storefront;
   },
   now = new Date().toISOString(),
 ) {
@@ -1030,6 +1034,9 @@ export async function confirmCheckout(
     successUrl: input.successUrl,
   };
   const create = db.transaction(() => {
+    if (input.nativeMy && !hasRequiredAccountConsents(db, input.customerId, input.nativeMyAccountStorefront)) {
+      throw new Error("CONSENT_REQUIRED");
+    }
     // Final admission of the issued intent and the payment-safety checks, under the same write lock
     // as the order: a second process (CLI) cannot slip a change in between.
     const current = intentBy(db, "id", pending.id)!;

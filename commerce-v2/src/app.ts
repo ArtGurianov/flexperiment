@@ -1,3 +1,4 @@
+import { MY_CHECKOUT_RETURN_PATH } from "../../lib/my-checkout-intent";
 import { labGuestClientIp } from "./lab-guest-client-ip";
 import { receiveNativeCallback } from "./native-payment-callbacks";
 import { contourOfOrder, nativeConfirm, nativeOrderStatus, reconcileNativePaymentWithoutNewCharge, type NativeLedgerContext } from "./native-payment-ledger";
@@ -1059,7 +1060,7 @@ export function createCommerceV2App(deps: Dependencies) {
         return context.json({ code: "SESSION_AUDIENCE_FORBIDDEN" }, 403, noStore);
       }
       if (fromNativeMy && context.req.header("origin") !== origins.my) return context.json({ code: "ORIGIN_FORBIDDEN" }, 403, noStore);
-      if (fromNativeMy && offerOwner === "COURSES" && !hasRequiredAccountConsents(deps.db, customerId)) {
+      if (fromNativeMy && !hasRequiredAccountConsents(deps.db, customerId, deps.myOtp?.accountLegalStorefront)) {
         return context.json({ code: "CONSENT_REQUIRED" }, 403, noStore);
       }
       if (storefront && offerOwner && offerOwner !== storefront) throw new CheckoutConflictError("CHECKOUT_STOREFRONT_MISMATCH");
@@ -1091,6 +1092,7 @@ export function createCommerceV2App(deps: Dependencies) {
         orderPublicId,
         storefront: guest ? "LAB" : handoff?.storefront ?? storefront,
         nativeMy: fromNativeMy,
+        nativeMyAccountStorefront: deps.myOtp?.accountLegalStorefront,
         ...resolutionContext,
       }, now().toISOString());
       const kind = fromNativeMy ? deps.db.prepare(`SELECT product.kind FROM offers offer JOIN products product ON product.id=offer.product_id
@@ -1135,13 +1137,13 @@ export function createCommerceV2App(deps: Dependencies) {
       }
       if (deps.nativePayments && fromMy) {
         if (context.req.header("origin") !== origins.my) return context.json({ code: "ORIGIN_FORBIDDEN" }, 403, noStore);
-        if (typeof body.returnPath !== "string" || !/^\/checkout\/[A-Za-z0-9_-]{16,64}$/.test(body.returnPath)) {
+        if (typeof body.returnPath !== "string" || !MY_CHECKOUT_RETURN_PATH.test(body.returnPath)) {
           return context.json({ code: "CHECKOUT_RETURN_PATH_INVALID" }, 400, noStore);
         }
-        const quote = deps.db.prepare("SELECT order_public_id,storefront FROM checkout_quotes WHERE id=? AND customer_id=?")
-          .get(body.quoteId, customerId) as { order_public_id: string; storefront: "COURSES" | "LAB" } | undefined;
+        const quote = deps.db.prepare("SELECT order_public_id FROM checkout_quotes WHERE id=? AND customer_id=?")
+          .get(body.quoteId, customerId) as { order_public_id: string } | undefined;
         if (!quote) return context.json({ code: "CHECKOUT_QUOTE_NOT_FOUND" }, 404, noStore);
-        if (quote.storefront === "COURSES" && !hasRequiredAccountConsents(deps.db, customerId)) {
+        if (!hasRequiredAccountConsents(deps.db, customerId, deps.myOtp?.accountLegalStorefront)) {
           return context.json({ code: "CONSENT_REQUIRED" }, 403, noStore);
         }
         nativeReturn = new URL(body.returnPath, origins.my);
@@ -1161,6 +1163,7 @@ export function createCommerceV2App(deps: Dependencies) {
         legalAcceptance: body.legalAcceptance,
         labAcceptance: body.labAcceptance,
         nativeMy: Boolean(deps.nativePayments && fromMy),
+        nativeMyAccountStorefront: deps.myOtp?.accountLegalStorefront,
         ...(deps.nativePayments ? { native: nativeConfirm(deps.db, deps.nativePayments) } : {}),
       }, now().toISOString());
       if (guest && result.state === "PAID" && deps.sendLabTicketEmail) {

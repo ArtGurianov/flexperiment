@@ -336,7 +336,7 @@ Exact allowlists (fixture `return-targets.json`, regexes are normative):
 | Where | Accepted | Refused |
 | --- | --- | --- |
 | LMS `next` / `return_path` | `^/courses/[a-z0-9-]{1,80}(/lessons/[a-z0-9-]{1,120})?$` and `^/account$` (cabinet landing on LMS until FLEX-127 decides) | anything with scheme, `//`, `\`, `%2f`/`%5c` (any case), `..`, query, fragment, control chars, `/auth/*`, `/v1/*`, `/arrive`, > 256 chars |
-| my `next` after OTP | `^/$`, `^/continue\?tx=[A-Za-z0-9_-]{22}$`, `^/orders$`, `^/profile$`, `^/courses$`, `^/tickets$` (FLEX-123), `^/checkout/[A-Za-z0-9_-]{16,64}$` (C/D intent ids) | same refusals; any absolute URL |
+| my `next` after OTP | `^/$`, `^/continue\?tx=[A-Za-z0-9_-]{22}$`, `^/orders$`, `^/profile$`, `^/courses$`, `^/tickets$` (FLEX-123), `^/checkout/[A-Za-z0-9_-]{12,100}$` (C/D intent ids) | same refusals; any absolute URL |
 | Exchange redirect from my | always `PLATFORM_ORIGIN + /auth/lms/redeem` (constant, not data) | — |
 | Redeem result | `return_path` stored at start, relative | never an absolute URL |
 

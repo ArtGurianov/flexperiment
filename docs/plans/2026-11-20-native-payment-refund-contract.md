@@ -77,8 +77,11 @@ metadata. A provider fact without that metadata cannot be bound, so it goes to r
 Deadlines. A LAB seat hold and the quote deadline (the 15 minutes from `checkout_quotes`) limit
 when a payment may be **started**. They never decide its outcome. When a hold expires while the
 payment is still `PENDING` or `CREATE_UNKNOWN`, the seat stays committed (existing
-`lab-occurrences.ts` semantics: an uncertain payment never loses its seat). It is released only by
-`RELEASE_HOLD` after a terminal provider fact. The provider payment link must expire no later than
+`lab-occurrences.ts` semantics: an uncertain payment never loses its seat). A terminal provider fact can
+release the hold. The integrated 0043 migration also records a durable dispatch marker. Commerce can
+expire a staged order and release its hold when dispatch is forbidden and the marker still proves no
+handoff began. For legacy rows and rows that may have crossed the provider boundary, the hold remains
+subject to authoritative read-back, with an operations alert when a stopped order remains unknown. The provider payment link must expire no later than
 the hold deadline (provider qualification item Q3).
 
 ## 4. Callback intake

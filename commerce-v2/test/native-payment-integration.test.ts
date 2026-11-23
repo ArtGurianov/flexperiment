@@ -1,4 +1,4 @@
-import { beginLabOccurrenceCancellation } from "../src/lab-lifecycle";
+import { beginLabOccurrenceCancellation, completeLabOccurrenceCancellation } from "../src/lab-lifecycle";
 import Database from "better-sqlite3";
 import { scryptSync } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -7,6 +7,7 @@ import { controlRoomIntegrationSummary } from "../src/control-room";
 import { confirmCheckout, prepareCheckout, type PaymentRail } from "../src/checkout";
 import { migrateV2 } from "../src/db";
 import { loadCommerceOrigins } from "../src/origins";
+import { recordAuthenticatedConsents } from "../src/authenticated-consents";
 import { legalManifestHash } from "../src/legal-control";
 import { confirmSyntheticAccount } from "./fixtures/confirmed-account";
 import { applyCourseManifest, withManifestHash } from "../src/manifest";
@@ -17,8 +18,9 @@ import { nativePaymentsFromConfig } from "../src/native-payment-runtime";
 import { CommerceConfigurationError, loadCommerceRuntimeConfig } from "../src/payment-mode";
 import { decideRefund, requestRefund } from "../src/refunds";
 import { enrolledTotp, testTotpKey } from "./fixtures/control-room-totp";
-import { stageALegalManifestJson, stageBLegalManifest, stageBLegalManifestJson } from "./fixtures/legal";
+import { stageALegalManifest, stageALegalManifestJson, stageBLegalManifest, stageBLegalManifestJson } from "./fixtures/legal";
 import { confirmLabBuyer, labAcceptanceFor } from "./fixtures/lab-purchase";
+import { encodeIntentId } from "../../lib/my-checkout-intent";
 import { FakeNativeBank } from "./fixtures/native-fake-provider";
 import { openTestStorefront, qualifyTestFiscalPolicy, setTestStorefronts, withTestStorefrontSwitch } from "./fixtures/sales";
 
@@ -202,9 +204,9 @@ describe("native checkout confirm and callback route (FLEX-119)", () => {
     };
     expect(await confirmCheckout(db, rail, config, { customerId: "customer", customerEmail: "student@example.com",
       quoteId: prepared.quoteId, idempotencyKey: "confirm-stop", native: { ...hook, dispatch },
-    }, "2026-09-30T10:01:00Z")).toMatchObject({ state: "CREATING" });
+    }, "2026-09-30T10:01:00Z")).toMatchObject({ state: "EXPIRED" });
     await reconcilePendingNativePayments(db, { ...ledger, now: () => "2026-09-30T10:10:00.000Z" });
-    expect(db.prepare("SELECT state,last_reason FROM native_payments").get()).toEqual({ state: "CREATE_UNKNOWN", last_reason: "PAYMENT_INITIATION_STOPPED" });
+    expect(db.prepare("SELECT state,last_reason FROM native_payments").get()).toEqual({ state: "EXPIRED", last_reason: "PAYMENT_NOT_DISPATCHED" });
     expect(bank.calls.create).toHaveLength(0);
   });
 
@@ -409,7 +411,62 @@ describe("owner directive v4.8 item 4: COURSES=OPEN, LAB=CLOSED, PAYMENT_MODE=na
     expect(db.prepare("SELECT consumed_at FROM checkout_quotes").get()).toEqual({ consumed_at: null });
   });
 
-  it("reconciles an outstanding order without creating a new charge after LAB cancellation starts", async () => {
+  it("requires the current MY account agreement throughout LAB checkout and keeps the purchase acceptance separate", async () => {
+    setTestStorefronts(db, { LAB: "OPEN" });
+    const my = "https://my.flexperiment.test";
+    const origins = { ...loadCommerceOrigins({}), my };
+    const app = createCommerceV2App({ db, config, origins, myIdentity: { mode: "on", origins },
+      sourceCommit: "a".repeat(40), serviceToken: "synthetic", paymentRail: rail, nativePayments: ledger(),
+      authenticateCustomer: async () => "customer", now: () => new Date("2026-09-30T10:01:00Z") });
+    const post = (path: string, body: unknown, key: string) => app.request(path, { method: "POST",
+      headers: { "x-forwarded-host": new URL(my).host, origin: my, "content-type": "application/json", "idempotency-key": key },
+      body: JSON.stringify(body) });
+    const preview = (key: string) => post("/v1/checkout/preview", { offerRef: "lab:a" }, key);
+    const missing = await preview("lab-no-consent");
+    expect([missing.status, await missing.json()]).toEqual([403, { code: "CONSENT_REQUIRED" }]);
+    expect(sideEffects()).toEqual(none);
+
+    confirmSyntheticAccount(db, "customer");
+    const accepted = await preview("lab-consented");
+    expect(accepted.status, await accepted.clone().text()).toBe(200);
+    const { quoteId } = await accepted.json() as { quoteId: string };
+    const confirm = (key: string, includeLabAcceptance = true) => post("/v1/checkout", {
+      quoteId, returnPath: `/checkout/${encodeIntentId("lab:a")}`,
+      ...(includeLabAcceptance ? { labAcceptance: labAcceptanceFor(db) } : {}),
+    }, key);
+    db.prepare("UPDATE legal_releases SET active=0 WHERE id='legal-COURSES'").run();
+    db.prepare(`INSERT INTO legal_releases(id,storefront,version,manifest_json,effective_at,active)
+      VALUES ('legal-courses-v2','COURSES','v2',?,'2026-09-30T00:00:00Z',1)`).run(stageALegalManifestJson);
+
+    const stale = await confirm("lab-stale-consent");
+    expect([stale.status, await stale.json()]).toEqual([403, { code: "CONSENT_REQUIRED" }]);
+    expect((await preview("lab-stale-preview")).status).toBe(403);
+    expect(sideEffects()).toEqual({ ...none, quotes: 1 });
+
+    recordAuthenticatedConsents(db, "customer", { storefront: "COURSES", releaseVersion: "v2",
+      manifestSha256: legalManifestHash(stageALegalManifest), actionKey: "my-v2-confirmed-consents",
+      personalDataConsent: true, accountTermsAccepted: true, marketingConsent: false });
+    const noAcceptance = await confirm("lab-no-purchase-acceptance", false);
+    expect(await noAcceptance.json()).toEqual(expect.objectContaining({ code: "LAB_CONSENT_REQUIRED" }));
+    expect(sideEffects()).toEqual({ ...none, quotes: 1 });
+    const paid = await confirm("lab-current-consent");
+    expect(paid.status, await paid.clone().text()).toBe(201);
+    expect(bank.calls.create).toHaveLength(1);
+  });
+
+  it("honours an effective quote when only the LAB offer is closed", async () => {
+    setTestStorefronts(db, { LAB: "OPEN" });
+    const prepared = await prepareCheckout(db, rail, config, { customerId: "customer", customerEmail: "student@example.com",
+      offerRef: "lab:a", previewIdempotencyKey: "soft-close-preview", storefront: "LAB" }, "2026-09-30T10:00:00Z");
+    if (prepared.state !== "PRICE_REVIEW_REQUIRED") throw new Error("expected a quote");
+    db.prepare("UPDATE offers SET sale_mode='CLOSED' WHERE id='offer-lab'").run();
+    await expect(confirmCheckout(db, rail, config, { customerId: "customer", customerEmail: "student@example.com",
+      quoteId: prepared.quoteId, idempotencyKey: "soft-close-confirm", labAcceptance: labAcceptanceFor(db), native: nativeConfirm(db, ledger()),
+    }, "2026-09-30T10:01:00Z")).resolves.toMatchObject({ state: "PENDING" });
+    expect(bank.calls.create).toHaveLength(1);
+  });
+
+  it("completes cancellation for an order that never reached the provider", async () => {
     setTestStorefronts(db, { LAB: "OPEN" });
     const prepared = await prepareCheckout(db, rail, config, { customerId: "customer", customerEmail: "student@example.com",
       offerRef: "lab:a", previewIdempotencyKey: "cancel-lab", storefront: "LAB" }, "2026-09-30T10:00:00Z");
@@ -422,11 +479,39 @@ describe("owner directive v4.8 item 4: COURSES=OPEN, LAB=CLOSED, PAYMENT_MODE=na
     };
     await expect(confirmCheckout(db, rail, config, { customerId: "customer", customerEmail: "student@example.com",
       quoteId: prepared.quoteId, idempotencyKey: "confirm-cancel-lab", labAcceptance: labAcceptanceFor(db), native: { ...hook, dispatch },
-    }, "2026-09-30T10:01:00Z")).resolves.toMatchObject({ state: "CREATING" });
+    }, "2026-09-30T10:01:00Z")).resolves.toMatchObject({ state: "EXPIRED" });
     await reconcilePendingNativePayments(db, { ...fixed, now: () => "2026-09-30T10:10:00Z" });
-    expect(bank.calls.readPayment).toBeGreaterThan(0);
+    expect(bank.calls.readPayment).toBe(0);
     expect(bank.calls.create).toHaveLength(0);
-    expect(db.prepare("SELECT state FROM native_payments").get()).toEqual({ state: "CREATE_UNKNOWN" });
+    expect(db.prepare("SELECT state, dispatch_started FROM native_payments").get()).toEqual({ state: "EXPIRED", dispatch_started: 0 });
+    expect(completeLabOccurrenceCancellation(db, { occurrenceRef: "occ-1", actor: "owner" }, () => "NATIVE",
+      "2026-09-30T10:11:00Z")).toMatchObject({ state: "COMPLETED", obligations: [] });
+  });
+
+  it("retains a possibly dispatched payment for reconciliation and reports the stopped replay", async () => {
+    setTestStorefronts(db, { LAB: "OPEN" });
+    const prepared = await prepareCheckout(db, rail, config, { customerId: "customer", customerEmail: "student@example.com",
+      offerRef: "lab:a", previewIdempotencyKey: "ambiguous-lab", storefront: "LAB" }, "2026-09-30T10:00:00Z");
+    if (prepared.state !== "PRICE_REVIEW_REQUIRED") throw new Error("expected a quote");
+    let now = "2026-09-30T10:01:00Z";
+    const fixed = { ...ledger(), now: () => now };
+    // The merchant cannot tell whether the bank received this attempt. Pause the first read-back so
+    // cancellation can start before the sweep receives NOT_FOUND.
+    bank.faults.create.push("LOSE_BEFORE_COMMIT");
+    bank.faults.readPayment.push("UNAVAILABLE");
+    await expect(confirmCheckout(db, rail, config, { customerId: "customer", customerEmail: "student@example.com",
+      quoteId: prepared.quoteId, idempotencyKey: "confirm-ambiguous-lab", labAcceptance: labAcceptanceFor(db), native: nativeConfirm(db, fixed),
+    }, now)).resolves.toMatchObject({ state: "CREATE_UNKNOWN" });
+    now = "2026-09-30T10:10:00Z";
+    beginLabOccurrenceCancellation(db, { occurrenceRef: "occ-1", actor: "owner", reason: "Synthetic cancellation" }, now);
+    for (let index = 0; index < 3; index += 1) await reconcilePendingNativePayments(db, fixed);
+    expect(bank.calls.create).toHaveLength(1);
+    expect(bank.calls.readPayment).toBe(4);
+    expect(db.prepare("SELECT state, dispatch_started FROM native_payments").get()).toEqual({ state: "CREATE_UNKNOWN", dispatch_started: 1 });
+    expect(db.prepare("SELECT count(*) AS n FROM audit_log WHERE action='NATIVE_PAYMENT_REVIEW_REQUIRED'").get()).toEqual({ n: 1 });
+    expect(db.prepare("SELECT count(*) AS n FROM native_payment_observations WHERE reason='PAYMENT_INITIATION_STOPPED'").get()).toEqual({ n: 1 });
+    expect(() => completeLabOccurrenceCancellation(db, { occurrenceRef: "occ-1", actor: "owner" }, () => "NATIVE", now))
+      .toThrow("LAB_CANCELLATION_OPEN_PAYMENTS");
   });
 
   it("the public LAB catalogue is served under native, while LAB sales stay refused server-side", async () => {

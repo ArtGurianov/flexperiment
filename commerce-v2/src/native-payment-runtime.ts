@@ -20,12 +20,12 @@ export function nativePaymentsFromConfig(db: Database.Database, config: Commerce
   if (!keyring) throw new Error("REFUND_ENVELOPE_KEYS_REQUIRED");
   if (config.deployEnvironment !== "local" && config.deployEnvironment !== "test") throw new Error("NATIVE_FAKE_PROVIDER_FORBIDDEN");
   const issuedQuote = db.prepare("SELECT storefront_open_since FROM checkout_quotes WHERE order_public_id=? AND consumed_at IS NOT NULL");
+  // The native-only source branch can run before the LAB cancellation migration is present.
   const hasLabCancellation = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='lab_occurrence_cancellations'").get();
   const eligibleLabOffer = db.prepare(`SELECT 1 FROM checkout_quotes quote JOIN offers offer ON offer.id=quote.offer_id
     JOIN products product ON product.id=offer.product_id JOIN lab_occurrences occurrence ON occurrence.occurrence_ref=product.occurrence_ref
     WHERE quote.order_public_id=? AND quote.consumed_at IS NOT NULL AND product.kind='LAB'
       AND product.withdrawn_at IS NULL AND occurrence.lifecycle='SCHEDULED'
-      AND offer.sale_mode IN ('PUBLIC','ACCEPTANCE_ONLY') AND offer.sale_mode=quote.sale_mode_at_quote
       ${hasLabCancellation
         ? "AND NOT EXISTS (SELECT 1 FROM lab_occurrence_cancellations c WHERE c.occurrence_ref=occurrence.occurrence_ref)" : ""}`);
   const mayInitiate = (kind: ProductKind, orderPublicId: string) => {

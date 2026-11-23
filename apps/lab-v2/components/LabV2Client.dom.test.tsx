@@ -44,8 +44,10 @@ describe("separate LAB V2 entrypoint", () => {
     render(<LabV2Client />);await screen.findByRole("alert");
     expect(fetcher.mock.calls).toHaveLength(3);expect(fetcher.mock.calls.every(([path]) => !path.includes("/public/"))).toBe(true);
   });
-  it("starts a native LAB purchase in MY using the displayed offer", async () => {
-    const event = { occurrenceRef: "fixture", offerRef: "lab:fixture-event", cityId: "fixture", title: "Native event",
+  it.each([
+    "lab:fixture-event", "lab:one", "lab:workshop-advanced-conditioning-novosibirsk-november",
+  ])("starts a native LAB purchase in MY for %s", async (offerRef) => {
+    const event = { occurrenceRef: "fixture", offerRef, cityId: "fixture", title: "Native event",
       startsAt: "2026-11-01T10:00:00Z", endsAt: "2026-11-01T12:00:00Z", timezone: "Europe/Moscow", amountKopecks: 12345, currency: "RUB",
       venue: { status: "CONFIRMED", name: null, address: null }, soldOut: false };
     const load = vi.fn(async (path: string) => response(path === "/v1/me" ? { customer: null }
@@ -53,7 +55,7 @@ describe("separate LAB V2 entrypoint", () => {
     stubFetch(load);
     render(<LabV2Client myOrigin="https://my.example.test" />);
     const checkout = await screen.findByRole("link", { name: "Купить билет" });
-    expect(checkout).toHaveAttribute("href", "https://my.example.test/checkout/offerbGFiOmZpeHR1cmUtZXZlbnQ?type=lab");
+    expect(checkout).toHaveAttribute("href", `https://my.example.test/checkout/offer${Buffer.from(offerRef).toString("base64url")}?type=lab`);
     expect(screen.queryByLabelText("Email для билета и чека")).not.toBeInTheDocument();
     expect(load.mock.calls.some(([path]) => path.startsWith("/v1/checkout"))).toBe(false);
   });

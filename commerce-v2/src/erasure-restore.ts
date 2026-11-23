@@ -50,6 +50,8 @@ const REVIEWED_SCHEMA_SHA256 = new Set([
   "e76bc6d055caaeb356ab43fe96ab9766484fbd1fef165431a685236da5bb228a",
   // 0038–0042: MY, native payments and LAB lifecycle on top of the showcase schema.
   "260e9e4e7d342587d89acad72ad5c38d4c83ede762b6afe5e4827483b71daa4d",
+  // 0043: irreversible native payment handoff marker.
+  "a9b1238f3188fd74e87d86edef9774887a4d23f728e24ab8337eb0060f889150",
 ]);
 export function assertReviewedRestoreSchema(db: Database.Database) {
   const schema = db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").all();

@@ -1,3 +1,4 @@
+import { MY_CHECKOUT_RETURN_PATH } from "../../lib/my-checkout-intent";
 import { createHash, timingSafeEqual } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { Context, Next } from "hono";
@@ -166,7 +167,7 @@ export function sessionAudienceGuard(config: MyIdentityConfig) {
 /** §7 exact return-target allowlists (fixture return-targets.json is normative). Invalid ⇒ default. */
 const RETURN_TARGETS: Readonly<Record<"MY" | "LMS", readonly RegExp[]>> = {
   LMS: [/^\/courses\/[a-z0-9-]{1,80}(?:\/lessons\/[a-z0-9-]{1,120})?$/, /^\/account$/],
-  MY: [/^\/$/, /^\/continue\?tx=[A-Za-z0-9_-]{22}$/, /^\/orders$/, /^\/profile$/, /^\/courses$/, /^\/tickets$/, /^\/checkout\/[A-Za-z0-9_-]{16,64}$/],
+  MY: [/^\/$/, /^\/continue\?tx=[A-Za-z0-9_-]{22}$/, /^\/orders$/, /^\/profile$/, /^\/courses$/, /^\/tickets$/, MY_CHECKOUT_RETURN_PATH],
 };
 export function validReturnTarget(surface: "MY" | "LMS", value: unknown): string {
   return typeof value === "string" && value.length <= 256 && RETURN_TARGETS[surface].some(rule => rule.test(value)) ? value : "/";

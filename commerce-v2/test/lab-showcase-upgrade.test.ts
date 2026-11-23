@@ -29,8 +29,26 @@ it("upgrades the exact showcase migration prefix and preserves interest and noti
     const before = interestRows();
     const journal = () => db.prepare("SELECT * FROM schema_migrations ORDER BY version").all();
     const prefix = journal();
+    const previousLock = JSON.parse(readFileSync(join(source, "migration.lock"), "utf8"));
+    for (const [name, hash] of Object.entries(previousLock.migrations as Record<string, string>)) {
+      if (Number(name.slice(0, 4)) > 42) continue;
+      copyFileSync(join(source, name), join(directory, name));
+      lock.migrations[name] = hash;
+    }
+    writeFileSync(join(directory, "migration.lock"), JSON.stringify(lock));
+    migrateV2(db, directory);
+    db.exec(`INSERT INTO customers (id,email_normalized) VALUES ('legacy-buyer','legacy@example.test');
+      INSERT INTO legal_releases (id,storefront,version,manifest_json,effective_at) VALUES ('legacy-legal','COURSES','synthetic','{}','2026-11-22');
+      INSERT INTO orders (id,public_id,customer_id,state,total_kopecks,checkout_snapshot_json,snapshot_hash,legal_release_id,created_at,updated_at)
+      VALUES ('legacy-order','legacy-order','legacy-buyer','PAYMENT_PENDING',100,'{}','${"a".repeat(64)}','legacy-legal','2026-11-22','2026-11-22');
+      INSERT INTO native_payments (id,order_id,payment_ref,idempotency_key,amount_kopecks,snapshot_hash,state,created_at,updated_at)
+      VALUES ('legacy-payment','legacy-order','legacy-payment','legacy-key',100,'${"a".repeat(64)}','CREATING','2026-11-22','2026-11-22');`);
 
     migrateV2(db);
+    expect(db.prepare("SELECT state, dispatch_started FROM native_payments WHERE id='legacy-payment'").get())
+      .toEqual({ state: "CREATING", dispatch_started: 1 });
+    expect(() => db.prepare("UPDATE native_payments SET dispatch_started=0 WHERE id='legacy-payment'").run())
+      .toThrow("NATIVE_PAYMENT_DISPATCH_ALREADY_STARTED");
     expect(interestRows()).toEqual(before);
     expect(journal().slice(0, prefix.length)).toEqual(prefix);
     expect(assertReviewedRestoreSchema(db)).toBeUndefined();

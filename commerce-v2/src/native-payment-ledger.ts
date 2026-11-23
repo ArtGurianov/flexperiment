@@ -3,7 +3,7 @@ import type Database from "better-sqlite3";
 import { grantEntitlement } from "./entitlements";
 import { issueLabTicket } from "./lab-tickets";
 import {
-  admitErasure, applyPaymentObservation, beginPayment, buyerPaymentStatus, buyerRefundStatus, fiscalEventRef, paymentKeys, paymentReceiptMethod,
+  admitErasure, applyPaymentObservation, buyerPaymentStatus, buyerRefundStatus, fiscalEventRef, paymentKeys, paymentReceiptMethod,
   routeContour, type FiscalEventState, type FiscalizationMode, type NativePaymentState, type NativeRefundState, type PaymentDecision,
   type PaymentObservation, type ProductKind,
 } from "./native-payment-contract";
@@ -58,6 +58,7 @@ export type NativePaymentRow = {
   id: string; order_id: string; payment_ref: string; idempotency_key: string; amount_kopecks: number; snapshot_hash: string;
   state: NativePaymentState; provider_payment_id: string | null; payment_url: string | null; request_envelope: string | null;
   envelope_key_id: string | null; created_at: string; updated_at: string;
+  dispatch_started: 0 | 1; last_reason: string | null;
 };
 const paymentById = (db: Database.Database, id: string) => db.prepare("SELECT * FROM native_payments WHERE id=?").get(id) as NativePaymentRow | undefined;
 const paymentOfOrder = (db: Database.Database, orderId: string) =>
@@ -113,7 +114,7 @@ function stageNativePayment(db: Database.Database, ctx: NativeLedgerContext, ord
     };
     const sealed = sealPayload(ctx.keyring, "native-payment-envelope", id, request);
     db.prepare(`INSERT INTO native_payments(id,order_id,payment_ref,idempotency_key,amount_kopecks,snapshot_hash,state,request_envelope,
-      envelope_key_id,created_at,updated_at) VALUES (?,?,?,?,?,?,'CREATING',?,?,?,?)`)
+      envelope_key_id,created_at,updated_at,dispatch_started) VALUES (?,?,?,?,?,?,'CREATING',?,?,?,?,0)`)
       .run(id, order.order_id, keys.paymentRef, keys.idempotencyKey, order.total_kopecks, order.snapshot_hash, sealed.sealed, sealed.keyId, now, now);
     return { payment: paymentById(db, id)!, created: true };
   }).immediate();
@@ -123,8 +124,7 @@ async function dispatchNativePayment(db: Database.Database, ctx: NativeLedgerCon
   const order = orderContext(db, orderPublicId);
   const payment = order && paymentOfOrder(db, order.order_id);
   if (!order || !payment) throw new Error("NATIVE_PAYMENT_NOT_FOUND");
-  const start = beginPayment({ mayInitiate: ctx.mayInitiate(order.kind, orderPublicId) });
-  if (payment.state === "CREATING" && start.effects.includes("PROVIDER_CREATE")) await sendCreate(db, ctx, payment.id);
+  if (payment.state === "CREATING") await sendCreate(db, ctx, payment.id);
   const current = paymentById(db, payment.id)!;
   return { orderPublicId, state: current.state, paymentUrl: current.payment_url };
 }
@@ -144,14 +144,53 @@ export async function startNativePayment(db: Database.Database, ctx: NativeLedge
 type ReplayBudget = { replays: number };
 const replayBudget = (): ReplayBudget => ({ replays: 1 });
 
-async function sendCreate(db: Database.Database, ctx: NativeLedgerContext, paymentId: string, budget: ReplayBudget = replayBudget()) {
-  const row = paymentById(db, paymentId)!;
-  if (!row.request_envelope || !row.envelope_key_id) throw new Error("NATIVE_PAYMENT_ENVELOPE_MISSING");
-  const request = openPayload<FrozenNativePaymentRequest>(ctx.keyring, "native-payment-envelope", row.envelope_key_id, row.id, row.request_envelope);
+/** Called under the merchant write lock. A timeout or NOT_FOUND can never establish this fact. */
+function expireUnsent(db: Database.Database, order: OrderContext, payment: NativePaymentRow, now: string) {
+  if (payment.dispatch_started !== 0 || payment.state !== "CREATING" || payment.provider_payment_id !== null) return false;
+  db.prepare(`UPDATE native_payments SET state='EXPIRED',last_reason='PAYMENT_NOT_DISPATCHED',request_envelope=NULL,
+    envelope_purged_at=?,updated_at=? WHERE id=?`).run(now, now, payment.id);
+  db.prepare("UPDATE orders SET state='EXPIRED',updated_at=? WHERE id=? AND state='PAYMENT_PENDING'").run(now, order.order_id);
+  db.prepare(`UPDATE checkout_quotes SET state='EXPIRED',updated_at=? WHERE order_public_id=? AND consumed_at IS NOT NULL AND state<>'PAID'`)
+    .run(now, order.public_id);
+  auditNative(db, "NATIVE_PAYMENT_NOT_DISPATCHED", "ORDER", order.public_id, { paymentRef: payment.payment_ref }, now);
+  return true;
+}
+
+async function sendCreate(db: Database.Database, ctx: NativeLedgerContext, paymentId: string, budget: ReplayBudget = replayBudget(), replay = false) {
+  const request = db.transaction(() => {
+    const row = paymentById(db, paymentId)!;
+    if (row.state !== "CREATING" && row.state !== "CREATE_UNKNOWN") return undefined;
+    if ((row.dispatch_started === 1) !== replay || (replay && !ctx.provider.replayGuarantees.payment)) return undefined;
+    const order = orderOfPayment(db, row);
+    if (!ctx.mayInitiate(order.kind, order.public_id)) {
+      expireUnsent(db, order, row, clock(ctx));
+      return undefined;
+    }
+    if (!row.request_envelope || !row.envelope_key_id) throw new Error("NATIVE_PAYMENT_ENVELOPE_MISSING");
+    const frozen = openPayload<FrozenNativePaymentRequest>(ctx.keyring, "native-payment-envelope", row.envelope_key_id, row.id, row.request_envelope);
+    // Commit before the provider call. A crash after this write has an ambiguous outcome.
+    if (!replay) db.prepare("UPDATE native_payments SET dispatch_started=1,updated_at=? WHERE id=?").run(clock(ctx), row.id);
+    return frozen;
+  }).immediate();
+  if (!request) return;
+  // Hand off while cancellation and storefront changes are serialized by the write lock.
+  // Only the handoff is synchronous. The already-committed dispatch marker survives either outcome.
+  const handoff = db.transaction(() => {
+    const row = paymentById(db, paymentId)!;
+    if (row.state !== "CREATING" && row.state !== "CREATE_UNKNOWN") return undefined;
+    const order = orderOfPayment(db, row);
+    if (!ctx.mayInitiate(order.kind, order.public_id)) return undefined;
+    try {
+      return { response: ctx.provider.createPayment(request) };
+    } catch (error) {
+      return { response: Promise.reject(error) };
+    }
+  }).immediate();
+  if (!handoff) return;
   let observation: PaymentObservation;
   let paymentUrl: string | undefined;
   try {
-    const answer = await ctx.provider.createPayment(request);
+    const answer = await handoff.response;
     observation = answer.outcome === "ACCEPTED"
       ? { source: "CREATE_RESPONSE", outcome: "ACCEPTED", providerPaymentId: answer.providerPaymentId }
       : { source: "CREATE_RESPONSE", outcome: "REFUSED", code: answer.code };
@@ -194,7 +233,7 @@ export async function driveNativePayment(db: Database.Database, ctx: NativeLedge
       if (!ctx.mayInitiate(order.kind, order.public_id)) return decision;
       if (!ctx.provider.replayGuarantees.payment || budget.replays <= 0) return decision;
       budget.replays -= 1;
-      await sendCreate(db, ctx, paymentId, budget);
+      await sendCreate(db, ctx, paymentId, budget, true);
       return { ...decision, effects: [] };
     }
     if (!decision.effects.includes("READ_BACK")) return decision;
@@ -212,6 +251,9 @@ export function applyNativePaymentObservation(db: Database.Database, ctx: Native
     const payment = paymentById(db, paymentId);
     if (!payment) throw new Error("NATIVE_PAYMENT_NOT_FOUND");
     const order = orderOfPayment(db, payment);
+    if (payment.dispatch_started === 0 && observation.source === "READ_BACK" && observation.outcome === "NOT_FOUND") {
+      return { state: payment.state, providerPaymentId: payment.provider_payment_id, effects: [] } satisfies PaymentDecision;
+    }
     const decision = applyPaymentObservation({ state: payment.state, providerPaymentId: payment.provider_payment_id },
       { merchantOrderRef: order.public_id, amountKopecks: payment.amount_kopecks, currency: "RUB", snapshotHash: payment.snapshot_hash },
       observation, { mayInitiate: ctx.mayInitiate(order.kind, order.public_id), kind: order.kind, fiscalizationMode: ctx.fiscalizationMode });
@@ -227,7 +269,11 @@ export function applyNativePaymentObservation(db: Database.Database, ctx: Native
       request_envelope=CASE WHEN ? THEN NULL ELSE request_envelope END,
       envelope_purged_at=CASE WHEN ? AND request_envelope IS NOT NULL THEN ? ELSE envelope_purged_at END WHERE id=?`)
       .run(decision.state, decision.providerPaymentId, decision.reason ?? null, now, boundUrl, terminal ? 1 : 0, terminal ? 1 : 0, now, payment.id);
-    db.prepare(`INSERT INTO native_payment_observations(id,native_payment_id,source,observation_json,decided_state,reason,observed_at)
+    const stoppedUnknown = decision.state === "CREATE_UNKNOWN" && decision.reason === "PAYMENT_INITIATION_STOPPED";
+    if (stoppedUnknown && payment.last_reason !== decision.reason) {
+      auditNative(db, "NATIVE_PAYMENT_REVIEW_REQUIRED", "ORDER", order.public_id, { reason: decision.reason }, now);
+    }
+    if (!stoppedUnknown || payment.last_reason !== decision.reason) db.prepare(`INSERT INTO native_payment_observations(id,native_payment_id,source,observation_json,decided_state,reason,observed_at)
       VALUES (?,?,?,?,?,?,?)`).run(randomUUID(), payment.id, observation.source, JSON.stringify(observation), decision.state, decision.reason ?? null, now);
     const item = order.fiscal_item_json ? fiscalItemOf(order) : undefined;
     for (const effect of decision.effects) {
@@ -276,6 +322,7 @@ export async function reconcileNativePaymentWithoutNewCharge(db: Database.Databa
   const order = orderContext(db, orderPublicId);
   const payment = order && paymentOfOrder(db, order.order_id);
   if (!payment) throw new Error("NATIVE_PAYMENT_NOT_FOUND");
+  if (db.transaction(() => expireUnsent(db, order, paymentById(db, payment.id)!, clock(ctx))).immediate()) return;
   await driveNativePayment(db, { ...ctx, mayInitiate: () => false }, payment.id,
     { state: payment.state, providerPaymentId: payment.provider_payment_id, effects: ["READ_BACK"] });
 }
@@ -284,13 +331,15 @@ export async function reconcileNativePaymentWithoutNewCharge(db: Database.Databa
 export async function reconcilePendingNativePayments(db: Database.Database, ctx: NativeLedgerContext) {
   const now = clock(ctx);
   const rows = db.prepare(`SELECT id FROM native_payments WHERE state IN ('CREATE_UNKNOWN','PENDING')
-      OR (state='CREATING' AND julianday(?) - julianday(created_at) >= ? / 86400000.0)
+      OR (state='CREATING' AND julianday(?) - julianday(updated_at) >= ? / 86400000.0)
     ORDER BY updated_at LIMIT 100`).all(now, NATIVE_CREATING_UNANSWERED_AFTER_MS) as { id: string }[];
   let reconciled = 0;
   let failed = 0;
   for (const { id } of rows) {
     try {
-      await driveNativePayment(db, ctx, id, { state: paymentById(db, id)!.state, providerPaymentId: null, effects: ["READ_BACK"] });
+      const payment = paymentById(db, id)!;
+      if (payment.dispatch_started === 0 && payment.state === "CREATING") await sendCreate(db, ctx, id);
+      else await driveNativePayment(db, ctx, id, { state: payment.state, providerPaymentId: null, effects: ["READ_BACK"] });
       reconciled += 1;
     } catch {
       failed += 1;

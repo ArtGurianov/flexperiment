@@ -1,5 +1,6 @@
 "use client";
 
+import { validMyReturnTarget } from "@/lib/return-targets";
 import { useEffect, useState, type FormEvent } from "react";
 
 /** FLEX-120 sign-in on my: e-mail → code. All calls are same-origin `/v1/my/*`; the browser never
@@ -132,7 +133,7 @@ export default function SignInForm({ next, captchaSiteKey, onlyConsent = false }
     const recorded = await recordConsents().catch(() => "CONSENT_WRITE_UNCONFIRMED");
     if (recorded !== "OK") { setError(message(recorded)); setBusy(false); return; }
     // `next` is re-validated by Commerce; only a local my path comes back.
-    window.location.assign(typeof payload.next === "string" && payload.next.startsWith("/") && !payload.next.startsWith("//") ? payload.next : "/");
+    window.location.assign(validMyReturnTarget(payload.next));
   }
 
   if (release === undefined) return <p>Загрузка…</p>;

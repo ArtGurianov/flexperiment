@@ -8,7 +8,10 @@ import buyerStates from "./fixtures/checkout/buyer-states.c-34131eb9.json";
 import { MemoryStorage, MY } from "./checkout-harness";
 
 describe("intent id", () => {
-  it.each(["course:one", "course:test-course", "lab:november", "lab:2026-11-01", "bundle:all-courses"])("round-trips %s and fits B §7", (offerRef) => {
+  it.each([
+    "course:one", "course:test-course", "course:" + "x".repeat(63), "bundle:all-courses",
+    "lab:a", "lab:one", "lab:2026-11-01", "lab:workshop-advanced-conditioning-novosibirsk-november",
+  ])("round-trips %s and fits B §7", (offerRef) => {
     const id = encodeIntentId(offerRef)!;
     expect(id).toMatch(INTENT_ID);
     expect(decodeIntentId(id)).toBe(offerRef);
@@ -21,7 +24,7 @@ describe("intent id", () => {
     expect(decodeIntentId("offer" + Buffer.from("evil:thing").toString("base64url"))).toBeNull();
     expect(decodeIntentId("offer" + Buffer.from("course:one").toString("base64url") + "A")).toBeNull();
     expect(decodeIntentId("../../etc/passwd")).toBeNull();
-    expect(encodeIntentId("lab:" + "x".repeat(60))).toBeNull();
+    expect(encodeIntentId("lab:" + "x".repeat(64))).toBeNull();
     expect(encodeIntentId("course:Bad Ref")).toBeNull();
   });
 
