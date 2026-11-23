@@ -4,6 +4,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { classifyV2Database } from "./db";
 import { assertErasureSubjectKey, erasurePseudonym, ErasureLedgerError, VerifiedErasureLedger, type ErasureKeys } from "./erasure-ledger";
 import { DrainedErasureRuntime } from "./erasure-fence";
+import { hasTable, verificationSubjectEmail } from "./my-session-storage";
 
 // Exact reviewed 0001–0025, 0001–0026 and 0001–0027 schemas. Migration 0026 adds only
 // Control Room authored course content/history, with no customer FK or subject
@@ -42,9 +43,11 @@ const REVIEWED_SCHEMA_SHA256 = new Set([
   // 0035: owner storefront-switch observations (no subject data), the quote's opening generation in
   // checkout_quotes, and sales_activation frozen as history; no new identity store. Hashed journal.
   "6ef1be23e4d713fa77e81a1cb0391fcb1292d18634b3d2270751bec6ab58a728",
-  // FLEX-128 (local 0036, coordinator reserve 0037): course_learning_starts, a subject-linked nonfinancial
+  // FLEX-128 (0036): course_learning_starts, a subject-linked nonfinancial
   // start fact written only with an explicit FREE enrollment. Erased with the subject; kept by retention.
   "f0b2205a43d7a733a96cbc3b40f7b57e4850dc0f8082dfc5449f1a95bee21e13",
+  // 0037: MY and derived LMS credentials, exchange state and OTP outbox. Hashed journal.
+  "35df100cb8733fba2583d4a63ec83ee597a8c9708e265d57590c64f42d75f5af",
 ]);
 export function assertReviewedRestoreSchema(db: Database.Database) {
   const schema = db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").all();
@@ -114,6 +117,8 @@ function applyErasure(db: Database.Database, ledger: VerifiedErasureLedger, keys
           ...users.filter(user => matches("email", user.email)).map(user => user.email.trim().toLocaleLowerCase("en-US")),
           ...(db.prepare("SELECT DISTINCT recipient_normalized FROM auth_email_outbox").all() as Array<{ recipient_normalized: string }>)
             .filter(row => matches("email", row.recipient_normalized)).map(row => row.recipient_normalized),
+          ...(hasTable(db, "my_otp_outbox") ? db.prepare("SELECT DISTINCT recipient_normalized FROM my_otp_outbox").all() as Array<{ recipient_normalized: string }> : [])
+            .filter(row => matches("email", row.recipient_normalized)).map(row => row.recipient_normalized),
         ]);
         for (const email of emails) {
           db.prepare(`INSERT INTO email_suppressions(email_normalized,reason,created_at,removed_at) VALUES (?,'INDEPENDENT_ERASURE_LEDGER',?,NULL)
@@ -165,11 +170,12 @@ function applyErasure(db: Database.Database, ledger: VerifiedErasureLedger, keys
           db.prepare('DELETE FROM "user" WHERE id=?').run(user.id);
         }
         for (const email of emails) db.prepare("DELETE FROM auth_email_outbox WHERE recipient_normalized=?").run(email);
+        if (hasTable(db, "my_otp_outbox")) for (const email of emails) db.prepare("DELETE FROM my_otp_outbox WHERE recipient_normalized=?").run(email);
         if(!resetAllCredentials) {
-          for(const row of db.prepare("SELECT id,value FROM verification").all() as Array<{id:string;value:string}>) {
-            let value:unknown; try {value=JSON.parse(row.value);} catch {throw new ErasureLedgerError("ERASURE_VERIFICATION_UNCLASSIFIED");}
-            if(!value || typeof value!=="object" || typeof (value as {email?:unknown}).email!=="string") throw new ErasureLedgerError("ERASURE_VERIFICATION_UNCLASSIFIED");
-            if(matches("email",(value as {email:string}).email)) db.prepare("DELETE FROM verification WHERE id=?").run(row.id);
+          for(const row of db.prepare("SELECT id,identifier,value FROM verification").all() as Array<{id:string;identifier:string;value:string}>) {
+            const email = verificationSubjectEmail(row);
+            if(email===null) throw new ErasureLedgerError("ERASURE_VERIFICATION_UNCLASSIFIED");
+            if(matches("email",email)) db.prepare("DELETE FROM verification WHERE id=?").run(row.id);
           }
         }
       }
@@ -178,6 +184,8 @@ function applyErasure(db: Database.Database, ledger: VerifiedErasureLedger, keys
       // Better Auth 1.7.6 stores hashed token identifiers + JSON {email,name} value.
       if(resetAllCredentials) {
         db.exec('DELETE FROM "session"; DELETE FROM verification;');
+        // FLEX-121: cascades already remove issued exchanges and LMS sessions; STARTED rows have no session.
+        if (hasTable(db, "session_exchanges")) db.exec("DELETE FROM lms_sessions; DELETE FROM session_exchanges;");
         if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='lab_guest_access'").get()) {
           db.exec("DELETE FROM lab_ticket_recoveries; UPDATE lab_tickets SET qr_sha256=NULL;");
           for (const row of db.prepare("SELECT order_public_id FROM lab_guest_access").all() as Array<{order_public_id:string}>) {

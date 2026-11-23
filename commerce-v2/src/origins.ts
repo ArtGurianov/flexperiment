@@ -5,6 +5,8 @@ export type CommerceOrigins = {
   readonly lab: string;
   readonly admin: string;
   readonly api: string;
+  /** FLEX-120: present only when `MY_ORIGIN` is configured; absent means no MY surface. */
+  readonly my?: string;
 };
 
 type Environment = Readonly<Record<string, string | undefined>>;
@@ -27,12 +29,18 @@ export function loadCommerceOrigins(environment: Environment = process.env): Com
     if (requireExplicit && !value) throw new Error(`${name}_REQUIRED`);
     return origin(value ?? fallback, name, requireHttps);
   };
-  return {
+  const origins: CommerceOrigins = {
     platform: configured("PLATFORM_ORIGIN", "http://localhost:3001"),
     lab: configured("LAB_ORIGIN", "http://localhost:3000"),
     admin: configured("ADMIN_ORIGIN", "http://localhost:3000"),
     api: configured("API_ORIGIN", "http://localhost:3002"),
   };
+  // Additive and optional: without MY_ORIGIN the returned object is unchanged.
+  const my = environment.MY_ORIGIN?.trim();
+  if (!my) return origins;
+  const parsed = origin(my, "MY_ORIGIN", requireHttps);
+  if (Object.values(origins).includes(parsed)) throw new Error("MY_ORIGIN_INVALID");
+  return { ...origins, my: parsed };
 }
 
 export const storefrontOrigin = (origins: CommerceOrigins, storefront: Storefront) =>

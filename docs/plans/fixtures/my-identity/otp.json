@@ -1,0 +1,27 @@
+{
+  "schema": "flexperiment.my-identity.otp/1",
+  "plugin": { "package": "better-auth", "version": "1.7.6", "name": "emailOTP",
+    "options": { "otpLength": 6, "expiresIn": 600, "allowedAttempts": 5, "storeOTP": "hashed", "resendStrategy": "rotate", "disableSignUp": false } },
+  "limits": { "resendCooldownSeconds": 60, "perEmail15Min": 3, "perEmail24h": 10, "sendPerIpPerMinute": 5, "verifyPerIpPerMinute": 10 },
+  "verificationRowShape": { "identifier": "^sign-in-otp-(.+)$", "value": "^[A-Za-z0-9_-]{43}:\\d{1,2}$", "subjectEmailFrom": "identifier group 1" },
+  "sendOrder": ["assertRegistrationChoices", "smartCaptcha", "perIpLimit", "legalRelease", "erasureFence", "perEmailThrottle", "recordUnverifiedAccountIntent", "pluginSend"],
+  "cases": [
+    { "name": "new address", "request": { "email": "new@example.test" }, "response": { "status": 202, "body": { "status": "CODE_SENT_IF_ALLOWED", "resendAfterSeconds": 60 } }, "mailSent": true },
+    { "name": "existing address", "request": { "email": "known@example.test" }, "response": { "status": 202, "body": { "status": "CODE_SENT_IF_ALLOWED", "resendAfterSeconds": 60 } }, "mailSent": true },
+    { "name": "erasure-fenced address", "request": { "email": "erased@example.test" }, "response": { "status": 202, "body": { "status": "CODE_SENT_IF_ALLOWED", "resendAfterSeconds": 60 } }, "mailSent": false },
+    { "name": "per-email throttle", "request": { "email": "known@example.test", "precondition": "3 sends in 15 min" }, "response": { "status": 202, "body": { "status": "CODE_SENT_IF_ALLOWED", "resendAfterSeconds": 60 } }, "mailSent": false },
+    { "name": "consent missing", "request": { "personalDataConsent": false }, "response": { "status": 422, "body": { "code": "PERSONAL_DATA_CONSENT_REQUIRED" } }, "persisted": false },
+    { "name": "captcha rejected", "request": { "captchaToken": "bad" }, "response": { "status": 422, "body": { "code": "SMARTCAPTCHA_REJECTED" } }, "persisted": false },
+    { "name": "stale legal edition", "request": { "accountTermsVersion": "old" }, "response": { "status": 422, "body": { "code": "LEGAL_RELEASE_STALE" } }, "persisted": false },
+    { "name": "per-ip limit", "response": { "status": 429, "body": { "code": "RATE_LIMITED" } } },
+    { "name": "wrong origin", "request": { "origin": "https://flexperiment.ru" }, "response": { "status": 403, "body": { "code": "ORIGIN_FORBIDDEN" } } },
+    { "name": "verify ok, first sign-in", "endpoint": "verify", "response": { "status": 200, "body": { "accountCreated": true, "next": "/" }, "setCookie": "MY" } },
+    { "name": "verify ok, returning", "endpoint": "verify", "response": { "status": 200, "body": { "accountCreated": false, "next": "/continue?tx=AAAAAAAAAAAAAAAAAAAAAA" }, "setCookie": "MY", "customerId": "unchanged" } },
+    { "name": "verify wrong code", "endpoint": "verify", "response": { "status": 400, "body": { "code": "OTP_INVALID_OR_EXPIRED" } } },
+    { "name": "verify expired code", "endpoint": "verify", "response": { "status": 400, "body": { "code": "OTP_INVALID_OR_EXPIRED" } } },
+    { "name": "verify after 5 wrong attempts", "endpoint": "verify", "response": { "status": 403, "body": { "code": "TOO_MANY_ATTEMPTS" } } },
+    { "name": "verify replay of used code", "endpoint": "verify", "response": { "status": 400, "body": { "code": "OTP_INVALID_OR_EXPIRED" } } },
+    { "name": "verify while another account signed in", "endpoint": "verify", "effect": "previous MY session row deleted (cascade LMS + exchanges) before the new cookie is set" }
+  ],
+  "neverLogged": ["email", "otp", "session token", "exchange code", "exchange state"]
+}

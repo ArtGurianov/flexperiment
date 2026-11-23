@@ -1,7 +1,10 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import { betterAuth } from "better-auth";
-import { magicLink } from "better-auth/plugins";
+import { emailOTP, magicLink } from "better-auth/plugins";
+import type { MyOtpEmail } from "./auth-email-delivery";
+import { createSessionResolver, loadMyIdentityConfig, type BetterAuthSession, type MyIdentityConfig } from "./my-session";
 import { bindVerifiedAuthUser, customerIdForAuthUser, getOrCreateCustomer, recordUnverifiedAccountIntent, type ConsentInput } from "./customers";
 import { currentLegalRelease } from "./legal-control";
 import { loadCommerceOrigins, storefrontOrigin, type Storefront } from "./origins";
@@ -16,7 +19,15 @@ export type AuthRuntimeDependencies = {
   readonly sendMagicLinkEmail: (message: MagicLinkEmail) => Promise<void>;
   readonly environment?: AuthEnvironment;
   readonly erasureFence?: ErasureRuntimeFence;
+  /** FLEX-120: MY sign-in code transport. Without it MY OTP sending fails closed. */
+  readonly sendMyOtpEmail?: (message: MyOtpEmail) => Promise<void>;
+  /** FLEX-120: defaults to `MY_IDENTITY_MODE` / `MY_ORIGIN` from the environment (mode `off`). */
+  readonly myIdentity?: MyIdentityConfig;
 };
+
+/** Set only by the MY OTP verify wrapper; the session-create hook stamps `audience='MY'` from it. */
+export const myAuthScope = new AsyncLocalStorage<{ readonly surface: "MY" }>();
+export const MY_OTP = { length: 6, expiresInSeconds: 600, allowedAttempts: 5 } as const;
 
 const required = (environment: AuthEnvironment, name: string) => {
   const value = environment[name]?.trim();
@@ -56,7 +67,8 @@ export function createAuthRuntime(dependencies: AuthRuntimeDependencies) {
   const secret = production ? required(environment, "BETTER_AUTH_SECRET") : environment.BETTER_AUTH_SECRET ?? "development-better-auth-secret-change-me";
   const origins = loadCommerceOrigins(environment);
   const baseURL = origins.api;
-  const trustedOrigins = [origins.platform, origins.lab, origins.api];
+  const myIdentity = dependencies.myIdentity ?? loadMyIdentityConfig(environment, origins);
+  const trustedOrigins = [origins.platform, origins.lab, origins.api, ...(origins.my ? [origins.my] : [])];
   const key = encryptionKey(environment, secret);
 
   const auth = betterAuth({
@@ -72,6 +84,8 @@ export function createAuthRuntime(dependencies: AuthRuntimeDependencies) {
         expiresAt: "expires_at", createdAt: "created_at", updatedAt: "updated_at",
         ipAddress: "ip_address", userAgent: "user_agent", userId: "user_id",
       },
+      // FLEX-120: written only by the session-create hook below; never client input.
+      additionalFields: { audience: { type: "string", required: false, input: false } },
     },
     account: {
       fields: {
@@ -82,7 +96,29 @@ export function createAuthRuntime(dependencies: AuthRuntimeDependencies) {
     },
     verification: { fields: { expiresAt: "expires_at", createdAt: "created_at", updatedAt: "updated_at" } },
     rateLimit: { enabled: true, window: 60, max: 100 },
-    plugins: [magicLink({
+    plugins: [emailOTP({
+      // FLEX-120: called only server-side by my-session-otp.ts; the public /v1/auth router refuses its paths.
+      otpLength: MY_OTP.length, expiresIn: MY_OTP.expiresInSeconds, allowedAttempts: MY_OTP.allowedAttempts,
+      storeOTP: "hashed", resendStrategy: "rotate", disableSignUp: false,
+      sendVerificationOTP: async ({ email, otp, type }) => {
+        if (type !== "sign-in") throw new Error("MY_OTP_TYPE_REFUSED");
+        const normalized = email.trim().toLocaleLowerCase("en-US");
+        dependencies.erasureFence?.assertIdentity({ email: normalized }, "AUTH_MAIL");
+        const id = randomUUID();
+        dependencies.db.prepare("INSERT INTO my_otp_outbox(id,recipient_normalized,state) VALUES (?,?,'PENDING')").run(id, normalized);
+        try {
+          if (!dependencies.sendMyOtpEmail) throw new Error("AUTH_EMAIL_NOT_CONFIGURED");
+          const send = dependencies.sendMyOtpEmail;
+          if (dependencies.erasureFence) await dependencies.erasureFence.send(normalized, () => send({ email: normalized, code: otp }), "AUTH_MAIL");
+          else await send({ email: normalized, code: otp });
+          dependencies.db.prepare("UPDATE my_otp_outbox SET state='SENT',attempt_count=1,updated_at=CURRENT_TIMESTAMP WHERE id=?").run(id);
+        } catch (error) {
+          dependencies.db.prepare("UPDATE my_otp_outbox SET state='FAILED',attempt_count=1,last_error=?,updated_at=CURRENT_TIMESTAMP WHERE id=?")
+            .run(dependencies.erasureFence ? "ERASURE_FENCED_EMAIL_FAILED" : error instanceof Error && /^[A-Z0-9_]{1,64}$/.test(error.message) ? error.message : "EMAIL_SEND_FAILED", id);
+          throw error;
+        }
+      },
+    }), magicLink({
       expiresIn: 10 * 60,
       rateLimit: { window: 60, max: 5 },
       storeToken: "hashed",
@@ -122,8 +158,23 @@ export function createAuthRuntime(dependencies: AuthRuntimeDependencies) {
       },
       session: {create: {before: async session=>{
         dependencies.erasureFence?.assertIdentity({userId:session.userId},"ACCOUNT");
+        // FLEX-120: only the MY OTP verify wrapper creates MY sessions; everything else stays LEGACY.
+        if (myIdentity.mode === "on" && myAuthScope.getStore()?.surface === "MY") return { data: { ...session, audience: "MY" } };
       }}},
     },
+  });
+
+  // Exactly today's resolution; mode `off` uses it verbatim (equivalence is tested route by route).
+  async function legacyAuthenticateCustomer(headers: Headers) {
+    const session = await auth.api.getSession({ headers });
+    if (!session?.user.id) return null;
+    dependencies.erasureFence?.assertIdentity({email:session.user.email,userId:session.user.id},"ACCOUNT");
+    return customerIdForAuthUser(dependencies.db, session.user.id);
+  }
+  const resolver = createSessionResolver({
+    db: dependencies.db, config: myIdentity, legacyAuthenticate: legacyAuthenticateCustomer,
+    getSession: async (headers) => await auth.api.getSession({ headers }) as BetterAuthSession | null,
+    assertIdentity: (identity) => dependencies.erasureFence?.assertIdentity(identity, "ACCOUNT"),
   });
 
   return {
@@ -167,12 +218,10 @@ export function createAuthRuntime(dependencies: AuthRuntimeDependencies) {
       };
       recordUnverifiedAccountIntent(dependencies.db, customer.id, consent);
     },
-    async authenticateCustomer(headers: Headers) {
-      const session = await auth.api.getSession({ headers });
-      if (!session?.user.id) return null;
-      dependencies.erasureFence?.assertIdentity({email:session.user.email,userId:session.user.id},"ACCOUNT");
-      return customerIdForAuthUser(dependencies.db, session.user.id);
-    },
+    authenticateCustomer: resolver.authenticateCustomer,
+    resolveSession: resolver.resolve,
+    legacyAuthenticateCustomer,
+    myIdentity,
     outboxKey: key,
   };
 }

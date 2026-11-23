@@ -1,0 +1,14 @@
+{
+  "schema": "flexperiment.my-identity.legacy-links/1",
+  "recipient": "FLEX-127 (A integrates apps/platform)",
+  "modeOff": "Stage A unchanged (FLEX-128 acceptance)",
+  "modeOn": [
+    { "request": "GET https://flexperiment.ru/account", "response": { "status": 303, "location": "https://my.flexperiment.ru/" } },
+    { "request": "GET https://flexperiment.ru/account?next=/courses/flex-basics/lessons/intro", "response": { "status": 303, "location": "/auth/lms/start?next=%2Fcourses%2Fflex-basics%2Flessons%2Fintro" } },
+    { "request": "GET https://flexperiment.ru/account?next=https://evil.example/", "response": { "status": 303, "location": "https://my.flexperiment.ru/" } },
+    { "request": "GET https://flexperiment.ru/account?next=/v1/me", "response": { "status": 303, "location": "https://my.flexperiment.ru/" } },
+    { "request": "GET https://flexperiment.ru/v1/auth/magic-link/verify?token=<old>&callbackURL=/courses/flex-basics", "response": { "status": 410, "code": "MAGIC_LINK_RETIRED", "offers": "Войти через my → /auth/lms/start?next=%2Fcourses%2Fflex-basics" } },
+    { "request": "GET https://flexperiment.ru/courses/flex-basics/lessons/intro with LEGACY session only", "response": { "navigates": "/auth/lms/start?next=%2Fcourses%2Fflex-basics%2Flessons%2Fintro" }, "customerIdAfterOtp": "same as Stage A (e-mail binding unchanged)" },
+    { "request": "GET https://flexperiment.ru/courses/flex-basics (public page) with no session", "response": { "status": 200, "navigates": null } }
+  ]
+}

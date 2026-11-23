@@ -37,6 +37,7 @@
     "0033_lab_seat_holds.sql": "aace5461504487ad00da50d1fbf6f0dbe7514a1aadfe2e9910a6f9f8958e7391",
     "0034_browser_contexts.sql": "b7bd54cad4fc6882f0e91ec2237a2d3429678679d8f7489a723ce15fde270d80",
     "0035_storefront_switch.sql": "7b6ff1ab0127eb50e6c4db5bf2ee6fe87a611279785ec829fc65616e4668af58",
-    "0036_free_enrollment_learning_starts.sql": "97909ae9bd9f01152c8b6159c56f8a384680e1ddaab92377efae560caa1b019f"
+    "0036_free_enrollment_learning_starts.sql": "97909ae9bd9f01152c8b6159c56f8a384680e1ddaab92377efae560caa1b019f",
+    "0037_my_identity_sessions.sql": "83fe904ecb08e9669ef616ac93e2448d7c206e0b0e52f56dfbd2b098652d14d9"
   }
 }
