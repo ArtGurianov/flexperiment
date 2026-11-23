@@ -6,6 +6,7 @@ import { BROWSER_CONTEXT_COOKIES, BrowserContexts, cleanArrivalTarget, loadBrows
 import { MockPaymentRail, type PaymentResolveInput } from "../src/checkout";
 import { migrateV2 } from "../src/db";
 import { loadCommerceOrigins } from "../src/origins";
+import type { AccountSessionScope } from "../src/shared-account-routes";
 import {
   RefrefArrivalExchange, type ArrivalClaimInput, type ArrivalClaimOutcome, type ArrivalExchange, type ContextCloseOutcome,
 } from "../src/refref-arrival-exchange";
@@ -57,13 +58,15 @@ const build = (options: { enabled?: boolean; withExchange?: boolean } = {}) => {
   tasks = new AfterResponseTasks();
   contexts = new BrowserContexts({ db, origins, config, exchange: options.withExchange === false ? undefined : exchange,
     now: () => clock, schedule: (task) => tasks.schedule(task), alert: (code) => alerts.push(code) });
+  const authenticateCustomer = vi.fn(async (headers: Headers, _scope?: AccountSessionScope) => headers.get("x-test-customer"));
   app = createCommerceV2App({
     db, config: testCheckoutConfig, serviceToken: "synthetic", sourceCommit: "a".repeat(40), paymentRail: rail, origins,
-    now: () => clock, authenticateCustomer: async (headers) => headers.get("x-test-customer"),
+    now: () => clock, authenticateCustomer,
     authHandler: async () => new Response(JSON.stringify({ success: true }), { status: 200,
       headers: { "content-type": "application/json", "set-cookie": "flx.session=; Path=/; Max-Age=0" } }),
     ...(options.enabled === false ? {} : { browserContexts: contexts }),
   });
+  return authenticateCustomer;
 };
 const advance = (ms: number) => { clock = new Date(clock.getTime() + ms); };
 
@@ -239,6 +242,26 @@ describe("30-minute exchange and retry on later same-context requests", () => {
     expect(exchange.claims).toHaveLength(2);
     expect(exchange.claims[1]).toEqual(exchange.claims[0]);
     expect(arrivals()[0]).toMatchObject({ state: "CONFIRMED", attempts: 2, arrival_proof: null });
+  });
+
+  it("reuses the final registered route for the after-response account check", async () => {
+    const authenticateCustomer = build();
+    exchange.script.push({ kind: "UNKNOWN", code: "TRANSPORT" });
+    const browser = new Browser(PLATFORM, "A");
+    await browser.arrive(PROOF);
+    await tasks.drain();
+    expect(contextRow(browser.context()!)).toMatchObject({ bound_customer_id: "A" });
+    expect(exchange.claims).toHaveLength(1);
+
+    authenticateCustomer.mockClear();
+    advance(3_000);
+    await browser.get("/v1/me/courses/course-one");
+    await tasks.drain();
+
+    const scope = { method: "GET", route: "/v1/me/courses/:slug" };
+    // First lookup is in the handler, second is in the middleware after await next().
+    expect(authenticateCustomer.mock.calls.map(([, usedScope]) => usedScope)).toEqual([scope, scope]);
+    expect(exchange.claims).toHaveLength(2);
   });
 
   it("retries on a platform page view through the touch hook, rate-limited and single-flight", async () => {
