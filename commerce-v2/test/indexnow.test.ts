@@ -6,9 +6,12 @@ const KEY = "a1b2c3d4e5f60718";
 let db: Database.Database;
 beforeEach(() => {
   db = new Database(":memory:");
-  // Only the column the notifier reads; the real projection is created by migrateV2.
-  db.exec("CREATE TABLE catalog_course_projection (course_ref TEXT PRIMARY KEY, slug TEXT)");
-  db.prepare("INSERT INTO catalog_course_projection VALUES ('course-one','one'),('course-draft',NULL)").run();
+  db.exec(`
+    CREATE TABLE catalog_course_projection (course_ref TEXT PRIMARY KEY, slug TEXT, version INTEGER, visibility TEXT);
+    CREATE TABLE products (course_ref TEXT, kind TEXT, withdrawn_at TEXT);
+    INSERT INTO catalog_course_projection VALUES ('course-one','one',1,'LISTED'),('course-draft',NULL,1,'UNLISTED');
+    INSERT INTO products VALUES ('course-one','ONLINE_COURSE',NULL);
+  `);
 });
 
 const enabled = { INDEXNOW_ENABLED: "true", INDEXNOW_KEY: KEY };
@@ -45,9 +48,36 @@ describe("IndexNow notifier", () => {
       host: "flexperiment.ru", key: KEY, keyLocation: "https://flexperiment.ru/indexnow-key.txt",
       urlList: ["https://flexperiment.ru/courses/one"],
     });
+    await flush();
     advance(10 * 60_000 + 1);
     notify!("course-one");
     expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it("submits publish, unlist, relist and withdrawal inside one dedupe window", () => {
+    const { notify, fetcher } = notifier();
+    notify!("course-one");
+    db.exec("UPDATE catalog_course_projection SET version=2,visibility='UNLISTED' WHERE course_ref='course-one'");
+    notify!("course-one");
+    db.exec("UPDATE catalog_course_projection SET version=3,visibility='LISTED' WHERE course_ref='course-one'");
+    notify!("course-one");
+    db.exec("UPDATE products SET withdrawn_at='2026-11-23T00:00:00Z' WHERE course_ref='course-one'");
+    notify!("course-one");
+    notify!("course-one");
+    expect(fetcher).toHaveBeenCalledTimes(4);
+  });
+
+  it.each([429, 500])("records HTTP %s as a failure and accepts a later notification for that state", async (status) => {
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(null, { status }))
+      .mockResolvedValueOnce(new Response(null, { status: 202 }));
+    const { notify, log } = notifier({ fetcher });
+    notify!("course-one");
+    await flush();
+    expect(log.mock.calls).toEqual([[{ event: "indexnow.failed", courseRef: "course-one", status }]]);
+    notify!("course-one");
+    await flush();
+    expect(log).toHaveBeenLastCalledWith({ event: "indexnow.sent", courseRef: "course-one", status: 202 });
   });
 
   it("ignores unknown, slugless or absent courses", async () => {

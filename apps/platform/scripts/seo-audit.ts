@@ -7,7 +7,7 @@
  * is reached on a loopback port. A path suffixed
  * with `:noindex` must carry `noindex`; every other path must be indexable. Exits 1 on any issue.
  */
-import { auditRenderedPage, auditRobots } from "../lib/seo-audit";
+import { auditRenderedPage, auditRobots, renderedOgImages } from "../lib/seo-audit";
 
 async function main(argv: string[]) {
   const [base, ...rest] = argv;
@@ -27,14 +27,16 @@ async function main(argv: string[]) {
 
   for (const entry of paths) {
     const [path, flag] = entry.split(":");
-    const response = await fetch(new URL(path, base), { redirect: "manual" });
+    // Next sends blocking metadata in <head> to HTML-limited crawlers.
+    const response = await fetch(new URL(path, base), { redirect: "manual", headers: { "user-agent": "Twitterbot" } });
     if (response.status !== 200) { issues.push(`${path}: HTTP ${response.status}`); continue; }
     const url = new URL(path, origin ?? base).toString();
     const html = await response.text();
     issues.push(...auditRenderedPage(html, { url, indexable: flag !== "noindex" }).map((issue) => `${path}: ${issue}`));
     // Read-back: a same-origin og:image must actually be served by this build as WebP.
-    for (const match of html.matchAll(/<meta property="og:image" content="([^"]+)"/g)) {
-      const image = new URL(match[1]);
+    for (const source of renderedOgImages(html)) {
+      const image = URL.parse(source);
+      if (!image) continue; // auditRenderedPage reports malformed URLs.
       if (image.origin !== new URL(origin ?? base).origin) continue;
       const served = await fetch(new URL(image.pathname, base), { redirect: "manual" });
       await served.arrayBuffer();
