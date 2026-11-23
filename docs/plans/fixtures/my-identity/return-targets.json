@@ -86,7 +86,7 @@
       "^/profile$",
       "^/courses$",
       "^/tickets$",
-      "^/checkout/[A-Za-z0-9_-]{12,100}$"
+      "^/checkout/[A-Za-z0-9_-]{12,228}$"
     ],
     "maxLength": 256,
     "default": "/",

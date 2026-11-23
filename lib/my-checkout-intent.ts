@@ -1,14 +1,15 @@
-/** FLEX-122: the checkout intent id in `/checkout/<id>` (contract B §7: `^/checkout/[A-Za-z0-9_-]{12,100}$`).
+/** FLEX-122: the checkout intent id in `/checkout/<id>` (contract B §7: `^/checkout/[A-Za-z0-9_-]{12,228}$`).
  *
  * The id is stateless: `offer` + base64url(offerRef). It carries only the buyer's choice of offer, so a
  * forged or edited id can at most name another offer. Commerce derives the storefront, price, documents
  * and rights from the offer and its own state (`storefrontForOffer`), never from this id or `?type=`.
  * Nothing is created server-side by opening the page: no order, LAB seat hold or payment before a
  * MY-session preview. */
-export const INTENT_ID = /^[A-Za-z0-9_-]{12,100}$/;
-export const MY_CHECKOUT_RETURN_PATH = /^\/checkout\/[A-Za-z0-9_-]{12,100}$/;
+export const INTENT_ID = /^[A-Za-z0-9_-]{12,228}$/;
+export const MY_CHECKOUT_RETURN_PATH = /^\/checkout\/[A-Za-z0-9_-]{12,228}$/;
 const PREFIX = "offer";
-const OFFER_REF = /^(?:course:[a-z0-9][a-z0-9-]{0,62}|lab:[A-Za-z0-9][A-Za-z0-9._-]{0,62}|bundle:all-courses)$/;
+// Room for course commercial refs of 160 characters and LAB occurrence refs of 128 characters.
+const OFFER_REF = /^(?:course:[A-Za-z0-9:_-]{1,160}|lab:[A-Za-z0-9][A-Za-z0-9:._-]{0,127}|bundle:all-courses)$/;
 
 const toBase64Url = (bytes: Uint8Array) => {
   let binary = "";
