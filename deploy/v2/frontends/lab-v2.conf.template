@@ -32,6 +32,22 @@ server {
         include /etc/nginx/v2/proxy.conf;
         proxy_pass http://$commerce_upstream;
     }
+    location = /v1/lab/showcase {
+        if ($request_method != GET) { return 405; }
+        include /etc/nginx/v2/proxy.conf;
+        proxy_pass http://$commerce_upstream;
+    }
+    location = /v1/lab/interest {
+        if ($request_method != POST) { return 405; }
+        include /etc/nginx/v2/lab-guest-source-gate.conf;
+        include /etc/nginx/v2/proxy.conf;
+        proxy_pass http://$commerce_upstream;
+    }
+    location ~ ^/v1/lab/interest/(confirm|withdraw)$ {
+        if ($request_method != POST) { return 405; }
+        include /etc/nginx/v2/proxy.conf;
+        proxy_pass http://$commerce_upstream;
+    }
     location ~ ^/v1/lab/guest/(start|recover)$ {
         include /etc/nginx/v2/lab-guest-source-gate.conf;
         include /etc/nginx/v2/proxy.conf;

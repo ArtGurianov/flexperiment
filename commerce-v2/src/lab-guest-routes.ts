@@ -12,6 +12,7 @@ export const labBearer = (context: Context) => context.req.header("authorization
 export function registerLabGuestRoutes(parent: Hono, deps: {
   db: Database.Database; origin: string; now: () => Date;
   requestSource: (context: Context) => string | undefined;
+  canStartGuest: () => boolean;
   authenticateCustomer?: (headers: Headers) => Promise<string | null>;
   sendLabTicketEmail?: (message: LabTicketEmail) => Promise<void>;
   erasureFence?: ErasureRuntimeFence;
@@ -37,6 +38,7 @@ export function registerLabGuestRoutes(parent: Hono, deps: {
     deps.erasureFence?.assertIdentity({ email }, "AUTH_MAIL");
     const source = deps.requestSource(c);
     if (!source) return c.json({ code: "LAB_SOURCE_UNAVAILABLE" }, 503, noStore);
+    if (!deps.canStartGuest()) return c.json({ code: "LAB_SALES_CLOSED" }, 409, noStore);
     // Charge the trusted source first, so rotating email/token cannot allocate unlimited buckets/sessions.
     if (!consumeLabLimit(deps.db, "start-source", source, 30, time)
       || !consumeLabLimit(deps.db, "start-source-email", JSON.stringify([source, email]), 10, time)) {

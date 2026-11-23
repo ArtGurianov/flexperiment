@@ -67,6 +67,8 @@ const supportedSchemaSha256 = new Set([
   // FLEX-128 (local 0036, coordinator reserve 0037): course_learning_starts, a subject-linked nonfinancial
   // start fact written only with an explicit FREE enrollment. Erased with the subject; kept by retention.
   "f0b2205a43d7a733a96cbc3b40f7b57e4850dc0f8082dfc5449f1a95bee21e13",
+  // 0037: LAB interest, notice history and purpose-specific suppression. Hashed journal.
+  "e76bc6d055caaeb356ab43fe96ab9766484fbd1fef165431a685236da5bb228a",
 ]);
 const parse = <T>(schema: z.ZodType<T>, value: unknown): T => {
   const result = schema.safeParse(value); return result.success ? result.data : refuse("RETENTION_POLICY_OR_HOLD_INVALID");
