@@ -402,6 +402,24 @@ class FrontendProxy(unittest.TestCase):
     def guest_counts(self):
         return json.loads(self.request("lab-v2", "/v1/lab/catalogue?guest-counts=1")[2])
 
+    def test_lab_showcase_and_interest_routes_are_same_origin_and_method_scoped(self):
+        showcase = "/v1/lab/showcase"
+        interest = "/v1/lab/interest"
+        status, _, body = self.request("lab-v2", showcase)
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["url"], showcase)
+        self.assertEqual(self.request("lab-v2", showcase, body=b'{}')[0], 405)
+        self.assertEqual(self.request("lab-v2", interest, body=b'{}')[0], 503)
+        status, _, body = self.request("lab-v2", interest, container=self.edge, body=b'{}')
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["url"], interest)
+        for path in (interest + "/confirm", interest + "/withdraw"):
+            self.assertEqual(self.request("lab-v2", path)[0], 405)
+            status, _, body = self.request("lab-v2", path, body=b'{}')
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(body)["method"], "POST")
+        self.assertEqual(self.request("lab-v2", interest + "/other", body=b'{}')[0], 404)
+
     def test_lab_requires_trusted_peer_and_successful_realip_replacement(self):
         before = self.guest_counts()
         edge_address = json.loads(docker("inspect", self.edge).stdout)[0]["NetworkSettings"]["Networks"][self.network]["IPAddress"]

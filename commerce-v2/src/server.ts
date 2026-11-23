@@ -1,3 +1,5 @@
+import { createLabInterestMailDelivery } from "./lab-interest-mail";
+import { loadLabInterestManifest } from "./lab-interest-legal";
 import { serve } from "@hono/node-server";
 import { createCommerceV2App } from "./app";
 import { migrateV2, openV2Database } from "./db";
@@ -51,6 +53,8 @@ if (!serviceToken && config.deployEnvironment === "production") throw new Error(
 const emailDeliveryEndpoint = process.env.AUTH_EMAIL_DELIVERY_ENDPOINT;
 const magicLinkDelivery = createMagicLinkEmailDelivery();
 const labTicketDelivery = createLabTicketEmailDelivery();
+// FLEX-8 (G): LAB interest mail only when NotiSend is fully configured; otherwise signups stay refused.
+const labInterestDelivery = createLabInterestMailDelivery();
 const campaignUnsubscribeSecret = process.env.CAMPAIGN_UNSUBSCRIBE_SECRET;
 if (!campaignUnsubscribeSecret && config.deployEnvironment === "production") throw new Error("CAMPAIGN_UNSUBSCRIBE_SECRET_REQUIRED");
 const marketingBroadcastsEnabled = process.env.MARKETING_BROADCASTS_ENABLED === "true";
@@ -162,6 +166,12 @@ const app = createCommerceV2App({
     platformOrigin: origins.platform, log: event => console.log(JSON.stringify({ ...event, observedAt: new Date().toISOString() })) }),
   sendCampaignEmail,
   labGuestTrustedProxyIps: labGuestTrustedProxyIps(process.env.LAB_GUEST_TRUSTED_PROXY_IPS),
+  labInterestSignupsEnabled: process.env.LAB_INTEREST_SIGNUPS_ENABLED === "true",
+  labInterestManifest: loadLabInterestManifest(process.env),
+  sendLabInterestEmail: labInterestDelivery.configured ? async message => {
+    if (erasureFence) await erasureFence.send(message.email, () => labInterestDelivery.send(message), "AUTH_MAIL");
+    else await labInterestDelivery.send(message);
+  } : undefined,
   sendLabTicketEmail: labTicketDelivery.configured ? async message => {
     if (erasureFence) await erasureFence.send(message.email, () => labTicketDelivery.send(message), "AUTH_MAIL");
     else await labTicketDelivery.send(message);
