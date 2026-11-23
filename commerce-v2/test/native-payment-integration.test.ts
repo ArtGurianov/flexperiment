@@ -5,6 +5,7 @@ import { createCommerceV2App } from "../src/app";
 import { controlRoomIntegrationSummary } from "../src/control-room";
 import { confirmCheckout, prepareCheckout, type PaymentRail } from "../src/checkout";
 import { migrateV2 } from "../src/db";
+import { loadCommerceOrigins } from "../src/origins";
 import { applyCourseManifest, withManifestHash } from "../src/manifest";
 import { draftFiscalPolicy } from "../src/fiscal-policy";
 import { nativeConfirm, reconcilePendingNativePayments, startNativePayment, type NativeLedgerContext } from "../src/native-payment-ledger";
@@ -120,6 +121,30 @@ describe("native checkout confirm and callback route (FLEX-119)", () => {
     await reconcilePendingNativePayments(db, ledger);
     expect(db.prepare("SELECT state FROM checkout_quotes").get()).toEqual({ state: "PAID" });
     expect(db.prepare("SELECT COUNT(*) n FROM course_entitlements").get()).toEqual({ n: 1 });
+  });
+
+  it("freezes the MY return target in the request, scoped to the authenticated quote", async () => {
+    qualify("FULL_PAYMENT");
+    const prepared = await quote("my-return");
+    const my = "https://my.flexperiment.test";
+    const origins = { ...loadCommerceOrigins({}), my };
+    const app = createCommerceV2App({ db, config, origins, myIdentity: { mode: "on", origins },
+      sourceCommit: "a".repeat(40), serviceToken: "synthetic", paymentRail: rail, nativePayments: ledger,
+      authenticateCustomer: async () => "customer", now: () => new Date("2026-09-30T10:01:00Z") });
+    const go = (returnPath: string, origin = my) => app.request("/v1/checkout", { method: "POST",
+      headers: { "x-forwarded-host": new URL(my).host, origin, "content-type": "application/json", "idempotency-key": "my-confirm" },
+      body: JSON.stringify({ quoteId: prepared.quoteId, returnPath }),
+    });
+    expect((await go("//elsewhere.test/checkout/opaquevaluehere")).status).toBe(400);
+    expect((await go("/checkout/abcdefghijklmnop", "https://forged.test")).status).toBe(403);
+    expect(bank.calls.create).toHaveLength(0);
+    const response = await go("/checkout/abcdefghijklmnop");
+    expect(response.status).toBe(201);
+    const order = await response.json() as { orderPublicId: string; paymentUrl: string };
+    expect(order.paymentUrl).toMatch(/^https:/);
+    expect(bank.calls.create[0]?.successUrl).toBe(`${my}/checkout/abcdefghijklmnop?order=${order.orderPublicId}`);
+    const status = await app.request(`/v1/checkout/${order.orderPublicId}`, { headers: { "x-forwarded-host": new URL(my).host } });
+    expect(await status.json()).toMatchObject({ kind: "ONLINE_COURSE", contour: "NATIVE", paymentUrl: order.paymentUrl });
   });
 
   it("refuses an unqualified fiscal combination before any order exists", async () => {

@@ -39,6 +39,7 @@ import { resolvePlaybackAccess } from "./playback-access";
 import { issuePlaybackToken, verifyPlaybackToken, type PlaybackKeyring } from "./playback-auth";
 import { recordPlaybackAccessEvent } from "./playback-telemetry";
 import { loadCommerceOrigins, storefrontOrigin, type CommerceOrigins, type Storefront } from "./origins";
+import { surfaceForRequest } from "./my-session";
 import type { MyIdentityConfig, ResolvedSession } from "./my-session";
 import type { createMyOtp } from "./my-session-otp";
 import { registerMySessionRoutes } from "./my-session-routes";
@@ -146,10 +147,11 @@ const LAB_GUEST_PURCHASE_CLOSED: boolean = true;
 /** Checkout refusals that a retry with the same request cannot change (ART-373): answered 409. */
 const CHECKOUT_CONFLICTS = new Set(["IDEMPOTENCY_KEY_REUSED", "CHECKOUT_HANDOFF_REUSED", "CHECKOUT_PAYMENT_IN_PROGRESS",
   "CHECKOUT_ALREADY_PAID", "REFREF_RESOLUTION_REQUEST_MISMATCH"]);
-const checkoutError = (context: Context, error: unknown, fallback: string) => {
+const checkoutError = (context: Context, error: unknown, fallback: string, native = false) => {
   const message = error instanceof Error ? error.message : undefined;
   const conflict = error instanceof CheckoutConflictError || (message !== undefined && CHECKOUT_CONFLICTS.has(message));
-  const consent = message === "CONSENT_REQUIRED" || message === "LAB_CONSENT_REQUIRED";
+  const consent = message === "CONSENT_REQUIRED" || message === "LAB_CONSENT_REQUIRED"
+    || (native && message === "PAID_CHECKOUT_TERMS_ACCEPTANCE_REQUIRED");
   // Configuration codes are authored locally; never publish dynamic config details or unknown messages.
   const configurationCode = error instanceof CommerceConfigurationError && /^[A-Z][A-Z0-9_]*$/.test(error.code) ? error.code : undefined;
   const labLifecycle = error instanceof LabLifecycleError; // FLEX-60: authored LAB lifecycle refusals.
@@ -1068,7 +1070,7 @@ export function createCommerceV2App(deps: Dependencies) {
         deps.erasureFence?.assertIdentity({ email: customer.email_normalized, customerId }, "AUTH_MAIL");
         if (!context.req.header("idempotency-key")?.trim()) throw new LabTicketError("IDEMPOTENCY_KEY_REQUIRED");
       }
-      const body = await context.req.json<{ quoteId?: string; state?: string; legalAcceptance?: PaidCheckoutAcceptance; labAcceptance?: LabAcceptance }>();
+      const body = await context.req.json<{ quoteId?: string; state?: string; returnPath?: unknown; legalAcceptance?: PaidCheckoutAcceptance; labAcceptance?: LabAcceptance }>();
       if (!body.quoteId) throw new Error("CHECKOUT_QUOTE_REQUIRED");
       const handoff = !guest && deps.config.paymentMode === "refref"
         ? verifyCheckoutHandoffState(deps.config.refref!.handoffStateSecret, body.state ?? "", customerId, now().getTime())
@@ -1078,6 +1080,20 @@ export function createCommerceV2App(deps: Dependencies) {
         : undefined;
       const successUrl = paymentReturn ? new URL("/checkout/return", storefrontOrigin(origins, paymentReturn.state.storefront)) : undefined;
       successUrl?.searchParams.set("state", paymentReturn!.token);
+      let nativeReturn: URL | undefined;
+      const fromMy = deps.myIdentity?.mode === "on" && origins.my
+        && surfaceForRequest(origins, context.req.raw.headers) === "MY";
+      if (deps.nativePayments && fromMy) {
+        if (context.req.header("origin") !== origins.my) return context.json({ code: "ORIGIN_FORBIDDEN" }, 403, noStore);
+        if (typeof body.returnPath !== "string" || !/^\/checkout\/[A-Za-z0-9_-]{16,64}$/.test(body.returnPath)) {
+          return context.json({ code: "CHECKOUT_RETURN_PATH_INVALID" }, 400, noStore);
+        }
+        const quote = deps.db.prepare("SELECT order_public_id FROM checkout_quotes WHERE id=? AND customer_id=?")
+          .get(body.quoteId, customerId) as { order_public_id: string } | undefined;
+        if (!quote) return context.json({ code: "CHECKOUT_QUOTE_NOT_FOUND" }, 404, noStore);
+        nativeReturn = new URL(body.returnPath, origins.my);
+        nativeReturn.searchParams.set("order", quote.order_public_id);
+      }
       if (guest && !deps.db.prepare("SELECT 1 FROM checkout_quotes WHERE id=? AND order_public_id=? AND storefront='LAB'").get(body.quoteId, guest.order_public_id)) {
         return context.json({ code: "CHECKOUT_QUOTE_NOT_FOUND" }, 404, noStore);
       }
@@ -1088,7 +1104,7 @@ export function createCommerceV2App(deps: Dependencies) {
         idempotencyKey: guest ? `${guest.order_public_id}:pay:${context.req.header("idempotency-key") ?? ""}` : context.req.header("idempotency-key") ?? "",
         expectedOrderPublicId: guest?.order_public_id ?? handoff?.orderPublicId,
         storefront: guest ? "LAB" : handoff?.storefront,
-        successUrl: guest ? `${origins.lab}/ticket` : successUrl?.toString(),
+        successUrl: guest ? `${origins.lab}/ticket` : (nativeReturn ?? successUrl)?.toString(),
         legalAcceptance: body.legalAcceptance,
         labAcceptance: body.labAcceptance,
         ...(deps.nativePayments ? { native: nativeConfirm(deps.db, deps.nativePayments) } : {}),
@@ -1106,7 +1122,7 @@ export function createCommerceV2App(deps: Dependencies) {
       }
       return context.json(result, result.state === "CREATE_UNKNOWN" ? 202 : 201, noStore);
     } catch (error) {
-      return checkoutError(context, error, "CHECKOUT_UNAVAILABLE");
+      return checkoutError(context, error, "CHECKOUT_UNAVAILABLE", deps.config.paymentMode === "native");
     }
   });
 

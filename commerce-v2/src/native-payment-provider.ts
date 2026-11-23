@@ -16,6 +16,7 @@ export type FrozenNativePaymentRequest = {
   readonly currency: "RUB";
   readonly snapshotHash: string;
   readonly purpose: string;
+  readonly successUrl?: string;
   readonly receiptEmail: string;
   readonly fiscalItems: readonly unknown[];
 };

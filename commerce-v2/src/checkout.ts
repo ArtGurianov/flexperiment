@@ -911,7 +911,7 @@ export async function prepareCheckout(
  * later read-back. `status` answers a repeated confirm of an already consumed intent.
  */
 export type NativeConfirm = {
-  readonly stage: (orderPublicId: string) => void;
+  readonly stage: (orderPublicId: string, successUrl?: string) => void;
   readonly dispatch: (orderPublicId: string) => Promise<{ orderPublicId: string; state: string; paymentUrl?: string | null }>;
   readonly status: (orderPublicId: string) => { orderPublicId: string; state: string; paymentUrl?: string | null };
 };
@@ -1071,7 +1071,7 @@ export async function confirmCheckout(
     const consumed = db.prepare("UPDATE checkout_quotes SET state='PAYMENT_CREATING',consumed_at=?,updated_at=? WHERE id=? AND state='REVIEW'")
       .run(now, now, pending.id);
     if (consumed.changes !== 1) throw new Error("CHECKOUT_QUOTE_UNAVAILABLE");
-    native?.stage(publicId);
+    native?.stage(publicId, input.successUrl);
     return true;
   });
   if (!create.immediate()) return native ? native.status(publicId) : reconcileCheckout(db, rail, publicId, now, config);

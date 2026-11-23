@@ -87,7 +87,7 @@ export function insertFiscalEvent(db: Database.Database, keyring: RefundEnvelope
 }
 
 /** Stages the sealed request with the order. The enclosing checkout transaction owns the commit. */
-function stageNativePayment(db: Database.Database, ctx: NativeLedgerContext, orderPublicId: string) {
+function stageNativePayment(db: Database.Database, ctx: NativeLedgerContext, orderPublicId: string, successUrl?: string) {
   const now = clock(ctx);
   return db.transaction(() => {
     const order = orderContext(db, orderPublicId);
@@ -109,6 +109,7 @@ function stageNativePayment(db: Database.Database, ctx: NativeLedgerContext, ord
     const request: FrozenNativePaymentRequest = {
       idempotencyKey: keys.idempotencyKey, paymentRef: keys.paymentRef, merchantOrderRef: order.public_id, amountKopecks: order.total_kopecks,
       currency: "RUB", snapshotHash: order.snapshot_hash, purpose, receiptEmail: order.email_normalized, fiscalItems: [item],
+      ...(successUrl ? { successUrl } : {}),
     };
     const sealed = sealPayload(ctx.keyring, "native-payment-envelope", id, request);
     db.prepare(`INSERT INTO native_payments(id,order_id,payment_ref,idempotency_key,amount_kopecks,snapshot_hash,state,request_envelope,
@@ -317,7 +318,7 @@ export function nativeOrderStatus(db: Database.Database, orderPublicId: string) 
   const refund = db.prepare(`SELECT refund.state FROM native_refunds refund WHERE refund.native_payment_id=? ORDER BY refund.created_at DESC LIMIT 1`)
     .get(payment.id) as { state: NativeRefundState } | undefined;
   return {
-    orderPublicId, contour: "NATIVE" as const, payment: buyerPaymentStatus(payment.state, order.kind),
+    orderPublicId, kind: order.kind, contour: "NATIVE" as const, payment: buyerPaymentStatus(payment.state, order.kind),
     ...(payment.state === "PENDING" && payment.payment_url ? { paymentUrl: payment.payment_url } : {}),
     ...(refund ? { refund: buyerRefundStatus(refund.state) } : {}),
     ...(payment.state === "REVIEW_REQUIRED" ? { supportReference: payment.payment_ref } : {}),
@@ -345,7 +346,7 @@ export function nativeConfirm(db: Database.Database, ctx: NativeLedgerContext) {
     return { orderPublicId, state: payment.state as string, paymentUrl: payment.state === "PENDING" ? payment.payment_url : null };
   };
   return {
-    stage: (orderPublicId: string) => { stageNativePayment(db, ctx, orderPublicId); },
+    stage: (orderPublicId: string, successUrl?: string) => { stageNativePayment(db, ctx, orderPublicId, successUrl); },
     dispatch: (orderPublicId: string) => dispatchNativePayment(db, ctx, orderPublicId),
     status,
   };
