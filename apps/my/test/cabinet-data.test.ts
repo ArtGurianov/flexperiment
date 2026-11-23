@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   CABINET_ROUTES, cabinetSource, commerceCabinetSource, fixtureCabinetSource, fixtureName, sessionCookieHeader,
 } from "../components/cabinet/data";
-import { lmsEntryHref, parseCourses, parseOrders, parseProfile, parseTickets, ticketHref } from "../components/cabinet/model";
+import { lmsEntryHref, parseCourses, parseOrders, parseProfile, parseTickets } from "../components/cabinet/model";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const ENV = { MY_ORIGIN: "https://my.flexperiment.test", COMMERCE_INTERNAL_ORIGIN: "http://commerce.internal:8787", NODE_ENV: "test" };
@@ -61,7 +61,7 @@ describe("FLEX-123 cabinet data layer", () => {
       consentRequired: false, marketing: false, customerId: "cus_other", authUserId: "u_other", sessionId: "s" });
     expect(Object.keys(profile!).sort()).toEqual(["consentRequired", "createdAt", "displayName", "email", "marketing"]);
     const tickets = parseTickets({ tickets: [{ orderPublicId: "ord_lab_fixture_0001", title: "LAB", startsAt: "2026-12-06T09:00:00Z",
-      timezone: "Asia/Novosibirsk", status: "ACTIVE", viewPath: "https://evil.test/ticket", qr: "QRDATA", accessToken: "secret",
+      timezone: "Asia/Novosibirsk", status: "VALID", viewPath: "https://evil.test/ticket", qr: "QRDATA", accessToken: "secret",
       customerEmail: "other@example.test" }] });
     expect(tickets![0]).not.toHaveProperty("qr");
     expect(tickets![0]).not.toHaveProperty("accessToken");
@@ -72,15 +72,14 @@ describe("FLEX-123 cabinet data layer", () => {
     expect(parseCourses({ code: "X" })).toBeNull();
   });
 
-  it("builds lesson entries only through the exchange receiver and ticket links only on LAB", () => {
+  it("builds lesson entries only through the exchange receiver and ticket links only within MY", () => {
     const [course] = parseCourses({ courses: [{ slug: "flex-basics", title: "Основы", access: "PURCHASE", started: true,
       resumeLesson: { slug: "isolation-intro", title: "Изоляции" } }] })!;
     expect(lmsEntryHref("https://flexperiment.test", course))
       .toBe("https://flexperiment.test/auth/lms/start?next=%2Fcourses%2Fflex-basics%2Flessons%2Fisolation-intro");
     const [ticket] = parseTickets({ tickets: [{ orderPublicId: "ord_lab_fixture_0001", title: "LAB", startsAt: "2026-12-06T09:00:00Z",
-      timezone: "Asia/Novosibirsk", status: "ACTIVE", viewPath: "/ticket/ord_lab_fixture_0001" }] })!;
-    expect(ticketHref("https://lab.flexperiment.test", ticket)).toBe("https://lab.flexperiment.test/ticket/ord_lab_fixture_0001");
-    expect(ticketHref(null, ticket)).toBeNull();
+      timezone: "Asia/Novosibirsk", status: "VALID", viewPath: "/tickets/ord_lab_fixture_0001" }] })!;
+    expect(ticket.viewPath).toBe("/tickets/ord_lab_fixture_0001");
   });
 
   it("serves both fixture profiles through the same parsers and never in production", async () => {
@@ -88,7 +87,7 @@ describe("FLEX-123 cabinet data layer", () => {
     const lab = fixtureCabinetSource("lab");
     expect((await lms.courses())).toMatchObject({ status: "ok", data: [{ slug: "flex-basics" }, { slug: "musicality-free" }] });
     expect((await lms.tickets())).toEqual({ status: "ok", data: [] });
-    expect((await lab.tickets())).toMatchObject({ status: "ok", data: [{ status: "ACTIVE" }, { status: "REFUND_PENDING" }] });
+    expect((await lab.tickets())).toMatchObject({ status: "ok", data: [{ status: "VALID" }, { status: "NOT_ISSUED" }] });
     expect((await lab.courses())).toEqual({ status: "ok", data: [] });
     expect((await fixtureCabinetSource("signed-out").profile())).toEqual({ status: "signed-out" });
     expect(fixtureName({ NODE_ENV: "production", MY_CABINET_FIXTURE: "lms" })).toBeNull();

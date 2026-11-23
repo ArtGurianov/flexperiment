@@ -39,9 +39,9 @@ const lab: RawFixture = {
   tickets: { tickets: [
     { orderPublicId: "ord_lab_fixture_0001", title: "LAB · Флекс-интенсив", startsAt: "2026-12-06T09:00:00.000Z",
       endsAt: "2026-12-06T17:00:00.000Z", timezone: "Asia/Novosibirsk", venueName: "Студия на Красном",
-      status: "ACTIVE", viewPath: "/ticket/ord_lab_fixture_0001" },
+      status: "VALID", viewPath: "/tickets/ord_lab_fixture_0001" },
     { orderPublicId: "ord_lab_fixture_0002", title: "LAB · Вечерняя практика", startsAt: "2026-12-13T12:00:00.000Z",
-      endsAt: null, timezone: "Asia/Novosibirsk", venueName: null, status: "REFUND_PENDING", viewPath: null },
+      endsAt: null, timezone: "Asia/Novosibirsk", venueName: null, status: "NOT_ISSUED", viewPath: null },
   ] },
   orders: { orders: [
     { orderPublicId: "ord_lab_fixture_0002", state: "REFUND_PENDING", amountKopecks: 250000, currency: "RUB",

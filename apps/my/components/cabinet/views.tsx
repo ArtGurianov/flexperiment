@@ -4,7 +4,7 @@
 import type { ReactNode } from "react";
 import {
   ACCESS_LABEL, ORDER_STATE_LABEL, PRODUCT_LABEL, TICKET_STATUS_LABEL,
-  formatDate, formatDateTime, formatRub, lmsEntryHref, ticketHref,
+  formatDate, formatDateTime, formatRub, lmsEntryHref,
   type CabinetCourse, type CabinetOrder, type CabinetProfile, type CabinetTicket, type LoadResult,
 } from "./model";
 
@@ -55,8 +55,8 @@ export function CoursesView({ result, platformOrigin, heading = "Мои курс
   );
 }
 
-export function TicketsView({ result, labOrigin, heading = "Мои билеты" }: {
-  result: LoadResult<CabinetTicket[]>; labOrigin: string | null; heading?: string;
+export function TicketsView({ result, heading = "Мои билеты" }: {
+  result: LoadResult<CabinetTicket[]>; heading?: string;
 }) {
   return (
     <Section title={heading} id="tickets-heading">
@@ -65,7 +65,7 @@ export function TicketsView({ result, labOrigin, heading = "Мои билеты"
           : (
             <ul className="cabinet-list">
               {result.data.map((ticket) => {
-                const href = ticket.status === "ACTIVE" ? ticketHref(labOrigin, ticket) : null;
+                const href = ticket.status === "VALID" ? ticket.viewPath : null;
                 return (
                   <li key={ticket.orderPublicId} className="cabinet-item">
                     <div>

@@ -13,7 +13,7 @@ export default async function CabinetPage() {
     <>
       <h1>{name ? `Личный кабинет · ${name}` : "Личный кабинет"}</h1>
       <CoursesView result={courses} platformOrigin={origins.platform} />
-      <TicketsView result={tickets} labOrigin={origins.lab} />
+      <TicketsView result={tickets} />
       <OrdersView result={orders} heading="Последние заказы" />
     </>
   );

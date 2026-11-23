@@ -1,4 +1,3 @@
-import { cabinetOrigins } from "@/components/cabinet/data";
 import { requestCabinet, requireSignedIn } from "@/components/cabinet/request";
 import { TicketsView } from "@/components/cabinet/views";
 
@@ -6,5 +5,5 @@ import { TicketsView } from "@/components/cabinet/views";
 export default async function TicketsPage() {
   const cabinet = await requestCabinet();
   const tickets = requireSignedIn(await cabinet.tickets(), "/tickets");
-  return <><h1>Мои билеты</h1><TicketsView result={tickets} labOrigin={cabinetOrigins().lab} heading="Билеты LAB" /></>;
+  return <><h1>Мои билеты</h1><TicketsView result={tickets} heading="Билеты LAB" /></>;
 }

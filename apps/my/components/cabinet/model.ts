@@ -28,7 +28,7 @@ export type CabinetCourse = {
   readonly resumeLesson: { readonly slug: string; readonly title: string } | null;
 };
 
-export type TicketStatus = "ACTIVE" | "USED" | "CANCELLED" | "REFUND_PENDING" | "REFUNDED";
+export type TicketStatus = "VALID" | "USED" | "VOID" | "NOT_ISSUED";
 export type CabinetTicket = {
   readonly orderPublicId: string;
   readonly title: string;
@@ -37,7 +37,7 @@ export type CabinetTicket = {
   readonly timezone: string;
   readonly venueName: string | null;
   readonly status: TicketStatus;
-  /** Relative LAB path of the owner's ticket view (FLEX-60). Never a QR or capability token. */
+  /** Relative MY path of the owner's ticket view (FLEX-60). Never a QR or capability token. */
   readonly viewPath: string | null;
 };
 
@@ -71,7 +71,6 @@ const list = <T>(value: unknown, key: string, item: (entry: Unknown) => T | null
 const SLUG = /^[a-z0-9-]{1,80}$/;
 const LESSON_SLUG = /^[a-z0-9-]{1,120}$/;
 const PUBLIC_ID = /^[A-Za-z0-9_-]{8,64}$/;
-const TICKET_PATH = /^\/ticket(\/[A-Za-z0-9_-]{8,64})?$/;
 const EMAIL = /^[^\s@]{1,64}@[^\s@]{1,190}$/;
 
 export function parseProfile(value: unknown): CabinetProfile | null {
@@ -108,11 +107,11 @@ export function parseTickets(value: unknown): CabinetTicket[] | null {
     const title = text(entry.title);
     const startsAt = iso(entry.startsAt);
     const timezone = text(entry.timezone, 64);
-    const status = oneOf(["ACTIVE", "USED", "CANCELLED", "REFUND_PENDING", "REFUNDED"] as const, entry.status);
+    const status = oneOf(["VALID", "USED", "VOID", "NOT_ISSUED"] as const, entry.status);
     if (!orderPublicId || !title || !startsAt || !timezone || !status) return null;
     return { orderPublicId, title, startsAt, timezone, status,
       endsAt: iso(entry.endsAt), venueName: text(entry.venueName),
-      viewPath: typeof entry.viewPath === "string" && TICKET_PATH.test(entry.viewPath) ? entry.viewPath : null };
+      viewPath: entry.viewPath === `/tickets/${orderPublicId}` ? entry.viewPath : null };
   });
 }
 
@@ -138,10 +137,6 @@ export function lmsEntryHref(platformOrigin: string, course: CabinetCourse): str
   return url.toString();
 }
 
-export function ticketHref(labOrigin: string | null, ticket: CabinetTicket): string | null {
-  return labOrigin && ticket.viewPath ? new URL(ticket.viewPath, labOrigin).toString() : null;
-}
-
 export const ACCESS_LABEL: Record<CourseAccess, string> = {
   FREE_ENROLMENT: "Бесплатная запись",
   PURCHASE: "Куплен",
@@ -161,11 +156,10 @@ export const ORDER_STATE_LABEL: Record<OrderState, string> = {
 };
 
 export const TICKET_STATUS_LABEL: Record<TicketStatus, string> = {
-  ACTIVE: "Действует",
+  VALID: "Действует",
   USED: "Использован",
-  CANCELLED: "Отменён",
-  REFUND_PENDING: "Возврат в обработке",
-  REFUNDED: "Возвращён",
+  VOID: "Аннулирован",
+  NOT_ISSUED: "Ещё не выдан",
 };
 
 export const PRODUCT_LABEL: Record<ProductKind, string> = {

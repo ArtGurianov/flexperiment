@@ -7,7 +7,6 @@ import { CoursesView, OrdersView, ProfileView, TicketsView } from "../components
 
 afterEach(cleanup);
 const PLATFORM = "https://flexperiment.test";
-const LAB = "https://lab.flexperiment.test";
 
 describe("FLEX-123 cabinet views on fixtures", () => {
   it("LMS profile: courses show access and the started fact, separate from payment and refund state", async () => {
@@ -29,16 +28,18 @@ describe("FLEX-123 cabinet views on fixtures", () => {
 
   it("LAB profile: tickets list with an entry point for active tickets only, no QR", async () => {
     const lab = fixtureCabinetSource("lab");
-    const { container } = render(<TicketsView result={await lab.tickets()} labOrigin={LAB} />);
+    const { container } = render(<TicketsView result={await lab.tickets()} />);
     const links = screen.getAllByRole("link", { name: "Открыть билет" });
     expect(links).toHaveLength(1);
-    expect(links[0]).toHaveAttribute("href", `${LAB}/ticket/ord_lab_fixture_0001`);
-    expect(screen.getByText(/Возврат в обработке/)).toBeInTheDocument();
+    expect(links[0]).toHaveAttribute("href", "/tickets/ord_lab_fixture_0001");
+    expect(screen.getByText(/Ещё не выдан/)).toBeInTheDocument();
     expect(container.querySelector("img, canvas, svg")).toBeNull();
   });
 
-  it("does not render a ticket link without a configured LAB origin", async () => {
-    render(<TicketsView result={await fixtureCabinetSource("lab").tickets()} labOrigin={null} />);
+  it("does not link a historical ticket whose own capability is required", async () => {
+    const result = await fixtureCabinetSource("lab").tickets();
+    if (result.status !== "ok") throw new Error("fixture unavailable");
+    render(<TicketsView result={{ status: "ok", data: result.data.map(ticket => ({ ...ticket, viewPath: null })) }} />);
     expect(screen.queryByRole("link", { name: "Открыть билет" })).not.toBeInTheDocument();
   });
 
@@ -51,7 +52,7 @@ describe("FLEX-123 cabinet views on fixtures", () => {
   it("renders pending, consent and error states instead of empty lists", () => {
     render(<>
       <CoursesView result={{ status: "not-yet-available" }} platformOrigin={PLATFORM} />
-      <TicketsView result={{ status: "consent-required" }} labOrigin={LAB} />
+      <TicketsView result={{ status: "consent-required" }} />
       <OrdersView result={{ status: "unavailable" }} />
     </>);
     expect(screen.getByText("Раздел «курсы» скоро появится в кабинете.")).toBeInTheDocument();
