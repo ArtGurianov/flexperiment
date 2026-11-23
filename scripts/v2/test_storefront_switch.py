@@ -1,5 +1,6 @@
 """The owner's storefront switch host tool (ART-319). Docker is replaced by a recorded fake."""
 import hashlib
+import argparse
 import importlib.util
 import io
 import json
@@ -15,7 +16,7 @@ spec = importlib.util.spec_from_file_location("storefront_switch", Path(__file__
 tool = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(tool)
 
-META = ["--by", "owner", "--reason", "synthetic test change", "--evidence", "ART-319"]
+META = ["--by", "owner", "--reason", "synthetic test change", "--evidence", "FLEX-16"]
 
 
 class FakeDocker:
@@ -159,11 +160,24 @@ class StorefrontSwitchTool(unittest.TestCase):
         self.assertEqual((code, reopened["storefronts"]["COURSES"]), (0, {"state": "OPEN", "openSince": 4}))
 
     def test_changes_require_actor_reason_and_evidence_issue(self):
-        for meta in (["--by", "Owner Name", "--reason", "x" * 5, "--evidence", "ART-1"],
-                     ["--by", "owner", "--reason", "no", "--evidence", "ART-1"],
-                     ["--by", "owner", "--reason", "valid reason", "--evidence", "LIN-1"]):
+        for meta in (["--by", "Owner Name", *META[2:]],
+                     ["--by", "owner", "--reason", "no", *META[4:]],
+                     [*META[:-1], "LIN-1"], [*META[:-1], "ART-319"]):
             self.assertEqual(self.run_tool("close", "--storefront", "ALL", *meta)[1]["code"], "SWITCH_CHANGE_EVIDENCE_REQUIRED")
         self.assertFalse(os.path.exists(self.layout.directory))
+
+    def test_plane_change_preserves_existing_art_generation(self):
+        with self.layout.locked():
+            self.layout.ensure_layout()
+            tool_meta = argparse.Namespace(by="owner", reason="historical install", evidence="ART-319", min_generation=None)
+            original = tool.next_document(self.layout, None, {"COURSES": "CLOSED", "LAB": "CLOSED"}, tool_meta)
+            original_digest = self.layout.write(original)
+
+        self.assertEqual(self.layout.current(), ((original, original_digest), None))
+        code, result = self.run_tool("close", "--storefront", "ALL", *META[:-1], "VPS-28")
+        self.assertEqual((code, result["generation"], result["previousFile"]), (0, 2, "VALID"))
+        self.assertEqual(self.document()["evidenceIssue"], "VPS-28")
+        self.assertEqual(self.journal()[0], {"generation": 1, "sha256": original_digest, "document": original})
 
     def test_verify_proves_a_read_only_mount_and_no_runtime_writer(self):
         self.run_tool("install", *META)

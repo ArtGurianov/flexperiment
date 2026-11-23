@@ -96,9 +96,14 @@ storefront; only a new write by the tool can.
 
 Owner authorization for the host change is required (`adman-vps-infrastructure` AGENTS.md).
 
+Use the current Plane work item (a `FLEX-…` or `VPS-…` ID) for every new generation. The reader
+also accepts existing `ART-…` references so past generations and their digests can be preserved.
+Deploy a Commerce image that reads both formats before installing the Plane-only host tool.
+After a Plane generation is written, any Commerce image used for rollback must also read both formats.
+
 ```bash
 sudo python3 scripts/v2/storefront-switch.py install --scope canary \
-  --by art --reason "Install the storefront switch, both storefronts closed" --evidence ART-319
+  --by art --reason "Install the storefront switch, both storefronts closed" --evidence FLEX-16
 ```
 
 This creates `/var/lib/flexperiment-sales-canary/switch/switch.json` and
@@ -124,7 +129,7 @@ closed paid test (`ACCEPTANCE_ONLY`). That is fail-closed by design; install fir
 
 ```bash
 sudo python3 scripts/v2/storefront-switch.py open --scope production --storefront COURSES \
-  --container <commerce> --by art --reason "F10.3 first sales after ART-240 acceptance" --evidence ART-242
+  --container <commerce> --by art --reason "First LMS sales after acceptance" --evidence FLEX-83
 ```
 
 The tool refuses unless the current file is valid and the container's preflight
@@ -141,7 +146,7 @@ Opening the switch opens nothing by itself: offers sell only where Control Room 
 
 ```bash
 sudo python3 scripts/v2/storefront-switch.py close --scope production --storefront ALL \
-  --by art --reason "Provider credential incident" --evidence ART-NNN [--container <commerce>]
+  --by art --reason "Provider credential incident" --evidence FLEX-90 [--container <commerce>]
 ```
 
 - Works with Commerce down, unready, its database lost, its file damaged or deleted, and with a
