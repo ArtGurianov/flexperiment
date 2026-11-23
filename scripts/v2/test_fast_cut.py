@@ -4,6 +4,7 @@ import io
 import importlib.util
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import time
@@ -17,6 +18,45 @@ spec=importlib.util.spec_from_file_location('fast_cut',ROOT/'scripts/v2/fast-cut
 f=importlib.util.module_from_spec(spec);spec.loader.exec_module(f)
 
 class FastCut(unittest.TestCase):
+    def fence_fixture(self):
+        db = Mock()
+        db.execute.side_effect = [Mock(fetchone=Mock(return_value=('canary', 'OPEN', 1, None))),
+                                  Mock(fetchone=Mock(return_value=(0,)))]
+        return db
+
+    def test_stage_a_database_admits_the_real_clean_bootstrap_and_rejects_drift(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'commerce.sqlite'
+            subprocess.run([
+                'pnpm', 'exec', 'tsx', '-e',
+                'import {openV2Database,migrateV2} from "./commerce-v2/src/db";'
+                'const db=openV2Database(process.argv[1]);migrateV2(db);db.close();',
+                str(path),
+            ], cwd=ROOT, check=True, timeout=30)
+            with patch.object(f, 'DATABASE', path):
+                self.assertEqual(f.check_stage_a_database(f.STAGE_A_SOURCE), {
+                    'schemaFingerprint': f.SCHEMA, 'migrationCount': 36, 'migrationLedgerSha256': f.MIGRATION_LEDGER,
+                })
+                with self.assertRaisesRegex(ValueError, 'FAST_CUT_SOURCE_SCOPE'):
+                    f.check_stage_a_database(f.SOURCE)
+                for statement in (
+                    "delete from schema_migrations where version like '0036_%'",
+                    "insert into schema_migrations(version,sha256) values ('0037_unknown.sql',lower(hex(zeroblob(32))))",
+                    "update schema_migrations set sha256=lower(hex(zeroblob(32))) where version like '0001_%'",
+                    "update schema_migrations set version='0036_unknown.sql' where version like '0036_%'",
+                    "update schema_migrations set applied_at='' where version like '0036_%'",
+                    "create table unexpected_schema_change(id integer)",
+                ):
+                    with self.subTest(statement=statement):
+                        drift = path.with_name('drift.sqlite')
+                        shutil.copyfile(path, drift)
+                        with contextlib.closing(f.sqlite3.connect(drift)) as db:
+                            db.execute(statement)
+                            db.commit()
+                        with patch.object(f, 'DATABASE', drift):
+                            with self.assertRaisesRegex(ValueError, 'FAST_CUT_SCHEMA'):
+                                f.check_stage_a_database(f.STAGE_A_SOURCE)
+
     def test_control_room_ingress_requires_exact_private_receipt_and_requalification(self):
         canary = 'flexperiment-fast-cut-canary'
         ingress = 'flexperiment-control-room-ingress'
@@ -267,25 +307,14 @@ class FastCut(unittest.TestCase):
 
     def test_mixed_release_admin_readiness_identifies_commerce_not_native_admin(self):
         vector=f.validate_release(self.commerce_candidate());target=vector['commerce']['sourceCommit']
-        def connection(fence=False):
-            db=Mock()
-            def execute(query):
-                result=Mock()
-                if 'sqlite_master' in query:result.__iter__=Mock(return_value=iter([]))
-                elif 'foreign_key_check' in query:result.fetchall.return_value=[]
-                elif 'fence_state' in query:result.fetchone.return_value=('canary','OPEN',1,None)
-                elif 'fence_leases' in query:result.fetchone.return_value=(0,)
-                elif 'integrity_check' in query:result.fetchone.return_value=('ok',)
-                else:result.fetchone.return_value=(28,)
-                return result
-            db.execute.side_effect=execute;return db
+        connection = self.fence_fixture()
         def check(admin_source,platform_source=vector['platform']['sourceCommit']):
             ready=[{'ok':True,'foundationMode':False,'capabilities':{'erasure':'qualified'},'core':{'paymentMode':'disabled'},'sourceCommit':target},
                    {'status':200,'body':json.dumps({'sourceCommit':platform_source})},{'ok':True,'service':'commerce-v2','sourceCommit':admin_source},{'state':'REMOTE_VERIFIED','scope':'canary','sequence':1}]
             with patch.object(f,'release',return_value=vector),patch.object(f,'inspect',side_effect=lambda role:(role,{})), \
                  patch.object(f,'run',side_effect=[json.dumps(r).encode() for r in ready]), \
-                 patch.object(f.sqlite3,'connect',side_effect=[connection(),connection(True)]), \
-                 patch.object(f,'SCHEMA',__import__('hashlib').sha256(b'[]').hexdigest()),patch.object(f,'READINESS_ATTEMPTS',1):return f.check()
+                 patch.object(f.sqlite3,'connect',return_value=connection), \
+                 patch.object(f,'check_stage_a_database',return_value={}),patch.object(f,'READINESS_ATTEMPTS',1):return f.check()
         self.assertEqual(check(target)['sourceCommit'],target)
         with self.assertRaisesRegex(ValueError,'ADMIN_NOT_READY'):check(f.SOURCE)
         with self.assertRaisesRegex(ValueError,'PLATFORM_NOT_READY'):check(target,platform_source=target)
@@ -326,7 +355,7 @@ class FastCut(unittest.TestCase):
             calls.append((args,timeout))
             return json.dumps(ready[['commerce','platform','admin'][len(calls)-1]]).encode()
         with patch.object(f,'release',return_value=vector),patch.object(f,'inspect',side_effect=lambda role:(role,{})), \
-             patch.object(f,'run',side_effect=command),patch.object(f,'DATABASE',Path('/nonexistent/commerce.sqlite')), \
+             patch.object(f,'run',side_effect=command),patch.object(f,'check_stage_a_database',side_effect=f.sqlite3.OperationalError), \
              self.assertRaises(f.sqlite3.OperationalError):f.check()
         (commerce,c_timeout),(platform,p_timeout),(admin,a_timeout)=calls[:3]
         self.assertEqual(commerce[commerce.index('--max-time')+1],str(f.READINESS_TIMEOUT['commerce']))
@@ -382,23 +411,11 @@ class FastCut(unittest.TestCase):
             role=args[2]
             if role=='platform':return json.dumps(next(probes)).encode()
             return json.dumps(commerce if role=='commerce' else admin).encode()
-        def connection(*args,**kwargs):
-            db=Mock()
-            def execute(query):
-                result=Mock()
-                if 'sqlite_master' in query:result.__iter__=Mock(return_value=iter([]))
-                elif 'foreign_key_check' in query:result.fetchall.return_value=[]
-                elif 'fence_state' in query:result.fetchone.return_value=('canary','OPEN',1,None)
-                elif 'fence_leases' in query:result.fetchone.return_value=(0,)
-                elif 'integrity_check' in query:result.fetchone.return_value=('ok',)
-                else:result.fetchone.return_value=(28,)
-                return result
-            db.execute.side_effect=execute;return db
         return contextlib.ExitStack(),[
             patch.object(f,'release',return_value=vector),
             patch.object(f,'inspect',side_effect=inspect or (lambda role:(role,{}))),
-            patch.object(f,'run',side_effect=command),patch.object(f.sqlite3,'connect',side_effect=connection),
-            patch.object(f,'SCHEMA',__import__('hashlib').sha256(b'[]').hexdigest()),
+            patch.object(f,'run',side_effect=command),patch.object(f.sqlite3,'connect',return_value=self.fence_fixture()),
+            patch.object(f,'check_stage_a_database',return_value={}),
             patch.object(f.time,'sleep')],vector
 
     def test_one_slow_platform_readiness_is_retried_after_a_bounded_pause(self):

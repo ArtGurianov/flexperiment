@@ -2,6 +2,7 @@
 """Closed ART337 Compose inputs/readback/backup. No operation runs on import."""
 import argparse
 import base64
+from contextlib import closing
 import functools
 import hashlib
 import importlib.util
@@ -32,8 +33,12 @@ STACK = Path('/opt/flexperiment-fast-cut-canary/deploy/v2/fast-cut/compose.json'
 ERASURE = Path('/var/lib/flexperiment-erasure-canary')
 # The owner's storefront switch (ART-319): written only by scripts/v2/storefront-switch.py on the host.
 SALES = Path('/var/lib/flexperiment-sales-canary')
-SCHEMA = '40ede1d98e15b510c920418cd525e039346890560e7e9dc2fe90aecd760b86a1'
-DATABASE = Path('/var/lib/docker/volumes/'+ORIGINAL+'-'+ORIGINAL+'-commerce-v2-data/_data/commerce.sqlite')
+STAGE_A_SOURCE = 'cc476dc041eb8bbe8ac5e6452acc9f9aa25d2a28'
+STAGE_A_DATA_VOLUME = 'flexperiment-stage-a-canary-commerce-v2-data'
+DATABASE = Path('/var/lib/docker/volumes') / STAGE_A_DATA_VOLUME / '_data/commerce.sqlite'
+SCHEMA = 'f0b2205a43d7a733a96cbc3b40f7b57e4850dc0f8082dfc5449f1a95bee21e13'
+# SHA-256 of the ordered [filename, SQL SHA-256] pairs from the Stage A migration.lock.
+MIGRATION_LEDGER = '1c634b20ccead5c496f2e3b6db73bf914e94dc480c5165e160eca17aa3f6e87e'
 ORIGINS = {key:'https://canary-'+name+'.flexperiment.ru' for key,name in
            [('PLATFORM_ORIGIN','platform'),('LAB_ORIGIN','lab'),('ADMIN_ORIGIN','admin'),('API_ORIGIN','api')]}
 
@@ -380,8 +385,12 @@ def inspect(role):
         for target,folder in [('/etc/flexperiment-sales','switch'),('/etc/flexperiment-sales-journal','journal')]:
             row=mounts.get(target)
             require(row and row['Type']=='bind' and row['Source']==str(SALES/folder) and row['RW'] is False,'FAST_CUT_STOREFRONT_SWITCH_MOUNT')
-        for target,suffix in [('/var/lib/flexperiment-v2','commerce-v2-data'),('/var/lib/flexperiment-v2-backups','commerce-v2-backups')]:
-            row=mounts.get(target);require(row and row['Name']==ORIGINAL+'-'+ORIGINAL+'-'+suffix and row['RW'],'FAST_CUT_DATA_MOUNT')
+        data = mounts.get('/var/lib/flexperiment-v2')
+        require(data and data.get('Type') == 'volume' and data.get('Name') == STAGE_A_DATA_VOLUME
+                and data.get('Source') == str(DATABASE.parent) and data.get('RW'), 'FAST_CUT_DATA_MOUNT')
+        backups = mounts.get('/var/lib/flexperiment-v2-backups')
+        require(backups and backups.get('Name') == ORIGINAL+'-'+ORIGINAL+'-commerce-v2-backups'
+                and backups.get('RW'), 'FAST_CUT_DATA_MOUNT')
     if role=='platform':
         assert_payment_environment(env, role, paid_test())
         require(env.get('PLATFORM_V2_CANARY')=='true' and env.get('PLATFORM_EXPECTED_COMMERCE_SHA')==release()['commerce']['sourceCommit']
@@ -438,6 +447,26 @@ def bounded_readiness(role, name):
             time.sleep(READINESS_RETRY_PAUSE)
 
 
+def check_stage_a_database(source):
+    require(source == STAGE_A_SOURCE, 'FAST_CUT_SOURCE_SCOPE')
+    with closing(sqlite3.connect(DATABASE.as_uri()+'?mode=ro', uri=True)) as db:
+        db.row_factory = sqlite3.Row
+        db.execute('BEGIN')
+        schema = [dict(row) for row in db.execute("select type,name,tbl_name,sql from sqlite_master where name not like 'sqlite_%' order by type,name")]
+        fingerprint = hashlib.sha256(json.dumps(schema, separators=(',', ':'), ensure_ascii=False).encode()).hexdigest()
+        require(fingerprint == SCHEMA, 'FAST_CUT_SCHEMA')
+        rows = db.execute('select version,sha256,applied_at from schema_migrations order by version').fetchall()
+        ledger = [[row['version'], row['sha256']] for row in rows]
+        ledger_digest = hashlib.sha256(json.dumps(ledger, separators=(',', ':')).encode()).hexdigest()
+        identity = db.execute('select lineage from schema_identity where singleton=1').fetchone()
+        require(len(rows) == 36 and all(isinstance(row['applied_at'], str) and row['applied_at'] for row in rows)
+                and ledger_digest == MIGRATION_LEDGER
+                and identity and identity['lineage'] == 'flexperiment-v2'
+                and db.execute('pragma integrity_check').fetchone()[0] == 'ok'
+                and not db.execute('pragma foreign_key_check').fetchall(), 'FAST_CUT_SCHEMA')
+    return {'schemaFingerprint': fingerprint, 'migrationCount': len(rows), 'migrationLedgerSha256': ledger_digest}
+
+
 def check():
     result={'sourceCommit':release()['commerce']['sourceCommit'],'roles':{}}
     for role in ['commerce','platform','admin']:
@@ -446,12 +475,7 @@ def check():
         mark_stage(role+'_readiness')
         bounded_readiness(role,name)
     mark_stage('database')
-    db=sqlite3.connect(DATABASE.as_uri()+'?mode=ro',uri=True);db.row_factory=sqlite3.Row
-    rows=[dict(v) for v in db.execute("select type,name,tbl_name,sql from sqlite_master where name not like 'sqlite_%' order by type,name")]
-    require(hashlib.sha256(json.dumps(rows,separators=(',',':'),ensure_ascii=False).encode()).hexdigest()==SCHEMA
-            and db.execute('select count(*) from schema_migrations').fetchone()[0]==28
-            and db.execute('pragma integrity_check').fetchone()[0]=='ok' and not db.execute('pragma foreign_key_check').fetchall(),'FAST_CUT_SCHEMA')
-    db.close()
+    result.update(check_stage_a_database(result['sourceCommit']))
     mark_stage('fence')
     fence=sqlite3.connect((ERASURE/'fence'/'erasure-fence.sqlite').as_uri()+'?mode=ro',uri=True)
     state=fence.execute('select scope,state,sequence,owner from fence_state where id=1').fetchone()
@@ -460,7 +484,7 @@ def check():
     mark_stage('remote_ledger')
     remote=json.loads(run(['/usr/local/bin/flexperiment-erasure','read']))
     require(remote['scope']=='canary' and remote['state']=='REMOTE_VERIFIED' and remote['sequence']==state[2],'FAST_CUT_REMOTE_LEDGER')
-    result.update(schemaFingerprint=SCHEMA,fence='OPEN',ledgerSequence=state[2],leases=0,state='RUNTIME_CHECK_PASS_NOT_FINAL_ACCEPTANCE')
+    result.update(fence='OPEN',ledgerSequence=state[2],leases=0,state='RUNTIME_CHECK_PASS_NOT_FINAL_ACCEPTANCE')
     return result
 
 
