@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import Image from "next/image";
 import { notFound } from "next/navigation";
 import { connection } from "next/server";
 import { Suspense } from "react";
@@ -11,6 +12,7 @@ import LexicalReadOnly from "@/components/courses/LexicalReadOnly";
 import { lessonAccessLabel } from "@/lib/course-access-labels";
 import { courseJsonLd, courseMetadata, jsonLdScript } from "@/lib/seo";
 import { platformOrigin } from "@/lib/origins";
+import { courseImageFor } from "@/lib/public-media";
 
 type Props = { params: Promise<{ slug: string }> };
 const buildShellSlug = "__build-shell__";
@@ -32,6 +34,7 @@ async function CourseContent({ params }: Props) {
   if (!result) notFound();
   const { commercial } = result;
   const courseDescription = result.course.description;
+  const cover = courseImageFor(result.course);
   const lessonsBySection = new Map<string, typeof result.outline.lessons>();
   for (const lesson of result.outline.lessons) {
     const key = lesson.sectionRef;
@@ -42,7 +45,10 @@ async function CourseContent({ params }: Props) {
   return (
     <main className="courseDetail">
       <nav className="nav" aria-label="Основная навигация"><Link className="wordmark" href="/">FLEXPERIMENT<span>®</span></Link><Link href="/courses">← Все курсы</Link></nav>
-      <header className="courseHero"><p className="eyebrow">{state}</p><h1>{result.course.title}</h1><p>{result.course.summary}</p></header>
+      <header className={cover ? "courseHero courseHeroWithCover" : "courseHero"}>
+        <div><p className="eyebrow">{state}</p><h1>{result.course.title}</h1><p>{result.course.summary}</p></div>
+        {cover && <Image className="courseHeroCover" src={cover.path} alt={cover.alt} width={cover.width} height={cover.height} unoptimized />}
+      </header>
       {commercial.accessModel === "PAID" && <CourseCheckout courseRef={result.course.courseRef} offerRef={commercial.offerRef} saleMode={commercial.saleMode} priceKopecks={commercial.priceKopecks} />}
       {courseDescription != null && <section className="richCopy courseDescription" aria-label="О курсе"><LexicalReadOnly data={courseDescription} /></section>}
       <section className="syllabus" aria-labelledby="syllabus-title">

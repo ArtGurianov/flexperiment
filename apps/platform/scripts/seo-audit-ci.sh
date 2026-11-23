@@ -22,3 +22,16 @@ done
 
 ../../node_modules/.bin/tsx scripts/seo-audit.ts "http://127.0.0.1:$PLATFORM_PORT" --production --origin "$ORIGIN" \
   / /courses /courses/one /courses/two /courses/one/lessons/intro:noindex
+
+# The WebP must appear as a visible cover, not just as an Open Graph URL.
+node --input-type=module - "$PLATFORM_PORT" <<'JS'
+import { strict as assert } from "node:assert";
+const origin = `http://127.0.0.1:${process.argv[2]}`;
+for (const [path, css] of [["/courses", "courseCardCover"], ["/courses/one", "courseHeroCover"]]) {
+  const response = await fetch(origin + path);
+  assert.equal(response.status, 200);
+  assert.match(await response.text(), new RegExp(`<img[^>]*class="${css}"[^>]*src="/course-covers/course-main-basics.webp"`));
+}
+const withoutCover = await fetch(origin + "/courses/two");
+assert.doesNotMatch(await withoutCover.text(), /<img[^>]+courseHeroCover/);
+JS
