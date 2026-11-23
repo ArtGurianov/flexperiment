@@ -6,7 +6,8 @@ import { createCommerceV2App } from "../src/app";
 import { createAuthRuntime } from "../src/auth";
 import { migrateV2 } from "../src/db";
 import { activateLegalRelease } from "../src/legal-control";
-import { loadMyIdentityConfig, sameSite, validReturnTarget } from "../src/my-session";
+import { assertSharedAccountDeployment, loadMyIdentityConfig, sameSite, validReturnTarget } from "../src/my-session";
+import { accountSessionScope, SHARED_ACCOUNT_ROUTES } from "../src/shared-account-routes";
 import { createMyOtp } from "../src/my-session-otp";
 import { verificationSubjectEmail } from "../src/my-session-storage";
 import { loadCommerceOrigins } from "../src/origins";
@@ -348,10 +349,14 @@ describe("Owner-approved shared account session", () => {
     expect(setCookie).toMatch(/HttpOnly/i);
     expect(setCookie).toMatch(/Secure/i);
     const headersAt = (host: string) => new Headers({ "x-forwarded-host": host, cookie });
-    const session = await runtime.resolveSession(headersAt(MY));
+    const myScope = { method: "GET", route: "/v1/my/session" };
+    const lmsScope = { method: "GET", route: "/v1/lms/session" };
+    const session = await runtime.resolveSession(headersAt(MY), myScope);
     expect(session).toMatchObject({ surface: "MY", kind: "MY" });
-    expect(await runtime.resolveSession(headersAt(LMS))).toEqual({ ...session, surface: "LMS" });
-    expect(await runtime.resolveSession(headersAt(lab))).toEqual({ ...session, surface: "LAB" });
+    expect(await runtime.resolveSession(headersAt(LMS), lmsScope)).toEqual({ ...session, surface: "LMS" });
+    expect(await runtime.resolveSession(headersAt(lab), lmsScope)).toBeNull();
+    expect(await runtime.resolveSession(headersAt(MY))).toBeNull();
+    expect(await runtime.resolveSession(new Headers({ "x-forwarded-host": MY, cookie: `${cookie}; ${cookie}` }), myScope)).toBeNull();
     expect(await runtime.resolveSession(headersAt("admin.flexperiment.test"))).toBeNull();
     expect(db.prepare('SELECT count(*) AS n FROM "session"').get()).toEqual({ n: 1 });
     expect(db.prepare('SELECT count(*) AS n FROM lms_sessions').get()).toEqual({ n: 0 });
@@ -374,9 +379,8 @@ describe("Owner-approved shared account session", () => {
     } });
     expect(revoked.status).toBe(204);
     expect(revoked.headers.getSetCookie().find(value => value.startsWith("__Secure-flex-account-"))).toMatch(/Domain=flexperiment\.test.*Max-Age=0|Max-Age=0.*Domain=flexperiment\.test/i);
-    expect(await runtime.resolveSession(headersAt(MY))).toBeNull();
-    expect(await runtime.resolveSession(headersAt(LMS))).toBeNull();
-    expect(await runtime.resolveSession(headersAt(lab))).toBeNull();
+    expect(await runtime.resolveSession(headersAt(MY), myScope)).toBeNull();
+    expect(await runtime.resolveSession(headersAt(LMS), lmsScope)).toBeNull();
   });
 
   it("leaves Stage A host scoped and refuses a domain that omits a configured storefront", () => {
@@ -385,5 +389,60 @@ describe("Owner-approved shared account session", () => {
       .toBeUndefined();
     expect(() => loadMyIdentityConfig({ ...environment, MY_SESSION_COOKIE_DOMAIN: "other.test" }, origins))
       .toThrow("MY_SESSION_COOKIE_DOMAIN_ORIGIN_MISMATCH");
+  });
+});
+
+
+describe("shared account route admission and deployment isolation", () => {
+  it("checks registered method/path pairs and a later handler stays anonymous by default", async () => {
+    const { app, runtime } = build({ MY_SESSION_COOKIE_DOMAIN: "flexperiment.test" });
+    const registered = new Set(app.routes.map(route => `${route.method} ${route.path}`));
+    for (const [surface, routes] of Object.entries(SHARED_ACCOUNT_ROUTES)) {
+      for (const rule of routes) expect(registered.has(rule), `${surface}: ${rule}`).toBe(true);
+    }
+    app.get("/v1/me/future-route", async context => context.json({
+      signedIn: !!await runtime.authenticateCustomer(context.req.raw.headers, accountSessionScope(context)),
+    }));
+    const { cookie } = await signIn(app, "buyer@example.test");
+    expect(await (await call(app, LMS, "/v1/me/future-route", { cookie })).json()).toEqual({ signedIn: false });
+    expect(await runtime.authenticateCustomer(new Headers({ "x-forwarded-host": LMS, cookie }),
+      { method: "POST", route: "/v1/lms/session" })).toBeNull();
+    const foreignPlayback = await call(app, LMS, "/v1/lessons/fixture/playback", {
+      cookie, method: "POST", origin: "https://lab.flexperiment.test",
+    });
+    expect([foreignPlayback.status, await foreignPlayback.json()]).toEqual([401, { decision: "SIGN_IN_REQUIRED" }]);
+  });
+
+  it("keeps the browser and server on one fixed expiration date even when a renewal would have been due", async () => {
+    const { app } = build({ MY_SESSION_COOKIE_DOMAIN: "flexperiment.test" });
+    const { cookie, response } = await signIn(app, "buyer@example.test");
+    expect(response.headers.getSetCookie().find(value => value.startsWith("__Secure-flex-account-"))).toContain("Max-Age=604800");
+    const expiresAt = new Date(Date.now() + 2 * 86_400_000).toISOString();
+    db.prepare('UPDATE "session" SET expires_at=?').run(expiresAt);
+    const read = await call(app, LMS, "/v1/lms/session", { cookie });
+    expect(await read.json()).toMatchObject({ signedIn: true });
+    expect(read.headers.getSetCookie()).toEqual([]);
+    expect(db.prepare('SELECT expires_at FROM "session"').get()).toEqual({ expires_at: expiresAt });
+    db.prepare('UPDATE "session" SET expires_at=?').run(new Date(Date.now() - 60_000).toISOString());
+    expect(await (await call(app, LMS, "/v1/lms/session", { cookie })).json()).toEqual({ signedIn: false });
+  });
+
+  it("rejects the production domain on canary, including its API or Admin origins", () => {
+    const prod = { ...environment, MY_ORIGIN: "https://my.flexperiment.ru", PLATFORM_ORIGIN: "https://flexperiment.ru",
+      LAB_ORIGIN: "https://lab.flexperiment.ru", ADMIN_ORIGIN: "https://admin.flexperiment.ru", API_ORIGIN: "https://api.flexperiment.ru",
+      MY_SESSION_COOKIE_DOMAIN: "flexperiment.ru" };
+    const production = loadMyIdentityConfig(prod, loadCommerceOrigins(prod));
+    expect(() => assertSharedAccountDeployment(production, "production", false)).not.toThrow();
+    expect(() => assertSharedAccountDeployment(production, "staging", true)).toThrow("MY_SESSION_CANARY_PRODUCTION_DOMAIN");
+    expect(() => assertSharedAccountDeployment(production, "production", true)).toThrow("MY_SESSION_CANARY_PRODUCTION_DOMAIN");
+    const oldCanary = { ...prod, MY_ORIGIN: "https://canary-my.flexperiment.ru" };
+    expect(() => loadMyIdentityConfig(oldCanary, loadCommerceOrigins(oldCanary))).toThrow("MY_SESSION_COOKIE_DOMAIN_RESERVED_FOR_PRODUCTION");
+    const nonProduction = { ...environment, MY_SESSION_COOKIE_DOMAIN: "flexperiment.test" };
+    for (const key of ["API_ORIGIN", "ADMIN_ORIGIN"]) {
+      const mixed = { ...nonProduction, [key]: prod[key as "API_ORIGIN" | "ADMIN_ORIGIN"] };
+      expect(() => assertSharedAccountDeployment(loadMyIdentityConfig(mixed, loadCommerceOrigins(mixed)), "staging", true))
+        .toThrow("MY_SESSION_CANARY_PRODUCTION_DOMAIN");
+    }
+    expect(() => assertSharedAccountDeployment(loadMyIdentityConfig(nonProduction, loadCommerceOrigins(nonProduction)), "staging", true)).not.toThrow();
   });
 });

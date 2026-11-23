@@ -6,7 +6,7 @@ import { createCommerceV2App } from "./app";
 import { migrateV2, openV2Database } from "./db";
 import { loadCommerceRuntimeConfig } from "./payment-mode";
 import { createAuthRuntime } from "./auth";
-import { loadMyIdentityConfig } from "./my-session";
+import { assertSharedAccountDeployment, loadMyIdentityConfig } from "./my-session";
 import { createMyOtp, myAccountLegalStorefront } from "./my-session-otp";
 import { createSessionExchange } from "./session-exchange";
 import { verifySmartCaptcha } from "./smartcaptcha";
@@ -78,10 +78,8 @@ if (config.deployEnvironment === "production" && (!controlRoomSessionSecret || !
 
 // FLEX-120/121 (B block): MY identity. MY_IDENTITY_MODE defaults to `off` (Stage A unchanged).
 const myIdentity = loadMyIdentityConfig(process.env, origins);
-if (config.deployEnvironment === "production" && myIdentity.mode === "on" &&
-  myIdentity.sharedCookie?.domain !== "flexperiment.ru") {
-  throw new Error("MY_SESSION_COOKIE_DOMAIN_INVALID_FOR_PRODUCTION");
-}
+assertSharedAccountDeployment(myIdentity, config.deployEnvironment,
+  process.env.COMMERCE_V2_ENVIRONMENT === "canary" || process.env.ERASURE_SCOPE === "canary");
 const myOtpDelivery = createMyOtpEmailDelivery();
 const auth = createAuthRuntime({
   db,
@@ -174,8 +172,8 @@ const app = createCommerceV2App({
   // FLEX-60/123: owned LAB ticket QR; absent or short LAB_TICKET_QR_SECRET keeps the route closed.
   labTicketQrSecret: labTicketQrSecretFromEnv(process.env),
   myOrigin: origins.my,
-  resolveSessionAudience: async (headers) => {
-    const session = await auth.resolveSession(headers);
+  resolveSessionAudience: async (headers, scope) => {
+    const session = await auth.resolveSession(headers, scope);
     if (!session || (session.kind === "MY" && session.surface !== "MY")) return null;
     return { customerId: session.customerId, audience: session.kind };
   },

@@ -1,3 +1,4 @@
+import { accountSessionScope, type AccountSessionScope } from "./shared-account-routes";
 import type Database from "better-sqlite3";
 import type { Context, Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
@@ -16,7 +17,7 @@ export function registerMySessionRoutes(app: Hono, dependencies: {
   readonly db: Database.Database;
   readonly config: MyIdentityConfig;
   readonly otp?: ReturnType<typeof createMyOtp>;
-  readonly resolveSession?: (headers: Headers) => Promise<ResolvedSession | null>;
+  readonly resolveSession?: (headers: Headers, scope?: AccountSessionScope) => Promise<ResolvedSession | null>;
   readonly signOut?: (headers: Headers) => Promise<Response>;
   readonly exchange?: ReturnType<typeof createSessionExchange>;
 }) {
@@ -38,7 +39,7 @@ export function registerMySessionRoutes(app: Hono, dependencies: {
     } catch { return null; }
   };
   const mySession = async (context: Context) => {
-    const resolved = await dependencies.resolveSession?.(context.req.raw.headers).catch(() => null);
+    const resolved = await dependencies.resolveSession?.(context.req.raw.headers, accountSessionScope(context)).catch(() => null);
     return resolved?.surface === "MY" && resolved.kind === "MY" ? resolved : null;
   };
   const refusal = (context: Context, error: unknown) => error instanceof MyOtpRefusal
@@ -200,7 +201,7 @@ export function registerMySessionRoutes(app: Hono, dependencies: {
   };
   app.get("/v1/lms/session", async (context) => {
     if (!lmsSurface(context)) return context.json({ code: "NOT_FOUND" }, 404, noStore);
-    const session = await dependencies.resolveSession?.(context.req.raw.headers);
+    const session = await dependencies.resolveSession?.(context.req.raw.headers, accountSessionScope(context));
     return context.json(navbarProfile(session?.surface === "LMS" && session.kind === (config.sharedCookie ? "MY" : "LMS") ? session : null),
       200, noStore);
   });

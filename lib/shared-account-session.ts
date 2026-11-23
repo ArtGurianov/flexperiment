@@ -1,3 +1,5 @@
+export const PRODUCTION_ACCOUNT_COOKIE_DOMAIN = "flexperiment.ru";
+
 type Environment = Readonly<Record<string, string | undefined>>;
 
 /** Activation is explicit so Stage A and already-qualified rehearsal images keep their behaviour. */
@@ -8,8 +10,14 @@ export function sharedAccountCookie(environment: Environment, origins: readonly 
   const targets = [environment.MY_ORIGIN, ...origins].map(value => value && URL.parse(value));
   if (targets.some(target => !target || target.protocol !== "https:" ||
     (target.hostname !== domain && !target.hostname.endsWith(`.${domain}`)))) throw new Error("MY_SESSION_COOKIE_DOMAIN_ORIGIN_MISMATCH");
-  const host = (targets[0] as URL).hostname;
-  // Separate cookie names for production and rehearsal MY origins, even if they share the DNS domain.
+  const my = targets[0] as URL;
+  if (domain === PRODUCTION_ACCOUNT_COOKIE_DOMAIN && (my.origin !== "https://my.flexperiment.ru" ||
+    (origins.length > 0 && (targets[1] as URL).origin !== "https://flexperiment.ru") ||
+    (origins.length > 1 && (targets[2] as URL).origin !== "https://lab.flexperiment.ru"))) {
+    throw new Error("MY_SESSION_COOKIE_DOMAIN_RESERVED_FOR_PRODUCTION");
+  }
+  const host = my.hostname;
+  // Separate names help distinguish environments. The domains, keys and databases also differ.
   return { domain, name: `flex-account-${host.replaceAll(".", "_")}` };
 }
 
@@ -21,7 +29,6 @@ export function validSharedAccountSetCookie(value: string, cookie: NonNullable<R
   return attributes.includes(`Domain=${cookie.domain}`) && attributes.includes("Path=/")
     && attributes.includes("Secure") && attributes.includes("HttpOnly") && attributes.includes("SameSite=Lax");
 }
-
 
 // No URL can be supplied by the browser. Reconstruct a link using the configured LMS origin.
 export function sharedLmsReturnHref(input: unknown, platformOrigin: string | undefined) {

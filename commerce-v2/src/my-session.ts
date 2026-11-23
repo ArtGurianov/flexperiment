@@ -1,9 +1,10 @@
-import { sharedAccountCookie } from "../../lib/shared-account-session";
+import { PRODUCTION_ACCOUNT_COOKIE_DOMAIN, sharedAccountCookie } from "../../lib/shared-account-session";
 import { MY_CHECKOUT_RETURN_PATH } from "../../lib/my-checkout-intent";
 import { createHash, timingSafeEqual } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { Context, Next } from "hono";
 import type { CommerceOrigins } from "./origins";
+import { admitsSharedAccountSession, type AccountSessionScope } from "./shared-account-routes";
 
 /** FLEX-120/121 session audiences. Contract: docs/plans/2026-11-20-my-identity-session-exchange-design.md §1, §3. */
 export type Surface = "MY" | "LMS" | "LAB";
@@ -40,6 +41,25 @@ export function loadMyIdentityConfig(environment: Environment, origins: Commerce
   }
   const sharedCookie = sharedAccountCookie(environment, [origins.platform, origins.lab]);
   return sharedCookie ? { mode, origins, sharedCookie } : { mode, origins };
+}
+
+/** A non-production shared session rollout must move all its public endpoints out of the live cookie domain. */
+export function assertSharedAccountDeployment(config: MyIdentityConfig, deployment: string, canary: boolean) {
+  if (config.mode === "off") return;
+  const production = deployment === "production" && !canary;
+  if (production) {
+    if (config.sharedCookie?.domain !== PRODUCTION_ACCOUNT_COOKIE_DOMAIN) {
+      throw new Error("MY_SESSION_COOKIE_DOMAIN_INVALID_FOR_PRODUCTION");
+    }
+    return;
+  }
+  if (!config.sharedCookie) return;
+  for (const origin of Object.values(config.origins)) {
+    const host = new URL(origin).hostname;
+    if (host === PRODUCTION_ACCOUNT_COOKIE_DOMAIN || host.endsWith(`.${PRODUCTION_ACCOUNT_COOKIE_DOMAIN}`)) {
+      throw new Error("MY_SESSION_CANARY_PRODUCTION_DOMAIN");
+    }
+  }
 }
 
 /** Surface from the host the trusted proxy set; never from a body, query, cookie or Origin. */
@@ -97,9 +117,15 @@ export function createSessionResolver(dependencies: {
   const now = dependencies.now ?? (() => new Date());
   const { db, config } = dependencies;
 
-  async function resolve(headers: Headers): Promise<ResolvedSession | null> {
+  async function resolve(headers: Headers, scope?: AccountSessionScope): Promise<ResolvedSession | null> {
     const surface = surfaceForRequest(config.origins, headers);
     if (!surface) return null;
+    if (config.sharedCookie) {
+      if (!admitsSharedAccountSession(surface, scope, headers, config.origins)) return null;
+      const name = `__Secure-${config.sharedCookie.name}`;
+      const candidates = headers.get("cookie")?.split(";").filter(part => part.split("=", 1)[0].trim() === name);
+      if (candidates?.length !== 1) return null;
+    }
     const admitted = config.sharedCookie ? ["MY"] : ADMITTED_SESSION_KINDS[config.mode][surface];
     if (admitted.includes("LMS")) {
       const token = presentedCookie(headers, LMS_SESSION_COOKIE);
@@ -122,9 +148,9 @@ export function createSessionResolver(dependencies: {
   return {
     resolve,
     /** Signature of today's `authenticateCustomer`; mode `off` delegates to it unchanged. */
-    async authenticateCustomer(headers: Headers): Promise<string | null> {
+    async authenticateCustomer(headers: Headers, scope?: AccountSessionScope): Promise<string | null> {
       if (config.mode === "off") return dependencies.legacyAuthenticate(headers);
-      return (await resolve(headers))?.customerId ?? null;
+      return (await resolve(headers, scope))?.customerId ?? null;
     },
   };
 }

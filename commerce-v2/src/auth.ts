@@ -87,6 +87,9 @@ export function createAuthRuntime(dependencies: AuthRuntimeDependencies) {
     database: dependencies.db,
     user: { fields: { createdAt: "created_at", updatedAt: "updated_at", emailVerified: "email_verified" } },
     session: {
+      // Ordinary account reads do not forward Better Auth's Set-Cookie. Keep the UTC expiry
+      // consistent across the signed browser credential and SQLite by using a fixed lifetime.
+      ...(myIdentity.sharedCookie ? { expiresIn: 7 * 24 * 60 * 60, disableSessionRefresh: true } : {}),
       fields: {
         expiresAt: "expires_at", createdAt: "created_at", updatedAt: "updated_at",
         ipAddress: "ip_address", userAgent: "user_agent", userId: "user_id",

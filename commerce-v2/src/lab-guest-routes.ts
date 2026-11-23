@@ -1,3 +1,4 @@
+import { accountSessionScope, type AccountSessionScope } from "./shared-account-routes";
 import type Database from "better-sqlite3";
 import { Hono, type Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
@@ -12,7 +13,7 @@ export const labBearer = (context: Context) => context.req.header("authorization
 export function registerLabGuestRoutes(parent: Hono, deps: {
   db: Database.Database; origin: string; now: () => Date;
   requestSource: (context: Context) => string | undefined;
-  authenticateCustomer?: (headers: Headers) => Promise<string | null>;
+  authenticateCustomer?: (headers: Headers, scope?: AccountSessionScope) => Promise<string | null>;
   sendLabTicketEmail?: (message: LabTicketEmail) => Promise<void>;
   erasureFence?: ErasureRuntimeFence;
 }) {
@@ -77,7 +78,7 @@ export function registerLabGuestRoutes(parent: Hono, deps: {
     return c.json(result, 200, noStore);
   });
   app.post("/v1/lab/guest/reissue", async c => {
-    const customerId = await deps.authenticateCustomer?.(c.req.raw.headers);
+    const customerId = await deps.authenticateCustomer?.(c.req.raw.headers, accountSessionScope(c));
     if (!customerId) return c.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
     const body = await c.req.json<{ orderPublicId: string; accessToken: string }>();
     return c.json(reissueOwnedLabTicket(deps.db, customerId, body.orderPublicId, body.accessToken, deps.now().toISOString()), 200, noStore);

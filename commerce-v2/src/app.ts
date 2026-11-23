@@ -46,6 +46,7 @@ import { surfaceForRequest } from "./my-session";
 import type { MyIdentityConfig, ResolvedSession } from "./my-session";
 import type { createMyOtp } from "./my-session-otp";
 import { registerMySessionRoutes } from "./my-session-routes";
+import { accountSessionScope, type AccountSessionScope } from "./shared-account-routes";
 import type { createSessionExchange } from "./session-exchange";
 import { databaseReady, READINESS_DEADLINE_MS, withinDeadline, type RefrefReadiness } from "./readiness";
 import { storefrontSwitchStatus } from "./storefront-switch";
@@ -68,7 +69,7 @@ type Dependencies = {
   readonly serviceToken: string;
   readonly foundationMode?: boolean;
   readonly probeRefref?: () => Promise<RefrefReadiness>;
-  readonly authenticateCustomer?: (headers: Headers) => Promise<string | null>;
+  readonly authenticateCustomer?: (headers: Headers, scope?: AccountSessionScope) => Promise<string | null>;
   /**
    * FLEX-59/62: C's routeContour(order) (FLEX-119) and the contour this process's payment rail reads back.
    * Absent until C is integrated: cancellation read-back/completion answer 503 rather than guess a contour.
@@ -83,7 +84,7 @@ type Dependencies = {
    * B's audience-aware session resolver (FLEX-120, #286 §3). MY-surface routes of D accept only an MY
    * session; absent until B is integrated, those routes stay closed (503) rather than accept any session.
    */
-  readonly resolveSessionAudience?: (headers: Headers) => Promise<{ customerId: string; audience: "MY" | "LMS" | "LEGACY" } | null>;
+  readonly resolveSessionAudience?: (headers: Headers, scope?: AccountSessionScope) => Promise<{ customerId: string; audience: "MY" | "LMS" | "LEGACY" } | null>;
   readonly authHandler?: (request: Request) => Promise<Response>;
   readonly prepareMagicLinkInitiation?: (input: {
     email: string; storefront: "COURSES" | "LAB"; personalDataConsent: boolean; personalDataVersion: string; personalDataSha256: string;
@@ -136,7 +137,7 @@ type Dependencies = {
   // FLEX-120/121 (B block): MY identity. Absent ⇒ mode `off` with the configured origins.
   readonly myIdentity?: MyIdentityConfig;
   readonly myOtp?: ReturnType<typeof createMyOtp>;
-  readonly resolveSession?: (headers: Headers) => Promise<ResolvedSession | null>;
+  readonly resolveSession?: (headers: Headers, scope?: AccountSessionScope) => Promise<ResolvedSession | null>;
   readonly signOutMySession?: (headers: Headers) => Promise<Response>;
   readonly sessionExchange?: ReturnType<typeof createSessionExchange>;
 
@@ -257,16 +258,16 @@ export function createCommerceV2App(deps: Dependencies) {
 
   // ART-378 (refref docs/29 §2, §4, §6). The signed-in account matters only to rotate an LMS context;
   // an unreadable session changes nothing.
-  const accountOf = async (headers: Headers) => {
+  const accountOf = async (headers: Headers, scope: AccountSessionScope) => {
     if (!deps.authenticateCustomer) return undefined;
-    try { return { customerId: await deps.authenticateCustomer(headers) }; } catch { return undefined; }
+    try { return { customerId: await deps.authenticateCustomer(headers, scope) }; } catch { return undefined; }
   };
   /** A bounded claim attempt for a context's still-unconfirmed proof, run after the response. */
-  const retryExchange = async (contexts: BrowserContexts, storefront: Storefront, presented: string, headers: Headers) => {
+  const retryExchange = async (contexts: BrowserContexts, storefront: Storefront, presented: string, headers: Headers, scope: AccountSessionScope) => {
     if (!contexts.hasPending(storefront, presented)) return;
     // An LMS context bound to an account other than the signed-in one waits for its rotation instead.
     const bound = contexts.boundCustomer(storefront, presented);
-    if (bound !== null && (await accountOf(headers))?.customerId !== bound) return;
+    if (bound !== null && (await accountOf(headers, scope))?.customerId !== bound) return;
     contexts.scheduleExchange(storefront, presented);
   };
   const contextHandledPaths = new Set(["/v1/browser-context/arrive", "/v1/browser-context/touch", "/v1/checkout/preview"]);
@@ -278,7 +279,8 @@ export function createCommerceV2App(deps: Dependencies) {
     const headers = new Headers(context.req.raw.headers);
     const storefront = storefrontForRequest(origins, headers);
     const presented = storefront && presentedContextId(headers, storefront);
-    if (storefront && presented) contexts.after(() => retryExchange(contexts, storefront, presented, headers));
+    const scope = accountSessionScope(context);
+    if (storefront && presented) contexts.after(() => retryExchange(contexts, storefront, presented, headers, scope));
   });
 
   // The storefront arrival endpoint: platform `/arrive` and LAB `/arrive` forward here. The proof is
@@ -294,7 +296,7 @@ export function createCommerceV2App(deps: Dependencies) {
     context.header("Location", cleanArrivalTarget(origins, storefront, url.searchParams.get(ARRIVAL_RETURN_PARAM)));
     const contexts = deps.browserContexts;
     if (contexts) {
-      const account = storefront === "COURSES" ? await accountOf(headers) : undefined;
+      const account = storefront === "COURSES" ? await accountOf(headers, accountSessionScope(context)) : undefined;
       const admitted = contexts.admit(storefront, presentedContextId(headers, storefront), { account, create: true })!;
       if (admitted.setCookie) context.header("Set-Cookie", admitted.setCookie, { append: true });
       // Refref sets exactly one proof; anything else is not an Arrival this endpoint can vouch for.
@@ -311,7 +313,8 @@ export function createCommerceV2App(deps: Dependencies) {
     const headers = new Headers(context.req.raw.headers);
     const storefront = storefrontForRequest(origins, headers);
     const presented = storefront && presentedContextId(headers, storefront);
-    if (contexts && storefront && presented) contexts.after(() => retryExchange(contexts, storefront, presented, headers));
+    const scope = accountSessionScope(context);
+    if (contexts && storefront && presented) contexts.after(() => retryExchange(contexts, storefront, presented, headers, scope));
     return context.body(null, 204, noStore);
   });
 
@@ -977,7 +980,7 @@ export function createCommerceV2App(deps: Dependencies) {
   /** MY surface only: an MY-audience session of a confirmed account (FLEX-60). */
   const myCustomer = async (context: Context): Promise<string | Response> => {
     if (!deps.resolveSessionAudience) return context.json({ code: "MY_SESSION_UNAVAILABLE" }, 503, noStore);
-    const session = await deps.resolveSessionAudience(context.req.raw.headers);
+    const session = await deps.resolveSessionAudience(context.req.raw.headers, accountSessionScope(context));
     if (!session) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
     if (session.audience !== "MY") return context.json({ code: "SESSION_AUDIENCE_FORBIDDEN" }, 403, noStore);
     try { assertLabPurchaseAuthority(deps.db, session.customerId, null); }
@@ -1028,7 +1031,7 @@ export function createCommerceV2App(deps: Dependencies) {
       if (guest && context.req.header("origin") !== origins.lab) return context.json({ code: "ORIGIN_FORBIDDEN" }, 403, noStore);
       // FLEX-60: a guest capability opens no new hold, context exchange or resolution; read-back stays on GET.
       if (guest && LAB_GUEST_PURCHASE_CLOSED) return context.json({ code: "LAB_ACCOUNT_CONFIRMATION_REQUIRED" }, 403, noStore);
-      const customerId = guest?.customer_id ?? await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;
+      const customerId = guest?.customer_id ?? await deps.authenticateCustomer?.(context.req.raw.headers, accountSessionScope(context)) ?? null;
       if (!customerId) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
       if (!deps.paymentRail) return context.json({ code: "PAYMENT_RAIL_UNAVAILABLE" }, 503, noStore);
       const customer = deps.db.prepare("SELECT email_normalized FROM customers WHERE id=?").get(customerId) as { email_normalized: string } | undefined;
@@ -1112,7 +1115,7 @@ export function createCommerceV2App(deps: Dependencies) {
       assertPaymentCreationEnabled(deps.config);
       const guest = labBearer(context) ? labAccess(deps.db, labBearer(context)) : undefined;
       if (guest && context.req.header("origin") !== origins.lab) return context.json({ code: "ORIGIN_FORBIDDEN" }, 403, noStore);
-      const customerId = guest?.customer_id ?? await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;
+      const customerId = guest?.customer_id ?? await deps.authenticateCustomer?.(context.req.raw.headers, accountSessionScope(context)) ?? null;
       if (!customerId) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
       if (!deps.paymentRail) return context.json({ code: "PAYMENT_RAIL_UNAVAILABLE" }, 503, noStore);
       const customer = deps.db.prepare("SELECT email_normalized FROM customers WHERE id=?").get(customerId) as { email_normalized: string } | undefined;
@@ -1186,7 +1189,7 @@ export function createCommerceV2App(deps: Dependencies) {
   });
 
   app.post("/v1/checkout/handoff", async (context) => {
-    const customerId = await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;
+    const customerId = await deps.authenticateCustomer?.(context.req.raw.headers, accountSessionScope(context)) ?? null;
     if (!customerId) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
     if (deps.config.paymentMode !== "refref") return context.json({ required: false }, 200, noStore);
     try {
@@ -1207,7 +1210,7 @@ export function createCommerceV2App(deps: Dependencies) {
   });
 
   app.get("/v1/checkout/handoff/return", async (context) => {
-    const customerId = await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;
+    const customerId = await deps.authenticateCustomer?.(context.req.raw.headers, accountSessionScope(context)) ?? null;
     if (!customerId) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
     if (deps.config.paymentMode !== "refref") return context.json({ code: "CHECKOUT_HANDOFF_NOT_REQUIRED" }, 409, noStore);
     try {
@@ -1223,7 +1226,7 @@ export function createCommerceV2App(deps: Dependencies) {
     try { guest = labBearer(context) ? labAccess(deps.db, labBearer(context)) : undefined; }
     catch { return context.json({ code: "ORDER_NOT_FOUND" }, 404, noStore); }
     if (guest && guest.order_public_id !== context.req.param("orderPublicId")) return context.json({ code: "ORDER_NOT_FOUND" }, 404, noStore);
-    const customerId = guest?.customer_id ?? await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;
+    const customerId = guest?.customer_id ?? await deps.authenticateCustomer?.(context.req.raw.headers, accountSessionScope(context)) ?? null;
     if (!customerId) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
     if (guest) {
       try { deps.erasureFence?.assertIdentity({ customerId: guest.customer_id }, "ACCOUNT"); }
@@ -1247,13 +1250,13 @@ export function createCommerceV2App(deps: Dependencies) {
   });
 
   app.get("/v1/refunds", async (context) => {
-    const customerId = await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;
+    const customerId = await deps.authenticateCustomer?.(context.req.raw.headers, accountSessionScope(context)) ?? null;
     if (!customerId) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
     return context.json({ refunds: listCustomerRefunds(deps.db, customerId) }, 200, noStore);
   });
 
   app.post("/v1/refunds", async (context) => {
-    const customerId = await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;
+    const customerId = await deps.authenticateCustomer?.(context.req.raw.headers, accountSessionScope(context)) ?? null;
     if (!customerId) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
     try {
       const body = await context.req.json<{ orderPublicId?: string; reasonCode?: RefundReason; customerNote?: string }>();
@@ -1360,7 +1363,7 @@ export function createCommerceV2App(deps: Dependencies) {
   });
 
   app.get("/v1/me/consents", async (context) => {
-    const customerId = await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;
+    const customerId = await deps.authenticateCustomer?.(context.req.raw.headers, accountSessionScope(context)) ?? null;
     if (!customerId) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
     const storefront = context.req.query("storefront") ?? "COURSES";
     if (storefront !== "COURSES" && storefront !== "LAB") return context.json({ code: "STOREFRONT_INVALID" }, 422, noStore);
@@ -1371,7 +1374,7 @@ export function createCommerceV2App(deps: Dependencies) {
   });
   app.post("/v1/me/consents", bodyLimit({ maxSize: 8192,
     onError: context => context.json({ code: "CONSENT_INPUT_TOO_LARGE" }, 413, noStore) }), async (context) => {
-    const customerId = await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;
+    const customerId = await deps.authenticateCustomer?.(context.req.raw.headers, accountSessionScope(context)) ?? null;
     if (!customerId) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
     try {
       const body = await context.req.json<AuthenticatedConsentInput>();
@@ -1398,7 +1401,7 @@ export function createCommerceV2App(deps: Dependencies) {
   // FLEX-128 G-05 / G-18 (A): marketing-only account action; never re-records the required choices.
   app.post("/v1/me/consents/marketing", bodyLimit({ maxSize: 4096,
     onError: context => context.json({ code: "CONSENT_INPUT_TOO_LARGE" }, 413, noStore) }), async (context) => {
-    const customerId = await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;
+    const customerId = await deps.authenticateCustomer?.(context.req.raw.headers, accountSessionScope(context)) ?? null;
     if (!customerId) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
     try {
       const body = await context.req.json<AuthenticatedMarketingChoiceInput>();
@@ -1421,7 +1424,7 @@ export function createCommerceV2App(deps: Dependencies) {
   });
 
   app.get("/v1/me", async (context) => {
-    const customerId = await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;
+    const customerId = await deps.authenticateCustomer?.(context.req.raw.headers, accountSessionScope(context)) ?? null;
     // An LMS page load binds an anonymous context to the account or rotates it at an account boundary.
     const storefront = storefrontForRequest(origins, context.req.raw.headers);
     if (deps.browserContexts && storefront === "COURSES") {
@@ -1459,7 +1462,7 @@ export function createCommerceV2App(deps: Dependencies) {
   });
 
   app.get("/v1/my/courses", async (context) => {
-    const session = await deps.resolveSession?.(context.req.raw.headers);
+    const session = await deps.resolveSession?.(context.req.raw.headers, accountSessionScope(context));
     if (!session) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
     if (session.kind !== "MY" || session.surface !== "MY") return context.json({ code: "SESSION_AUDIENCE_FORBIDDEN" }, 403, noStore);
     if (!requireCustomerConsent(session.customerId)) return context.json({ code: "CONSENT_REQUIRED" }, 403, noStore);
@@ -1469,7 +1472,7 @@ export function createCommerceV2App(deps: Dependencies) {
   });
 
   app.get("/v1/me/course-library", async (context) => {
-    const customerId = await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;
+    const customerId = await deps.authenticateCustomer?.(context.req.raw.headers, accountSessionScope(context)) ?? null;
     if (!customerId) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
     if (!requireCustomerConsent(customerId)) return context.json({ code: "CONSENT_REQUIRED" }, 403, noStore);
     try { return context.json(listCustomerStorefrontLibrary(deps.db, customerId, now(),
@@ -1477,7 +1480,7 @@ export function createCommerceV2App(deps: Dependencies) {
     catch { return context.json({ code: "COURSE_CONTENT_UNAVAILABLE" }, 503, noStore); }
   });
   app.get("/v1/me/courses/:slug", async (context) => {
-    const customerId = await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;
+    const customerId = await deps.authenticateCustomer?.(context.req.raw.headers, accountSessionScope(context)) ?? null;
     if (!customerId) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
     if (!requireCustomerConsent(customerId)) return context.json({ code: "CONSENT_REQUIRED" }, 403, noStore);
     try {
@@ -1488,7 +1491,7 @@ export function createCommerceV2App(deps: Dependencies) {
     } catch { return context.json({ code: "COURSE_CONTENT_UNAVAILABLE" }, 503, noStore); }
   });
   app.get("/v1/me/courses/:slug/lessons/:lessonSlug", async (context) => {
-    const customerId = await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;
+    const customerId = await deps.authenticateCustomer?.(context.req.raw.headers, accountSessionScope(context)) ?? null;
     if (!customerId) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
     if (!requireCustomerConsent(customerId)) return context.json({ code: "CONSENT_REQUIRED" }, 403, noStore);
     try {
@@ -1501,7 +1504,7 @@ export function createCommerceV2App(deps: Dependencies) {
   });
 
   app.get("/v1/library", async (context) => {
-    const customerId = await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;
+    const customerId = await deps.authenticateCustomer?.(context.req.raw.headers, accountSessionScope(context)) ?? null;
     if (!customerId) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
     if (!requireCustomerConsent(customerId)) return context.json({ code: "CONSENT_REQUIRED" }, 403, noStore);
     return context.json(listCustomerLibrary(
@@ -1513,13 +1516,13 @@ export function createCommerceV2App(deps: Dependencies) {
   });
 
   app.get("/v1/me/orders", async (context) => {
-    const customerId = await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;
+    const customerId = await deps.authenticateCustomer?.(context.req.raw.headers, accountSessionScope(context)) ?? null;
     if (!customerId) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
     return context.json({ orders: listCustomerOrderHistory(deps.db, customerId) }, 200, { "Cache-Control": "private, no-store" });
   });
 
   app.on(["PUT", "POST"], "/v1/lessons/:lessonRef/resume", async (context) => {
-    const customerId = await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;
+    const customerId = await deps.authenticateCustomer?.(context.req.raw.headers, accountSessionScope(context)) ?? null;
     if (!customerId) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
     if (!requireCustomerConsent(customerId)) return context.json({ code: "CONSENT_REQUIRED" }, 403, noStore);
     try {
@@ -1537,7 +1540,7 @@ export function createCommerceV2App(deps: Dependencies) {
   });
 
   app.post("/v1/lessons/:lessonRef/playback", async (context) => {
-    const customerId = await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;
+    const customerId = await deps.authenticateCustomer?.(context.req.raw.headers, accountSessionScope(context)) ?? null;
     if (!customerId) return context.json({ decision: "SIGN_IN_REQUIRED" }, 401, noStore);
     if (!requireCustomerConsent(customerId)) return context.json({ decision: "CONSENT_REQUIRED" }, 403, noStore);
     const windowStart = new Date(Math.floor(now().getTime() / 60_000) * 60_000).toISOString();
