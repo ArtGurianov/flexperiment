@@ -110,7 +110,7 @@ export async function driveNativeRefund(db: Database.Database, ctx: NativeLedger
     // No admission gate on refunds (contract I7): the same sealed request under the same key.
     // At most one replay per drive (shared with nested sends); further retries belong to the sweep.
     if (decision.effects.includes("REPLAY_REFUND_SAME_KEY")) {
-      if (budget.replays <= 0) return decision;
+      if (!ctx.provider.replayGuarantees.refund || budget.replays <= 0) return decision;
       budget.replays -= 1;
       await sendRefund(db, ctx, refundId, budget);
       return { ...decision, effects: [] };

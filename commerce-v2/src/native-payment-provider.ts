@@ -65,6 +65,8 @@ export type NativeCallbackHint = {
 
 export interface NativePaymentProvider {
   readonly name: string;
+  /** Provider, not merchant, guarantees a repeated key cannot create a second financial effect. */
+  readonly replayGuarantees: { readonly payment: boolean; readonly refund: boolean };
   createPayment(request: FrozenNativePaymentRequest): Promise<NativeCreateAnswer>;
   /** Authoritative, by our merchant order ref. */
   readPaymentByOrder(merchantOrderRef: string): Promise<NativePaymentReadBack>;

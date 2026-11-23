@@ -16,6 +16,7 @@ type BankRefund = { id: string; request: FrozenNativeRefundRequest; status: "PRO
 export type FakeFault = "LOSE_BEFORE_COMMIT" | "LOSE_AFTER_COMMIT" | "UNAVAILABLE";
 
 export class FakeNativeBank implements NativePaymentProvider {
+  readonly replayGuarantees = { payment: true, refund: true };
   readonly name = "fake-bank";
   readonly payments = new Map<string, BankPayment>();
   readonly refunds = new Map<string, BankRefund>();
