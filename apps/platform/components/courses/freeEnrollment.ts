@@ -62,9 +62,13 @@ export async function readEnrollmentStatus(courseSlug: string, signal?: AbortSig
   const response = await fetch(`/v1/me/free-enrollments/${encodeURIComponent(courseSlug)}`,
     { cache: "no-store", credentials: "same-origin", signal });
   if (response.status === 401) return "signin";
-  if (!response.ok) return null;
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error("ENROLLMENT_STATUS_UNAVAILABLE");
   const status = await response.json() as FreeEnrollmentStatus;
-  return status && status.courseSlug === courseSlug && typeof status.enrollable === "boolean" ? status : null;
+  if (!status || status.courseSlug !== courseSlug || typeof status.enrollable !== "boolean") {
+    throw new Error("ENROLLMENT_STATUS_INVALID");
+  }
+  return status;
 }
 
 export async function requestEnrollment(intent: EnrollmentIntent): Promise<EnrollmentOutcome> {
