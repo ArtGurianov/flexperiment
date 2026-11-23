@@ -77,6 +77,13 @@ export function createAuthRuntime(dependencies: AuthRuntimeDependencies) {
     basePath: "/v1/auth",
     secret,
     trustedOrigins,
+    ...(myIdentity.sharedCookie ? { advanced: {
+      useSecureCookies: true,
+      cookies: { session_token: {
+        name: myIdentity.sharedCookie.name,
+        attributes: { domain: myIdentity.sharedCookie.domain },
+      } },
+    } } : {}),
     database: dependencies.db,
     user: { fields: { createdAt: "created_at", updatedAt: "updated_at", emailVerified: "email_verified" } },
     session: {

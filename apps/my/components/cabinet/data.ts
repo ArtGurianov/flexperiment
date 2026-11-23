@@ -4,6 +4,7 @@
  * Authorization stays in Commerce. The loader sends no customer id, e-mail or other selector:
  * fixed paths only, plus the presented MY session cookie, so Commerce answers for the session
  * owner or not at all. The surface is fixed to MY exactly as the /v1 proxy does (contract §1). */
+import { sharedAccountCookie } from "../../../../lib/shared-account-session";
 import { myOrigin } from "../../lib/commerce-proxy";
 import { CABINET_FIXTURES, isCabinetFixtureName, type CabinetFixtureName } from "./fixtures";
 import {
@@ -21,11 +22,12 @@ export type CabinetSource = {
   readonly orders: () => Promise<LoadResult<CabinetOrder[]>>;
 };
 
-/** Only the Better Auth MY session cookie leaves my (host-only on my, contract §3). */
+/** Forward only the configured account session cookie to Commerce. */
 export const SESSION_COOKIE_NAMES: ReadonlySet<string> = new Set(["__Secure-better-auth.session_token", "better-auth.session_token"]);
 
-export function sessionCookieHeader(cookies: ReadonlyArray<{ name: string; value: string }>): string | null {
-  const kept = cookies.filter((cookie) => SESSION_COOKIE_NAMES.has(cookie.name) && /^[\x21-\x7e]{1,4096}$/.test(cookie.value));
+export function sessionCookieHeader(cookies: ReadonlyArray<{ name: string; value: string }>, environment: Environment = process.env): string | null {
+  const shared = sharedAccountCookie(environment);
+  const kept = cookies.filter((cookie) => (shared ? cookie.name === `__Secure-${shared.name}` : SESSION_COOKIE_NAMES.has(cookie.name)) && /^[\x21-\x7e]{1,4096}$/.test(cookie.value));
   return kept.length ? kept.map((cookie) => `${cookie.name}=${cookie.value}`).join("; ") : null;
 }
 

@@ -335,3 +335,55 @@ describe("return targets", () => {
     }
   });
 });
+
+
+describe("Owner-approved shared account session", () => {
+  it("uses one real session across the surfaces with scoped reads and one revocation", async () => {
+    const { app, runtime } = build({ MY_SESSION_COOKIE_DOMAIN: "flexperiment.test" });
+    const lab = "lab.flexperiment.test";
+    const { response, cookie } = await signIn(app, "buyer@example.test");
+    const [setCookie] = response.headers.getSetCookie();
+    expect(setCookie).toMatch(/^__Secure-flex-account-my_flexperiment_test=/);
+    expect(setCookie).toContain("Domain=flexperiment.test");
+    expect(setCookie).toMatch(/HttpOnly/i);
+    expect(setCookie).toMatch(/Secure/i);
+    const headersAt = (host: string) => new Headers({ "x-forwarded-host": host, cookie });
+    const session = await runtime.resolveSession(headersAt(MY));
+    expect(session).toMatchObject({ surface: "MY", kind: "MY" });
+    expect(await runtime.resolveSession(headersAt(LMS))).toEqual({ ...session, surface: "LMS" });
+    expect(await runtime.resolveSession(headersAt(lab))).toEqual({ ...session, surface: "LAB" });
+    expect(await runtime.resolveSession(headersAt("admin.flexperiment.test"))).toBeNull();
+    expect(db.prepare('SELECT count(*) AS n FROM "session"').get()).toEqual({ n: 1 });
+    expect(db.prepare('SELECT count(*) AS n FROM lms_sessions').get()).toEqual({ n: 0 });
+
+    const display = { signedIn: true, displayName: null, emailMasked: "b***@e***.test" };
+    expect(await (await call(app, LMS, "/v1/lms/session", { cookie })).json()).toEqual(display);
+    expect(await (await call(app, MY, "/v1/my/storefront-session", { cookie, origin: `https://${lab}` })).json()).toEqual(display);
+    expect((await call(app, lab, "/v1/me", { cookie })).status).toBe(403);
+    expect((await call(app, MY, "/v1/my/profile", { cookie, origin: `https://${lab}` })).status).toBe(403);
+    expect((await call(app, lab, "/v1/my/profile", { cookie })).status).toBe(404);
+    expect((await call(app, lab, "/v1/checkout/preview", { cookie, body: { offerRef: "lab:fixture" } })).status).toBe(403);
+    expect((await call(app, lab, "/v1/lessons/fixture/playback", { cookie, method: "POST" })).status).toBe(403);
+    const playback = await call(app, LMS, "/v1/lessons/fixture/playback", { cookie, method: "POST" });
+    expect([playback.status, await playback.json()]).toEqual([403, { decision: "CONSENT_REQUIRED" }]);
+    expect((await call(app, LMS, "/v1/lms/exchange/start", { cookie, body: { next: "/courses/sample" } })).status).toBe(404);
+    expect((await call(app, MY, "/v1/my/storefront-session", { cookie, origin: "https://admin.flexperiment.test" })).status).toBe(403);
+    expect((await call(app, MY, "/v1/my/storefront-sign-out", { cookie, method: "POST", origin: `https://${lab}` })).status).toBe(403);
+    const revoked = await app.request("/v1/my/storefront-sign-out", { method: "POST", headers: {
+      "x-forwarded-host": MY, origin: `https://${lab}`, cookie, "x-flex-navbar": "1",
+    } });
+    expect(revoked.status).toBe(204);
+    expect(revoked.headers.getSetCookie().find(value => value.startsWith("__Secure-flex-account-"))).toMatch(/Domain=flexperiment\.test.*Max-Age=0|Max-Age=0.*Domain=flexperiment\.test/i);
+    expect(await runtime.resolveSession(headersAt(MY))).toBeNull();
+    expect(await runtime.resolveSession(headersAt(LMS))).toBeNull();
+    expect(await runtime.resolveSession(headersAt(lab))).toBeNull();
+  });
+
+  it("leaves Stage A host scoped and refuses a domain that omits a configured storefront", () => {
+    const origins = loadCommerceOrigins(environment);
+    expect(loadMyIdentityConfig({ ...environment, MY_IDENTITY_MODE: "off", MY_SESSION_COOKIE_DOMAIN: "flexperiment.test" }, origins).sharedCookie)
+      .toBeUndefined();
+    expect(() => loadMyIdentityConfig({ ...environment, MY_SESSION_COOKIE_DOMAIN: "other.test" }, origins))
+      .toThrow("MY_SESSION_COOKIE_DOMAIN_ORIGIN_MISMATCH");
+  });
+});

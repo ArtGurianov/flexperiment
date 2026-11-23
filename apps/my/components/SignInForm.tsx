@@ -38,7 +38,9 @@ async function post(path: string, body: unknown) {
   return { ok: response.ok, payload };
 }
 
-export default function SignInForm({ next, captchaSiteKey, onlyConsent = false }: { next: string; captchaSiteKey?: string; onlyConsent?: boolean }) {
+export default function SignInForm({ next, successHref, captchaSiteKey, onlyConsent = false }: {
+  next: string; successHref?: string; captchaSiteKey?: string; onlyConsent?: boolean;
+}) {
   const [release, setRelease] = useState<LegalRelease | null | undefined>(undefined);
   const [email, setEmail] = useState("");
   const [code, setCode] = useState("");
@@ -118,7 +120,7 @@ export default function SignInForm({ next, captchaSiteKey, onlyConsent = false }
     event.preventDefault();
     setBusy(true); setError("");
     const recorded = await recordConsents().catch(() => "CONSENT_WRITE_UNCONFIRMED");
-    if (recorded === "OK") { window.location.assign(next); return; }
+    if (recorded === "OK") { window.location.assign(successHref ?? next); return; }
     setError(message(recorded)); setBusy(false);
   }
 
@@ -133,7 +135,7 @@ export default function SignInForm({ next, captchaSiteKey, onlyConsent = false }
     const recorded = await recordConsents().catch(() => "CONSENT_WRITE_UNCONFIRMED");
     if (recorded !== "OK") { setError(message(recorded)); setBusy(false); return; }
     // `next` is re-validated by Commerce; only a local my path comes back.
-    window.location.assign(validMyReturnTarget(payload.next));
+    window.location.assign(successHref ?? validMyReturnTarget(payload.next));
   }
 
   if (release === undefined) return <p>Загрузка…</p>;

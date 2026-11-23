@@ -1,7 +1,9 @@
+import { sharedAccountCookie, validSharedAccountSetCookie } from "../../../lib/shared-account-session";
+
 /** Same-origin `/v1/*` proxy for my.flexperiment.ru (FLEX-120 contract §1, §7, §12).
  * Commerce derives the surface only from the host this proxy sets, so every client-supplied
- * forwarding header is dropped and replaced. Domain cookies, off-origin redirects and CORS
- * headers from upstream are refused or stripped in every environment, not only in canary. */
+ * forwarding header is dropped and replaced. Only the configured account cookie and the two
+ * explicit storefront Navbar routes can cross the MY host boundary. */
 type Environment = Readonly<Record<string, string | undefined>>;
 
 /** First path segments my may reach. `lms` and `auth` are deliberately absent. */
@@ -36,7 +38,30 @@ export async function proxyCommerce(request: Request, path: string[], environmen
   const source = new URL(request.url);
   const presentedHost = request.headers.get("host") ?? source.host;
   if (presentedHost !== origin.host) return refuse("FORBIDDEN", 403);
-  if (request.headers.has("origin") && request.headers.get("origin") !== origin.origin) return refuse("FORBIDDEN", 403);
+  let sessionCookie: ReturnType<typeof sharedAccountCookie>;
+  try { sessionCookie = sharedAccountCookie(environment, [environment.PLATFORM_ORIGIN, environment.LAB_ORIGIN]); }
+  catch { return refuse("COMMERCE_NOT_CONFIGURED", 503); }
+  const requestOrigin = request.headers.get("origin");
+  const storefrontRead = path.length === 2 && path[0] === "my" && path[1] === "storefront-session";
+  const storefrontLogout = path.length === 2 && path[0] === "my" && path[1] === "storefront-sign-out";
+  const storefrontRoute = storefrontRead || storefrontLogout;
+  const cors = new Headers({ "Cache-Control": "no-store", Vary: "Origin" });
+  if (storefrontRoute) {
+    const storefrontOrigins = [environment.PLATFORM_ORIGIN, environment.LAB_ORIGIN].map(value => value && URL.parse(value)?.origin);
+    if (!sessionCookie || !requestOrigin || !storefrontOrigins.includes(requestOrigin)) return refuse("FORBIDDEN", 403);
+    cors.set("Access-Control-Allow-Origin", requestOrigin);
+    cors.set("Access-Control-Allow-Credentials", "true");
+    if (storefrontLogout && request.method === "OPTIONS") {
+      if (request.headers.get("access-control-request-method") !== "POST" ||
+        request.headers.get("access-control-request-headers")?.trim().toLowerCase() !== "x-flex-navbar") return refuse("FORBIDDEN", 403);
+      cors.set("Access-Control-Allow-Methods", "POST");
+      cors.set("Access-Control-Allow-Headers", "X-Flex-Navbar");
+      return new Response(null, { status: 204, headers: cors });
+    }
+    if (storefrontRead ? request.method !== "GET" : request.method !== "POST" || request.headers.get("x-flex-navbar") !== "1") {
+      return refuse("FORBIDDEN", 403);
+    }
+  } else if (request.headers.has("origin") && requestOrigin !== origin.origin) return refuse("FORBIDDEN", 403);
 
   const target = new URL(`/v1/${path.map(encodeURIComponent).join("/")}${source.search}`, upstream);
   const clientIp = ingressClientIp(request.headers);
@@ -52,7 +77,10 @@ export async function proxyCommerce(request: Request, path: string[], environmen
       redirect: "manual", cache: "no-store", signal: AbortSignal.timeout(5000), duplex: "half",
     } as RequestInit & { duplex: "half" });
     const output = new Headers(response.headers);
-    if (output.getSetCookie().some((cookie) => /;\s*domain\s*=/i.test(cookie))) {
+    const maySetAccountCookie = request.method === "POST" && path[0] === "my"
+      && (storefrontLogout || path.length === 2 && path[1] === "sign-out" || path.length === 3 && path[1] === "otp" && path[2] === "verify");
+    if (output.getSetCookie().some(cookie => /;\s*domain\s*=/i.test(cookie)
+      && (!maySetAccountCookie || !sessionCookie || !validSharedAccountSetCookie(cookie, sessionCookie)))) {
       await response.body?.cancel();
       return refuse("COMMERCE_COOKIE_REFUSED", 502);
     }
@@ -62,6 +90,11 @@ export async function proxyCommerce(request: Request, path: string[], environmen
       return refuse("COMMERCE_REDIRECT_REFUSED", 502);
     }
     for (const key of [...output.keys()]) if (key.startsWith("access-control-")) output.delete(key);
+    if (storefrontRoute) {
+      output.append("Vary", "Origin");
+      output.set("Access-Control-Allow-Origin", cors.get("Access-Control-Allow-Origin")!);
+      output.set("Access-Control-Allow-Credentials", "true");
+    }
     output.set("cache-control", "no-store");
     return new Response(response.body, { status: response.status, headers: output });
   } catch { return refuse("COMMERCE_UNAVAILABLE", 503); } // no URL, token or exception body in logs

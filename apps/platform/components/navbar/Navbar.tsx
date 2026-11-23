@@ -11,12 +11,12 @@ import type { NavbarConfig } from "../../../../lib/navbar/navbar-core";
 
 type Fetcher = (input: string, init: RequestInit) => Promise<Response>;
 
-export function lmsNavbarConfig(myOrigin: string): NavbarConfig {
-  return { variant: "LMS", myOrigin, sessionUrl: "/v1/lms/session", signOutUrl: "/v1/lms/sign-out" };
+export function lmsNavbarConfig(myOrigin: string, sharedSession = false): NavbarConfig {
+  return { variant: "LMS", myOrigin, sessionUrl: "/v1/lms/session", signOutUrl: sharedSession ? new URL("/v1/my/storefront-sign-out", myOrigin).href : "/v1/lms/sign-out" };
 }
 
-export default function Navbar({ myOrigin, fetcher }: { myOrigin: string; fetcher?: Fetcher }) {
+export default function Navbar({ myOrigin, sharedSession = false, fetcher }: { myOrigin: string; sharedSession?: boolean; fetcher?: Fetcher }) {
   const pathname = usePathname();
-  const config = useMemo(() => lmsNavbarConfig(myOrigin), [myOrigin]);
+  const config = useMemo(() => lmsNavbarConfig(myOrigin, sharedSession), [myOrigin, sharedSession]);
   return <NavbarProfile config={config} pathname={pathname} fetcher={fetcher} />;
 }

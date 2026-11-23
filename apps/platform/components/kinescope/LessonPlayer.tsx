@@ -43,8 +43,8 @@ const parseGrant = async (response: Response) => {
 const deniedDecision = async (response: Response) => response.status === 403
   ? ((await response.clone().json().catch(() => null)) as { decision?: string } | null)?.decision : undefined;
 
-function LessonPlayerSession({ lessonRef, title, enrollment, onEnrolled }: {
-  lessonRef: string; title: string; enrollment?: LessonEnrollmentContext; onEnrolled: () => void;
+function LessonPlayerSession({ lessonRef, title, enrollment, myLogin, onEnrolled }: {
+  lessonRef: string; title: string; enrollment?: LessonEnrollmentContext; myLogin?: string; onEnrolled: () => void;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<KinescopePlayerInstance | null>(null);
@@ -203,18 +203,18 @@ function LessonPlayerSession({ lessonRef, title, enrollment, onEnrolled }: {
 
   if (state === "signin" && enrollment?.accessModel === "FREE") return <div className="playerGate"><p>Урок бесплатного курса откроется после записи.</p>
     <FreeEnrollmentAction courseSlug={enrollment.courseSlug} lessonSlug={enrollment.lessonSlug} accessModel="FREE" compact onEnrolled={onEnrolled} />
-    <Link href={`/account?next=${encodeURIComponent(window.location.pathname)}`}>Уже записаны? Войти</Link></div>;
-  if (state === "signin") return <div className="playerGate"><p>Войдите, чтобы открыть урок.</p><Link className="primary" href={`/account?next=${encodeURIComponent(window.location.pathname)}`}>Получить ссылку →</Link></div>;
+    <Link href={myLogin ?? `/account?next=${encodeURIComponent(window.location.pathname)}`}>Уже записаны? Войти</Link></div>;
+  if (state === "signin") return <div className="playerGate"><p>Войдите, чтобы открыть урок.</p><Link className="primary" href={myLogin ?? `/account?next=${encodeURIComponent(window.location.pathname)}`}>{myLogin ? "Войти через MY →" : "Получить ссылку →"}</Link></div>;
   if (state === "enroll" && enrollment) return <div className="playerGate"><p>Чтобы открыть урок, запишитесь на бесплатный курс.</p>
     <FreeEnrollmentAction courseSlug={enrollment.courseSlug} lessonSlug={enrollment.lessonSlug} accessModel={enrollment.accessModel} compact onEnrolled={onEnrolled} /></div>;
   if (state === "enroll") return <div className="playerGate"><p>Чтобы открыть урок, запишитесь на бесплатный курс.</p><Link href="/courses">Вернуться к курсам</Link></div>;
-  if (state === "consent") return <div className="playerGate"><p>Подтвердите обработку ПД и правила в аккаунте, чтобы открыть урок. Реклама необязательна.</p><Link href={`/account?next=${encodeURIComponent(window.location.pathname)}`}>Подтвердить выбор</Link></div>;
+  if (state === "consent") return <div className="playerGate"><p>Подтвердите обработку ПД и правила в аккаунте, чтобы открыть урок. Реклама необязательна.</p><Link href={myLogin ?? `/account?next=${encodeURIComponent(window.location.pathname)}`}>Подтвердить выбор</Link></div>;
   if (state === "denied") return <div className="playerGate"><p>Урок пока недоступен для вашего аккаунта.</p><Link href="/courses">Вернуться к курсам</Link></div>;
   if (state === "error") return <div className="playerGate"><p>Видео сейчас не загрузилось. Попробуйте обновить страницу.</p></div>;
   return <div className="lessonPlayer" aria-label={`Видео: ${title}`}><div ref={hostRef} className="lessonPlayerHost" />{state === "loading" && <p>Проверяем доступ…</p>}</div>;
 }
 
-export default function LessonPlayer(props: { lessonRef: string; title: string; enrollment?: LessonEnrollmentContext }) {
+export default function LessonPlayer(props: { lessonRef: string; title: string; enrollment?: LessonEnrollmentContext; myLogin?: string }) {
   // A fresh enrollment re-requests the grant in a new session; the enrollment itself never mints one.
   const [attempt, setAttempt] = useState(0);
   return <LessonPlayerSession key={`${props.lessonRef}:${attempt}`} {...props} onEnrolled={() => setAttempt(value => value + 1)} />;

@@ -60,11 +60,21 @@ async function exchange(request: Request, action: "start" | "redeem", input: unk
 
 export function startExchange(request: Request) {
   if (!lmsExchangeEnabled()) return notFound();
-  return exchange(request, "start", { next: new URL(request.url).searchParams.get("next") });
+  const next = new URL(request.url).searchParams.get("next");
+  if (process.env.MY_SESSION_COOKIE_DOMAIN?.trim()) {
+    const my = URL.parse(process.env.MY_ORIGIN!);
+    const platform = URL.parse(platformOrigin());
+    if (my?.protocol !== "https:" || my.href !== my.origin + "/" || !platform ||
+      (request.headers.get("host") ?? new URL(request.url).host) !== platform.host) return failed();
+    const destination = new URL("/sign-in", my);
+    destination.searchParams.set("lmsNext", next && lmsPath.test(next) && next !== "/account" ? next : "/courses");
+    return new Response(null, { status: 303, headers: { ...responseHeaders, Location: destination.href } });
+  }
+  return exchange(request, "start", { next });
 }
 
 export async function redeemExchange(request: Request) {
-  if (!lmsExchangeEnabled()) return notFound();
+  if (!lmsExchangeEnabled() || process.env.MY_SESSION_COOKIE_DOMAIN?.trim()) return notFound();
   if (!request.body || request.headers.get("content-type")?.split(";")[0] !== "application/x-www-form-urlencoded") return failed();
   const reader = request.body.getReader();
   const decoder = new TextDecoder();

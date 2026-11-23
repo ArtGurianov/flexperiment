@@ -226,6 +226,8 @@ export function createCommerceV2App(deps: Dependencies) {
   };
   const now = deps.now ?? (() => new Date());
   const origins = deps.origins ?? loadCommerceOrigins({ NODE_ENV: "test" });
+  const requireCustomerConsent = (customerId: string) => hasRequiredAccountConsents(deps.db, customerId,
+    deps.myIdentity?.sharedCookie ? deps.myOtp?.accountLegalStorefront : undefined);
 
   app.use("*", async (context, next) => {
     await next();
@@ -1460,7 +1462,7 @@ export function createCommerceV2App(deps: Dependencies) {
     const session = await deps.resolveSession?.(context.req.raw.headers);
     if (!session) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
     if (session.kind !== "MY" || session.surface !== "MY") return context.json({ code: "SESSION_AUDIENCE_FORBIDDEN" }, 403, noStore);
-    if (!hasRequiredAccountConsents(deps.db, session.customerId)) return context.json({ code: "CONSENT_REQUIRED" }, 403, noStore);
+    if (!requireCustomerConsent(session.customerId)) return context.json({ code: "CONSENT_REQUIRED" }, 403, noStore);
     try { return context.json(listMyStorefrontLibrary(deps.db, session.customerId, now(),
       Number(process.env.CATALOG_LEASE_MS ?? 24 * 60 * 60 * 1000)), 200, { "Cache-Control": "private, no-store" }); }
     catch { return context.json({ code: "COURSE_CONTENT_UNAVAILABLE" }, 503, noStore); }
@@ -1469,7 +1471,7 @@ export function createCommerceV2App(deps: Dependencies) {
   app.get("/v1/me/course-library", async (context) => {
     const customerId = await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;
     if (!customerId) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
-    if (!hasRequiredAccountConsents(deps.db, customerId)) return context.json({ code: "CONSENT_REQUIRED" }, 403, noStore);
+    if (!requireCustomerConsent(customerId)) return context.json({ code: "CONSENT_REQUIRED" }, 403, noStore);
     try { return context.json(listCustomerStorefrontLibrary(deps.db, customerId, now(),
       Number(process.env.CATALOG_LEASE_MS ?? 24 * 60 * 60 * 1000)), 200, { "Cache-Control": "private, no-store" }); }
     catch { return context.json({ code: "COURSE_CONTENT_UNAVAILABLE" }, 503, noStore); }
@@ -1477,7 +1479,7 @@ export function createCommerceV2App(deps: Dependencies) {
   app.get("/v1/me/courses/:slug", async (context) => {
     const customerId = await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;
     if (!customerId) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
-    if (!hasRequiredAccountConsents(deps.db, customerId)) return context.json({ code: "CONSENT_REQUIRED" }, 403, noStore);
+    if (!requireCustomerConsent(customerId)) return context.json({ code: "CONSENT_REQUIRED" }, 403, noStore);
     try {
       const course = getCustomerStorefrontCourse(deps.db, customerId, context.req.param("slug"), now(),
         Number(process.env.CATALOG_LEASE_MS ?? 24 * 60 * 60 * 1000));
@@ -1488,7 +1490,7 @@ export function createCommerceV2App(deps: Dependencies) {
   app.get("/v1/me/courses/:slug/lessons/:lessonSlug", async (context) => {
     const customerId = await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;
     if (!customerId) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
-    if (!hasRequiredAccountConsents(deps.db, customerId)) return context.json({ code: "CONSENT_REQUIRED" }, 403, noStore);
+    if (!requireCustomerConsent(customerId)) return context.json({ code: "CONSENT_REQUIRED" }, 403, noStore);
     try {
       const lesson = getCustomerStorefrontLesson(deps.db, customerId,
         context.req.param("slug"), context.req.param("lessonSlug"), now(),
@@ -1501,7 +1503,7 @@ export function createCommerceV2App(deps: Dependencies) {
   app.get("/v1/library", async (context) => {
     const customerId = await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;
     if (!customerId) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
-    if (!hasRequiredAccountConsents(deps.db, customerId)) return context.json({ code: "CONSENT_REQUIRED" }, 403, noStore);
+    if (!requireCustomerConsent(customerId)) return context.json({ code: "CONSENT_REQUIRED" }, 403, noStore);
     return context.json(listCustomerLibrary(
       deps.db,
       customerId,
@@ -1519,10 +1521,10 @@ export function createCommerceV2App(deps: Dependencies) {
   app.on(["PUT", "POST"], "/v1/lessons/:lessonRef/resume", async (context) => {
     const customerId = await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;
     if (!customerId) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
-    if (!hasRequiredAccountConsents(deps.db, customerId)) return context.json({ code: "CONSENT_REQUIRED" }, 403, noStore);
+    if (!requireCustomerConsent(customerId)) return context.json({ code: "CONSENT_REQUIRED" }, 403, noStore);
     try {
       const body = await context.req.json<{ seconds: number; clientSeq: number; clientTs: string }>();
-      const result = deps.db.transaction(() => hasRequiredAccountConsents(deps.db, customerId)
+      const result = deps.db.transaction(() => requireCustomerConsent(customerId)
         ? saveResumePosition(deps.db, {
           customerId, lessonRef: context.req.param("lessonRef"),
           seconds: body.seconds, clientSeq: body.clientSeq, clientTs: body.clientTs,
@@ -1537,7 +1539,7 @@ export function createCommerceV2App(deps: Dependencies) {
   app.post("/v1/lessons/:lessonRef/playback", async (context) => {
     const customerId = await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;
     if (!customerId) return context.json({ decision: "SIGN_IN_REQUIRED" }, 401, noStore);
-    if (!hasRequiredAccountConsents(deps.db, customerId)) return context.json({ decision: "CONSENT_REQUIRED" }, 403, noStore);
+    if (!requireCustomerConsent(customerId)) return context.json({ decision: "CONSENT_REQUIRED" }, 403, noStore);
     const windowStart = new Date(Math.floor(now().getTime() / 60_000) * 60_000).toISOString();
     const rate = deps.db.prepare(`INSERT INTO playback_grant_rate_limits(customer_id,window_start,request_count)
       VALUES (?,?,1) ON CONFLICT(customer_id,window_start) DO UPDATE SET request_count=request_count+1

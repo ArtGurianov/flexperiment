@@ -80,3 +80,18 @@ describe("Platform MY → LMS browser bridge", () => {
     }
   });
 });
+
+it("returns to a scoped LMS path through MY sign-in without allocating an exchange", async () => {
+  vi.stubEnv("MY_SESSION_COOKIE_DOMAIN", "flexperiment.ru");
+  const fetch = vi.spyOn(globalThis, "fetch");
+  const response = await start(requestStart());
+  expect(response.status).toBe(303);
+  const location = new URL(response.headers.get("Location")!);
+  expect(location.origin).toBe(MY);
+  expect(location.pathname).toBe("/sign-in");
+  expect(location.searchParams.get("lmsNext")).toBe(lesson);
+  const foreign = await start(new Request(`${LMS}/auth/lms/start?next=%2F%2Fevil.example`));
+  expect(new URL(foreign.headers.get("Location")!).searchParams.get("lmsNext")).toBe("/courses");
+  expect((await redeem(requestRedeem())).status).toBe(404);
+  expect(fetch).not.toHaveBeenCalled();
+});

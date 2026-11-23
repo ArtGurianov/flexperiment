@@ -78,3 +78,50 @@ describe("my page contract", () => {
     for (const sample of fixture.MY.cases) expect([sample.input, validMyReturnTarget(sample.input)]).toEqual([sample.input, sample.result]);
   });
 });
+
+describe("shared account cookie and narrow Navbar CORS", () => {
+  const config = { ...environment, MY_IDENTITY_MODE: "on", MY_SESSION_COOKIE_DOMAIN: "flexperiment.ru",
+    PLATFORM_ORIGIN: "https://flexperiment.ru", LAB_ORIGIN: "https://lab.flexperiment.ru" };
+  const domainCookie = "__Secure-flex-account-my_flexperiment_ru=fixture; Domain=flexperiment.ru; Path=/; Secure; HttpOnly; SameSite=Lax";
+
+  it("passes only the pinned domain cookie on OTP verify and logout", async () => {
+    for (const [parts, cookie, status] of [
+      [["my", "otp", "verify"], domainCookie, 200],
+      [["my", "otp", "verify"], domainCookie.replace("HttpOnly; ", ""), 502],
+      [["my", "otp", "verify"], domainCookie.replace("Domain=flexperiment.ru", "Domain=other.ru"), 502],
+      [["my", "otp", "verify"], domainCookie.replace("__Secure-flex-account-", "__Secure-unowned-"), 502],
+      [["my", "otp", "send"], domainCookie, 502],
+    ] as const) {
+      const send = upstream(Response.json({}, { headers: { "Set-Cookie": cookie } }));
+      const response = await proxyCommerce(request(`/v1/${parts.join("/")}`, { method: "POST" }), [...parts], config, send as unknown as typeof fetch);
+      expect(response.status).toBe(status);
+      expect(response.headers.getSetCookie()).toEqual(status === 200 ? [cookie] : []);
+    }
+  });
+
+  it("admits only the two exact storefront origins and the single logout preflight header", async () => {
+    const origin = config.LAB_ORIGIN;
+    const send = upstream(Response.json({ signedIn: true }, { headers: { "Access-Control-Allow-Origin": "*" } }));
+    const preflight = await proxyCommerce(request("/v1/my/storefront-sign-out", { method: "OPTIONS", headers: {
+      origin, "access-control-request-method": "POST", "access-control-request-headers": "x-flex-navbar",
+    } }), ["my", "storefront-sign-out"], config, send as unknown as typeof fetch);
+    expect(preflight.status).toBe(204);
+    expect(preflight.headers.get("Access-Control-Allow-Origin")).toBe(origin);
+    expect(preflight.headers.get("Access-Control-Allow-Credentials")).toBe("true");
+    expect(preflight.headers.get("Vary")).toBe("Origin");
+    for (const [path, method, testedOrigin] of [
+      ["profile", "GET", origin],
+      ["storefront-session", "GET", "https://admin.flexperiment.ru"],
+      ["storefront-sign-out", "POST", origin],
+    ]) {
+      const denied = await proxyCommerce(request(`/v1/my/${path}`, { method, headers: { origin: testedOrigin } }),
+        ["my", path], config, send as unknown as typeof fetch);
+      expect(denied.status).toBe(403);
+    }
+    expect(send).not.toHaveBeenCalled();
+    const get = await proxyCommerce(request("/v1/my/storefront-session", { headers: { origin } }),
+      ["my", "storefront-session"], config, send as unknown as typeof fetch);
+    expect(get.headers.get("Access-Control-Allow-Origin")).toBe(origin);
+    expect(get.headers.get("Cache-Control")).toBe("no-store");
+  });
+});

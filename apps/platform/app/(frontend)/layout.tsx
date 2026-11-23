@@ -26,7 +26,7 @@ export const metadata: Metadata = {
 async function RuntimeNavbar() {
   await connection();
   const myOrigin = storefrontMyOrigin(process.env);
-  return myOrigin ? <Navbar myOrigin={myOrigin} /> : null;
+  return myOrigin ? <Navbar myOrigin={myOrigin} sharedSession={Boolean(process.env.MY_SESSION_COOKIE_DOMAIN?.trim())} /> : null;
 }
 
 export default function FrontendLayout({ children }: { children: ReactNode }) {

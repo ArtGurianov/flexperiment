@@ -24,6 +24,7 @@ export function registerMySessionRoutes(app: Hono, dependencies: {
   app.use("/v1/*", sessionAudienceGuard(config));
   if (config.mode !== "on" || !config.origins.my) return;
   const myOrigin = config.origins.my;
+  const exchange = config.sharedCookie ? undefined : dependencies.exchange;
   const sameOrigin = (context: Context) => {
     const origin = context.req.header("origin");
     if (!origin) return context.json({ code: "ORIGIN_REQUIRED" }, 403, noStore);
@@ -115,6 +116,9 @@ export function registerMySessionRoutes(app: Hono, dependencies: {
   });
 
   app.get("/v1/my/profile", async (context) => {
+    if (config.sharedCookie && context.req.header("origin") && context.req.header("origin") !== myOrigin) {
+      return context.json({ code: "ORIGIN_FORBIDDEN" }, 403, noStore);
+    }
     const session = await mySession(context);
     if (!session) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
     const customer = db.prepare("SELECT email_normalized AS email,display_name AS displayName,created_at AS createdAt FROM customers WHERE id=?")
@@ -138,83 +142,104 @@ export function registerMySessionRoutes(app: Hono, dependencies: {
   const lmsSurface = (context: Context) => surfaceForRequest(config.origins, context.req.raw.headers) === "LMS";
 
   app.get("/v1/my/exchange/:tx", async (context) => {
-    if (!dependencies.exchange) return context.json({ code: "NOT_FOUND" }, 404, noStore);
+    if (!exchange) return context.json({ code: "NOT_FOUND" }, 404, noStore);
     try {
       const signedIn = !!await mySession(context);
-      return context.json({ ...dependencies.exchange.describe(context.req.param("tx")), signedIn }, 200, noStore);
+      return context.json({ ...exchange.describe(context.req.param("tx")), signedIn }, 200, noStore);
     } catch (error) { return exchangeRefusal(context, error); }
   });
   app.post("/v1/my/exchange/:tx/issue", async (context) => {
     const refused = sameOrigin(context); if (refused) return refused;
-    if (!dependencies.exchange) return context.json({ code: "NOT_FOUND" }, 404, noStore);
+    if (!exchange) return context.json({ code: "NOT_FOUND" }, 404, noStore);
     const session = await mySession(context);
     if (!session) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
     try {
-      const { code } = dependencies.exchange.issue(context.req.param("tx"), session);
+      const { code } = exchange.issue(context.req.param("tx"), session);
       return context.json({ code, redeemUrl: new URL("/auth/lms/redeem", platformOrigin).toString() }, 200, noStore);
     } catch (error) { return exchangeRefusal(context, error); }
   });
   app.post("/v1/my/exchange/:tx/cancel", (context) => {
     const refused = sameOrigin(context); if (refused) return refused;
-    if (!dependencies.exchange) return context.json({ code: "NOT_FOUND" }, 404, noStore);
-    try { dependencies.exchange.cancel(context.req.param("tx")); return context.body(null, 204, noStore); }
+    if (!exchange) return context.json({ code: "NOT_FOUND" }, 404, noStore);
+    try { exchange.cancel(context.req.param("tx")); return context.body(null, 204, noStore); }
     catch (error) { return exchangeRefusal(context, error); }
   });
 
   // Called server-to-server by the platform `/auth/lms/start` handler (no browser Origin; §7 exception).
   app.post("/v1/lms/exchange/start", json8k, async (context) => {
-    if (!lmsSurface(context) || !dependencies.exchange) return context.json({ code: "NOT_FOUND" }, 404, noStore);
+    if (!lmsSurface(context) || !exchange) return context.json({ code: "NOT_FOUND" }, 404, noStore);
     const input = await body(context) ?? {};
     try {
-      const { tx, cookies } = dependencies.exchange.start({ next: input.next, headers: context.req.raw.headers });
+      const { tx, cookies } = exchange.start({ next: input.next, headers: context.req.raw.headers });
       for (const cookie of cookies) context.header("Set-Cookie", cookie, { append: true });
       return context.json({ location: `${myOrigin}/continue?tx=${tx}` }, 200, noStore);
     } catch (error) { return exchangeRefusal(context, error); }
   });
   // The auto-submitting form on my posts here through the platform `/auth/lms/redeem` handler.
   app.post("/v1/lms/exchange/redeem", json8k, async (context) => {
-    if (!lmsSurface(context) || !dependencies.exchange) return context.json({ code: "NOT_FOUND" }, 404, noStore);
+    if (!lmsSurface(context) || !exchange) return context.json({ code: "NOT_FOUND" }, 404, noStore);
     const origin = context.req.header("origin");
     if (!origin) return context.json({ code: "ORIGIN_REQUIRED" }, 403, noStore);
     if (origin !== myOrigin) return context.json({ code: "ORIGIN_FORBIDDEN" }, 403, noStore);
     if (!redeemLimiter.consume(clientIpOf(context.req.raw.headers), Date.now())) return context.json({ code: "RATE_LIMITED" }, 429, noStore);
     const input = await body(context) ?? {};
     try {
-      const { location, cookies } = dependencies.exchange.redeem({ tx: input.tx, code: input.code, headers: context.req.raw.headers });
+      const { location, cookies } = exchange.redeem({ tx: input.tx, code: input.code, headers: context.req.raw.headers });
       for (const cookie of cookies) context.header("Set-Cookie", cookie, { append: true });
       return context.json({ location }, 200, noStore);
     } catch (error) { return exchangeRefusal(context, error); }
   });
+  const navbarProfile = (session: ResolvedSession | null | undefined) => {
+    if (!session) return { signedIn: false };
+    const profile = db.prepare("SELECT email_normalized,display_name FROM customers WHERE id=?").get(session.customerId) as
+      { email_normalized: string; display_name: string | null } | undefined;
+    if (!profile) return { signedIn: false };
+    const name = profile.display_name?.trim();
+    const displayName = name && name.length <= 80 && !name.includes("@") ? name : null;
+    return { signedIn: true, displayName, emailMasked: maskEmail(profile.email_normalized) };
+  };
   app.get("/v1/lms/session", async (context) => {
     if (!lmsSurface(context)) return context.json({ code: "NOT_FOUND" }, 404, noStore);
     const session = await dependencies.resolveSession?.(context.req.raw.headers);
-    if (session?.surface !== "LMS" || session.kind !== "LMS") return context.json({ signedIn: false }, 200, noStore);
-    const profile = db.prepare("SELECT email_normalized,display_name FROM customers WHERE id=?").get(session.customerId) as
-      { email_normalized: string; display_name: string | null } | undefined;
-    if (!profile) return context.json({ signedIn: false }, 200, noStore);
-    const name = profile.display_name?.trim();
-    const displayName = name && name.length <= 80 && !name.includes("@") ? name : null;
-    return context.json({ signedIn: true, displayName, emailMasked: maskEmail(profile.email_normalized) }, 200, noStore);
+    return context.json(navbarProfile(session?.surface === "LMS" && session.kind === (config.sharedCookie ? "MY" : "LMS") ? session : null),
+      200, noStore);
   });
 
   app.post("/v1/lms/sign-out", (context) => {
-    if (!lmsSurface(context) || !dependencies.exchange) return context.json({ code: "NOT_FOUND" }, 404, noStore);
+    if (!lmsSurface(context) || !exchange) return context.json({ code: "NOT_FOUND" }, 404, noStore);
     const origin = context.req.header("origin");
     if (!origin) return context.json({ code: "ORIGIN_REQUIRED" }, 403, noStore);
     if (origin !== platformOrigin) return context.json({ code: "ORIGIN_FORBIDDEN" }, 403, noStore);
-    for (const cookie of dependencies.exchange.signOutLms(context.req.raw.headers)) context.header("Set-Cookie", cookie, { append: true });
+    for (const cookie of exchange.signOutLms(context.req.raw.headers)) context.header("Set-Cookie", cookie, { append: true });
     return context.body(null, 204, noStore);
   });
 
-  app.post("/v1/my/sign-out", async (context) => {
-    const refused = sameOrigin(context); if (refused) return refused;
+  const revokeMySession = async (context: Context) => {
     const session = await mySession(context);
     if (!session) return context.body(null, 204, noStore);
     const response = await dependencies.signOut?.(context.req.raw.headers).catch(() => null);
-    // Server-side revocation is authoritative even if Better Auth's own sign-out failed.
+    // Server-side revocation remains authoritative if the library could not clear the browser cookie.
     db.prepare('DELETE FROM "session" WHERE id=?').run(session.sessionId);
     for (const cookie of response?.headers.getSetCookie() ?? []) context.header("Set-Cookie", cookie, { append: true });
     await response?.body?.cancel();
     return context.body(null, 204, noStore);
-  });
+  };
+  app.post("/v1/my/sign-out", async (context) => sameOrigin(context) ?? await revokeMySession(context));
+
+  if (config.sharedCookie) {
+    const fromStorefront = (context: Context) => {
+      const origin = context.req.header("origin");
+      return origin === config.origins.platform || origin === config.origins.lab;
+    };
+    // Only the MY proxy supplies CORS and only for these two routes. Commerce independently checks the origin.
+    app.get("/v1/my/storefront-session", async (context) => fromStorefront(context)
+      ? context.json(navbarProfile(await mySession(context)), 200, noStore)
+      : context.json({ code: "ORIGIN_FORBIDDEN" }, 403, noStore));
+    app.post("/v1/my/storefront-sign-out", async (context) => {
+      if (!fromStorefront(context) || context.req.header("x-flex-navbar") !== "1") {
+        return context.json({ code: "ORIGIN_FORBIDDEN" }, 403, noStore);
+      }
+      return revokeMySession(context);
+    });
+  }
 }

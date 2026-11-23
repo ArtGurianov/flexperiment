@@ -23,6 +23,7 @@ COPY --from=dependencies /app/node_modules ./node_modules
 COPY package.json pnpm-lock.yaml ./
 COPY commerce-v2 ./commerce-v2
 COPY lib/my-checkout-intent.ts ./lib/my-checkout-intent.ts
+COPY lib/shared-account-session.ts ./lib/shared-account-session.ts
 COPY lib/lab-v2-contract.ts ./lib/lab-v2-contract.ts
 COPY lib/lab-showcase-contract.ts ./lib/lab-showcase-contract.ts
 COPY lib/closed-paid-test-profile.ts ./lib/closed-paid-test-profile.ts

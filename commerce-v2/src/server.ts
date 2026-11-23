@@ -78,6 +78,10 @@ if (config.deployEnvironment === "production" && (!controlRoomSessionSecret || !
 
 // FLEX-120/121 (B block): MY identity. MY_IDENTITY_MODE defaults to `off` (Stage A unchanged).
 const myIdentity = loadMyIdentityConfig(process.env, origins);
+if (config.deployEnvironment === "production" && myIdentity.mode === "on" &&
+  myIdentity.sharedCookie?.domain !== "flexperiment.ru") {
+  throw new Error("MY_SESSION_COOKIE_DOMAIN_INVALID_FOR_PRODUCTION");
+}
 const myOtpDelivery = createMyOtpEmailDelivery();
 const auth = createAuthRuntime({
   db,
@@ -165,7 +169,7 @@ const app = createCommerceV2App({
     verifyCaptcha: smartCaptchaSecret ? (token, ip) => verifySmartCaptcha(token, ip, smartCaptchaSecret) : undefined }),
   resolveSession: auth.resolveSession,
   signOutMySession: (headers) => auth.auth.api.signOut({ headers, asResponse: true }),
-  sessionExchange: createSessionExchange({ db }),
+  sessionExchange: myIdentity.sharedCookie ? undefined : createSessionExchange({ db }),
 
   // FLEX-60/123: owned LAB ticket QR; absent or short LAB_TICKET_QR_SECRET keeps the route closed.
   labTicketQrSecret: labTicketQrSecretFromEnv(process.env),

@@ -29,7 +29,7 @@ async function read(path: string, signal: AbortSignal) {
 }
 
 /** LAB V2 guest checkout; all authority stays in Commerce V2. */
-export default function LabV2Client({ myOrigin }: { myOrigin?: string | null } = {}) {
+export default function LabV2Client({ myOrigin, sharedSession = false }: { myOrigin?: string | null; sharedSession?: boolean } = {}) {
   const router = useRouter();
   const [catalogue, setCatalogue] = useState<LabCatalogue | null>(null);
   const [showcase, setShowcase] = useState<LabShowcase | null>(null);
@@ -48,7 +48,7 @@ export default function LabV2Client({ myOrigin }: { myOrigin?: string | null } =
       .then((data) => {
         if (!controller.signal.aborted) setCatalogue(labCatalogueSchema.parse(data));
       }).catch(reportReadError);
-    void read("/v1/me", controller.signal)
+    if (!sharedSession) void read("/v1/me", controller.signal)
       .then(async (session) => {
         const me = labMeSchema.parse(session);
         const history = me.customer ? labHistorySchema.parse(await read("/v1/me/orders", controller.signal)).orders : [];
@@ -57,7 +57,7 @@ export default function LabV2Client({ myOrigin }: { myOrigin?: string | null } =
         setOrders(history.filter((order) => order.productKind === "LAB"));
       }).catch(reportReadError);
     return () => controller.abort();
-  }, []);
+  }, [sharedSession]);
   const logout = async () => {
     setBusy(true);
     try {
@@ -70,7 +70,7 @@ export default function LabV2Client({ myOrigin }: { myOrigin?: string | null } =
     finally { setBusy(false); }
   };
   return <main>
-    <header><a href="#catalogue" className="wordmark">FLEXPERIMENT<span> / LAB</span></a><span className="stamp">PRIVATE CANARY · V2</span>{myOrigin && <Navbar myOrigin={myOrigin} />}</header>
+    <header><a href="#catalogue" className="wordmark">FLEXPERIMENT<span> / LAB</span></a><span className="stamp">PRIVATE CANARY · V2</span>{myOrigin && <Navbar myOrigin={myOrigin} sharedSession={sharedSession} />}</header>
     <section className="intro"><p className="eyebrow">Практика в движении</p><h1>Встречаемся.<br /><span>Двигаемся.</span></h1><p className="notice">Афиша мастер-классов по городам.</p></section>
     {error ? <p role="alert">Не удалось проверить данные V2. Повторите загрузку. Устаревший API не используется.</p> : null}
     <section id="catalogue" aria-labelledby="catalogue-title"><div className="sectionHeading"><span>01 /</span><h2 id="catalogue-title">Расписание LAB</h2></div>

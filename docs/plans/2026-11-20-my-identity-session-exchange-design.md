@@ -23,6 +23,17 @@ the review must say so.
 
 ---
 
+## Owner decision · 2026-11-23 · One account session
+
+For the MY cutover, the owner approved the trust boundary of `flexperiment.ru` and one Better Auth session for MY, LMS and LAB. This amendment governs the shared-cookie configuration. The exchange sections below describe the earlier rehearsal configuration.
+
+- Only MY creates the central session through verified OTP and the existing account binding. Set a single environment-specific `Secure; HttpOnly; SameSite=Lax; Path=/` session cookie with the configured `Domain=flexperiment.ru` in production. Browser domain matching covers the apex and every subdomain. Keep environment-specific MY hostnames, cookie names, signing keys and databases. Every serving HTTPS subdomain of the cookie domain, including test and future hosts, belongs to the approved trust boundary. Inventory actual ingress, log redaction and external hosting before activation.
+- Enable the shared-cookie configuration explicitly with `MY_IDENTITY_MODE=on` and `MY_SESSION_COOKIE_DOMAIN` on Commerce, MY and Platform. Set matching HTTPS `MY_ORIGIN`, `PLATFORM_ORIGIN` and `LAB_ORIGIN`. Build the LAB static image with the matching MY mode, origin and cookie-domain flag. Stage A uses the existing `off` mode and magic link.
+- Commerce resolves the same live session on each storefront. Only LMS may serve protected lesson, playback and progress routes. Commerce still checks current consent and entitlement. Only MY admits checkout, orders, refunds and account-owned tickets. Authenticate the forwarded surface separately from the user's session.
+- LMS reads its own same-origin session projection. Static LAB reads the limited projection from MY. Both storefronts may post the dedicated MY logout route. The MY proxy and Commerce allow only the exact configured storefront Origins on those routes. The logout request requires the dedicated `X-Flex-Navbar` header and successful preflight. The session projection is uncached and contains only signed-in state, display name and masked email. The MY cabinet remains the full account view.
+- LMS sign-in navigation forwards a strictly validated local return path to MY. MY returns to the configured LMS origin after verifying the session and current consent, or after OTP and consent. There is no exchange-code issuance, LMS session creation or extra logout state in shared-cookie mode. Keep applied migration history unchanged. Logout revokes one server-side session and expires its domain cookie. Other open tabs re-read profile on focus.
+- Test direct and deep links, expiry, account switch and logout, foreign Origins, wrong-surface routes, Stage A equivalence, and public cache isolation. Test restoration and encrypted custody by the existing release gates. This decision approves source architecture and test work. Live cookies, ingress and authentication cutover use the existing release process.
+
 ## 1. Surfaces, origins and the trusted host
 
 | Surface | Origin (production) | Env | Reached through | Purpose |

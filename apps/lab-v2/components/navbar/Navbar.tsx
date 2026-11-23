@@ -8,12 +8,15 @@ import { useMemo } from "react";
 import NavbarProfile from "../../../../lib/navbar/NavbarProfile";
 import type { NavbarConfig } from "../../../../lib/navbar/navbar-core";
 
-export function labNavbarConfig(myOrigin: string): NavbarConfig {
-  return { variant: "LAB", myOrigin, sessionUrl: null, signOutUrl: null };
+export function labNavbarConfig(myOrigin: string, sharedSession = false): NavbarConfig {
+  return { variant: "LAB", myOrigin,
+    sessionUrl: sharedSession ? new URL("/v1/my/storefront-session", myOrigin).href : null,
+    signOutUrl: sharedSession ? new URL("/v1/my/storefront-sign-out", myOrigin).href : null,
+  };
 }
 
-export default function Navbar({ myOrigin }: { myOrigin: string }) {
+export default function Navbar({ myOrigin, sharedSession = false }: { myOrigin: string; sharedSession?: boolean }) {
   const pathname = usePathname();
-  const config = useMemo(() => labNavbarConfig(myOrigin), [myOrigin]);
+  const config = useMemo(() => labNavbarConfig(myOrigin, sharedSession), [myOrigin, sharedSession]);
   return <NavbarProfile config={config} pathname={pathname} />;
 }

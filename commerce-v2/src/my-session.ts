@@ -1,3 +1,4 @@
+import { sharedAccountCookie } from "../../lib/shared-account-session";
 import { MY_CHECKOUT_RETURN_PATH } from "../../lib/my-checkout-intent";
 import { createHash, timingSafeEqual } from "node:crypto";
 import type Database from "better-sqlite3";
@@ -8,7 +9,7 @@ import type { CommerceOrigins } from "./origins";
 export type Surface = "MY" | "LMS" | "LAB";
 export type SessionKind = "MY" | "LMS" | "LEGACY";
 export type MyIdentityMode = "off" | "on";
-export type MyIdentityConfig = { readonly mode: MyIdentityMode; readonly origins: CommerceOrigins };
+export type MyIdentityConfig = { readonly mode: MyIdentityMode; readonly origins: CommerceOrigins; readonly sharedCookie?: NonNullable<ReturnType<typeof sharedAccountCookie>> };
 type Environment = Readonly<Record<string, string | undefined>>;
 
 export const LMS_SESSION_COOKIE = "__Host-flx-lms";
@@ -37,7 +38,8 @@ export function loadMyIdentityConfig(environment: Environment, origins: Commerce
     if (!origins.my) throw new Error("MY_ORIGIN_REQUIRED");
     if (!sameSite(origins.my, origins.platform)) throw new Error("MY_ORIGIN_NOT_SAME_SITE");
   }
-  return { mode, origins };
+  const sharedCookie = sharedAccountCookie(environment, [origins.platform, origins.lab]);
+  return sharedCookie ? { mode, origins, sharedCookie } : { mode, origins };
 }
 
 /** Surface from the host the trusted proxy set; never from a body, query, cookie or Origin. */
@@ -98,7 +100,7 @@ export function createSessionResolver(dependencies: {
   async function resolve(headers: Headers): Promise<ResolvedSession | null> {
     const surface = surfaceForRequest(config.origins, headers);
     if (!surface) return null;
-    const admitted = ADMITTED_SESSION_KINDS[config.mode][surface];
+    const admitted = config.sharedCookie ? ["MY"] : ADMITTED_SESSION_KINDS[config.mode][surface];
     if (admitted.includes("LMS")) {
       const token = presentedCookie(headers, LMS_SESSION_COOKIE);
       const row = token ? resolveLmsSession(db, token, now()) : null;
@@ -149,16 +151,20 @@ export function sessionAudienceGuard(config: MyIdentityConfig) {
     // A surface's own namespace does not exist anywhere else.
     if (surface !== "MY" && /^\/v1\/my(?:\/|$)/.test(path)) return context.json({ code: "NOT_FOUND" }, 404, noStore);
     if (surface !== "LMS" && /^\/v1\/lms(?:\/|$)/.test(path)) return context.json({ code: "NOT_FOUND" }, 404, noStore);
-    const forbidden = surface === "LMS" ? MY_ONLY.some(rule => rule.test(path))
-      || MY_ONLY_METHOD.some(([method, rule]) => method === context.req.method && rule.test(path))
-      : surface === "MY" ? LMS_ONLY.some(rule => rule.test(path)) : false;
+    const needsMy = MY_ONLY.some(rule => rule.test(path))
+      || MY_ONLY_METHOD.some(([method, rule]) => method === context.req.method && rule.test(path));
+    const needsLms = LMS_ONLY.some(rule => rule.test(path));
+    const forbidden = config.sharedCookie
+      ? (surface !== "MY" && needsMy) || (surface !== "LMS" && needsLms)
+        || (surface === "LAB" && /^\/v1\/me(?:\/|$)/.test(path))
+      : (surface === "LMS" && needsMy) || (surface === "MY" && needsLms);
     if (forbidden) return context.json({ code: "SESSION_AUDIENCE_FORBIDDEN" }, 403, noStore);
     if (/^\/v1\/auth(?:\/|$)/.test(path)) {
       // MY signs in only through /v1/my/*; the LMS retires Stage A magic links (contract §1, §9).
       if (surface === "LMS" && /^\/v1\/auth\/(?:sign-in\/magic-link|magic-link\/)/.test(path)) {
         return context.json({ code: "MAGIC_LINK_RETIRED" }, 410, noStore);
       }
-      if (surface === "MY" || surface === "LMS") return context.json({ code: "NOT_FOUND" }, 404, noStore);
+      if (config.sharedCookie || surface === "MY" || surface === "LMS") return context.json({ code: "NOT_FOUND" }, 404, noStore);
     }
     await next();
   };
