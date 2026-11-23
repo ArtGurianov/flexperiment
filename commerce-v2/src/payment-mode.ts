@@ -30,6 +30,7 @@ export type CommerceRuntimeConfig = {
    * environment are confirmed, and the fake never starts outside local/test.
    */
   readonly native?: { readonly provider: "fake"; readonly fiscalizationMode: "PROVIDER" | "MERCHANT" };
+  readonly historicalRefref?: Pick<NonNullable<CommerceRuntimeConfig["refref"]>, "apiBaseUrl" | "apiKey" | "merchantId">;
   /**
    * The owner's storefront switch (storefront-switch.ts). The server attaches the read-only host file;
    * it is never loaded from env, and without one every storefront is CLOSED.
@@ -44,6 +45,16 @@ const required = (env: Environment, name: string) => {
   if (!value) throw new CommerceConfigurationError(`REFREF_CONFIG_MISSING:${name}`);
   return value;
 };
+
+function loadRefrefExecutor(env: Environment) {
+  const apiBaseUrl = required(env, "REFREF_API_BASE_URL");
+  try { new URL(apiBaseUrl); } catch { throw new CommerceConfigurationError("REFREF_API_BASE_URL_INVALID"); }
+  const merchantId = required(env, "REFREF_MERCHANT_ID");
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(merchantId)) {
+    throw new CommerceConfigurationError("REFREF_MERCHANT_ID_INVALID");
+  }
+  return { apiBaseUrl, apiKey: required(env, "REFREF_API_KEY"), merchantId };
+}
 
 export function loadCommerceRuntimeConfig(env: Environment = process.env): CommerceRuntimeConfig {
   const deployEnvironment = (env.DEPLOY_ENV ?? (env.NODE_ENV === "test" ? "test" : "local")) as CommerceRuntimeConfig["deployEnvironment"];
@@ -72,14 +83,17 @@ export function loadCommerceRuntimeConfig(env: Environment = process.env): Comme
   }
 
   if (paymentMode === "native") {
-    // No REFREF_* is read or required: the direct contour runs without Refref (decision 4A).
+    // The Refref executor is optional and can only service existing RC.2 records.
     if (kinescopeDeliveryMode !== "protected") throw new CommerceConfigurationError("NATIVE_REQUIRES_PROTECTED_KINESCOPE");
     const provider = env.NATIVE_PROVIDER?.trim();
     if (provider !== "fake") throw new CommerceConfigurationError("NATIVE_PROVIDER_INVALID");
     if (deployEnvironment !== "local" && deployEnvironment !== "test") throw new CommerceConfigurationError("NATIVE_FAKE_PROVIDER_FORBIDDEN");
     const fiscalizationMode = env.NATIVE_FISCALIZATION_MODE?.trim() || "MERCHANT";
     if (fiscalizationMode !== "PROVIDER" && fiscalizationMode !== "MERCHANT") throw new CommerceConfigurationError("NATIVE_FISCALIZATION_MODE_INVALID");
-    return { deployEnvironment, paymentMode, kinescopeDeliveryMode, merchantPromotionPrefix, native: { provider, fiscalizationMode } };
+    const historicalRefref = [env.REFREF_API_BASE_URL, env.REFREF_API_KEY, env.REFREF_MERCHANT_ID].some(value => value !== undefined)
+      ? loadRefrefExecutor(env) : undefined;
+    return { deployEnvironment, paymentMode, kinescopeDeliveryMode, merchantPromotionPrefix, native: { provider, fiscalizationMode },
+      ...(historicalRefref ? { historicalRefref } : {}) };
   }
   if (paymentMode !== "refref") return { deployEnvironment, paymentMode, kinescopeDeliveryMode, merchantPromotionPrefix };
   if (kinescopeDeliveryMode !== "protected") throw new CommerceConfigurationError("REFREF_REQUIRES_PROTECTED_KINESCOPE");

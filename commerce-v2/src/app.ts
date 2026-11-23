@@ -73,6 +73,7 @@ type Dependencies = {
     readonly kinescopeApiConfigured: boolean;
   };
   readonly paymentRail?: PaymentRail;
+  readonly historicalPaymentRail?: PaymentRail;
   /** Seals each refund's frozen submission (ART-174). Without it no refund is executed. */
   readonly refundEnvelopeKeys?: RefundEnvelopeKeyring;
   /** `WITHDRAWN` marks the one commercial change that removes public pages; the platform notifies IndexNow for it. */
@@ -725,10 +726,11 @@ export function createCommerceV2App(deps: Dependencies) {
         return context.json({ error: { code: error instanceof Error ? error.message : "REFUND_EXECUTION_FAILED" } }, 409, noStore);
       }
     }
-    if (!deps.paymentRail) return context.json({ error: { code: "PAYMENT_RAIL_UNAVAILABLE" } }, 503, noStore);
+    const originalRail = nativePayments ? deps.historicalPaymentRail : deps.paymentRail;
+    if (!originalRail) return context.json({ error: { code: "PAYMENT_RAIL_UNAVAILABLE" } }, 503, noStore);
     if (!deps.refundEnvelopeKeys) return context.json({ error: { code: "REFUND_ENVELOPE_KEYS_UNAVAILABLE" } }, 503, noStore);
     try {
-      const result = await executeApprovedRefund(deps.db, deps.paymentRail, deps.refundEnvelopeKeys, context.req.param("requestPublicId"), now().toISOString());
+      const result = await executeApprovedRefund(deps.db, originalRail, deps.refundEnvelopeKeys, context.req.param("requestPublicId"), now().toISOString());
       auditControlRoom(deps.db, { adminId: context.get("controlRoomAdminId")!, action: "REFUND_EXECUTION_REQUESTED",
         entityType: "refund_request", entityId: context.req.param("requestPublicId"), details: { state: result.state } }, now().toISOString());
       return context.json(result, 200, noStore);
@@ -982,7 +984,6 @@ export function createCommerceV2App(deps: Dependencies) {
     if (guest && guest.order_public_id !== context.req.param("orderPublicId")) return context.json({ code: "ORDER_NOT_FOUND" }, 404, noStore);
     const customerId = guest?.customer_id ?? await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;
     if (!customerId) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
-    if (!deps.paymentRail) return context.json({ code: "PAYMENT_RAIL_UNAVAILABLE" }, 503, noStore);
     if (guest) {
       try { deps.erasureFence?.assertIdentity({ customerId: guest.customer_id }, "ACCOUNT"); }
       catch { return context.json({ code: "ERASURE_RUNTIME_CLOSED" }, 503, noStore); }
@@ -994,7 +995,11 @@ export function createCommerceV2App(deps: Dependencies) {
       if (deps.nativePayments && contourOfOrder(deps.db, context.req.param("orderPublicId")) === "NATIVE") {
         return context.json(nativeOrderStatus(deps.db, context.req.param("orderPublicId")), 200, noStore);
       }
-      return context.json(await reconcileCheckout(deps.db, deps.paymentRail, context.req.param("orderPublicId"), now().toISOString(), deps.config), 200, noStore);
+      const originalRail = deps.nativePayments ? deps.historicalPaymentRail : deps.paymentRail;
+      if (!originalRail) return context.json({ code: "PAYMENT_RAIL_UNAVAILABLE" }, 503, noStore);
+      // A historical checkout may still be fulfilled, but cannot initiate a new Refref charge.
+      const admission = deps.nativePayments ? undefined : deps.config;
+      return context.json(await reconcileCheckout(deps.db, originalRail, context.req.param("orderPublicId"), now().toISOString(), admission), 200, noStore);
     } catch (error) {
       return context.json({ code: error instanceof Error ? error.message : "RECONCILE_FAILED" }, 409, noStore);
     }

@@ -37,6 +37,15 @@ describe("PAYMENT_MODE=native configuration (FLEX-119)", () => {
     expect(() => loadCommerceRuntimeConfig({ ...nativeEnv, ...override })).toThrow(new CommerceConfigurationError(code));
   });
 
+  it("loads a separately configured historical executor without enabling Refref checkout", () => {
+    const config = loadCommerceRuntimeConfig({ ...nativeEnv, REFREF_API_BASE_URL: "https://refref.example/v1",
+      REFREF_API_KEY: "synthetic", REFREF_MERCHANT_ID: "7fbe2f20-42c3-4797-a63c-741355a9058b" });
+    expect(config.historicalRefref).toMatchObject({ apiBaseUrl: "https://refref.example/v1" });
+    expect(config.refref).toBeUndefined();
+    expect(() => loadCommerceRuntimeConfig({ ...nativeEnv, REFREF_API_KEY: "synthetic" }))
+      .toThrow(new CommerceConfigurationError("REFREF_CONFIG_MISSING:REFREF_API_BASE_URL"));
+  });
+
   it("the Control Room integration summary reports the native mode as it is", () => {
     const db = new Database(":memory:");
     migrateV2(db);
@@ -200,11 +209,12 @@ describe("native dispatch in the refund and order read routes; historical RC.2 p
   });
 
   const ledger = (): NativeLedgerContext => ({ provider: bank, keyring, fiscalizationMode: "MERCHANT", mayInitiate: () => true, now: () => T.toISOString() });
-  const server = (native: boolean) => createCommerceV2App({
+  const server = (native: boolean, historical = true) => createCommerceV2App({
     db, config: native ? withTestStorefrontSwitch(loadCommerceRuntimeConfig(nativeEnv))
       : withTestStorefrontSwitch(loadCommerceRuntimeConfig({ DEPLOY_ENV: "test", PAYMENT_MODE: "mock", MERCHANT_PROMOTION_PREFIX: "FX-" })),
-    sourceCommit: "a".repeat(40), serviceToken: "synthetic", refundEnvelopeKeys: keyring, paymentRail: originalRail,
-    ...(native ? { nativePayments: ledger() } : {}),
+    sourceCommit: "a".repeat(40), serviceToken: "synthetic", refundEnvelopeKeys: keyring,
+    paymentRail: native ? nativePaymentsFromConfig(db, loadCommerceRuntimeConfig(nativeEnv), keyring)!.quoteRail : originalRail,
+    ...(native ? { nativePayments: ledger(), historicalPaymentRail: historical ? originalRail : undefined } : {}),
     authenticateCustomer: async (headers) => (headers.get("authorization") === "Session customer" ? "customer" : null),
     now: () => T,
     controlRoomAuth: { origin: "https://admin.flexperiment.ru", sessionSecret: "s", passwordScrypt, trustedProxyIps: ["127.0.0.1"], totpKey: testTotpKey },
@@ -249,6 +259,18 @@ describe("native dispatch in the refund and order read routes; historical RC.2 p
     expect(historical.status).toBe(409);
     expect(originalCalls).toContain("reconcile");
     expect(bank.calls.readPayment).toBe(1);
+  });
+
+  it("leaves historical requests unavailable when the original executor is absent", async () => {
+    const app = server(true, false);
+    const headers = { authorization: "Session customer" };
+    const read = await app.request("/v1/checkout/RC2-1", { headers });
+    expect([read.status, await read.json()]).toEqual([503, { code: "PAYMENT_RAIL_UNAVAILABLE" }]);
+    const cookie = await admin(app);
+    const refund = await app.request(`/v1/admin/v2/refunds/${approved("RC2-1")}/execute`, post(cookie));
+    expect(refund.status).toBe(503);
+    expect(originalCalls).toEqual([]);
+    expect(bank.calls.submitRefund).toHaveLength(0);
   });
 
   it("outside PAYMENT_MODE=native every order keeps the original path", async () => {

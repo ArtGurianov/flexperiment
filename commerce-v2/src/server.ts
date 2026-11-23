@@ -33,8 +33,9 @@ ErasureInstallationEvidence.assertRuntime(installation,process.env);
 // The owner's storefront switch is attached here only, from the fixed read-only host mount (ART-319).
 const config = { ...loadCommerceRuntimeConfig(), storefrontSwitch: hostStorefrontSwitchSource() };
 // Preserve the configured foundation dependency when switching to normal mode.
-// Production and a live Refref rail may never report readiness without probing it.
-const probeRefref = process.env.REFREF_READINESS_URL || config.deployEnvironment === "production" || config.paymentMode === "refref"
+// Native sales do not depend on the historical provider's availability.
+const probeRefref = config.paymentMode !== "native"
+  && (process.env.REFREF_READINESS_URL || config.deployEnvironment === "production" || config.paymentMode === "refref")
   ? createRefrefReadinessProbe(process.env) : undefined;
 const origins = loadCommerceOrigins();
 const db = openV2Database();
@@ -93,6 +94,7 @@ if (config.paymentMode === "refref" && !refundEnvelopeKeys) throw new Error("REF
 // FLEX-119 · the direct native contour (PAYMENT_MODE=native): quote rail, ledger context and sweeps.
 // payment-mode.ts already refused the fake provider outside local/test.
 const native = nativePaymentsFromConfig(db, config, refundEnvelopeKeys);
+const historicalPaymentRail = config.historicalRefref ? new RefrefPaymentRail(config.historicalRefref) : undefined;
 const paymentRail = native ? native.quoteRail : config.paymentMode === "mock" ? new MockPaymentRail()
   : config.paymentMode === "refref" && config.refref ? new RefrefPaymentRail({
     apiBaseUrl: config.refref.apiBaseUrl,
@@ -156,6 +158,7 @@ const app = createCommerceV2App({
     kinescopeApiConfigured: Boolean(kinescopeClient),
   },
   paymentRail,
+  historicalPaymentRail,
   refundEnvelopeKeys,
   campaignUnsubscribeSecret,
   marketingBroadcastsEnabled,
@@ -217,15 +220,17 @@ if (marketingBroadcastsEnabled && campaignUnsubscribeSecret && sendCampaignEmail
   void campaignDispatch();
 }
 
-if (paymentRail && !native) {
+const reconciliationRail = native ? historicalPaymentRail : paymentRail;
+if (reconciliationRail) {
   let checkoutPollRunning = false;
   const checkoutPoll = async () => {
     if (checkoutPollRunning) return;
     checkoutPollRunning = true;
     try {
       const reconcile=async()=>{
-        await reconcilePendingCheckouts(db, paymentRail, undefined, config);
-        if (refundEnvelopeKeys) await reconcilePendingRefunds(db, paymentRail, refundEnvelopeKeys);
+        // Native checkout attempts and refunds use their own tables and sweeps.
+        await reconcilePendingCheckouts(db, reconciliationRail, undefined, native ? undefined : config);
+        if (refundEnvelopeKeys) await reconcilePendingRefunds(db, reconciliationRail, refundEnvelopeKeys);
       };
       if(erasureFence) await erasureFence.run("WORKER",reconcile);else await reconcile();
     }
