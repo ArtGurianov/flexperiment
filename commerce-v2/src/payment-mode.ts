@@ -30,6 +30,7 @@ export type CommerceRuntimeConfig = {
    * environment are confirmed, and the fake never starts outside local/test.
    */
   readonly native?: { readonly provider: "fake"; readonly fiscalizationMode: "PROVIDER" | "MERCHANT" };
+  readonly nativeCoursesLegal?: { readonly version: string; readonly sha256: string };
   readonly historicalRefref?: Pick<NonNullable<CommerceRuntimeConfig["refref"]>, "apiBaseUrl" | "apiKey" | "merchantId">;
   /**
    * The owner's storefront switch (storefront-switch.ts). The server attaches the read-only host file;
@@ -92,8 +93,13 @@ export function loadCommerceRuntimeConfig(env: Environment = process.env): Comme
     if (fiscalizationMode !== "PROVIDER" && fiscalizationMode !== "MERCHANT") throw new CommerceConfigurationError("NATIVE_FISCALIZATION_MODE_INVALID");
     const historicalRefref = [env.REFREF_API_BASE_URL, env.REFREF_API_KEY, env.REFREF_MERCHANT_ID].some(value => value !== undefined)
       ? loadRefrefExecutor(env) : undefined;
+    const version = env.NATIVE_COURSES_LEGAL_VERSION?.trim();
+    const sha256 = env.NATIVE_COURSES_LEGAL_SHA256?.trim();
+    if ((version || sha256) && (!version || !sha256 || !/^[a-f0-9]{64}$/.test(sha256))) {
+      throw new CommerceConfigurationError("NATIVE_COURSES_LEGAL_CONFIG_INVALID");
+    }
     return { deployEnvironment, paymentMode, kinescopeDeliveryMode, merchantPromotionPrefix, native: { provider, fiscalizationMode },
-      ...(historicalRefref ? { historicalRefref } : {}) };
+      ...(historicalRefref ? { historicalRefref } : {}), ...(version && sha256 ? { nativeCoursesLegal: { version, sha256 } } : {}) };
   }
   if (paymentMode !== "refref") return { deployEnvironment, paymentMode, kinescopeDeliveryMode, merchantPromotionPrefix };
   if (kinescopeDeliveryMode !== "protected") throw new CommerceConfigurationError("REFREF_REQUIRES_PROTECTED_KINESCOPE");

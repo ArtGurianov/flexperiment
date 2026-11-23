@@ -1020,6 +1020,15 @@ export function createCommerceV2App(deps: Dependencies) {
       // An origin buys only its own storefront's offers: an LMS context never attributes a LAB order,
       // nor the reverse (ART-378). Checked before any context is admitted or exchanged.
       const offerOwner = offerStorefront(deps.db, body.offerRef);
+      const fromNativeMy = Boolean(deps.nativePayments && deps.myIdentity?.mode === "on"
+        && surfaceForRequest(origins, context.req.raw.headers) === "MY");
+      if (deps.nativePayments && deps.myIdentity?.mode === "on" && !fromNativeMy) {
+        return context.json({ code: "SESSION_AUDIENCE_FORBIDDEN" }, 403, noStore);
+      }
+      if (fromNativeMy && context.req.header("origin") !== origins.my) return context.json({ code: "ORIGIN_FORBIDDEN" }, 403, noStore);
+      if (fromNativeMy && offerOwner === "COURSES" && !hasRequiredAccountConsents(deps.db, customerId)) {
+        return context.json({ code: "CONSENT_REQUIRED" }, 403, noStore);
+      }
       if (storefront && offerOwner && offerOwner !== storefront) throw new CheckoutConflictError("CHECKOUT_STOREFRONT_MISMATCH");
       let resolutionContext: ResolutionContext = guest ? { storefrontOrigin: origins.lab }
         : handoff ? { storefrontOrigin: storefrontOrigin(origins, handoff.storefront) } : {};
@@ -1048,9 +1057,14 @@ export function createCommerceV2App(deps: Dependencies) {
         displayedAmountKopecks: body.displayedAmountKopecks,
         orderPublicId,
         storefront: guest ? "LAB" : handoff?.storefront ?? storefront,
+        nativeMy: fromNativeMy,
         ...resolutionContext,
       }, now().toISOString());
-      return context.json({ ...result, ...(guest ? { labLegal: labLegalReview(deps.db) } : {}) }, result.state === "RESOLUTION_PENDING" ? 202 : 200, noStore);
+      const kind = fromNativeMy ? deps.db.prepare(`SELECT product.kind FROM offers offer JOIN products product ON product.id=offer.product_id
+        WHERE offer.offer_ref=?`).pluck().get(body.offerRef) : undefined;
+      const labLegal = guest || kind === "LAB" ? labLegalReview(deps.db) : undefined;
+      return context.json({ ...result, ...(kind ? { kind, offerRef: body.offerRef } : {}), ...(labLegal ? { labLegal } : {}) },
+        result.state === "RESOLUTION_PENDING" ? 202 : 200, noStore);
     } catch (error) {
       return checkoutError(context, error, "CHECKOUT_PREVIEW_UNAVAILABLE");
     }
@@ -1083,14 +1097,20 @@ export function createCommerceV2App(deps: Dependencies) {
       let nativeReturn: URL | undefined;
       const fromMy = deps.myIdentity?.mode === "on" && origins.my
         && surfaceForRequest(origins, context.req.raw.headers) === "MY";
+      if (deps.nativePayments && deps.myIdentity?.mode === "on" && !fromMy) {
+        return context.json({ code: "SESSION_AUDIENCE_FORBIDDEN" }, 403, noStore);
+      }
       if (deps.nativePayments && fromMy) {
         if (context.req.header("origin") !== origins.my) return context.json({ code: "ORIGIN_FORBIDDEN" }, 403, noStore);
         if (typeof body.returnPath !== "string" || !/^\/checkout\/[A-Za-z0-9_-]{16,64}$/.test(body.returnPath)) {
           return context.json({ code: "CHECKOUT_RETURN_PATH_INVALID" }, 400, noStore);
         }
-        const quote = deps.db.prepare("SELECT order_public_id FROM checkout_quotes WHERE id=? AND customer_id=?")
-          .get(body.quoteId, customerId) as { order_public_id: string } | undefined;
+        const quote = deps.db.prepare("SELECT order_public_id,storefront FROM checkout_quotes WHERE id=? AND customer_id=?")
+          .get(body.quoteId, customerId) as { order_public_id: string; storefront: "COURSES" | "LAB" } | undefined;
         if (!quote) return context.json({ code: "CHECKOUT_QUOTE_NOT_FOUND" }, 404, noStore);
+        if (quote.storefront === "COURSES" && !hasRequiredAccountConsents(deps.db, customerId)) {
+          return context.json({ code: "CONSENT_REQUIRED" }, 403, noStore);
+        }
         nativeReturn = new URL(body.returnPath, origins.my);
         nativeReturn.searchParams.set("order", quote.order_public_id);
       }
@@ -1107,6 +1127,7 @@ export function createCommerceV2App(deps: Dependencies) {
         successUrl: guest ? `${origins.lab}/ticket` : (nativeReturn ?? successUrl)?.toString(),
         legalAcceptance: body.legalAcceptance,
         labAcceptance: body.labAcceptance,
+        nativeMy: Boolean(deps.nativePayments && fromMy),
         ...(deps.nativePayments ? { native: nativeConfirm(deps.db, deps.nativePayments) } : {}),
       }, now().toISOString());
       if (guest && result.state === "PAID" && deps.sendLabTicketEmail) {

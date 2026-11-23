@@ -6,6 +6,8 @@ import { controlRoomIntegrationSummary } from "../src/control-room";
 import { confirmCheckout, prepareCheckout, type PaymentRail } from "../src/checkout";
 import { migrateV2 } from "../src/db";
 import { loadCommerceOrigins } from "../src/origins";
+import { legalManifestHash } from "../src/legal-control";
+import { confirmSyntheticAccount } from "./fixtures/confirmed-account";
 import { applyCourseManifest, withManifestHash } from "../src/manifest";
 import { draftFiscalPolicy } from "../src/fiscal-policy";
 import { nativeConfirm, reconcilePendingNativePayments, startNativePayment, type NativeLedgerContext } from "../src/native-payment-ledger";
@@ -14,7 +16,7 @@ import { nativePaymentsFromConfig } from "../src/native-payment-runtime";
 import { CommerceConfigurationError, loadCommerceRuntimeConfig } from "../src/payment-mode";
 import { decideRefund, requestRefund } from "../src/refunds";
 import { enrolledTotp, testTotpKey } from "./fixtures/control-room-totp";
-import { stageALegalManifestJson, stageBLegalManifestJson } from "./fixtures/legal";
+import { stageALegalManifestJson, stageBLegalManifest, stageBLegalManifestJson } from "./fixtures/legal";
 import { confirmLabBuyer, labAcceptanceFor } from "./fixtures/lab-purchase";
 import { FakeNativeBank } from "./fixtures/native-fake-provider";
 import { openTestStorefront, qualifyTestFiscalPolicy, setTestStorefronts, withTestStorefrontSwitch } from "./fixtures/sales";
@@ -123,28 +125,41 @@ describe("native checkout confirm and callback route (FLEX-119)", () => {
     expect(db.prepare("SELECT COUNT(*) n FROM course_entitlements").get()).toEqual({ n: 1 });
   });
 
-  it("freezes the MY return target in the request, scoped to the authenticated quote", async () => {
+  it("requires the pinned MY purchase review and freezes the owned order's return target", async () => {
+    db.prepare("UPDATE legal_releases SET version='native-synthetic-v1',manifest_json=? WHERE id='legal'").run(stageBLegalManifestJson);
     qualify("FULL_PAYMENT");
-    const prepared = await quote("my-return");
+    confirmSyntheticAccount(db, "customer");
+    const legal = { version: "native-synthetic-v1", sha256: legalManifestHash(stageBLegalManifest) };
     const my = "https://my.flexperiment.test";
     const origins = { ...loadCommerceOrigins({}), my };
-    const app = createCommerceV2App({ db, config, origins, myIdentity: { mode: "on", origins },
+    const app = createCommerceV2App({ db, config: { ...config, nativeCoursesLegal: legal }, origins, myIdentity: { mode: "on", origins },
       sourceCommit: "a".repeat(40), serviceToken: "synthetic", paymentRail: rail, nativePayments: ledger,
       authenticateCustomer: async () => "customer", now: () => new Date("2026-09-30T10:01:00Z") });
-    const go = (returnPath: string, origin = my) => app.request("/v1/checkout", { method: "POST",
-      headers: { "x-forwarded-host": new URL(my).host, origin, "content-type": "application/json", "idempotency-key": "my-confirm" },
-      body: JSON.stringify({ quoteId: prepared.quoteId, returnPath }),
-    });
+    const post = (path: string, body: unknown, key: string, origin = my, host = new URL(my).host) => app.request(path, { method: "POST",
+      headers: { "x-forwarded-host": host, origin, "content-type": "application/json", "idempotency-key": key }, body: JSON.stringify(body) });
+    const preview = await post("/v1/checkout/preview", { offerRef: "course:one" }, "my-preview");
+    expect(preview.status, await preview.clone().text()).toBe(200);
+    const prepared = await preview.json() as { quoteId: string; legalAcceptance: { releaseVersion: string; manifestSha256: string; receiptEmail: string } };
+    expect(prepared).toMatchObject({ kind: "ONLINE_COURSE", offerRef: "course:one",
+      legalAcceptance: { releaseVersion: legal.version, manifestSha256: legal.sha256 } });
+    const go = (returnPath: string, origin = my, legalAcceptance?: unknown) =>
+      post("/v1/checkout", { quoteId: prepared.quoteId, returnPath, legalAcceptance }, "my-confirm", origin);
     expect((await go("//elsewhere.test/checkout/opaquevaluehere")).status).toBe(400);
     expect((await go("/checkout/abcdefghijklmnop", "https://forged.test")).status).toBe(403);
+    const missing = await go("/checkout/abcdefghijklmnop");
+    expect([missing.status, await missing.json()]).toEqual([403, { code: "PAID_CHECKOUT_TERMS_ACCEPTANCE_REQUIRED" }]);
+    expect((await post("/v1/checkout", { quoteId: prepared.quoteId }, "outside-my", origins.lab, new URL(origins.lab).host)).status).toBe(403);
     expect(bank.calls.create).toHaveLength(0);
-    const response = await go("/checkout/abcdefghijklmnop");
+    const acceptance = { accepted: true, releaseVersion: prepared.legalAcceptance.releaseVersion, manifestSha256: prepared.legalAcceptance.manifestSha256,
+      receiptEmail: prepared.legalAcceptance.receiptEmail };
+    const response = await go("/checkout/abcdefghijklmnop", my, acceptance);
     expect(response.status).toBe(201);
     const order = await response.json() as { orderPublicId: string; paymentUrl: string };
     expect(order.paymentUrl).toMatch(/^https:/);
     expect(bank.calls.create[0]?.successUrl).toBe(`${my}/checkout/abcdefghijklmnop?order=${order.orderPublicId}`);
     const status = await app.request(`/v1/checkout/${order.orderPublicId}`, { headers: { "x-forwarded-host": new URL(my).host } });
     expect(await status.json()).toMatchObject({ kind: "ONLINE_COURSE", contour: "NATIVE", paymentUrl: order.paymentUrl });
+    expect(db.prepare("SELECT COUNT(*) n FROM audit_log WHERE action='PAID_CHECKOUT_TERMS_ACCEPTED'").get()).toEqual({ n: 1 });
   });
 
   it("refuses an unqualified fiscal combination before any order exists", async () => {

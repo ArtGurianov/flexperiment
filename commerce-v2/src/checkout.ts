@@ -33,7 +33,7 @@ function checkoutAdmission<T>(guard: () => T): T {
 }
 
 /** The runtime facts checkout re-evaluates on every preview and confirm. */
-export type CheckoutPolicyConfig = Pick<CommerceRuntimeConfig, "deployEnvironment" | "paymentMode" | "merchantPromotionPrefix" | "closedPaidTest" | "storefrontSwitch">;
+export type CheckoutPolicyConfig = Pick<CommerceRuntimeConfig, "deployEnvironment" | "paymentMode" | "merchantPromotionPrefix" | "closedPaidTest" | "storefrontSwitch" | "nativeCoursesLegal">;
 export type PaidCheckoutAcceptance = { accepted: boolean; releaseVersion: string; manifestSha256: string; receiptEmail: string };
 
 export type RailState = "PENDING" | "CUSTOMER_ACTION_REQUIRED" | "PAID" | "DECLINED" | "EXPIRED" | "REFUND_PENDING" | "REFUNDED" | "REVIEW_REQUIRED";
@@ -469,18 +469,30 @@ const priceNotice = (quotedAmountKopecks: number, currentAmountKopecks: number |
       ? { code: "PRICE_CHANGED_SINCE_DISPLAY", quotedAmountKopecks, displayedAmountKopecks }
       : null;
 
+const paidReviewDocuments = ["privacy", "personal_data", "account_terms", "marketing_consent", "course_offer", "receipt_contact", "fiscal_items", "refund_terms"];
+
 function paidTestReview(db: Database.Database, config: CheckoutPolicyConfig, email: string) {
   if (!config.closedPaidTest) return undefined;
   const legal = legalRelease(db, "COURSES");
   if (!legal) throw new Error("LEGAL_RELEASE_REQUIRED");
   const manifest = JSON.parse(legal.manifest_json) as LegalReleaseManifest;
   const manifestSha256 = legalManifestHash(manifest);
-  const required = ["privacy", "personal_data", "account_terms", "marketing_consent", "course_offer", "receipt_contact", "fiscal_items", "refund_terms"];
-  if (manifest.stage !== "B" || required.some(kind => !manifest.documents.some(doc => doc.kind === kind))
+  if (manifest.stage !== "B" || paidReviewDocuments.some(kind => !manifest.documents.some(doc => doc.kind === kind))
     || legal.version !== config.closedPaidTest.legalVersion || manifestSha256 !== config.closedPaidTest.legalManifestSha256) {
     throw new Error("CLOSED_PAID_TEST_LEGAL_RELEASE_REFUSED");
   }
   return { releaseVersion: legal.version, manifestSha256, receiptEmail: email, documents: manifest.documents };
+}
+
+function nativeCourseReview(db: Database.Database, config: CheckoutPolicyConfig, email: string) {
+  const pinned = config.nativeCoursesLegal, release = legalRelease(db, "COURSES");
+  if (!pinned || !release || release.version !== pinned.version) throw new CheckoutConflictError("NATIVE_COURSES_LEGAL_RELEASE_REFUSED");
+  const manifest = JSON.parse(release.manifest_json) as LegalReleaseManifest;
+  const manifestSha256 = legalManifestHash(manifest);
+  if (manifest.stage !== "B" || manifestSha256 !== pinned.sha256 || paidReviewDocuments.some(kind => !manifest.documents.some(doc => doc.kind === kind))) {
+    throw new CheckoutConflictError("NATIVE_COURSES_LEGAL_RELEASE_REFUSED");
+  }
+  return { releaseVersion: release.version, manifestSha256, receiptEmail: email, documents: manifest.documents };
 }
 
 function assertNoOtherPaidTestOrder(db: Database.Database, config: CheckoutPolicyConfig, offerRef: string) {
@@ -783,14 +795,15 @@ export async function prepareCheckout(
   config: CheckoutPolicyConfig,
   input: {
     customerId: string; customerEmail: string; offerRef: string; previewIdempotencyKey: string; scenario?: string;
-    handoffToken?: string; checkoutCode?: string; orderPublicId?: string; storefront?: Storefront; displayedAmountKopecks?: number;
+    handoffToken?: string; checkoutCode?: string; orderPublicId?: string; storefront?: Storefront; displayedAmountKopecks?: number; nativeMy?: boolean;
   } & ResolutionContext,
   now = new Date().toISOString(),
 ) {
   if (!input.previewIdempotencyKey.trim()) throw new Error("IDEMPOTENCY_KEY_REQUIRED");
   if (config.closedPaidTest && input.checkoutCode?.trim()) throw new Error("CLOSED_PAID_TEST_PRICE_REFUSED");
   // This is review data, not an acceptance event. A later explicit confirm writes the event.
-  const review = paidTestReview(db, config, input.customerEmail);
+  const review = input.nativeMy && offerStorefront(db, input.offerRef) === "COURSES"
+    ? nativeCourseReview(db, config, input.customerEmail) : paidTestReview(db, config, input.customerEmail);
   assertClosedPaidTestAccountConsents(db, config, input.customerId);
   if (input.displayedAmountKopecks !== undefined
     && (!Number.isSafeInteger(input.displayedAmountKopecks) || input.displayedAmountKopecks < 0)) throw new Error("DISPLAYED_AMOUNT_INVALID");
@@ -931,6 +944,7 @@ export async function confirmCheckout(
     legalAcceptance?: PaidCheckoutAcceptance;
     labAcceptance?: LabAcceptance;
     native?: NativeConfirm;
+    nativeMy?: boolean;
   },
   now = new Date().toISOString(),
 ) {
@@ -957,7 +971,8 @@ export async function confirmCheckout(
     expireIntent(db, pending.id, now);
     throw expiredIntentError(pending);
   }
-  const review = paidTestReview(db, config, input.customerEmail);
+  const nativeCourse = input.nativeMy && pending.storefront === "COURSES";
+  const review = nativeCourse ? nativeCourseReview(db, config, input.customerEmail) : paidTestReview(db, config, input.customerEmail);
   if (review && (input.legalAcceptance?.accepted !== true || input.legalAcceptance.releaseVersion !== review.releaseVersion
     || input.legalAcceptance.manifestSha256 !== review.manifestSha256 || input.legalAcceptance.receiptEmail !== review.receiptEmail)) {
     throw new Error("PAID_CHECKOUT_TERMS_ACCEPTANCE_REQUIRED");
@@ -1043,7 +1058,8 @@ export async function confirmCheckout(
     // consumed_at below atomically removes it from quote inventory as the order takes its seat.
     if (review) {
       // Re-read under the same write transaction as order creation; no backfilled UI event.
-      const current = paidTestReview(db, config, input.customerEmail)!;
+      const current = (nativeCourse ? nativeCourseReview(db, config, input.customerEmail) : paidTestReview(db, config, input.customerEmail))!;
+      if (current.manifestSha256 !== review.manifestSha256) throw new CheckoutConflictError("CHECKOUT_QUOTE_STALE");
       const customer = db.prepare("SELECT email_normalized FROM customers WHERE id=?").get(input.customerId) as { email_normalized: string } | undefined;
       if (customer?.email_normalized !== current.receiptEmail) throw new Error("PAID_CHECKOUT_CONTACT_CHANGED");
       db.prepare(`INSERT INTO audit_log(id,actor,action,subject_type,subject_ref,evidence_json,created_at)
