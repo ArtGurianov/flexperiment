@@ -8,6 +8,7 @@ import { publicLabShowcase } from "./lab-interest-showcase";
 import { consumeLabLimit, LabTicketError, labEmail } from "./lab-tickets";
 import type { CommerceRuntimeConfig } from "./payment-mode";
 import { LabInterestMailError } from "./lab-interest-mail";
+import type { LabInterestManifest } from "./lab-interest-legal";
 
 const noStore = { "Cache-Control": "no-store" };
 
@@ -24,18 +25,19 @@ export function registerLabInterestRoutes(parent: Hono, deps: {
   /** Derives withdrawal links; without it (or without mail) signups are refused, never stored. */
   secret?: string;
   signupsEnabled: boolean;
+  manifest?: LabInterestManifest;
   sendLabInterestEmail?: (message: LabInterestEmail) => Promise<void>;
   erasureFence?: ErasureRuntimeFence;
 }) {
   const app = new Hono();
-  const available = () => deps.signupsEnabled && Boolean(deps.secret && deps.sendLabInterestEmail);
+  const available = () => deps.signupsEnabled && Boolean(deps.secret && deps.sendLabInterestEmail && deps.manifest);
   const invalid = (error: unknown) => error instanceof LabInterestError || error instanceof LabTicketError;
   app.onError((error, c) => invalid(error)
     ? c.json({ code: error.message }, 422, noStore)
     : c.json({ code: "LAB_INTEREST_UNAVAILABLE" }, 503, noStore));
 
   app.get("/v1/lab/showcase", (c) => {
-    try { return c.json(publicLabShowcase(deps.db, deps.config, available(), deps.now()), 200, noStore); }
+    try { return c.json(publicLabShowcase(deps.db, deps.config, available(), deps.manifest, deps.now()), 200, noStore); }
     catch { return c.json({ code: "LAB_SHOWCASE_UNAVAILABLE" }, 503, noStore); }
   });
 
@@ -44,6 +46,7 @@ export function registerLabInterestRoutes(parent: Hono, deps: {
 
   app.post("/v1/lab/interest", async (c) => {
     if (c.req.header("origin") !== deps.origin) return c.json({ code: "ORIGIN_FORBIDDEN" }, 403, noStore);
+    if (!deps.manifest) return c.json({ code: "LAB_INTEREST_UNAVAILABLE" }, 503, noStore);
     if (!deps.signupsEnabled || !deps.secret || !deps.sendLabInterestEmail) return c.json({ code: "LAB_INTEREST_EMAIL_UNAVAILABLE" }, 503, noStore);
     let body: LabInterestRequest;
     try { body = await c.req.json<LabInterestRequest>(); } catch { return c.json({ code: "LAB_INPUT_INVALID" }, 422, noStore); }
@@ -51,13 +54,12 @@ export function registerLabInterestRoutes(parent: Hono, deps: {
     const source = deps.requestSource(c);
     if (!source) return c.json({ code: "LAB_SOURCE_UNAVAILABLE" }, 503, noStore);
     if (!consumeLabLimit(deps.db, "interest-source", source, 20, time)) return c.json({ code: "LAB_RATE_LIMITED" }, 429, noStore);
-    // Validate consent and city before any per-address effect.
     const accepted = () => c.json({ accepted: true }, 202, noStore);
     if (!consumeLabLimit(deps.db, "interest-source-email", JSON.stringify([source, email]), 3, time)
       || !consumeLabLimit(deps.db, "interest-email", email, 5, time)) return accepted();
     try { deps.erasureFence?.assertIdentity({ email }, "MARKETING"); }
     catch { return accepted(); }
-    const prepared = requestLabInterest(deps.db, body, { origin: deps.origin, secret: deps.secret }, time);
+    const prepared = requestLabInterest(deps.db, body, { origin: deps.origin, secret: deps.secret, consent: deps.manifest.consent }, time);
     if (prepared) {
       try { await deps.sendLabInterestEmail(prepared.message); }
       catch (error) {
@@ -71,11 +73,11 @@ export function registerLabInterestRoutes(parent: Hono, deps: {
   });
 
   app.post("/v1/lab/interest/confirm", async (c) => {
-    if (!deps.signupsEnabled) return c.json({ code: "LAB_INTEREST_UNAVAILABLE" }, 503, noStore);
+    if (!deps.signupsEnabled || !deps.manifest) return c.json({ code: "LAB_INTEREST_UNAVAILABLE" }, 503, noStore);
     if (c.req.header("origin") !== deps.origin) return c.json({ code: "ORIGIN_FORBIDDEN" }, 403, noStore);
     let body: { token?: unknown };
     try { body = await c.req.json(); } catch { return c.json({ code: "LAB_INPUT_INVALID" }, 422, noStore); }
-    return c.json(confirmLabInterest(deps.db, body?.token, deps.now().toISOString()), 200, noStore);
+    return c.json(confirmLabInterest(deps.db, body?.token, deps.now().toISOString(), deps.manifest.consent), 200, noStore);
   });
 
   // One-click (RFC 8058) posts come from the mail provider without an Origin, so withdrawal is the one

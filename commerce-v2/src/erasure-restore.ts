@@ -45,6 +45,8 @@ const REVIEWED_SCHEMA_SHA256 = new Set([
   // FLEX-8 (G; branch number 0036, final number at integration): LAB interest signups keyed only by
   // email for the LAB_SALES_NOTICE purpose; erasure deletes them by email pseudonym and suppresses.
   "9dbea1cf537be77bf6ace1f3be6e87a81b30aac8bf8ed88372787befebb5de94",
+  // 0037: purpose-specific LAB notice suppression.
+  "488027c3850f96384ddc248b6efcfdfd11317624dec3a415af2589c95f56473b",
 ]);
 export function assertReviewedRestoreSchema(db: Database.Database) {
   const schema = db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").all();

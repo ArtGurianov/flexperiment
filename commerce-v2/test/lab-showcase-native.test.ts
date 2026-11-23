@@ -1,10 +1,10 @@
+import { labInterestManifest } from "./fixtures/lab-interest";
 import Database from "better-sqlite3";
 import { randomBytes } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createCommerceV2App } from "../src/app";
 import { migrateV2 } from "../src/db";
 import { capabilityHash, labLegalReview } from "../src/lab-tickets";
-import { LAB_INTEREST_CONSENT, labInterestConsentSha256 } from "../src/lab-interest";
 import { CommerceConfigurationError, loadCommerceRuntimeConfig, type CommerceRuntimeConfig } from "../src/payment-mode";
 import { stageBLegalManifestJson } from "./fixtures/legal";
 import { openTestStorefront, qualifyTestFiscalPolicies, setTestStorefronts, withTestStorefrontSwitch } from "./fixtures/sales";
@@ -32,7 +32,7 @@ describe("FLEX-8 native fixture admission", () => {
 describe.runIf(nativeConfig !== null)("FLEX-8: COURSES=OPEN, LAB=CLOSED, PAYMENT_MODE=native", () => {
   const origin = "http://localhost:3000";
   const now = "2026-10-19T10:00:00.000Z";
-  const consent = { version: LAB_INTEREST_CONSENT.version, textSha256: labInterestConsentSha256 };
+  const consent = labInterestManifest.consent;
   let db: Database.Database;
   let bank: { calls: { create: unknown[]; readPayment: number; submitRefund: unknown[]; readRefund: number } };
   let app: ReturnType<typeof createCommerceV2App>;
@@ -64,7 +64,7 @@ describe.runIf(nativeConfig !== null)("FLEX-8: COURSES=OPEN, LAB=CLOSED, PAYMENT
     app = createCommerceV2App({ db, config, sourceCommit: "a".repeat(40), serviceToken: "synthetic", now: () => new Date(now),
       paymentRail: new NativeQuoteRail({ merchantId: "flexperiment-native", fiscalizationMode: "MERCHANT" }) as never,
       ...({ nativePayments: { provider: bank, keyring: { currentKeyId: "k", keys: { k: Buffer.alloc(32, 7) } }, fiscalizationMode: "MERCHANT", mayInitiate: () => true } } as object),
-      campaignUnsubscribeSecret: "synthetic-secret", labInterestSignupsEnabled: true, sendLabInterestEmail: async () => {},
+      campaignUnsubscribeSecret: "synthetic-secret", labInterestSignupsEnabled: true, labInterestManifest, sendLabInterestEmail: async () => {},
       labGuestTrustedProxyIps: ["10.0.5.4"], labGuestPeerAddress: () => "10.0.5.4" });
   });
   afterEach(() => db.close());
@@ -75,7 +75,7 @@ describe.runIf(nativeConfig !== null)("FLEX-8: COURSES=OPEN, LAB=CLOSED, PAYMENT
     const showcase = await (await call("/v1/lab/showcase")).json();
     expect(showcase.sales).toEqual({ state: "CLOSED", reason: "STOREFRONT_CLOSED" });
     expect(showcase.occurrences).toMatchObject([{ occurrenceRef: "lab:one", amountKopecks: 10000, sales: "CLOSED" }]);
-    expect((await call("/v1/lab/interest", { email: "fan@example.test", consent })).status).toBe(202);
+    expect((await call("/v1/lab/interest", { email: "fan@example.test", cityId: "city", consent })).status).toBe(202);
     expect(moneyState()).toEqual(before);
     expect(bank.calls).toEqual({ create: [], readPayment: 0, submitRefund: [], readRefund: 0 });
   });

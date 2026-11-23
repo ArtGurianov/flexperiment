@@ -18,7 +18,7 @@ const stubFetch = (fetcher: Fetcher, interestAvailable = true) => vi.stubGlobal(
   if (!Array.isArray(model?.occurrences)) return response(model);
   const open = model.paymentMode !== "disabled";
   return response({ schema: "flexperiment.lab-showcase/1", sales: open ? { state: "OPEN", reason: null } : { state: "CLOSED", reason: "PAYMENTS_DISABLED" },
-    interest: { available: interestAvailable, consent }, cities: model.cities,
+    interest: { available: interestAvailable, consent, privacy: "Фикстура политики" }, cities: model.cities,
     occurrences: model.occurrences.map((event: Record<string, unknown>) => {
       const published: Record<string, unknown> = { ...event, sales: open ? "OPEN" : "CLOSED" };
       delete published.offerRef;
@@ -59,7 +59,7 @@ describe("separate LAB V2 entrypoint", () => {
     vi.stubGlobal("fetch", vi.fn(async (path: string) => path === "/v1/lab/showcase"
       ? response({
           schema: "flexperiment.lab-showcase/1", sales: { state: "CLOSED", reason: "STOREFRONT_CLOSED" },
-          interest: { available: true, consent }, cities: [{ cityId: "nsk", slug: "nsk", title: "Новосибирск" }],
+          interest: { available: true, consent, privacy: "Фикстура политики" }, cities: [{ cityId: "nsk", slug: "nsk", title: "Новосибирск" }],
           occurrences: [event],
         })
       : response({ code: "UNAVAILABLE" }, 503)));

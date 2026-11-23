@@ -37,6 +37,7 @@
     "0033_lab_seat_holds.sql": "aace5461504487ad00da50d1fbf6f0dbe7514a1aadfe2e9910a6f9f8958e7391",
     "0034_browser_contexts.sql": "b7bd54cad4fc6882f0e91ec2237a2d3429678679d8f7489a723ce15fde270d80",
     "0035_storefront_switch.sql": "7b6ff1ab0127eb50e6c4db5bf2ee6fe87a611279785ec829fc65616e4668af58",
-    "0036_lab_interest.sql": "e05c7d8299cd7840d5913fa374eeb966610a31962e0488ab8bfef2721f6a67e2"
+    "0036_lab_interest.sql": "e05c7d8299cd7840d5913fa374eeb966610a31962e0488ab8bfef2721f6a67e2",
+    "0037_lab_interest_purpose_suppression.sql": "645b44da99a093d65e28bdf1861de72d8bb28ca0eb4d8f2f84514f6f64c108e0"
   }
 }

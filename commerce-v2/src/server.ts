@@ -1,4 +1,5 @@
 import { createLabInterestMailDelivery } from "./lab-interest-mail";
+import { loadLabInterestManifest } from "./lab-interest-legal";
 import { serve } from "@hono/node-server";
 import { createCommerceV2App } from "./app";
 import { migrateV2, openV2Database } from "./db";
@@ -162,6 +163,7 @@ const app = createCommerceV2App({
   sendCampaignEmail,
   labGuestTrustedProxyIps: labGuestTrustedProxyIps(process.env.LAB_GUEST_TRUSTED_PROXY_IPS),
   labInterestSignupsEnabled: process.env.LAB_INTEREST_SIGNUPS_ENABLED === "true",
+  labInterestManifest: loadLabInterestManifest(process.env),
   sendLabInterestEmail: labInterestDelivery.configured ? async message => {
     // The confirmation is service mail for the subject's own request; the notice is advertising (E: 38-FZ art. 18).
     const purpose = message.kind === "CONFIRM" ? "AUTH_MAIL" : "MARKETING";

@@ -12,7 +12,7 @@ const event = { occurrenceRef: "lab:dec", cityId: "nsk", title: "LAB в дека
   timezone: "Asia/Novosibirsk", amountKopecks: 250000, currency: "RUB", venue: { status: "CONFIRMED", name: "Студия", address: "Адрес" } };
 const consent = { version: "e-draft", text: "Согласие на уведомление о старте продаж (фикстура)", textSha256: "b".repeat(64) };
 const showcase = (available = true) => ({ schema: "flexperiment.lab-showcase/1", sales: { state: "CLOSED", reason: "OFFERS_CLOSED" },
-  interest: { available, consent }, cities: [{ cityId: "nsk", slug: "nsk", title: "Новосибирск" }], occurrences: [{ ...event, sales: "CLOSED" }] });
+  interest: { available, consent, privacy: "Политика (фикстура)" }, cities: [{ cityId: "nsk", slug: "nsk", title: "Новосибирск" }], occurrences: [{ ...event, sales: "CLOSED" }] });
 const stub = (available = true, interestStatus = 202) => {
   const fetcher = vi.fn(async (path: string, ...rest: [RequestInit?]) => { void rest;
     if (path === "/v1/lab/showcase") return response(showcase(available));
@@ -38,11 +38,14 @@ describe("FLEX-8 LAB showcase UI", () => {
   it("requires the separate unticked consent and sends only email, city and the consent hash", async () => {
     const fetcher = stub(); render(<LabV2Client />);
     fireEvent.change(await screen.findByLabelText("Email"), { target: { value: "fan@example.test" } });
-    fireEvent.change(screen.getByLabelText("Город"), { target: { value: "nsk" } });
     const submit = screen.getByRole("button", { name: "Оставить предзапись" });
     const box = screen.getByRole("checkbox"); expect(box).not.toBeChecked(); expect(submit).toBeDisabled();
-    fireEvent.click(box); fireEvent.click(submit);
-    expect(await screen.findByText(/Проверьте почту/)).toBeInTheDocument();
+    fireEvent.click(box);
+    expect(submit).toBeDisabled();
+    expect(screen.getByText("Политика обработки персональных данных")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Город"), { target: { value: "nsk" } });
+    fireEvent.click(submit);
+    expect(await screen.findByText(/откройте ссылку в течение 48 часов/)).toBeInTheDocument();
     const call = fetcher.mock.calls.find(([path]) => path === "/v1/lab/interest")!;
     expect(JSON.parse(String(call[1]!.body))).toEqual({ email: "fan@example.test", cityId: "nsk", consent: { version: "e-draft", textSha256: "b".repeat(64) } });
   });

@@ -67,6 +67,8 @@ const supportedSchemaSha256 = new Set([
   // FLEX-8 (G; branch number 0036): LAB interest signups. Retention is purgeLabInterest's explicit
   // reviewed policy in lab-interest.ts; existing retention targets are unchanged.
   "9dbea1cf537be77bf6ace1f3be6e87a81b30aac8bf8ed88372787befebb5de94",
+  // 0037: purpose-specific LAB notice suppression.
+  "488027c3850f96384ddc248b6efcfdfd11317624dec3a415af2589c95f56473b",
 ]);
 const parse = <T>(schema: z.ZodType<T>, value: unknown): T => {
   const result = schema.safeParse(value); return result.success ? result.data : refuse("RETENTION_POLICY_OR_HOLD_INVALID");

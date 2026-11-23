@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import { labShowcaseSchema, type LabShowcase } from "../../lib/lab-showcase-contract";
 import { venueDisclosure, type LabOccurrenceRow } from "./lab-occurrences";
-import { LAB_INTEREST_CONSENT, labInterestConsentSha256 } from "./lab-interest";
+import type { LabInterestManifest } from "./lab-interest-legal";
 import type { CommerceRuntimeConfig } from "./payment-mode";
 import { storefrontSwitchStatus } from "./storefront-switch";
 
@@ -12,7 +12,7 @@ import { storefrontSwitchStatus } from "./storefront-switch";
  * switch is read without recording an observation.
  */
 export function publicLabShowcase(db: Database.Database, config: Pick<CommerceRuntimeConfig, "paymentMode" | "deployEnvironment" | "storefrontSwitch">,
-  interestAvailable: boolean, now: Date): LabShowcase {
+  interestAvailable: boolean, manifest: LabInterestManifest | undefined, now: Date): LabShowcase {
   const labSwitch = storefrontSwitchStatus(db, config).LAB;
   const reason = config.paymentMode === "disabled" ? "PAYMENTS_DISABLED" as const : labSwitch !== "OPEN" ? "STOREFRONT_CLOSED" as const : null;
   const cities = db.prepare("SELECT id AS cityId,slug,title FROM cities ORDER BY title,id").all();
@@ -40,7 +40,9 @@ export function publicLabShowcase(db: Database.Database, config: Pick<CommerceRu
     schema: "flexperiment.lab-showcase/1",
     // Sales are OPEN only if at least one listed event can actually be bought.
     sales: { state: open ? "OPEN" : "CLOSED", reason: open ? null : reason ?? "OFFERS_CLOSED" },
-    interest: { available: interestAvailable, consent: { ...LAB_INTEREST_CONSENT, textSha256: labInterestConsentSha256 } },
+    interest: interestAvailable && cities.length > 0 && manifest
+      ? { available: true, consent: manifest.consent, privacy: manifest.privacy }
+      : { available: false, consent: null, privacy: null },
     cities, occurrences,
   });
 }
