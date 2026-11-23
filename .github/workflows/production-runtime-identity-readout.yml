@@ -18,6 +18,10 @@ name: Production runtime identity readout
 on:
   workflow_dispatch:
     inputs:
+      include_legacy_v1:
+        description: Include historical V1 observations for an explicitly requested recovery audit.
+        type: boolean
+        default: false
       expected_commit:
         description: Optional 40-hex candidate SHA to compare the V2 surfaces against (reported, not enforced).
         required: false
@@ -67,6 +71,7 @@ jobs:
       # into it at build time. That is the artifact speaking, not the deployer
       # reporting on its own work.
       - name: Read what the public surfaces attest
+        if: ${{ inputs.include_legacy_v1 }}
         run: |
           set -euo pipefail
           read_surface() {
@@ -104,11 +109,12 @@ jobs:
             echo "$lines"
             echo '```'
             echo "_The V2 rows report observed source commits. Image digests and deployment receipts are verified separately._"
-            echo "_The subsequent V1 release-state step can fail independently of these V2 observations._"
+            echo "_Historical V1 observations are available through the explicit include_legacy_v1 input._"
           } >> "$GITHUB_STEP_SUMMARY"
           echo "$lines"
 
       - name: Read durable release state and the commerce runtime
+        if: ${{ inputs.include_legacy_v1 }}
         run: |
           set -euo pipefail
           http="$(curl --silent --show-error --connect-timeout 5 --max-time 20 \
