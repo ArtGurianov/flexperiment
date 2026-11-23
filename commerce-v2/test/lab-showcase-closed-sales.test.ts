@@ -65,8 +65,8 @@ describe("FLEX-8: LAB closed while COURSES stays open", () => {
     setTestStorefronts(db, { LAB: "CLOSED", COURSES: "OPEN" });
     const before = moneyState();
     const result = await call(appWith(), "/v1/lab/guest/start", { email: "new@example.test", accessToken: capability() });
-    expect(result.status).toBe(409);
-    expect(await result.json()).toEqual({ code: "LAB_SALES_CLOSED" });
+    expect(result.status).toBe(403);
+    expect(await result.json()).toEqual({ code: "LAB_ACCOUNT_CONFIRMATION_REQUIRED" });
     expect(moneyState()).toEqual(before);
   });
   it.each([

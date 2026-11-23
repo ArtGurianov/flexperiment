@@ -93,38 +93,38 @@ describe("LAB lifecycle evidence across restore and erasure", () => {
   });
 });
 
-describe("migration 0040 rebuilds SERVICE_RENDERED without losing or inventing a fact", () => {
+describe("migration 0041 rebuilds SERVICE_RENDERED without losing or inventing a fact", () => {
   const directory = join(process.cwd(), "commerce-v2/migrations");
-  const upTo0039 = () => {
+  const upTo0040 = () => {
     const legacy = new Database(":memory:"); legacy.pragma("foreign_keys=ON");
-    for (const version of readdirSync(directory).filter(name => name.endsWith(".sql") && name < "0040").sort()) {
+    for (const version of readdirSync(directory).filter(name => name.endsWith(".sql") && name < "0041").sort()) {
       applyV2Migration(legacy, version, readFileSync(join(directory, version), "utf8"));
     }
     legacy.exec(`INSERT INTO cities(id,slug,title) VALUES ('city','nsk','City');
       INSERT INTO lab_occurrences(id,occurrence_ref,city_id,title,starts_at,ends_at,timezone,capacity,venue_status,venue_name,venue_address)
         VALUES ('event','lab:one','city','LAB','2026-11-01T09:00:00Z','2026-11-01T17:00:00Z','Asia/Novosibirsk',20,'CONFIRMED','Studio','Address');
       INSERT INTO products(id,product_ref,kind,access_model,occurrence_ref) VALUES ('product','lab:one','LAB','PAID','lab:one');`);
-    legacy.pragma("foreign_keys=OFF"); // The 0039-era fact under test; its order line is not.
+    legacy.pragma("foreign_keys=OFF"); // The 0040-era fact under test; its order line is not.
     return legacy;
   };
-  const v0040 = "0040_lab_service_rendered_semantics.sql";
-  it("moves a 0039 check-in time to checked_in_at and records rendering at recorded_at", () => {
-    const legacy = upTo0039();
+  const v0041 = "0041_lab_service_rendered_semantics.sql";
+  it("moves a 0040 check-in time to checked_in_at and records rendering at recorded_at", () => {
+    const legacy = upTo0040();
     try {
       legacy.prepare(`INSERT INTO lab_service_renditions(order_line_id,occurrence_ref,basis,attestation_reason,rendered_at,evidence_ref,recorded_by,recorded_at)
         VALUES ('line','lab:one','CHECKED_IN',NULL,'2026-11-01T09:05:00Z','lab-ticket:t:used','owner','2026-11-01T18:00:00Z')`).run();
-      applyV2Migration(legacy, v0040, readFileSync(join(directory, v0040), "utf8"));
+      applyV2Migration(legacy, v0041, readFileSync(join(directory, v0041), "utf8"));
       expect(legacy.prepare("SELECT basis,checked_in_at,rendered_at,recorded_at FROM lab_service_renditions").get())
         .toEqual({ basis: "CHECKED_IN", checked_in_at: "2026-11-01T09:05:00Z", rendered_at: "2026-11-01T18:00:00Z", recorded_at: "2026-11-01T18:00:00Z" });
       expect(() => legacy.prepare("DELETE FROM lab_service_renditions").run()).toThrow("LAB_SERVICE_RENDERED_IMMUTABLE");
     } finally { legacy.close(); }
   });
-  it("aborts on a 0039 attendance-list fact without a protected document reference", () => {
-    const legacy = upTo0039();
+  it("aborts on a 0040 attendance-list fact without a protected document reference", () => {
+    const legacy = upTo0040();
     try {
       legacy.prepare(`INSERT INTO lab_service_renditions(order_line_id,occurrence_ref,basis,attestation_reason,rendered_at,evidence_ref,recorded_by,recorded_at)
         VALUES ('line','lab:one','ATTENDED_ATTESTED','ATTENDANCE_LIST_CONFIRMED','2026-11-01T17:00:00Z','control-room:owner','owner','2026-11-01T18:00:00Z')`).run();
-      expect(() => applyV2Migration(legacy, v0040, readFileSync(join(directory, v0040), "utf8"))).toThrow(/CHECK constraint/);
+      expect(() => applyV2Migration(legacy, v0041, readFileSync(join(directory, v0041), "utf8"))).toThrow(/CHECK constraint/);
       expect(legacy.prepare("SELECT COUNT(*) AS n FROM lab_service_renditions").get()).toEqual({ n: 1 });
     } finally { legacy.close(); }
   });

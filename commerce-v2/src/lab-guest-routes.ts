@@ -12,7 +12,6 @@ export const labBearer = (context: Context) => context.req.header("authorization
 export function registerLabGuestRoutes(parent: Hono, deps: {
   db: Database.Database; origin: string; now: () => Date;
   requestSource: (context: Context) => string | undefined;
-  canStartGuest: () => boolean;
   authenticateCustomer?: (headers: Headers) => Promise<string | null>;
   sendLabTicketEmail?: (message: LabTicketEmail) => Promise<void>;
   erasureFence?: ErasureRuntimeFence;
@@ -35,11 +34,7 @@ export function registerLabGuestRoutes(parent: Hono, deps: {
   // FLEX-60 (owner decision 18.11.2026): new guest purchases are closed on the server. A LAB purchase
   // starts on a confirmed account (my/checkout, FLEX-122). Existing guest orders keep read-back,
   // ticket, recovery and refunds below through their own capability.
-  app.post("/v1/lab/guest/start", c => {
-    if (!deps.requestSource(c)) return c.json({ code: "LAB_SOURCE_UNAVAILABLE" }, 503, noStore);
-    if (!deps.canStartGuest()) return c.json({ code: "LAB_SALES_CLOSED" }, 409, noStore);
-    return c.json({ code: "LAB_ACCOUNT_CONFIRMATION_REQUIRED" }, 403, noStore);
-  });
+  app.post("/v1/lab/guest/start", c => c.json({ code: "LAB_ACCOUNT_CONFIRMATION_REQUIRED" }, 403, noStore));
   app.get("/v1/lab/guest/ticket", async c => {
     accessFor(c);
     const ticket = readLabTicket(deps.db, labBearer(c));
