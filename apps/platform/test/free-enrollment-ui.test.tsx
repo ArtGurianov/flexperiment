@@ -119,6 +119,32 @@ describe("FLEX-128 enrollment UI", () => {
     expect(screen.getByRole("link", { name: "Уже записаны? Войти" })).toHaveAttribute("href", expect.stringContaining("/account?next="));
   });
 
+  it("rechecks the playback grant without enrolling again when another tab has enrolled", async () => {
+    const create = vi.fn(async () => ({ Events: {}, on: vi.fn(), getCurrentTime: vi.fn(async () => 0), seekTo: vi.fn(), play: vi.fn(), destroy: vi.fn(async () => undefined) }));
+    vi.mocked(loadIframeApi).mockResolvedValue({ create } as never);
+    let playbackReads = 0;
+    global.fetch = vi.fn(async input => {
+      if (String(input).endsWith("/playback")) {
+        return ++playbackReads === 1 ? json({ decision: "ENROLLMENT_REQUIRED" }, 403)
+          : json({ mode: "open", videoId: "video", resumeAt: 0 });
+      }
+      return json(status({ enrollment: enrolled, enrollable: false }));
+    });
+    render(<LessonPlayer lessonRef="free-l2" title="Two" enrollment={{ courseSlug: "free", lessonSlug: "two", accessModel: "FREE" }} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Проверить доступ" }));
+    await waitFor(() => expect(create).toHaveBeenCalledOnce());
+    expect(playbackReads).toBe(2);
+    expect(posts().filter(([input]) => String(input) === "/v1/me/free-enrollments")).toHaveLength(0);
+  });
+
+  it("offers to retry a transient status failure without enrolling", async () => {
+    global.fetch = vi.fn<typeof fetch>().mockResolvedValueOnce(json({}, 503)).mockResolvedValueOnce(json(status()));
+    render(<FreeEnrollmentAction courseSlug="free" accessModel="FREE" />);
+    fireEvent.click(await screen.findByRole("button", { name: "Повторить проверку" }));
+    expect(await screen.findByRole("button", { name: "Записаться бесплатно →" })).toBeInTheDocument();
+    expect(posts()).toHaveLength(0);
+  });
+
   it("switches marketing off with one sequenced action confirmed by read-back", async () => {
     const consent = (marketing: boolean, sequence: number, action?: object) => ({ storefront: "COURSES", verifiedAccount: true,
       requiredChoicesConfirmed: true, releaseVersion: "r1", manifestSha256: "a".repeat(64), actionSequence: sequence,
@@ -131,11 +157,25 @@ describe("FLEX-128 enrollment UI", () => {
       return posted ? json(consent(false, 2, { key, outcome: "COMMITTED" })) : json(consent(true, 1));
     });
     render(<MarketingPreference />);
-    fireEvent.click(await screen.findByRole("button", { name: "Отказаться от рассылки" }));
-    expect(await screen.findByText("Рассылка отключена.")).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: "Отозвать согласие на рассылку" }));
+    expect(await screen.findByText("Согласие на рекламную рассылку отозвано.")).toBeInTheDocument();
     // G-18: only the marketing choice is sent; required choices are never re-recorded from here.
     expect(posted).toEqual({ storefront: "COURSES", releaseVersion: "r1", manifestSha256: "a".repeat(64),
       actionKey: expect.any(String), expectedActionSequence: 1, marketingConsent: false });
-    expect(screen.getByRole("button", { name: "Получать рассылку" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Дать согласие на рассылку" })).toBeInTheDocument();
+  });
+
+  it("confirms the saved marketing choice without asserting that mail will be delivered", async () => {
+    const consent = { storefront: "COURSES", verifiedAccount: true, requiredChoicesConfirmed: true,
+      releaseVersion: "r1", manifestSha256: "a".repeat(64), actionSequence: 1, documents: [] };
+    global.fetch = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(json({ ...consent, choices: { marketing_consent: false } }))
+      .mockResolvedValueOnce(json({}))
+      .mockResolvedValueOnce(json({ ...consent, actionSequence: 2, action: { outcome: "COMMITTED" },
+        choices: { marketing_consent: true } }));
+    render(<MarketingPreference />);
+    fireEvent.click(await screen.findByRole("button", { name: "Дать согласие на рассылку" }));
+    expect(await screen.findByText("Согласие на рекламную рассылку сохранено.")).toBeInTheDocument();
+    expect(screen.queryByText(/Вы получаете|Рассылка включена/)).not.toBeInTheDocument();
   });
 });
