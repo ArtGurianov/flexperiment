@@ -13,7 +13,7 @@ import { openTestStorefront, qualifyTestFiscalPolicies, setTestStorefronts, test
 /**
  * FLEX-8 acceptance, on fixtures: with LAB sales closed the showcase and interest work, existing
  * tickets and refunds keep working, and the server refuses every new LAB quote, seat hold, order and
- * payment attempt with no payment-rail call. Guest-start closure itself comes from D (#292).
+ * payment attempt with no payment-rail call.
  */
 const origin = "http://localhost:3000";
 const now = "2026-10-19T10:00:00.000Z";
@@ -47,8 +47,7 @@ const call = (app: ReturnType<typeof appWith>, path: string, body?: unknown, tok
   ...(body === undefined ? {} : { body: JSON.stringify(body) }),
 });
 /**
- * A historical guest capability, as an order started before the closure would hold. Seeded directly:
- * the public guest-start route is closed by D (#292) and is not part of this slice.
+ * A historical guest capability, as an order started before the closure would hold.
  */
 const historicalGuest = async () => {
   const token = capability();
@@ -61,6 +60,14 @@ const acceptance = () => ({ personalDataConsent: true, termsAccepted: true, rece
   releaseVersion: labLegalReview(db).releaseVersion, manifestSha256: labLegalReview(db).manifestSha256 });
 
 describe("FLEX-8: LAB closed while COURSES stays open", () => {
+  it("refuses guest registration without allocating a customer or access capability", async () => {
+    setTestStorefronts(db, { LAB: "CLOSED", COURSES: "OPEN" });
+    const before = moneyState();
+    const result = await call(appWith(), "/v1/lab/guest/start", { email: "new@example.test", accessToken: capability() });
+    expect(result.status).toBe(409);
+    expect(await result.json()).toEqual({ code: "LAB_SALES_CLOSED" });
+    expect(moneyState()).toEqual(before);
+  });
   it.each([
     ["LAB switch CLOSED, offer PUBLIC", () => setTestStorefronts(db, { LAB: "CLOSED", COURSES: "OPEN" }), "SALES_STOPPED"],
     ["offer CLOSED, switch OPEN", () => db.prepare("UPDATE offers SET sale_mode='CLOSED'").run(), "OFFER_CLOSED"],
@@ -107,7 +114,7 @@ describe("FLEX-8: non-financial acceptance with PAYMENT_MODE=disabled", () => {
     expect(showcase.sales).toEqual({ state: "CLOSED", reason: "PAYMENTS_DISABLED" });
     expect(showcase.occurrences[0]).toMatchObject({ amountKopecks: 10000, sales: "CLOSED" });
     expect((await call(app, "/v1/lab/interest", { email: "fan@example.test", consent })).status).toBe(202);
-    for (const [path, body] of [["/v1/checkout/preview", { offerRef: "lab:one" }], ["/v1/checkout", { quoteId: "missing" }]] as const) {
+    for (const [path, body] of [["/v1/lab/guest/start", { email: "new@example.test", accessToken: capability() }], ["/v1/checkout/preview", { offerRef: "lab:one" }], ["/v1/checkout", { quoteId: "missing" }]] as const) {
       expect((await call(app, path, body, capability())).status).toBeGreaterThanOrEqual(400);
     }
     expect(moneyState()).toEqual(before); expect(holds()).toBe(0);

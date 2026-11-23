@@ -781,6 +781,7 @@ export function createCommerceV2App(deps: Dependencies) {
   });
 
   registerLabGuestRoutes(app as unknown as Hono, { db: deps.db, origin: origins.lab, now,
+    canStartGuest: () => deps.config.paymentMode !== "disabled" && storefrontSwitchStatus(deps.db, deps.config).LAB === "OPEN",
     authenticateCustomer: deps.authenticateCustomer, sendLabTicketEmail: deps.sendLabTicketEmail, erasureFence: deps.erasureFence,
     requestSource: context => {
       let peer: string | undefined;
