@@ -68,8 +68,11 @@ FLEX-96/29 (Coolify, erasure/restore). Подготовлено 2026-11-20 от 
 2. С хоста (read-only, по GO): `docker inspect` контейнера → image digest и label commit; совпадение с Coolify deployment.
 3. LAB-образы не входят в эту проверку.
 4. Platform собирается **отдельно для каждого окружения** с его `PLATFORM_ORIGIN` (build ARG `Dockerfile.platform`, по умолчанию `https://flexperiment.ru`; F · #290): `/` и `/courses` пререндерятся при сборке, их canonical/og:url берутся из этого значения. Проверка: на canary `canonical` и `og:url` указывают на origin canary, на production — на `https://flexperiment.ru`. Один и тот же digest Platform для canary и production — **FAIL** (canonical canary укажет на production). Значит, для Platform критерий «тот же образ» заменяется на «тот же commit, отдельная сборка на окружение» (G-17).
-**Известный разрыв:** G-11 (readout не покрывает V2), G-12 (сборка не публикует образы; digest
-сопоставляется по хосту). Без решения D-06 этот сценарий принимается в форме «commit + digest read-back с хоста».
+**Критерий A-6:** CI должен собрать образы для точного SHA кандидата и опубликовать их с неизменяемыми
+digest. Развёртывание в каждом окружении использует его утверждённые digest. Независимый read-back с хоста
+подтверждает фактически установленные digest, а G-11 сверяет исходный SHA через `/identity`. До доказательства
+этой цепочки A-6 остаётся открытым. Сейчас CI собирает образы без публикации, поэтому сохраняется G-12.
+Настройка публикации, реестра и развёртывания требует отдельного допуска.
 
 ### A-7. Свежее независимое восстановление с подавлением удалений
 Ссылка: `docs/release/COMMERCE_V2_BACKUPS.md` §«Independent restore», `COMMERCE_V2_RESTORE_RECONCILIATION.md`.
