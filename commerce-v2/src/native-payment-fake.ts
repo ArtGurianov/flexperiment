@@ -52,7 +52,8 @@ export class FakeNativeBank implements NativePaymentProvider {
     const payment = this.payments.get(merchantOrderRef);
     if (!payment) return { outcome: "NOT_FOUND" };
     return { outcome: "FOUND", providerPaymentId: payment.id, status: payment.status, merchantOrderRef, currency: "RUB",
-      amountKopecks: payment.amountOverride ?? payment.request.amountKopecks, snapshotHash: payment.request.snapshotHash };
+      amountKopecks: payment.amountOverride ?? payment.request.amountKopecks, snapshotHash: payment.request.snapshotHash,
+      ...(payment.status === "PENDING" ? { paymentUrl: `https://fake-bank.test/pay/${payment.id}` } : {}) };
   }
 
   async submitRefund(request: FrozenNativeRefundRequest): Promise<NativeRefundAnswer> {

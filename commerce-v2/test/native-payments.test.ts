@@ -99,6 +99,10 @@ describe("native payment ledger on the fake bank (FLEX-119)", () => {
     bank.faults.create.push("LOSE_AFTER_COMMIT");
     bank.faults.readPayment.push("UNAVAILABLE");
     expect((await startNativePayment(db, ctx(), id)).state).toBe("CREATE_UNKNOWN");
+    await reconcilePendingNativePayments(db, ctx());
+    expect(db.prepare("SELECT state,payment_url FROM native_payments").get()).toMatchObject({
+      state: "PENDING", payment_url: expect.stringMatching(/^https:/),
+    });
     bank.buyerPays(id);
     await reconcilePendingNativePayments(db, ctx());
     expect([paymentState(id), bank.calls.create.length, bank.debits, entitlements()]).toEqual(["PAID", 1, 1, 1]);

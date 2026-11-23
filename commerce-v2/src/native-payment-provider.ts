@@ -41,6 +41,7 @@ export type NativePaymentReadBack =
     readonly outcome: "FOUND"; readonly providerPaymentId: string; readonly status: "PENDING" | "PAID" | "DECLINED" | "EXPIRED";
     readonly merchantOrderRef: string; readonly amountKopecks: number; readonly currency: string; readonly snapshotHash: string;
     readonly providerReceiptRef?: string;
+    readonly paymentUrl?: string;
   };
 
 export type NativeRefundAnswer =

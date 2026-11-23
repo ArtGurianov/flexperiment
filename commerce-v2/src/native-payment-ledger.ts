@@ -148,30 +148,38 @@ async function sendCreate(db: Database.Database, ctx: NativeLedgerContext, payme
   if (!row.request_envelope || !row.envelope_key_id) throw new Error("NATIVE_PAYMENT_ENVELOPE_MISSING");
   const request = openPayload<FrozenNativePaymentRequest>(ctx.keyring, "native-payment-envelope", row.envelope_key_id, row.id, row.request_envelope);
   let observation: PaymentObservation;
+  let paymentUrl: string | undefined;
   try {
     const answer = await ctx.provider.createPayment(request);
     observation = answer.outcome === "ACCEPTED"
       ? { source: "CREATE_RESPONSE", outcome: "ACCEPTED", providerPaymentId: answer.providerPaymentId }
       : { source: "CREATE_RESPONSE", outcome: "REFUSED", code: answer.code };
-    if (answer.outcome === "ACCEPTED" && answer.paymentUrl) {
-      db.prepare("UPDATE native_payments SET payment_url=COALESCE(payment_url,?) WHERE id=?").run(answer.paymentUrl, paymentId);
-    }
+    if (answer.outcome === "ACCEPTED") paymentUrl = answer.paymentUrl;
   } catch {
     observation = { source: "CREATE_RESPONSE", outcome: "LOST" };
   }
-  await driveNativePayment(db, ctx, paymentId, applyNativePaymentObservation(db, ctx, paymentId, observation), budget);
+  await driveNativePayment(db, ctx, paymentId, applyNativePaymentObservation(db, ctx, paymentId, observation, paymentUrl), budget);
 }
 
-async function readBack(ctx: NativeLedgerContext, merchantOrderRef: string): Promise<PaymentObservation> {
+async function readBack(ctx: NativeLedgerContext, merchantOrderRef: string): Promise<{ observation: PaymentObservation; paymentUrl?: string }> {
   try {
     const found = await ctx.provider.readPaymentByOrder(merchantOrderRef);
-    return found.outcome === "NOT_FOUND" ? { source: "READ_BACK", outcome: "NOT_FOUND" } : {
+    if (found.outcome === "NOT_FOUND") return { observation: { source: "READ_BACK", outcome: "NOT_FOUND" } };
+    return { observation: {
       source: "READ_BACK", outcome: "FOUND", providerPaymentId: found.providerPaymentId, status: found.status, merchantOrderRef: found.merchantOrderRef,
       amountKopecks: found.amountKopecks, currency: found.currency, snapshotHash: found.snapshotHash,
-    };
+    }, paymentUrl: found.status === "PENDING" ? found.paymentUrl : undefined };
   } catch {
-    return { source: "READ_BACK", outcome: "UNAVAILABLE" };
+    return { observation: { source: "READ_BACK", outcome: "UNAVAILABLE" } };
   }
+}
+
+function safePaymentUrl(value?: string) {
+  if (!value || value.length > 2048 || Array.from(value).some(char => char <= " " || char.charCodeAt(0) === 127 || char.charCodeAt(0) === 92)) return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && !url.username && !url.password ? url.href : null;
+  } catch { return null; }
 }
 
 /** Performs the external effects of a decision (read-back, replay) until none remain. */
@@ -190,13 +198,14 @@ export async function driveNativePayment(db: Database.Database, ctx: NativeLedge
     }
     if (!decision.effects.includes("READ_BACK")) return decision;
     const order = orderOfPayment(db, paymentById(db, paymentId)!);
-    decision = applyNativePaymentObservation(db, ctx, paymentId, await readBack(ctx, order.public_id));
+    const read = await readBack(ctx, order.public_id);
+    decision = applyNativePaymentObservation(db, ctx, paymentId, read.observation, read.paymentUrl);
   }
   return decision;
 }
 
 /** One observation, applied with its in-database effects in a single transaction (contract I5). */
-export function applyNativePaymentObservation(db: Database.Database, ctx: NativeLedgerContext, paymentId: string, observation: PaymentObservation) {
+export function applyNativePaymentObservation(db: Database.Database, ctx: NativeLedgerContext, paymentId: string, observation: PaymentObservation, paymentUrl?: string) {
   const now = clock(ctx);
   return db.transaction(() => {
     const payment = paymentById(db, paymentId);
@@ -209,11 +218,14 @@ export function applyNativePaymentObservation(db: Database.Database, ctx: Native
     const envelope = terminal && payment.request_envelope && payment.envelope_key_id
       ? openPayload<FrozenNativePaymentRequest>(ctx.keyring, "native-payment-envelope", payment.envelope_key_id, payment.id, payment.request_envelope)
       : undefined;
+    const boundUrl = decision.state === "PENDING" && "providerPaymentId" in observation
+      && observation.providerPaymentId === decision.providerPaymentId ? safePaymentUrl(paymentUrl) : null;
     // The terminal state and the purge of the sealed request are one statement (0036 trigger).
     db.prepare(`UPDATE native_payments SET state=?,provider_payment_id=COALESCE(provider_payment_id,?),last_reason=?,updated_at=?,
+      payment_url=COALESCE(payment_url,?),
       request_envelope=CASE WHEN ? THEN NULL ELSE request_envelope END,
       envelope_purged_at=CASE WHEN ? AND request_envelope IS NOT NULL THEN ? ELSE envelope_purged_at END WHERE id=?`)
-      .run(decision.state, decision.providerPaymentId, decision.reason ?? null, now, terminal ? 1 : 0, terminal ? 1 : 0, now, payment.id);
+      .run(decision.state, decision.providerPaymentId, decision.reason ?? null, now, boundUrl, terminal ? 1 : 0, terminal ? 1 : 0, now, payment.id);
     db.prepare(`INSERT INTO native_payment_observations(id,native_payment_id,source,observation_json,decided_state,reason,observed_at)
       VALUES (?,?,?,?,?,?,?)`).run(randomUUID(), payment.id, observation.source, JSON.stringify(observation), decision.state, decision.reason ?? null, now);
     const item = order.fiscal_item_json ? fiscalItemOf(order) : undefined;
