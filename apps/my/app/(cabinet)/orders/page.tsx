@@ -1,11 +1,9 @@
-import { connection } from "next/server";
+import { requestCabinet, requireSignedIn } from "@/components/cabinet/request";
+import { OrdersView } from "@/components/cabinet/views";
 
-/** FLEX-123 zone: order history (read-only). Skeleton. */
+/** FLEX-123 order history (read-only): payment and refund state, separate from access. */
 export default async function OrdersPage() {
-  await connection();
-  return (
-    <section>
-      <h1>Заказы</h1>
-    </section>
-  );
+  const cabinet = await requestCabinet();
+  const orders = requireSignedIn(await cabinet.orders(), "/orders");
+  return <><h1>Заказы</h1><OrdersView result={orders} heading="История заказов" /></>;
 }

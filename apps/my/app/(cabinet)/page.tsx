@@ -1,11 +1,20 @@
-import { connection } from "next/server";
+import { cabinetOrigins } from "@/components/cabinet/data";
+import { requestCabinet, requireSignedIn } from "@/components/cabinet/request";
+import { CoursesView, OrdersView, TicketsView } from "@/components/cabinet/views";
 
-/** FLEX-123 zone: cabinet landing. Skeleton owned by B until FLEX-123 takes over. */
+/** FLEX-123 cabinet landing: access (courses, tickets) first, payment history separately. */
 export default async function CabinetPage() {
-  await connection();
+  const cabinet = await requestCabinet();
+  const profile = requireSignedIn(await cabinet.profile(), "/");
+  const [courses, tickets, orders] = await Promise.all([cabinet.courses(), cabinet.tickets(), cabinet.orders()]);
+  const origins = cabinetOrigins();
+  const name = profile.status === "ok" ? profile.data.displayName : null;
   return (
-    <section>
-      <h1>Личный кабинет</h1>
-    </section>
+    <>
+      <h1>{name ? `Личный кабинет · ${name}` : "Личный кабинет"}</h1>
+      <CoursesView result={courses} platformOrigin={origins.platform} />
+      <TicketsView result={tickets} />
+      <OrdersView result={orders} heading="Последние заказы" />
+    </>
   );
 }
