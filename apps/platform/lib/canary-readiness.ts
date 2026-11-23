@@ -48,12 +48,13 @@ export async function assertCommerceReady() {
   } catch (error) { throw unavailable(error); }
   let ready;
   try { ready = JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { throw new CommerceReadinessError("UPSTREAM_CONTRACT"); }
+  const paidCanary = Boolean(process.env.CLOSED_PAID_TEST_PROFILE);
   if (ready.ok !== true || ready.service !== "commerce-v2" || ready.core?.database !== "ok"
     || ready.foundationMode !== false
     || (canary && (ready.sourceCommit !== process.env.PLATFORM_EXPECTED_COMMERCE_SHA
-      || ready.core?.paymentMode !== (process.env.CLOSED_PAID_TEST_PROFILE ? "refref" : "disabled")
-      || (process.env.CLOSED_PAID_TEST_PROFILE && (ready.core?.closedPaidTestProfile !== CLOSED_PAID_TEST_PROFILE
+      || ready.core?.paymentMode !== (paidCanary ? "refref" : "disabled")
+      || (paidCanary && (ready.core?.closedPaidTestProfile !== CLOSED_PAID_TEST_PROFILE
         || ready.core?.closedPaidTestLegalSha256 !== process.env.CLOSED_PAID_TEST_LEGAL_SHA256
         || ready.core?.closedPaidTestRefrefSource !== process.env.CLOSED_PAID_TEST_REFREF_SOURCE))
-      || ready.capabilities?.refref !== "ready"))) throw new CommerceReadinessError("UPSTREAM_CONTRACT");
+      || ready.capabilities?.refref !== (paidCanary ? "ready" : "not_required")))) throw new CommerceReadinessError("UPSTREAM_CONTRACT");
 }
