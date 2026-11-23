@@ -1,6 +1,6 @@
 import { CLOSED_PAID_TEST_PROFILE, closedPaidTestEnabled } from "../../lib/closed-paid-test-profile";
 import type { StorefrontSwitchSource } from "./storefront-switch";
-export type PaymentMode = "disabled" | "mock" | "refref";
+export type PaymentMode = "disabled" | "mock" | "refref" | "native";
 export type KinescopeDeliveryMode = "open" | "protected";
 export type SaleMode = "CLOSED" | "ACCEPTANCE_ONLY" | "PUBLIC";
 
@@ -26,6 +26,12 @@ export type CommerceRuntimeConfig = {
     readonly vnextApiBaseUrl?: string;
   };
   /**
+   * The direct native contour (FLEX-119). Only the test fake exists until a provider and an admitted
+   * environment are confirmed, and the fake never starts outside local/test.
+   */
+  readonly native?: { readonly provider: "fake"; readonly fiscalizationMode: "PROVIDER" | "MERCHANT" };
+  readonly historicalRefref?: Pick<NonNullable<CommerceRuntimeConfig["refref"]>, "apiBaseUrl" | "apiKey" | "merchantId">;
+  /**
    * The owner's storefront switch (storefront-switch.ts). The server attaches the read-only host file;
    * it is never loaded from env, and without one every storefront is CLOSED.
    */
@@ -40,13 +46,23 @@ const required = (env: Environment, name: string) => {
   return value;
 };
 
+function loadRefrefExecutor(env: Environment) {
+  const apiBaseUrl = required(env, "REFREF_API_BASE_URL");
+  try { new URL(apiBaseUrl); } catch { throw new CommerceConfigurationError("REFREF_API_BASE_URL_INVALID"); }
+  const merchantId = required(env, "REFREF_MERCHANT_ID");
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(merchantId)) {
+    throw new CommerceConfigurationError("REFREF_MERCHANT_ID_INVALID");
+  }
+  return { apiBaseUrl, apiKey: required(env, "REFREF_API_KEY"), merchantId };
+}
+
 export function loadCommerceRuntimeConfig(env: Environment = process.env): CommerceRuntimeConfig {
   const deployEnvironment = (env.DEPLOY_ENV ?? (env.NODE_ENV === "test" ? "test" : "local")) as CommerceRuntimeConfig["deployEnvironment"];
   if (!["local", "test", "staging", "production"].includes(deployEnvironment)) {
     throw new CommerceConfigurationError("DEPLOY_ENV_INVALID");
   }
   const paymentMode = (env.PAYMENT_MODE ?? (deployEnvironment === "production" ? "disabled" : "mock")) as PaymentMode;
-  if (!["disabled", "mock", "refref"].includes(paymentMode)) throw new CommerceConfigurationError("PAYMENT_MODE_INVALID");
+  if (!["disabled", "mock", "refref", "native"].includes(paymentMode)) throw new CommerceConfigurationError("PAYMENT_MODE_INVALID");
   const paidTest = closedPaidTestEnabled(env);
   const canary = env.COMMERCE_V2_ENVIRONMENT === "canary" || env.ERASURE_SCOPE === "canary"
     || env.PLATFORM_ORIGIN === "https://canary-platform.flexperiment.ru";
@@ -66,6 +82,19 @@ export function loadCommerceRuntimeConfig(env: Environment = process.env): Comme
     throw new CommerceConfigurationError("MERCHANT_PROMOTION_PREFIX_INVALID");
   }
 
+  if (paymentMode === "native") {
+    // The Refref executor is optional and can only service existing RC.2 records.
+    if (kinescopeDeliveryMode !== "protected") throw new CommerceConfigurationError("NATIVE_REQUIRES_PROTECTED_KINESCOPE");
+    const provider = env.NATIVE_PROVIDER?.trim();
+    if (provider !== "fake") throw new CommerceConfigurationError("NATIVE_PROVIDER_INVALID");
+    if (deployEnvironment !== "local" && deployEnvironment !== "test") throw new CommerceConfigurationError("NATIVE_FAKE_PROVIDER_FORBIDDEN");
+    const fiscalizationMode = env.NATIVE_FISCALIZATION_MODE?.trim() || "MERCHANT";
+    if (fiscalizationMode !== "PROVIDER" && fiscalizationMode !== "MERCHANT") throw new CommerceConfigurationError("NATIVE_FISCALIZATION_MODE_INVALID");
+    const historicalRefref = [env.REFREF_API_BASE_URL, env.REFREF_API_KEY, env.REFREF_MERCHANT_ID].some(value => value !== undefined)
+      ? loadRefrefExecutor(env) : undefined;
+    return { deployEnvironment, paymentMode, kinescopeDeliveryMode, merchantPromotionPrefix, native: { provider, fiscalizationMode },
+      ...(historicalRefref ? { historicalRefref } : {}) };
+  }
   if (paymentMode !== "refref") return { deployEnvironment, paymentMode, kinescopeDeliveryMode, merchantPromotionPrefix };
   if (kinescopeDeliveryMode !== "protected") throw new CommerceConfigurationError("REFREF_REQUIRES_PROTECTED_KINESCOPE");
   const apiBaseUrl = required(env, "REFREF_API_BASE_URL");
@@ -121,7 +150,7 @@ export function assertOfferSaleModeAllowed(
   // No acceptance qualifies the all-courses bundle yet (ART-240 qualifies one course): an open COURSES
   // switch never makes it PUBLIC (the fence of migration 0016, kept after sales_activation).
   if (offer.saleMode === "PUBLIC" && offer.kind === "COURSE_BUNDLE") throw new CommerceConfigurationError("COURSE_BUNDLE_NOT_QUALIFIED");
-  if (offer.saleMode === "ACCEPTANCE_ONLY" && config.paymentMode !== "refref" && config.deployEnvironment === "production") {
+  if (offer.saleMode === "ACCEPTANCE_ONLY" && config.paymentMode !== "refref" && config.paymentMode !== "native" && config.deployEnvironment === "production") {
     throw new CommerceConfigurationError("ACCEPTANCE_OFFER_REQUIRES_REFREF");
   }
 }

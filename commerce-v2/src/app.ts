@@ -1,4 +1,7 @@
 import { labGuestClientIp } from "./lab-guest-client-ip";
+import { receiveNativeCallback } from "./native-payment-callbacks";
+import { contourOfOrder, nativeConfirm, nativeOrderStatus, type NativeLedgerContext } from "./native-payment-ledger";
+import { executeApprovedNativeRefund } from "./native-payment-refunds";
 import { registerLabGuestRoutes, labBearer } from "./lab-guest-routes";
 import { checkInLabTicket, prepareLabRecovery, labAccess, labLegalReview, LabTicketError, type LabAcceptance, type LabTicketEmail } from "./lab-tickets";
 import type Database from "better-sqlite3";
@@ -22,7 +25,7 @@ import { currentLegalRelease } from "./legal-control";
 import { issueCheckoutHandoffState, issueCheckoutPaymentReturnState, verifyCheckoutHandoffState, verifyCheckoutNavigationState } from "./checkout-handoff";
 import { listMerchantPromotions, saveMerchantPromotion } from "./promotions";
 import type { RefundEnvelopeKeyring } from "./refund-envelope";
-import { decideRefund, executeApprovedRefund, listCustomerRefunds, listRefundCases, recordCourseAccessStart, registerEmailRefund, requestRefund, type RefundDecisionInput, type RefundReason } from "./refunds";
+import { decideRefund, executeApprovedRefund, executeApprovedRefundOnContour, listCustomerRefunds, listRefundCases, recordCourseAccessStart, registerEmailRefund, requestRefund, type RefundDecisionInput, type RefundReason } from "./refunds";
 import { grantManualEntitlement, revokeManualEntitlement } from "./entitlements";
 import { listCustomerLibrary, listCustomerOrderHistory } from "./library";
 import { controlRoomAttention, controlRoomAudit, controlRoomCatalogue, controlRoomCities, controlRoomCustomers, controlRoomEmailOperations, controlRoomEntitlements, controlRoomIncidents, controlRoomIntegrationSummary, controlRoomLabOccurrences, controlRoomOrders } from "./control-room";
@@ -75,6 +78,7 @@ type Dependencies = {
     readonly kinescopeApiConfigured: boolean;
   };
   readonly paymentRail?: PaymentRail;
+  readonly historicalPaymentRail?: PaymentRail;
   /** Seals each refund's frozen submission (ART-174). Without it no refund is executed. */
   readonly refundEnvelopeKeys?: RefundEnvelopeKeyring;
   /** `WITHDRAWN` marks the one commercial change that removes public pages; the platform notifies IndexNow for it. */
@@ -102,6 +106,9 @@ type Dependencies = {
   readonly resolveSession?: (headers: Headers) => Promise<ResolvedSession | null>;
   readonly signOutMySession?: (headers: Headers) => Promise<Response>;
   readonly sessionExchange?: ReturnType<typeof createSessionExchange>;
+
+  /** FLEX-119 · the direct native contour; present only with PAYMENT_MODE=native. */
+  readonly nativePayments?: NativeLedgerContext;
 };
 
 type AppBindings = { Variables: { controlRoomAdminId?: string; controlRoomSessionId?: string } };
@@ -713,10 +720,29 @@ export function createCommerceV2App(deps: Dependencies) {
     }
   });
   app.post("/v1/admin/v2/refunds/:requestPublicId/execute", async (context) => {
-    if (!deps.paymentRail) return context.json({ error: { code: "PAYMENT_RAIL_UNAVAILABLE" } }, 503, noStore);
+    // FLEX-119 · on the native contour a NATIVE order's refund goes to the native ledger; every other
+    // order (historical RC.2) and every other payment mode keep the unchanged path below.
+    const nativePayments = deps.nativePayments;
+    if (nativePayments) {
+      const requestPublicId = context.req.param("requestPublicId");
+      try {
+        const routed = await executeApprovedRefundOnContour(deps.db, requestPublicId, {
+          native: async () => executeApprovedNativeRefund(deps.db, nativePayments, requestPublicId), original: async () => undefined,
+        });
+        if (routed) {
+          auditControlRoom(deps.db, { adminId: context.get("controlRoomAdminId")!, action: "REFUND_EXECUTION_REQUESTED",
+            entityType: "refund_request", entityId: requestPublicId, details: { state: routed.state, contour: "NATIVE" } }, now().toISOString());
+          return context.json(routed, 200, noStore);
+        }
+      } catch (error) {
+        return context.json({ error: { code: error instanceof Error ? error.message : "REFUND_EXECUTION_FAILED" } }, 409, noStore);
+      }
+    }
+    const originalRail = nativePayments ? deps.historicalPaymentRail : deps.paymentRail;
+    if (!originalRail) return context.json({ error: { code: "PAYMENT_RAIL_UNAVAILABLE" } }, 503, noStore);
     if (!deps.refundEnvelopeKeys) return context.json({ error: { code: "REFUND_ENVELOPE_KEYS_UNAVAILABLE" } }, 503, noStore);
     try {
-      const result = await executeApprovedRefund(deps.db, deps.paymentRail, deps.refundEnvelopeKeys, context.req.param("requestPublicId"), now().toISOString());
+      const result = await executeApprovedRefund(deps.db, originalRail, deps.refundEnvelopeKeys, context.req.param("requestPublicId"), now().toISOString());
       auditControlRoom(deps.db, { adminId: context.get("controlRoomAdminId")!, action: "REFUND_EXECUTION_REQUESTED",
         entityType: "refund_request", entityId: context.req.param("requestPublicId"), details: { state: result.state } }, now().toISOString());
       return context.json(result, 200, noStore);
@@ -915,6 +941,7 @@ export function createCommerceV2App(deps: Dependencies) {
         successUrl: guest ? `${origins.lab}/ticket` : successUrl?.toString(),
         legalAcceptance: body.legalAcceptance,
         labAcceptance: body.labAcceptance,
+        ...(deps.nativePayments ? { native: nativeConfirm(deps.db, deps.nativePayments) } : {}),
       }, now().toISOString());
       if (guest && result.state === "PAID" && deps.sendLabTicketEmail) {
         const claimed = deps.db.prepare("UPDATE lab_guest_access SET initial_email_attempted_at=? WHERE order_public_id=? AND initial_email_attempted_at IS NULL")
@@ -973,7 +1000,6 @@ export function createCommerceV2App(deps: Dependencies) {
     if (guest && guest.order_public_id !== context.req.param("orderPublicId")) return context.json({ code: "ORDER_NOT_FOUND" }, 404, noStore);
     const customerId = guest?.customer_id ?? await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;
     if (!customerId) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
-    if (!deps.paymentRail) return context.json({ code: "PAYMENT_RAIL_UNAVAILABLE" }, 503, noStore);
     if (guest) {
       try { deps.erasureFence?.assertIdentity({ customerId: guest.customer_id }, "ACCOUNT"); }
       catch { return context.json({ code: "ERASURE_RUNTIME_CLOSED" }, 503, noStore); }
@@ -981,7 +1007,15 @@ export function createCommerceV2App(deps: Dependencies) {
     const owned = deps.db.prepare("SELECT 1 FROM orders WHERE public_id=? AND customer_id=?").get(context.req.param("orderPublicId"), customerId);
     if (!owned) return context.json({ code: "ORDER_NOT_FOUND" }, 404, noStore);
     try {
-      return context.json(await reconcileCheckout(deps.db, deps.paymentRail, context.req.param("orderPublicId"), now().toISOString(), deps.config), 200, noStore);
+      // FLEX-119 · a NATIVE order is read from the native ledger (its sweep owns provider read-back).
+      if (deps.nativePayments && contourOfOrder(deps.db, context.req.param("orderPublicId")) === "NATIVE") {
+        return context.json(nativeOrderStatus(deps.db, context.req.param("orderPublicId")), 200, noStore);
+      }
+      const originalRail = deps.nativePayments ? deps.historicalPaymentRail : deps.paymentRail;
+      if (!originalRail) return context.json({ code: "PAYMENT_RAIL_UNAVAILABLE" }, 503, noStore);
+      // A historical checkout may still be fulfilled, but cannot initiate a new Refref charge.
+      const admission = deps.nativePayments ? undefined : deps.config;
+      return context.json(await reconcileCheckout(deps.db, originalRail, context.req.param("orderPublicId"), now().toISOString(), admission), 200, noStore);
     } catch (error) {
       return context.json({ code: error instanceof Error ? error.message : "RECONCILE_FAILED" }, 409, noStore);
     }
@@ -1030,6 +1064,18 @@ export function createCommerceV2App(deps: Dependencies) {
       return context.json({ code: error instanceof Error ? error.message : "KINESCOPE_WEBHOOK_FAILED" }, 422, noStore);
     }
   });
+
+  // FLEX-119 · native provider callbacks: registered only on the native contour (404 otherwise). The
+  // event is stored durably before 2xx and only schedules a read-back (native-payment-callbacks.ts).
+  if (deps.config.paymentMode === "native" && deps.nativePayments) {
+    const nativePayments = deps.nativePayments;
+    app.post("/v1/native-payments/callback", async (context) => {
+      const rawBody = new Uint8Array(await context.req.arrayBuffer());
+      const headers = Object.fromEntries(context.req.raw.headers.entries());
+      const result = await receiveNativeCallback(deps.db, nativePayments, headers, rawBody);
+      return context.json(result, result.accepted ? 200 : 401, noStore);
+    });
+  }
 
   app.post("/v1/kinescope/drm/authorize", async (context) => {
     const expected = deps.kinescopeDrmAuth;

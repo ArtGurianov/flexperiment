@@ -3,7 +3,7 @@ import { z } from "zod";
 /** Public LAB read model, not a checkout grant or a legacy ticket capability. */
 export const labCatalogueSchema = z.object({
   schema: z.literal("flexperiment.lab-catalogue/1"),
-  paymentMode: z.enum(["disabled", "mock", "refref"]),
+  paymentMode: z.enum(["disabled", "mock", "refref", "native"]),
   cities: z.array(z.object({ cityId: z.string(), slug: z.string(), title: z.string() })),
   occurrences: z.array(z.object({
     occurrenceRef: z.string(), offerRef: z.string(), cityId: z.string(), title: z.string(),

@@ -48,6 +48,8 @@ const REVIEWED_SCHEMA_SHA256 = new Set([
   "f0b2205a43d7a733a96cbc3b40f7b57e4850dc0f8082dfc5449f1a95bee21e13",
   // 0037: MY and derived LMS credentials, exchange state and OTP outbox. Hashed journal.
   "35df100cb8733fba2583d4a63ec83ee597a8c9708e265d57590c64f42d75f5af",
+  // 0038: native payments, refunds and fiscal events. Hashed journal.
+  "106c44b578785d1be8c4e5a1353346b3ae279e55bdb031d33ac7a6f84b79600b",
 ]);
 export function assertReviewedRestoreSchema(db: Database.Database) {
   const schema = db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").all();

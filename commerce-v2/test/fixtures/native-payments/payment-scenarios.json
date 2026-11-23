@@ -1,0 +1,895 @@
+{
+  "schema": "flexperiment.native-payment-fixtures/1",
+  "contract": "flexperiment.native-payment-contract/1",
+  "bindings": {
+    "course": {
+      "merchantOrderRef": "ord-course-0001",
+      "amountKopecks": 490000,
+      "currency": "RUB",
+      "snapshotHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "lab": {
+      "merchantOrderRef": "ord-lab-0001",
+      "amountKopecks": 350000,
+      "currency": "RUB",
+      "snapshotHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  },
+  "begin": [
+    {
+      "mayInitiate": true,
+      "expect": {
+        "state": "CREATING",
+        "effects": [
+          "PROVIDER_CREATE"
+        ]
+      }
+    },
+    {
+      "mayInitiate": false,
+      "expect": {
+        "state": "CREATING",
+        "effects": [],
+        "reason": "PAYMENT_INITIATION_STOPPED"
+      }
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "P01",
+      "title": "Happy course payment; repeated read-back is idempotent",
+      "binding": "course",
+      "kind": "ONLINE_COURSE",
+      "fiscalizationMode": "MERCHANT",
+      "steps": [
+        {
+          "observe": {
+            "source": "CREATE_RESPONSE",
+            "outcome": "ACCEPTED",
+            "providerPaymentId": "fake-pay-1"
+          },
+          "expect": {
+            "state": "PENDING",
+            "effects": [
+              "READ_BACK"
+            ]
+          }
+        },
+        {
+          "observe": {
+            "source": "READ_BACK",
+            "outcome": "FOUND",
+            "providerPaymentId": "fake-pay-1",
+            "status": "PENDING",
+            "merchantOrderRef": "ord-course-0001",
+            "amountKopecks": 490000,
+            "currency": "RUB",
+            "snapshotHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "expect": {
+            "state": "PENDING",
+            "effects": []
+          }
+        },
+        {
+          "observe": {
+            "source": "READ_BACK",
+            "outcome": "FOUND",
+            "providerPaymentId": "fake-pay-1",
+            "status": "PAID",
+            "merchantOrderRef": "ord-course-0001",
+            "amountKopecks": 490000,
+            "currency": "RUB",
+            "snapshotHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "expect": {
+            "state": "PAID",
+            "effects": [
+              "GRANT",
+              "ISSUE_PAYMENT_RECEIPT"
+            ]
+          }
+        },
+        {
+          "observe": {
+            "source": "READ_BACK",
+            "outcome": "FOUND",
+            "providerPaymentId": "fake-pay-1",
+            "status": "PAID",
+            "merchantOrderRef": "ord-course-0001",
+            "amountKopecks": 490000,
+            "currency": "RUB",
+            "snapshotHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "expect": {
+            "state": "PAID",
+            "effects": []
+          }
+        }
+      ],
+      "totals": {
+        "GRANT": 1
+      }
+    },
+    {
+      "id": "P02",
+      "title": "Create answer lost, provider had accepted: read-back finds PAID",
+      "binding": "course",
+      "kind": "ONLINE_COURSE",
+      "fiscalizationMode": "MERCHANT",
+      "steps": [
+        {
+          "observe": {
+            "source": "CREATE_RESPONSE",
+            "outcome": "LOST"
+          },
+          "expect": {
+            "state": "CREATE_UNKNOWN",
+            "effects": [
+              "READ_BACK"
+            ]
+          }
+        },
+        {
+          "observe": {
+            "source": "READ_BACK",
+            "outcome": "FOUND",
+            "providerPaymentId": "fake-pay-1",
+            "status": "PAID",
+            "merchantOrderRef": "ord-course-0001",
+            "amountKopecks": 490000,
+            "currency": "RUB",
+            "snapshotHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "expect": {
+            "state": "PAID",
+            "effects": [
+              "GRANT",
+              "ISSUE_PAYMENT_RECEIPT"
+            ]
+          }
+        }
+      ],
+      "totals": {
+        "GRANT": 1
+      }
+    },
+    {
+      "id": "P03",
+      "title": "Create answer lost, provider has nothing: same request replayed under the same key",
+      "binding": "course",
+      "kind": "ONLINE_COURSE",
+      "fiscalizationMode": "MERCHANT",
+      "steps": [
+        {
+          "observe": {
+            "source": "CREATE_RESPONSE",
+            "outcome": "LOST"
+          },
+          "expect": {
+            "state": "CREATE_UNKNOWN",
+            "effects": [
+              "READ_BACK"
+            ]
+          }
+        },
+        {
+          "observe": {
+            "source": "READ_BACK",
+            "outcome": "NOT_FOUND"
+          },
+          "expect": {
+            "state": "CREATE_UNKNOWN",
+            "effects": [
+              "REPLAY_CREATE_SAME_KEY"
+            ]
+          }
+        },
+        {
+          "observe": {
+            "source": "CREATE_RESPONSE",
+            "outcome": "ACCEPTED",
+            "providerPaymentId": "fake-pay-1"
+          },
+          "expect": {
+            "state": "PENDING",
+            "effects": [
+              "READ_BACK"
+            ]
+          }
+        },
+        {
+          "observe": {
+            "source": "READ_BACK",
+            "outcome": "FOUND",
+            "providerPaymentId": "fake-pay-1",
+            "status": "PAID",
+            "merchantOrderRef": "ord-course-0001",
+            "amountKopecks": 490000,
+            "currency": "RUB",
+            "snapshotHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "expect": {
+            "state": "PAID",
+            "effects": [
+              "GRANT",
+              "ISSUE_PAYMENT_RECEIPT"
+            ]
+          }
+        }
+      ],
+      "totals": {
+        "GRANT": 1,
+        "REPLAY_CREATE_SAME_KEY": 1
+      }
+    },
+    {
+      "id": "P04",
+      "title": "Unknown create while sales are stopped: no replay, later PAID is still fulfilled",
+      "binding": "course",
+      "kind": "ONLINE_COURSE",
+      "fiscalizationMode": "MERCHANT",
+      "steps": [
+        {
+          "observe": {
+            "source": "CREATE_RESPONSE",
+            "outcome": "LOST"
+          },
+          "expect": {
+            "state": "CREATE_UNKNOWN",
+            "effects": [
+              "READ_BACK"
+            ]
+          }
+        },
+        {
+          "observe": {
+            "source": "READ_BACK",
+            "outcome": "NOT_FOUND"
+          },
+          "expect": {
+            "state": "CREATE_UNKNOWN",
+            "effects": [],
+            "reason": "PAYMENT_INITIATION_STOPPED"
+          },
+          "mayInitiate": false
+        },
+        {
+          "observe": {
+            "source": "READ_BACK",
+            "outcome": "FOUND",
+            "providerPaymentId": "fake-pay-1",
+            "status": "PAID",
+            "merchantOrderRef": "ord-course-0001",
+            "amountKopecks": 490000,
+            "currency": "RUB",
+            "snapshotHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "expect": {
+            "state": "PAID",
+            "effects": [
+              "GRANT",
+              "ISSUE_PAYMENT_RECEIPT"
+            ]
+          },
+          "mayInitiate": false
+        }
+      ],
+      "totals": {
+        "GRANT": 1,
+        "REPLAY_CREATE_SAME_KEY": 0
+      }
+    },
+    {
+      "id": "P05",
+      "title": "Callback never arrives: the periodic read-back alone finds PAID",
+      "binding": "course",
+      "kind": "ONLINE_COURSE",
+      "fiscalizationMode": "MERCHANT",
+      "steps": [
+        {
+          "observe": {
+            "source": "CREATE_RESPONSE",
+            "outcome": "ACCEPTED",
+            "providerPaymentId": "fake-pay-1"
+          },
+          "expect": {
+            "state": "PENDING",
+            "effects": [
+              "READ_BACK"
+            ]
+          }
+        },
+        {
+          "observe": {
+            "source": "READ_BACK",
+            "outcome": "UNAVAILABLE"
+          },
+          "expect": {
+            "state": "PENDING",
+            "effects": [],
+            "reason": "READ_BACK_UNAVAILABLE"
+          }
+        },
+        {
+          "observe": {
+            "source": "READ_BACK",
+            "outcome": "FOUND",
+            "providerPaymentId": "fake-pay-1",
+            "status": "PAID",
+            "merchantOrderRef": "ord-course-0001",
+            "amountKopecks": 490000,
+            "currency": "RUB",
+            "snapshotHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "expect": {
+            "state": "PAID",
+            "effects": [
+              "GRANT",
+              "ISSUE_PAYMENT_RECEIPT"
+            ]
+          }
+        }
+      ],
+      "totals": {
+        "GRANT": 1
+      }
+    },
+    {
+      "id": "P06",
+      "title": "Forged and premature callbacks never grant",
+      "binding": "course",
+      "kind": "ONLINE_COURSE",
+      "fiscalizationMode": "MERCHANT",
+      "steps": [
+        {
+          "observe": {
+            "source": "CREATE_RESPONSE",
+            "outcome": "ACCEPTED",
+            "providerPaymentId": "fake-pay-1"
+          },
+          "expect": {
+            "state": "PENDING",
+            "effects": [
+              "READ_BACK"
+            ]
+          }
+        },
+        {
+          "observe": {
+            "source": "CALLBACK",
+            "signatureValid": false,
+            "providerPaymentId": "fake-pay-1",
+            "claimedStatus": "PAID"
+          },
+          "expect": {
+            "state": "PENDING",
+            "effects": [],
+            "reason": "CALLBACK_SIGNATURE_INVALID"
+          }
+        },
+        {
+          "observe": {
+            "source": "CALLBACK",
+            "signatureValid": true,
+            "providerPaymentId": "fake-pay-1",
+            "claimedStatus": "PAID"
+          },
+          "expect": {
+            "state": "PENDING",
+            "effects": [
+              "READ_BACK"
+            ]
+          }
+        },
+        {
+          "observe": {
+            "source": "READ_BACK",
+            "outcome": "FOUND",
+            "providerPaymentId": "fake-pay-1",
+            "status": "PENDING",
+            "merchantOrderRef": "ord-course-0001",
+            "amountKopecks": 490000,
+            "currency": "RUB",
+            "snapshotHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "expect": {
+            "state": "PENDING",
+            "effects": []
+          }
+        }
+      ],
+      "totals": {
+        "GRANT": 0
+      }
+    },
+    {
+      "id": "P07",
+      "title": "Duplicate callbacks and concurrent read-backs: one grant",
+      "binding": "course",
+      "kind": "ONLINE_COURSE",
+      "fiscalizationMode": "MERCHANT",
+      "steps": [
+        {
+          "observe": {
+            "source": "CREATE_RESPONSE",
+            "outcome": "ACCEPTED",
+            "providerPaymentId": "fake-pay-1"
+          },
+          "expect": {
+            "state": "PENDING",
+            "effects": [
+              "READ_BACK"
+            ]
+          }
+        },
+        {
+          "observe": {
+            "source": "CALLBACK",
+            "signatureValid": true,
+            "providerPaymentId": "fake-pay-1",
+            "claimedStatus": "PAID"
+          },
+          "expect": {
+            "state": "PENDING",
+            "effects": [
+              "READ_BACK"
+            ]
+          }
+        },
+        {
+          "observe": {
+            "source": "READ_BACK",
+            "outcome": "FOUND",
+            "providerPaymentId": "fake-pay-1",
+            "status": "PAID",
+            "merchantOrderRef": "ord-course-0001",
+            "amountKopecks": 490000,
+            "currency": "RUB",
+            "snapshotHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "expect": {
+            "state": "PAID",
+            "effects": [
+              "GRANT",
+              "ISSUE_PAYMENT_RECEIPT"
+            ]
+          }
+        },
+        {
+          "observe": {
+            "source": "CALLBACK",
+            "signatureValid": true,
+            "providerPaymentId": "fake-pay-1",
+            "claimedStatus": "PAID"
+          },
+          "expect": {
+            "state": "PAID",
+            "effects": [
+              "READ_BACK"
+            ]
+          }
+        },
+        {
+          "observe": {
+            "source": "READ_BACK",
+            "outcome": "FOUND",
+            "providerPaymentId": "fake-pay-1",
+            "status": "PAID",
+            "merchantOrderRef": "ord-course-0001",
+            "amountKopecks": 490000,
+            "currency": "RUB",
+            "snapshotHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "expect": {
+            "state": "PAID",
+            "effects": []
+          }
+        }
+      ],
+      "totals": {
+        "GRANT": 1
+      }
+    },
+    {
+      "id": "P08",
+      "title": "Paid fact with a different amount is a person's, never access",
+      "binding": "course",
+      "kind": "ONLINE_COURSE",
+      "fiscalizationMode": "MERCHANT",
+      "steps": [
+        {
+          "observe": {
+            "source": "CREATE_RESPONSE",
+            "outcome": "ACCEPTED",
+            "providerPaymentId": "fake-pay-1"
+          },
+          "expect": {
+            "state": "PENDING",
+            "effects": [
+              "READ_BACK"
+            ]
+          }
+        },
+        {
+          "observe": {
+            "source": "READ_BACK",
+            "outcome": "FOUND",
+            "providerPaymentId": "fake-pay-1",
+            "status": "PAID",
+            "merchantOrderRef": "ord-course-0001",
+            "amountKopecks": 100,
+            "currency": "RUB",
+            "snapshotHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "expect": {
+            "state": "REVIEW_REQUIRED",
+            "effects": [
+              "ALERT"
+            ],
+            "reason": "PAYMENT_BINDING_MISMATCH"
+          }
+        },
+        {
+          "observe": {
+            "source": "READ_BACK",
+            "outcome": "FOUND",
+            "providerPaymentId": "fake-pay-1",
+            "status": "PAID",
+            "merchantOrderRef": "ord-course-0001",
+            "amountKopecks": 490000,
+            "currency": "RUB",
+            "snapshotHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "expect": {
+            "state": "REVIEW_REQUIRED",
+            "effects": []
+          }
+        }
+      ],
+      "totals": {
+        "GRANT": 0
+      }
+    },
+    {
+      "id": "P09",
+      "title": "LAB: late PAID after the provider's own EXPIRED goes to review, no ticket",
+      "binding": "lab",
+      "kind": "LAB",
+      "fiscalizationMode": "MERCHANT",
+      "steps": [
+        {
+          "observe": {
+            "source": "CREATE_RESPONSE",
+            "outcome": "ACCEPTED",
+            "providerPaymentId": "fake-pay-1"
+          },
+          "expect": {
+            "state": "PENDING",
+            "effects": [
+              "READ_BACK"
+            ]
+          }
+        },
+        {
+          "observe": {
+            "source": "READ_BACK",
+            "outcome": "FOUND",
+            "providerPaymentId": "fake-pay-1",
+            "status": "EXPIRED",
+            "merchantOrderRef": "ord-lab-0001",
+            "amountKopecks": 350000,
+            "currency": "RUB",
+            "snapshotHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "expect": {
+            "state": "EXPIRED",
+            "effects": [
+              "RELEASE_HOLD"
+            ]
+          }
+        },
+        {
+          "observe": {
+            "source": "READ_BACK",
+            "outcome": "FOUND",
+            "providerPaymentId": "fake-pay-1",
+            "status": "PAID",
+            "merchantOrderRef": "ord-lab-0001",
+            "amountKopecks": 350000,
+            "currency": "RUB",
+            "snapshotHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "expect": {
+            "state": "REVIEW_REQUIRED",
+            "effects": [
+              "ALERT"
+            ],
+            "reason": "LATE_PAYMENT_AFTER_TERMINAL"
+          }
+        }
+      ],
+      "totals": {
+        "GRANT": 0,
+        "RELEASE_HOLD": 1
+      }
+    },
+    {
+      "id": "P10",
+      "title": "Provider regression PAID→DECLINED keeps access and alerts",
+      "binding": "course",
+      "kind": "ONLINE_COURSE",
+      "fiscalizationMode": "MERCHANT",
+      "steps": [
+        {
+          "observe": {
+            "source": "CREATE_RESPONSE",
+            "outcome": "ACCEPTED",
+            "providerPaymentId": "fake-pay-1"
+          },
+          "expect": {
+            "state": "PENDING",
+            "effects": [
+              "READ_BACK"
+            ]
+          }
+        },
+        {
+          "observe": {
+            "source": "READ_BACK",
+            "outcome": "FOUND",
+            "providerPaymentId": "fake-pay-1",
+            "status": "PAID",
+            "merchantOrderRef": "ord-course-0001",
+            "amountKopecks": 490000,
+            "currency": "RUB",
+            "snapshotHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "expect": {
+            "state": "PAID",
+            "effects": [
+              "GRANT",
+              "ISSUE_PAYMENT_RECEIPT"
+            ]
+          }
+        },
+        {
+          "observe": {
+            "source": "READ_BACK",
+            "outcome": "FOUND",
+            "providerPaymentId": "fake-pay-1",
+            "status": "DECLINED",
+            "merchantOrderRef": "ord-course-0001",
+            "amountKopecks": 490000,
+            "currency": "RUB",
+            "snapshotHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "expect": {
+            "state": "REVIEW_REQUIRED",
+            "effects": [
+              "ALERT"
+            ],
+            "reason": "PROVIDER_STATE_REGRESSION"
+          }
+        }
+      ],
+      "totals": {
+        "GRANT": 1
+      }
+    },
+    {
+      "id": "P11",
+      "title": "LAB: proven refusal of the create releases the hold",
+      "binding": "lab",
+      "kind": "LAB",
+      "fiscalizationMode": "MERCHANT",
+      "steps": [
+        {
+          "observe": {
+            "source": "CREATE_RESPONSE",
+            "outcome": "REFUSED",
+            "code": "PROVIDER_VALIDATION_REFUSED"
+          },
+          "expect": {
+            "state": "DECLINED",
+            "effects": [
+              "RELEASE_HOLD"
+            ],
+            "reason": "PROVIDER_VALIDATION_REFUSED"
+          }
+        }
+      ],
+      "totals": {
+        "GRANT": 0
+      }
+    },
+    {
+      "id": "P12",
+      "title": "Foreign payment id in a read-back for this order goes to review",
+      "binding": "course",
+      "kind": "ONLINE_COURSE",
+      "fiscalizationMode": "MERCHANT",
+      "steps": [
+        {
+          "observe": {
+            "source": "CREATE_RESPONSE",
+            "outcome": "ACCEPTED",
+            "providerPaymentId": "fake-pay-1"
+          },
+          "expect": {
+            "state": "PENDING",
+            "effects": [
+              "READ_BACK"
+            ]
+          }
+        },
+        {
+          "observe": {
+            "source": "READ_BACK",
+            "outcome": "FOUND",
+            "providerPaymentId": "fake-pay-OTHER",
+            "status": "PAID",
+            "merchantOrderRef": "ord-course-0001",
+            "amountKopecks": 490000,
+            "currency": "RUB",
+            "snapshotHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "expect": {
+            "state": "REVIEW_REQUIRED",
+            "effects": [
+              "ALERT"
+            ],
+            "reason": "PROVIDER_PAYMENT_ID_CONFLICT"
+          }
+        }
+      ],
+      "totals": {
+        "GRANT": 0
+      }
+    },
+    {
+      "id": "P13",
+      "title": "PROVIDER-fiscalized rail: grant without a merchant receipt",
+      "binding": "course",
+      "kind": "ONLINE_COURSE",
+      "fiscalizationMode": "PROVIDER",
+      "steps": [
+        {
+          "observe": {
+            "source": "CREATE_RESPONSE",
+            "outcome": "ACCEPTED",
+            "providerPaymentId": "fake-pay-1"
+          },
+          "expect": {
+            "state": "PENDING",
+            "effects": [
+              "READ_BACK"
+            ]
+          }
+        },
+        {
+          "observe": {
+            "source": "READ_BACK",
+            "outcome": "FOUND",
+            "providerPaymentId": "fake-pay-1",
+            "status": "PAID",
+            "merchantOrderRef": "ord-course-0001",
+            "amountKopecks": 490000,
+            "currency": "RUB",
+            "snapshotHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "expect": {
+            "state": "PAID",
+            "effects": [
+              "GRANT"
+            ]
+          }
+        }
+      ],
+      "totals": {
+        "GRANT": 1,
+        "ISSUE_PAYMENT_RECEIPT": 0
+      }
+    },
+    {
+      "id": "P14",
+      "title": "Known payment disappears at the provider: review, never DECLINED",
+      "binding": "course",
+      "kind": "ONLINE_COURSE",
+      "fiscalizationMode": "MERCHANT",
+      "steps": [
+        {
+          "observe": {
+            "source": "CREATE_RESPONSE",
+            "outcome": "ACCEPTED",
+            "providerPaymentId": "fake-pay-1"
+          },
+          "expect": {
+            "state": "PENDING",
+            "effects": [
+              "READ_BACK"
+            ]
+          }
+        },
+        {
+          "observe": {
+            "source": "READ_BACK",
+            "outcome": "NOT_FOUND"
+          },
+          "expect": {
+            "state": "REVIEW_REQUIRED",
+            "effects": [
+              "ALERT"
+            ],
+            "reason": "KNOWN_PAYMENT_NOT_FOUND"
+          }
+        }
+      ],
+      "totals": {
+        "GRANT": 0
+      }
+    },
+    {
+      "id": "P15",
+      "title": "LAB paid: ticket once, prepayment receipt, closing receipt reserved with the sealed contact",
+      "binding": "lab",
+      "kind": "LAB",
+      "fiscalizationMode": "MERCHANT",
+      "steps": [
+        {
+          "observe": {
+            "source": "CREATE_RESPONSE",
+            "outcome": "ACCEPTED",
+            "providerPaymentId": "fake-pay-1"
+          },
+          "expect": {
+            "state": "PENDING",
+            "effects": [
+              "READ_BACK"
+            ]
+          }
+        },
+        {
+          "observe": {
+            "source": "READ_BACK",
+            "outcome": "FOUND",
+            "providerPaymentId": "fake-pay-1",
+            "status": "PAID",
+            "merchantOrderRef": "ord-lab-0001",
+            "amountKopecks": 350000,
+            "currency": "RUB",
+            "snapshotHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "expect": {
+            "state": "PAID",
+            "effects": [
+              "GRANT",
+              "ISSUE_PAYMENT_RECEIPT",
+              "RESERVE_FINAL_SETTLEMENT"
+            ]
+          }
+        },
+        {
+          "observe": {
+            "source": "READ_BACK",
+            "outcome": "FOUND",
+            "providerPaymentId": "fake-pay-1",
+            "status": "PAID",
+            "merchantOrderRef": "ord-lab-0001",
+            "amountKopecks": 350000,
+            "currency": "RUB",
+            "snapshotHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "expect": {
+            "state": "PAID",
+            "effects": []
+          }
+        }
+      ],
+      "totals": {
+        "GRANT": 1,
+        "RESERVE_FINAL_SETTLEMENT": 1
+      }
+    }
+  ]
+}
