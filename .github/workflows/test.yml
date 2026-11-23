@@ -340,7 +340,10 @@ jobs:
       - name: my image — boot, identity, headers and closed proxy
         run: |
           docker run -d --name my-smoke -p 127.0.0.1:3103:3003 -e MY_ORIGIN=http://127.0.0.1:3103 flexperiment-my:test
-          for attempt in $(seq 1 30); do curl -fsS http://127.0.0.1:3103/healthz >/dev/null && break; sleep 1; done
+          for ((attempt = 0; attempt < 30; attempt++)); do
+            curl -fsS http://127.0.0.1:3103/healthz >/dev/null && break
+            sleep 1
+          done
           curl -fsS http://127.0.0.1:3103/identity | python3 -c 'import json,os,sys; d=json.load(sys.stdin); assert d=={"schema":"flexperiment.build-identity/1","service":"my","sourceCommit":os.environ["SOURCE_COMMIT"]}, d'
           curl -fsS -D - -o /dev/null http://127.0.0.1:3103/sign-in | tr -d '\r' | grep -qi '^referrer-policy: no-referrer$'
           test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3103/v1/lms/exchange/redeem)" = 404
