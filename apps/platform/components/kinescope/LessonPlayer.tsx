@@ -3,6 +3,10 @@
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { loadIframeApi, type KinescopePlayerInstance } from "./iframeApi";
+import FreeEnrollmentAction from "../courses/FreeEnrollmentAction";
+
+/** FLEX-128: where the lesson sits, so a FREE course can offer the explicit enrollment in place. */
+export type LessonEnrollmentContext = { courseSlug: string; lessonSlug: string; accessModel: "FREE" | "PAID" };
 
 export type PlaybackGrant = {
   mode: "open" | "protected";
@@ -36,7 +40,12 @@ const parseGrant = async (response: Response) => {
   return grant;
 };
 
-function LessonPlayerSession({ lessonRef, title }: { lessonRef: string; title: string }) {
+const deniedDecision = async (response: Response) => response.status === 403
+  ? ((await response.clone().json().catch(() => null)) as { decision?: string } | null)?.decision : undefined;
+
+function LessonPlayerSession({ lessonRef, title, enrollment, onEnrolled }: {
+  lessonRef: string; title: string; enrollment?: LessonEnrollmentContext; onEnrolled: () => void;
+}) {
   const hostRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<KinescopePlayerInstance | null>(null);
   const positionRef = useRef(0);
@@ -50,7 +59,7 @@ function LessonPlayerSession({ lessonRef, title }: { lessonRef: string; title: s
     grantSnapshotRef.current = next;
     commitGrant(next);
   }, []);
-  const [state, setState] = useState<"loading" | "signin" | "consent" | "denied" | "ready" | "error">("loading");
+  const [state, setState] = useState<"loading" | "signin" | "consent" | "enroll" | "denied" | "ready" | "error">("loading");
 
   useEffect(() => {
     const controller = new AbortController();
@@ -62,7 +71,10 @@ function LessonPlayerSession({ lessonRef, title }: { lessonRef: string; title: s
     }).then(async (response) => {
       if (controller.signal.aborted) return;
       if (response.status === 401) { setState("signin"); return; }
-      if (response.status === 403 && (await response.clone().json()).decision === "CONSENT_REQUIRED") { setState("consent"); return; }
+      const denied = await deniedDecision(response);
+      if (controller.signal.aborted) return;
+      if (denied === "CONSENT_REQUIRED") { setState("consent"); return; }
+      if (denied === "ENROLLMENT_REQUIRED") { setState("enroll"); return; }
       const next = await parseGrant(response);
       if (controller.signal.aborted) return;
       if (!next) { setState("denied"); return; }
@@ -96,7 +108,9 @@ function LessonPlayerSession({ lessonRef, title }: { lessonRef: string; title: s
         });
         if (controller.signal.aborted) return;
         if (response.status === 401) { setState("signin"); setGrant(null); return; }
-        if (response.status === 403 && (await response.clone().json()).decision === "CONSENT_REQUIRED") { setState("consent"); setGrant(null); return; }
+        const denied = await deniedDecision(response);
+        if (denied === "CONSENT_REQUIRED") { setState("consent"); setGrant(null); return; }
+        if (denied === "ENROLLMENT_REQUIRED") { setState("enroll"); setGrant(null); return; }
         const next = await parseGrant(response);
         if (controller.signal.aborted) return;
         if (!next) { setState("denied"); setGrant(null); return; }
@@ -187,13 +201,21 @@ function LessonPlayerSession({ lessonRef, title }: { lessonRef: string; title: s
     };
   }, [grant, lessonRef]);
 
+  if (state === "signin" && enrollment?.accessModel === "FREE") return <div className="playerGate"><p>Урок бесплатного курса откроется после записи.</p>
+    <FreeEnrollmentAction courseSlug={enrollment.courseSlug} lessonSlug={enrollment.lessonSlug} accessModel="FREE" compact onEnrolled={onEnrolled} />
+    <Link href={`/account?next=${encodeURIComponent(window.location.pathname)}`}>Уже записаны? Войти</Link></div>;
   if (state === "signin") return <div className="playerGate"><p>Войдите, чтобы открыть урок.</p><Link className="primary" href={`/account?next=${encodeURIComponent(window.location.pathname)}`}>Получить ссылку →</Link></div>;
+  if (state === "enroll" && enrollment) return <div className="playerGate"><p>Чтобы открыть урок, запишитесь на бесплатный курс.</p>
+    <FreeEnrollmentAction courseSlug={enrollment.courseSlug} lessonSlug={enrollment.lessonSlug} accessModel={enrollment.accessModel} compact onEnrolled={onEnrolled} /></div>;
+  if (state === "enroll") return <div className="playerGate"><p>Чтобы открыть урок, запишитесь на бесплатный курс.</p><Link href="/courses">Вернуться к курсам</Link></div>;
   if (state === "consent") return <div className="playerGate"><p>Подтвердите обработку ПД и правила в аккаунте, чтобы открыть урок. Реклама необязательна.</p><Link href={`/account?next=${encodeURIComponent(window.location.pathname)}`}>Подтвердить выбор</Link></div>;
   if (state === "denied") return <div className="playerGate"><p>Урок пока недоступен для вашего аккаунта.</p><Link href="/courses">Вернуться к курсам</Link></div>;
   if (state === "error") return <div className="playerGate"><p>Видео сейчас не загрузилось. Попробуйте обновить страницу.</p></div>;
   return <div className="lessonPlayer" aria-label={`Видео: ${title}`}><div ref={hostRef} className="lessonPlayerHost" />{state === "loading" && <p>Проверяем доступ…</p>}</div>;
 }
 
-export default function LessonPlayer(props: { lessonRef: string; title: string }) {
-  return <LessonPlayerSession key={props.lessonRef} {...props} />;
+export default function LessonPlayer(props: { lessonRef: string; title: string; enrollment?: LessonEnrollmentContext }) {
+  // A fresh enrollment re-requests the grant in a new session; the enrollment itself never mints one.
+  const [attempt, setAttempt] = useState(0);
+  return <LessonPlayerSession key={`${props.lessonRef}:${attempt}`} {...props} onEnrolled={() => setAttempt(value => value + 1)} />;
 }

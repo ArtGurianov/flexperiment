@@ -30,6 +30,9 @@ const playable = () => {
   confirmSyntheticAccount(db, "c");
 };
 const access = (overrides = {}) => resolvePlaybackAccess(db, { customerId: "c", lessonRef: "lesson", now, leaseMs: 60_000, ...overrides });
+// A recorded FREE enrollment (as the FLEX-128 command or an earlier implicit grant left it); 0024 triggers still apply.
+const enrolled = (customerId = "c") => db.prepare(`INSERT INTO free_course_enrollments(customer_id,product_id,product_version,enrolled_at)
+  SELECT ?,id,version,? FROM products WHERE course_ref='one'`).run(customerId, now.toISOString());
 describe("CMS canonical course commercial commands", () => {
   it("creates a closed FREE offer without financial rows and atomically deduplicates commands", () => {
     const first = configure(); expect(configure()).toEqual(first);
@@ -56,8 +59,9 @@ describe("CMS canonical course commercial commands", () => {
     expect(() => configure({ expectedVersion: 2, commandKey: "different-command-01" })).toThrow("WITHDRAWN_PRODUCT_IMMUTABLE");
   });
   it("preserves verified free enrollment across FREE→PAID, but not access for new users", () => {
-    playable(); expect(access({ recordFreeEnrollment: true }).decision).toBe("ALLOW");
-    expect(access({ recordFreeEnrollment: true }).decision).toBe("ALLOW");
+    playable(); expect(access().decision).toBe("ENROLLMENT_REQUIRED");
+    expect(db.prepare("SELECT count(*) n FROM free_course_enrollments").get()).toEqual({ n: 0 });
+    enrolled(); expect(access().decision).toBe("ALLOW");
     expect(db.prepare("SELECT count(*) n FROM free_course_enrollments").get()).toEqual({ n: 1 });
     configure({ accessModel: "PAID", priceKopecks: 100, expectedVersion: 1, commandKey: "different-command-01" });
     expect(access().decision).toBe("ALLOW"); expect(access().paidEntitled).toBe(false);
@@ -68,7 +72,7 @@ describe("CMS canonical course commercial commands", () => {
     expect(db.prepare("SELECT count(*) n FROM orders").get()).toEqual({ n: 0 });
   });
   it.each(["stale", "unlisted", "withdrawn"])("retained free enrollment does not bypass %s", condition => {
-    playable(); access({ recordFreeEnrollment: true });
+    playable(); enrolled();
     configure({ accessModel: "PAID", priceKopecks: 100, expectedVersion: 1, commandKey: "different-command-01" });
     if (condition === "stale") db.exec("UPDATE catalog_course_projection SET last_reconciled_at='2020-01-01'");
     if (condition === "unlisted") db.exec("UPDATE catalog_lesson_projection SET visibility='UNLISTED'");
@@ -76,8 +80,9 @@ describe("CMS canonical course commercial commands", () => {
     expect(access().decision).toBe("DENY"); expect(listCustomerLibrary(db, "c", now).courses).toEqual([]);
   });
   it("does not enroll guests, missing videos, denied lessons, paid previews or read-only library visits", () => {
-    playable(); listCustomerLibrary(db, "c", now); access({ customerId: "new", recordFreeEnrollment: true });
-    db.exec("DELETE FROM lesson_video_bindings"); access({ recordFreeEnrollment: true });
+    playable(); listCustomerLibrary(db, "c", now); access({ customerId: "new" });
+    expect(access().decision).toBe("ENROLLMENT_REQUIRED");
+    db.exec("DELETE FROM lesson_video_bindings"); access();
     expect(db.prepare("SELECT count(*) n FROM free_course_enrollments").get()).toEqual({ n: 0 });
     expect(() => db.prepare(`INSERT INTO free_course_enrollments VALUES ('new',(SELECT id FROM products),1,'now')`).run()).toThrow("FREE_ENROLLMENT_AUTHORITY_INVALID");
   });
@@ -89,7 +94,7 @@ describe("CMS canonical course commercial commands", () => {
     expect(db.prepare("SELECT access_model,version FROM products").get()).toEqual({ access_model: "FREE", version: 1 });
   });
   it("enrollment does not bypass restrictive overrides and cannot be rewritten", () => {
-    playable(); access({ recordFreeEnrollment: true });
+    playable(); enrolled();
     expect(() => db.exec("UPDATE free_course_enrollments SET product_version=999")).toThrow("FREE_ENROLLMENT_IMMUTABLE");
     db.exec(`INSERT INTO access_overrides(operation_id,course_ref,scope_level,scope_ref,expected_kind,expected_value,deadline_at,platform_epoch)
       VALUES ('operation','one','COURSE','one','EFFECTIVE_VISIBILITY','UNLISTED','2026-10-12','synthetic-epoch')`);
@@ -98,7 +103,7 @@ describe("CMS canonical course commercial commands", () => {
   it("never converts paid preview eligibility into retained free enrollment", () => {
     playable(); configure({ accessModel: "PAID", priceKopecks: 100, expectedVersion: 1, commandKey: "different-command-01" });
     db.exec("UPDATE catalog_lesson_projection SET free_preview=1");
-    expect(access({ recordFreeEnrollment: true }).decision).toBe("ALLOW");
+    expect(access().decision).toBe("ALLOW");
     expect(db.prepare("SELECT count(*) n FROM free_course_enrollments").get()).toEqual({ n: 0 });
   });
 });

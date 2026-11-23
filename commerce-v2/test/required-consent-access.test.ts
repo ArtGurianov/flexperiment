@@ -15,7 +15,10 @@ import { stageALegalManifest } from "./fixtures/legal";
 let db: Database.Database;
 const now = new Date("2026-10-11T10:00:00Z");
 const headers = { authorization: "synthetic-session", "content-type": "application/json" };
-const access = { customerId: "c", lessonRef: "lesson", now, leaseMs: 60_000, recordFreeEnrollment: true };
+const access = { customerId: "c", lessonRef: "lesson", now, leaseMs: 60_000 };
+// The FREE enrollment as recorded (FLEX-128 command or historical grant); 0024 triggers still apply.
+const enroll = () => db.prepare(`INSERT INTO free_course_enrollments(customer_id,product_id,product_version,enrolled_at)
+  VALUES ('c','p',1,?)`).run(now.toISOString());
 const server = () => createCommerceV2App({ db, sourceCommit: "a".repeat(40), serviceToken: "synthetic-service",
   config: loadCommerceRuntimeConfig({ DEPLOY_ENV: "staging", PAYMENT_MODE: "disabled", KINESCOPE_DELIVERY_MODE: "open" }),
   authenticateCustomer: async h => h.get("authorization") === "synthetic-session" ? "c" : null, now: () => now });
@@ -64,12 +67,14 @@ describe("required consent is a server access gate, not an entitlement or React 
   it.each(["manual entitlement", "retained FREE enrollment"])("does not let %s bypass the gate", async grant => {
     if (grant === "manual entitlement") grantManualEntitlement(db, { customerId: "c", scope: "COURSE", courseRef: "course",
       reason: "Synthetic", evidenceRef: "synthetic", legalTermsRef: "synthetic", actor: "isolated-test", idempotencyKey: "synthetic-manual-grant" });
-    else expect(resolvePlaybackAccess(db, access).decision).toBe("ALLOW");
+    else { enroll(); expect(resolvePlaybackAccess(db, access).decision).toBe("ALLOW"); }
     db.exec("DELETE FROM authenticated_consent_actions;");
     await denied();
   });
   it("allows required-only confirmation and FREE enrollment without marketing or financial effects", async () => {
     expect(hasRequiredAccountConsents(db, "c")).toBe(true);
+    expect(resolvePlaybackAccess(db, access).decision).toBe("ENROLLMENT_REQUIRED");
+    enroll();
     expect(resolvePlaybackAccess(db, access)).toMatchObject({ decision: "ALLOW", binding: { videoId: "synthetic-video" } });
     expect((await server().request("/v1/library", { headers })).status).toBe(200);
     expect(db.prepare("SELECT granted FROM authenticated_consent_events WHERE kind='marketing_consent'").get()).toEqual({ granted: 0 });

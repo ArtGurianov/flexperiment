@@ -46,7 +46,7 @@ describe("public discovery output", () => {
   it("labels lesson access from the commerce authority", () => {
     const freeCourse = { courseRef: "free", offerRef: null, accessModel: "FREE" as const, withdrawn: false, saleMode: "CLOSED" as const, priceKopecks: 0 };
     const paidCourse = { courseRef: "paid", offerRef: "offer", accessModel: "PAID" as const, withdrawn: false, saleMode: "PUBLIC" as const, priceKopecks: 10000 };
-    expect(lessonAccessLabel(freeCourse, false)).toBe("Бесплатно после регистрации");
+    expect(lessonAccessLabel(freeCourse, false)).toBe("Бесплатно после записи");
     expect(lessonAccessLabel(paidCourse, true)).toBe("Бесплатный превью-урок");
     expect(lessonAccessLabel(paidCourse, false)).toBe("Доступ по покупке курса");
   });

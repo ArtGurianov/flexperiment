@@ -10,6 +10,7 @@ import { activateLegalRelease } from "../src/legal-control";
 import { loadCommerceRuntimeConfig } from "../src/payment-mode";
 import { applyCourseManifest, withManifestHash } from "../src/manifest";
 import { resolvePlaybackAccess } from "../src/playback-access";
+import { enrollInFreeCourse } from "../src/free-enrollment";
 import { confirmSyntheticAccount } from "./fixtures/confirmed-account";
 import { stageALegalManifest } from "./fixtures/legal";
 
@@ -44,9 +45,11 @@ function publishCourse(courseRef: string, accessModel: "FREE" | "PAID", freePrev
     .run(`${courseRef}-lesson`, `${courseRef}-video`, publishedAt.toISOString(), publishedAt.toISOString());
 }
 
-const access = (courseRef: string, when: Date, recordFreeEnrollment = false) => resolvePlaybackAccess(db, {
-  customerId: "student", lessonRef: `${courseRef}-lesson`, now: when, leaseMs: day, recordFreeEnrollment,
-});
+// FLEX-128: enrollment is an explicit command; a grant decision never records one.
+const access = (courseRef: string, when: Date, enroll = false) => {
+  if (enroll) enrollInFreeCourse(db, { customerId: "student", courseSlug: courseRef }, when.toISOString());
+  return resolvePlaybackAccess(db, { customerId: "student", lessonRef: `${courseRef}-lesson`, now: when, leaseMs: day });
+};
 const library = (when: Date) => listCustomerLibrary(db, "student", when, day);
 
 describe("Commerce editorial access without a manifest lease", () => {
@@ -69,7 +72,8 @@ describe("Commerce editorial access without a manifest lease", () => {
 
   it("enforces local visibility and withdrawal without waiting for reconciliation", () => {
     publishCourse("free", "FREE");
-    expect(access("free", later(7)).decision).toBe("ALLOW");
+    expect(access("free", later(7)).decision).toBe("ENROLLMENT_REQUIRED");
+    expect(access("free", later(7), true).decision).toBe("ALLOW");
     db.prepare("UPDATE catalog_lesson_projection SET visibility='UNLISTED' WHERE lesson_ref='free-lesson'").run();
     expect(access("free", later(7)).decision).toBe("DENY");
     expect(library(later(7)).courses).toEqual([]);
@@ -96,7 +100,7 @@ describe("Commerce editorial access without a manifest lease", () => {
 
   it("requires current account consent even when the local course is FREE", () => {
     publishCourse("free", "FREE");
-    expect(access("free", later(7)).decision).toBe("ALLOW");
+    expect(access("free", later(7), true).decision).toBe("ALLOW");
     activateLegalRelease(db, { storefront: "COURSES", version: "synthetic-required-v2",
       manifest: stageALegalManifest, actor: "isolated-test" }, later(7).toISOString());
     expect(access("free", later(7)).decision).toBe("CONSENT_REQUIRED");
@@ -117,7 +121,7 @@ describe("Commerce editorial access without a manifest lease", () => {
       deadlineAt: later(1).toISOString(), platformEpoch: "legacy-epoch" });
 
     expect(access("legacy", publishedAt).decision).toBe("DENY");
-    expect(access("editorial", later(7)).decision).toBe("ALLOW");
+    expect(access("editorial", later(7), true).decision).toBe("ALLOW");
     expect(library(later(7)).courses.map((course) => course.courseRef)).toEqual(["editorial"]);
   });
 
@@ -139,6 +143,6 @@ describe("Commerce editorial access without a manifest lease", () => {
     expect(() => createRestrictiveOverride(db, override)).toThrow("COMMERCE_EDITORIAL_OWNED");
     expect(db.prepare("SELECT state FROM access_overrides WHERE operation_id=?").get(override.operationId))
       .toEqual({ state: "RELEASED_ROLLED_BACK" });
-    expect(access("free", later(7)).decision).toBe("ALLOW");
+    expect(access("free", later(7), true).decision).toBe("ALLOW");
   });
 });

@@ -94,6 +94,8 @@ describe("reconciliation lease and acknowledgement recovery", () => {
     expect(applyCourseManifest(db, committed, "2026-09-30T00:00:00.000Z").kind).toBe("NO_OP");
     expect(db.prepare("SELECT last_reconciled_at,applied_at FROM catalog_course_projection").get())
       .toEqual({ last_reconciled_at: "2026-09-30T00:00:00.000Z", applied_at: "2026-09-28T00:00:00.000Z" });
+    // FLEX-128: the FREE course opens through a recorded enrollment; the lease keeps it from going stale.
+    db.prepare("INSERT INTO free_course_enrollments(customer_id,product_id,product_version,enrolled_at) VALUES ('customer','p',1,'2026-09-28')").run();
     expect(resolvePlaybackAccess(db, {
       customerId: "customer", lessonRef: "paid", now: new Date("2026-09-30T12:00:00.000Z"), leaseMs: day,
     }).decision).toBe("ALLOW");

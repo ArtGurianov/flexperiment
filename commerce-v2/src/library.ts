@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import { decideLessonAccess } from "./access-policy";
 import { hasRequiredAccountConsents } from "./authenticated-consents";
+import { customerFreeEnrollments } from "./free-enrollment";
 
 type LibraryRow = {
   course_ref: string;
@@ -24,7 +25,10 @@ type ActiveGrant = { scope: "COURSE" | "ALL_COURSES"; course_ref: string | null 
 export type CustomerLibrary = {
   courses: Array<{
     courseRef: string;
+    /** FREE = the account's explicit FREE enrollment (FLEX-128), PREVIEW = free previews of a paid course. */
     access: "ENTITLED" | "FREE" | "PREVIEW";
+    /** Present only for an enrolled course; progress stays 0% until FLEX-129. */
+    enrollment: { enrolledAt: string; startedAt: string | null; progressPercent: 0 } | null;
     lessons: Array<{ lessonRef: string; sectionRef: string; access: "ENTITLED" | "FREE" | "PREVIEW" }>;
   }>;
 };
@@ -53,8 +57,8 @@ export function listCustomerLibrary(
     ? db.prepare(`SELECT course_ref,scope_level,scope_ref FROM access_overrides
       WHERE state='PENDING'`).all() as Array<{ course_ref: string; scope_level: "COURSE" | "SECTION" | "LESSON"; scope_ref: string }>
     : [];
-  const freeCourses = new Set((db.prepare(`SELECT p.course_ref FROM free_course_enrollments f
-    JOIN products p ON p.id=f.product_id WHERE f.customer_id=?`).all(customerId) as Array<{ course_ref: string }>).map(row => row.course_ref));
+  const enrollments = customerFreeEnrollments(db, customerId);
+  const freeCourses = new Set(enrollments.keys());
   const entitledCourse = (courseRef: string) => grants.some((grant) =>
     grant.scope === "ALL_COURSES" || (grant.scope === "COURSE" && grant.course_ref === courseRef));
   const result = new Map<string, CustomerLibrary["courses"][number]>();
@@ -92,8 +96,10 @@ export function listCustomerLibrary(
       retainedFreeEnrollment: freeCourses.has(row.course_ref),
     });
     if (decision !== "ALLOW") continue;
-    const access = entitled ? "ENTITLED" : row.access_model === "FREE" || freeCourses.has(row.course_ref) ? "FREE" : "PREVIEW";
-    const course = result.get(row.course_ref) ?? { courseRef: row.course_ref, access, lessons: [] };
+    // A FREE course reaches ALLOW only through an enrollment or a grant; nothing else is labelled FREE.
+    const access = entitled ? "ENTITLED" : freeCourses.has(row.course_ref) ? "FREE" : "PREVIEW";
+    const course = result.get(row.course_ref)
+      ?? { courseRef: row.course_ref, access, enrollment: enrollments.get(row.course_ref) ?? null, lessons: [] };
     course.lessons.push({ lessonRef: row.lesson_ref, sectionRef: row.section_ref, access });
     if (access === "ENTITLED") course.access = "ENTITLED";
     else if (access === "FREE" && course.access === "PREVIEW") course.access = "FREE";

@@ -77,11 +77,18 @@ describe("customer library", () => {
     addLesson("withdrawn", "one");
     addPaidOrder("withdrawn");
 
-    expect(listCustomerLibrary(db, "customer", new Date("2026-10-01T10:00:00.000Z"))).toEqual({
+    const at = new Date("2026-10-01T10:00:00.000Z");
+    const owned_ = { courseRef: "owned", access: "ENTITLED", enrollment: null, lessons: [{ lessonRef: owned, sectionRef: "section:owned", access: "ENTITLED" }] };
+    const preview_ = { courseRef: "preview", access: "PREVIEW", enrollment: null, lessons: [{ lessonRef: preview, sectionRef: "section:preview", access: "PREVIEW" }] };
+    // FLEX-128: a FREE course is the account's only after explicit enrollment; catalogue presence is not access.
+    expect(listCustomerLibrary(db, "customer", at)).toEqual({ courses: [owned_, preview_] });
+    db.prepare(`INSERT INTO free_course_enrollments(customer_id,product_id,product_version,enrolled_at)
+      VALUES ('customer','product:free',1,'2026-10-01T09:00:00.000Z')`).run();
+    expect(listCustomerLibrary(db, "customer", at)).toEqual({
       courses: [
-        { courseRef: "free", access: "FREE", lessons: [{ lessonRef: free, sectionRef: "section:free", access: "FREE" }] },
-        { courseRef: "owned", access: "ENTITLED", lessons: [{ lessonRef: owned, sectionRef: "section:owned", access: "ENTITLED" }] },
-        { courseRef: "preview", access: "PREVIEW", lessons: [{ lessonRef: preview, sectionRef: "section:preview", access: "PREVIEW" }] },
+        { courseRef: "free", access: "FREE", enrollment: { enrolledAt: "2026-10-01T09:00:00.000Z", startedAt: null, progressPercent: 0 },
+          lessons: [{ lessonRef: free, sectionRef: "section:free", access: "FREE" }] },
+        owned_, preview_,
       ],
     });
   });

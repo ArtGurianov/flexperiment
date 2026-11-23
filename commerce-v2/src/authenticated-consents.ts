@@ -127,3 +127,52 @@ export function recordAuthenticatedConsents(db: Database.Database, customerId: s
     return { actionId, replayed: Boolean(prior), status: authenticatedConsentStatus(db, customerId, input.storefront) };
   }).immediate();
 }
+
+export type AuthenticatedMarketingChoiceInput = {
+  storefront: Storefront; releaseVersion: string; manifestSha256: string; actionKey: string;
+  marketingConsent: boolean; expectedActionSequence: number;
+};
+
+/**
+ * G-18 / FLEX-128 G-05: a marketing-only account action. It records exactly one `marketing_consent` event for the
+ * active release and never writes personal-data or account-terms events, so the journal attributes to the customer
+ * only the choice actually made. The required choices already confirmed for this release stay in force (status reads
+ * the latest event per kind). The action key is idempotent; a stale action sequence is refused. A one-click email
+ * suppression is a separate fact and is not lifted here. Caller derives `customerId` from an active session.
+ */
+export function recordAuthenticatedMarketingChoice(db: Database.Database, customerId: string, input: AuthenticatedMarketingChoiceInput,
+  now = new Date().toISOString()) {
+  if (!input || !["COURSES", "LAB"].includes(input.storefront) || typeof input.marketingConsent !== "boolean"
+    || !validActionKey(input.actionKey) || !Number.isSafeInteger(input.expectedActionSequence) || input.expectedActionSequence < 0
+    || typeof input.releaseVersion !== "string" || !input.releaseVersion || typeof input.manifestSha256 !== "string"
+    || !/^[a-f0-9]{64}$/.test(input.manifestSha256)) {
+    throw new Error("AUTHENTICATED_CONSENT_INPUT_INVALID");
+  }
+  return db.transaction(() => {
+    const user = verifiedUser(db, customerId);
+    if (!user) throw new Error("VERIFIED_ACCOUNT_REQUIRED");
+    const release = activeRelease(db, input.storefront);
+    if (!release) throw new Error("LEGAL_RELEASE_NOT_FOUND");
+    if (release.version !== input.releaseVersion || release.manifestSha256 !== input.manifestSha256) throw new Error("LEGAL_RELEASE_STALE");
+    // A distinct request shape: the same key can never be replayed as a full three-choice action or vice versa.
+    const hash = createHash("sha256").update(JSON.stringify(["MARKETING_ONLY", release.id, release.version, release.manifestSha256,
+      input.marketingConsent])).digest("hex");
+    const prior = db.prepare(`SELECT id,request_sha256,auth_user_id FROM authenticated_consent_actions WHERE customer_id=? AND storefront=? AND action_key=?`)
+      .get(customerId, input.storefront, input.actionKey) as { id: string; request_sha256: string; auth_user_id: string } | undefined;
+    if (prior && (prior.request_sha256 !== hash || prior.auth_user_id !== user.id)) throw new Error("CONSENT_ACTION_KEY_CONFLICT");
+    if (!prior) {
+      if (input.expectedActionSequence !== actionSequence(db, customerId, input.storefront)) throw new Error("CONSENT_STATE_STALE");
+      // Only an account that has already made its own required choices for this release can manage the optional one here.
+      if (!authenticatedConsentStatus(db, customerId, input.storefront).requiredChoicesConfirmed) throw new Error("REQUIRED_CHOICES_UNCONFIRMED");
+    }
+    const actionId = prior?.id ?? randomUUID();
+    if (!prior) {
+      db.prepare(`INSERT INTO authenticated_consent_actions(id,customer_id,auth_user_id,storefront,legal_release_id,release_version,manifest_sha256,action_key,request_sha256,recorded_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?)`).run(actionId, customerId, user.id, input.storefront, release.id, release.version, release.manifestSha256, input.actionKey, hash, now);
+      const document = release.manifest.documents.find(candidate => candidate.kind === "marketing_consent")!;
+      db.prepare(`INSERT INTO authenticated_consent_events(action_id,kind,granted,document_version,document_sha256)
+        VALUES (?,'marketing_consent',?,?,?)`).run(actionId, Number(input.marketingConsent), document.version, document.sha256);
+    }
+    return { actionId, replayed: Boolean(prior), status: authenticatedConsentStatus(db, customerId, input.storefront) };
+  }).immediate();
+}

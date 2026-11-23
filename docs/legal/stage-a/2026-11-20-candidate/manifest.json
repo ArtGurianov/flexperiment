@@ -1,0 +1,59 @@
+{
+  "schema": "flexperiment.legal-candidate-review/1",
+  "version": "2026-11-20.stage-a.candidate.2",
+  "baseCommit": "be55bb755100535fd2af5f2a407b1be0199e2c40",
+  "ownerApproval": "NOT_REQUESTED_YET",
+  "openMarkers": [
+    "G-06",
+    "G-07",
+    "G-08",
+    "D-05"
+  ],
+  "activation": "PROHIBITED_UNTIL_ADMISSION",
+  "documents": [
+    {
+      "kind": "privacy",
+      "previousCandidate": {
+        "sha256": "15665fdfea53c99f2c36e98697e817e83ece9a09b7ceed6882fc668609859408",
+        "path": "docs/legal/stage-a/2026-10-11-candidate/privacy.md"
+      },
+      "candidate": {
+        "sha256": "d52463c52e8c1d18a73805ea0ea98d47b44e6e505780a439abeb98abccf45677",
+        "path": "docs/legal/stage-a/2026-11-20-candidate/privacy.md"
+      }
+    },
+    {
+      "kind": "personal_data",
+      "previousCandidate": {
+        "sha256": "1b34aa22849b8a328709bdcc1c368937594bbce9a615989e6f17f85bce40e4b8",
+        "path": "docs/legal/stage-a/2026-10-11-candidate/personal_data.md"
+      },
+      "candidate": {
+        "sha256": "c3d1f879d0c0bb2243d035db6ac2b2571cca068876e0ab82abf14fe700cb5433",
+        "path": "docs/legal/stage-a/2026-11-20-candidate/personal_data.md"
+      }
+    },
+    {
+      "kind": "account_terms",
+      "previousCandidate": {
+        "sha256": "a75588355cedbf91a3ca96fb61c1d8d062a76ff242f7233661866949f6ad5740",
+        "path": "docs/legal/stage-a/2026-10-11-candidate/account_terms.md"
+      },
+      "candidate": {
+        "sha256": "1128c18396ef84376089da4ae827f939cd68851767b6c22f5ac49972e8001b9b",
+        "path": "docs/legal/stage-a/2026-11-20-candidate/account_terms.md"
+      }
+    },
+    {
+      "kind": "marketing_consent",
+      "previousCandidate": {
+        "sha256": "f8305d62fb4dbaf8884b7281e0d2a3e75568789cabd09b1fae799739a1d79088",
+        "path": "docs/legal/stage-a/2026-10-11-candidate/marketing_consent.md"
+      },
+      "candidate": {
+        "sha256": "48178eb56cb5ccfc59c872482bef8c0543a3ae63f7540c27421c4e2aa344fbf6",
+        "path": "docs/legal/stage-a/2026-11-20-candidate/marketing_consent.md"
+      }
+    }
+  ]
+}

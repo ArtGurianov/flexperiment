@@ -39,10 +39,11 @@ import { databaseReady, READINESS_DEADLINE_MS, withinDeadline, type RefrefReadin
 import { storefrontSwitchStatus } from "./storefront-switch";
 import { publicLabCatalogue } from "./lab-catalogue";
 import { getCustomerStorefrontCourse, getCustomerStorefrontLesson, getStorefrontCourse, getStorefrontLesson, listCustomerStorefrontLibrary, listStorefrontCourses } from "./storefront-content";
-import { authenticatedConsentStatus, hasRequiredAccountConsents, recordAuthenticatedConsents, type AuthenticatedConsentInput } from "./authenticated-consents";
+import { authenticatedConsentStatus, hasRequiredAccountConsents, recordAuthenticatedConsents, recordAuthenticatedMarketingChoice, type AuthenticatedConsentInput, type AuthenticatedMarketingChoiceInput } from "./authenticated-consents";
 import { ErasureLedgerError } from "./erasure-ledger";
 import { assertClosedPaidTestAccountConsents } from "./closed-paid-test";
 import type { ErasureRuntimeFence } from "./erasure-fence";
+import { registerFreeEnrollmentRoutes } from "./free-enrollment-routes";
 
 type Dependencies = {
   readonly db: Database.Database;
@@ -74,6 +75,11 @@ type Dependencies = {
   readonly refundEnvelopeKeys?: RefundEnvelopeKeyring;
   /** `WITHDRAWN` marks the one commercial change that removes public pages; the platform notifies IndexNow for it. */
   readonly invalidatePlatformCache?: (mode: "swr" | "immediate", courseRef?: string, reason?: "WITHDRAWN") => Promise<void>;
+  /**
+   * FLEX-70: a course's public URLs changed (publish, unlist, relist, withdraw). Fire-and-forget; it must
+   * not throw and is never awaited, so it cannot delay or fail the owner command. Absent: no effect.
+   */
+  readonly notifyPublicCourseChange?: (courseRef: string) => void;
   readonly campaignUnsubscribeSecret?: string;
   readonly marketingBroadcastsEnabled?: boolean;
   readonly origins?: CommerceOrigins;
@@ -163,6 +169,11 @@ const labCommandBody = async <T,>(context: Context) => {
 
 export function createCommerceV2App(deps: Dependencies) {
   const app = new Hono<AppBindings>();
+  // FLEX-70 block: guarded so a faulty notifier can never change a command's response.
+  const notifyPublicCourseChange = (courseRef: string | null | undefined) => {
+    if (!courseRef) return;
+    try { deps.notifyPublicCourseChange?.(courseRef); } catch { /* best effort */ }
+  };
   const now = deps.now ?? (() => new Date());
   const origins = deps.origins ?? loadCommerceOrigins({ NODE_ENV: "test" });
 
@@ -441,6 +452,7 @@ export function createCommerceV2App(deps: Dependencies) {
       try {
         await deps.invalidatePlatformCache?.(result.visibility === "UNLISTED" ? "immediate" : "swr", courseRef);
       } catch { cacheInvalidation = "FAILED"; }
+      notifyPublicCourseChange(courseRef);
       return context.json({ ...result, cacheInvalidation }, 200, noStore);
     } catch (error) {
       return context.json({ error: { code: error instanceof Error ? error.message : "COURSE_PUBLISH_FAILED" } }, 409, noStore);
@@ -453,6 +465,7 @@ export function createCommerceV2App(deps: Dependencies) {
       const result = restrictEditorialCourse(deps.db, { ...input, courseRef, actor: context.get("controlRoomAdminId")! }, now().toISOString());
       let cacheInvalidation: "OK" | "FAILED" = "OK";
       try { await deps.invalidatePlatformCache?.("immediate", courseRef); } catch { cacheInvalidation = "FAILED"; }
+      notifyPublicCourseChange(courseRef);
       return context.json({ ...result, cacheInvalidation }, 200, noStore);
     } catch (error) {
       return context.json({ error: { code: error instanceof Error ? error.message : "COURSE_UNLIST_FAILED" } }, 409, noStore);
@@ -465,6 +478,7 @@ export function createCommerceV2App(deps: Dependencies) {
       const result = relistEditorialCourse(deps.db, { ...input, courseRef, actor: context.get("controlRoomAdminId")! }, now().toISOString());
       let cacheInvalidation: "OK" | "FAILED" = "OK";
       try { await deps.invalidatePlatformCache?.("swr", courseRef); } catch { cacheInvalidation = "FAILED"; }
+      notifyPublicCourseChange(courseRef);
       return context.json({ ...result, cacheInvalidation }, 200, noStore);
     } catch (error) {
       return context.json({ error: { code: error instanceof Error ? error.message : "COURSE_RELIST_FAILED" } }, 409, noStore);
@@ -478,6 +492,7 @@ export function createCommerceV2App(deps: Dependencies) {
       const result = restrictEditorialCourse(deps.db, { ...input, courseRef, actor: context.get("controlRoomAdminId")! }, now().toISOString());
       let cacheInvalidation: "OK" | "FAILED" = "OK";
       try { await deps.invalidatePlatformCache?.("immediate", courseRef, "WITHDRAWN"); } catch { cacheInvalidation = "FAILED"; }
+      notifyPublicCourseChange(courseRef);
       return context.json({ ...result, cacheInvalidation }, 200, noStore);
     } catch (error) {
       return context.json({ error: { code: error instanceof Error ? error.message : "COURSE_WITHDRAW_FAILED" } }, 409, noStore);
@@ -669,6 +684,7 @@ export function createCommerceV2App(deps: Dependencies) {
       auditControlRoom(deps.db, { adminId: actor, action: "PRODUCT_WITHDRAWN", entityType: "product",
         entityId: productRef, details: { version: result.version, reason: input.reason, termsRef: input.termsRef } }, now().toISOString());
       await deps.invalidatePlatformCache?.("immediate", product?.course_ref ?? undefined, "WITHDRAWN");
+      notifyPublicCourseChange(product?.course_ref);
       return context.json(result, 200, noStore);
     } catch (error) {
       return context.json({ error: { code: error instanceof Error ? error.message : "WITHDRAWAL_FAILED" } }, 409, noStore);
@@ -1109,6 +1125,31 @@ export function createCommerceV2App(deps: Dependencies) {
     }
   });
 
+  // FLEX-128 G-05 / G-18 (A): marketing-only account action; never re-records the required choices.
+  app.post("/v1/me/consents/marketing", bodyLimit({ maxSize: 4096,
+    onError: context => context.json({ code: "CONSENT_INPUT_TOO_LARGE" }, 413, noStore) }), async (context) => {
+    const customerId = await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;
+    if (!customerId) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
+    try {
+      const body = await context.req.json<AuthenticatedMarketingChoiceInput>();
+      if (!body || typeof body !== "object" || Array.isArray(body)) return context.json({ code: "AUTHENTICATED_CONSENT_INPUT_INVALID" }, 422, noStore);
+      if (body.storefront !== "COURSES" && body.storefront !== "LAB") return context.json({ code: "STOREFRONT_INVALID" }, 422, noStore);
+      if (context.req.header("origin") !== storefrontOrigin(origins, body.storefront)) return context.json({ code: "ORIGIN_FORBIDDEN" }, 403, noStore);
+      if (!Number.isSafeInteger(body.expectedActionSequence) || body.expectedActionSequence < 0) {
+        return context.json({ code: "CONSENT_PRECONDITION_REQUIRED" }, 422, noStore);
+      }
+      return context.json(recordAuthenticatedMarketingChoice(deps.db, customerId, {
+        storefront: body.storefront, releaseVersion: body.releaseVersion, manifestSha256: body.manifestSha256,
+        actionKey: body.actionKey, marketingConsent: body.marketingConsent, expectedActionSequence: body.expectedActionSequence,
+      }, now().toISOString()), 200, noStore);
+    } catch (error) {
+      const allowed = ["VERIFIED_ACCOUNT_REQUIRED", "LEGAL_RELEASE_NOT_FOUND", "LEGAL_RELEASE_INCOMPLETE", "LEGAL_RELEASE_STALE",
+        "AUTHENTICATED_CONSENT_INPUT_INVALID", "CONSENT_ACTION_KEY_CONFLICT", "CONSENT_STATE_STALE", "REQUIRED_CHOICES_UNCONFIRMED"];
+      const code = error instanceof Error && allowed.includes(error.message) ? error.message : "CONSENT_WRITE_UNCONFIRMED";
+      return context.json({ code }, 409, noStore);
+    }
+  });
+
   app.get("/v1/me", async (context) => {
     const customerId = await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;
     // An LMS page load binds an anonymous context to the account or rotates it at an account boundary.
@@ -1233,7 +1274,7 @@ export function createCommerceV2App(deps: Dependencies) {
     const lessonRef = context.req.param("lessonRef");
     const observedAt = now().toISOString();
     const resolution = resolvePlaybackAccess(deps.db, {
-      customerId, lessonRef, now: now(), leaseMs: Number(process.env.CATALOG_LEASE_MS ?? 24 * 60 * 60 * 1000), recordFreeEnrollment: true,
+      customerId, lessonRef, now: now(), leaseMs: Number(process.env.CATALOG_LEASE_MS ?? 24 * 60 * 60 * 1000),
     });
     if (resolution.decision !== "ALLOW") {
       recordPlaybackAccessEvent(deps.db, {
@@ -1283,6 +1324,10 @@ export function createCommerceV2App(deps: Dependencies) {
       return context.json({ code: "KINESCOPE_GRANT_UNAVAILABLE" }, 503, noStore);
     }
   });
+
+  // FLEX-128 (A): explicit FREE enrollment and start of learning.
+  registerFreeEnrollmentRoutes(app, { db: deps.db, coursesOrigin: storefrontOrigin(origins, "COURSES"), now,
+    authenticateCustomer: deps.authenticateCustomer });
 
   return app;
 }

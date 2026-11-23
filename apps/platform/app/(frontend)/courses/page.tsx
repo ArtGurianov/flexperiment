@@ -1,5 +1,7 @@
 import Link from "next/link";
+import Image from "next/image";
 import { publicCourses } from "@/lib/content/public";
+import { courseImageFor } from "@/lib/public-media";
 import CourseSearch from "@/components/search/CourseSearch";
 import { Suspense } from "react";
 import { connection } from "next/server";
@@ -28,10 +30,13 @@ async function CourseGrid() {
   const courses = await publicCourses();
   return <section className="courseGrid" aria-label="Опубликованные курсы">
     {courses.map(({ course, commercial }, index) => {
+      const cover = courseImageFor(course);
       const commercialLabel = commercial.accessModel === "FREE" ? "Бесплатно" : commercial.saleMode === "CLOSED" ? "Продажи закрыты" : commercial.priceKopecks === null ? "Скоро" : money(commercial.priceKopecks);
       return (
         <article className="courseCard" key={course.courseRef}>
-          <div className="courseCardNumber">{String(index + 1).padStart(2, "0")}</div>
+          {cover
+            ? <Image className="courseCardCover" src={cover.path} alt="" width={cover.width} height={cover.height} unoptimized />
+            : <div className="courseCardNumber">{String(index + 1).padStart(2, "0")}</div>}
           <div><p className="courseMeta">{commercialLabel}</p><h2><Link href={`/courses/${course.slug}`}>{course.title}</Link></h2><p>{course.summary}</p></div>
           <Link className="courseArrow" aria-label={`Открыть курс ${course.title}`} href={`/courses/${course.slug}`}>↗</Link>
         </article>

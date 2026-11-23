@@ -97,7 +97,7 @@ describe("explicit category retention in offline SQLite, no runtime/default poli
     expect(db.prepare("SELECT id FROM customers").all()).toEqual([{ id: "verified" }]);
     expect(count("email_suppressions")).toBe(1); expect(count("authenticated_consent_events")).toBe(3);
   });
-  it.each(["recent-intent", "user", "link", "outbox", "hold", "history", "audit", "progress", "owner-evidence"])("preserves an unbound profile with %s authority or fresh evidence", reason => {
+  it.each(["recent-intent", "user", "link", "outbox", "hold", "history", "audit", "progress", "learning-start", "owner-evidence"])("preserves an unbound profile with %s authority or fresh evidence", reason => {
     const pending = intent(reason === "recent-intent" ? recent : old);
     if (reason === "owner-evidence") {
       activateLegalRelease(db, { storefront: "COURSES", version: "synthetic-legal", manifest: stageBLegalManifest, actor: "owner" }, old);
@@ -116,6 +116,17 @@ describe("explicit category retention in offline SQLite, no runtime/default poli
     }
     if (reason === "audit") db.prepare(`INSERT INTO audit_log(id,actor,action,subject_type,subject_ref,evidence_json) VALUES ('audit','synthetic','TEST','CUSTOMER',?,'{}')`).run(pending);
     if (reason === "progress") db.prepare("INSERT INTO lesson_resume_positions(customer_id,lesson_ref,seconds,client_seq,client_ts) VALUES (?,'lesson',0,0,?)").run(pending, old);
+    if (reason === "learning-start") {
+      // FLEX-128 (G-01): a historical start fact keeps an otherwise unbound profile. The authority triggers
+      // refuse an unbound subject, so the isolated fixture recreates them byte-for-byte (same fingerprint).
+      const triggers = db.prepare("SELECT name,sql FROM sqlite_master WHERE type='trigger' AND name IN ('free_course_enrollment_authority','course_learning_start_authority')").all() as Array<{ name: string; sql: string }>;
+      for (const trigger of triggers) db.exec(`DROP TRIGGER ${trigger.name}`);
+      db.exec(`INSERT INTO products(id,product_ref,kind,access_model,course_ref) VALUES ('free','course:free','ONLINE_COURSE','FREE','free')`);
+      db.prepare("INSERT INTO free_course_enrollments(customer_id,product_id,product_version,enrolled_at) VALUES (?,'free',1,?)").run(pending, old);
+      db.prepare("INSERT INTO course_learning_starts(customer_id,course_ref,product_id,source,started_at) VALUES (?,'free','free','FREE_ENROLLMENT',?)").run(pending, old);
+      db.prepare("DELETE FROM free_course_enrollments WHERE customer_id=?").run(pending); // only the start fact remains
+      for (const trigger of triggers) db.exec(trigger.sql);
+    }
     const holds = reason === "hold" ? [hold("UNBOUND_INTENTS", "CUSTOMER", pending)] : [];
     expect(cleanupOfflinePersonalData(db, input(holds), now).unboundIntents).toBe(0);
     expect(db.prepare("SELECT id FROM customers WHERE id=?").get(pending)).toEqual({ id: pending });
