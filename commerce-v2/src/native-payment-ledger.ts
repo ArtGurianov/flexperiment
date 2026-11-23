@@ -270,6 +270,15 @@ export function applyNativePaymentObservation(db: Database.Database, ctx: Native
   }).immediate();
 }
 
+/** Cancellation can reconcile the original payment and fulfill a debit already accepted by the bank. */
+export async function reconcileNativePaymentWithoutNewCharge(db: Database.Database, ctx: NativeLedgerContext, orderPublicId: string) {
+  const order = orderContext(db, orderPublicId);
+  const payment = order && paymentOfOrder(db, order.order_id);
+  if (!payment) throw new Error("NATIVE_PAYMENT_NOT_FOUND");
+  await driveNativePayment(db, { ...ctx, mayInitiate: () => false }, payment.id,
+    { state: payment.state, providerPaymentId: payment.provider_payment_id, effects: ["READ_BACK"] });
+}
+
 /** The sweep: every unsettled payment is read back, whether or not a callback arrived. */
 export async function reconcilePendingNativePayments(db: Database.Database, ctx: NativeLedgerContext) {
   const now = clock(ctx);

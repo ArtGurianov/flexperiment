@@ -102,7 +102,7 @@ export const occurrencePhase = (row: Pick<LabOccurrenceRow, "lifecycle" | "start
     : Date.parse(row.ends_at) <= Date.parse(now) ? "FINISHED"
       : Date.parse(row.starts_at) <= Date.parse(now) ? "IN_PROGRESS" : "SCHEDULED";
 
-const occurrenceRow = (db: Database.Database, occurrenceRef: string) =>
+export const occurrenceRow = (db: Database.Database, occurrenceRef: string) =>
   db.prepare("SELECT * FROM lab_occurrences WHERE occurrence_ref=?").get(occurrenceRef) as LabOccurrenceRow | undefined;
 
 /**
@@ -146,6 +146,9 @@ export function assertLabOccurrenceAdmissible(db: Database.Database, occurrenceR
   const phase = occurrencePhase(row, now);
   if (phase === "CANCELLED") throw new CheckoutConflictError("LAB_OCCURRENCE_CANCELLED");
   if (phase !== "SCHEDULED") throw new CheckoutConflictError("LAB_OCCURRENCE_STARTED");
+  // FLEX-59: a requested cancellation closes sales before its open payments are settled.
+  const cancelling = db.prepare("SELECT state FROM lab_occurrence_cancellations WHERE occurrence_ref=?").get(row.occurrence_ref) as { state: string } | undefined;
+  if (cancelling) throw new CheckoutConflictError(cancelling.state === "COMPLETED" ? "LAB_OCCURRENCE_CANCELLED" : "LAB_OCCURRENCE_CANCELLING");
   const venue = venueDisclosure(row);
   if (!venue) throw new CheckoutConflictError("LAB_VENUE_UNDECLARED");
   if (labSeatInventory(db, row, now, excludeQuoteId).available < 1) throw new CheckoutConflictError("LAB_OCCURRENCE_SOLD_OUT");
@@ -163,7 +166,7 @@ const revisionFacts = (row: LabOccurrenceRow) => ({
   visibility: row.visibility, lifecycle: row.lifecycle, cancellationReason: row.cancellation_reason,
 });
 
-const recordRevision = (db: Database.Database, input: {
+export const recordRevision = (db: Database.Database, input: {
   before: LabOccurrenceRow | null; after: LabOccurrenceRow; kind: "CREATED" | "EDITED" | "CANCELLED";
   changedFields: string[]; customerFacing: boolean; actor: string; reason: string; now: string;
 }) => {

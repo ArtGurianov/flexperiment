@@ -13,7 +13,8 @@ import { nativePaymentsFromConfig } from "../src/native-payment-runtime";
 import { CommerceConfigurationError, loadCommerceRuntimeConfig } from "../src/payment-mode";
 import { decideRefund, requestRefund } from "../src/refunds";
 import { enrolledTotp, testTotpKey } from "./fixtures/control-room-totp";
-import { stageALegalManifestJson } from "./fixtures/legal";
+import { stageALegalManifestJson, stageBLegalManifestJson } from "./fixtures/legal";
+import { confirmLabBuyer, labAcceptanceFor } from "./fixtures/lab-purchase";
 import { FakeNativeBank } from "./fixtures/native-fake-provider";
 import { openTestStorefront, qualifyTestFiscalPolicy, setTestStorefronts, withTestStorefrontSwitch } from "./fixtures/sales";
 
@@ -320,8 +321,9 @@ describe("owner directive v4.8 item 4: COURSES=OPEN, LAB=CLOSED, PAYMENT_MODE=na
     migrateV2(db);
     bank = new FakeNativeBank();
     db.prepare("INSERT INTO customers(id,email_normalized) VALUES ('customer','student@example.com')").run();
+    confirmLabBuyer(db, "customer");
     for (const storefront of ["COURSES", "LAB"]) db.prepare(`INSERT INTO legal_releases(id,storefront,version,manifest_json,effective_at,active)
-      VALUES (?,?,'v1',?,'2026-09-30T00:00:00Z',1)`).run(`legal-${storefront}`, storefront, stageALegalManifestJson);
+      VALUES (?,?,'v1',?,'2026-09-30T00:00:00Z',1)`).run(`legal-${storefront}`, storefront, storefront === "LAB" ? stageBLegalManifestJson : stageALegalManifestJson);
     db.exec(`INSERT INTO cities(id,slug,title) VALUES ('city','msk','Москва');
       INSERT INTO lab_occurrences(id,occurrence_ref,city_id,title,starts_at,ends_at,timezone,capacity,venue_status,venue_name,venue_address)
         VALUES ('occ','occ-1','city','Мастер-класс','2026-12-05T15:00:00Z','2026-12-05T18:00:00Z','Europe/Moscow',10,'CONFIRMED','Студия','Москва, 1');
@@ -358,7 +360,7 @@ describe("owner directive v4.8 item 4: COURSES=OPEN, LAB=CLOSED, PAYMENT_MODE=na
     setTestStorefronts(db, { COURSES: "OPEN", LAB: "CLOSED" });
     const before = sideEffects();
     await expect(confirmCheckout(db, rail, config, { customerId: "customer", customerEmail: "student@example.com", quoteId: prepared.quoteId,
-      idempotencyKey: "lab-confirm", native: nativeConfirm(db, ledger()) }, "2026-09-30T10:01:00Z")).rejects.toThrow("SALES_STOPPED");
+      idempotencyKey: "lab-confirm", labAcceptance: labAcceptanceFor(db), native: nativeConfirm(db, ledger()) }, "2026-09-30T10:01:00Z")).rejects.toThrow("SALES_STOPPED");
     // The quote issued while LAB was open is the only row; the close lets nothing further through.
     expect(sideEffects()).toEqual({ ...none, quotes: 1 });
     expect(before).toEqual({ ...none, quotes: 1 });

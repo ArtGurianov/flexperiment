@@ -50,6 +50,8 @@ const REVIEWED_SCHEMA_SHA256 = new Set([
   "35df100cb8733fba2583d4a63ec83ee597a8c9708e265d57590c64f42d75f5af",
   // 0038: native payments, refunds and fiscal events. Hashed journal.
   "106c44b578785d1be8c4e5a1353346b3ae279e55bdb031d33ac7a6f84b79600b",
+  // 0039–0041: LAB acceptance, cancellation and service evidence. Hashed journal.
+  "6e2ceeec90757a43a859b4286c8d37543f27ed136f0b4613281d2caa48a012d3",
 ]);
 export function assertReviewedRestoreSchema(db: Database.Database) {
   const schema = db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").all();
@@ -146,7 +148,8 @@ function applyErasure(db: Database.Database, ledger: VerifiedErasureLedger, keys
           // Generic audit JSON is not assumed anonymous or safely discardable.
           // A classified legal/security hold must be implemented before such a
           // subject can be admitted; no invented retention deadline here.
-          const audit = db.prepare(`SELECT 1 FROM audit_log WHERE actor=? OR subject_ref=?
+          // An actor may embed the subject (e.g. `customer:<id>`); any mention stops erasure (fail closed).
+          const audit = db.prepare(`SELECT 1 FROM audit_log WHERE instr(actor,?)>0 OR subject_ref=?
             OR instr(evidence_json,?)>0 OR instr(evidence_json,?)>0 LIMIT 1`)
             .get(customer.id, customer.id, customer.id, customer.email_normalized);
           const adminAudit = db.prepare(`SELECT 1 FROM control_room_audit_log WHERE entity_id=?
@@ -190,6 +193,13 @@ function applyErasure(db: Database.Database, ledger: VerifiedErasureLedger, keys
         if (hasTable(db, "session_exchanges")) db.exec("DELETE FROM lms_sessions; DELETE FROM session_exchanges;");
         if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='lab_guest_access'").get()) {
           db.exec("DELETE FROM lab_ticket_recoveries; UPDATE lab_tickets SET qr_sha256=NULL;");
+          // FLEX-60 (E review): an owned QR is HMAC(secret, ticket, qr_generation). The snapshot may predate
+          // several reissues, so +1 could land on a generation already revoked live. Jump past any counter
+          // value instead (reissue counts from 0 by 1; restore time in seconds is far above it and grows).
+          if ((db.prepare("PRAGMA table_info(lab_tickets)").all() as Array<{ name: string }>).some(column => column.name === "qr_generation")) {
+            db.prepare("UPDATE lab_tickets SET qr_generation=MAX(qr_generation+1,?) WHERE used_at IS NULL")
+              .run(Math.floor(Math.max(Date.now(), now.getTime()) / 1000));
+          }
           for (const row of db.prepare("SELECT order_public_id FROM lab_guest_access").all() as Array<{order_public_id:string}>) {
             db.prepare("UPDATE lab_guest_access SET token_sha256=? WHERE order_public_id=?").run(randomBytes(32).toString("hex"), row.order_public_id);
           }

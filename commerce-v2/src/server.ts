@@ -1,4 +1,5 @@
 import { serve } from "@hono/node-server";
+import { labTicketQrSecretFromEnv } from "./lab-tickets";
 import { createCommerceV2App } from "./app";
 import { migrateV2, openV2Database } from "./db";
 import { loadCommerceRuntimeConfig } from "./payment-mode";
@@ -28,6 +29,7 @@ import { ErasureInstallationEvidence, readErasureInstallation } from "./erasure-
 import { AfterResponseTasks } from "./after-response";
 import { BrowserContexts, loadBrowserContextConfig } from "./browser-context";
 import { RefrefArrivalExchange } from "./refref-arrival-exchange";
+import { contourOfOrder } from "./native-payment-ledger";
 import { nativePaymentsFromConfig, startNativeSweeps } from "./native-payment-runtime";
 
 async function startServer() {
@@ -159,6 +161,15 @@ const app = createCommerceV2App({
   resolveSession: auth.resolveSession,
   signOutMySession: (headers) => auth.auth.api.signOut({ headers, asResponse: true }),
   sessionExchange: createSessionExchange({ db }),
+
+  // FLEX-60/123: owned LAB ticket QR; absent or short LAB_TICKET_QR_SECRET keeps the route closed.
+  labTicketQrSecret: labTicketQrSecretFromEnv(process.env),
+  myOrigin: origins.my,
+  resolveSessionAudience: async (headers) => {
+    const session = await auth.resolveSession(headers);
+    if (!session || (session.kind === "MY" && session.surface !== "MY")) return null;
+    return { customerId: session.customerId, audience: session.kind };
+  },
   verifyCaptcha: smartCaptchaSecret ? (token, ip) => verifySmartCaptcha(token, ip, smartCaptchaSecret) : undefined,
   kinescopeClient,
   kinescopeLessonsFolderId: process.env.KINESCOPE_LESSONS_FOLDER_ID,
@@ -194,6 +205,8 @@ const app = createCommerceV2App({
   erasureFence,
   browserContexts,
   nativePayments: native?.ledger,
+  labRouteContour: ({ orderPublicId }) => contourOfOrder(db, orderPublicId),
+  labRailContour: config.paymentMode === "refref" ? "REFREF_RC2" : undefined,
 });
 if (native) startNativeSweeps(db, native, {
   intervalMs: Number(process.env.CHECKOUT_POLL_INTERVAL_MS ?? 30_000),

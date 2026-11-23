@@ -5,7 +5,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { checkout, MockPaymentRail, reconcileCheckout, type AcceptedRefund, type RailProjection, type RefundSubmission } from "../src/checkout";
 import { migrateV2 } from "../src/db";
 import type { RefundEnvelope, RefundEnvelopeKeyring } from "../src/refund-envelope";
-import { stageALegalManifestJson, stageBLegalManifestJson } from "./fixtures/legal";
+import { stageBLegalManifestJson } from "./fixtures/legal";
+import { confirmLabBuyer, labAcceptanceIfActive } from "./fixtures/lab-purchase";
 import { openTestStorefront, qualifyTestFiscalPolicies, testCheckoutConfig } from "./fixtures/sales";
 import { decideRefund, executeApprovedRefund, listRefundCases, reconcilePendingRefunds, recordCourseAccessStart, registerEmailRefund, requestRefund } from "../src/refunds";
 
@@ -131,7 +132,7 @@ describe("email refund intake", () => {
 
   it("uses the same manual case and separate decision for a LAB order on its existing V2 payment rail", async () => {
     db.prepare(`INSERT INTO legal_releases(id,storefront,version,manifest_json,effective_at,active)
-      VALUES ('lab-legal','LAB','lab-fixture-v1',?,'2026-09-30T00:00:00Z',1)`).run(stageALegalManifestJson);
+      VALUES ('lab-legal','LAB','lab-fixture-v1',?,'2026-09-30T00:00:00Z',1)`).run(stageBLegalManifestJson);
     db.prepare("INSERT INTO cities(id,slug,title) VALUES ('city','fixture-city','Fixture city')").run();
     db.prepare(`INSERT INTO lab_occurrences(id,occurrence_ref,city_id,title,starts_at,ends_at,timezone,capacity,venue_status,venue_name,venue_address)
       VALUES ('occurrence','lab:fixture','city','Fixture LAB','2026-11-01T09:00:00Z','2026-11-01T17:00:00Z','Asia/Novosibirsk',20,'CONFIRMED','Студия','ул. Фикстурная, 1')`).run();
@@ -139,9 +140,9 @@ describe("email refund intake", () => {
       VALUES ('lab-product','lab:fixture','LAB','PAID','lab:fixture')`).run();
     db.prepare(`INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode)
       VALUES ('lab-offer','lab:fixture','lab-product',10000,'PUBLIC')`).run();
-    qualifyTestFiscalPolicies(db); openTestStorefront(db, "LAB");
+    qualifyTestFiscalPolicies(db); openTestStorefront(db, "LAB"); confirmLabBuyer(db, "customer");
     const order = await checkout(db, rail, testCheckoutConfig, { customerId: "customer", customerEmail: "student@example.com",
-      offerRef: "lab:fixture", idempotencyKey: "lab-payment" }, "2026-09-30T10:00:00Z");
+      offerRef: "lab:fixture", idempotencyKey: "lab-payment", labAcceptance: labAcceptanceIfActive(db) }, "2026-09-30T10:00:00Z");
     const request = registerEmailRefund(db, { ...mail, orderPublicId: order.orderPublicId }, now);
     expect(listRefundCases(db).refunds[0].policyFacts).toMatchObject({ productKind: "LAB", courseRef: null, emailIntake: { channel: "EMAIL" } });
     await expect(executeApprovedRefund(db, rail, keys, request.requestPublicId, now)).rejects.toThrow("REFUND_APPROVAL_REQUIRED");

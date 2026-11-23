@@ -72,6 +72,8 @@ const supportedSchemaSha256 = new Set([
   "35df100cb8733fba2583d4a63ec83ee597a8c9708e265d57590c64f42d75f5af",
   // 0038: native payments, refunds and fiscal events. Hashed journal.
   "106c44b578785d1be8c4e5a1353346b3ae279e55bdb031d33ac7a6f84b79600b",
+  // 0039–0041: LAB acceptance, cancellation and service evidence. Hashed journal.
+  "6e2ceeec90757a43a859b4286c8d37543f27ed136f0b4613281d2caa48a012d3",
 ]);
 const parse = <T>(schema: z.ZodType<T>, value: unknown): T => {
   const result = schema.safeParse(value); return result.success ? result.data : refuse("RETENTION_POLICY_OR_HOLD_INVALID");
