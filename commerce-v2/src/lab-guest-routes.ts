@@ -34,11 +34,11 @@ export function registerLabGuestRoutes(parent: Hono, deps: {
   });
   app.post("/v1/lab/guest/start", async c => {
     const body = await c.req.json<{ email: unknown; accessToken: unknown }>();
-    if (!deps.canStartGuest()) return c.json({ code: "LAB_SALES_CLOSED" }, 409, noStore);
     const email = labEmail(body.email), time = deps.now().toISOString();
     deps.erasureFence?.assertIdentity({ email }, "AUTH_MAIL");
     const source = deps.requestSource(c);
     if (!source) return c.json({ code: "LAB_SOURCE_UNAVAILABLE" }, 503, noStore);
+    if (!deps.canStartGuest()) return c.json({ code: "LAB_SALES_CLOSED" }, 409, noStore);
     // Charge the trusted source first, so rotating email/token cannot allocate unlimited buckets/sessions.
     if (!consumeLabLimit(deps.db, "start-source", source, 30, time)
       || !consumeLabLimit(deps.db, "start-source-email", JSON.stringify([source, email]), 10, time)) {
