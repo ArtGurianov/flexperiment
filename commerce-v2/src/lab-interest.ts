@@ -2,6 +2,11 @@ import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from
 import type Database from "better-sqlite3";
 import { labEmail } from "./lab-tickets";
 import type { LabInterestManifest } from "./lab-interest-legal";
+import { publicLabCatalogue } from "./lab-catalogue";
+import { LabInterestMailError, type LabNoticeHandoff } from "./lab-interest-mail";
+import { assertOfferSaleModeAllowed, type SaleModePolicyConfig } from "./payment-mode";
+import { qualifiedFiscalPolicy } from "./fiscal-policy";
+import { storefrontSwitchStatus } from "./storefront-switch";
 
 /**
  * FLEX-8 (owner decision 2026-11-22): interest in LAB sales while they are closed.
@@ -100,18 +105,20 @@ export function discardUndeliveredLabInterest(db: Database.Database, signupId: s
 
 export function confirmLabInterest(db: Database.Database, token: unknown, now: string, consent: Consent) {
   if (typeof token !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(token)) fail("LAB_INTEREST_TOKEN_INVALID");
-  return db.transaction(() => {
+  const confirmed = db.transaction(() => {
     const row = db.prepare("SELECT * FROM lab_interest_signups WHERE confirm_token_sha256=?").get(sha256(token as string)) as SignupRow | undefined;
     if (!row?.city_id || Date.parse(row.confirm_expires_at!) <= Date.parse(now)
       || row.consent_text_version !== consent.version || row.consent_text_sha256 !== consent.textSha256) fail("LAB_INTEREST_TOKEN_INVALID");
     if (interestSuppressed(db, row!.email_normalized)) {
       db.prepare("DELETE FROM lab_interest_signups WHERE id=?").run(row!.id);
-      fail("LAB_INTEREST_TOKEN_INVALID");
+      return false;
     }
     db.prepare(`UPDATE lab_interest_signups SET state='CONFIRMED',confirmed_at=?,confirm_token_sha256=NULL,confirm_expires_at=NULL
       WHERE id=?`).run(now, row!.id);
-    return { confirmed: true as const };
+    return true;
   }).immediate();
+  if (!confirmed) fail("LAB_INTEREST_TOKEN_INVALID");
+  return { confirmed: true as const };
 }
 
 /** Withdrawal is idempotent and deletes the signup with its notice history. */
@@ -134,19 +141,30 @@ export function withdrawLabInterest(db: Database.Database, token: unknown, secre
   return { withdrawn: true as const };
 }
 
-/**
- * The only notice this store may carry: LAB sales have opened. The caller proves the LAB storefront
- * switch is OPEN; nothing here can send while sales are closed, and nothing else (marketing,
- * courses, partner offers) may use these addresses.
- */
+type NoticeEmail = Extract<LabInterestEmail, { kind: "NOTICE" }>;
+type PreparedNotice = NoticeEmail & { signupId: string; cityId: string };
+type NoticeTransport = (message: NoticeEmail, handoff: LabNoticeHandoff) => Promise<"ACCEPTED" | "SKIPPED">;
+
+function canAnnounceLabSales(db: Database.Database, config: SaleModePolicyConfig, cityId: string, now: Date) {
+  try {
+    assertOfferSaleModeAllowed(config, { kind: "LAB", accessModel: "PAID", saleMode: "PUBLIC" });
+    const available = publicLabCatalogue(db, config.paymentMode, now).occurrences.some(offer => {
+      if (offer.cityId !== cityId || offer.soldOut) return false;
+      try { qualifiedFiscalPolicy(db, offer.offerRef, "LAB"); return true; }
+      catch { return false; }
+    });
+    return available && storefrontSwitchStatus(db, config).LAB === "OPEN";
+  } catch { return false; }
+}
+
 export type LabSalesOpenedNotice = {
-  noticeKey: string; labSwitch: "OPEN" | "CLOSED"; subject: string; message: string; cityId: string;
+  noticeKey: string; subject: string; message: string; cityId: string;
 };
 
 export function prepareLabSalesOpenedNotices(db: Database.Database, notice: LabSalesOpenedNotice,
-  deps: { origin: string; secret: string; commerceOrigin: string }, now: Date, limit = 500): Array<Extract<LabInterestEmail, { kind: "NOTICE" }> & { signupId: string; cityId: string }> {
-  if (notice.labSwitch !== "OPEN") fail("LAB_INTEREST_SALES_NOT_OPEN");
+  deps: { origin: string; secret: string; commerceOrigin: string; config: SaleModePolicyConfig }, now: Date, limit = 500): PreparedNotice[] {
   if (!notice.cityId) fail("LAB_INTEREST_CITY_INVALID");
+  if (!canAnnounceLabSales(db, deps.config, notice.cityId, now)) fail("LAB_INTEREST_SALES_NOT_OPEN");
   if (!/^[a-z0-9][a-z0-9:._-]{0,127}$/.test(notice.noticeKey)) fail("LAB_INTEREST_NOTICE_KEY_INVALID");
   const subject = typeof notice.subject === "string" ? notice.subject.trim() : "";
   const message = typeof notice.message === "string" ? notice.message.trim() : "";
@@ -168,33 +186,49 @@ export function prepareLabSalesOpenedNotices(db: Database.Database, notice: LabS
 }
 
 /**
- * Sends prepared notices at most once each. The attempt is recorded before the provider call; an
- * unknown outcome stays ATTEMPTED and is never retried. A signup withdrawn or suppressed between
- * preparation and send is skipped.
+ * Claims an attempt durably and checks consent and sales again at the transport boundary.
+ * Hold the SQLite write lock only until the provider request is initiated. A committed withdrawal
+ * is respected up to that point. Once handed to the provider, the message cannot be recalled here.
+ * SENT records provider acceptance. An attempt without confirmed acceptance is never replayed.
  */
-export async function dispatchLabSalesOpenedNotices(db: Database.Database,
-  notices: ReturnType<typeof prepareLabSalesOpenedNotices>, send: (message: LabInterestEmail) => Promise<void>, now: () => Date) {
-  const result = { sent: 0, skipped: 0, unknown: 0 };
-  for (const notice of notices) {
-    const claimed = db.transaction(() => {
-      const live = db.prepare(`SELECT 1 FROM lab_interest_signups s WHERE s.id=? AND s.state='CONFIRMED'
-        AND s.city_id=? AND s.email_normalized=? AND ${CONFIRMED_EXPIRY}>julianday(?)
-        AND NOT EXISTS (SELECT 1 FROM email_suppressions x WHERE x.email_normalized=s.email_normalized AND x.removed_at IS NULL)
-        AND NOT EXISTS (SELECT 1 FROM lab_interest_suppressions x WHERE x.email_normalized=s.email_normalized)`).get(notice.signupId, notice.cityId, notice.email, now().toISOString());
-      if (!live) return false;
-      if (db.prepare("SELECT 1 FROM lab_interest_notices WHERE signup_id=?").get(notice.signupId)) return false;
-      return db.prepare(`INSERT INTO lab_interest_notices(signup_id,notice_key,state,attempted_at,sent_at) VALUES (?,?,'ATTEMPTED',?,NULL)
-        ON CONFLICT DO NOTHING`).run(notice.signupId, notice.noticeKey, now().toISOString()).changes === 1;
-    }).immediate();
-    if (!claimed) { result.skipped++; continue; }
-    const message: LabInterestEmail = { kind: notice.kind, email: notice.email, noticeKey: notice.noticeKey, subject: notice.subject,
-      message: notice.message, storefrontUrl: notice.storefrontUrl, withdrawUrl: notice.withdrawUrl, headers: notice.headers };
+export async function dispatchLabSalesOpenedNotices(db: Database.Database, notices: PreparedNotice[],
+  config: SaleModePolicyConfig, send: NoticeTransport, now: () => Date) {
+  const result = { sent: 0, skipped: 0, rejected: 0, unknown: 0 };
+  for (const { signupId, cityId, ...message } of notices) {
+    let handedOff = false;
+    const live = (at: Date) => db.prepare(`SELECT 1 FROM lab_interest_signups s WHERE s.id=? AND s.state='CONFIRMED'
+      AND s.city_id=? AND s.email_normalized=? AND ${CONFIRMED_EXPIRY}>julianday(?)`)
+      .get(signupId, cityId, message.email, at.toISOString())
+      && !interestSuppressed(db, message.email) && canAnnounceLabSales(db, config, cityId, at);
+    const handoff: LabNoticeHandoff = start => {
+      const claimed = db.transaction(() => {
+        const at = now();
+        if (!live(at) || db.prepare("SELECT 1 FROM lab_interest_notices WHERE signup_id=?").get(signupId)) return false;
+        return db.prepare(`INSERT INTO lab_interest_notices(signup_id,notice_key,state,attempted_at,sent_at) VALUES (?,?,'ATTEMPTED',?,NULL)`)
+          .run(signupId, message.noticeKey, at.toISOString()).changes === 1;
+      }).immediate();
+      if (!claimed) return undefined;
+      // Box the promise: the SQLite transaction itself must remain synchronous.
+      return db.transaction(() => {
+        if (!live(now())) {
+          db.prepare("DELETE FROM lab_interest_notices WHERE signup_id=? AND notice_key=? AND state='ATTEMPTED'")
+            .run(signupId, message.noticeKey);
+          return { request: undefined };
+        }
+        handedOff = true;
+        return { request: start() };
+      }).immediate().request;
+    };
     try {
-      await send(message);
+      const outcome = await send(message, handoff);
+      if (!handedOff || outcome === "SKIPPED") { result.skipped++; continue; }
       db.prepare("UPDATE lab_interest_notices SET state='SENT',sent_at=? WHERE signup_id=? AND notice_key=?")
-        .run(now().toISOString(), notice.signupId, notice.noticeKey);
+        .run(now().toISOString(), signupId, message.noticeKey);
       result.sent++;
-    } catch { result.unknown++; }
+    } catch (error) {
+      if (error instanceof LabInterestMailError && error.message === "LAB_INTEREST_MAIL_REJECTED") result.rejected++;
+      else result.unknown++;
+    }
   }
   return result;
 }
@@ -202,8 +236,8 @@ export async function dispatchLabSalesOpenedNotices(db: Database.Database,
 /**
  * Reviewed retention policy; there are deliberately no default durations. E's proposal (pending owner
  * decision D-I2): PENDING at most 7 days (the link itself lives 48 h); CONFIRMED deleted within 30 days
- * of the delivered notice and never kept beyond 12 months from confirmation. An undelivered (ATTEMPTED)
- * notice is not the purpose achieved; such a row waits for the 12-month bound.
+ * of provider acceptance and never kept beyond 12 months from confirmation. An unconfirmed (ATTEMPTED)
+ * attempt is not provider acceptance; such a row waits for the 12-month bound.
  */
 export type LabInterestRetentionPolicy = { pendingMaxAgeSeconds: number; deliveredMaxAgeSeconds: number; confirmedMaxAgeSeconds: number };
 

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { MagicLinkEmail } from "./auth";
 import { loadCommerceOrigins } from "./origins";
+import { readNotiSendOutcome } from "./notisend-response";
 
 type LinkEmail = MagicLinkEmail & { ticketLinks?: readonly string[] };
 type Environment = Readonly<Record<string, string | undefined>>;
@@ -10,7 +11,6 @@ export class AuthEmailDeliveryError extends Error {
 }
 
 const SEND_URL = "https://api.notisend.ru/v1/email/messages";
-const MAX_RESPONSE_BYTES = 16_384;
 const safeText = (value: string) => value.length <= 512 && !/[\u0000-\u001f\u007f-\u009f]/u.test(value);
 const emailAddress = (value: string) => value.length <= 254 && /^[^\s<>@]+@[^\s<>@]+\.[^\s<>@]+$/.test(value) && safeText(value);
 const htmlEscape = (value: string) => value.replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]!);
@@ -20,30 +20,6 @@ const required = (environment: Environment, key: string) => {
   if (!safeText(value)) throw new Error(`${key}_INVALID`);
   return value;
 };
-
-async function boundedJson(response: Response): Promise<Record<string, unknown>> {
-  if (!response.body) throw new AuthEmailDeliveryError("AUTH_EMAIL_AMBIGUOUS");
-  const reader = response.body.getReader();
-  const parts: Uint8Array[] = [];
-  let size = 0;
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      size += value.byteLength;
-      if (size > MAX_RESPONSE_BYTES) throw new AuthEmailDeliveryError("AUTH_EMAIL_AMBIGUOUS");
-      parts.push(value);
-    }
-    const result: unknown = JSON.parse(Buffer.concat(parts).toString("utf8"));
-    if (!result || typeof result !== "object" || Array.isArray(result)) throw new Error();
-    return result as Record<string, unknown>;
-  } catch {
-    throw new AuthEmailDeliveryError("AUTH_EMAIL_AMBIGUOUS");
-  } finally {
-    await reader.cancel().catch(() => undefined);
-    reader.releaseLock();
-  }
-}
 
 /** Better Auth owns tokens/verification. This is only its transactional email transport.
  * One attempt, no automatic retry: NotiSend does not supply a durable send dedupe key.
@@ -120,23 +96,8 @@ function createLinkEmailDelivery(environment: Environment, request: typeof fetch
           // No unsubscribe/suppression bypass, marketing activation, or legacy provider callbacks.
         }),
       });
-      if (response.status === 408 || response.status >= 500) {
-        await response.body?.cancel();
-        throw new AuthEmailDeliveryError("AUTH_EMAIL_AMBIGUOUS");
-      }
-      if (!response.ok) {
-        await response.body?.cancel();
-        throw new AuthEmailDeliveryError("AUTH_EMAIL_REJECTED");
-      }
-      const payload = await boundedJson(response);
-      if (payload.errors !== undefined || ["skipped", "soft_bounced", "hard_bounced"].includes(String(payload.status))) {
-        throw new AuthEmailDeliveryError("AUTH_EMAIL_REJECTED");
-      }
-      const validId = (typeof payload.id === "number" && Number.isSafeInteger(payload.id) && payload.id > 0)
-        || (typeof payload.id === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(payload.id));
-      if (!validId || !["queued", "sent", "delivered"].includes(String(payload.status))) {
-        throw new AuthEmailDeliveryError("AUTH_EMAIL_AMBIGUOUS");
-      }
+      const outcome = await readNotiSendOutcome(response);
+      if (outcome !== "ACCEPTED") throw new AuthEmailDeliveryError(outcome === "REJECTED" ? "AUTH_EMAIL_REJECTED" : "AUTH_EMAIL_AMBIGUOUS");
     } catch (error) {
       if (error instanceof AuthEmailDeliveryError) throw error;
       throw new AuthEmailDeliveryError("AUTH_EMAIL_AMBIGUOUS");

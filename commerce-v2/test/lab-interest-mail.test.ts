@@ -17,10 +17,10 @@ describe("FLEX-8 LAB interest mail adapter (fake transport only)", () => {
   });
 
   it("sends a non-advertising confirmation and a notice with one-click unsubscribe, escaping content", async () => {
-    const request = vi.fn(async () => new Response("{}", { status: 200 }));
+    const request = vi.fn(async () => Response.json({ id: "fixture-1", status: "queued" }));
     const delivery = createLabInterestMailDelivery(env, request as unknown as typeof fetch);
     if (!delivery.configured) throw new Error("expected configured");
-    await delivery.send(confirm); await delivery.send(notice);
+    await delivery.send(confirm); await delivery.sendNotice(notice, start => start());
     const [first, second] = request.mock.calls.map((call) => JSON.parse((call as unknown as [string, RequestInit])[1].body as string));
     expect(first).toMatchObject({ to: "fan@example.test", subject: "Подтвердите предзапись Flexperiment LAB" });
     expect(first.text).toContain("не резервирует место"); expect(first.smtp_headers["List-Unsubscribe"]).toBeUndefined();
@@ -41,5 +41,19 @@ describe("FLEX-8 LAB interest mail adapter (fake transport only)", () => {
 
   it("keeps the confirmation free of advertising wording", () => {
     expect(labInterestMailContent(confirm).text).not.toMatch(/скидк|акци|купите/i);
+  });
+
+  it.each([
+    [JSON.stringify({ status: "skipped" }), "LAB_INTEREST_MAIL_REJECTED"],
+    [JSON.stringify({ status: "queued", id: "valid", errors: ["refused"] }), "LAB_INTEREST_MAIL_REJECTED"],
+    [JSON.stringify({ status: "queued" }), "LAB_INTEREST_MAIL_AMBIGUOUS"],
+    ["?", "LAB_INTEREST_MAIL_AMBIGUOUS"],
+    [JSON.stringify({ status: "queued", id: "valid", padding: "x".repeat(17_000) }), "LAB_INTEREST_MAIL_AMBIGUOUS"],
+  ])("requires a bounded provider acknowledgement", async (body, code) => {
+    const request = vi.fn<typeof fetch>(async () => new Response(body, { status: 200 }));
+    const delivery = createLabInterestMailDelivery(env, request);
+    if (!delivery.configured) throw new Error("expected configured");
+    await expect(delivery.send(confirm)).rejects.toThrow(new RegExp(`^${code}$`));
+    expect(request).toHaveBeenCalledOnce();
   });
 });

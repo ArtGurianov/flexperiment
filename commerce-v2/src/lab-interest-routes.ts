@@ -26,7 +26,7 @@ export function registerLabInterestRoutes(parent: Hono, deps: {
   secret?: string;
   signupsEnabled: boolean;
   manifest?: LabInterestManifest;
-  sendLabInterestEmail?: (message: LabInterestEmail) => Promise<void>;
+  sendLabInterestEmail?: (message: Extract<LabInterestEmail, { kind: "CONFIRM" }>) => Promise<void>;
   erasureFence?: ErasureRuntimeFence;
 }) {
   const app = new Hono();

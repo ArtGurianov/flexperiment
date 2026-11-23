@@ -1,8 +1,10 @@
+import { createLabInterestMailDelivery } from "../src/lab-interest-mail";
+import { stageBLegalManifestJson } from "./fixtures/legal";
 import { labInterestManifest, labInterestManifestBytes, labInterestManifestSha256 } from "./fixtures/lab-interest";
 import { parseLabInterestManifest } from "../src/lab-interest-legal";
 import { LabInterestMailError } from "../src/lab-interest-mail";
 import Database from "better-sqlite3";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createCommerceV2App } from "../src/app";
 import { migrateV2 } from "../src/db";
 import { applyV2Seed } from "../src/seed";
@@ -12,7 +14,7 @@ import {
   prepareLabSalesOpenedNotices, purgeLabInterest, type LabInterestEmail,
 } from "../src/lab-interest";
 import { labShowcaseSchema } from "../../lib/lab-showcase-contract";
-import { setTestStorefronts, withTestStorefrontSwitch } from "./fixtures/sales";
+import { qualifyTestFiscalPolicies, setTestStorefronts, withTestStorefrontSwitch } from "./fixtures/sales";
 
 const LAB = "http://localhost:3000";
 const SECRET = "synthetic-lab-interest-secret";
@@ -228,6 +230,14 @@ describe("FLEX-8 interest signup (double opt-in)", () => {
     expect(count("lab_interest_signups")).toBe(0); expect(sent).toHaveLength(1);
   });
 
+  it("commits deletion of the pending signup when a suppression arrived after signup", async () => {
+    await post(server(), "/v1/lab/interest", { email: "visitor@example.test", cityId: cityId("fixture-city"), consent });
+    const token = tokenFrom((sent[0] as { confirmUrl: string }).confirmUrl, "confirm");
+    db.prepare("INSERT INTO email_suppressions(email_normalized,reason) VALUES ('visitor@example.test','ONE_CLICK')").run();
+    expect(() => confirmLabInterest(db, token, clock.toISOString(), consent)).toThrow("LAB_INTEREST_TOKEN_INVALID");
+    expect(count("lab_interest_signups")).toBe(0);
+  });
+
   it("expires an unconfirmed token", async () => {
     await post(server(), "/v1/lab/interest", { email: "visitor@example.test", cityId: cityId("fixture-city"), consent });
     const token = tokenFrom((sent[0] as { confirmUrl: string }).confirmUrl, "confirm");
@@ -235,63 +245,143 @@ describe("FLEX-8 interest signup (double opt-in)", () => {
   });
 });
 
+const saleConfig = config({ PAYMENT_MODE: "mock" });
+const noticeDeps = { origin: LAB, secret: SECRET, commerceOrigin: "http://localhost:4000", config: saleConfig };
+const enableNoticeOffers = () => {
+  db.prepare("INSERT INTO legal_releases(id,storefront,version,manifest_json,effective_at,active) VALUES ('lab-legal','LAB','lab-b',?,?,1)")
+    .run(stageBLegalManifestJson, clock.toISOString());
+  qualifyTestFiscalPolicies(db);
+  db.prepare("UPDATE offers SET sale_mode='PUBLIC', acceptance_allowlist_json='[]'").run();
+};
+const transport = (request: typeof fetch) => {
+  const delivery = createLabInterestMailDelivery({
+    NOTISEND_API_KEY: "synthetic", NOTISEND_FROM_EMAIL: "lab@example.test", NOTISEND_FROM_NAME: "Lab", NOTISEND_REPLY_TO: "lab@example.test",
+  }, request);
+  if (!delivery.configured) throw Error("Fixture transport unavailable");
+  return delivery.sendNotice;
+};
+const queued = () => Response.json({ id: 1, status: "queued" });
+
 describe("FLEX-8 notices stay inside their purpose", () => {
   const signup = async (email: string, city?: string) => {
     await post(server(), "/v1/lab/interest", { email, cityId: cityId(city ?? "fixture-city"), consent });
     const message = sent.at(-1) as Extract<LabInterestEmail, { kind: "CONFIRM" }>;
     confirmLabInterest(db, tokenFrom(message.confirmUrl, "confirm"), clock.toISOString(), consent);
   };
-  const deps = { origin: LAB, secret: SECRET, commerceOrigin: "http://localhost:4000" };
   const notice = { noticeKey: "lab-sales-opened:2026-12", subject: "Продажи LAB открыты", message: "Билеты доступны на сайте." };
 
   it("cannot be prepared while LAB sales are closed", () => {
-    expect(() => prepareLabSalesOpenedNotices(db, { ...notice, labSwitch: "CLOSED", cityId: cityId("fixture-city") }, deps, clock)).toThrow("LAB_INTEREST_SALES_NOT_OPEN");
+    enableNoticeOffers();
+    setTestStorefronts(db, { LAB: "CLOSED" });
+    expect(() => prepareLabSalesOpenedNotices(db, { ...notice, cityId: cityId("fixture-city") }, noticeDeps, clock)).toThrow("LAB_INTEREST_SALES_NOT_OPEN");
+  });
+
+  it("does not announce a city without a publicly purchasable offer", () => {
+    enableNoticeOffers();
+    db.prepare("UPDATE offers SET sale_mode='CLOSED' WHERE offer_ref='lab:closed-event'").run();
+    expect(() => prepareLabSalesOpenedNotices(db, { ...notice, cityId: cityId("fixture-city") }, noticeDeps, clock))
+      .toThrow("LAB_INTEREST_SALES_NOT_OPEN");
+  });
+
+  it.each(["storefront stop", "offer closure", "withdrawal"] as const)("rechecks %s at provider handoff", async (change) => {
+    enableNoticeOffers();
+    await signup("city@example.test");
+    const prepared = prepareLabSalesOpenedNotices(db, { ...notice, cityId: cityId("fixture-city") }, noticeDeps, clock);
+    expect(prepared).toHaveLength(1);
+    const request = vi.fn<typeof fetch>(async () => queued());
+    const send = transport(request);
+    const result = await dispatchLabSalesOpenedNotices(db, prepared, saleConfig, async (message, handoff) => {
+      // A transport wrapper may wait before calling the provider.
+      await Promise.resolve();
+      if (change === "storefront stop") setTestStorefronts(db, { LAB: "CLOSED" });
+      if (change === "offer closure") db.prepare("UPDATE offers SET sale_mode='CLOSED' WHERE offer_ref='lab:closed-event'").run();
+      if (change === "withdrawal") {
+        const token = labInterestWithdrawToken(prepared[0]!.signupId, SECRET);
+        expect((await post(server(), "/v1/lab/interest/withdraw", { token }, null)).status).toBe(200);
+      }
+      return send(message, handoff);
+    }, () => clock);
+    expect(result).toEqual({ sent: 0, skipped: 1, rejected: 0, unknown: 0 });
+    expect(request).not.toHaveBeenCalled();
+    expect(count("lab_interest_notices")).toBe(0);
+  });
+
+  it("records a NotiSend refusal without claiming acceptance or retrying", async () => {
+    enableNoticeOffers();
+    await signup("city@example.test");
+    const input = { ...notice, cityId: cityId("fixture-city") };
+    const prepared = prepareLabSalesOpenedNotices(db, input, noticeDeps, clock);
+    const request = vi.fn<typeof fetch>(async () => Response.json({ status: "skipped" }));
+    expect(await dispatchLabSalesOpenedNotices(db, prepared, saleConfig, transport(request), () => clock))
+      .toEqual({ sent: 0, skipped: 0, rejected: 1, unknown: 0 });
+    expect(db.prepare("SELECT state,sent_at FROM lab_interest_notices").all()).toEqual([{ state: "ATTEMPTED", sent_at: null }]);
+    expect(prepareLabSalesOpenedNotices(db, input, noticeDeps, clock)).toEqual([]);
+    expect(request).toHaveBeenCalledOnce();
+  });
+
+  it("rechecks the sales switch after the attempt becomes durable", async () => {
+    enableNoticeOffers();
+    await signup("city@example.test");
+    const prepared = prepareLabSalesOpenedNotices(db, { ...notice, cityId: cityId("fixture-city") }, noticeDeps, clock);
+    const stopAfterClaim = { ...saleConfig, storefrontSwitch: (database: Database.Database) => {
+      if (count("lab_interest_notices") > 0) setTestStorefronts(database, { LAB: "CLOSED" });
+      return saleConfig.storefrontSwitch!(database);
+    } };
+    const request = vi.fn<typeof fetch>(async () => queued());
+    expect(await dispatchLabSalesOpenedNotices(db, prepared, stopAfterClaim, transport(request), () => clock))
+      .toEqual({ sent: 0, skipped: 1, rejected: 0, unknown: 0 });
+    expect(request).not.toHaveBeenCalled();
+    expect(count("lab_interest_notices")).toBe(0);
   });
 
   it("skips a signup that expires after preparation, including a leap-day confirmation", async () => {
+    db.exec("UPDATE lab_occurrences SET starts_at='2029-03-05T10:00:00Z', ends_at='2029-03-05T12:00:00Z'");
+    enableNoticeOffers();
     clock = new Date("2028-02-29T10:00:00Z");
     await signup("leap@example.test");
-    const input = { ...notice, labSwitch: "OPEN" as const, cityId: cityId("fixture-city") };
+    const input = { ...notice, cityId: cityId("fixture-city") };
     clock = new Date("2029-02-28T09:59:59Z");
-    const prepared = prepareLabSalesOpenedNotices(db, input, deps, clock);
+    const prepared = prepareLabSalesOpenedNotices(db, input, noticeDeps, clock);
     expect(prepared).toHaveLength(1);
     clock = new Date("2029-02-28T10:00:00Z");
-    expect(prepareLabSalesOpenedNotices(db, input, deps, clock)).toEqual([]);
-    expect(await dispatchLabSalesOpenedNotices(db, prepared, async () => { throw new Error("must not send"); }, () => clock))
-      .toEqual({ sent: 0, skipped: 1, unknown: 0 });
+    expect(prepareLabSalesOpenedNotices(db, input, noticeDeps, clock)).toEqual([]);
+    expect(await dispatchLabSalesOpenedNotices(db, prepared, saleConfig, transport(async () => { throw new Error("must not send"); }), () => clock))
+      .toEqual({ sent: 0, skipped: 1, rejected: 0, unknown: 0 });
     expect(count("lab_interest_notices")).toBe(0);
   });
 
   it("reaches only confirmed, non-suppressed signups of the city, once, with a withdrawal link", async () => {
+    enableNoticeOffers();
     await signup("city@example.test", "fixture-city");
     await signup("other@example.test", "other-city");
     await signup("suppressed@example.test");
     await post(server(), "/v1/lab/interest", { email: "pending@example.test", cityId: cityId("fixture-city"), consent });
     db.prepare("INSERT INTO email_suppressions(email_normalized,reason) VALUES ('suppressed@example.test','ONE_CLICK')").run();
-    const prepared = prepareLabSalesOpenedNotices(db, { ...notice, labSwitch: "OPEN", cityId: cityId("fixture-city") }, deps, clock);
+    const prepared = prepareLabSalesOpenedNotices(db, { ...notice, cityId: cityId("fixture-city") }, noticeDeps, clock);
     expect(prepared.map((message) => message.email).sort()).toEqual(["city@example.test"]);
     expect(prepared[0].headers["List-Unsubscribe-Post"]).toBe("List-Unsubscribe=One-Click");
     const delivered: LabInterestEmail[] = [];
-    expect(await dispatchLabSalesOpenedNotices(db, prepared, async (message) => { delivered.push(message); }, () => clock))
-      .toEqual({ sent: 1, skipped: 0, unknown: 0 });
+    expect(await dispatchLabSalesOpenedNotices(db, prepared, saleConfig, async (message, handoff) => { delivered.push(message); return transport(async () => queued())(message, handoff); }, () => clock))
+      .toEqual({ sent: 1, skipped: 0, rejected: 0, unknown: 0 });
     expect(delivered.every((message) => message.kind === "NOTICE" && !("signupId" in message))).toBe(true);
-    expect(await dispatchLabSalesOpenedNotices(db, prepared, async () => { throw new Error("must not resend"); }, () => clock))
-      .toEqual({ sent: 0, skipped: 1, unknown: 0 });
-    expect(prepareLabSalesOpenedNotices(db, { ...notice, labSwitch: "OPEN", cityId: cityId("fixture-city") }, deps, clock)).toEqual([]);
+    expect(await dispatchLabSalesOpenedNotices(db, prepared, saleConfig, transport(async () => { throw new Error("must not resend"); }), () => clock))
+      .toEqual({ sent: 0, skipped: 1, rejected: 0, unknown: 0 });
+    expect(prepareLabSalesOpenedNotices(db, { ...notice, cityId: cityId("fixture-city") }, noticeDeps, clock)).toEqual([]);
     // The consent covers one notice: a different notice key does not reach the same signups again.
-    expect(prepareLabSalesOpenedNotices(db, { ...notice, noticeKey: "lab-sales-opened:2027-01", labSwitch: "OPEN", cityId: cityId("other-city") }, deps, clock).map((m) => m.email))
+    expect(prepareLabSalesOpenedNotices(db, { ...notice, noticeKey: "lab-sales-opened:2027-01", cityId: cityId("other-city") }, noticeDeps, clock).map((m) => m.email))
       .toEqual(["other@example.test"]);
   });
 
   it("never retries an unknown provider outcome and skips a signup withdrawn after preparation", async () => {
+    enableNoticeOffers();
     await signup("first@example.test"); await signup("second@example.test");
-    const prepared = prepareLabSalesOpenedNotices(db, { ...notice, labSwitch: "OPEN", cityId: cityId("fixture-city") }, deps, clock);
+    const prepared = prepareLabSalesOpenedNotices(db, { ...notice, cityId: cityId("fixture-city") }, noticeDeps, clock);
     const second = prepared.find((message) => message.email === "second@example.test")!;
     db.prepare("DELETE FROM lab_interest_signups WHERE id=?").run(second.signupId);
-    expect(await dispatchLabSalesOpenedNotices(db, prepared, async () => { throw new Error("timeout"); }, () => clock))
-      .toEqual({ sent: 0, skipped: 1, unknown: 1 });
+    expect(await dispatchLabSalesOpenedNotices(db, prepared, saleConfig, transport(async () => { throw new Error("timeout"); }), () => clock))
+      .toEqual({ sent: 0, skipped: 1, rejected: 0, unknown: 1 });
     expect(db.prepare("SELECT state FROM lab_interest_notices").all()).toEqual([{ state: "ATTEMPTED" }]);
-    expect(prepareLabSalesOpenedNotices(db, { ...notice, labSwitch: "OPEN", cityId: cityId("fixture-city") }, deps, clock)).toEqual([]);
+    expect(prepareLabSalesOpenedNotices(db, { ...notice, cityId: cityId("fixture-city") }, noticeDeps, clock)).toEqual([]);
   });
 
   it("derives a withdrawal capability bound to one signup and the server secret", () => {
@@ -312,13 +402,14 @@ describe("FLEX-8 retention (E proposal, owner decision D-I2 pending)", () => {
 
   it("deletes PENDING after its link expires, delivered after 30 days and any CONFIRMED after 12 months", async () => {
     await post(server(), "/v1/lab/interest", { email: "pending@example.test", cityId: cityId("fixture-city"), consent });
+    enableNoticeOffers();
     await post(server(), "/v1/lab/interest", { email: "delivered@example.test", cityId: cityId("fixture-city"), consent }); confirmLast();
     await post(server(), "/v1/lab/interest", { email: "undelivered@example.test", cityId: cityId("fixture-city"), consent }); confirmLast();
-    const deps = { origin: LAB, secret: SECRET, commerceOrigin: "http://localhost:4000" };
-    const prepared = prepareLabSalesOpenedNotices(db, { noticeKey: "opened", labSwitch: "OPEN", cityId: cityId("fixture-city"), subject: "Продажи открыты", message: "Билеты на сайте." }, deps, clock);
-    await dispatchLabSalesOpenedNotices(db, prepared, async (message) => {
-      if (message.email === "undelivered@example.test") throw new Error("timeout");
-    }, () => clock);
+      const prepared = prepareLabSalesOpenedNotices(db, { noticeKey: "opened", cityId: cityId("fixture-city"), subject: "Продажи открыты", message: "Билеты на сайте." }, noticeDeps, clock);
+    await dispatchLabSalesOpenedNotices(db, prepared, saleConfig, transport(async (_url, init) => {
+      if (JSON.parse(String(init?.body)).to === "undelivered@example.test") throw new Error("timeout");
+      return queued();
+    }), () => clock);
     expect(purgeLabInterest(db, policy, new Date("2026-11-23T10:00:00Z"))).toEqual({ pending: 0, delivered: 0, expired: 0 });
     expect(purgeLabInterest(db, policy, new Date("2026-11-24T10:00:01Z"))).toEqual({ pending: 1, delivered: 0, expired: 0 });
     expect(purgeLabInterest(db, policy, new Date("2026-12-22T10:00:01Z"))).toEqual({ pending: 0, delivered: 1, expired: 0 });

@@ -169,9 +169,7 @@ const app = createCommerceV2App({
   labInterestSignupsEnabled: process.env.LAB_INTEREST_SIGNUPS_ENABLED === "true",
   labInterestManifest: loadLabInterestManifest(process.env),
   sendLabInterestEmail: labInterestDelivery.configured ? async message => {
-    // The confirmation is service mail for the subject's own request; the notice is advertising (E: 38-FZ art. 18).
-    const purpose = message.kind === "CONFIRM" ? "AUTH_MAIL" : "MARKETING";
-    if (erasureFence) await erasureFence.send(message.email, () => labInterestDelivery.send(message), purpose);
+    if (erasureFence) await erasureFence.send(message.email, () => labInterestDelivery.send(message), "AUTH_MAIL");
     else await labInterestDelivery.send(message);
   } : undefined,
   sendLabTicketEmail: labTicketDelivery.configured ? async message => {

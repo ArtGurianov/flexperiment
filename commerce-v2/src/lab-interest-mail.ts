@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { LabInterestEmail } from "./lab-interest";
+import { readNotiSendOutcome } from "./notisend-response";
 
 /**
  * FLEX-8 mail adapter for LAB interest: the double opt-in confirmation (service mail, no advertising)
@@ -14,6 +15,8 @@ export class LabInterestMailError extends Error {
     super(code); this.name = "LabInterestMailError";
   }
 }
+
+export type LabNoticeHandoff = (start: () => Promise<Response>) => Promise<Response> | undefined;
 
 const SEND_URL = "https://api.notisend.ru/v1/email/messages";
 const safe = (value: string | undefined) => Boolean(value && value.length <= 512 && !/[\u0000-\u001f\u007f-\u009f]/u.test(value));
@@ -48,22 +51,30 @@ export function createLabInterestMailDelivery(environment: Environment = process
   const fromName = environment.NOTISEND_FROM_NAME?.trim(), replyTo = environment.NOTISEND_REPLY_TO?.trim();
   const relay = (environment.AUTH_EMAIL_PROVIDER ?? (environment.AUTH_EMAIL_DELIVERY_ENDPOINT ? "http-relay" : "notisend")) !== "notisend";
   if (relay || !safe(apiKey) || !address(fromEmail) || !safe(fromName) || !address(replyTo)) return { configured: false as const };
-  return { configured: true as const, send: async (message: LabInterestEmail) => {
+  const send = async (message: LabInterestEmail, handoff?: LabNoticeHandoff) => {
     if (!address(message.email)) throw new LabInterestMailError("LAB_INTEREST_MAIL_INPUT_INVALID");
+    if (message.kind === "NOTICE" && !handoff) throw new LabInterestMailError("LAB_INTEREST_MAIL_INPUT_INVALID");
     const content = labInterestMailContent(message);
     const correlation = createHash("sha256").update(JSON.stringify(["LAB_INTEREST", message.kind, message.email,
       message.kind === "CONFIRM" ? message.confirmUrl : message.noticeKey])).digest("hex");
-    let response: Response;
+    let response: Response | undefined;
     try {
-      response = await request(SEND_URL, {
+      const start = () => request(SEND_URL, {
         method: "POST", redirect: "error", signal: AbortSignal.timeout(10_000),
         headers: { "Content-Type": "application/json", Accept: "application/json", Authorization: `Bearer ${apiKey}` },
         body: JSON.stringify({ to: message.email, from_email: fromEmail, from_name: fromName, subject: content.subject,
           text: content.text, html: content.html, smtp_headers: { "Reply-To": replyTo, "X-Flexperiment-Lab-Interest-Key": correlation, ...content.headers } }),
       });
+      response = await (handoff ? handoff(start) : start());
     } catch { throw new LabInterestMailError("LAB_INTEREST_MAIL_AMBIGUOUS"); }
-    await response.body?.cancel().catch(() => undefined);
-    if (response.status === 408 || response.status >= 500) throw new LabInterestMailError("LAB_INTEREST_MAIL_AMBIGUOUS");
-    if (!response.ok) throw new LabInterestMailError("LAB_INTEREST_MAIL_REJECTED");
-  } };
+    if (!response) return "SKIPPED" as const;
+    const outcome = await readNotiSendOutcome(response);
+    if (outcome !== "ACCEPTED") throw new LabInterestMailError(outcome === "REJECTED" ? "LAB_INTEREST_MAIL_REJECTED" : "LAB_INTEREST_MAIL_AMBIGUOUS");
+    return "ACCEPTED" as const;
+  };
+  return {
+    configured: true as const,
+    send: async (message: Extract<LabInterestEmail, { kind: "CONFIRM" }>) => { await send(message); },
+    sendNotice: (message: Extract<LabInterestEmail, { kind: "NOTICE" }>, handoff: LabNoticeHandoff) => send(message, handoff),
+  };
 }

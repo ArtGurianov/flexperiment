@@ -94,7 +94,7 @@ type Dependencies = {
   /** FLEX-8 LAB interest (confirmation and sales-opened notice). Absent: signups are refused, never stored. */
   readonly labInterestSignupsEnabled?: boolean;
   readonly labInterestManifest?: import("./lab-interest-legal").LabInterestManifest;
-  readonly sendLabInterestEmail?: (message: LabInterestEmail) => Promise<void>;
+  readonly sendLabInterestEmail?: (message: Extract<LabInterestEmail, { kind: "CONFIRM" }>) => Promise<void>;
   readonly controlRoomAuth?: ControlRoomAuthConfig;
   /** In-process transport adapter for tests; production uses Node's socket metadata. */
   readonly controlRoomPeerAddress?: (context: Context) => string | undefined;
