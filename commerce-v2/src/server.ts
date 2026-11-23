@@ -161,6 +161,7 @@ const app = createCommerceV2App({
   origins,
   sendCampaignEmail,
   labGuestTrustedProxyIps: labGuestTrustedProxyIps(process.env.LAB_GUEST_TRUSTED_PROXY_IPS),
+  labInterestSignupsEnabled: process.env.LAB_INTEREST_SIGNUPS_ENABLED === "true",
   sendLabInterestEmail: labInterestDelivery.configured ? async message => {
     // The confirmation is service mail for the subject's own request; the notice is advertising (E: 38-FZ art. 18).
     const purpose = message.kind === "CONFIRM" ? "AUTH_MAIL" : "MARKETING";

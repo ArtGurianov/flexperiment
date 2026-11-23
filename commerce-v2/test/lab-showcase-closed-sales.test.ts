@@ -39,7 +39,7 @@ beforeEach(() => {
 afterEach(() => db.close());
 
 const appWith = (config = testCheckoutConfig) => createCommerceV2App({ db, config, sourceCommit: "a".repeat(40), serviceToken: "synthetic",
-  paymentRail: rail, now: () => new Date(now), campaignUnsubscribeSecret: "synthetic-secret", sendLabInterestEmail: async () => {},
+  paymentRail: rail, now: () => new Date(now), campaignUnsubscribeSecret: "synthetic-secret", labInterestSignupsEnabled: true, sendLabInterestEmail: async () => {},
   labGuestTrustedProxyIps: ["10.0.5.4"], labGuestPeerAddress: () => "10.0.5.4", sendLabTicketEmail: async () => {} });
 const call = (app: ReturnType<typeof appWith>, path: string, body?: unknown, token?: string, key = "k") => app.request(path, {
   method: body === undefined ? "GET" : "POST",

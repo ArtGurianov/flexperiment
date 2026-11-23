@@ -44,10 +44,11 @@ afterEach(() => db.close());
 
 const config = (env: Record<string, string> = { PAYMENT_MODE: "disabled" }) =>
   withTestStorefrontSwitch(loadCommerceRuntimeConfig({ DEPLOY_ENV: "test", ...env })) as CommerceRuntimeConfig;
-const server = (options: { mail?: false | ((message: LabInterestEmail) => Promise<void>); runtime?: CommerceRuntimeConfig } = {}) =>
+const server = (options: { enabled?: boolean; mail?: false | ((message: LabInterestEmail) => Promise<void>); runtime?: CommerceRuntimeConfig } = {}) =>
   createCommerceV2App({
     db, config: options.runtime ?? config(), sourceCommit: "a".repeat(40), serviceToken: "isolated-fixture", now: () => clock,
     campaignUnsubscribeSecret: SECRET, labGuestTrustedProxyIps: ["10.0.5.4"], labGuestPeerAddress: () => "10.0.5.4",
+    labInterestSignupsEnabled: options.enabled ?? true,
     sendLabInterestEmail: options.mail === false ? undefined : options.mail ?? (async (message) => { sent.push(message); }),
   });
 const post = (app: ReturnType<typeof server>, path: string, body: unknown, origin: string | null = LAB) => app.request(path, {
@@ -135,6 +136,18 @@ describe("FLEX-8 interest signup (double opt-in)", () => {
     expect((await post(app, "/v1/lab/interest", { email: "a@example.test", cityId: "missing", consent })).status).toBe(422);
     expect((await post(server({ mail: false }), "/v1/lab/interest", { email: "a@example.test", consent })).status).toBe(503);
     expect(count("lab_interest_signups")).toBe(0); expect(sent).toHaveLength(0);
+  });
+
+  it("keeps the showcase and withdrawals available without accepting registrations before approval", async () => {
+    await post(server(), "/v1/lab/interest", { email: "existing@example.test", consent });
+    const confirmation = sent[0] as Extract<LabInterestEmail, { kind: "CONFIRM" }>;
+    const app = server({ enabled: false });
+    expect((await app.request("/v1/lab/showcase")).status).toBe(200);
+    expect((await post(app, "/v1/lab/interest", { email: "new@example.test", consent })).status).toBe(503);
+    expect((await post(app, "/v1/lab/interest/confirm", { token: tokenFrom(confirmation.confirmUrl, "confirm") })).status).toBe(503);
+    expect((await post(app, "/v1/lab/interest/withdraw", { token: tokenFrom(confirmation.withdrawUrl, "withdraw") })).status).toBe(200);
+    expect(count("lab_interest_signups")).toBe(0);
+    expect(sent).toHaveLength(1);
   });
 
   it("does not keep an address whose confirmation could not be sent", async () => {

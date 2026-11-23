@@ -64,7 +64,7 @@ describe.runIf(nativeConfig !== null)("FLEX-8: COURSES=OPEN, LAB=CLOSED, PAYMENT
     app = createCommerceV2App({ db, config, sourceCommit: "a".repeat(40), serviceToken: "synthetic", now: () => new Date(now),
       paymentRail: new NativeQuoteRail({ merchantId: "flexperiment-native", fiscalizationMode: "MERCHANT" }) as never,
       ...({ nativePayments: { provider: bank, keyring: { currentKeyId: "k", keys: { k: Buffer.alloc(32, 7) } }, fiscalizationMode: "MERCHANT", mayInitiate: () => true } } as object),
-      campaignUnsubscribeSecret: "synthetic-secret", sendLabInterestEmail: async () => {},
+      campaignUnsubscribeSecret: "synthetic-secret", labInterestSignupsEnabled: true, sendLabInterestEmail: async () => {},
       labGuestTrustedProxyIps: ["10.0.5.4"], labGuestPeerAddress: () => "10.0.5.4" });
   });
   afterEach(() => db.close());

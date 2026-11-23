@@ -23,11 +23,12 @@ export function registerLabInterestRoutes(parent: Hono, deps: {
   requestSource: (context: Context) => string | undefined;
   /** Derives withdrawal links; without it (or without mail) signups are refused, never stored. */
   secret?: string;
+  signupsEnabled: boolean;
   sendLabInterestEmail?: (message: LabInterestEmail) => Promise<void>;
   erasureFence?: ErasureRuntimeFence;
 }) {
   const app = new Hono();
-  const available = () => Boolean(deps.secret && deps.sendLabInterestEmail);
+  const available = () => deps.signupsEnabled && Boolean(deps.secret && deps.sendLabInterestEmail);
   const invalid = (error: unknown) => error instanceof LabInterestError || error instanceof LabTicketError;
   app.onError((error, c) => invalid(error)
     ? c.json({ code: error.message }, 422, noStore)
@@ -43,7 +44,7 @@ export function registerLabInterestRoutes(parent: Hono, deps: {
 
   app.post("/v1/lab/interest", async (c) => {
     if (c.req.header("origin") !== deps.origin) return c.json({ code: "ORIGIN_FORBIDDEN" }, 403, noStore);
-    if (!deps.secret || !deps.sendLabInterestEmail) return c.json({ code: "LAB_INTEREST_EMAIL_UNAVAILABLE" }, 503, noStore);
+    if (!deps.signupsEnabled || !deps.secret || !deps.sendLabInterestEmail) return c.json({ code: "LAB_INTEREST_EMAIL_UNAVAILABLE" }, 503, noStore);
     let body: LabInterestRequest;
     try { body = await c.req.json<LabInterestRequest>(); } catch { return c.json({ code: "LAB_INPUT_INVALID" }, 422, noStore); }
     const email = labEmail(body?.email), time = deps.now().toISOString();
@@ -70,6 +71,7 @@ export function registerLabInterestRoutes(parent: Hono, deps: {
   });
 
   app.post("/v1/lab/interest/confirm", async (c) => {
+    if (!deps.signupsEnabled) return c.json({ code: "LAB_INTEREST_UNAVAILABLE" }, 503, noStore);
     if (c.req.header("origin") !== deps.origin) return c.json({ code: "ORIGIN_FORBIDDEN" }, 403, noStore);
     let body: { token?: unknown };
     try { body = await c.req.json(); } catch { return c.json({ code: "LAB_INPUT_INVALID" }, 422, noStore); }

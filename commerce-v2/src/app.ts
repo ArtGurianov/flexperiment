@@ -86,6 +86,7 @@ type Dependencies = {
   readonly sendLabTicketEmail?: (message: LabTicketEmail) => Promise<void>;
   readonly sendCampaignEmail?: (message: CampaignEmail) => Promise<void>;
   /** FLEX-8 LAB interest (confirmation and sales-opened notice). Absent: signups are refused, never stored. */
+  readonly labInterestSignupsEnabled?: boolean;
   readonly sendLabInterestEmail?: (message: LabInterestEmail) => Promise<void>;
   readonly controlRoomAuth?: ControlRoomAuthConfig;
   /** In-process transport adapter for tests; production uses Node's socket metadata. */
@@ -792,7 +793,8 @@ export function createCommerceV2App(deps: Dependencies) {
   });
   // FLEX-8 (G): public LAB showcase and interest signups; no order, hold, ticket or payment state.
   registerLabInterestRoutes(app as unknown as Hono, { db: deps.db, config: deps.config, origin: origins.lab, now,
-    secret: deps.campaignUnsubscribeSecret, sendLabInterestEmail: deps.sendLabInterestEmail, erasureFence: deps.erasureFence,
+    secret: deps.campaignUnsubscribeSecret, signupsEnabled: deps.labInterestSignupsEnabled === true,
+    sendLabInterestEmail: deps.sendLabInterestEmail, erasureFence: deps.erasureFence,
     requestSource: context => {
       let peer: string | undefined;
       try { peer = deps.labGuestPeerAddress ? deps.labGuestPeerAddress(context) : getConnInfo(context).remote.address; }
