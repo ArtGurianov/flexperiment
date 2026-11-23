@@ -103,7 +103,8 @@ jobs:
             echo '```'
             echo "$lines"
             echo '```'
-            echo "_Observed commit only; not an image digest, not a deployment receipt._"
+            echo "_The V2 rows report observed source commits. Image digests and deployment receipts are verified separately._"
+            echo "_The subsequent V1 release-state step can fail independently of these V2 observations._"
           } >> "$GITHUB_STEP_SUMMARY"
           echo "$lines"
 
