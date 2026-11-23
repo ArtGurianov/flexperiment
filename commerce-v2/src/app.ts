@@ -51,7 +51,7 @@ import { assertLabPurchaseAuthority, beginLabOccurrenceCancellation, completeLab
   LabLifecycleError, reconcileLabOccurrenceAttempts, type LabRouteContour } from "./lab-lifecycle";
 import { attestLabAttendance, labServiceRenderedBacklog, recordCheckedInServiceRendered, serviceRenderedFact,
   ServiceRenderedError } from "./service-rendered";
-import { getCustomerStorefrontCourse, getCustomerStorefrontLesson, getStorefrontCourse, getStorefrontLesson, listCustomerStorefrontLibrary, listStorefrontCourses } from "./storefront-content";
+import { getCustomerStorefrontCourse, getCustomerStorefrontLesson, getStorefrontCourse, getStorefrontLesson, listCustomerStorefrontLibrary, listMyStorefrontLibrary, listStorefrontCourses } from "./storefront-content";
 import { authenticatedConsentStatus, hasRequiredAccountConsents, recordAuthenticatedConsents, recordAuthenticatedMarketingChoice, type AuthenticatedConsentInput, type AuthenticatedMarketingChoiceInput } from "./authenticated-consents";
 import { ErasureLedgerError } from "./erasure-ledger";
 import { assertClosedPaidTestAccountConsents } from "./closed-paid-test";
@@ -1397,6 +1397,16 @@ export function createCommerceV2App(deps: Dependencies) {
       const lesson = getStorefrontLesson(deps.db, context.req.param("slug"), context.req.param("lessonSlug"));
       return lesson ? context.json(lesson, 200, noStore) : context.json({ code: "LESSON_NOT_FOUND" }, 404, noStore);
     } catch { return context.json({ code: "COURSE_CONTENT_UNAVAILABLE" }, 503, noStore); }
+  });
+
+  app.get("/v1/my/courses", async (context) => {
+    const session = await deps.resolveSession?.(context.req.raw.headers);
+    if (!session) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
+    if (session.kind !== "MY" || session.surface !== "MY") return context.json({ code: "SESSION_AUDIENCE_FORBIDDEN" }, 403, noStore);
+    if (!hasRequiredAccountConsents(deps.db, session.customerId)) return context.json({ code: "CONSENT_REQUIRED" }, 403, noStore);
+    try { return context.json(listMyStorefrontLibrary(deps.db, session.customerId, now(),
+      Number(process.env.CATALOG_LEASE_MS ?? 24 * 60 * 60 * 1000)), 200, { "Cache-Control": "private, no-store" }); }
+    catch { return context.json({ code: "COURSE_CONTENT_UNAVAILABLE" }, 503, noStore); }
   });
 
   app.get("/v1/me/course-library", async (context) => {

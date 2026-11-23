@@ -157,3 +157,29 @@ export function listCustomerStorefrontLibrary(db: Database.Database, customerId:
   });
   return read.deferred();
 }
+
+/** MY cabinet projection of the same course access policy the LMS uses. */
+export function listMyStorefrontLibrary(db: Database.Database, customerId: string, now: Date, leaseMs: number) {
+  return db.transaction(() => {
+    const { courses } = listCustomerStorefrontLibrary(db, customerId, now, leaseMs);
+    const grants = db.prepare(`SELECT entitlement.scope,entitlement.course_ref,
+        COALESCE(json_extract(orders.checkout_snapshot_json,'$.schema'),'')='flexperiment.manual-entitlement/1' AS manual
+      FROM course_entitlements entitlement JOIN order_lines line ON line.id=entitlement.source_order_line_id
+      JOIN orders ON orders.id=line.order_id WHERE entitlement.customer_id=? AND entitlement.revoked_at IS NULL`)
+      .all(customerId) as Array<{ scope: "COURSE" | "ALL_COURSES"; course_ref: string | null; manual: number }>;
+    const viewHistory = db.prepare(`SELECT lesson_ref FROM lesson_resume_positions WHERE customer_id=? AND seconds>0
+       ORDER BY julianday(updated_at) DESC,lesson_ref`).pluck().all(customerId) as string[];
+    const rank = new Map(viewHistory.map((ref, index) => [ref, index]));
+
+    return { courses: courses.filter(course => course.access !== "PREVIEW" && course.lessons.length > 0).map(course => {
+      const direct = grants.some(grant => !grant.manual && grant.scope === "COURSE" && grant.course_ref === course.courseRef);
+      const bundle = grants.some(grant => !grant.manual && grant.scope === "ALL_COURSES");
+      const access = direct ? "PURCHASE" : bundle ? "BUNDLE" : course.enrollment ? "FREE_ENROLMENT" : "GRANTED";
+      const watched = course.lessons.filter(lesson => rank.has(lesson.lessonRef))
+        .sort((a,b) => rank.get(a.lessonRef)! - rank.get(b.lessonRef)!)[0];
+      return { slug: course.url.split("/").at(-1)!, title: course.title, access,
+        started: Boolean(watched || course.enrollment?.startedAt),
+        resumeLesson: watched ? { slug: watched.url.split("/").at(-1)!, title: watched.title } : null };
+    }) };
+  }).deferred();
+}

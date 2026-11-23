@@ -18,7 +18,7 @@ export type CabinetProfile = {
   readonly createdAt: string;
 };
 
-export type CourseAccess = "FREE_ENROLMENT" | "PURCHASE" | "BUNDLE";
+export type CourseAccess = "FREE_ENROLMENT" | "PURCHASE" | "BUNDLE" | "GRANTED";
 export type CabinetCourse = {
   readonly slug: string;
   readonly title: string;
@@ -91,7 +91,7 @@ export function parseCourses(value: unknown): CabinetCourse[] | null {
   return list(value, "courses", (entry) => {
     const slug = typeof entry.slug === "string" && SLUG.test(entry.slug) ? entry.slug : null;
     const title = text(entry.title);
-    const access = oneOf(["FREE_ENROLMENT", "PURCHASE", "BUNDLE"] as const, entry.access);
+    const access = oneOf(["FREE_ENROLMENT", "PURCHASE", "BUNDLE", "GRANTED"] as const, entry.access);
     if (!slug || !title || !access) return null;
     const lesson = record(entry.resumeLesson);
     const lessonSlug = lesson && typeof lesson.slug === "string" && LESSON_SLUG.test(lesson.slug) ? lesson.slug : null;
@@ -141,6 +141,7 @@ export const ACCESS_LABEL: Record<CourseAccess, string> = {
   FREE_ENROLMENT: "Бесплатная запись",
   PURCHASE: "Куплен",
   BUNDLE: "В пакете",
+  GRANTED: "Предоставлен",
 };
 
 /** Payment / refund state of an order — deliberately separate from access. */
