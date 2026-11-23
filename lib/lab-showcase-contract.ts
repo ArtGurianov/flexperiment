@@ -18,7 +18,8 @@ export const labShowcaseSchema = z.object({
   }),
   interest: z.object({
     available: z.boolean(),
-    consent: z.object({ version: z.string(), text: z.string(), textSha256: z.string().regex(/^[0-9a-f]{64}$/) }),
+    consent: z.object({ version: z.string(), text: z.string(), textSha256: z.string().regex(/^[0-9a-f]{64}$/) }).nullable(),
+    privacy: z.string().nullable(),
   }),
   cities: z.array(z.object({ cityId: z.string(), slug: z.string(), title: z.string() })),
   occurrences: z.array(z.object({

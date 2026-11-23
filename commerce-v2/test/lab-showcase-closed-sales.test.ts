@@ -1,3 +1,4 @@
+import { labInterestManifest } from "./fixtures/lab-interest";
 import Database from "better-sqlite3";
 import { randomBytes } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -6,7 +7,6 @@ import { MockPaymentRail } from "../src/checkout";
 import { migrateV2 } from "../src/db";
 import { capabilityHash, labLegalReview } from "../src/lab-tickets";
 import { loadCommerceRuntimeConfig } from "../src/payment-mode";
-import { LAB_INTEREST_CONSENT, labInterestConsentSha256 } from "../src/lab-interest";
 import { stageBLegalManifestJson } from "./fixtures/legal";
 import { openTestStorefront, qualifyTestFiscalPolicies, setTestStorefronts, testCheckoutConfig, withTestStorefrontSwitch } from "./fixtures/sales";
 
@@ -18,7 +18,7 @@ import { openTestStorefront, qualifyTestFiscalPolicies, setTestStorefronts, test
 const origin = "http://localhost:3000";
 const now = "2026-10-19T10:00:00.000Z";
 let db: Database.Database, rail: MockPaymentRail;
-const consent = { version: LAB_INTEREST_CONSENT.version, textSha256: labInterestConsentSha256 };
+const consent = labInterestManifest.consent;
 const capability = () => randomBytes(32).toString("base64url");
 const count = (table: string) => (db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
 /** Money-side state: the five owner "zero" facts plus customers and guest access. */
@@ -39,7 +39,7 @@ beforeEach(() => {
 afterEach(() => db.close());
 
 const appWith = (config = testCheckoutConfig) => createCommerceV2App({ db, config, sourceCommit: "a".repeat(40), serviceToken: "synthetic",
-  paymentRail: rail, now: () => new Date(now), campaignUnsubscribeSecret: "synthetic-secret", labInterestSignupsEnabled: true, sendLabInterestEmail: async () => {},
+  paymentRail: rail, now: () => new Date(now), campaignUnsubscribeSecret: "synthetic-secret", labInterestSignupsEnabled: true, labInterestManifest, sendLabInterestEmail: async () => {},
   labGuestTrustedProxyIps: ["10.0.5.4"], labGuestPeerAddress: () => "10.0.5.4", sendLabTicketEmail: async () => {} });
 const call = (app: ReturnType<typeof appWith>, path: string, body?: unknown, token?: string, key = "k") => app.request(path, {
   method: body === undefined ? "GET" : "POST",
@@ -87,7 +87,7 @@ describe("FLEX-8: LAB closed while COURSES stays open", () => {
     const showcase = await (await call(app, "/v1/lab/showcase")).json();
     expect(showcase.sales.state).toBe("CLOSED");
     expect(showcase.occurrences).toMatchObject([{ occurrenceRef: "lab:one", startsAt: "2026-11-01T09:00:00Z", amountKopecks: 10000, sales: "CLOSED" }]);
-    expect((await call(app, "/v1/lab/interest", { email: "fan@example.test", consent })).status).toBe(202);
+    expect((await call(app, "/v1/lab/interest", { email: "fan@example.test", cityId: "city", consent })).status).toBe(202);
     expect(moneyState()).toEqual(before); expect(holds()).toBe(0);
   });
 
@@ -113,7 +113,7 @@ describe("FLEX-8: non-financial acceptance with PAYMENT_MODE=disabled", () => {
     const showcase = await (await call(app, "/v1/lab/showcase")).json();
     expect(showcase.sales).toEqual({ state: "CLOSED", reason: "PAYMENTS_DISABLED" });
     expect(showcase.occurrences[0]).toMatchObject({ amountKopecks: 10000, sales: "CLOSED" });
-    expect((await call(app, "/v1/lab/interest", { email: "fan@example.test", consent })).status).toBe(202);
+    expect((await call(app, "/v1/lab/interest", { email: "fan@example.test", cityId: "city", consent })).status).toBe(202);
     for (const [path, body] of [["/v1/lab/guest/start", { email: "new@example.test", accessToken: capability() }], ["/v1/checkout/preview", { offerRef: "lab:one" }], ["/v1/checkout", { quoteId: "missing" }]] as const) {
       expect((await call(app, path, body, capability())).status).toBeGreaterThanOrEqual(400);
     }
