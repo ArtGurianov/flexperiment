@@ -13,6 +13,9 @@ FROM dependencies AS build
 COPY . .
 ARG SOURCE_COMMIT
 ARG V2_FRONTEND_SERVICE
+ARG MY_IDENTITY_MODE=off
+ARG MY_ORIGIN
+ENV MY_IDENTITY_MODE=${MY_IDENTITY_MODE} MY_ORIGIN=${MY_ORIGIN}
 ENV SOURCE_COMMIT=${SOURCE_COMMIT}
 ENV LAB_ORIGIN=https://canary-lab.flexperiment.ru
 # Next.js freezes NEXT_PUBLIC_* in the browser bundle at build time. Empty is

@@ -1,0 +1,13 @@
+csp: default-src 'self'; script-src 'self' 'unsafe-inline' https://smartcaptcha.cloud.yandex.ru; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://smartcaptcha.cloud.yandex.ru; connect-src 'self' https://smartcaptcha.cloud.yandex.ru; frame-src https://smartcaptcha.cloud.yandex.ru; form-action 'self' https://flexperiment.ru; frame-ancestors 'none'; base-uri 'none'; object-src 'none'
+referrer-policy: no-referrer
+submit disabled before consent: true
+submit disabled after consent: false
+alert: Код неверный или устарел. Запросите новый код.
+url after sign-in: http://127.0.0.1:3997/orders
+/v1/my/legal host=127.0.0.1:3997
+/v1/my/otp/send host=127.0.0.1:3997 {"email":"<redacted>","captchaToken":"","personalDataConsent":true,"accountTermsAccepted":true,"marketingConsent":false,"personalDataVersion":"personal_data-v1","personalDataSha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","accountTermsVersion":"account_terms-v1","accountTermsSha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","marketingDocumentVersion":"marketing_consent-v1","marketingDocumentSha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+/v1/my/otp/verify host=127.0.0.1:3997 {"email":"<redacted>","otp":"<redacted>","next":"/orders"}
+/v1/my/otp/verify host=127.0.0.1:3997 {"email":"<redacted>","otp":"<redacted>","next":"/orders"}
+/v1/my/consents host=127.0.0.1:3997
+/v1/my/consents host=127.0.0.1:3997 {"releaseVersion":"v1","manifestSha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","actionKey":"<redacted>","expectedActionSequence":0,"personalDataConsent":true,"accountTermsAccepted":true,"marketingConsent":false}
+errors: ["Failed to load resource: the server responded with a status of 400 (Bad Request)"]

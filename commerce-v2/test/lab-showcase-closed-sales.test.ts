@@ -1,3 +1,4 @@
+import { confirmLabBuyer } from "./fixtures/lab-purchase";
 import { labInterestManifest } from "./fixtures/lab-interest";
 import Database from "better-sqlite3";
 import { randomBytes } from "node:crypto";
@@ -5,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createCommerceV2App } from "../src/app";
 import { MockPaymentRail } from "../src/checkout";
 import { migrateV2 } from "../src/db";
-import { capabilityHash, labLegalReview } from "../src/lab-tickets";
+import { capabilityHash, issueLabTicket, labLegalReview } from "../src/lab-tickets";
 import { loadCommerceRuntimeConfig } from "../src/payment-mode";
 import { stageBLegalManifestJson } from "./fixtures/legal";
 import { openTestStorefront, qualifyTestFiscalPolicies, setTestStorefronts, testCheckoutConfig, withTestStorefrontSwitch } from "./fixtures/sales";
@@ -38,8 +39,8 @@ beforeEach(() => {
 });
 afterEach(() => db.close());
 
-const appWith = (config = testCheckoutConfig) => createCommerceV2App({ db, config, sourceCommit: "a".repeat(40), serviceToken: "synthetic",
-  paymentRail: rail, now: () => new Date(now), campaignUnsubscribeSecret: "synthetic-secret", labInterestSignupsEnabled: true, labInterestManifest, sendLabInterestEmail: async () => {},
+const appWith = (config = testCheckoutConfig, signedIn = false) => createCommerceV2App({ db, config, sourceCommit: "a".repeat(40), serviceToken: "synthetic",
+  paymentRail: rail, authenticateCustomer: signedIn ? async () => "history-customer" : undefined, now: () => new Date(now), campaignUnsubscribeSecret: "synthetic-secret", labInterestSignupsEnabled: true, labInterestManifest, sendLabInterestEmail: async () => {},
   labGuestTrustedProxyIps: ["10.0.5.4"], labGuestPeerAddress: () => "10.0.5.4", sendLabTicketEmail: async () => {} });
 const call = (app: ReturnType<typeof appWith>, path: string, body?: unknown, token?: string, key = "k") => app.request(path, {
   method: body === undefined ? "GET" : "POST",
@@ -72,14 +73,16 @@ describe("FLEX-8: LAB closed while COURSES stays open", () => {
     ["LAB switch CLOSED, offer PUBLIC", () => setTestStorefronts(db, { LAB: "CLOSED", COURSES: "OPEN" }), "SALES_STOPPED"],
     ["offer CLOSED, switch OPEN", () => db.prepare("UPDATE offers SET sale_mode='CLOSED'").run(), "OFFER_CLOSED"],
   ])("refuses a new LAB quote with %s, without any money-side row or rail call", async (_label, close, code) => {
-    const app = appWith(); const token = await historicalGuest();
+    await historicalGuest();
+    confirmLabBuyer(db, "history-customer");
+    const app = appWith(testCheckoutConfig, true);
     close();
     const create = vi.spyOn(rail, "create"), resolve = vi.spyOn(rail, "resolve");
     const before = moneyState();
-    const preview = await call(app, "/v1/checkout/preview", { offerRef: "lab:one" }, token, "preview");
+    const preview = await call(app, "/v1/checkout/preview", { offerRef: "lab:one" }, undefined, "preview");
     expect(preview.status).toBeGreaterThanOrEqual(400);
     expect(JSON.stringify(await preview.json())).toContain(code);
-    const pay = await call(app, "/v1/checkout", { quoteId: "missing", labAcceptance: acceptance() }, token, "pay");
+    const pay = await call(app, "/v1/checkout", { quoteId: "missing", labAcceptance: acceptance() }, undefined, "pay");
     expect(pay.status).toBeGreaterThanOrEqual(400);
     expect(moneyState()).toEqual(before); expect(holds()).toBe(0);
     expect(create).not.toHaveBeenCalled(); expect(resolve).not.toHaveBeenCalled();
@@ -93,8 +96,11 @@ describe("FLEX-8: LAB closed while COURSES stays open", () => {
 
   it("keeps a historical paid ticket and its refund request working after the closure", async () => {
     const app = appWith(); const token = await historicalGuest();
-    const quote = await (await call(app, "/v1/checkout/preview", { offerRef: "lab:one" }, token, "preview")).json();
-    expect((await call(app, "/v1/checkout", { quoteId: quote.quoteId, labAcceptance: acceptance() }, token, "pay")).status).toBeLessThan(300);
+    db.prepare(`INSERT INTO orders(id,public_id,customer_id,state,total_kopecks,checkout_snapshot_json,snapshot_hash,legal_release_id,created_at,updated_at)
+      VALUES ('order','history-order','history-customer','FULFILLED',10000,'{}',?,'legal',?,?)`).run("a".repeat(64), now, now);
+    db.prepare(`INSERT INTO order_lines(id,order_id,product_id,offer_ref_snapshot,title_snapshot,unit_amount_kopecks,legal_terms_ref,fiscal_item_json,created_at)
+      VALUES ('line','order','product','lab:one','LAB',10000,'lab-b','{}',?)`).run(now);
+    issueLabTicket(db, "line", now);
     expect(count("lab_tickets")).toBe(1);
     setTestStorefronts(db, { LAB: "CLOSED", COURSES: "OPEN" });
     db.prepare("UPDATE offers SET sale_mode='CLOSED'").run();

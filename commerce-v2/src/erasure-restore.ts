@@ -4,6 +4,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { classifyV2Database } from "./db";
 import { assertErasureSubjectKey, erasurePseudonym, ErasureLedgerError, VerifiedErasureLedger, type ErasureKeys } from "./erasure-ledger";
 import { DrainedErasureRuntime } from "./erasure-fence";
+import { hasTable, verificationSubjectEmail } from "./my-session-storage";
 
 // Exact reviewed 0001–0025, 0001–0026 and 0001–0027 schemas. Migration 0026 adds only
 // Control Room authored course content/history, with no customer FK or subject
@@ -42,11 +43,13 @@ const REVIEWED_SCHEMA_SHA256 = new Set([
   // 0035: owner storefront-switch observations (no subject data), the quote's opening generation in
   // checkout_quotes, and sales_activation frozen as history; no new identity store. Hashed journal.
   "6ef1be23e4d713fa77e81a1cb0391fcb1292d18634b3d2270751bec6ab58a728",
-  // FLEX-128 (local 0036, coordinator reserve 0037): course_learning_starts, a subject-linked nonfinancial
+  // FLEX-128 (0036): course_learning_starts, a subject-linked nonfinancial
   // start fact written only with an explicit FREE enrollment. Erased with the subject; kept by retention.
   "f0b2205a43d7a733a96cbc3b40f7b57e4850dc0f8082dfc5449f1a95bee21e13",
   // 0037: LAB interest, notice history and purpose-specific suppression. Hashed journal.
   "e76bc6d055caaeb356ab43fe96ab9766484fbd1fef165431a685236da5bb228a",
+  // 0038–0042: MY, native payments and LAB lifecycle on top of the showcase schema.
+  "260e9e4e7d342587d89acad72ad5c38d4c83ede762b6afe5e4827483b71daa4d",
 ]);
 export function assertReviewedRestoreSchema(db: Database.Database) {
   const schema = db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").all();
@@ -117,8 +120,10 @@ function applyErasure(db: Database.Database, ledger: VerifiedErasureLedger, keys
           ...(db.prepare("SELECT DISTINCT recipient_normalized FROM auth_email_outbox").all() as Array<{ recipient_normalized: string }>)
             .filter(row => matches("email", row.recipient_normalized)).map(row => row.recipient_normalized),
           // FLEX-8 (G): an interest-only subject has no customer row; its email is the only identifier.
-          ...(db.prepare("SELECT DISTINCT email_normalized FROM lab_interest_signups").all() as Array<{ email_normalized: string }>)
+          ...(hasTable(db, "lab_interest_signups") ? db.prepare("SELECT DISTINCT email_normalized FROM lab_interest_signups").all() as Array<{ email_normalized: string }> : [])
             .filter(row => matches("email", row.email_normalized)).map(row => row.email_normalized),
+          ...(hasTable(db, "my_otp_outbox") ? db.prepare("SELECT DISTINCT recipient_normalized FROM my_otp_outbox").all() as Array<{ recipient_normalized: string }> : [])
+            .filter(row => matches("email", row.recipient_normalized)).map(row => row.recipient_normalized),
         ]);
         for (const email of emails) {
           db.prepare(`INSERT INTO email_suppressions(email_normalized,reason,created_at,removed_at) VALUES (?,'INDEPENDENT_ERASURE_LEDGER',?,NULL)
@@ -144,7 +149,8 @@ function applyErasure(db: Database.Database, ledger: VerifiedErasureLedger, keys
           // Generic audit JSON is not assumed anonymous or safely discardable.
           // A classified legal/security hold must be implemented before such a
           // subject can be admitted; no invented retention deadline here.
-          const audit = db.prepare(`SELECT 1 FROM audit_log WHERE actor=? OR subject_ref=?
+          // An actor may embed the subject (e.g. `customer:<id>`); any mention stops erasure (fail closed).
+          const audit = db.prepare(`SELECT 1 FROM audit_log WHERE instr(actor,?)>0 OR subject_ref=?
             OR instr(evidence_json,?)>0 OR instr(evidence_json,?)>0 LIMIT 1`)
             .get(customer.id, customer.id, customer.id, customer.email_normalized);
           const adminAudit = db.prepare(`SELECT 1 FROM control_room_audit_log WHERE entity_id=?
@@ -171,12 +177,13 @@ function applyErasure(db: Database.Database, ledger: VerifiedErasureLedger, keys
         }
         for (const email of emails) db.prepare("DELETE FROM auth_email_outbox WHERE recipient_normalized=?").run(email);
         // FLEX-8 (G): LAB interest signups (and their notice rows, by cascade) of the erased email.
-        for (const email of emails) db.prepare("DELETE FROM lab_interest_signups WHERE email_normalized=?").run(email);
+        if (hasTable(db, "lab_interest_signups")) for (const email of emails) db.prepare("DELETE FROM lab_interest_signups WHERE email_normalized=?").run(email);
+        if (hasTable(db, "my_otp_outbox")) for (const email of emails) db.prepare("DELETE FROM my_otp_outbox WHERE recipient_normalized=?").run(email);
         if(!resetAllCredentials) {
-          for(const row of db.prepare("SELECT id,value FROM verification").all() as Array<{id:string;value:string}>) {
-            let value:unknown; try {value=JSON.parse(row.value);} catch {throw new ErasureLedgerError("ERASURE_VERIFICATION_UNCLASSIFIED");}
-            if(!value || typeof value!=="object" || typeof (value as {email?:unknown}).email!=="string") throw new ErasureLedgerError("ERASURE_VERIFICATION_UNCLASSIFIED");
-            if(matches("email",(value as {email:string}).email)) db.prepare("DELETE FROM verification WHERE id=?").run(row.id);
+          for(const row of db.prepare("SELECT id,identifier,value FROM verification").all() as Array<{id:string;identifier:string;value:string}>) {
+            const email = verificationSubjectEmail(row);
+            if(email===null) throw new ErasureLedgerError("ERASURE_VERIFICATION_UNCLASSIFIED");
+            if(matches("email",email)) db.prepare("DELETE FROM verification WHERE id=?").run(row.id);
           }
         }
       }
@@ -185,8 +192,17 @@ function applyErasure(db: Database.Database, ledger: VerifiedErasureLedger, keys
       // Better Auth 1.7.6 stores hashed token identifiers + JSON {email,name} value.
       if(resetAllCredentials) {
         db.exec('DELETE FROM "session"; DELETE FROM verification;');
+        // FLEX-121: cascades already remove issued exchanges and LMS sessions; STARTED rows have no session.
+        if (hasTable(db, "session_exchanges")) db.exec("DELETE FROM lms_sessions; DELETE FROM session_exchanges;");
         if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='lab_guest_access'").get()) {
           db.exec("DELETE FROM lab_ticket_recoveries; UPDATE lab_tickets SET qr_sha256=NULL;");
+          // FLEX-60 (E review): an owned QR is HMAC(secret, ticket, qr_generation). The snapshot may predate
+          // several reissues, so +1 could land on a generation already revoked live. Jump past any counter
+          // value instead (reissue counts from 0 by 1; restore time in seconds is far above it and grows).
+          if ((db.prepare("PRAGMA table_info(lab_tickets)").all() as Array<{ name: string }>).some(column => column.name === "qr_generation")) {
+            db.prepare("UPDATE lab_tickets SET qr_generation=MAX(qr_generation+1,?) WHERE used_at IS NULL")
+              .run(Math.floor(Math.max(Date.now(), now.getTime()) / 1000));
+          }
           for (const row of db.prepare("SELECT order_public_id FROM lab_guest_access").all() as Array<{order_public_id:string}>) {
             db.prepare("UPDATE lab_guest_access SET token_sha256=? WHERE order_public_id=?").run(randomBytes(32).toString("hex"), row.order_public_id);
           }

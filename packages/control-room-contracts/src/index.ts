@@ -263,7 +263,7 @@ export type ControlRoomAttentionItem = {
 };
 
 export type ControlRoomIntegrationSummary = {
-  paymentMode: "disabled" | "mock" | "refref";
+  paymentMode: "disabled" | "mock" | "refref" | "native";
   lastAcceptedPayment: null | { orderPublicId: string; observedAt: string; refrefAttemptId: string };
   outstandingCheckoutCount: number;
   processingRefundCount: number;

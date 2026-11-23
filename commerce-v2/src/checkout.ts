@@ -1,5 +1,7 @@
-import { acceptLabPurchase, issueLabTicket, type LabAcceptance } from "./lab-tickets";
+import { issueLabTicket, type LabAcceptance } from "./lab-tickets";
+import { assertLabPurchaseAuthority, recordLabPurchaseAcceptance } from "./lab-lifecycle";
 import { CheckoutConflictError } from "./checkout-conflict";
+import { paymentReceiptMethod } from "./native-payment-contract";
 export { CheckoutConflictError } from "./checkout-conflict";
 import { readyImmediateCourseAccess } from "./immediate-course-access";
 import { createHash, randomUUID } from "node:crypto";
@@ -31,7 +33,7 @@ function checkoutAdmission<T>(guard: () => T): T {
 }
 
 /** The runtime facts checkout re-evaluates on every preview and confirm. */
-export type CheckoutPolicyConfig = Pick<CommerceRuntimeConfig, "deployEnvironment" | "paymentMode" | "merchantPromotionPrefix" | "closedPaidTest" | "storefrontSwitch">;
+export type CheckoutPolicyConfig = Pick<CommerceRuntimeConfig, "deployEnvironment" | "paymentMode" | "merchantPromotionPrefix" | "closedPaidTest" | "storefrontSwitch" | "nativeCoursesLegal">;
 export type PaidCheckoutAcceptance = { accepted: boolean; releaseVersion: string; manifestSha256: string; receiptEmail: string };
 
 export type RailState = "PENDING" | "CUSTOMER_ACTION_REQUIRED" | "PAID" | "DECLINED" | "EXPIRED" | "REFUND_PENDING" | "REFUNDED" | "REVIEW_REQUIRED";
@@ -467,18 +469,30 @@ const priceNotice = (quotedAmountKopecks: number, currentAmountKopecks: number |
       ? { code: "PRICE_CHANGED_SINCE_DISPLAY", quotedAmountKopecks, displayedAmountKopecks }
       : null;
 
+const paidReviewDocuments = ["privacy", "personal_data", "account_terms", "marketing_consent", "course_offer", "receipt_contact", "fiscal_items", "refund_terms"];
+
 function paidTestReview(db: Database.Database, config: CheckoutPolicyConfig, email: string) {
   if (!config.closedPaidTest) return undefined;
   const legal = legalRelease(db, "COURSES");
   if (!legal) throw new Error("LEGAL_RELEASE_REQUIRED");
   const manifest = JSON.parse(legal.manifest_json) as LegalReleaseManifest;
   const manifestSha256 = legalManifestHash(manifest);
-  const required = ["privacy", "personal_data", "account_terms", "marketing_consent", "course_offer", "receipt_contact", "fiscal_items", "refund_terms"];
-  if (manifest.stage !== "B" || required.some(kind => !manifest.documents.some(doc => doc.kind === kind))
+  if (manifest.stage !== "B" || paidReviewDocuments.some(kind => !manifest.documents.some(doc => doc.kind === kind))
     || legal.version !== config.closedPaidTest.legalVersion || manifestSha256 !== config.closedPaidTest.legalManifestSha256) {
     throw new Error("CLOSED_PAID_TEST_LEGAL_RELEASE_REFUSED");
   }
   return { releaseVersion: legal.version, manifestSha256, receiptEmail: email, documents: manifest.documents };
+}
+
+function nativeCourseReview(db: Database.Database, config: CheckoutPolicyConfig, email: string) {
+  const pinned = config.nativeCoursesLegal, release = legalRelease(db, "COURSES");
+  if (!pinned || !release || release.version !== pinned.version) throw new CheckoutConflictError("NATIVE_COURSES_LEGAL_RELEASE_REFUSED");
+  const manifest = JSON.parse(release.manifest_json) as LegalReleaseManifest;
+  const manifestSha256 = legalManifestHash(manifest);
+  if (manifest.stage !== "B" || manifestSha256 !== pinned.sha256 || paidReviewDocuments.some(kind => !manifest.documents.some(doc => doc.kind === kind))) {
+    throw new CheckoutConflictError("NATIVE_COURSES_LEGAL_RELEASE_REFUSED");
+  }
+  return { releaseVersion: release.version, manifestSha256, receiptEmail: email, documents: manifest.documents };
 }
 
 function assertNoOtherPaidTestOrder(db: Database.Database, config: CheckoutPolicyConfig, offerRef: string) {
@@ -781,14 +795,15 @@ export async function prepareCheckout(
   config: CheckoutPolicyConfig,
   input: {
     customerId: string; customerEmail: string; offerRef: string; previewIdempotencyKey: string; scenario?: string;
-    handoffToken?: string; checkoutCode?: string; orderPublicId?: string; storefront?: Storefront; displayedAmountKopecks?: number;
+    handoffToken?: string; checkoutCode?: string; orderPublicId?: string; storefront?: Storefront; displayedAmountKopecks?: number; nativeMy?: boolean;
   } & ResolutionContext,
   now = new Date().toISOString(),
 ) {
   if (!input.previewIdempotencyKey.trim()) throw new Error("IDEMPOTENCY_KEY_REQUIRED");
   if (config.closedPaidTest && input.checkoutCode?.trim()) throw new Error("CLOSED_PAID_TEST_PRICE_REFUSED");
   // This is review data, not an acceptance event. A later explicit confirm writes the event.
-  const review = paidTestReview(db, config, input.customerEmail);
+  const review = input.nativeMy && offerStorefront(db, input.offerRef) === "COURSES"
+    ? nativeCourseReview(db, config, input.customerEmail) : paidTestReview(db, config, input.customerEmail);
   assertClosedPaidTestAccountConsents(db, config, input.customerId);
   if (input.displayedAmountKopecks !== undefined
     && (!Number.isSafeInteger(input.displayedAmountKopecks) || input.displayedAmountKopecks < 0)) throw new Error("DISPLAYED_AMOUNT_INVALID");
@@ -837,6 +852,7 @@ export async function prepareCheckout(
     const candidate = offerByRef(db, input.offerRef);
     let inheritedHoldExpiry: string | null = null;
     if (candidate?.kind === "LAB") {
+      assertLabPurchaseAuthority(db, input.customerId, orderPublicId); // FLEX-60: no hold before account confirmation.
       const scope = paymentAdmissionScope(db, input.customerId, candidate.offer_id, orderPublicId);
       assertNoOpenPayment(db, scope);
       // Re-acquiring a replacement must not renew the live reservation's clock.
@@ -902,6 +918,17 @@ export async function prepareCheckout(
   return advanceIntent(db, rail, draft.immediate(), context, now);
 }
 
+/**
+ * FLEX-119 · the direct native contour at confirm. The same order, snapshot and admission as RC.2;
+ * instead of a Refref attempt the committed order is handed to the native ledger, which owns every
+ * later read-back. `status` answers a repeated confirm of an already consumed intent.
+ */
+export type NativeConfirm = {
+  readonly stage: (orderPublicId: string, successUrl?: string) => void;
+  readonly dispatch: (orderPublicId: string) => Promise<{ orderPublicId: string; state: string; paymentUrl?: string | null }>;
+  readonly status: (orderPublicId: string) => { orderPublicId: string; state: string; paymentUrl?: string | null };
+};
+
 export async function confirmCheckout(
   db: Database.Database,
   rail: PaymentRail,
@@ -916,10 +943,13 @@ export async function confirmCheckout(
     successUrl?: string;
     legalAcceptance?: PaidCheckoutAcceptance;
     labAcceptance?: LabAcceptance;
+    native?: NativeConfirm;
+    nativeMy?: boolean;
   },
   now = new Date().toISOString(),
 ) {
   if (!input.idempotencyKey.trim()) throw new Error("IDEMPOTENCY_KEY_REQUIRED");
+  const native = input.native;
   assertClosedPaidTestAccountConsents(db, config, input.customerId);
   const existing = db.prepare(`SELECT attempt.idempotency_key,orders.public_id,orders.customer_id FROM checkout_attempts attempt
     JOIN orders ON orders.id=attempt.order_id WHERE attempt.idempotency_key=?`).get(input.idempotencyKey) as { idempotency_key: string; public_id: string; customer_id: string } | undefined;
@@ -934,27 +964,31 @@ export async function confirmCheckout(
   if (input.expectedOrderPublicId && pending.order_public_id !== input.expectedOrderPublicId) throw new Error("CHECKOUT_STATE_INVALID");
   if (input.storefront && input.storefront !== pending.storefront) throw new Error("CHECKOUT_STOREFRONT_MISMATCH");
   // Confirmed already (another tab, or a reload with a new key): the order it started, read back.
-  if (pending.consumed_at) return reconcileCheckout(db, rail, pending.order_public_id, now, config);
+  if (pending.consumed_at) return native ? native.status(pending.order_public_id) : reconcileCheckout(db, rail, pending.order_public_id, now, config);
   if (pending.state === "EXPIRED") throw expiredIntentError(pending);
   if (pending.state !== "REVIEW") throw new Error("CHECKOUT_QUOTE_UNAVAILABLE");
   if (pending.expires_at! <= now) {
     expireIntent(db, pending.id, now);
     throw expiredIntentError(pending);
   }
-  const review = paidTestReview(db, config, input.customerEmail);
+  const nativeCourse = input.nativeMy && pending.storefront === "COURSES";
+  const review = nativeCourse ? nativeCourseReview(db, config, input.customerEmail) : paidTestReview(db, config, input.customerEmail);
   if (review && (input.legalAcceptance?.accepted !== true || input.legalAcceptance.releaseVersion !== review.releaseVersion
     || input.legalAcceptance.manifestSha256 !== review.manifestSha256 || input.legalAcceptance.receiptEmail !== review.receiptEmail)) {
     throw new Error("PAID_CHECKOUT_TERMS_ACCEPTANCE_REQUIRED");
   }
   // By-order read-back stays within the persisted identity's admission scope.
   const admissionScope = paymentAdmissionScope(db, input.customerId, pending.offer_id, pending.order_public_id);
-  await readBackOpenPayments(db, rail, config, admissionScope, now);
+  // On the native contour the ledger's sweep owns read-back; the open-payment refusal below still applies.
+  if (!native) await readBackOpenPayments(db, rail, config, admissionScope, now);
 
   // These immutable facts build the request. Live admission belongs to create.immediate()
   // below; a concurrent confirmation must reuse its committed order, not seek another seat.
   const offer = offerById(db, pending.offer_id);
   if (!offer) throw new CheckoutConflictError("OFFER_NOT_AVAILABLE");
   const frozenLine = JSON.parse(pending.line_snapshot_json!) as FrozenLineSnapshot;
+  // A line the native contour cannot fiscalize never becomes an order (contract I8).
+  if (native) checkoutAdmission(() => paymentReceiptMethod(offer.kind, frozenLine.fiscal.paymentMethod));
   const quote = JSON.parse(pending.rail_quote_json!) as RailQuote;
   const orderId = randomUUID();
   const attemptId = randomUUID();
@@ -1004,6 +1038,7 @@ export async function confirmCheckout(
     if (current.state !== "REVIEW") throw new Error("CHECKOUT_QUOTE_UNAVAILABLE");
     if (current.expires_at! <= now) throw new CheckoutConflictError("CHECKOUT_QUOTE_EXPIRED");
     assertIssuedIntentAdmissible(db, config, current, input.customerEmail, now, "CONFIRM");
+    if (offer.kind === "LAB") assertLabPurchaseAuthority(db, input.customerId, publicId); // FLEX-60, under the order's lock.
     if (offer.kind === "ONLINE_COURSE" && offer.course_ref && customerCanAccessCourse(db, input.customerId, offer.course_ref)) throw new CheckoutConflictError("ALREADY_OWNED");
     if (offer.kind === "COURSE_BUNDLE" && customerCanAccessCourse(db, input.customerId, "__any_future_course__")) throw new CheckoutConflictError("ALREADY_OWNED");
     assertNoOpenPayment(db, admissionScope);
@@ -1023,16 +1058,14 @@ export async function confirmCheckout(
     // consumed_at below atomically removes it from quote inventory as the order takes its seat.
     if (review) {
       // Re-read under the same write transaction as order creation; no backfilled UI event.
-      const current = paidTestReview(db, config, input.customerEmail)!;
+      const current = (nativeCourse ? nativeCourseReview(db, config, input.customerEmail) : paidTestReview(db, config, input.customerEmail))!;
+      if (current.manifestSha256 !== review.manifestSha256) throw new CheckoutConflictError("CHECKOUT_QUOTE_STALE");
       const customer = db.prepare("SELECT email_normalized FROM customers WHERE id=?").get(input.customerId) as { email_normalized: string } | undefined;
       if (customer?.email_normalized !== current.receiptEmail) throw new Error("PAID_CHECKOUT_CONTACT_CHANGED");
       db.prepare(`INSERT INTO audit_log(id,actor,action,subject_type,subject_ref,evidence_json,created_at)
         VALUES (?,?, 'PAID_CHECKOUT_TERMS_ACCEPTED','ORDER',?,?,?)`).run(randomUUID(), `customer:${input.customerId}`, publicId,
         JSON.stringify({ quoteId: pending.id, legalReleaseVersion: current.releaseVersion, legalManifestSha256: current.manifestSha256,
           receiptEmailSha256: buyerEmailSha256(current.receiptEmail), source: "AUTHENTICATED_CHECKOUT_CONFIRM" }), now);
-    }
-    if (offer.kind === "LAB" && db.prepare("SELECT 1 FROM lab_guest_access WHERE order_public_id=?").get(publicId)) {
-      acceptLabPurchase(db, publicId, input.customerId, input.labAcceptance, now);
     }
     db.prepare(`INSERT INTO orders(id,public_id,customer_id,state,total_kopecks,checkout_snapshot_json,snapshot_hash,legal_release_id,created_at,updated_at)
       VALUES (?,?,?,'PAYMENT_PENDING',?,?,?,?,?,?)`).run(orderId, publicId, input.customerId, pending.final_amount_kopecks, snapshotJson, snapshotHashHex, pending.legal_release_id, now, now);
@@ -1046,17 +1079,23 @@ export async function confirmCheckout(
       frozenLine.occurrence ? JSON.stringify(frozenLine.occurrence) : null, frozenLine.fiscal.policyId,
       initialAccessEvidence ? JSON.stringify(initialAccessEvidence) : null,
     );
-    db.prepare(`INSERT INTO checkout_attempts(id,order_id,idempotency_key,request_payload_json,state,created_at,updated_at)
+    if (offer.kind === "LAB") recordLabPurchaseAcceptance(db, { orderId, orderPublicId: publicId, customerId: input.customerId,
+      quoteId: pending.id, legalReleaseId: pending.legal_release_id, acceptance: input.labAcceptance, orderSnapshotHash: snapshotHashHex,
+      occurrenceSnapshotJson: JSON.stringify(frozenLine.occurrence) }, now);
+    if (!native) db.prepare(`INSERT INTO checkout_attempts(id,order_id,idempotency_key,request_payload_json,state,created_at,updated_at)
       VALUES (?,?,?,?,'CREATING',?,?)`).run(attemptId, orderId, input.idempotencyKey, JSON.stringify(railInput), now, now);
     const consumed = db.prepare("UPDATE checkout_quotes SET state='PAYMENT_CREATING',consumed_at=?,updated_at=? WHERE id=? AND state='REVIEW'")
       .run(now, now, pending.id);
     if (consumed.changes !== 1) throw new Error("CHECKOUT_QUOTE_UNAVAILABLE");
+    native?.stage(publicId, input.successUrl);
     return true;
   });
-  if (!create.immediate()) return reconcileCheckout(db, rail, publicId, now, config);
+  if (!create.immediate()) return native ? native.status(publicId) : reconcileCheckout(db, rail, publicId, now, config);
 
-  // The last read before the provider call: a stop that landed after the commit still keeps this
-  // attempt from leaving Commerce. Nothing was sent, so the attempt ends here without uncertainty.
+  // A native order and its frozen payment are committed together. The sweep can recover it
+  // even if this process stops between commit and dispatch.
+  if (native) return native.dispatch(publicId);
+  // The RC.2 attempt only leaves Commerce if the same storefront generation is still open.
   try {
     assertStorefrontOpen(db, config, pending.storefront, "PAYMENT_INITIATION", { issuedOpenSince: pending.storefront_open_since, now });
   } catch (error) {
@@ -1094,7 +1133,8 @@ export async function checkout(
   db: Database.Database,
   rail: PaymentRail,
   config: CheckoutPolicyConfig,
-  input: { customerId: string; customerEmail: string; offerRef: string; idempotencyKey: string; scenario?: string; handoffToken?: string; checkoutCode?: string; orderPublicId?: string },
+  input: { customerId: string; customerEmail: string; offerRef: string; idempotencyKey: string; scenario?: string; handoffToken?: string; checkoutCode?: string; orderPublicId?: string;
+    labAcceptance?: LabAcceptance },
   now = new Date().toISOString(),
 ) {
   const prepared = await prepareCheckout(db, rail, config, {
@@ -1113,6 +1153,7 @@ export async function checkout(
     customerEmail: input.customerEmail,
     quoteId: prepared.quoteId,
     idempotencyKey: input.idempotencyKey,
+    labAcceptance: input.labAcceptance,
   }, now);
 }
 

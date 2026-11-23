@@ -1,3 +1,6 @@
+import Navbar from "@/components/navbar/Navbar";
+import { storefrontMyOrigin } from "../../../../lib/my-storefront";
+import { connection } from "next/server";
 import type { Metadata } from "next";
 import { Suspense, type ReactNode } from "react";
 import AnalyticsConsentManager, { AnalyticsSettingsButton } from "@/components/analytics/AnalyticsConsent";
@@ -20,11 +23,17 @@ export const metadata: Metadata = {
     : undefined,
 };
 
+async function RuntimeNavbar() {
+  await connection();
+  const myOrigin = storefrontMyOrigin(process.env);
+  return myOrigin ? <Navbar myOrigin={myOrigin} /> : null;
+}
+
 export default function FrontendLayout({ children }: { children: ReactNode }) {
   const origin = platformOrigin();
   const organization = {
     "@context": "https://schema.org", "@type": "Organization",
     name: "Flexperiment", url: origin,
   };
-  return <html lang="ru"><body>{children}<footer><span>© Flexperiment</span><AnalyticsSettingsButton /></footer><Suspense fallback={null}><AnalyticsConsentManager /></Suspense><script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(organization).replace(/</g, "\\u003c") }} /></body></html>;
+  return <html lang="ru"><body><Suspense fallback={null}><RuntimeNavbar /></Suspense>{children}<footer><span>© Flexperiment</span><AnalyticsSettingsButton /></footer><Suspense fallback={null}><AnalyticsConsentManager /></Suspense><script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(organization).replace(/</g, "\\u003c") }} /></body></html>;
 }

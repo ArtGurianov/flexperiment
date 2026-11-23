@@ -87,7 +87,7 @@ describe.runIf(nativeConfig !== null)("FLEX-8: COURSES=OPEN, LAB=CLOSED, PAYMENT
       .run(capabilityHash(token), now, now);
     const before = moneyState();
     const preview = await call("/v1/checkout/preview", { offerRef: "lab:one" }, token, "preview");
-    expect(preview.status).toBeGreaterThanOrEqual(400); expect(JSON.stringify(await preview.json())).toContain("SALES_STOPPED");
+    expect(preview.status).toBeGreaterThanOrEqual(400); expect(JSON.stringify(await preview.json())).toContain("LAB_ACCOUNT_CONFIRMATION_REQUIRED");
     const acceptance = { personalDataConsent: true, termsAccepted: true, receiptContactAccepted: true,
       releaseVersion: labLegalReview(db).releaseVersion, manifestSha256: labLegalReview(db).manifestSha256 };
     expect((await call("/v1/checkout", { quoteId: "missing", labAcceptance: acceptance }, token, "pay")).status).toBeGreaterThanOrEqual(400);

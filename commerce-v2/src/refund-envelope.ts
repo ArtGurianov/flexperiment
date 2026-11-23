@@ -62,3 +62,35 @@ export function openRefundEnvelope(keyring: RefundEnvelopeKeyring, keyId: string
     throw new Error("REFUND_ENVELOPE_INVALID");
   }
 }
+
+/**
+ * The same sealing for the native contour's other sealed payloads (FLEX-119): the frozen payment
+ * request and a fiscal event's receipt contact. `purpose` is part of the additional data, so a payload
+ * sealed for one purpose and row cannot be opened as another.
+ */
+export type SealedPurpose = "native-payment-envelope" | "native-refund-envelope" | "fiscal-contact";
+
+export function sealPayload(keyring: RefundEnvelopeKeyring, purpose: SealedPurpose, rowId: string, value: unknown) {
+  const key = keyring.keys[keyring.currentKeyId];
+  if (!key) throw new Error("REFUND_ENVELOPE_CURRENT_KEY_INVALID");
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", key, iv);
+  cipher.setAAD(Buffer.from(`flexperiment.${purpose}/1:${rowId}`, "utf8"));
+  const ciphertext = Buffer.concat([cipher.update(JSON.stringify(value), "utf8"), cipher.final()]);
+  return { keyId: keyring.currentKeyId, sealed: [iv, cipher.getAuthTag(), ciphertext].map((v) => v.toString("base64url")).join(".") };
+}
+
+export function openPayload<T>(keyring: RefundEnvelopeKeyring, purpose: SealedPurpose, keyId: string, rowId: string, sealed: string): T {
+  const key = keyring.keys[keyId];
+  if (!key) throw new Error("REFUND_ENVELOPE_KEY_UNAVAILABLE");
+  const [iv, tag, ciphertext] = sealed.split(".").map((part) => Buffer.from(part, "base64url"));
+  if (!iv || !tag || !ciphertext) throw new Error("REFUND_ENVELOPE_INVALID");
+  try {
+    const decipher = createDecipheriv("aes-256-gcm", key, iv);
+    decipher.setAAD(Buffer.from(`flexperiment.${purpose}/1:${rowId}`, "utf8"));
+    decipher.setAuthTag(tag);
+    return JSON.parse(Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString("utf8")) as T;
+  } catch {
+    throw new Error("REFUND_ENVELOPE_INVALID");
+  }
+}

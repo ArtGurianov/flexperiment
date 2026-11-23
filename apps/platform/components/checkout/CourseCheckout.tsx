@@ -1,11 +1,13 @@
 "use client";
 
+import { myCheckoutHref } from "../../../../lib/my-storefront";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { checkoutCodeMessage, type CheckoutCodeOutcome } from "./checkout-copy";
 
 type Props = {
+  myOrigin?: string | null;
   courseRef: string;
   offerRef: string | null;
   saleMode: "CLOSED" | "ACCEPTANCE_ONLY" | "PUBLIC";
@@ -48,7 +50,16 @@ const observeCheckout = async (initial: CheckoutResult): Promise<CheckoutResult>
   return result;
 };
 
-export default function CourseCheckout({ courseRef, offerRef, saleMode, priceKopecks }: Props) {
+export default function CourseCheckout(props: Props) {
+  if (props.myOrigin === undefined) return <LegacyCourseCheckout {...props} />;
+  if (props.saleMode === "CLOSED") return <p className="checkoutCta">Продажи скоро.</p>;
+  const destination = myCheckoutHref(props.myOrigin, props.offerRef, "course");
+  return <div className="checkoutCta">{destination && props.priceKopecks !== null
+    ? <a className="primary" href={destination}>Купить за {price(props.priceKopecks)}</a>
+    : <p role="status">Покупка временно недоступна.</p>}</div>;
+}
+
+function LegacyCourseCheckout({ courseRef, offerRef, saleMode, priceKopecks }: Props) {
   const pathname = usePathname();
   const [session, setSession] = useState<"loading" | "anonymous" | "signed-in" | "owned">("loading");
   const [status, setStatus] = useState("");
