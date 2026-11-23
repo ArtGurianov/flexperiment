@@ -42,7 +42,6 @@ jobs:
     environment: production
     timeout-minutes: 10
     env:
-      COMMERCE_RELEASE_CONTROL_TOKEN: ${{ secrets.COMMERCE_RELEASE_CONTROL_TOKEN }}
       PUBLIC_API_URL: ${{ vars.PUBLIC_API_URL }}
       FRONTEND_RELEASE_URL: https://flexperiment.ru/release.json
       ADMIN_RELEASE_URL: https://admin.flexperiment.ru/release.json
@@ -115,6 +114,8 @@ jobs:
 
       - name: Read durable release state and the commerce runtime
         if: ${{ inputs.include_legacy_v1 }}
+        env:
+          COMMERCE_RELEASE_CONTROL_TOKEN: ${{ secrets.COMMERCE_RELEASE_CONTROL_TOKEN }}
         run: |
           set -euo pipefail
           http="$(curl --silent --show-error --connect-timeout 5 --max-time 20 \
