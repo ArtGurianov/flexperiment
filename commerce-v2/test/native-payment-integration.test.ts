@@ -178,10 +178,11 @@ describe("native checkout confirm and callback route (FLEX-119)", () => {
     expect(outside.status).toBe(404);
     const forged = await app("native").request("/v1/native-payments/callback", { method: "POST", body: "{}", headers: { "x-fake-signature": "00" } });
     expect(forged.status).toBe(401);
+    expect(db.prepare("SELECT COUNT(*) n FROM native_callback_inbox").get()).toEqual({ n: 0 });
     const signed = bank.signedCallback({ providerEventId: "evt-1", subjectKind: "PAYMENT", providerSubjectId: "unknown-payment" });
     const accepted = await app("native").request("/v1/native-payments/callback", { method: "POST", body: signed.body, headers: signed.headers });
     expect([accepted.status, await accepted.json()]).toEqual([200, { accepted: true, duplicate: false }]);
-    expect(db.prepare("SELECT COUNT(*) n FROM native_callback_inbox").get()).toEqual({ n: 2 });
+    expect(db.prepare("SELECT COUNT(*) n FROM native_callback_inbox").get()).toEqual({ n: 1 });
   });
 });
 

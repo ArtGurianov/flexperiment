@@ -4,21 +4,16 @@ import { applyNativePaymentObservation, driveNativePayment, type NativeLedgerCon
 import { applyNativeRefundObservation, driveNativeRefund } from "./native-payment-refunds";
 
 /**
- * FLEX-119 · callback intake (contract §4). A callback is stored durably first (deduplicated by provider
+ * FLEX-119 · callback intake (contract §4). An authenticated callback is stored durably first (deduplicated by provider
  * event id) and then only schedules a read-back; it never changes a payment or refund itself. The HTTP
  * route answers 2xx only after `receiveNativeCallback` returned (route registration: coordinator).
  */
 export async function receiveNativeCallback(db: Database.Database, ctx: NativeLedgerContext,
   headers: Readonly<Record<string, string | undefined>>, rawBody: Uint8Array) {
+  const hint = ctx.provider.verifyCallback(headers, rawBody);
+  if (!hint) return { accepted: false as const };
   const now = ctx.now ? ctx.now() : new Date().toISOString();
   const bodySha256 = createHash("sha256").update(rawBody).digest("hex");
-  const hint = ctx.provider.verifyCallback(headers, rawBody);
-  if (!hint) {
-    db.prepare(`INSERT INTO native_callback_inbox(id,provider,provider_event_id,body_sha256,signature_valid,received_at,processed_at)
-      VALUES (?,?,?,?,0,?,?) ON CONFLICT(provider,provider_event_id) DO NOTHING`)
-      .run(randomUUID(), ctx.provider.name, `invalid:${bodySha256}`, bodySha256, now, now);
-    return { accepted: false as const };
-  }
   const inserted = db.prepare(`INSERT INTO native_callback_inbox(id,provider,provider_event_id,body_sha256,signature_valid,subject_kind,subject_ref,received_at)
     VALUES (?,?,?,?,1,?,?,?) ON CONFLICT(provider,provider_event_id) DO NOTHING`)
     .run(randomUUID(), ctx.provider.name, hint.providerEventId, bodySha256, hint.subjectKind, hint.providerSubjectId, now).changes;

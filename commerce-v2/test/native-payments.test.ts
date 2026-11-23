@@ -177,7 +177,7 @@ describe("native payment ledger on the fake bank (FLEX-119)", () => {
     await receiveNativeCallback(db, ctx(), paid.headers, paid.body);
     expect((await receiveNativeCallback(db, ctx(), paid.headers, paid.body)).duplicate).toBe(true);
     expect([paymentState(id), entitlements()]).toEqual(["PAID", 1]);
-    expect(count("SELECT COUNT(*) n FROM native_callback_inbox")).toBe(3);
+    expect(count("SELECT COUNT(*) n FROM native_callback_inbox")).toBe(2);
   });
 
   it("confirmed payment whose access grant fails: the sweep completes the grant later, with no second debit", async () => {
