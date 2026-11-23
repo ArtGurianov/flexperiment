@@ -26,6 +26,14 @@ const tags = (html: string, name: string) => [...html.matchAll(new RegExp(`<${na
 const meta = (html: string, key: string) => tags(html, "meta")
   .filter((tag) => tag.name === key || tag.property === key).map((tag) => tag.content ?? "");
 
+function metadataHead(html: string): string {
+  const markup = html.replace(/<!--[\s\S]*?-->|<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, "");
+  const beforeBody = markup.split(/<body\b/i, 1)[0];
+  return beforeBody.match(/<head\b[^>]*>([\s\S]*?)<\/head\s*>/i)?.[1] ?? "";
+}
+
+export const renderedOgImages = (html: string) => meta(metadataHead(html), "og:image");
+
 const absoluteHttps = (value: string, origin?: string) => {
   try {
     const url = new URL(value);
@@ -41,17 +49,18 @@ export function auditRenderedPage(html: string, expected: SeoAuditExpectation): 
   const htmlTag = tags(html, "html")[0];
   if (htmlTag?.lang !== "ru") issues.push("html lang is not ru");
 
-  const titles = [...html.matchAll(/<title\b[^>]*>([\s\S]*?)<\/title>/gi)].map((m) => decode(m[1]).trim());
+  const head = metadataHead(html);
+  const titles = [...head.matchAll(/<title\b[^>]*>([\s\S]*?)<\/title>/gi)].map((m) => decode(m[1]).trim());
   if (titles.length !== 1 || !titles[0]) issues.push("exactly one non-empty <title> is required");
 
-  const descriptions = meta(html, "description");
+  const descriptions = meta(head, "description");
   if (descriptions.length !== 1 || !descriptions[0].trim()) issues.push("exactly one non-empty meta description is required");
 
-  const robots = meta(html, "robots").join(",").toLowerCase();
+  const robots = meta(head, "robots").join(",").toLowerCase();
   if (expected.indexable && robots.includes("noindex")) issues.push("indexable page carries noindex");
   if (!expected.indexable && !robots.includes("noindex")) issues.push("non-indexable page lacks noindex");
 
-  const canonicals = tags(html, "link").filter((tag) => tag.rel?.split(/\s+/).includes("canonical"));
+  const canonicals = tags(head, "link").filter((tag) => tag.rel?.split(/\s+/).includes("canonical"));
   const canonical = canonicals[0]?.href ?? "";
   if (expected.indexable) {
     if (canonicals.length !== 1) issues.push("exactly one canonical link is required");
@@ -68,19 +77,19 @@ export function auditRenderedPage(html: string, expected: SeoAuditExpectation): 
 
   if (expected.indexable) {
     for (const key of ["og:title", "og:description", "og:type", "og:url", "og:locale"]) {
-      if (meta(html, key).filter(Boolean).length !== 1) issues.push(`exactly one ${key} is required`);
+      if (meta(head, key).filter(Boolean).length !== 1) issues.push(`exactly one ${key} is required`);
     }
-    if (meta(html, "og:locale")[0] && meta(html, "og:locale")[0] !== "ru_RU") issues.push("og:locale is not ru_RU");
-    const ogURL = meta(html, "og:url")[0];
+    if (meta(head, "og:locale")[0] && meta(head, "og:locale")[0] !== "ru_RU") issues.push("og:locale is not ru_RU");
+    const ogURL = meta(head, "og:url")[0];
     if (ogURL && canonical && ogURL !== canonical) issues.push("og:url differs from canonical");
   }
 
-  const images = meta(html, "og:image");
+  const images = meta(head, "og:image");
   for (const image of images) if (!absoluteHttps(image)) issues.push("og:image must be an absolute https URL");
   if (images.length) {
-    const widths = meta(html, "og:image:width"); const heights = meta(html, "og:image:height");
+    const widths = meta(head, "og:image:width"); const heights = meta(head, "og:image:height");
     if (widths.length !== images.length || heights.length !== images.length) issues.push("every og:image needs width and height");
-    if (meta(html, "og:image:alt").length !== images.length) issues.push("every og:image needs alt text");
+    if (meta(head, "og:image:alt").length !== images.length) issues.push("every og:image needs alt text");
   }
 
   const ldBlocks = [...html.matchAll(/<script\b[^>]*type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/gi)].map((m) => m[1]);

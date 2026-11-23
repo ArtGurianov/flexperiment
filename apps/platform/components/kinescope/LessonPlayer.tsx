@@ -202,7 +202,7 @@ function LessonPlayerSession({ lessonRef, title, enrollment, onEnrolled }: {
   }, [grant, lessonRef]);
 
   if (state === "signin" && enrollment?.accessModel === "FREE") return <div className="playerGate"><p>Урок бесплатного курса откроется после записи.</p>
-    <FreeEnrollmentAction courseSlug={enrollment.courseSlug} lessonSlug={enrollment.lessonSlug} accessModel="FREE" compact />
+    <FreeEnrollmentAction courseSlug={enrollment.courseSlug} lessonSlug={enrollment.lessonSlug} accessModel="FREE" compact onEnrolled={onEnrolled} />
     <Link href={`/account?next=${encodeURIComponent(window.location.pathname)}`}>Уже записаны? Войти</Link></div>;
   if (state === "signin") return <div className="playerGate"><p>Войдите, чтобы открыть урок.</p><Link className="primary" href={`/account?next=${encodeURIComponent(window.location.pathname)}`}>Получить ссылку →</Link></div>;
   if (state === "enroll" && enrollment) return <div className="playerGate"><p>Чтобы открыть урок, запишитесь на бесплатный курс.</p>

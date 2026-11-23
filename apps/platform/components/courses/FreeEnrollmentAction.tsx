@@ -7,7 +7,7 @@ import {
 } from "./freeEnrollment";
 
 type View =
-  | { kind: "loading" } | { kind: "guest" } | { kind: "status"; status: FreeEnrollmentStatus } | { kind: "unavailable" };
+  | { kind: "loading" } | { kind: "guest" } | { kind: "status"; status: FreeEnrollmentStatus } | { kind: "missing" } | { kind: "error" };
 
 /**
  * Explicit «Записаться бесплатно» (FLEX-128). A guest's click is remembered for this browser and carried through
@@ -20,6 +20,7 @@ export default function FreeEnrollmentAction({ courseSlug, lessonSlug, accessMod
   onEnrolled?: () => void;
 }) {
   const [view, setView] = useState<View>({ kind: "loading" });
+  const [statusAttempt, setStatusAttempt] = useState(0);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const pending = useRef(false);
@@ -29,10 +30,10 @@ export default function FreeEnrollmentAction({ courseSlug, lessonSlug, accessMod
     const controller = new AbortController();
     void readEnrollmentStatus(courseSlug, controller.signal).then(status => {
       if (controller.signal.aborted) return;
-      setView(status === "signin" ? { kind: "guest" } : status ? { kind: "status", status } : { kind: "unavailable" });
-    }).catch(() => { if (!controller.signal.aborted) setView({ kind: "unavailable" }); });
+      setView(status === "signin" ? { kind: "guest" } : status ? { kind: "status", status } : { kind: "missing" });
+    }).catch(() => { if (!controller.signal.aborted) setView({ kind: "error" }); });
     return () => controller.abort();
-  }, [courseSlug]);
+  }, [courseSlug, statusAttempt]);
 
   const toAccount = () => {
     rememberEnrollmentIntent(intent);
@@ -54,7 +55,11 @@ export default function FreeEnrollmentAction({ courseSlug, lessonSlug, accessMod
   };
 
   if (view.kind === "loading") return compact ? null : <p className="enrollmentStatus" role="status">Проверяем запись…</p>;
-  if (view.kind === "unavailable") return null;
+  if (view.kind === "missing") return null;
+  if (view.kind === "error") return <div className="enrollmentAction">
+    <p role="status">Не удалось проверить запись на курс.</p>
+    <button type="button" onClick={() => { setView({ kind: "loading" }); setStatusAttempt(attempt => attempt + 1); }}>Повторить проверку</button>
+  </div>;
   if (view.kind === "guest") {
     if (accessModel !== "FREE") return null;
     return <div className="enrollmentAction">
@@ -67,6 +72,7 @@ export default function FreeEnrollmentAction({ courseSlug, lessonSlug, accessMod
     return <div className="enrollmentAction enrolled" aria-label="Запись на курс">
       <p><strong>Вы записаны</strong> · прогресс 0%{status.accessModel === "PAID" ? " · доступ сохранён после перехода курса на платный" : ""}</p>
       {!compact && <button type="button" disabled={busy} onClick={() => { void enroll(); }}>{busy ? "Открываем…" : "Продолжить обучение →"}</button>}
+      {compact && onEnrolled && <button type="button" onClick={onEnrolled}>Проверить доступ</button>}
       {message && <p role="status">{message}</p>}
     </div>;
   }

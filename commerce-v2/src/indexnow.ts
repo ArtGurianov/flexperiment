@@ -33,7 +33,7 @@ export type IndexNowConfig = {
   readonly platformOrigin: string;
   readonly fetcher?: typeof fetch;
   readonly now?: () => number;
-  /** One notification per course per window; publish followed by a price edit sends once. */
+  /** Suppress repeated submissions of the same public course state within this window. */
   readonly dedupeMs?: number;
   readonly log?: (event: Record<string, unknown>) => void;
 };
@@ -50,29 +50,40 @@ export function createIndexNowNotifier(config: IndexNowConfig): PublicCourseChan
   const fetcher = config.fetcher ?? fetch;
   const now = config.now ?? Date.now;
   const dedupeMs = config.dedupeMs ?? 10 * 60_000;
-  const lastSent = new Map<string, number>();
+  const submissions = new Map<string, { state: string; sentAt?: number }>();
   // Any visibility: an unlisted or withdrawn course still needs its URL re-crawled to drop it.
-  const slugOf = config.db.prepare("SELECT slug FROM catalog_course_projection WHERE course_ref=?");
+  const courseState = config.db.prepare(`SELECT course.slug, course.version, course.visibility,
+    EXISTS (SELECT 1 FROM products WHERE kind='ONLINE_COURSE' AND course_ref=course.course_ref AND withdrawn_at IS NOT NULL) AS withdrawn
+    FROM catalog_course_projection AS course WHERE course.course_ref=?`);
 
   return (courseRef) => {
+    let submission: { state: string; sentAt?: number } | undefined;
+    const failed = (status?: number) => {
+      if (submission && submissions.get(courseRef) === submission) submissions.delete(courseRef);
+      config.log?.({ event: "indexnow.failed", courseRef, ...(status === undefined ? {} : { status }) });
+    };
     try {
       if (!courseRef) return;
-      const at = now();
-      if ((lastSent.get(courseRef) ?? -Infinity) > at - dedupeMs) return;
-      const row = slugOf.get(courseRef) as { slug: string | null } | undefined;
-      const body = row?.slug ? indexNowPayload(config.platformOrigin, key, [row.slug]) : null;
+      const row = courseState.get(courseRef) as { slug: string | null; version: number; visibility: string; withdrawn: number } | undefined;
+      if (!row?.slug) return;
+      const state = JSON.stringify([row.slug, row.version, row.visibility, row.withdrawn]);
+      const previous = submissions.get(courseRef);
+      if (previous?.state === state && (previous.sentAt === undefined || previous.sentAt > now() - dedupeMs)) return;
+      const body = indexNowPayload(config.platformOrigin, key, [row.slug]);
       if (!body) return;
-      lastSent.set(courseRef, at);
+      const attempt = { state, sentAt: undefined as number | undefined };
+      submission = attempt;
+      submissions.set(courseRef, attempt);
       void fetcher(INDEXNOW_ENDPOINT, {
         method: "POST", redirect: "error", signal: AbortSignal.timeout(5_000),
         headers: { "content-type": "application/json; charset=utf-8" }, body: JSON.stringify(body),
       }).then((response) => {
+        if (!response.ok) { failed(response.status); return; }
+        attempt.sentAt = now();
         config.log?.({ event: "indexnow.sent", courseRef, status: response.status });
-      }, () => {
-        config.log?.({ event: "indexnow.failed", courseRef });
-      });
+      }, () => failed());
     } catch {
-      config.log?.({ event: "indexnow.failed", courseRef });
+      failed();
     }
   };
 }

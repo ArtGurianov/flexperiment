@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { auditRenderedPage, auditRobots } from "../lib/seo-audit";
+import { auditRenderedPage, auditRobots, renderedOgImages } from "../lib/seo-audit";
 import { robotsTxt } from "../lib/seo";
 
 const origin = "https://flexperiment.ru";
@@ -20,6 +20,18 @@ describe("rendered SEO audit", () => {
     const html = page(`<title>Урок</title><meta name="description" content="Урок курса"/><meta name="robots" content="noindex, follow"/>
 <link rel="canonical" href="${origin}/courses/one/lessons/intro"/>`);
     expect(auditRenderedPage(html, { url: `${origin}/courses/one/lessons/intro`, indexable: false })).toEqual([]);
+  });
+
+  it("ignores body tags and head comments or scripts when auditing metadata", () => {
+    const bodyTags = indexableHead(`<meta name="robots" content="noindex"/><meta property="og:image" content="${origin}/body.webp"/>`);
+    const html = page(`<!-- <title>Comment</title> --><script>const title = "<title>Script</title>";</script>`)
+      .replace("<body>", `<body>${bodyTags}`);
+    expect(auditRenderedPage(html, { url: `${origin}/courses/one`, indexable: true })).toEqual(expect.arrayContaining([
+      "exactly one non-empty <title> is required", "exactly one non-empty meta description is required",
+      "exactly one canonical link is required", "exactly one og:title is required",
+    ]));
+    expect(auditRenderedPage(html, { url: `${origin}/courses/one`, indexable: false })).toContain("non-indexable page lacks noindex");
+    expect(renderedOgImages(html)).toEqual([]);
   });
 
   it("reports each broken contract", () => {
