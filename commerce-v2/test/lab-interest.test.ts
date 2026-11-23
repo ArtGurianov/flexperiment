@@ -1,3 +1,4 @@
+import { LabInterestMailError } from "../src/lab-interest-mail";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createCommerceV2App } from "../src/app";
@@ -137,8 +138,24 @@ describe("FLEX-8 interest signup (double opt-in)", () => {
   });
 
   it("does not keep an address whose confirmation could not be sent", async () => {
-    const response = await post(server({ mail: async () => { throw new Error("provider down"); } }), "/v1/lab/interest", { email: "a@example.test", consent });
+    const response = await post(server({ mail: async () => { throw new LabInterestMailError("LAB_INTEREST_MAIL_REJECTED"); } }), "/v1/lab/interest", { email: "a@example.test", consent });
     expect(response.status).toBe(202); expect(count("lab_interest_signups")).toBe(0);
+  });
+
+  it("keeps an ambiguously sent link usable and does not mail again on duplicate sign-up", async () => {
+    let confirmation: string | undefined;
+    let calls = 0;
+    const app = server({ mail: async message => {
+      calls++;
+      if (message.kind === "CONFIRM") confirmation = tokenFrom(message.confirmUrl, "confirm");
+      throw new LabInterestMailError("LAB_INTEREST_MAIL_AMBIGUOUS");
+    } });
+    for (let i = 0; i < 2; i++) {
+      expect((await post(app, "/v1/lab/interest", { email: "a@example.test", consent })).status).toBe(202);
+    }
+    expect(calls).toBe(1);
+    expect((await post(app, "/v1/lab/interest/confirm", { token: confirmation })).status).toBe(200);
+    expect(db.prepare("SELECT state FROM lab_interest_signups").get()).toEqual({ state: "CONFIRMED" });
   });
 
   it("answers identically for suppressed, confirmed and rate-limited addresses", async () => {
@@ -148,7 +165,7 @@ describe("FLEX-8 interest signup (double opt-in)", () => {
     expect(suppressed.status).toBe(202); expect(await suppressed.json()).toEqual({ accepted: true });
     expect(count("lab_interest_signups")).toBe(0); expect(sent).toHaveLength(0);
     for (let attempt = 0; attempt < 5; attempt++) expect((await post(app, "/v1/lab/interest", { email: "busy@example.test", consent })).status).toBe(202);
-    expect(sent).toHaveLength(3); // source+email limit; the later answers do not differ
+    expect(sent).toHaveLength(1); // repeats do not rotate an unexpired link
     expect(count("lab_interest_signups")).toBe(1);
   });
 

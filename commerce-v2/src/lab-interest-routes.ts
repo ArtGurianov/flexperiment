@@ -7,6 +7,7 @@ import { confirmLabInterest, discardUndeliveredLabInterest, LabInterestError, re
 import { publicLabShowcase } from "./lab-interest-showcase";
 import { consumeLabLimit, LabTicketError, labEmail } from "./lab-tickets";
 import type { CommerceRuntimeConfig } from "./payment-mode";
+import { LabInterestMailError } from "./lab-interest-mail";
 
 const noStore = { "Cache-Control": "no-store" };
 
@@ -58,9 +59,11 @@ export function registerLabInterestRoutes(parent: Hono, deps: {
     const prepared = requestLabInterest(deps.db, body, { origin: deps.origin, secret: deps.secret }, time);
     if (prepared) {
       try { await deps.sendLabInterestEmail(prepared.message); }
-      catch {
-        // Never keep an address whose confirmation did not leave; never log the address or provider body.
-        discardUndeliveredLabInterest(deps.db, prepared.signupId);
+      catch (error) {
+        // After a timeout a valid link may already have left. Keep the pending token until expiry.
+        if (error instanceof LabInterestMailError && error.message !== "LAB_INTEREST_MAIL_AMBIGUOUS") {
+          discardUndeliveredLabInterest(deps.db, prepared.signupId, prepared.confirmationDigest);
+        }
       }
     }
     return accepted();

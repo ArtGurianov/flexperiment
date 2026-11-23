@@ -71,7 +71,7 @@ export type LabInterestRequest = { email: unknown; cityId?: unknown; consent?: {
  * every case, so the endpoint never reveals whether an address is known.
  */
 export function requestLabInterest(db: Database.Database, input: LabInterestRequest, deps: { origin: string; secret: string },
-  now: string): { signupId: string; message: Extract<LabInterestEmail, { kind: "CONFIRM" }> } | null {
+  now: string): { signupId: string; confirmationDigest: string; message: Extract<LabInterestEmail, { kind: "CONFIRM" }> } | null {
   const email = labEmail(input.email);
   if (input.consent?.version !== LAB_INTEREST_CONSENT.version || input.consent?.textSha256 !== labInterestConsentSha256) {
     fail("LAB_INTEREST_CONSENT_REQUIRED");
@@ -87,26 +87,27 @@ export function requestLabInterest(db: Database.Database, input: LabInterestRequ
     if (db.prepare("SELECT 1 FROM email_suppressions WHERE email_normalized=? AND removed_at IS NULL").get(email)) return null;
     const existing = db.prepare("SELECT * FROM lab_interest_signups WHERE email_normalized=? AND ifnull(city_id,'')=?")
       .get(email, cityId ?? "") as SignupRow | undefined;
-    if (existing?.state === "CONFIRMED") return null;
+    if (existing?.state === "CONFIRMED" || (existing?.confirm_expires_at && Date.parse(existing.confirm_expires_at) > Date.parse(now))) return null;
     const token = randomBytes(32).toString("base64url");
+    const confirmationDigest = sha256(token);
     const expires = new Date(Date.parse(now) + CONFIRM_TTL_MS).toISOString();
     const id = existing?.id ?? randomUUID().replace(/-/g, "");
     if (existing) {
       db.prepare(`UPDATE lab_interest_signups SET confirm_token_sha256=?,confirm_expires_at=?,consent_text_version=?,consent_text_sha256=?
-        WHERE id=? AND state='PENDING'`).run(sha256(token), expires, LAB_INTEREST_CONSENT.version, labInterestConsentSha256, id);
+        WHERE id=? AND state='PENDING'`).run(confirmationDigest, expires, LAB_INTEREST_CONSENT.version, labInterestConsentSha256, id);
     } else {
       db.prepare(`INSERT INTO lab_interest_signups(id,email_normalized,city_id,state,purpose,consent_text_version,consent_text_sha256,
         confirm_token_sha256,confirm_expires_at,created_at,confirmed_at) VALUES (?,?,?,'PENDING',?,?,?,?,?,?,NULL)`)
-        .run(id, email, cityId, LAB_INTEREST_PURPOSE, LAB_INTEREST_CONSENT.version, labInterestConsentSha256, sha256(token), expires, now);
+        .run(id, email, cityId, LAB_INTEREST_PURPOSE, LAB_INTEREST_CONSENT.version, labInterestConsentSha256, confirmationDigest, expires, now);
     }
-    return { signupId: id, message: { kind: "CONFIRM" as const, email, cityTitle, confirmUrl: `${deps.origin}/interest#confirm=${token}`,
+    return { signupId: id, confirmationDigest, message: { kind: "CONFIRM" as const, email, cityTitle, confirmUrl: `${deps.origin}/interest#confirm=${token}`,
       withdrawUrl: withdrawUrl(deps.origin, id, deps.secret) } };
   }).immediate();
 }
 
-/** Removes a PENDING signup whose confirmation could not be delivered: no unconfirmed address is kept. */
-export function discardUndeliveredLabInterest(db: Database.Database, signupId: string) {
-  db.prepare("DELETE FROM lab_interest_signups WHERE id=? AND state='PENDING'").run(signupId);
+/** A proven rejection can discard only the exact confirmation that failed. */
+export function discardUndeliveredLabInterest(db: Database.Database, signupId: string, confirmationDigest: string) {
+  db.prepare("DELETE FROM lab_interest_signups WHERE id=? AND state='PENDING' AND confirm_token_sha256=?").run(signupId, confirmationDigest);
 }
 
 export function confirmLabInterest(db: Database.Database, token: unknown, now: string) {
