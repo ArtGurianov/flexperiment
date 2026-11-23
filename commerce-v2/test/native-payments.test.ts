@@ -118,6 +118,15 @@ describe("native payment ledger on the fake bank (FLEX-119)", () => {
     expect(bank.calls.create[0]!.idempotencyKey).toBe("native-pay:ORD-3:1");
   });
 
+  it("does not resend creation if the provider does not guarantee payment idempotency", async () => {
+    Object.assign(bank, { replayGuarantees: { payment: false, refund: true } });
+    const id = order("ORD-NO-REPLAY", "ONLINE_COURSE", 490000);
+    bank.faults.create.push("LOSE_BEFORE_COMMIT");
+    await startNativePayment(db, ctx(), id);
+    await reconcilePendingNativePayments(db, ctx());
+    expect([paymentState(id), bank.calls.create.length, bank.debits]).toEqual(["CREATE_UNKNOWN", 1, 0]);
+  });
+
   it("an unknown create is never replayed while sales are stopped; money already taken is still fulfilled", async () => {
     const id = order("ORD-4", "ONLINE_COURSE", 490000);
     bank.faults.create.push("LOSE_BEFORE_COMMIT");
@@ -250,6 +259,18 @@ describe("native refunds on the fake bank (FLEX-119)", () => {
     bank.settleRefund(`refund:${request}`);
     await reconcilePendingNativeRefunds(db, ctx());
     expect([bank.returns, entitlements()]).toEqual([1, 0]);
+  });
+
+  it("keeps an uncertain refund open without resubmission when the provider has no refund key guarantee", async () => {
+    Object.assign(bank, { replayGuarantees: { payment: true, refund: false } });
+    await paidCourse("ORD-NO-REFUND-REPLAY");
+    const request = await refund("ORD-NO-REFUND-REPLAY");
+    bank.faults.submitRefund.push("LOSE_BEFORE_COMMIT");
+    await executeApprovedNativeRefund(db, ctx(), request);
+    await reconcilePendingNativeRefunds(db, ctx());
+    expect(bank.calls.submitRefund).toHaveLength(1);
+    expect(bank.returns).toBe(0);
+    expect(entitlements()).toBe(1);
   });
 
   it("a proven refusal keeps access and hands the case to a person", async () => {

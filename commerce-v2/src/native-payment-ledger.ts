@@ -191,7 +191,7 @@ export async function driveNativePayment(db: Database.Database, ctx: NativeLedge
       // Admission is read again at the moment of sending; a stop since the decision keeps it unknown.
       const order = orderOfPayment(db, paymentById(db, paymentId)!);
       if (!ctx.mayInitiate(order.kind, order.public_id)) return decision;
-      if (budget.replays <= 0) return decision;
+      if (!ctx.provider.replayGuarantees.payment || budget.replays <= 0) return decision;
       budget.replays -= 1;
       await sendCreate(db, ctx, paymentId, budget);
       return { ...decision, effects: [] };
