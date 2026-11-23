@@ -909,7 +909,8 @@ export async function prepareCheckout(
  * later read-back. `status` answers a repeated confirm of an already consumed intent.
  */
 export type NativeConfirm = {
-  readonly start: (orderPublicId: string) => Promise<{ orderPublicId: string; state: string; paymentUrl?: string | null }>;
+  readonly stage: (orderPublicId: string) => void;
+  readonly dispatch: (orderPublicId: string) => Promise<{ orderPublicId: string; state: string; paymentUrl?: string | null }>;
   readonly status: (orderPublicId: string) => { orderPublicId: string; state: string; paymentUrl?: string | null };
 };
 
@@ -1067,27 +1068,21 @@ export async function confirmCheckout(
     const consumed = db.prepare("UPDATE checkout_quotes SET state='PAYMENT_CREATING',consumed_at=?,updated_at=? WHERE id=? AND state='REVIEW'")
       .run(now, now, pending.id);
     if (consumed.changes !== 1) throw new Error("CHECKOUT_QUOTE_UNAVAILABLE");
+    native?.stage(publicId);
     return true;
   });
   if (!create.immediate()) return native ? native.status(publicId) : reconcileCheckout(db, rail, publicId, now, config);
 
-  // The last read before the provider call: a stop that landed after the commit still keeps this
-  // attempt from leaving Commerce. Nothing was sent, so the attempt ends here without uncertainty.
+  // A native order and its frozen payment are committed together. The sweep can recover it
+  // even if this process stops between commit and dispatch.
+  if (native) return native.dispatch(publicId);
+  // The RC.2 attempt only leaves Commerce if the same storefront generation is still open.
   try {
     assertStorefrontOpen(db, config, pending.storefront, "PAYMENT_INITIATION", { issuedOpenSince: pending.storefront_open_since, now });
   } catch (error) {
-    if (error instanceof SalesStoppedError) {
-      if (native) {
-        // Nothing was sent: the order ends here, like recordAttemptRefusal on the RC.2 contour.
-        db.transaction(() => {
-          db.prepare("UPDATE orders SET state='CANCELLED',updated_at=? WHERE public_id=? AND state='PAYMENT_PENDING'").run(now, publicId);
-          db.prepare("UPDATE checkout_quotes SET state='DECLINED',failure_code=?,updated_at=? WHERE order_public_id=?").run(error.message, now, publicId);
-        }).immediate();
-      } else recordAttemptRefusal(db, publicId, error.message, now, "PAYMENT_INITIATION_STOPPED");
-    }
+    if (error instanceof SalesStoppedError) recordAttemptRefusal(db, publicId, error.message, now, "PAYMENT_INITIATION_STOPPED");
     throw error;
   }
-  if (native) return native.start(publicId);
   try {
     const projection = await rail.create(railInput, { mayInitiate: () => recoveryMayInitiate(db, config, publicId, now, "PAYMENT_INITIATION") });
     return applyRailProjection(db, rail, publicId, projection, now);

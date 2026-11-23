@@ -19,9 +19,13 @@ export function nativePaymentsFromConfig(db: Database.Database, config: Commerce
   if (!config.native) throw new Error("NATIVE_CONFIGURATION_REQUIRED");
   if (!keyring) throw new Error("REFUND_ENVELOPE_KEYS_REQUIRED");
   if (config.deployEnvironment !== "local" && config.deployEnvironment !== "test") throw new Error("NATIVE_FAKE_PROVIDER_FORBIDDEN");
-  const mayInitiate = (kind: ProductKind) => {
+  const issuedQuote = db.prepare("SELECT storefront_open_since FROM checkout_quotes WHERE order_public_id=? AND consumed_at IS NOT NULL");
+  const mayInitiate = (kind: ProductKind, orderPublicId: string) => {
+    const quote = issuedQuote.get(orderPublicId) as { storefront_open_since: number | null } | undefined;
+    if (!quote) return false;
     try {
-      assertStorefrontOpen(db, config, kind === "LAB" ? "LAB" : "COURSES", "PAYMENT_RECOVERY", { now: new Date().toISOString() });
+      assertStorefrontOpen(db, config, kind === "LAB" ? "LAB" : "COURSES", "PAYMENT_RECOVERY",
+        { issuedOpenSince: quote.storefront_open_since, now: new Date().toISOString() });
       return true;
     } catch (error) {
       if (error instanceof SalesStoppedError) return false;

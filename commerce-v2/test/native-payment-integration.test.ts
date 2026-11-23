@@ -129,23 +129,40 @@ describe("native checkout confirm and callback route (FLEX-119)", () => {
     expect(bank.calls.create).toHaveLength(0);
   });
 
-  it("a stop after the order commit ends the order with nothing sent", async () => {
+  it("recovers a stopped process after the order commits and before the first send", async () => {
     qualify("FULL_PAYMENT");
-    const prepared = await quote("three");
-    ledger = { ...ledger };
-    // The storefront closes between the confirm transaction and the provider call: confirm's own re-read refuses.
-    const stopAfterCommit = { ...nativeConfirm(db, ledger) };
-    const original = db.prepare.bind(db);
-    let armed = true;
-    (db as unknown as { prepare: typeof db.prepare }).prepare = ((sql: string) => {
-      if (armed && sql.startsWith("UPDATE checkout_quotes SET state='PAYMENT_CREATING'")) { armed = false; setTestStorefronts(db, { COURSES: "CLOSED" }); }
-      return original(sql);
-    }) as typeof db.prepare;
-    await expect(confirmCheckout(db, rail, config, { customerId: "customer", customerEmail: "student@example.com", quoteId: prepared.quoteId,
-      idempotencyKey: "confirm-3", native: stopAfterCommit }, "2026-09-30T10:01:00Z")).rejects.toThrow("SALES_STOPPED");
-    (db as unknown as { prepare: typeof db.prepare }).prepare = original;
-    expect(db.prepare("SELECT state FROM orders").get()).toEqual({ state: "CANCELLED" });
-    expect(db.prepare("SELECT state FROM checkout_quotes").get()).toEqual({ state: "DECLINED" });
+    const prepared = await quote("crash");
+    ledger = { ...ledger, now: () => "2026-09-30T10:01:00.000Z" };
+    const hook = nativeConfirm(db, ledger);
+    await expect(confirmCheckout(db, rail, config, { customerId: "customer", customerEmail: "student@example.com",
+      quoteId: prepared.quoteId, idempotencyKey: "confirm-crash", native: { ...hook, dispatch: async () => { throw new Error("STOPPED"); } },
+    }, "2026-09-30T10:01:00Z")).rejects.toThrow("STOPPED");
+    expect(db.prepare("SELECT state FROM orders").get()).toEqual({ state: "PAYMENT_PENDING" });
+    expect(db.prepare("SELECT state FROM native_payments").get()).toEqual({ state: "CREATING" });
+    expect(bank.calls.create).toHaveLength(0);
+    const restarted = { ...ledger, now: () => "2026-09-30T10:10:00.000Z" };
+    await reconcilePendingNativePayments(db, restarted);
+    await reconcilePendingNativePayments(db, restarted);
+    expect(bank.calls.create).toHaveLength(1);
+    expect(db.prepare("SELECT state FROM native_payments").get()).toEqual({ state: "PENDING" });
+  });
+
+  it("does not send a payment of a closed generation if the storefront reopens", async () => {
+    qualify("FULL_PAYMENT");
+    const prepared = await quote("stop");
+    const runtime = nativePaymentsFromConfig(db, config, keyring)!.ledger;
+    ledger = { ...runtime, provider: bank, now: () => "2026-09-30T10:01:00.000Z" };
+    const hook = nativeConfirm(db, ledger);
+    const dispatch = (orderPublicId: string) => {
+      setTestStorefronts(db, { COURSES: "CLOSED" });
+      setTestStorefronts(db, { COURSES: "OPEN" });
+      return hook.dispatch(orderPublicId);
+    };
+    expect(await confirmCheckout(db, rail, config, { customerId: "customer", customerEmail: "student@example.com",
+      quoteId: prepared.quoteId, idempotencyKey: "confirm-stop", native: { ...hook, dispatch },
+    }, "2026-09-30T10:01:00Z")).toMatchObject({ state: "CREATING" });
+    await reconcilePendingNativePayments(db, { ...ledger, now: () => "2026-09-30T10:10:00.000Z" });
+    expect(db.prepare("SELECT state,last_reason FROM native_payments").get()).toEqual({ state: "CREATE_UNKNOWN", last_reason: "PAYMENT_INITIATION_STOPPED" });
     expect(bank.calls.create).toHaveLength(0);
   });
 

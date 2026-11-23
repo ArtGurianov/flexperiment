@@ -21,7 +21,7 @@ export type NativeLedgerContext = {
   readonly keyring: RefundEnvelopeKeyring;
   readonly fiscalizationMode: FiscalizationMode;
   /** Sales admission (storefront switch + FLEX-90) for the order's storefront, read at each new-money send. */
-  readonly mayInitiate: (kind: ProductKind) => boolean;
+  readonly mayInitiate: (kind: ProductKind, orderPublicId: string) => boolean;
   readonly now?: () => string;
 };
 
@@ -86,14 +86,10 @@ export function insertFiscalEvent(db: Database.Database, keyring: RefundEnvelope
     input.evidence === undefined ? null : JSON.stringify(input.evidence), sealed?.sealed ?? null, sealed?.keyId ?? null, input.now, input.now);
 }
 
-/**
- * Starts the native payment of an already committed order (PAYMENT_PENDING, no RC.2 attempt). The row
- * and its sealed frozen request are committed before anything is sent; a repeat call never sends again
- * (what follows a begun payment is the sweep's).
- */
-export async function startNativePayment(db: Database.Database, ctx: NativeLedgerContext, orderPublicId: string) {
+/** Stages the sealed request with the order. The enclosing checkout transaction owns the commit. */
+function stageNativePayment(db: Database.Database, ctx: NativeLedgerContext, orderPublicId: string) {
   const now = clock(ctx);
-  const begun = db.transaction(() => {
+  return db.transaction(() => {
     const order = orderContext(db, orderPublicId);
     if (!order) throw new Error("ORDER_NOT_FOUND");
     if (order.has_attempt) throw new Error("PAYMENT_CONTOUR_AMBIGUOUS");
@@ -101,7 +97,7 @@ export async function startNativePayment(db: Database.Database, ctx: NativeLedge
     if (existing) return { payment: existing, created: false };
     if (order.order_state !== "PAYMENT_PENDING") throw new Error("NATIVE_PAYMENT_ORDER_NOT_PAYABLE");
     // A closed storefront leaves no payment row and calls no provider (owner directive v4.8, item 4).
-    if (!ctx.mayInitiate(order.kind)) throw new Error("NATIVE_PAYMENT_INITIATION_STOPPED");
+    if (!ctx.mayInitiate(order.kind, order.public_id)) throw new Error("NATIVE_PAYMENT_INITIATION_STOPPED");
     if (order.total_kopecks <= 0 || order.unit_amount_kopecks !== order.total_kopecks) throw new Error("NATIVE_PAYMENT_AMOUNT_INVALID");
     const item = fiscalItemOf(order);
     // Refused before any money: a combination the contract cannot fiscalize never becomes a payment (I8).
@@ -120,12 +116,23 @@ export async function startNativePayment(db: Database.Database, ctx: NativeLedge
       .run(id, order.order_id, keys.paymentRef, keys.idempotencyKey, order.total_kopecks, order.snapshot_hash, sealed.sealed, sealed.keyId, now, now);
     return { payment: paymentById(db, id)!, created: true };
   }).immediate();
-  if (!begun.created) return { orderPublicId, state: begun.payment.state, paymentUrl: begun.payment.payment_url };
-  const kind = orderContext(db, orderPublicId)!.kind;
-  const start = beginPayment({ mayInitiate: ctx.mayInitiate(kind) });
-  if (start.effects.includes("PROVIDER_CREATE")) await sendCreate(db, ctx, begun.payment.id);
-  const current = paymentById(db, begun.payment.id)!;
+}
+
+async function dispatchNativePayment(db: Database.Database, ctx: NativeLedgerContext, orderPublicId: string) {
+  const order = orderContext(db, orderPublicId);
+  const payment = order && paymentOfOrder(db, order.order_id);
+  if (!order || !payment) throw new Error("NATIVE_PAYMENT_NOT_FOUND");
+  const start = beginPayment({ mayInitiate: ctx.mayInitiate(order.kind, orderPublicId) });
+  if (payment.state === "CREATING" && start.effects.includes("PROVIDER_CREATE")) await sendCreate(db, ctx, payment.id);
+  const current = paymentById(db, payment.id)!;
   return { orderPublicId, state: current.state, paymentUrl: current.payment_url };
+}
+
+export async function startNativePayment(db: Database.Database, ctx: NativeLedgerContext, orderPublicId: string) {
+  const begun = stageNativePayment(db, ctx, orderPublicId);
+  return begun.created
+    ? dispatchNativePayment(db, ctx, orderPublicId)
+    : { orderPublicId, state: begun.payment.state, paymentUrl: begun.payment.payment_url };
 }
 
 /**
@@ -174,7 +181,8 @@ export async function driveNativePayment(db: Database.Database, ctx: NativeLedge
   for (let step = 0; step < MAX_DRIVE_STEPS; step += 1) {
     if (decision.effects.includes("REPLAY_CREATE_SAME_KEY")) {
       // Admission is read again at the moment of sending; a stop since the decision keeps it unknown.
-      if (!ctx.mayInitiate(orderOfPayment(db, paymentById(db, paymentId)!).kind)) return decision;
+      const order = orderOfPayment(db, paymentById(db, paymentId)!);
+      if (!ctx.mayInitiate(order.kind, order.public_id)) return decision;
       if (budget.replays <= 0) return decision;
       budget.replays -= 1;
       await sendCreate(db, ctx, paymentId, budget);
@@ -196,7 +204,7 @@ export function applyNativePaymentObservation(db: Database.Database, ctx: Native
     const order = orderOfPayment(db, payment);
     const decision = applyPaymentObservation({ state: payment.state, providerPaymentId: payment.provider_payment_id },
       { merchantOrderRef: order.public_id, amountKopecks: payment.amount_kopecks, currency: "RUB", snapshotHash: payment.snapshot_hash },
-      observation, { mayInitiate: ctx.mayInitiate(order.kind), kind: order.kind, fiscalizationMode: ctx.fiscalizationMode });
+      observation, { mayInitiate: ctx.mayInitiate(order.kind, order.public_id), kind: order.kind, fiscalizationMode: ctx.fiscalizationMode });
     const terminal = decision.state === "PAID" || decision.state === "DECLINED" || decision.state === "EXPIRED";
     const envelope = terminal && payment.request_envelope && payment.envelope_key_id
       ? openPayload<FrozenNativePaymentRequest>(ctx.keyring, "native-payment-envelope", payment.envelope_key_id, payment.id, payment.request_envelope)
@@ -315,5 +323,9 @@ export function nativeConfirm(db: Database.Database, ctx: NativeLedgerContext) {
     if (!payment) throw new Error("NATIVE_PAYMENT_NOT_FOUND");
     return { orderPublicId, state: payment.state as string, paymentUrl: payment.state === "PENDING" ? payment.payment_url : null };
   };
-  return { start: (orderPublicId: string) => startNativePayment(db, ctx, orderPublicId), status };
+  return {
+    stage: (orderPublicId: string) => { stageNativePayment(db, ctx, orderPublicId); },
+    dispatch: (orderPublicId: string) => dispatchNativePayment(db, ctx, orderPublicId),
+    status,
+  };
 }
