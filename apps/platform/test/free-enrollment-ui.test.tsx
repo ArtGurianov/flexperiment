@@ -82,6 +82,19 @@ describe("FLEX-128 enrollment UI", () => {
     await waitFor(() => expect(assign).toHaveBeenCalledWith("/courses/free/lessons/one"));
   });
 
+  it("preserves the browser intent when the first status read after login fails", async () => {
+    global.fetch = vi.fn<typeof fetch>().mockResolvedValueOnce(json({}, 503))
+      .mockResolvedValueOnce(json(status())).mockResolvedValueOnce(json({ ...enrolled, lessonPath: "/courses/free/lessons/two" }, 201));
+    rememberEnrollmentIntent({ courseSlug: "free", lessonSlug: "two" });
+    render(<FreeEnrollmentContinuation intent={{ courseSlug: "free", lessonSlug: "two" }} />);
+    const retry = await screen.findByRole("button", { name: "Повторить проверку" });
+    expect(posts()).toHaveLength(0);
+    fireEvent.click(retry);
+    await waitFor(() => expect(assign).toHaveBeenCalledWith("/courses/free/lessons/two"));
+    expect(posts()).toHaveLength(1);
+    expect(consumeEnrollmentIntent({ courseSlug: "free", lessonSlug: "two" })).toBe(false);
+  });
+
   it("does not auto-enroll from a stale click", () => {
     rememberEnrollmentIntent({ courseSlug: "free" }, Date.now() - 3 * 60 * 60 * 1000);
     expect(consumeEnrollmentIntent({ courseSlug: "free" })).toBe(false);
