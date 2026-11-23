@@ -33,7 +33,7 @@ STACK = Path('/opt/flexperiment-fast-cut-canary/deploy/v2/fast-cut/compose.json'
 ERASURE = Path('/var/lib/flexperiment-erasure-canary')
 # The owner's storefront switch (ART-319): written only by scripts/v2/storefront-switch.py on the host.
 SALES = Path('/var/lib/flexperiment-sales-canary')
-STAGE_A_SOURCE = 'cc476dc041eb8bbe8ac5e6452acc9f9aa25d2a28'
+STAGE_A_SOURCE = '587d7ab6b1d542dc08fc5816bf04e11e8a2b26ad'
 STAGE_A_DATA_VOLUME = 'flexperiment-stage-a-canary-commerce-v2-data'
 DATABASE = Path('/var/lib/docker/volumes') / STAGE_A_DATA_VOLUME / '_data/commerce.sqlite'
 SCHEMA = 'f0b2205a43d7a733a96cbc3b40f7b57e4850dc0f8082dfc5449f1a95bee21e13'
