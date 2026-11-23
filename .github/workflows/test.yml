@@ -121,6 +121,11 @@ jobs:
           SOURCE_COMMIT: ${{ env.CI_SOURCE_SHA }}
           PLATFORM_ORIGIN: https://build.invalid
           DEPLOY_ENV: staging
+      - name: Rendered platform SEO audit on a loopback fixture catalogue (FLEX-70)
+        run: bash apps/platform/scripts/seo-audit-ci.sh
+        timeout-minutes: 3
+        env:
+          PLATFORM_ORIGIN: https://build.invalid
       - name: Static-export conformance
         run: pnpm test:export
       - name: Real-Nginx frontend static-export routing contract

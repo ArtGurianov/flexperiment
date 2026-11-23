@@ -75,6 +75,11 @@ type Dependencies = {
   readonly refundEnvelopeKeys?: RefundEnvelopeKeyring;
   /** `WITHDRAWN` marks the one commercial change that removes public pages; the platform notifies IndexNow for it. */
   readonly invalidatePlatformCache?: (mode: "swr" | "immediate", courseRef?: string, reason?: "WITHDRAWN") => Promise<void>;
+  /**
+   * FLEX-70: a course's public URLs changed (publish, unlist, relist, withdraw). Fire-and-forget; it must
+   * not throw and is never awaited, so it cannot delay or fail the owner command. Absent: no effect.
+   */
+  readonly notifyPublicCourseChange?: (courseRef: string) => void;
   readonly campaignUnsubscribeSecret?: string;
   readonly marketingBroadcastsEnabled?: boolean;
   readonly origins?: CommerceOrigins;
@@ -164,6 +169,11 @@ const labCommandBody = async <T,>(context: Context) => {
 
 export function createCommerceV2App(deps: Dependencies) {
   const app = new Hono<AppBindings>();
+  // FLEX-70 block: guarded so a faulty notifier can never change a command's response.
+  const notifyPublicCourseChange = (courseRef: string | null | undefined) => {
+    if (!courseRef) return;
+    try { deps.notifyPublicCourseChange?.(courseRef); } catch { /* best effort */ }
+  };
   const now = deps.now ?? (() => new Date());
   const origins = deps.origins ?? loadCommerceOrigins({ NODE_ENV: "test" });
 
@@ -442,6 +452,7 @@ export function createCommerceV2App(deps: Dependencies) {
       try {
         await deps.invalidatePlatformCache?.(result.visibility === "UNLISTED" ? "immediate" : "swr", courseRef);
       } catch { cacheInvalidation = "FAILED"; }
+      notifyPublicCourseChange(courseRef);
       return context.json({ ...result, cacheInvalidation }, 200, noStore);
     } catch (error) {
       return context.json({ error: { code: error instanceof Error ? error.message : "COURSE_PUBLISH_FAILED" } }, 409, noStore);
@@ -454,6 +465,7 @@ export function createCommerceV2App(deps: Dependencies) {
       const result = restrictEditorialCourse(deps.db, { ...input, courseRef, actor: context.get("controlRoomAdminId")! }, now().toISOString());
       let cacheInvalidation: "OK" | "FAILED" = "OK";
       try { await deps.invalidatePlatformCache?.("immediate", courseRef); } catch { cacheInvalidation = "FAILED"; }
+      notifyPublicCourseChange(courseRef);
       return context.json({ ...result, cacheInvalidation }, 200, noStore);
     } catch (error) {
       return context.json({ error: { code: error instanceof Error ? error.message : "COURSE_UNLIST_FAILED" } }, 409, noStore);
@@ -466,6 +478,7 @@ export function createCommerceV2App(deps: Dependencies) {
       const result = relistEditorialCourse(deps.db, { ...input, courseRef, actor: context.get("controlRoomAdminId")! }, now().toISOString());
       let cacheInvalidation: "OK" | "FAILED" = "OK";
       try { await deps.invalidatePlatformCache?.("swr", courseRef); } catch { cacheInvalidation = "FAILED"; }
+      notifyPublicCourseChange(courseRef);
       return context.json({ ...result, cacheInvalidation }, 200, noStore);
     } catch (error) {
       return context.json({ error: { code: error instanceof Error ? error.message : "COURSE_RELIST_FAILED" } }, 409, noStore);
@@ -479,6 +492,7 @@ export function createCommerceV2App(deps: Dependencies) {
       const result = restrictEditorialCourse(deps.db, { ...input, courseRef, actor: context.get("controlRoomAdminId")! }, now().toISOString());
       let cacheInvalidation: "OK" | "FAILED" = "OK";
       try { await deps.invalidatePlatformCache?.("immediate", courseRef, "WITHDRAWN"); } catch { cacheInvalidation = "FAILED"; }
+      notifyPublicCourseChange(courseRef);
       return context.json({ ...result, cacheInvalidation }, 200, noStore);
     } catch (error) {
       return context.json({ error: { code: error instanceof Error ? error.message : "COURSE_WITHDRAW_FAILED" } }, 409, noStore);
@@ -670,6 +684,7 @@ export function createCommerceV2App(deps: Dependencies) {
       auditControlRoom(deps.db, { adminId: actor, action: "PRODUCT_WITHDRAWN", entityType: "product",
         entityId: productRef, details: { version: result.version, reason: input.reason, termsRef: input.termsRef } }, now().toISOString());
       await deps.invalidatePlatformCache?.("immediate", product?.course_ref ?? undefined, "WITHDRAWN");
+      notifyPublicCourseChange(product?.course_ref);
       return context.json(result, 200, noStore);
     } catch (error) {
       return context.json({ error: { code: error instanceof Error ? error.message : "WITHDRAWAL_FAILED" } }, 409, noStore);
