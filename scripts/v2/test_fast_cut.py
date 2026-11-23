@@ -280,6 +280,47 @@ class FastCut(unittest.TestCase):
             bad=copy.deepcopy(c);mutate(bad)
             with self.assertRaises(ValueError):check(bad)
 
+    def test_stage_a_commerce_uses_the_new_named_data_volume(self):
+        release = {role: {'sourceCommit': f.STAGE_A_SOURCE, 'imageReference': ref}
+                   for role, ref in f.LEGACY_IMAGES.items()}
+        manifest = ROOT / 'deploy/v2/fast-cut/compose.json'
+        service = json.loads(manifest.read_text())['services']['commerce']
+        config = {
+            'Image': release['commerce']['imageReference'], 'User': 'node',
+            'Env': [f'SOURCE_COMMIT={f.STAGE_A_SOURCE}', 'PAYMENT_MODE=disabled',
+                    'ERASURE_FENCING_ENABLED=true', 'ERASURE_SCOPE=canary', 'MARKETING_BROADCASTS_ENABLED=false'],
+            'Labels': {'com.flexperiment.scope': 'canary-fast-cut'},
+        }
+        authority_mounts = [{'Type': 'bind', 'Destination': m['target'], 'Source': m['source'],
+                          'RW': not m['read_only']}
+                         for m in service['volumes'] if isinstance(m, dict)]
+        data = {'Destination': '/var/lib/flexperiment-v2', 'Type': 'volume', 'Name': f.STAGE_A_DATA_VOLUME,
+                'Source': str(f.DATABASE.parent), 'RW': True}
+        backups = {'Destination': '/var/lib/flexperiment-v2-backups', 'Type': 'volume',
+                   'Name': f.ORIGINAL+'-'+f.ORIGINAL+'-commerce-v2-backups', 'RW': True}
+        identity = {'schema': 'flexperiment.build-identity/1', 'service': 'commerce-v2',
+                    'sourceCommit': f.STAGE_A_SOURCE}
+        image = {'Id': 'sha256:'+'a'*64, 'RootFS': {'Layers': ['layer']}, 'Config': config,
+                 'Os': 'linux', 'Architecture': 'amd64'}
+        qualified = {'imageId': image['Id'], 'rootfs': ['layer'], 'identity': identity}
+
+        def inspect(mount):
+            container = {'Config': config, 'Image': image['Id'], 'HostConfig': {'ReadonlyRootfs': True},
+                         'State': {'Running': True}, 'Mounts': [*authority_mounts, mount, backups],
+                         'NetworkSettings': {'Networks': {'flexperiment-fast-cut-canary': {}}}}
+            replies = (json.dumps(item).encode() for item in ([container], [image], identity))
+            with patch.object(f, 'STACK', manifest), patch.object(f, 'release', return_value=release), \
+                 patch.object(f, 'paid_test', return_value=None), \
+                 patch.object(f, 'private', return_value=json.dumps(qualified).encode()), \
+                 patch.object(f, 'run', side_effect=replies):
+                return f.inspect('commerce')
+
+        self.assertEqual(inspect(data)[0], service['container_name'])
+        for change in ({'Name': 'another-project-commerce-data'}, {'Type': 'bind'},
+                       {'Source': '/var/lib/docker/volumes/old/_data'}, {'RW': False}):
+            with self.subTest(change=change), self.assertRaisesRegex(ValueError, 'FAST_CUT_DATA_MOUNT'):
+                inspect({**data, **change})
+
     def test_new_platform_requires_vector_image_native_source_env_and_expected_commerce(self):
         vector=f.validate_release(self.commerce_candidate());row=vector['platform']
         manifest=json.loads((ROOT/'deploy/v2/fast-cut/compose.json').read_bytes())
