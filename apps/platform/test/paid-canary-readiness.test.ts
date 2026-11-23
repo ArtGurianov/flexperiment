@@ -18,7 +18,9 @@ it("requires upstream profile identity in addition to healthy matching source/pa
     core: { database: "ok", paymentMode: "refref", closedPaidTestProfile: env.CLOSED_PAID_TEST_PROFILE,
       closedPaidTestLegalSha256: env.CLOSED_PAID_TEST_LEGAL_SHA256, closedPaidTestRefrefSource: env.CLOSED_PAID_TEST_REFREF_SOURCE }, capabilities: { refref: "ready" } };
   vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(Response.json(ready))
-    .mockResolvedValueOnce(Response.json({ ...ready, core: { database: "ok", paymentMode: "refref" } })));
+    .mockResolvedValueOnce(Response.json({ ...ready, core: { database: "ok", paymentMode: "refref" } }))
+    .mockResolvedValueOnce(Response.json({ ...ready, capabilities: { refref: "not_required" } })));
   await expect(assertCommerceReady()).resolves.toBeUndefined();
+  await expect(assertCommerceReady()).rejects.toThrow("CANARY_COMMERCE_UNAVAILABLE");
   await expect(assertCommerceReady()).rejects.toThrow("CANARY_COMMERCE_UNAVAILABLE");
 });
