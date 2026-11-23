@@ -1,11 +1,11 @@
 {
   "schema": "flexperiment.flex-123.navbar-session/1",
-  "note": "Synthetic fixtures only. No real e-mail, session or customer. LMS shape follows #286 profile.json limited /v1/me view. LAB runs guest-only (coordinator decision, no CORS).",
+  "note": "Synthetic fixtures only. No real e-mail, session or customer. LMS shape follows #286 profile.json limited /v1/lms/session view. LAB runs guest-only (coordinator decision, no CORS).",
   "config": {
     "LMS": {
       "variant": "LMS",
       "myOrigin": "https://my.flexperiment.test",
-      "sessionUrl": "/v1/me",
+      "sessionUrl": "/v1/lms/session",
       "signOutUrl": "/v1/lms/sign-out"
     },
     "LAB": {

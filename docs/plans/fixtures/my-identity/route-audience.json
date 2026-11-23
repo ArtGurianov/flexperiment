@@ -29,6 +29,7 @@
     { "method": "POST", "path": "/v1/lessons/:lessonRef/playback", "surface": "LMS", "session": "LMS" },
     { "method": "POST", "path": "/v1/lms/exchange/start", "surface": "LMS", "session": "none", "origin": "none (server-to-server from /auth/lms/start)" },
     { "method": "POST", "path": "/v1/lms/exchange/redeem", "surface": "LMS", "session": "none", "origin": "MY" },
+    { "method": "GET", "path": "/v1/lms/session", "surface": "LMS", "session": "LMS", "view": "masked Navbar" },
     { "method": "POST", "path": "/v1/lms/sign-out", "surface": "LMS", "session": "LMS", "origin": "LMS" },
     { "method": "POST", "path": "/v1/auth/sign-in/magic-link", "surface": "LMS", "session": "none", "modeOn": { "status": 410, "code": "MAGIC_LINK_RETIRED" } }
   ],

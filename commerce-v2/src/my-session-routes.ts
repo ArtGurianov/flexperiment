@@ -185,6 +185,18 @@ export function registerMySessionRoutes(app: Hono, dependencies: {
       return context.json({ location }, 200, noStore);
     } catch (error) { return exchangeRefusal(context, error); }
   });
+  app.get("/v1/lms/session", async (context) => {
+    if (!lmsSurface(context)) return context.json({ code: "NOT_FOUND" }, 404, noStore);
+    const session = await dependencies.resolveSession?.(context.req.raw.headers);
+    if (session?.surface !== "LMS" || session.kind !== "LMS") return context.json({ signedIn: false }, 200, noStore);
+    const profile = db.prepare("SELECT email_normalized,display_name FROM customers WHERE id=?").get(session.customerId) as
+      { email_normalized: string; display_name: string | null } | undefined;
+    if (!profile) return context.json({ signedIn: false }, 200, noStore);
+    const name = profile.display_name?.trim();
+    const displayName = name && name.length <= 80 && !name.includes("@") ? name : null;
+    return context.json({ signedIn: true, displayName, emailMasked: maskEmail(profile.email_normalized) }, 200, noStore);
+  });
+
   app.post("/v1/lms/sign-out", (context) => {
     if (!lmsSurface(context) || !dependencies.exchange) return context.json({ code: "NOT_FOUND" }, 404, noStore);
     const origin = context.req.header("origin");

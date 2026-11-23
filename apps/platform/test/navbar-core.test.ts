@@ -96,7 +96,7 @@ describe("FLEX-123 Navbar core", () => {
     const lms = createNavbarSession(LMS, { fetcher, pageOrigin: "https://flexperiment.test", onChange: () => {} });
     await lms.check(); await lms.signOut();
     expect(fetcher.mock.calls.map(([url, init]) => [url, init.method, init.credentials])).toEqual([
-      ["/v1/me", "GET", "same-origin"], ["/v1/lms/sign-out", "POST", "same-origin"]]);
+      ["/v1/lms/session", "GET", "same-origin"], ["/v1/lms/sign-out", "POST", "same-origin"]]);
     expect(fetcher.mock.calls[0][1]).toEqual(expect.objectContaining({ cache: "no-store" }));
     expect(fetcher.mock.calls[1][1].headers).toEqual({});
   });

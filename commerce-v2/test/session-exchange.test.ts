@@ -119,6 +119,10 @@ describe("FLEX-121 exchange happy path and session shape", () => {
     expect(redeemed.cookies).toContain(`${EXCHANGE_STATE_PREFIX}${started.tx}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`);
     expect(status(started.tx)).toBe("REDEEMED");
     expect((await browser.library()).status).not.toBe(401);
+    expect(await (await call(app, LMS, "/v1/lms/session", { cookie: browser.lms })).json())
+      .toEqual({ signedIn: true, displayName: null, emailMasked: "b***@e***.test" });
+    expect(await (await call(app, LMS, "/v1/lms/session", { cookie: browser.my })).json()).toEqual({ signedIn: false });
+    expect((await call(app, MY, "/v1/lms/session", { cookie: browser.my })).status).toBe(404);
     // The LMS credential gives no access to my or checkout; the MY credential none to the LMS.
     expect(await (await call(app, MY, "/v1/my/session", { cookie: browser.lms })).json()).toEqual({ signedIn: false });
     expect((await call(app, MY, "/v1/me/orders", { cookie: browser.lms })).status).toBe(401);

@@ -14,9 +14,9 @@ export async function proxyCommerce(request: Request, path: string[], roots: Rea
   catch { return refuse("COMMERCE_NOT_CONFIGURED", 503); }
   const origin = process.env.COMMERCE_INTERNAL_ORIGIN;
   if (!origin) return refuse("COMMERCE_NOT_CONFIGURED", 503);
-  const lmsSignOut = lmsExchangeEnabled() && request.method === "POST" && path.length === 2
-    && path[0] === "lms" && path[1] === "sign-out";
-  if (!path[0] || !(roots.has(path[0]) || lmsSignOut)
+  const lmsSessionRoute = lmsExchangeEnabled() && path.length === 2 && path[0] === "lms"
+    && ((request.method === "POST" && path[1] === "sign-out") || (request.method === "GET" && path[1] === "session"));
+  if (!path[0] || !(roots.has(path[0]) || lmsSessionRoute)
     || path.some((part) => !part || /[\\/\x00-\x1f\x7f]/.test(part) || part === "." || part === "..")) return refuse("NOT_FOUND", 404);
   if (path[0] === "refunds" && (path.length !== 1 || !["GET", "POST"].includes(request.method))) return refuse("NOT_FOUND", 404);
   const source = new URL(request.url);
