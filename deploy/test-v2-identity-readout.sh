@@ -11,6 +11,7 @@ cat >"$tmp/fetch" <<EOF
 #!/usr/bin/env bash
 case "\$1" in
   https://api.flexperiment.ru/identity) echo '{"schema":"flexperiment.build-identity/1","service":"commerce-v2","sourceCommit":"$A"}' ;;
+  https://flexperiment.ru/identity) echo '{"schema":"flexperiment.build-identity/1","service":"platform","sourceCommit":"$A"}' ;;
   https://courses.flexperiment.ru/identity) echo '{"schema":"flexperiment.build-identity/1","service":"platform","sourceCommit":"$B"}' ;;
   https://wrong.flexperiment.ru/identity) echo '{"schema":"flexperiment.build-identity/1","service":"lab-v2","sourceCommit":"$A"}' ;;
   *) exit 7 ;;
@@ -27,6 +28,9 @@ grep -Eq "^commerce +$A +MATCHES_EXPECTED$" <<<"$out" || fail "commerce match: $
 grep -Eq "^platform +$B +DIFFERS_FROM_EXPECTED$" <<<"$out" || fail "platform differs: $out"
 grep -Eq "^admin +- +UNREACHABLE$" <<<"$out" || fail "admin unreachable: $out"
 
+out="$(V2_PLATFORM_IDENTITY_URL=https://flexperiment.ru/identity "$script" "$A")"
+grep -Eq "^platform +$A +MATCHES_EXPECTED$" <<<"$out" || fail "production platform match: $out"
+
 out="$("$script")"
 [[ "$(grep -c NOT_CONFIGURED <<<"$out")" == 3 ]] || fail "unset urls: $out"
 
@@ -36,7 +40,7 @@ grep -Eq "^admin +- +IDENTITY_INVALID$" <<<"$out" || fail "service mismatch must
 out="$(V2_COMMERCE_IDENTITY_URL=https://api.flexperiment.ru/identity "$script")"
 grep -Eq "^commerce +$A +OBSERVED$" <<<"$out" || fail "no expectation: $out"
 
-for bad in http://api.flexperiment.ru/identity https://evil.example/identity https://api.flexperiment.ru/identity?x=1; do
+for bad in http://api.flexperiment.ru/identity https://evil.example/identity https://api.flexperiment.ru/identity?x=1 https://flexperiment.ru/identity; do
   if V2_COMMERCE_IDENTITY_URL="$bad" "$script" >/dev/null 2>&1; then fail "accepted url $bad"; fi
 done
 if "$script" not-a-sha >/dev/null 2>&1; then fail "accepted invalid expected commit"; fi

@@ -25,7 +25,8 @@ fetch() {
 read_one() {
   local label="$1" service="$2" url="$3" body commit verdict
   if [[ -z "$url" ]]; then printf '%-9s %-40s %s\n' "$label" "-" "NOT_CONFIGURED"; return; fi
-  if [[ ! "$url" =~ ^https://[a-z0-9.-]+\.flexperiment\.ru/identity$ ]]; then
+  if [[ ! "$url" =~ ^https://[a-z0-9.-]+\.flexperiment\.ru/identity$ ]] &&
+     [[ "$service" != "platform" || "$url" != "https://flexperiment.ru/identity" ]]; then
     echo "IDENTITY_URL_INVALID:$label" >&2; exit 2
   fi
   if ! body="$(fetch "$url" 2>/dev/null)"; then
