@@ -54,7 +54,7 @@ The full table is `applyPaymentObservation`. In summary:
 | create `ACCEPTED(id)` | CREATING, CREATE_UNKNOWN | PENDING | READ_BACK |
 | create `LOST` | CREATING, CREATE_UNKNOWN | CREATE_UNKNOWN | READ_BACK |
 | create `REFUSED` (provider proves this exact request was not accepted) | CREATING, CREATE_UNKNOWN | DECLINED | RELEASE_HOLD (LAB) |
-| callback, signature invalid | any | unchanged | — (recorded, dropped) |
+| callback, signature invalid | any | unchanged | — (refused at intake) |
 | callback, valid | any | unchanged | READ_BACK |
 | read-back `UNAVAILABLE` | any | unchanged | — (retried by the sweep) |
 | read-back `NOT_FOUND`, no provider id known | CREATING, CREATE_UNKNOWN | CREATE_UNKNOWN | REPLAY_CREATE_SAME_KEY if admitted, else none |
@@ -86,9 +86,9 @@ the hold deadline (provider qualification item Q3).
 `POST /v1/native-payments/callback` is a proposed route. It changes `app.ts` and is registered
 through the coordinator in phase 2. The route:
 
-1. verifies the provider signature with a key that never leaves the runtime env;
-2. stores the raw event in an append-only inbox. Duplicates are recognised by
-   `(provider, provider_event_id)`, or by a body hash when the provider sends no event id;
+1. verifies the provider signature before writing to the inbox. A bad signature gets 401 with no durable row;
+2. stores the authenticated hint and body SHA-256. Duplicates are recognised by
+   `(provider, provider_event_id)`;
 3. answers 2xx after the insert. It never answers 2xx before the event is durable;
 4. schedules a read-back of the referenced payment or refund.
 
