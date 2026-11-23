@@ -40,7 +40,9 @@ export function publicLabShowcase(db: Database.Database, config: Pick<CommerceRu
     schema: "flexperiment.lab-showcase/1",
     // Sales are OPEN only if at least one listed event can actually be bought.
     sales: { state: open ? "OPEN" : "CLOSED", reason: open ? null : reason ?? "OFFERS_CLOSED" },
-    interest: { available: interestAvailable && cities.length > 0, consent: manifest?.consent ?? null, privacy: manifest?.privacy ?? null },
+    interest: interestAvailable && cities.length > 0 && manifest
+      ? { available: true, consent: manifest.consent, privacy: manifest.privacy }
+      : { available: false, consent: null, privacy: null },
     cities, occurrences,
   });
 }

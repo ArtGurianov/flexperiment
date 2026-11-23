@@ -118,6 +118,12 @@ describe("FLEX-8 public LAB showcase with closed sales", () => {
     expect(count("lab_interest_signups")).toBe(0);
     expect(sent).toEqual([]);
   });
+
+  it("keeps staged legal documents private until signups are enabled", async () => {
+    const response = await server({ enabled: false }).request("/v1/lab/showcase");
+    expect(response.status).toBe(200);
+    expect((await response.json()).interest).toEqual({ available: false, consent: null, privacy: null });
+  });
 });
 
 describe("FLEX-8 interest signup (double opt-in)", () => {
