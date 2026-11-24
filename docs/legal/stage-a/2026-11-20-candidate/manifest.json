@@ -13,7 +13,7 @@
         "path": "docs/legal/stage-a/2026-10-11-candidate/privacy.md"
       },
       "candidate": {
-        "sha256": "3f3a04573736d453ab79fabf8ecf254ff7562204f3ff96c32c23f764e7391e20",
+        "sha256": "f9b6ac0d055ceba51dda34f7ef590c10aa9ae6bb89caedc6bd9dbc02bcd9702d",
         "path": "docs/legal/stage-a/2026-11-20-candidate/privacy.md"
       }
     },
@@ -53,7 +53,7 @@
   ],
   "pendingAdmission": [
     "D-01",
-    "G-06",
+    "A-2/G-06",
     "G-09"
   ]
 }
