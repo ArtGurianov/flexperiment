@@ -39,7 +39,8 @@ MOUNT_TARGET = "/etc/flexperiment-sales"
 JOURNAL_MOUNT_TARGET = "/etc/flexperiment-sales-journal"
 MAX_BYTES = 4096
 ACTOR = re.compile(r"^[a-z0-9][a-z0-9._-]{1,63}$")
-ISSUE = re.compile(r"^ART-[0-9]{1,6}$")
+PLANE_ISSUE = re.compile(r"(?:FLEX|VPS)-[1-9][0-9]{0,5}")
+HISTORICAL_ISSUE = re.compile(r"ART-[0-9]{1,6}")
 OWNER_CLI = ["node", "--import", "tsx", "commerce-v2/src/owner-cli.ts"]
 
 
@@ -59,7 +60,9 @@ def validate(document, scope):
     generation = document["generation"]
     if not isinstance(generation, int) or isinstance(generation, bool) or not 1 <= generation <= 2 ** 53 - 1:
         raise Refused("SWITCH_DOCUMENT_INVALID")
-    if not ACTOR.match(document["changedBy"]) or not ISSUE.match(document["evidenceIssue"]) \
+    evidence = document["evidenceIssue"]
+    if not ACTOR.match(document["changedBy"]) or not isinstance(evidence, str) \
+            or not (PLANE_ISSUE.fullmatch(evidence) or HISTORICAL_ISSUE.fullmatch(evidence)) \
             or not isinstance(document["reason"], str) or not 3 <= len(document["reason"].strip()) <= 500:
         raise Refused("SWITCH_DOCUMENT_INVALID")
     try:
@@ -309,7 +312,7 @@ def runtime_readback(layout, container, generation, digest, runner):
 
 def require_meta(args):
     if not args.by or not ACTOR.match(args.by) or not args.reason or not 3 <= len(args.reason.strip()) <= 500 \
-            or not args.evidence or not ISSUE.match(args.evidence):
+            or not args.evidence or not PLANE_ISSUE.fullmatch(args.evidence):
         raise Refused("SWITCH_CHANGE_EVIDENCE_REQUIRED")
 
 

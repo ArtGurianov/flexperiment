@@ -136,14 +136,14 @@ describe("Platform same-origin proxy", () => {
 });
 
 describe("genuine read-only canary upstream readiness", () => {
-  const ready = { ok: true, service: "commerce-v2", sourceCommit: env.PLATFORM_EXPECTED_COMMERCE_SHA, foundationMode: false, core: { database: "ok", paymentMode: "disabled" }, capabilities: { refref: "ready" } };
+  const ready = { ok: true, service: "commerce-v2", sourceCommit: env.PLATFORM_EXPECTED_COMMERCE_SHA, foundationMode: false, core: { database: "ok", paymentMode: "disabled" }, capabilities: { refref: "not_required" } };
   it("checks exact expected canary SHA and payment mode with credential-free GET", async () => {
     const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json(ready));
     await expect(assertCommerceReady()).resolves.toBeUndefined();
     expect(fetch.mock.calls[0][1]).toMatchObject({ method: "GET", redirect: "error", cache: "no-store" });
     expect(fetch.mock.calls[0][1]?.headers).toBeUndefined();
   });
-  it.each([{ sourceCommit: "c".repeat(40) }, { foundationMode: true }, { core: { database: "ok", paymentMode: "refref" } }, { capabilities: { refref: "unavailable" } }])("rejects wrong upstream identity/state %j", async drift => {
+  it.each([{ sourceCommit: "c".repeat(40) }, { foundationMode: true }, { core: { database: "ok", paymentMode: "refref" } }, { capabilities: { refref: "unavailable" } }, { capabilities: { refref: "ready" } }])("rejects wrong upstream identity/state %j", async drift => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ ...ready, ...drift }));
     await expect(assertCommerceReady()).rejects.toThrow("CANARY_COMMERCE_UNAVAILABLE");
   });

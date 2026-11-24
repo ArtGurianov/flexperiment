@@ -97,7 +97,28 @@ describe("explicit category retention in offline SQLite, no runtime/default poli
     expect(db.prepare("SELECT id FROM customers").all()).toEqual([{ id: "verified" }]);
     expect(count("email_suppressions")).toBe(1); expect(count("authenticated_consent_events")).toBe(3);
   });
-  it.each(["recent-intent", "user", "link", "outbox", "hold", "history", "audit", "progress", "learning-start", "owner-evidence"])("preserves an unbound profile with %s authority or fresh evidence", reason => {
+  it.each(["PENDING", "SENT", "FAILED"])("expires an unbound intent before its older %s mail log", state => {
+    const pending = intent();
+    outbox("historical-outbox", old, old, "pending@example.test");
+    db.prepare("UPDATE auth_email_outbox SET state=? WHERE id='historical-outbox'").run(state);
+    verification("expired-link", "2026-10-01T12:10:00.000Z", "pending@example.test");
+    const days = 24 * 60 * 60;
+    const settings = {
+      ...input(),
+      policy: { ...policy, expiredCredentialsGraceSeconds: 30 * days, unboundIntentsMaxAgeSeconds: 30 * days,
+        authOutboxMaxAgeSeconds: 180 * days },
+    };
+    const at30Days = new Date("2026-10-31T12:05:00.000Z");
+    expect(cleanupOfflinePersonalData(db, settings, at30Days))
+      .toMatchObject({ unboundIntents: 1, authOutbox: 0, expiredCredentials: 0 });
+    expect(db.prepare("SELECT id FROM customers WHERE id=?").get(pending)).toBeUndefined();
+    expect(db.prepare("SELECT state FROM auth_email_outbox WHERE id='historical-outbox'").get()).toEqual({ state });
+    expect(count("verification")).toBe(1);
+    expect(cleanupOfflinePersonalData(db, settings, at30Days)).toMatchObject({ unboundIntents: 0, authOutbox: 0 });
+    expect(cleanupOfflinePersonalData(db, settings, new Date("2027-03-31T12:05:00.000Z")))
+      .toMatchObject({ unboundIntents: 0, authOutbox: 1, expiredCredentials: 1 });
+  });
+  it.each(["recent-intent", "user", "link", "outbox", "recent-outbox-update", "hold", "history", "audit", "progress", "learning-start", "owner-evidence"])("preserves an unbound profile with %s authority or fresh evidence", reason => {
     const pending = intent(reason === "recent-intent" ? recent : old);
     if (reason === "owner-evidence") {
       activateLegalRelease(db, { storefront: "COURSES", version: "synthetic-legal", manifest: stageBLegalManifest, actor: "owner" }, old);
@@ -110,6 +131,7 @@ describe("explicit category retention in offline SQLite, no runtime/default poli
     if (reason === "user") db.prepare('INSERT INTO "user"(id,name,email,email_verified) VALUES (?,\'Synthetic\',?,0)').run("unbound-user", "pending@example.test");
     if (reason === "link") verification("pending-link", "2026-10-12T00:00:00Z", "pending@example.test");
     if (reason === "outbox") outbox("pending-outbox", recent, recent, "pending@example.test");
+    if (reason === "recent-outbox-update") outbox("updated-outbox", old, recent, "pending@example.test");
     if (reason === "history") {
       // Build an isolated historical fixture; do NOT rewrite immutable intents.
       db.prepare("INSERT INTO account_consents(id,customer_id,kind,document_version,document_sha256,recorded_at,source,evidence_status) VALUES ('legacy',?,'PERSONAL_DATA','synthetic-legacy',?,?,'LEGACY','LEGACY_UNQUALIFIED')").run(pending, "a".repeat(64), old);
