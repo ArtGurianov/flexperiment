@@ -2,10 +2,8 @@
   "schema": "flexperiment.legal-candidate-review/1",
   "version": "2026-11-24.stage-a.candidate.3",
   "baseCommit": "587d7ab6b1d542dc08fc5816bf04e11e8a2b26ad",
-  "ownerApproval": "NOT_REQUESTED_YET",
-  "openMarkers": [
-    "D-03"
-  ],
+  "ownerApproval": "PENDING_EXACT_BYTES",
+  "openMarkers": [],
   "activation": "PROHIBITED_UNTIL_ADMISSION",
   "documents": [
     {
