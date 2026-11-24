@@ -131,6 +131,42 @@ export class ErasureRuntimeFence {
   }
   /** Applied proof and newest remote proof must coincide. Caller must apply the signed
    * ledger to the closed merchant database inside this same drain capability first. */
+  /** Reviewed operations use replayable custody CAS and a transactional merchant
+   * apply. Close durably, then hold the SQLite write lock until admission is
+   * prepared. A process death rolls back only the claim and readiness update;
+   * the durable CLOSED state and all preexisting leases remain. */
+  async withReviewedDrain<T>(merchant: Database.Database, operation: (proof: DrainedErasureRuntime) => Promise<T>): Promise<T> {
+    if (this.#db.inTransaction) refuse("ERASURE_OWNER_RECONCILIATION_REQUIRED");
+    this.closeAdmission();
+    this.#db.exec("BEGIN IMMEDIATE");
+    try {
+      this.#assertDrained();
+      if (this.#state().owner) refuse("ERASURE_OWNER_RECONCILIATION_REQUIRED");
+      const owner = randomUUID();
+      this.#db.prepare("UPDATE fence_state SET owner=? WHERE id=1").run(owner);
+      const assertOwner = () => {
+        this.#assertDrained();
+        if (!this.#db.inTransaction || this.#state().owner !== owner) refuse("ERASURE_DRAIN_INVALID");
+      };
+      const result = await operation(issueDrain(this.#scope, merchant, assertOwner));
+      assertOwner();
+      if (!this.#bootQualified) refuse("ERASURE_RUNTIME_BOOT_UNQUALIFIED");
+      this.#db.prepare("UPDATE fence_state SET owner=NULL,state='OPEN' WHERE id=1 AND owner=?").run(owner);
+      this.#db.exec("COMMIT");
+      return result;
+    } catch (error) {
+      this.#bootQualified = false;
+      if (this.#db.inTransaction) this.#db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+  assertCurrentPrefix(drain: DrainedErasureRuntime, proof: VerifiedErasureLedger, requireApplied = false) {
+    DrainedErasureRuntime.assert(drain, drain.merchant, this.#scope);
+    this.#proof(proof);
+    if (requireApplied && proof.bundle.entries.length > Math.max(0, this.#state().sequence)) {
+      refuse("ERASURE_PRIOR_APPLICATION_REQUIRED");
+    }
+  }
   async reopen(drain: DrainedErasureRuntime, applied: VerifiedErasureLedger, application: unknown) {
     DrainedErasureRuntime.assert(drain,drain.merchant,this.#scope); this.#proof(applied);
     assertErasureApplication(application,drain,drain.merchant,applied);
@@ -146,8 +182,11 @@ export class ErasureRuntimeFence {
   /** Opens only the same process that performed/verified application under withDrained.
    * Shared clients must separately boot-qualify; copied OPEN control DB is not authority. */
   openQualified() {
-    if(!this.#bootQualified || this.#state().owner) refuse("ERASURE_RUNTIME_BOOT_UNQUALIFIED");
-    this.#assertDrained(); this.#db.prepare("UPDATE fence_state SET state='OPEN' WHERE id=1").run();
+    this.#db.transaction(() => {
+      if (!this.#bootQualified || this.#state().owner) refuse("ERASURE_RUNTIME_BOOT_UNQUALIFIED");
+      this.#assertDrained();
+      this.#db.prepare("UPDATE fence_state SET state='OPEN' WHERE id=1").run();
+    }).immediate();
   }
   async #acquire(kind: "REQUEST" | "WORKER" | "SEND") {
     if(!this.#bootQualified) refuse("ERASURE_RUNTIME_BOOT_UNQUALIFIED");
@@ -194,7 +233,7 @@ export class ErasureRuntimeFence {
     this.#proof(context.proof);
     if(!Object.values(identity).some(value=>typeof value==="string" && value.length)) refuse("ERASURE_RUNTIME_IDENTITY_REQUIRED");
     for(const entry of context.proof.bundle.entries) {
-      if(purpose!=="MARKETING" && entry.body.kind!=="ERASURE") continue;
+      if(purpose!=="MARKETING" && entry.body.kind==="MARKETING_SUPPRESSION") continue;
       const subject=entry.body.subject;
       const match=(category:"email"|"user"|"customer",value:string|undefined)=>value!==undefined && erasurePseudonym(this.#keys,subject.keyId,this.#scope,category,value)===subject[category];
       if(match("email",identity.email)||match("user",identity.userId)||match("customer",identity.customerId)) refuse("ERASURE_SUBJECT_SUPPRESSED");

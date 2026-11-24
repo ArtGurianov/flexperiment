@@ -44,6 +44,7 @@
     "0040_lab_lifecycle.sql": "5bb2a2bdab8d2193f280955c60558ce061a8d8af925e4f98869771405fccfe90",
     "0041_lab_service_rendered_semantics.sql": "f0d12c7f097acf9eb029b75d3cb4ba76698163b1cbaa1cce50c4e922124682ab",
     "0042_lab_service_rendered_guards.sql": "faeb3d593d5e10417c2e6d41760d17e903ca7a07f3ae656df1c454e79bde6867",
-    "0043_native_payment_dispatch_boundary.sql": "e005943c562466c7161a8ffab6d4bf924a7e30a15eae529f432cb7d24729aa6d"
+    "0043_native_payment_dispatch_boundary.sql": "e005943c562466c7161a8ffab6d4bf924a7e30a15eae529f432cb7d24729aa6d",
+    "0044_reviewed_erasure_receipts.sql": "57a6c94824b814d7e21f1eabd5dc352dd5e65bc9a5870b595c16602791b0daa5"
   }
 }

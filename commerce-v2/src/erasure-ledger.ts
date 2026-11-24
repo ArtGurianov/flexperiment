@@ -3,19 +3,24 @@ import { createHash, createHmac, createPublicKey, randomBytes, sign, verify, typ
 import { closeSync, existsSync, fsyncSync, lstatSync, openSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 import { z } from "zod";
+import { reviewedErasurePlanHash, reviewedLedgerPlanSchema } from "./erasure-plan";
 
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
 const keyId = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
 const instant = z.string().datetime();
 const scope = z.enum(["canary", "production"]);
 const reference = z.object({ keyId, keySha256: digest, email: digest, customer: digest, user: digest }).strict();
-const bodySchema = z.object({
-  version: z.literal(1), scope, sequence: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
-  requestId: z.string().uuid(), kind: z.enum(["ERASURE", "MARKETING_SUPPRESSION"]),
-  subject: reference, recordedAt: instant, previousHash: digest, signingKeyId: keyId,
-}).strict();
+const legacyAppend = z.object({ requestId: z.string().uuid(), kind: z.enum(["ERASURE", "MARKETING_SUPPRESSION"]), subject: reference }).strict();
+const reviewedAppend = z.object({ requestId: z.string().uuid(), kind: z.literal("REVIEWED_ERASURE"), subject: reference,
+  reviewed: reviewedLedgerPlanSchema }).strict();
+const entryFields = { scope, sequence: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  recordedAt: instant, previousHash: digest, signingKeyId: keyId };
+const bodySchema = z.union([
+  legacyAppend.extend({ ...entryFields, version: z.literal(1) }),
+  reviewedAppend.extend({ ...entryFields, version: z.literal(2) }),
+]);
 const entrySchema = z.object({ body: bodySchema, hash: digest, signature: z.string().regex(/^[A-Za-z0-9_-]{86}$/) }).strict();
-const appendInputSchema = z.object({ requestId: z.string().uuid(), kind: z.enum(["ERASURE", "MARKETING_SUPPRESSION"]), subject: reference }).strict();
+const appendInputSchema = z.union([legacyAppend, reviewedAppend]);
 const bundleSchema = z.object({ version: z.literal(1), scope, entries: z.array(entrySchema).max(100_000) }).strict();
 const checkpointBodySchema = z.object({
   version: z.literal(1), scope, sequence: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
@@ -92,6 +97,33 @@ export function erasurePseudonym(keys: ErasureKeys, id: string, environment: Sco
     category === "email" ? value.trim().toLocaleLowerCase("en-US") : value])).digest("hex");
 }
 
+function assertReviewedEntry(body: z.infer<typeof bodySchema>) {
+  if (body.kind === "REVIEWED_ERASURE" && (
+    body.reviewed.plan.requestId !== body.requestId || body.reviewed.plan.scope !== body.scope ||
+    body.reviewed.planSha256 !== reviewedErasurePlanHash(body.reviewed.plan, body.subject) ||
+    Date.parse(body.reviewed.approvedAt) > Date.parse(body.recordedAt) ||
+    Date.parse(body.recordedAt) > Date.parse(body.reviewed.plan.executeBy)
+  )) refuse("ERASURE_CHAIN_INVALID");
+}
+
+function freezeVerifiedBundle(bundle: ErasureBundle) {
+  for (const entry of bundle.entries) {
+    const { body } = entry;
+    if (body.kind === "REVIEWED_ERASURE") {
+      for (const step of Object.values(body.reviewed.plan.categories)) Object.freeze(step);
+      Object.freeze(body.reviewed.plan.categories);
+      Object.freeze(body.reviewed.plan.packageE);
+      Object.freeze(body.reviewed.plan);
+      Object.freeze(body.reviewed);
+    }
+    Object.freeze(body.subject);
+    Object.freeze(body);
+    Object.freeze(entry);
+  }
+  Object.freeze(bundle.entries);
+  Object.freeze(bundle);
+}
+
 function validateBundle(value: unknown, expectedScope: Scope, keys: ErasureKeys): ErasureBundle {
   const bundle = parse(bundleSchema, value);
   if (bundle.scope !== expectedScope) refuse("ERASURE_SCOPE_MISMATCH");
@@ -104,6 +136,7 @@ function validateBundle(value: unknown, expectedScope: Scope, keys: ErasureKeys)
       || (lastTime && Date.parse(body.recordedAt) < Date.parse(lastTime)) || requests.has(body.requestId) || entry.hash !== hash(body)
       || !validSignature(body, entry.signature, signingKey(keys, body.signingKeyId))) refuse("ERASURE_CHAIN_INVALID");
     assertErasureSubjectKey(keys, body.subject);
+    assertReviewedEntry(body);
     previous = entry.hash; lastTime = body.recordedAt; requests.add(body.requestId);
   }
   return bundle;
@@ -160,8 +193,7 @@ export class VerifiedErasureLedger {
       refuse("ERASURE_LEDGER_STALE_OR_INCOMPLETE");
     }
     // The verified object must not alias mutable input supplied by an operator/API.
-    for (const entry of bundle.entries) { Object.freeze(entry.body.subject); Object.freeze(entry.body); Object.freeze(entry); }
-    Object.freeze(bundle.entries); Object.freeze(bundle);
+    freezeVerifiedBundle(bundle);
     return new VerifiedErasureLedger(bundle, checkedAt, verificationAuthority);
   }
   /** Trusted uncached custody adapter only, not an HTTP/body-to-capability parser.
@@ -181,8 +213,7 @@ export class VerifiedErasureLedger {
       || (bundle.entries.at(-1) && Date.parse(bundle.entries.at(-1)!.body.recordedAt) > checkedAt)) {
       refuse("ERASURE_LEDGER_STALE_OR_INCOMPLETE");
     }
-    for (const entry of bundle.entries) { Object.freeze(entry.body.subject); Object.freeze(entry.body); Object.freeze(entry); }
-    Object.freeze(bundle.entries); Object.freeze(bundle);
+    freezeVerifiedBundle(bundle);
     return new VerifiedErasureLedger(bundle, checkedAt, verificationAuthority);
   }
   assertFresh(now = new Date()) {
@@ -297,23 +328,27 @@ export class ErasureLedgerStore {
       return validateBundle({ version: 1, scope: this.#options.scope, entries }, this.#options.scope, this.#options.keys);
     } catch { return refuse("ERASURE_LEDGER_INVALID"); }
   }
-  append(input: { requestId: string; kind: "ERASURE" | "MARKETING_SUPPRESSION"; subject: ErasureSubject }, now = new Date()) {
+  append(input: z.infer<typeof appendInputSchema>, now = new Date()) {
     try {
     const admittedInput = parse(appendInputSchema, input);
     return this.#db.transaction(() => {
       const bundle = this.export();
       const existing = bundle.entries.find(entry => entry.body.requestId === admittedInput.requestId);
       if (existing) {
-        if (existing.body.kind !== admittedInput.kind || canonical(existing.body.subject) !== canonical(admittedInput.subject)) refuse("ERASURE_REQUEST_CONFLICT");
+        if (existing.body.kind !== admittedInput.kind || canonical(existing.body.subject) !== canonical(admittedInput.subject) ||
+          (existing.body.kind === "REVIEWED_ERASURE" && admittedInput.kind === "REVIEWED_ERASURE" &&
+            canonical(existing.body.reviewed) !== canonical(admittedInput.reviewed))) refuse("ERASURE_REQUEST_CONFLICT");
         return existing;
       }
       if (bundle.entries.length >= 100_000) refuse("ERASURE_LEDGER_CAPACITY_REVIEW_REQUIRED");
       const previous = bundle.entries.at(-1);
       if (previous && now.getTime() < Date.parse(previous.body.recordedAt)) refuse("ERASURE_CLOCK_REGRESSION");
-      const body = parse(bodySchema, { version: 1, scope: this.#options.scope, sequence: bundle.entries.length + 1,
+      const body = parse(bodySchema, { version: admittedInput.kind === "REVIEWED_ERASURE" ? 2 : 1, scope: this.#options.scope, sequence: bundle.entries.length + 1,
         ...admittedInput, recordedAt: now.toISOString(), previousHash: previous?.hash ?? genesis(this.#options.scope), signingKeyId: this.#options.signer.keyId });
       assertErasureSubjectKey(this.#options.keys, body.subject);
       const entry = { body, hash: hash(body), signature: signature(body, this.#options.signer) };
+      assertReviewedEntry(body);
+      if (Buffer.byteLength(canonical(entry)) > 4096) refuse("ERASURE_LEDGER_CAPACITY_REVIEW_REQUIRED");
       this.#db.prepare("INSERT INTO erasure_entries(sequence,request_id,entry_json) VALUES (?,?,?)")
         .run(body.sequence, body.requestId, canonical(entry));
       return entry;

@@ -4,6 +4,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { classifyV2Database } from "./db";
 import { assertErasureSubjectKey, erasurePseudonym, ErasureLedgerError, VerifiedErasureLedger, type ErasureKeys } from "./erasure-ledger";
 import { DrainedErasureRuntime } from "./erasure-fence";
+import { applyReviewedErasure } from "./erasure-reviewed-application";
 import { hasTable, verificationSubjectEmail } from "./my-session-storage";
 
 // Exact reviewed 0001–0025, 0001–0026 and 0001–0027 schemas. Migration 0026 adds only
@@ -52,6 +53,8 @@ const REVIEWED_SCHEMA_SHA256 = new Set([
   "260e9e4e7d342587d89acad72ad5c38d4c83ede762b6afe5e4827483b71daa4d",
   // 0043: irreversible native payment handoff marker.
   "a9b1238f3188fd74e87d86edef9774887a4d23f728e24ab8337eb0060f889150",
+  // 0044: FLEX-131 local execution receipts, linked to independent signed entries.
+  "49c1014232cb13df508508c6fb02c6b0a94149d1ff4e13310e8b9ba34f9aa658",
 ]);
 export function assertReviewedRestoreSchema(db: Database.Database) {
   const schema = db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").all();
@@ -110,6 +113,11 @@ function applyErasure(db: Database.Database, ledger: VerifiedErasureLedger, keys
         Array<{ id: string; email_normalized: string; auth_user_id: string | null }>;
       const users = db.prepare('SELECT id,email FROM "user"').all() as Array<{ id: string; email: string }>;
       for (const entry of ledger.bundle.entries) {
+        if (entry.body.kind === "REVIEWED_ERASURE") {
+          if (!hasTable(db, "reviewed_erasure_receipts")) throw new ErasureLedgerError("ERASURE_REVIEWED_SCHEMA_REQUIRED");
+          applyReviewedErasure(db, { ...entry, body: entry.body }, keys, now, resetAllCredentials);
+          continue;
+        }
         const { subject } = entry.body;
         assertErasureSubjectKey(keys, subject);
         const matches = (kind: "email" | "customer" | "user", value: string) =>
