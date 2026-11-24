@@ -8,6 +8,7 @@ import type { RefundEnvelope, RefundEnvelopeKeyring } from "../src/refund-envelo
 import { stageALegalManifestJson, stageBLegalManifestJson } from "./fixtures/legal";
 import { openTestStorefront, qualifyTestFiscalPolicies, testCheckoutConfig } from "./fixtures/sales";
 import { decideRefund, executeApprovedRefund, listRefundCases, reconcilePendingRefunds, recordCourseAccessStart, registerEmailRefund, requestRefund } from "../src/refunds";
+import { confirmSyntheticAccount } from "./fixtures/confirmed-account";
 
 const keys: RefundEnvelopeKeyring = { currentKeyId: "k1", keys: { k1: Buffer.alloc(32, 1), k0: Buffer.alloc(32, 2) } };
 
@@ -205,6 +206,37 @@ describe("refund authority", () => {
     expect(rail.sent[1]).toEqual(rail.sent[0]);
     expect(execution()).toMatchObject({ state: "SUCCEEDED" });
     expect(revoked()).toBe(1);
+  });
+
+  it("preserves the paid right, proof of payment and refund read-back after removing unrelated FREE data in a fixture", async () => {
+    const { request } = await approvedRefund();
+    confirmSyntheticAccount(db, "customer");
+    db.exec(`INSERT INTO products(id,product_ref,kind,access_model,course_ref)
+        VALUES ('free-fixture','course:free','ONLINE_COURSE','FREE','course-free');
+      INSERT INTO free_course_enrollments(customer_id,product_id,product_version,enrolled_at)
+        VALUES ('customer','free-fixture',1,'2026-09-30');
+      INSERT INTO course_learning_starts(customer_id,course_ref,product_id,source,started_at)
+        VALUES ('customer','course-free','free-fixture','FREE_ENROLLMENT','2026-09-30');`);
+    rail.submitAnswers.push(async () => ({ status: "UNKNOWN" }));
+    expect(await executeApprovedRefund(db, rail, keys, request.requestPublicId)).toMatchObject({ outcomeUnknown: true });
+    const orderEvidence = () => db.prepare("SELECT snapshot_hash,legal_release_id,total_kopecks FROM orders").get();
+    const paymentEvidence = () => db.prepare("SELECT refref_attempt_id,observed_payment_projection_json FROM checkout_attempts").get();
+    const evidence = [orderEvidence(), paymentEvidence()];
+    expect(evidence[1]).toMatchObject({ refref_attempt_id: expect.any(String), observed_payment_projection_json: expect.any(String) });
+
+    // Simulate only the approved scope: the unrelated FREE enrollment and its start on the in-memory test database.
+    db.transaction(() => {
+      db.prepare("DELETE FROM course_learning_starts WHERE customer_id=? AND product_id=?").run("customer", "free-fixture");
+      db.prepare("DELETE FROM free_course_enrollments WHERE customer_id=? AND product_id=?").run("customer", "free-fixture");
+    })();
+    expect(db.prepare("SELECT 1 FROM free_course_enrollments WHERE customer_id='customer'").get()).toBeUndefined();
+    expect(db.prepare("SELECT 1 FROM course_learning_starts WHERE customer_id='customer'").get()).toBeUndefined();
+    expect(revoked()).toBe(0);
+    expect(await reconcilePendingRefunds(db, rail, keys)).toEqual({ selected: 1, reconciled: 1, failed: 0 });
+    expect(execution()).toMatchObject({ state: "SUCCEEDED", canonical_refund_id: "mock-refund-1" });
+    expect([orderEvidence(), paymentEvidence()]).toEqual(evidence);
+    expect(revoked()).toBe(1);
+    expect(db.pragma("foreign_key_check")).toEqual([]);
   });
 
   it("reads a named execution instead of resubmitting it, and finishes only when it names an accepted Refund", async () => {
