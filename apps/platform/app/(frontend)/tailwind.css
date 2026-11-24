@@ -1,0 +1,18 @@
+/* Tailwind utilities for new components. Preflight is deliberately left out: the pages styled by
+   styles.css rely on browser defaults, and a global reset would change them. Utilities live in a
+   cascade layer, so any unlayered rule in styles.css (for example `a { color: inherit }`) still
+   wins over them; use the `!` modifier where a utility has to beat one of those rules. */
+@layer theme, base, components, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+
+@theme inline {
+  --color-ink: var(--ink);
+  --color-paper: var(--paper);
+  --color-acid: var(--acid);
+  --color-orange: var(--orange);
+  --color-muted: var(--muted);
+  --color-line: var(--line);
+  --font-display: "Unbounded", sans-serif;
+  --font-sans: "Manrope", sans-serif;
+}

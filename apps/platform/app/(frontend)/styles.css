@@ -21,22 +21,11 @@ a { color: inherit; text-decoration: none; }
 .navLinks a { border-bottom: 2px solid transparent; padding: .4rem 0; }
 .navLinks a:hover, .navLinks a:focus-visible { border-color: var(--ink); }
 
-.hero { min-height: calc(100svh - 78px); position: relative; overflow: hidden; padding: 7vh 4vw 5vh; display: grid; align-content: space-between; isolation: isolate; }
-.hero::before { content: ""; position: absolute; inset: 0; z-index: -2; background: repeating-linear-gradient(90deg, transparent 0 calc(25% - 1px), var(--line) calc(25% - 1px) 25%); opacity: .45; }
-.hero::after { content: ""; position: absolute; width: 48vw; height: 48vw; border-radius: 50%; background: var(--acid); filter: blur(1px); right: -13vw; bottom: -17vw; z-index: -1; }
 .eyebrow { text-transform: uppercase; letter-spacing: .14em; font-size: .72rem; font-weight: 700; }
-.hero h1 { margin: 6vh 0; font-family: "Unbounded", sans-serif; font-size: clamp(3.4rem, 9.7vw, 10rem); line-height: .88; letter-spacing: -.08em; text-transform: uppercase; }
-.hero h1 em { color: transparent; -webkit-text-stroke: 2px var(--ink); font-style: normal; }
-.heroFoot { display: grid; grid-template-columns: minmax(260px, 520px) auto; align-items: end; gap: 2rem; }
-.heroFoot p { margin: 0; font-size: clamp(1.05rem, 1.7vw, 1.4rem); line-height: 1.45; }
 .primary { justify-self: end; display: inline-flex; gap: 2rem; align-items: center; background: var(--ink); color: var(--paper); padding: 1rem 1.2rem; font-weight: 700; text-transform: uppercase; transition: transform .2s ease, background .2s ease; }
 .primary:hover, .primary:focus-visible { background: var(--orange); transform: translate(-4px, -4px); }
-.orbit { position: absolute; right: 6vw; top: 12vh; width: 11rem; height: 11rem; border: 1px solid var(--ink); border-radius: 50%; display: grid; place-items: center; animation: drift 6s ease-in-out infinite; }
-.orbit span { font: 700 4rem/1 "Unbounded", sans-serif; transform: rotate(-13deg); }
 
-.manifesto { background: var(--ink); color: var(--paper); padding: 8rem 4vw; }
 .sectionNumber { color: var(--acid); font-weight: 700; text-transform: uppercase; letter-spacing: .1em; }
-.manifesto h2 { font: 500 clamp(2.8rem, 7vw, 7rem)/.98 "Unbounded", sans-serif; letter-spacing: -.06em; margin: 2rem 0 6rem; max-width: 12ch; }
 .listing, .courseDetail, .lessonPage, .accountPage { min-height: 100vh; background: var(--paper); color: var(--ink); }
 .listingHeader, .courseHero { padding: 8rem 4vw 5rem; border-bottom: 1px solid var(--line); }
 .listingHeader h1, .courseHero h1 { font: 500 clamp(4rem, 13vw, 11rem)/.82 "Unbounded", sans-serif; letter-spacing: -.075em; margin: 1.5rem 0 3rem; }
@@ -135,12 +124,6 @@ a { color: inherit; text-decoration: none; }
 .authForm .primary:disabled { cursor: wait; opacity: .55; }
 .smartCaptcha { min-height: 100px; }
 @media (max-width: 720px) { .courseCard { grid-template-columns: 2rem 1fr; } .courseArrow { display: none; } .syllabusSection { grid-template-columns: 1fr; } }
-.principles { display: grid; grid-template-columns: repeat(3, 1fr); border-top: 1px solid #55564e; }
-.principles article { padding: 2rem 3rem 3rem 0; border-right: 1px solid #55564e; }
-.principles article + article { padding-left: 3rem; }
-.principles span { color: var(--acid); font-family: "Unbounded", sans-serif; }
-.principles h3 { font: 500 2rem/1 "Unbounded", sans-serif; margin: 4rem 0 1.5rem; }
-.principles p { color: #c9c6bb; line-height: 1.6; max-width: 30ch; }
 footer { display: flex; justify-content: space-between; padding: 2rem 4vw; font-size: .8rem; text-transform: uppercase; }
 .analyticsSettings { border: 0; border-bottom: 1px solid currentColor; padding: 0; background: transparent; color: inherit; font: inherit; text-transform: inherit; cursor: pointer; }
 .consentDialog { position: fixed; z-index: 120; left: 1rem; right: 1rem; bottom: 1rem; max-width: 64rem; margin: auto; border: 2px solid var(--acid); background: var(--ink); color: var(--paper); padding: 1.25rem; box-shadow: 6px 6px 0 var(--orange); }
@@ -149,19 +132,14 @@ footer { display: flex; justify-content: space-between; padding: 2rem 4vw; font-
 .consentDialog div { display: flex; flex-wrap: wrap; gap: .75rem; }
 .consentDialog button { border: 1px solid var(--paper); background: transparent; color: inherit; padding: .75rem 1rem; font: inherit; cursor: pointer; }
 .consentDialog button:hover, .consentDialog button:focus-visible, .consentDialog button[aria-pressed="true"] { background: var(--acid); color: var(--ink); border-color: var(--acid); }
-@keyframes drift { 50% { transform: translateY(16px) rotate(8deg); } }
-@media (prefers-reduced-motion: reduce) { .orbit { animation: none; } * { scroll-behavior: auto !important; } }
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
 @media (max-width: 720px) {
   .navLinks { gap: 1rem; }
-  .hero { padding-top: 4vh; }
-  .heroFoot { grid-template-columns: 1fr; }
   .primary { justify-self: start; }
-  .orbit { width: 6rem; height: 6rem; top: 8rem; opacity: .6; }
-  .orbit span { font-size: 2rem; }
-  .principles { grid-template-columns: 1fr; }
-  .principles article, .principles article + article { padding: 2rem 0; border-right: 0; border-bottom: 1px solid #55564e; }
   .accountCourses article { grid-template-columns: 1fr; }
   .accountCourses li { grid-template-columns: 1fr; gap: .35rem; }
   .purchaseHistory li { grid-template-columns: 1fr; }
   .purchaseHistory div:last-child { text-align: left; }
 }
+
+body:has(.homeSnap) > footer { display: none; }

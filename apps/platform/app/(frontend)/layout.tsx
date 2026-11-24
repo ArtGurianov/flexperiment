@@ -3,6 +3,7 @@ import { Suspense, type ReactNode } from "react";
 import AnalyticsConsentManager, { AnalyticsSettingsButton } from "@/components/analytics/AnalyticsConsent";
 import { platformOrigin } from "@/lib/origins";
 import "./styles.css";
+import "./tailwind.css";
 
 export const metadata: Metadata = {
   metadataBase: new URL(platformOrigin()),
