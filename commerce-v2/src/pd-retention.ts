@@ -74,6 +74,8 @@ const supportedSchemaSha256 = new Set([
   "260e9e4e7d342587d89acad72ad5c38d4c83ede762b6afe5e4827483b71daa4d",
   // 0043: irreversible native payment handoff marker.
   "a9b1238f3188fd74e87d86edef9774887a4d23f728e24ab8337eb0060f889150",
+  // 0044: executor identity, fiscal mode and refund dispatch on existing financial rows.
+  "36f6eb94ea30d5955b2d48abc3b86ac86ee0a0fb05db86d10356360cc3a2d324",
 ]);
 const parse = <T>(schema: z.ZodType<T>, value: unknown): T => {
   const result = schema.safeParse(value); return result.success ? result.data : refuse("RETENTION_POLICY_OR_HOLD_INVALID");

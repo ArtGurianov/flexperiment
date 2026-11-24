@@ -1,7 +1,8 @@
 import { beginLabOccurrenceCancellation, completeLabOccurrenceCancellation } from "../src/lab-lifecycle";
 import Database from "better-sqlite3";
 import { scryptSync } from "node:crypto";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { reconcileAutomaticNativeReceipts } from "../src/fiscal-port";
 import { createCommerceV2App } from "../src/app";
 import { controlRoomIntegrationSummary } from "../src/control-room";
 import { confirmCheckout, prepareCheckout, type PaymentRail } from "../src/checkout";
@@ -16,11 +17,13 @@ import { nativeConfirm, reconcilePendingNativePayments, startNativePayment, type
 import { NativeQuoteRail } from "../src/native-payment-rail";
 import { nativePaymentsFromConfig } from "../src/native-payment-runtime";
 import { CommerceConfigurationError, loadCommerceRuntimeConfig } from "../src/payment-mode";
+import { executeApprovedNativeRefund, reconcilePendingNativeRefunds } from "../src/native-payment-refunds";
 import { decideRefund, requestRefund } from "../src/refunds";
 import { enrolledTotp, testTotpKey } from "./fixtures/control-room-totp";
 import { stageALegalManifest, stageALegalManifestJson, stageBLegalManifest, stageBLegalManifestJson } from "./fixtures/legal";
 import { confirmLabBuyer, labAcceptanceFor } from "./fixtures/lab-purchase";
 import { encodeIntentId } from "../../lib/my-checkout-intent";
+import { startTochkaHttpFixture } from "./fixtures/tochka-http";
 import { FakeNativeBank } from "./fixtures/native-fake-provider";
 import { openTestStorefront, qualifyTestFiscalPolicy, setTestStorefronts, withTestStorefrontSwitch } from "./fixtures/sales";
 
@@ -37,7 +40,10 @@ describe("PAYMENT_MODE=native configuration (FLEX-119)", () => {
     [{ DEPLOY_ENV: "production" }, "NATIVE_FAKE_PROVIDER_FORBIDDEN"],
     [{ DEPLOY_ENV: "staging" }, "NATIVE_FAKE_PROVIDER_FORBIDDEN"],
     [{ NATIVE_PROVIDER: "" }, "NATIVE_PROVIDER_INVALID"],
-    [{ NATIVE_PROVIDER: "tochka" }, "NATIVE_PROVIDER_INVALID"],
+    [{ NATIVE_PROVIDER: "tochka" }, "NATIVE_TOCHKA_FIXTURE_ORIGIN_REQUIRED"],
+    [{ NATIVE_PROVIDER: "tochka", NATIVE_TOCHKA_FIXTURE_ORIGIN: "https://enter.tochka.com" }, "NATIVE_TOCHKA_FIXTURE_ORIGIN_REQUIRED"],
+    [{ NATIVE_PROVIDER: "tochka", DEPLOY_ENV: "production" }, "NATIVE_TOCHKA_PROFILE_UNQUALIFIED"],
+    [{ NATIVE_PROVIDER: "tochka", NATIVE_FISCALIZATION_MODE: "MERCHANT" }, "NATIVE_TOCHKA_REQUIRES_PROVIDER_RECEIPTS"],
     [{ KINESCOPE_DELIVERY_MODE: "open" }, "NATIVE_REQUIRES_PROTECTED_KINESCOPE"],
     [{ NATIVE_FISCALIZATION_MODE: "BANK" }, "NATIVE_FISCALIZATION_MODE_INVALID"],
   ])("refuses to start with %o", (override, code) => {
@@ -228,6 +234,193 @@ describe("native checkout confirm and callback route (FLEX-119)", () => {
     expect([accepted.status, await accepted.json()]).toEqual([200, { accepted: true, duplicate: false }]);
     expect(db.prepare("SELECT COUNT(*) n FROM native_callback_inbox").get()).toEqual({ n: 1 });
   });
+  describe("Tochka HTTP and the native Commerce boundary", () => {
+    let fixture: Awaited<ReturnType<typeof startTochkaHttpFixture>>;
+    let tochkaConfig: ReturnType<typeof loadCommerceRuntimeConfig>;
+    let runtime: NonNullable<ReturnType<typeof nativePaymentsFromConfig>>;
+    const at = "2026-09-30T10:01:00.000Z";
+
+    beforeEach(async () => {
+      fixture = await startTochkaHttpFixture();
+      tochkaConfig = withTestStorefrontSwitch(loadCommerceRuntimeConfig({ ...nativeEnv,
+        NATIVE_PROVIDER: "tochka", NATIVE_TOCHKA_FIXTURE_ORIGIN: fixture.origin }));
+      runtime = nativePaymentsFromConfig(db, tochkaConfig, keyring)!;
+    });
+    afterEach(async () => { await fixture.close(); });
+
+    async function checkout() {
+      qualify("FULL_PAYMENT");
+      const input = { customerId: "customer", customerEmail: "student@example.com" };
+      const prepared = await prepareCheckout(db, runtime.quoteRail, tochkaConfig,
+        { ...input, offerRef: "course:one", previewIdempotencyKey: "tochka-preview" }, at);
+      if (prepared.state !== "PRICE_REVIEW_REQUIRED") throw new Error("expected a quote");
+      const submit = () => confirmCheckout(db, runtime.quoteRail, tochkaConfig, { ...input, quoteId: prepared.quoteId,
+        idempotencyKey: "tochka-confirm", native: nativeConfirm(db, runtime.ledger) }, at);
+      return { result: await submit(), submit };
+    }
+
+    const commerce = () => createCommerceV2App({ db, config: tochkaConfig, sourceCommit: "a".repeat(40), serviceToken: "synthetic",
+      refundEnvelopeKeys: keyring, paymentRail: runtime.quoteRail, nativePayments: runtime.ledger, authenticateCustomer: async () => "customer" });
+    const entitlementCount = () => db.prepare("SELECT COUNT(*) n FROM course_entitlements WHERE revoked_at IS NULL").get();
+    const fiscal = (kind: string) => db.prepare("SELECT event_ref,state,last_reason FROM fiscal_events WHERE kind=?")
+      .get(kind) as { event_ref: string; state: string; last_reason: string | null };
+
+    it("a confirmed MY buyer can purchase an open ready course with the pinned purchase documents", async () => {
+      db.prepare("UPDATE legal_releases SET version='native-synthetic-v1',manifest_json=? WHERE id='legal'").run(stageBLegalManifestJson);
+      qualify("FULL_PAYMENT");
+      confirmSyntheticAccount(db, "customer");
+      const legal = { version: "native-synthetic-v1", sha256: legalManifestHash(stageBLegalManifest) };
+      const my = "https://my.flexperiment.test";
+      const origins = { ...loadCommerceOrigins({}), my };
+      const app = createCommerceV2App({ db, config: { ...tochkaConfig, nativeCoursesLegal: legal }, origins, myIdentity: { mode: "on", origins },
+        sourceCommit: "a".repeat(40), serviceToken: "synthetic", paymentRail: runtime.quoteRail, nativePayments: runtime.ledger,
+        authenticateCustomer: async () => "customer", now: () => new Date(at) });
+      const headers = { "x-forwarded-host": new URL(my).host, origin: my, "content-type": "application/json" };
+      const post = (path: string, key: string, body: unknown) => app.request(path, { method: "POST",
+        headers: { ...headers, "idempotency-key": key }, body: JSON.stringify(body) });
+      const preview = await post("/v1/checkout/preview", "my-tochka-preview", { offerRef: "course:one" });
+      const review = await preview.json();
+      expect(preview.status, review.code).toBe(200);
+      const confirmed = await post("/v1/checkout", "my-tochka-confirm", { quoteId: review.quoteId,
+        returnPath: `/checkout/${encodeIntentId("course:one")}`, legalAcceptance: { ...review.legalAcceptance, accepted: true } });
+      expect(confirmed.status).toBe(201);
+      const order = await confirmed.json();
+      expect(order.paymentUrl).toMatch(/^https:\/\/bank\.example\.test/);
+      fixture.pay([...fixture.payments.values()][0]);
+      const status = await app.request(`/v1/checkout/${order.orderPublicId}`, { headers });
+      expect(await status.json()).toMatchObject({ kind: "ONLINE_COURSE", contour: "NATIVE", payment: "ACCESS_GRANTED" });
+      expect(fixture.calls).toMatchObject({ create: 1, debit: 1 });
+    });
+
+    it("lost create remains UNKNOWN, recovers on the next process and grants once through buyer return", async () => {
+      fixture.faults.loseCreate = true;
+      fixture.faults.hideFromList = true;
+      const { result, submit } = await checkout();
+      expect(result.state).toBe("CREATE_UNKNOWN");
+      expect((await submit()).state).toBe("CREATE_UNKNOWN");
+      fixture.faults.hideFromList = false;
+      const [payment] = fixture.payments.values();
+      fixture.pay(payment);
+      runtime = nativePaymentsFromConfig(db, tochkaConfig, keyring)!;
+      const status = () => commerce().request(`/v1/checkout/${result.orderPublicId}`);
+      // A temporary DB failure simulates a failure after the first bank confirmation, before the access commit.
+      db.exec(`CREATE TRIGGER simulated_grant_failure BEFORE INSERT ON course_entitlements BEGIN SELECT RAISE(ABORT, 'TEST_STOP'); END;`);
+      await status();
+      expect(entitlementCount()).toEqual({ n: 0 });
+      db.exec("DROP TRIGGER simulated_grant_failure");
+      const response = await status();
+      expect(await response.json()).toMatchObject({ payment: "ACCESS_GRANTED" });
+      await reconcilePendingNativePayments(db, runtime.ledger);
+      expect(entitlementCount()).toEqual({ n: 1 });
+      expect(fixture.calls).toMatchObject({ create: 1, debit: 1, receipt: 0 });
+      expect(fiscal("PAYMENT_RECEIPT").state).toBe("PENDING");
+      await reconcileAutomaticNativeReceipts(db, runtime.ledger);
+      expect(fiscal("PAYMENT_RECEIPT")).toMatchObject({ state: "PENDING", last_reason: "RECEIPT_NOT_YET_VISIBLE" });
+      fixture.receipt(payment, fiscal("PAYMENT_RECEIPT").event_ref, false);
+      await reconcileAutomaticNativeReceipts(db, runtime.ledger);
+      expect(fiscal("PAYMENT_RECEIPT").state).toBe("REGISTERED");
+    });
+
+    it("a signed callback schedules read-back, a forgery or foreign merchant is rejected, and a retry is deduplicated", async () => {
+      const { result } = await checkout();
+      expect(result.state).toBe("PENDING");
+      const [payment] = fixture.payments.values();
+      const app = commerce();
+      const send = (body: string) => app.request("/v1/native-payments/callback", { method: "POST",
+        headers: { "content-type": "text/plain" }, body });
+      const initialReads = fixture.calls.info;
+      expect((await send(fixture.callback(payment, true))).status).toBe(401);
+      expect((await send(fixture.callback(payment, false, { merchantId: "000000000000002" }))).status).toBe(401);
+      expect(fixture.calls.info).toBe(initialReads);
+      // Bank still says CREATED even when the signed body claims APPROVED.
+      const signal = fixture.callback(payment);
+      expect((await send(signal)).status).toBe(200);
+      expect(fixture.calls.info).toBe(initialReads + 1);
+      expect(entitlementCount()).toEqual({ n: 0 });
+      fixture.pay(payment);
+      expect(await (await send(signal)).json()).toEqual({ accepted: true, duplicate: true });
+      expect(fixture.calls.info).toBe(initialReads + 1);
+      // A lost final callback is immaterial to the scheduled sweep.
+      await reconcilePendingNativePayments(db, runtime.ledger);
+      expect(entitlementCount()).toEqual({ n: 1 });
+      expect(db.prepare("SELECT COUNT(*) n FROM native_callback_inbox").get()).toEqual({ n: 1 });
+      expect(fixture.calls.key).toBe(1);
+    });
+
+    it.each([
+      ["wrong amount", { amount: 101 }],
+      ["wrong currency", { currency: "USD" }],
+      ["wrong operation id", { operationId: "0193d871-efcf-7897-8888-84ead1804311" }],
+      ["wrong frozen order reference", { paymentLinkId: "different" }],
+    ])("%s on bank read-back cannot grant", async (_label, fault) => {
+      const { result } = await checkout();
+      expect(result.state).toBe("PENDING");
+      fixture.pay([...fixture.payments.values()][0]);
+      Object.assign(fixture.faults, fault);
+      await reconcilePendingNativePayments(db, runtime.ledger);
+      expect(entitlementCount()).toEqual({ n: 0 });
+      expect(fixture.calls.create).toBe(1);
+    });
+
+    async function requestApprovedRefund() {
+      const { result } = await checkout();
+      const [payment] = fixture.payments.values();
+      fixture.pay(payment);
+      await reconcilePendingNativePayments(db, runtime.ledger);
+      const request = requestRefund(db, { customerId: "customer", orderPublicId: result.orderPublicId,
+        idempotencyKey: "refund-tochka", reasonCode: "CUSTOMER_REQUEST" }, at);
+      decideRefund(db, request.requestPublicId, { outcome: "APPROVE", amountKopecks: 10000,
+        policyBasis: "full", rationale: "synthetic", actor: "operator" }, at);
+      return { payment, refundId: request.requestPublicId };
+    }
+
+    it("lost refund ACK is independent of both receipts and converges without resend even with COURSES closed", async () => {
+      const { payment, refundId } = await requestApprovedRefund();
+      setTestStorefronts(db, { COURSES: "CLOSED" });
+      fixture.faults.loseRefund = true;
+      fixture.faults.hideRefund = true;
+      const execute = () => executeApprovedNativeRefund(db, runtime.ledger, refundId);
+      expect((await execute()).state).toBe("SUBMIT_UNKNOWN");
+      expect((await execute()).state).toBe("SUBMIT_UNKNOWN");
+      expect(entitlementCount()).toEqual({ n: 1 });
+      fixture.faults.hideRefund = false;
+      await reconcilePendingNativeRefunds(db, runtime.ledger);
+      expect(db.prepare("SELECT state FROM native_refunds").get()).toEqual({ state: "PROCESSING" });
+      fixture.completeRefund(payment);
+      await reconcilePendingNativeRefunds(db, runtime.ledger);
+      expect(db.prepare("SELECT state FROM native_refunds").get()).toEqual({ state: "SUCCEEDED" });
+      expect(entitlementCount()).toEqual({ n: 0 });
+      expect(fiscal("PAYMENT_RECEIPT").state).toBe("PENDING");
+      expect(fiscal("REFUND_RECEIPT").state).toBe("PENDING");
+      fixture.receipt(payment, fiscal("REFUND_RECEIPT").event_ref, true);
+      fixture.receipt(payment, fiscal("PAYMENT_RECEIPT").event_ref, false, { amount: 1 });
+      await reconcileAutomaticNativeReceipts(db, runtime.ledger);
+      expect(fiscal("PAYMENT_RECEIPT")).toMatchObject({ state: "REVIEW_REQUIRED", last_reason: "FISCAL_BINDING_MISMATCH" });
+      expect(fiscal("REFUND_RECEIPT").state).toBe("REGISTERED");
+      await reconcileAutomaticNativeReceipts(db, runtime.ledger);
+      expect(fixture.calls).toMatchObject({ create: 1, debit: 1, refund: 1, returned: 1 });
+      expect(db.prepare("SELECT COUNT(*) n FROM fiscal_events WHERE mode='MERCHANT'").get()).toEqual({ n: 0 });
+    });
+
+    it("does not replay when a failed create never appeared at the bank", async () => {
+      fixture.faults.lostBeforeCreate = true;
+      const { result } = await checkout();
+      expect(result.state).toBe("CREATE_UNKNOWN");
+      await reconcilePendingNativePayments(db, runtime.ledger);
+      expect(fixture.calls).toMatchObject({ create: 1, debit: 0 });
+      expect(entitlementCount()).toEqual({ n: 0 });
+    });
+
+    it("does not replay when an ambiguous refund never appeared at the bank", async () => {
+      const { refundId } = await requestApprovedRefund();
+      fixture.faults.lostBeforeRefund = true;
+      expect((await executeApprovedNativeRefund(db, runtime.ledger, refundId)).state).toBe("SUBMIT_UNKNOWN");
+      await reconcilePendingNativeRefunds(db, runtime.ledger);
+      expect(fixture.calls).toMatchObject({ refund: 1, returned: 0 });
+      expect(entitlementCount()).toEqual({ n: 1 });
+    });
+  });
+
 });
 
 describe("native dispatch in the refund and order read routes; historical RC.2 preserved (FLEX-119)", () => {
@@ -537,4 +730,102 @@ describe("owner directive v4.8 item 4: COURSES=OPEN, LAB=CLOSED, PAYMENT_MODE=na
     await reconcilePendingNativePayments(db, ledger());
     expect({ ...sideEffects(), orders: 0 }).toEqual(none);
   });
+  describe("Tochka Cheki leaves new LAB operations closed with the LAB switch OPEN", () => {
+    let fixture: Awaited<ReturnType<typeof startTochkaHttpFixture>>;
+    let tochkaConfig: ReturnType<typeof loadCommerceRuntimeConfig>;
+    let runtime: NonNullable<ReturnType<typeof nativePaymentsFromConfig>>;
+    const at = "2026-09-30T10:01:00.000Z";
+    const later = "2026-09-30T10:10:00.000Z";
+    const buyer = { customerId: "customer", customerEmail: "student@example.com" };
+
+    beforeEach(async () => {
+      setTestStorefronts(db, { COURSES: "OPEN", LAB: "OPEN" });
+      fixture = await startTochkaHttpFixture();
+      tochkaConfig = withTestStorefrontSwitch(loadCommerceRuntimeConfig({ ...nativeEnv,
+        NATIVE_PROVIDER: "tochka", NATIVE_TOCHKA_FIXTURE_ORIGIN: fixture.origin }));
+      runtime = nativePaymentsFromConfig(db, tochkaConfig, keyring)!;
+    });
+    afterEach(async () => { await fixture.close(); });
+
+    async function oldQuote() {
+      const result = await prepareCheckout(db, rail, config, { ...buyer, offerRef: "lab:a",
+        previewIdempotencyKey: "lab-before-profile-change", storefront: "LAB" }, "2026-09-30T10:00:00Z");
+      if (result.state !== "PRICE_REVIEW_REQUIRED") throw new Error("expected a quote");
+      return { ...buyer, quoteId: result.quoteId, idempotencyKey: "lab-confirm-profile", labAcceptance: labAcceptanceFor(db) };
+    }
+
+    it("refuses new checkout and a previously issued quote before order and reserve", async () => {
+      await expect(prepareCheckout(db, runtime.quoteRail, tochkaConfig, { ...buyer, offerRef: "lab:a",
+        previewIdempotencyKey: "lab-cheki", storefront: "LAB" }, at)).rejects.toThrow("NATIVE_TOCHKA_PRODUCT_UNAVAILABLE");
+      const app = createCommerceV2App({ db, config: tochkaConfig, sourceCommit: "a".repeat(40), serviceToken: "synthetic",
+        paymentRail: runtime.quoteRail, nativePayments: runtime.ledger, authenticateCustomer: async () => buyer.customerId,
+        now: () => new Date(at) });
+      const preview = await app.request("/v1/checkout/preview", { method: "POST",
+        headers: { "x-forwarded-host": "localhost:3000", "content-type": "application/json", "idempotency-key": "lab-cheki-http" },
+        body: JSON.stringify({ offerRef: "lab:a" }) });
+      expect([preview.status, await preview.json()]).toEqual([409, { code: "NATIVE_TOCHKA_PRODUCT_UNAVAILABLE" }]);
+      expect(sideEffects()).toEqual(none);
+      const quote = await oldQuote();
+      await expect(confirmCheckout(db, runtime.quoteRail, tochkaConfig, { ...quote, native: nativeConfirm(db, runtime.ledger) }, at))
+        .rejects.toThrow("NATIVE_TOCHKA_PRODUCT_UNAVAILABLE");
+      expect(sideEffects()).toEqual({ ...none, quotes: 1 });
+      expect(db.prepare("SELECT consumed_at FROM checkout_quotes").get()).toEqual({ consumed_at: null });
+      expect(fixture.calls).toMatchObject({ create: 0, list: 0, info: 0 });
+    });
+
+    it("refuses direct LAB create and expires a staged unsent LAB payment on sweep", async () => {
+      const quote = await oldQuote();
+      const active = { ...ledger(), now: () => at };
+      const staged = nativeConfirm(db, active);
+      await expect(confirmCheckout(db, rail, config, { ...quote, native: { ...staged,
+        dispatch: async order => { throw new Error(`SYNTHETIC_STOP:${order}`); } } }, at)).rejects.toThrow("SYNTHETIC_STOP");
+      const { public_id: orderId } = db.prepare("SELECT public_id FROM orders").get() as { public_id: string };
+      // Remove only the synthetic unsent row, then exercise the direct staging entrypoint on the existing order.
+      db.prepare("DELETE FROM native_payments WHERE dispatch_started=0").run();
+      await expect(startNativePayment(db, runtime.ledger, orderId)).rejects.toThrow("NATIVE_PAYMENT_INITIATION_STOPPED");
+      staged.stage(orderId);
+      await reconcilePendingNativePayments(db, { ...runtime.ledger, historicalProviders: [bank], now: () => later });
+      expect(db.prepare("SELECT state,dispatch_started FROM native_payments").get()).toEqual({ state: "EXPIRED", dispatch_started: 0 });
+      expect(fixture.calls).toMatchObject({ create: 0, info: 0 });
+      expect(bank.calls.create).toHaveLength(0);
+    });
+
+    it("sweeps already-sent LAB through the original executor and refunds on the same rail", async () => {
+      const quote = await oldQuote();
+      bank.faults.create.push("LOSE_AFTER_COMMIT");
+      bank.faults.readPayment.push("UNAVAILABLE");
+      const { orderPublicId } = await confirmCheckout(db, rail, config, { ...quote, native: nativeConfirm(db, { ...ledger(), now: () => at }) }, at);
+      expect(db.prepare("SELECT state FROM native_payments").get()).toEqual({ state: "CREATE_UNKNOWN" });
+      const migrated = { ...runtime.ledger, historicalProviders: [bank], now: () => later };
+      await reconcilePendingNativePayments(db, migrated);
+      expect(db.prepare("SELECT state FROM native_payments").get()).toEqual({ state: "PENDING" });
+      bank.buyerPays(orderPublicId);
+      await reconcilePendingNativePayments(db, migrated);
+      expect(db.prepare("SELECT state FROM native_payments").get()).toEqual({ state: "PAID" });
+      const request = requestRefund(db, { customerId: buyer.customerId, orderPublicId,
+        idempotencyKey: "historical-lab-refund", reasonCode: "CUSTOMER_REQUEST" }, later);
+      decideRefund(db, request.requestPublicId, { outcome: "APPROVE", amountKopecks: 350000, policyBasis: "full",
+        rationale: "synthetic", actor: "operator" }, later);
+      await executeApprovedNativeRefund(db, migrated, request.requestPublicId);
+      bank.settleRefund(`refund:${request.requestPublicId}`);
+      await reconcilePendingNativeRefunds(db, migrated);
+      expect(db.prepare("SELECT state FROM native_refunds").get()).toEqual({ state: "SUCCEEDED" });
+      expect(bank.calls.create).toHaveLength(1);
+      expect(bank.calls.submitRefund).toHaveLength(1);
+      expect(fixture.calls).toMatchObject({ create: 0, info: 0, refund: 0 });
+    });
+
+    it("blocks replay of a historical ambiguous LAB create even when the old executor supports replay", async () => {
+      const quote = await oldQuote();
+      bank.faults.create.push("LOSE_BEFORE_COMMIT");
+      bank.faults.readPayment.push("UNAVAILABLE");
+      await confirmCheckout(db, rail, config, { ...quote, native: nativeConfirm(db, { ...ledger(), now: () => at }) }, at);
+      await reconcilePendingNativePayments(db, { ...runtime.ledger, historicalProviders: [bank], now: () => later });
+      expect(db.prepare("SELECT state,dispatch_started FROM native_payments").get()).toEqual({ state: "CREATE_UNKNOWN", dispatch_started: 1 });
+      expect(bank.calls.readPayment).toBe(2);
+      expect(bank.calls.create).toHaveLength(1);
+      expect(fixture.calls.create).toBe(0);
+    });
+  });
+
 });

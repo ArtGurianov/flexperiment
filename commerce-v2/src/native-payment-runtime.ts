@@ -1,24 +1,33 @@
 import type Database from "better-sqlite3";
-import { reconcilePendingFiscalEvents } from "./fiscal-port";
+import { reconcileAutomaticNativeReceipts, reconcilePendingFiscalEvents } from "./fiscal-port";
 import { FakeFiscalAdapter, FakeNativeBank } from "./native-payment-fake";
 import type { ProductKind } from "./native-payment-contract";
 import { reconcilePendingNativePayments, type NativeLedgerContext } from "./native-payment-ledger";
 import { reconcilePendingNativeRefunds } from "./native-payment-refunds";
 import { NativeQuoteRail } from "./native-payment-rail";
-import type { CommerceRuntimeConfig } from "./payment-mode";
+import { TochkaNativeAcquiring } from "./native-payment-tochka";
+import { nativePurchaseAllowed, tochkaFixtureOrigin, type CommerceRuntimeConfig } from "./payment-mode";
 import type { RefundEnvelopeKeyring } from "./refund-envelope";
 import { assertStorefrontOpen, SalesStoppedError } from "./storefront-switch";
 
 /**
  * FLEX-119 · composition of the direct native contour for server.ts. Present only with
- * PAYMENT_MODE=native; payment-mode.ts admits only NATIVE_PROVIDER=fake, and only in local/test.
+ * PAYMENT_MODE=native. The unqualified Tochka profile connects only to a loopback fixture.
  * New money is admitted by the owner's storefront switch at the moment of each send (I7).
  */
 export function nativePaymentsFromConfig(db: Database.Database, config: CommerceRuntimeConfig, keyring: RefundEnvelopeKeyring | undefined) {
   if (config.paymentMode !== "native") return undefined;
   if (!config.native) throw new Error("NATIVE_CONFIGURATION_REQUIRED");
   if (!keyring) throw new Error("REFUND_ENVELOPE_KEYS_REQUIRED");
-  if (config.deployEnvironment !== "local" && config.deployEnvironment !== "test") throw new Error("NATIVE_FAKE_PROVIDER_FORBIDDEN");
+  if (config.deployEnvironment !== "local" && config.deployEnvironment !== "test") {
+    throw new Error(config.native.provider === "tochka" ? "NATIVE_TOCHKA_PROFILE_UNQUALIFIED" : "NATIVE_FAKE_PROVIDER_FORBIDDEN");
+  }
+  const fake = new FakeNativeBank();
+  const provider = config.native.provider === "tochka" ? new TochkaNativeAcquiring({
+    origin: tochkaFixtureOrigin(config.native.fixtureOrigin),
+    // Synthetic fixture constants; no bank credentials can be read by this composition.
+    customerCode: "000000001", merchantId: "000000000000001", bearer: "local-fixture",
+  }) : fake;
   const issuedQuote = db.prepare("SELECT storefront_open_since FROM checkout_quotes WHERE order_public_id=? AND consumed_at IS NOT NULL");
   // The native-only source branch can run before the LAB cancellation migration is present.
   const hasLabCancellation = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='lab_occurrence_cancellations'").get();
@@ -29,6 +38,7 @@ export function nativePaymentsFromConfig(db: Database.Database, config: Commerce
       ${hasLabCancellation
         ? "AND NOT EXISTS (SELECT 1 FROM lab_occurrence_cancellations c WHERE c.occurrence_ref=occurrence.occurrence_ref)" : ""}`);
   const mayInitiate = (kind: ProductKind, orderPublicId: string) => {
+    if (!nativePurchaseAllowed(config, kind)) return false;
     const quote = issuedQuote.get(orderPublicId) as { storefront_open_since: number | null } | undefined;
     if (!quote) return false;
     if (kind === "LAB" && !eligibleLabOffer.get(orderPublicId)) return false;
@@ -41,10 +51,11 @@ export function nativePaymentsFromConfig(db: Database.Database, config: Commerce
       throw error;
     }
   };
-  const ledger: NativeLedgerContext = { provider: new FakeNativeBank(), keyring, fiscalizationMode: config.native.fiscalizationMode, mayInitiate };
+  const ledger: NativeLedgerContext = { provider, keyring, fiscalizationMode: config.native.fiscalizationMode, mayInitiate,
+    ...(provider === fake ? {} : { historicalProviders: [fake] }) };
   return {
     ledger,
-    fiscalAdapter: new FakeFiscalAdapter(),
+    fiscalAdapter: provider === fake ? new FakeFiscalAdapter() : undefined,
     quoteRail: new NativeQuoteRail({ merchantId: "flexperiment-native", fiscalizationMode: config.native.fiscalizationMode }),
   };
 }
@@ -60,10 +71,13 @@ export function startNativeSweeps(db: Database.Database, native: NonNullable<Ret
         await reconcilePendingNativePayments(db, native.ledger);
         await reconcilePendingNativeRefunds(db, native.ledger);
         // D's SERVICE_RENDERED reader is attached at D's integration; until then settlements stay AWAITING_SERVICE.
-        await reconcilePendingFiscalEvents(db, { adapter: native.fiscalAdapter, keyring: native.ledger.keyring });
+        if (native.fiscalAdapter) {
+          await reconcilePendingFiscalEvents(db, { adapter: native.fiscalAdapter, keyring: native.ledger.keyring });
+        }
+        await reconcileAutomaticNativeReceipts(db, native.ledger);
       });
-    } catch (error) {
-      console.error("native payment sweep failed", error);
+    } catch {
+      console.error("NATIVE_PAYMENT_SWEEP_FAILED");
     } finally {
       running = false;
     }

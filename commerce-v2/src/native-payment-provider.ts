@@ -1,6 +1,6 @@
 /**
- * FLEX-119 · the native acquiring provider port (contract §10). One real adapter is added only once the
- * provider and an admitted environment are confirmed; tests use the fake in test/fixtures.
+ * FLEX-119 · the native acquiring provider port (contract §10). Each adapter owns the translation between
+ * its provider protocol and the ledger’s frozen bindings.
  *
  * Transport contract: a method that throws (timeout, reset, 5xx, unparseable body) is treated as a LOST
  * answer for a submission and as UNAVAILABLE for a read-back. Only `REFUSED` with request-bound proof
@@ -16,6 +16,7 @@ export type FrozenNativePaymentRequest = {
   readonly currency: "RUB";
   readonly snapshotHash: string;
   readonly purpose: string;
+  readonly taxSystem?: string;
   readonly successUrl?: string;
   readonly receiptEmail: string;
   readonly fiscalItems: readonly unknown[];
@@ -30,6 +31,7 @@ export type FrozenNativeRefundRequest = {
   readonly currency: "RUB";
   readonly receiptEmail: string;
   readonly fiscalItems: readonly unknown[];
+  readonly paymentKey?: RefundReadKey;
 };
 
 export type NativeCreateAnswer =
@@ -41,7 +43,6 @@ export type NativePaymentReadBack =
   | {
     readonly outcome: "FOUND"; readonly providerPaymentId: string; readonly status: "PENDING" | "PAID" | "DECLINED" | "EXPIRED";
     readonly merchantOrderRef: string; readonly amountKopecks: number; readonly currency: string; readonly snapshotHash: string;
-    readonly providerReceiptRef?: string;
     readonly paymentUrl?: string;
   };
 
@@ -63,16 +64,28 @@ export type NativeCallbackHint = {
   readonly providerSubjectId: string;
 };
 
+export type PaymentReadKey = { readonly snapshotHash: string; readonly providerPaymentId: string | null; readonly createdAt: string };
+export type RefundReadKey = {
+  readonly providerPaymentId: string; readonly merchantOrderRef: string; readonly snapshotHash: string;
+};
+
 export interface NativePaymentProvider {
   readonly name: string;
+  /** Stable connection identity, independent of credential rotation. */
+  readonly executorKey?: string;
+  /** The automatic issuer's read-only view. The money endpoints cannot confirm a receipt. */
+  readonly readAutomaticReceipt?: (kind: "PAYMENT_RECEIPT" | "REFUND_RECEIPT", paymentId: string, refundId: string | null) =>
+    Promise<import("./fiscal-port").FiscalReadBack>;
   /** Provider, not merchant, guarantees a repeated key cannot create a second financial effect. */
   readonly replayGuarantees: { readonly payment: boolean; readonly refund: boolean };
   createPayment(request: FrozenNativePaymentRequest): Promise<NativeCreateAnswer>;
   /** Authoritative, by our merchant order ref. */
-  readPaymentByOrder(merchantOrderRef: string): Promise<NativePaymentReadBack>;
+  readPaymentByOrder(merchantOrderRef: string, key: PaymentReadKey): Promise<NativePaymentReadBack>;
+  /** Optional read-only check before the ledger records first dispatch. False refuses before POST. */
+  prepareRefund?(request: FrozenNativeRefundRequest): Promise<boolean>;
   submitRefund(request: FrozenNativeRefundRequest): Promise<NativeRefundAnswer>;
   /** Authoritative, by our refund ref. */
-  readRefund(refundRef: string): Promise<NativeRefundReadBack>;
+  readRefund(refundRef: string, key: RefundReadKey): Promise<NativeRefundReadBack>;
   /** null: signature invalid or body unusable. Never throws for a forged body. */
-  verifyCallback(headers: Readonly<Record<string, string | undefined>>, rawBody: Uint8Array): NativeCallbackHint | null;
+  verifyCallback(headers: Readonly<Record<string, string | undefined>>, rawBody: Uint8Array): NativeCallbackHint | null | Promise<NativeCallbackHint | null>;
 }

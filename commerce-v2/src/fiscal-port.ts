@@ -3,7 +3,7 @@ import {
   admitFinalSettlement, applyFiscalObservation, cancelReservedSettlement, type FiscalAdapterCapabilities, type FiscalEventState,
   type FiscalObservation, type FiscalPaymentMethod, type NativePaymentState, type ProductKind, type ServiceRenderedFact,
 } from "./native-payment-contract";
-import { auditNative } from "./native-payment-ledger";
+import { auditNative, nativeProviderForPayment, type NativeLedgerContext } from "./native-payment-ledger";
 import { openPayload, type RefundEnvelopeKeyring } from "./refund-envelope";
 
 /**
@@ -87,6 +87,51 @@ function frozenEvent(db: Database.Database, keyring: RefundEnvelopeKeyring, row:
     ...(prepayment ? { prepayment: { executor: "NATIVE" as const, paymentRef: prepayment.payment_ref, receiptRef: prepayment.provider_receipt_id } } : {}),
     ...(evidence.serviceRenderedAt ? { serviceRenderedAt: evidence.serviceRenderedAt } : {}),
   };
+}
+
+/** Provider-issued receipts are observed independently; this path has no submission capability. */
+export async function reconcileAutomaticNativeReceipts(db: Database.Database, ledger: NativeLedgerContext) {
+  const rows = db.prepare(`SELECT f.id,f.kind,p.executor_key,p.provider_payment_id,r.provider_refund_id
+    FROM fiscal_events f JOIN order_lines l ON l.id=f.order_line_id
+    JOIN native_payments p ON p.order_id=l.order_id
+    LEFT JOIN native_refunds r ON r.refund_request_id=f.refund_request_id
+    WHERE f.mode='PROVIDER' AND f.state='PENDING' AND f.kind IN ('PAYMENT_RECEIPT','REFUND_RECEIPT')
+    ORDER BY f.updated_at LIMIT 100`).all() as {
+    id: string; kind: "PAYMENT_RECEIPT" | "REFUND_RECEIPT"; executor_key: string;
+    provider_payment_id: string; provider_refund_id: string | null;
+  }[];
+  const now = ledger.now?.() ?? new Date().toISOString();
+  let failed = 0;
+  for (const binding of rows) {
+    try {
+      const provider = nativeProviderForPayment(ledger, binding.executor_key);
+      if (!provider.readAutomaticReceipt || (binding.kind === "REFUND_RECEIPT" && !binding.provider_refund_id)) {
+        throw new Error("NATIVE_RECEIPT_READ_BACK_UNAVAILABLE");
+      }
+      const result = await provider.readAutomaticReceipt(binding.kind, binding.provider_payment_id, binding.provider_refund_id);
+      db.transaction(() => {
+        const current = eventRow(db, binding.id)!;
+        if (current.state !== "PENDING") return;
+        if (result.outcome === "NOT_FOUND") {
+          // Processing, or temporarily absent, is still an outstanding receipt.
+          db.prepare("UPDATE fiscal_events SET updated_at=?,last_reason=? WHERE id=?").run(now, "RECEIPT_NOT_YET_VISIBLE", binding.id);
+          return;
+        }
+        const { fiscalSign, issuedAt, ...receipt } = result;
+        const decision = applyFiscalObservation({ state: current.state, providerReceiptId: current.provider_receipt_id },
+          { eventRef: current.event_ref, amountKopecks: current.amount_kopecks, paymentMethod: current.payment_method },
+          { ...receipt, source: "READ_BACK" });
+        const evidence = decision.state === "REGISTERED" ? { fiscalSign, issuedAt,
+          providerPaymentId: binding.provider_payment_id, providerRefundId: binding.provider_refund_id } : undefined;
+        setState(db, current, decision.state, decision.providerReceiptId, decision.reason, evidence, now);
+      }).immediate();
+    } catch {
+      failed += 1;
+      db.prepare("UPDATE fiscal_events SET updated_at=?,last_reason=? WHERE id=? AND state='PENDING'")
+        .run(now, "READ_BACK_UNAVAILABLE", binding.id);
+    }
+  }
+  return { selected: rows.length, failed };
 }
 
 async function observe(adapter: FiscalAdapter, eventRef: string): Promise<FiscalObservation> {

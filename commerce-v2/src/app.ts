@@ -1,7 +1,7 @@
 import { MY_CHECKOUT_RETURN_PATH } from "../../lib/my-checkout-intent";
 import { labGuestClientIp } from "./lab-guest-client-ip";
 import { receiveNativeCallback } from "./native-payment-callbacks";
-import { contourOfOrder, nativeConfirm, nativeOrderStatus, reconcileNativePaymentWithoutNewCharge, type NativeLedgerContext } from "./native-payment-ledger";
+import { contourOfOrder, nativeConfirm, nativeOrderStatus, refreshNativeOrderStatus, reconcileNativePaymentWithoutNewCharge, type NativeLedgerContext } from "./native-payment-ledger";
 import { executeApprovedNativeRefund } from "./native-payment-refunds";
 import { registerLabGuestRoutes, labBearer } from "./lab-guest-routes";
 import { registerLabInterestRoutes } from "./lab-interest-routes";
@@ -1235,9 +1235,13 @@ export function createCommerceV2App(deps: Dependencies) {
     const owned = deps.db.prepare("SELECT 1 FROM orders WHERE public_id=? AND customer_id=?").get(context.req.param("orderPublicId"), customerId);
     if (!owned) return context.json({ code: "ORDER_NOT_FOUND" }, 404, noStore);
     try {
-      // FLEX-119 · a NATIVE order is read from the native ledger (its sweep owns provider read-back).
+      // The Tochka return path can catch up with a read-only lookup before the next sweep.
       if (deps.nativePayments && contourOfOrder(deps.db, context.req.param("orderPublicId")) === "NATIVE") {
-        return context.json(nativeOrderStatus(deps.db, context.req.param("orderPublicId")), 200, noStore);
+        const orderPublicId = context.req.param("orderPublicId");
+        const status = deps.config.native?.provider === "tochka"
+          ? await refreshNativeOrderStatus(deps.db, deps.nativePayments, orderPublicId)
+          : nativeOrderStatus(deps.db, orderPublicId);
+        return context.json(status, 200, noStore);
       }
       const originalRail = deps.nativePayments ? deps.historicalPaymentRail : deps.paymentRail;
       if (!originalRail) return context.json({ code: "PAYMENT_RAIL_UNAVAILABLE" }, 503, noStore);
@@ -1297,11 +1301,15 @@ export function createCommerceV2App(deps: Dependencies) {
   // event is stored durably before 2xx and only schedules a read-back (native-payment-callbacks.ts).
   if (deps.config.paymentMode === "native" && deps.nativePayments) {
     const nativePayments = deps.nativePayments;
-    app.post("/v1/native-payments/callback", async (context) => {
+    app.post("/v1/native-payments/callback", bodyLimit({ maxSize: 8192 }), async (context) => {
       const rawBody = new Uint8Array(await context.req.arrayBuffer());
       const headers = Object.fromEntries(context.req.raw.headers.entries());
-      const result = await receiveNativeCallback(deps.db, nativePayments, headers, rawBody);
-      return context.json(result, result.accepted ? 200 : 401, noStore);
+      try {
+        const result = await receiveNativeCallback(deps.db, nativePayments, headers, rawBody);
+        return context.json(result, result.accepted ? 200 : 401, noStore);
+      } catch {
+        return context.json({ code: "NATIVE_CALLBACK_UNAVAILABLE" }, 503, noStore);
+      }
     });
   }
 

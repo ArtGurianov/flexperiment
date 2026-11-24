@@ -16,7 +16,7 @@ import type { Storefront } from "./origins";
 import type { RefundEnvelope } from "./refund-envelope";
 import { assertMerchantPromotionStillApplicable, resolveCheckoutCode, type MerchantPromotionSnapshot } from "./promotions";
 import { assertLabOccurrenceAdmissible, occurrenceInstant, type BuyerVenueDisclosure } from "./lab-occurrences";
-import { assertOfferSaleModeAllowed, type CommerceRuntimeConfig } from "./payment-mode";
+import { assertOfferSaleModeAllowed, nativePurchaseAllowed, type CommerceRuntimeConfig } from "./payment-mode";
 import { assertStorefrontOpen, SalesStoppedError, type SalesStopStage, type StorefrontSwitchConfig } from "./storefront-switch";
 import { assertClosedPaidTestAccountConsents, assertClosedPaidTestFiscal, assertClosedPaidTestOffer, assertClosedPaidTestPrice, buyerEmailSha256 } from "./closed-paid-test";
 
@@ -34,7 +34,7 @@ function checkoutAdmission<T>(guard: () => T): T {
 }
 
 /** The runtime facts checkout re-evaluates on every preview and confirm. */
-export type CheckoutPolicyConfig = Pick<CommerceRuntimeConfig, "deployEnvironment" | "paymentMode" | "merchantPromotionPrefix" | "closedPaidTest" | "storefrontSwitch" | "nativeCoursesLegal">;
+export type CheckoutPolicyConfig = Pick<CommerceRuntimeConfig, "deployEnvironment" | "paymentMode" | "merchantPromotionPrefix" | "closedPaidTest" | "storefrontSwitch" | "native" | "nativeCoursesLegal">;
 export type PaidCheckoutAcceptance = { accepted: boolean; releaseVersion: string; manifestSha256: string; receiptEmail: string };
 
 export type RailState = "PENDING" | "CUSTOMER_ACTION_REQUIRED" | "PAID" | "DECLINED" | "EXPIRED" | "REFUND_PENDING" | "REFUNDED" | "REVIEW_REQUIRED";
@@ -402,6 +402,7 @@ const freezeLine = (db: Database.Database, offer: OfferRow, venue?: BuyerVenueDi
 /** Live sellability of the offer itself, re-read on every checkout step; a stored quote never stands in for it. */
 function assertOfferOpenToCustomer(db: Database.Database, config: CheckoutPolicyConfig, offer: OfferRow | undefined, customerEmail: string, now: string) {
   if (!offer || offer.withdrawn_at) throw new CheckoutConflictError("OFFER_NOT_AVAILABLE");
+  if (!nativePurchaseAllowed(config, offer.kind)) throw new CheckoutConflictError("NATIVE_TOCHKA_PRODUCT_UNAVAILABLE");
   if (offer.access_model === "FREE") throw new CheckoutConflictError("FREE_PRODUCT_CHECKOUT_FORBIDDEN");
   if (offer.sale_mode === "CLOSED") throw new CheckoutConflictError("OFFER_CLOSED");
   assertOfferSaleModeAllowed(config, { kind: offer.kind, accessModel: offer.access_model, saleMode: offer.sale_mode });
@@ -639,6 +640,7 @@ function assertIssuedIntentAdmissible(db: Database.Database, config: CheckoutPol
   now: string, stage: SalesStopStage) {
   const offer = offerById(db, intent.offer_id);
   if (!offer || offer.withdrawn_at) throw new CheckoutConflictError("OFFER_NOT_AVAILABLE");
+  if (!nativePurchaseAllowed(config, offer.kind)) throw new CheckoutConflictError("NATIVE_TOCHKA_PRODUCT_UNAVAILABLE");
   if (offer.access_model === "FREE") throw new CheckoutConflictError("FREE_PRODUCT_CHECKOUT_FORBIDDEN");
   assertOfferSaleModeAllowed(config, { kind: offer.kind, accessModel: offer.access_model, saleMode: intent.sale_mode_at_quote });
   assertStorefrontOpen(db, config, intent.storefront, stage, { issuedOpenSince: intent.storefront_open_since, now });
@@ -833,6 +835,7 @@ export async function prepareCheckout(
 
   const orderPublicId = input.orderPublicId ?? randomUUID();
   const candidate = offerByRef(db, input.offerRef);
+  if (candidate && !nativePurchaseAllowed(config, candidate.kind)) throw new CheckoutConflictError("NATIVE_TOCHKA_PRODUCT_UNAVAILABLE");
   if (candidate) await readBackOpenPayments(db, rail, config, paymentAdmissionScope(db, input.customerId, candidate.offer_id, orderPublicId), now);
   const intentId = randomUUID();
   const lineRef = randomUUID();
