@@ -12,6 +12,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ cou
   const published = courses.find(({ course }) => course.courseRef === courseAlias)?.course.slug;
   if (!published) return new Response(null, { status: 404, headers: { "Cache-Control": "no-store" } });
 
+  // Commerce rejects changes to a published slug (COURSE_SLUG_IMMUTABLE).
   return new Response(null, {
     status: 308,
     headers: { Location: coursePath(published), "Cache-Control": "no-store" },

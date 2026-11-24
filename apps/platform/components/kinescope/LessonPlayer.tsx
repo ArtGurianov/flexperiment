@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { loadIframeApi, type KinescopePlayerInstance } from "./iframeApi";
+import type { CourseCommercialSummary } from "@/lib/commerce-summary";
+import CourseCheckout from "../checkout/CourseCheckout";
 import FreeEnrollmentAction from "../courses/FreeEnrollmentAction";
 
 /** FLEX-128: where the lesson sits, so a FREE course can offer the explicit enrollment in place. */
@@ -40,13 +42,24 @@ const parseGrant = async (response: Response) => {
   return grant;
 };
 
-const deniedDecision = async (response: Response) => response.status === 403
-  ? ((await response.clone().json().catch(() => null)) as { decision?: string } | null)?.decision : undefined;
+const deniedDecision = async (response: Response) => [402, 403, 409].includes(response.status)
+  ? await response.clone().json().catch(() => null) as { decision?: string; code?: string } | null : null;
 
-function LessonPlayerSession({ lessonRef, title, enrollment, onEnrolled }: {
-  lessonRef: string; title: string; enrollment?: LessonEnrollmentContext; onEnrolled: () => void;
+function blockedState(denial: Awaited<ReturnType<typeof deniedDecision>>) {
+  if (denial?.decision === "CONSENT_REQUIRED") return "consent";
+  if (denial?.decision === "ENROLLMENT_REQUIRED") return "enroll";
+  if (denial?.decision === "PURCHASE_REQUIRED") return "purchase";
+  if (denial?.decision === "NOT_FOR_SALE") return "closed";
+  if (denial?.code === "VIDEO_NOT_READY") return "video-not-ready";
+  return "denied";
+}
+
+function LessonPlayerSession({ lessonRef, title, enrollment, commercial, offerDialog, onEnrolled }: {
+  lessonRef: string; title: string; enrollment?: LessonEnrollmentContext; commercial?: CourseCommercialSummary; offerDialog?: boolean; onEnrolled: () => void;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const shownOffer = useRef(false);
   const playerRef = useRef<KinescopePlayerInstance | null>(null);
   const positionRef = useRef(0);
   const playingRef = useRef(false);
@@ -59,7 +72,7 @@ function LessonPlayerSession({ lessonRef, title, enrollment, onEnrolled }: {
     grantSnapshotRef.current = next;
     commitGrant(next);
   }, []);
-  const [state, setState] = useState<"loading" | "signin" | "consent" | "enroll" | "denied" | "ready" | "error">("loading");
+  const [state, setState] = useState<"loading" | "signin" | "consent" | "enroll" | ReturnType<typeof blockedState> | "ready" | "error">("loading");
 
   useEffect(() => {
     const controller = new AbortController();
@@ -73,11 +86,9 @@ function LessonPlayerSession({ lessonRef, title, enrollment, onEnrolled }: {
       if (response.status === 401) { setState("signin"); return; }
       const denied = await deniedDecision(response);
       if (controller.signal.aborted) return;
-      if (denied === "CONSENT_REQUIRED") { setState("consent"); return; }
-      if (denied === "ENROLLMENT_REQUIRED") { setState("enroll"); return; }
       const next = await parseGrant(response);
       if (controller.signal.aborted) return;
-      if (!next) { setState("denied"); return; }
+      if (!next) { setState(blockedState(denied)); return; }
       setGrant(next);
       positionRef.current = next.resumeAt;
       setState("ready");
@@ -109,11 +120,9 @@ function LessonPlayerSession({ lessonRef, title, enrollment, onEnrolled }: {
         if (controller.signal.aborted) return;
         if (response.status === 401) { setState("signin"); setGrant(null); return; }
         const denied = await deniedDecision(response);
-        if (denied === "CONSENT_REQUIRED") { setState("consent"); setGrant(null); return; }
-        if (denied === "ENROLLMENT_REQUIRED") { setState("enroll"); setGrant(null); return; }
         const next = await parseGrant(response);
         if (controller.signal.aborted) return;
-        if (!next) { setState("denied"); setGrant(null); return; }
+        if (!next) { setState(blockedState(denied)); setGrant(null); return; }
         setGrant(next);
       } catch (error) {
         if (error instanceof DOMException && error.name === "AbortError") return;
@@ -201,6 +210,30 @@ function LessonPlayerSession({ lessonRef, title, enrollment, onEnrolled }: {
     };
   }, [grant, lessonRef]);
 
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!offerDialog || state !== "purchase" || commercial?.saleMode !== "PUBLIC" || shownOffer.current || !dialog) return;
+    const section = dialog.closest<HTMLElement>("[data-home-path]");
+    const shell = section?.closest<HTMLElement>("main");
+    if (!section || !shell) return;
+    const start = performance.now();
+    let frame = 0;
+    let aligned = false;
+    const check = () => {
+      if (performance.now() - start > 1600) return;
+      const atSection = !section.inert && Math.abs(section.getBoundingClientRect().top - shell.getBoundingClientRect().top) < 3;
+      if (aligned && atSection) {
+        shownOffer.current = true;
+        dialog.showModal();
+        return;
+      }
+      aligned = atSection;
+      frame = requestAnimationFrame(check);
+    };
+    frame = requestAnimationFrame(check);
+    return () => cancelAnimationFrame(frame);
+  }, [state, offerDialog, commercial?.saleMode]);
+
   if (state === "signin" && enrollment?.accessModel === "FREE") return <div className="playerGate"><p>Урок бесплатного курса откроется после записи.</p>
     <FreeEnrollmentAction courseSlug={enrollment.courseSlug} lessonSlug={enrollment.lessonSlug} accessModel="FREE" compact onEnrolled={onEnrolled} />
     <Link href={`/account?next=${encodeURIComponent(window.location.pathname)}`}>Уже записаны? Войти</Link></div>;
@@ -209,12 +242,24 @@ function LessonPlayerSession({ lessonRef, title, enrollment, onEnrolled }: {
     <FreeEnrollmentAction courseSlug={enrollment.courseSlug} lessonSlug={enrollment.lessonSlug} accessModel={enrollment.accessModel} compact onEnrolled={onEnrolled} /></div>;
   if (state === "enroll") return <div className="playerGate"><p>Чтобы открыть урок, запишитесь на бесплатный курс.</p><Link href="/courses">Вернуться к курсам</Link></div>;
   if (state === "consent") return <div className="playerGate"><p>Подтвердите обработку ПД и правила в аккаунте, чтобы открыть урок. Реклама необязательна.</p><Link href={`/account?next=${encodeURIComponent(window.location.pathname)}`}>Подтвердить выбор</Link></div>;
+  if (state === "purchase" && commercial?.saleMode !== "CLOSED" && commercial?.offerRef) {
+    return <section aria-label="Покупка курса" className="playerGate">
+      <p>Для просмотра нужен доступ ко всему курсу.</p>
+      {offerDialog && <dialog ref={dialogRef} aria-label="Условия доступа к уроку">
+        <p>Этот урок входит в платный курс.</p>
+        <form method="dialog"><button type="submit">К условиям покупки</button></form>
+      </dialog>}
+      <CourseCheckout {...commercial} />
+    </section>;
+  }
+  if (state === "closed" || state === "purchase") return <div className="playerGate"><p>Продажи курса закрыты.</p></div>;
+  if (state === "video-not-ready") return <div className="playerGate"><p>Видео пока недоступно.</p></div>;
   if (state === "denied") return <div className="playerGate"><p>Урок пока недоступен для вашего аккаунта.</p><Link href="/courses">Вернуться к курсам</Link></div>;
   if (state === "error") return <div className="playerGate"><p>Видео сейчас не загрузилось. Попробуйте обновить страницу.</p></div>;
   return <div className="lessonPlayer" aria-label={`Видео: ${title}`}><div ref={hostRef} className="lessonPlayerHost" />{state === "loading" && <p>Проверяем доступ…</p>}</div>;
 }
 
-export default function LessonPlayer(props: { lessonRef: string; title: string; enrollment?: LessonEnrollmentContext }) {
+export default function LessonPlayer(props: { lessonRef: string; title: string; enrollment?: LessonEnrollmentContext; commercial?: CourseCommercialSummary; offerDialog?: boolean }) {
   // A fresh enrollment re-requests the grant in a new session; the enrollment itself never mints one.
   const [attempt, setAttempt] = useState(0);
   return <LessonPlayerSession key={`${props.lessonRef}:${attempt}`} {...props} onEnrolled={() => setAttempt(value => value + 1)} />;

@@ -5,6 +5,8 @@ import { publicCourse } from "@/lib/content/public";
 import { coursePath, lessonPath } from "@/lib/seo";
 import HomeChapter, { chapterAction } from "./HomeChapter";
 import HomeSectionLink from "./HomeSectionLink";
+import HomeCourseProgram from "./HomeCourseProgram";
+import HomeSelectedLesson from "./HomeSelectedLesson";
 
 type CourseParams = { slug: string };
 type LessonParams = CourseParams & { lessonSlug: string };
@@ -26,7 +28,7 @@ async function CourseChapterContent({ params }: { params: Promise<CourseParams> 
     return <HomeChapter path={path} title="Курс"><p>Курс сейчас недоступен.</p></HomeChapter>;
   }
 
-  const { course, outline } = result;
+  const { course } = result;
   return (
     <HomeChapter path={path} title={course.title}>
       <h1 className="m-0 max-w-[16ch] font-display text-[clamp(2rem,8vw,7rem)] font-bold leading-[.95] tracking-[-.06em] [overflow-wrap:anywhere]">
@@ -36,17 +38,8 @@ async function CourseChapterContent({ params }: { params: Promise<CourseParams> 
       {course.description != null && (
         <div className="max-w-[65ch] leading-relaxed text-paper/90"><LexicalReadOnly data={course.description} /></div>
       )}
-      {outline.lessons.length > 0 && (
-        <ol aria-label="Уроки курса" className="m-0 flex list-none flex-wrap gap-2 p-0">
-          {outline.lessons.map(lesson => (
-            <li key={lesson.lessonRef}>
-              <HomeSectionLink href={lessonPath(slug, lesson.slug)} className="inline-block border border-paper/30 px-3 py-2 font-bold underline">
-                {lesson.title}
-              </HomeSectionLink>
-            </li>
-          ))}
-        </ol>
-      )}
+      <HomeCourseProgram key={course.courseRef} course={{ slug: course.slug, courseRef: course.courseRef }} commercial={result.commercial}
+        outline={result.outline} actionClassName={chapterAction} />
       <HomeSectionLink href="/all-courses" className="w-fit font-bold underline underline-offset-4">Все курсы комплектом <span aria-hidden>↓</span></HomeSectionLink>
     </HomeChapter>
   );
@@ -65,6 +58,8 @@ export async function HomeLessonChapter({ params }: { params: Promise<LessonPara
   return (
     <HomeChapter path={path} title={lesson?.title ?? "Урок"}>
       <h2 className="m-0 font-display text-[clamp(2rem,7vw,5rem)] font-bold leading-none">{lesson?.title ?? "Урок сейчас недоступен"}</h2>
+      {result && lesson && <HomeSelectedLesson key={lesson.lessonRef} path={path} lesson={lesson}
+        courseSlug={result.course.slug} commercial={result.commercial} />}
       <HomeSectionLink href={coursePath(slug)} className={chapterAction}>← К курсу</HomeSectionLink>
     </HomeChapter>
   );

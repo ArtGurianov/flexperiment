@@ -107,11 +107,27 @@ try {
     await active(path);
   };
 
+  const openProgram = async path => {
+    const section = panel(path).locator("details").first();
+    if (await section.count() && await section.getAttribute("open") === null) await section.locator("summary").click();
+  };
+  const selectLesson = async (path, name) => {
+    await openProgram(path);
+    await panel(path).getByRole("link", { name, exact: true }).click();
+  };
+
   await page.goto(origin);
   await panel("/").locator('img[src="/course-covers/course-main-basics.webp"]').waitFor();
   assert.equal(await panel("/").getByRole("link", { name: "Другой курс" }).count(), 0);
+  const privacy = panel("/").getByRole("link", { name: "Конфиденциальность" });
+  assert.equal(await privacy.getAttribute("href"), "/legal/privacy");
+  await panel("/").getByRole("button", { name: "Настройки cookies" }).click();
+  await page.getByRole("dialog", { name: "Настройки аналитики" }).waitFor();
+  await page.getByRole("button", { name: "Только необходимые" }).click();
+  made.push("homepage policy link and cookie settings are usable");
   await courseLink(basics);
-  await panel(basics).getByRole("link", { name: "Flexing Basics · урок 1" }).click();
+  assert.equal(await panel(basics).locator("details[open]").count(), 0);
+  await selectLesson(basics, "Flexing Basics · урок 1");
   await active(basicsFirst);
   assert.equal(await panel(basics).count(), 1);
   assert.equal(await page.locator("[data-home-path*='/lessons/']:visible").count(), 1);
@@ -126,7 +142,7 @@ try {
   await active(basicsFirst);
   await panel(basicsFirst).getByRole("link", { name: "К курсу" }).click();
   await active(basics);
-  await panel(basics).getByRole("link", { name: "Flexing Basics · урок 2" }).click();
+  await selectLesson(basics, "Flexing Basics · урок 2");
   await active(basicsSecond);
   assert.equal(await panel(basicsFirst).isVisible(), false);
   made.push("Back/Forward and explicit course return clear the inactive lesson");
@@ -136,7 +152,7 @@ try {
   assert.equal(await page.locator("[data-home-path*='/lessons/']:visible").count(), 0);
   await panel("/").getByRole("button", { name: "Следующий курс" }).click();
   await courseLink(gliding);
-  await panel(gliding).getByRole("link", { name: "Gliding · урок 1" }).click();
+  await selectLesson(gliding, "Gliding · урок 1");
   await active(glideFirst);
   assert.equal(await panel(basics).isVisible(), false);
   assert.equal(await page.locator("[data-home-path*='/lessons/']:visible").count(), 1);
@@ -250,6 +266,142 @@ try {
   await active("/");
   assert.equal(await panel(bundle).isVisible(), false);
   made.push("mobile touch: scrolling long course stays on the route, edge swipe opens bundle and tap returns");
+
+  await page.close();
+  page = await openPage({ reducedMotion: "reduce", viewport: desktop });
+
+  let signedIn = false;
+  let enrolled = false;
+  let paid = false;
+  let enrollments = 0;
+  let paymentAttempts = 0;
+  const paidCourse = courses.get("gliding");
+  paidCourse.commercial = {
+    ...paidCourse.commercial, accessModel: "PAID", offerRef: "course:gliding", priceKopecks: 180000,
+  };
+
+  // A local player stub observes mount and teardown. It neither contacts Kinescope nor logs a grant.
+  await page.addInitScript(() => {
+    window.Kinescope = { IframePlayer: { create: async (id) => {
+      const marker = document.createElement("span");
+      marker.dataset.fixturePlayer = "";
+      marker.textContent = "Fixture player";
+      document.getElementById(id).append(marker);
+      const on = () => {};
+      const noop = async () => {};
+      return { Events: {}, on, seekTo: noop, play: noop, getCurrentTime: async () => 0,
+        destroy: async () => marker.remove() };
+    } } };
+  });
+  await page.route(origin + "/v1/**", async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    const reply = (json, status = 200) => route.fulfill({ json, status, headers: { "Cache-Control": "private, no-store" } });
+    const facts = ({ courseRef: "basics", courseSlug: "flexing-foundations", enrolledAt: "2026-11-24T00:00:00Z",
+      startedAt: "2026-11-24T00:00:00Z", progressPercent: 0 });
+    if (path === "/v1/me") return reply({ customer: signedIn ? { id: "synthetic", email_normalized: "synthetic@example.test" } : null,
+      entitlements: paid ? [{ scope: "COURSE", course_ref: "gliding" }] : [] });
+    if (path === "/v1/me/consents") return reply({ storefront: "COURSES", verifiedAccount: true,
+      requiredChoicesConfirmed: true, actionSequence: 0, documents: [] });
+    if (path === "/v1/me/orders") return reply({ orders: [] });
+    if (path === "/v1/me/free-enrollments/flexing-foundations") {
+      return signedIn ? reply({ courseRef: facts.courseRef, courseSlug: facts.courseSlug, courseTitle: "Flexing Basics",
+        accessModel: "FREE", enrollment: enrolled ? facts : null, enrollable: !enrolled })
+        : reply({ code: "SIGN_IN_REQUIRED" }, 401);
+    }
+    if (path === "/v1/me/free-enrollments" && request.method() === "POST") {
+      const intent = request.postDataJSON();
+      assert.deepEqual(intent, { courseSlug: facts.courseSlug, lessonSlug: "second" });
+      assert.equal(signedIn, true);
+      enrollments += 1;
+      enrolled = true;
+      return reply({ ...facts, created: enrollments === 1, lessonPath: basicsSecond }, 201);
+    }
+    if (path.startsWith("/v1/lessons/") && path.endsWith("/playback")) {
+      if (!signedIn) return reply({ decision: "SIGN_IN_REQUIRED" }, 401);
+      if (path.includes("/flexing-foundations-") && !enrolled) return reply({ decision: "ENROLLMENT_REQUIRED" }, 403);
+      if (path.includes("/gliding-") && !paid) return paidCourse.commercial.saleMode === "CLOSED"
+        ? reply({ decision: "NOT_FOR_SALE" }, 403)
+        : reply({ decision: "PURCHASE_REQUIRED" }, 402);
+      return reply({ mode: "protected", videoId: "fixture-video", resumeAt: 0, token: "synthetic",
+        expiresAt: new Date(Date.now() + 180_000).toISOString() });
+    }
+    if (path === "/v1/checkout/handoff") {
+      assert.deepEqual(request.postDataJSON(), { returnPath: glideFirst, storefront: "COURSES" });
+      return reply({ required: false });
+    }
+    if (path === "/v1/checkout/preview") {
+      assert.equal(request.postDataJSON().offerRef, paidCourse.commercial.offerRef);
+      return reply({ quoteId: "local-review", state: "PRICE_REVIEW_REQUIRED", baseAmountKopecks: 180000,
+        merchantDiscountKopecks: 0, referralDiscountKopecks: 0, discountKopecks: 0, finalAmountKopecks: 180000,
+        merchantPromotionCode: null, checkoutCodeOutcome: "NONE" });
+    }
+    if (path === "/v1/checkout" && request.method() === "POST") {
+      assert.equal(request.postDataJSON().quoteId, "local-review");
+      paymentAttempts += 1;
+      paid = true;
+      return reply({ state: "PAID" });
+    }
+    return reply({}, 404);
+  });
+
+  await page.goto(origin);
+  await courseLink(basics);
+  await panel(basics).getByRole("button", { name: /Записаться бесплатно/ }).waitFor();
+  assert.equal(enrollments, 0);
+  await selectLesson(basics, "Flexing Basics · урок 2");
+  await active(basicsSecond);
+  await panel(basicsSecond).getByRole("button", { name: /Записаться бесплатно/ }).click();
+  await page.waitForURL(origin + "/account?enroll=flexing-foundations&lesson=second");
+  assert.equal(enrollments, 0);
+  signedIn = true;
+  await page.reload();
+  await page.waitForURL(origin + basicsSecond);
+  await page.locator("[data-fixture-player]").waitFor();
+  assert.equal(enrollments, 1);
+  await page.reload();
+  await page.locator("[data-fixture-player]").waitFor();
+  assert.equal(enrollments, 1);
+  made.push("carousel → guest enrollment intent for the selected second lesson → synthetic sign-in → protected second lesson");
+
+  const selectPaid = async () => {
+    await page.goto(origin);
+    await panel("/").getByRole("button", { name: "Следующий курс" }).click();
+    await courseLink(gliding);
+    await selectLesson(gliding, "Gliding · урок 1");
+    await active(glideFirst);
+  };
+  await selectPaid();
+  await panel(glideFirst).getByText("Продажи курса закрыты.").waitFor();
+  assert.equal(await panel(glideFirst).getByRole("button", { name: /Купить курс/ }).count(), 0);
+  paidCourse.commercial.saleMode = "PUBLIC";
+  await selectPaid();
+  const offer = page.getByRole("dialog", { name: "Условия доступа к уроку" });
+  await offer.waitFor();
+  await page.keyboard.press("Escape");
+  await offer.waitFor({ state: "hidden" });
+  await page.goBack();
+  await active(gliding);
+  await page.goForward();
+  await active(glideFirst);
+  await panel(glideFirst).getByRole("button", { name: /Купить курс/ }).waitFor();
+  assert.equal(await offer.isVisible(), false);
+  await panel(glideFirst).getByRole("button", { name: /Купить курс/ }).click();
+  await panel(glideFirst).getByRole("button", { name: /Подтвердить и оплатить/ }).click();
+  await page.getByRole("heading", { name: "Gliding · урок 1", level: 1 }).waitFor();
+  await page.locator("[data-fixture-player]").waitFor();
+  assert.equal(page.url(), origin + glideFirst);
+  assert.equal(paymentAttempts, 1);
+  made.push("carousel → closed or payable lesson → synthetic checkout → same canonical protected lesson");
+
+  await selectPaid();
+  await panel(glideFirst).locator("[data-fixture-player]").waitFor();
+  await page.goBack();
+  await active(gliding);
+  assert.equal(await page.locator("[data-fixture-player]").count(), 0);
+  assert.equal(await panel(gliding).locator("details[open]").count(), 1);
+  assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("href")), glideFirst);
+  made.push("leaving an intercepted protected lesson destroys the player and restores program and focus");
 
   console.log(JSON.stringify({ result: "PASS", scenarios: made }));
 } finally {

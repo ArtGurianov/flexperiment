@@ -1,8 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useEffectEvent, useRef, useTransition, type ReactNode } from "react";
+import { useCallback, useEffect, useEffectEvent, useRef, useState, useTransition, type ReactNode } from "react";
 import { usePathname, useRouter, useSelectedLayoutSegment } from "next/navigation";
-import { HomeSectionNavigation } from "./HomeSectionLink";
+import { HomeLessonSelection, HomeSectionNavigation } from "./HomeSectionLink";
 
 const BUNDLE_PATH = "/all-courses";
 const WHEEL_IDLE_MS = 150;
@@ -29,6 +29,7 @@ export default function HomeSnapShell({ children, course, bundle }: {
   const mainSegment = useSelectedLayoutSegment();
   const bundleSegment = useSelectedLayoutSegment("bundle")?.replace(/^\(\.\)/, "");
   const showBundleSlot = pathname === BUNDLE_PATH && mainSegment !== bundleSegment;
+  const [selectedLesson, setSelectedLesson] = useState<string | null>(null);
   const [routing, startRouting] = useTransition();
   const root = useRef<HTMLElement>(null);
   const pending = useRef<string | null>(null);
@@ -44,9 +45,16 @@ export default function HomeSnapShell({ children, course, bundle }: {
     if (!routing && !cancelReturnScroll.current) pending.current = null;
   }, [routing]);
 
+  useEffect(() => {
+    const clearSelection = () => setSelectedLesson(null);
+    window.addEventListener("popstate", clearSelection);
+    return () => window.removeEventListener("popstate", clearSelection);
+  }, []);
+
   const navigate = useCallback((path: string) => {
     if (path === pathname || (pending.current && pending.current !== pathname)) return false;
     pending.current = path;
+    setSelectedLesson(/^\/courses\/[^/]+\/lessons\/[^/]+$/.test(path) ? path : null);
     const push = () => startRouting(() => router.push(path, { scroll: false }));
     const element = root.current;
     const carousel = path === "/" && element
@@ -111,7 +119,8 @@ export default function HomeSnapShell({ children, course, bundle }: {
   useEffect(() => {
     const element = root.current;
     if (!element) return;
-    const changed = previous.current !== pathname;
+    const from = previous.current;
+    const changed = from !== pathname;
     previous.current = pathname;
 
     const align = () => {
@@ -119,7 +128,13 @@ export default function HomeSnapShell({ children, course, bundle }: {
       const target = panels.find((panel) => panel.offsetHeight > 0 && panel.dataset.homePath === pathname);
       if (!target) return false;
       for (const panel of panels) panel.inert = panel !== target;
-      if (changed) target.focus({ preventScroll: true });
+      if (changed) {
+        const lessonLink = isCoursePath(pathname) && from.startsWith(pathname + "/lessons/")
+          ? [...target.querySelectorAll<HTMLAnchorElement>("a[href]")]
+            .find(link => link.getAttribute("href") === from && link.getClientRects().length > 0)
+          : undefined;
+        (lessonLink ?? target).focus({ preventScroll: true });
+      }
       const offset = target.getBoundingClientRect().top - element.getBoundingClientRect().top;
       if (Math.abs(offset) > 1) {
         const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -265,9 +280,11 @@ export default function HomeSnapShell({ children, course, bundle }: {
   return (
     <HomeSectionNavigation.Provider value={navigate}>
       <main ref={root} className="homeSnap fixed inset-0 z-0 h-dvh snap-y snap-mandatory overflow-hidden overscroll-contain bg-paper">
-        {children}
-        {pathname === "/" ? null : course}
-        {showBundleSlot ? bundle : null}
+        <HomeLessonSelection.Provider value={selectedLesson}>
+          {children}
+          {pathname === "/" ? null : course}
+          {showBundleSlot ? bundle : null}
+        </HomeLessonSelection.Provider>
       </main>
     </HomeSectionNavigation.Provider>
   );

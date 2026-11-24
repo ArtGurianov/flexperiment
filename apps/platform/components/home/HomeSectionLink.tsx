@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { createContext, useContext, type ComponentProps } from "react";
 
+export const HomeLessonSelection = createContext<string | null>(null);
+
 export const HomeSectionNavigation = createContext<((path: string) => boolean) | null>(null);
 
 type Props = Omit<ComponentProps<typeof Link>, "href" | "onNavigate" | "prefetch" | "scroll"> & { href: string };
