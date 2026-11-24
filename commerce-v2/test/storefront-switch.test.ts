@@ -79,6 +79,7 @@ describe("reading the switch: anything but a valid, current, OPEN document is CL
     ["an unknown state", () => JSON.stringify({ ...document(), storefronts: { ...document().storefronts, LAB: { state: "PAUSED" } } }), "INVALID"],
     ["an opening after its own generation", () => JSON.stringify({ ...document(), storefronts: { ...document().storefronts, LAB: { state: "OPEN", openSince: 9 } } }), "INVALID"],
     ["a missing evidence issue", () => JSON.stringify({ ...document(), evidenceIssue: "" }), "INVALID"],
+    ["an unsupported evidence project", () => JSON.stringify({ ...document(), evidenceIssue: "LIN-1" }), "INVALID"],
     ["another scope", () => JSON.stringify({ ...document(), scope: "production" }), "SCOPE_MISMATCH"],
     ["an oversized file", () => JSON.stringify({ ...document(), reason: "x".repeat(5000) }), "INVALID"],
   ] as const)("refuses %s", (_case, raw, reason) => {
@@ -300,7 +301,7 @@ import importlib.util, sys
 spec = importlib.util.spec_from_file_location("tool", sys.argv[1]); tool = importlib.util.module_from_spec(spec); spec.loader.exec_module(tool)
 import os
 sys.exit(tool.main(sys.argv[2:], owner_uid=os.getuid()))`, join(__dirname, "..", "..", "scripts", "v2", "storefront-switch.py"),
-      argv[0], "--scope", "canary", "--root", hostRoot, ...argv.slice(1), "--by", "owner", "--reason", "contract test", "--evidence", "ART-319"],
+      argv[0], "--scope", "canary", "--root", hostRoot, ...argv.slice(1), "--by", "owner", "--reason", "contract test", "--evidence", "FLEX-16"],
       { encoding: "utf8" });
       expect(result.status).toBe(0);
     };
@@ -309,7 +310,7 @@ sys.exit(tool.main(sys.argv[2:], owner_uid=os.getuid()))`, join(__dirname, "..",
     directory = join(hostRoot, "switch");
     journalDirectory = join(hostRoot, "journal");
     const canary = { deployEnvironment: "staging" as const, storefrontSwitch: source() };
-    expect(readStorefrontSwitch(db, canary)).toMatchObject({ available: true, document: { generation: 7, scope: "canary",
+    expect(readStorefrontSwitch(db, canary)).toMatchObject({ available: true, document: { generation: 7, scope: "canary", evidenceIssue: "FLEX-16",
       storefronts: { COURSES: { state: "CLOSED" }, LAB: { state: "CLOSED" } } } });
     // The production runtime refuses a canary file.
     expect(readStorefrontSwitch(db, { ...canary, deployEnvironment: "production" })).toEqual({ available: false, reason: "SCOPE_MISMATCH" });

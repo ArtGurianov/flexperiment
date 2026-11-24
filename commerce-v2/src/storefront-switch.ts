@@ -42,7 +42,7 @@ const documentSchema = z.object({
   changedAt: z.iso.datetime({ offset: true }),
   changedBy: z.string().regex(/^[a-z0-9][a-z0-9._-]{1,63}$/),
   reason: z.string().trim().min(3).max(500),
-  evidenceIssue: z.string().regex(/^ART-[0-9]{1,6}$/),
+  evidenceIssue: z.string().regex(/^(?:ART-[0-9]{1,6}|(?:FLEX|VPS)-[1-9][0-9]{0,5})$/),
   storefronts: z.object({ COURSES: storefrontState, LAB: storefrontState }).strict(),
 }).strict().refine((doc) => Object.values(doc.storefronts).every((s) => s.state === "CLOSED" || s.openSince <= doc.generation));
 export type StorefrontSwitchDocument = z.infer<typeof documentSchema>;

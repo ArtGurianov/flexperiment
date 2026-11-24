@@ -67,6 +67,8 @@ const supportedSchemaSha256 = new Set([
   // FLEX-128 (local 0036, coordinator reserve 0037): course_learning_starts, a subject-linked nonfinancial
   // start fact written only with an explicit FREE enrollment. Erased with the subject; kept by retention.
   "f0b2205a43d7a733a96cbc3b40f7b57e4850dc0f8082dfc5449f1a95bee21e13",
+  // 0037: LAB interest, notice history and purpose-specific suppression. Hashed journal.
+  "e76bc6d055caaeb356ab43fe96ab9766484fbd1fef165431a685236da5bb228a",
 ]);
 const parse = <T>(schema: z.ZodType<T>, value: unknown): T => {
   const result = schema.safeParse(value); return result.success ? result.data : refuse("RETENTION_POLICY_OR_HOLD_INVALID");
@@ -152,12 +154,20 @@ export function cleanupOfflinePersonalData(db: Database.Database, input: {
       const refs = emailRefs(email);
       if (!held("EXPIRED_CREDENTIALS", refs)) result.expiredCredentials += db.prepare("DELETE FROM verification WHERE id=?").run(row.id).changes;
     }
+    const recentMailRecipients = new Set<string>();
     for (const row of rows("auth_email_outbox")) {
       const email = String(row.recipient_normalized);
       const refs = emailRefs(email);
       // Require last-update age AND actual link expiry. No ambiguous-send replay.
       if (older(row.updated_at, policy.authOutboxMaxAgeSeconds) && older(row.created_at, 600) && !held("AUTH_OUTBOX", refs)) {
         result.authOutbox += db.prepare("DELETE FROM auth_email_outbox WHERE id=?").run(row.id).changes;
+        continue;
+      }
+      // Preserve a recent initiation or send attempt. Older delivery history has its own
+      // retention window and carries no FK or replay authority for the unverified customer.
+      if (!older(row.created_at, policy.unboundIntentsMaxAgeSeconds)
+        || !older(row.updated_at, policy.unboundIntentsMaxAgeSeconds)) {
+        recentMailRecipients.add(email);
       }
     }
     for (const row of rows("playback_access_events")) {
@@ -177,12 +187,13 @@ export function cleanupOfflinePersonalData(db: Database.Database, input: {
         .all(customer.id, customer.id) as Array<{ recorded_at: string; evidence_status: string }>;
       if (!intents.length || intents.some(intent => intent.evidence_status !== "UNVERIFIED_INTENT"
         || !older(intent.recorded_at, policy.unboundIntentsMaxAgeSeconds))) continue;
-      if (db.prepare("SELECT 1 FROM auth_email_outbox WHERE recipient_normalized=? LIMIT 1").get(customer.email_normalized)) continue;
+      if (recentMailRecipients.has(customer.email_normalized)) continue;
       let pendingLink = false;
       for (const verification of rows("verification")) {
         let body: unknown; try { body = JSON.parse(String(verification.value)); } catch { refuse("RETENTION_VERIFICATION_CLASSIFICATION_REQUIRED"); }
         if (!body || typeof body !== "object" || typeof (body as { email?: unknown }).email !== "string") refuse("RETENTION_VERIFICATION_CLASSIFICATION_REQUIRED");
-        if ((body as { email: string }).email.trim().toLocaleLowerCase("en-US") === customer.email_normalized) pendingLink = true;
+        if ((body as { email: string }).email.trim().toLocaleLowerCase("en-US") === customer.email_normalized
+          && timestamp(verification.expires_at) >= time) pendingLink = true;
       }
       if (pendingLink) continue;
       // Preserve every grant/order/quote/recipient/access/progress fact, even if
