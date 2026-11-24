@@ -108,7 +108,7 @@ describe("AccountClient", () => {
       const path = input.toString();
       if (path === "/v1/me") return response({ customer: null });
       if (path === "/v1/legal/current?storefront=COURSES") return response({
-        version: "stage-a-v1",
+        version: "stage-a-v1", effectiveAt: "2026-11-23T21:00:00.000Z",
         manifest: { stage: "A", documents: ["privacy", "personal_data", "account_terms", "marketing_consent"].map((kind) => ({
           kind, version: `${kind}-v1`, sha256: hash, url: `https://flexperiment.ru/legal/${kind}`,
         })) },
@@ -120,6 +120,9 @@ describe("AccountClient", () => {
     render(<AccountClient nextPath="/courses" />);
     const submit = await screen.findByRole("button", { name: "Получить ссылку →" });
     expect(screen.getByRole("link", { name: "обработкой персональных данных" })).toHaveAttribute("href", "https://flexperiment.ru/legal/personal_data");
+    const dates = screen.getAllByText("24 ноября 2026 г.");
+    expect(dates).toHaveLength(4);
+    for (const date of dates) expect(date).toHaveAttribute("datetime", "2026-11-23T21:00:00.000Z");
     const personalData = screen.getByRole("checkbox", { name: /Согласен/ });
     const accountTerms = screen.getByRole("checkbox", { name: /Принимаю/ });
     const marketing = screen.getByRole("checkbox", { name: /Хочу получать/ });

@@ -2,6 +2,8 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState, type FormEvent } from "react";
+import { LegalLinkDate } from "@/components/legal/LegalEffectiveDate";
+import { currentCoursesLegalPath, type LegalRelease } from "@/lib/legal-release";
 import AuthenticatedConsentGate from "./AuthenticatedConsentGate";
 import FreeEnrollmentContinuation from "./FreeEnrollmentContinuation";
 import MarketingPreference from "./MarketingPreference";
@@ -40,9 +42,6 @@ type AccountOrder = {
   createdAt: string;
 };
 
-type LegalDocument = { kind: string; version: string; sha256: string; url: string };
-type LegalRelease = { version: string; manifest: { stage: "A" | "B"; documents: LegalDocument[] } };
-
 const accessLabel = (access: AccountCourse["access"]) => access === "ENTITLED" ? "Ваш доступ" : access === "FREE" ? "Вы записаны" : "Превью";
 const courseLabel = (course: AccountCourse) => course.access === "FREE" && course.enrollment ? "Вы записаны · прогресс 0%" : accessLabel(course.access);
 const money = (kopecks: number) => new Intl.NumberFormat("ru-RU", { style: "currency", currency: "RUB", maximumFractionDigits: 0 }).format(kopecks / 100);
@@ -77,7 +76,7 @@ export default function AccountClient({ nextPath, captchaSiteKey, enrollIntent }
       const current = await readBack.json() as Me;
       if (current.customer !== null) throw new Error("SESSION_STILL_ACTIVE");
       setMe(current);
-      const legal = await fetch("/v1/legal/current?storefront=COURSES", { credentials: "same-origin", cache: "no-store" });
+      const legal = await fetch(currentCoursesLegalPath, { credentials: "same-origin", cache: "no-store" });
       setLegalRelease(legal.ok ? await legal.json() as LegalRelease : null);
     } catch { setMessage("Не удалось подтвердить выход. Проверьте соединение и попробуйте снова."); }
     finally { logoutBusy.current = false; setLoggingOut(false); }
@@ -87,7 +86,7 @@ export default function AccountClient({ nextPath, captchaSiteKey, enrollIntent }
     void fetch("/v1/me", { cache: "no-store", credentials: "same-origin" })
       .then((response) => response.json()).then((body: Me) => {
         setMe(body);
-        if (!body.customer) void fetch("/v1/legal/current?storefront=COURSES", { cache: "no-store", credentials: "same-origin" })
+        if (!body.customer) void fetch(currentCoursesLegalPath, { cache: "no-store", credentials: "same-origin" })
           .then((response) => {
             if (!response.ok) throw new Error("LEGAL_RELEASE_NOT_FOUND");
             return response.json() as Promise<LegalRelease>;
@@ -176,10 +175,10 @@ export default function AccountClient({ nextPath, captchaSiteKey, enrollIntent }
     {enrollIntent && <p className="enrollmentStatus" role="note">Войдите по ссылке из письма — после входа запись на выбранный бесплатный курс завершится и откроется {enrollIntent.lessonSlug ? "выбранный урок" : "первый урок"}.</p>}
     <form className="authForm" onSubmit={submit}>
     <label>Электронная почта<input required name="email" type="email" autoComplete="email" /></label>
-    <p>Как используются данные: <a href={privacy?.url} target="_blank" rel="noreferrer">политика конфиденциальности</a>.</p>
-    <label className="check"><input required name="personalDataConsent" type="checkbox" />Согласен с <a href={personalData?.url} target="_blank" rel="noreferrer">обработкой персональных данных</a></label>
-    <label className="check"><input required name="accountTermsAccepted" type="checkbox" />Принимаю <a href={accountTerms?.url} target="_blank" rel="noreferrer">условия аккаунта</a></label>
-    <label className="check"><input name="marketingConsent" type="checkbox" />Хочу получать новости о курсах по <a href={marketing?.url} target="_blank" rel="noreferrer">условиям рассылки</a></label>
+    <p>Как используются данные: <a href={privacy?.url} target="_blank" rel="noreferrer">политика конфиденциальности</a><LegalLinkDate effectiveAt={legalRelease?.effectiveAt} />.</p>
+    <label className="check"><input required name="personalDataConsent" type="checkbox" /><span>Согласен с <a href={personalData?.url} target="_blank" rel="noreferrer">обработкой персональных данных</a><LegalLinkDate effectiveAt={legalRelease?.effectiveAt} /></span></label>
+    <label className="check"><input required name="accountTermsAccepted" type="checkbox" /><span>Принимаю <a href={accountTerms?.url} target="_blank" rel="noreferrer">условия аккаунта</a><LegalLinkDate effectiveAt={legalRelease?.effectiveAt} /></span></label>
+    <label className="check"><input name="marketingConsent" type="checkbox" /><span>Хочу получать новости о курсах по <a href={marketing?.url} target="_blank" rel="noreferrer">условиям рассылки</a><LegalLinkDate effectiveAt={legalRelease?.effectiveAt} /></span></label>
     {captchaSiteKey && <div id="smartcaptcha-account" className="smartCaptcha" />}
     <button className="primary" disabled={submitting || !legalReady || Boolean(captchaSiteKey && !captchaToken)} type="submit">{submitting ? "Отправляем…" : legalReady ? "Получить ссылку →" : "Документы не опубликованы"}</button>
     {message && <p role="status">{message}</p>}

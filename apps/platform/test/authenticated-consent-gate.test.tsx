@@ -164,6 +164,6 @@ describe("authenticated consent UI admission and reconciliation", () => {
     await waitFor(() => expect(finish).toBeDefined()); cleanup();
     finish(response({ ok: true }));
     await Promise.resolve(); await Promise.resolve();
-    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(fetcher.mock.calls.filter(([path]) => !String(path).startsWith("/v1/legal/current"))).toHaveLength(2);
   });
 });
