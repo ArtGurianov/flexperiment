@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { completionPercent, customerLearningStarts, customerLessonCompletions } from "./lesson-progress";
 import { listCustomerLibrary, type CustomerLibrary } from "./library";
 
 type CourseRow = {
@@ -139,6 +140,8 @@ export function getCustomerStorefrontCourse(db: Database.Database, customerId: s
 export function listCustomerStorefrontLibrary(db: Database.Database, customerId: string, now: Date, leaseMs: number) {
   const read = db.transaction(() => {
     const authorized: CustomerLibrary = listCustomerLibrary(db, customerId, now, leaseMs);
+    const startedCourses = customerLearningStarts(db, customerId);
+    const completions = customerLessonCompletions(db, customerId);
     return { courses: authorized.courses.flatMap(item => {
       const row = courseByRef(db, item.courseRef, false);
       if (!row) return [];
@@ -147,6 +150,8 @@ export function listCustomerStorefrontLibrary(db: Database.Database, customerId:
       const sections = new Map(graph.sections.map(section => [section.sectionRef, section]));
       return [{ courseRef: item.courseRef, title: row.title, url: `/courses/${row.slug}`, access: item.access,
         enrollment: item.enrollment,
+        progressPercent: item.access !== "PREVIEW" && startedCourses.has(item.courseRef)
+          ? completionPercent(graph.lessons, completions) : null,
         lessons: item.lessons.flatMap(allowed => {
           const lesson = lessons.get(allowed.lessonRef);
           const section = lesson && sections.get(lesson.sectionRef);
@@ -170,7 +175,6 @@ export function listMyStorefrontLibrary(db: Database.Database, customerId: strin
     const viewHistory = db.prepare(`SELECT lesson_ref FROM lesson_resume_positions WHERE customer_id=? AND seconds>0
        ORDER BY julianday(updated_at) DESC,lesson_ref`).pluck().all(customerId) as string[];
     const rank = new Map(viewHistory.map((ref, index) => [ref, index]));
-
     return { courses: courses.filter(course => course.access !== "PREVIEW" && course.lessons.length > 0).map(course => {
       const direct = grants.some(grant => !grant.manual && grant.scope === "COURSE" && grant.course_ref === course.courseRef);
       const bundle = grants.some(grant => !grant.manual && grant.scope === "ALL_COURSES");
@@ -178,7 +182,7 @@ export function listMyStorefrontLibrary(db: Database.Database, customerId: strin
       const watched = course.lessons.filter(lesson => rank.has(lesson.lessonRef))
         .sort((a,b) => rank.get(a.lessonRef)! - rank.get(b.lessonRef)!)[0];
       return { slug: course.url.split("/").at(-1)!, title: course.title, access,
-        started: Boolean(watched || course.enrollment?.startedAt),
+        started: course.progressPercent !== null, progressPercent: course.progressPercent,
         resumeLesson: watched ? { slug: watched.url.split("/").at(-1)!, title: watched.title } : null };
     }) };
   }).deferred();

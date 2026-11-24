@@ -60,6 +60,7 @@ import { authenticatedConsentStatus, hasRequiredAccountConsents, recordAuthentic
 import { ErasureLedgerError } from "./erasure-ledger";
 import { assertClosedPaidTestAccountConsents } from "./closed-paid-test";
 import type { ErasureRuntimeFence } from "./erasure-fence";
+import { lessonProgress } from "./lesson-progress";
 import { registerFreeEnrollmentRoutes } from "./free-enrollment-routes";
 
 type Dependencies = {
@@ -1605,6 +1606,24 @@ export function createCommerceV2App(deps: Dependencies) {
         reason: "KINESCOPE_GRANT_UNAVAILABLE", occurredAt: observedAt,
       });
       return context.json({ code: "KINESCOPE_GRANT_UNAVAILABLE" }, 503, noStore);
+    }
+  });
+
+  app.on(["GET", "POST"], "/v1/lessons/:lessonRef/completion", async (context) => {
+    const customerId = await deps.authenticateCustomer?.(context.req.raw.headers, accountSessionScope(context)) ?? null;
+    const privateNoStore = { "Cache-Control": "private, no-store" };
+    if (!customerId) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, privateNoStore);
+    const complete = context.req.method === "POST";
+    if (complete && context.req.header("origin") !== storefrontOrigin(origins, "COURSES")) {
+      return context.json({ code: "ORIGIN_FORBIDDEN" }, 403, privateNoStore);
+    }
+    try {
+      const state = lessonProgress(deps.db, { customerId, lessonRef: context.req.param("lessonRef"), now: now(), complete,
+        leaseMs: Number(process.env.CATALOG_LEASE_MS ?? 24 * 60 * 60 * 1000) });
+      return state ? context.json(state, 200, privateNoStore)
+        : context.json({ code: "LESSON_COMPLETION_UNAVAILABLE" }, 403, privateNoStore);
+    } catch {
+      return context.json({ code: "LESSON_PROGRESS_UNAVAILABLE" }, 503, privateNoStore);
     }
   });
 

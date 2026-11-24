@@ -70,7 +70,7 @@ export default function FreeEnrollmentAction({ courseSlug, lessonSlug, accessMod
   const { status } = view;
   if (status.enrollment) {
     return <div className="enrollmentAction enrolled" aria-label="Запись на курс">
-      <p><strong>Вы записаны</strong> · прогресс 0%{status.accessModel === "PAID" ? " · доступ сохранён после перехода курса на платный" : ""}</p>
+      <p><strong>Вы записаны</strong>{status.accessModel === "PAID" ? " · доступ сохранён после перехода курса на платный" : ""}</p>
       {!compact && <button type="button" disabled={busy} onClick={() => { void enroll(); }}>{busy ? "Открываем…" : "Продолжить обучение →"}</button>}
       {compact && onEnrolled && <button type="button" onClick={onEnrolled}>Проверить доступ</button>}
       {message && <p role="status">{message}</p>}

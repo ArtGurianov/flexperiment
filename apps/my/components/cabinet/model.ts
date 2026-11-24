@@ -23,8 +23,9 @@ export type CabinetCourse = {
   readonly slug: string;
   readonly title: string;
   readonly access: CourseAccess;
-  /** "Начат" is a separate fact; full progress arrives with FLEX-129. */
+  /** "Начат" is a separate fact. */
   readonly started: boolean;
+  readonly progressPercent?: number;
   readonly resumeLesson: { readonly slug: string; readonly title: string } | null;
 };
 
@@ -96,7 +97,10 @@ export function parseCourses(value: unknown): CabinetCourse[] | null {
     const lesson = record(entry.resumeLesson);
     const lessonSlug = lesson && typeof lesson.slug === "string" && LESSON_SLUG.test(lesson.slug) ? lesson.slug : null;
     const lessonTitle = lesson && text(lesson.title);
+    const progressPercent = typeof entry.progressPercent === "number" && Number.isInteger(entry.progressPercent)
+      && entry.progressPercent >= 0 && entry.progressPercent <= 100 ? entry.progressPercent : undefined;
     return { slug, title, access, started: entry.started === true,
+      ...(progressPercent !== undefined ? { progressPercent } : {}),
       resumeLesson: lessonSlug && lessonTitle ? { slug: lessonSlug, title: lessonTitle } : null };
   });
 }

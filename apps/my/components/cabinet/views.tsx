@@ -41,6 +41,7 @@ export function CoursesView({ result, platformOrigin, heading = "Мои курс
                     <p className="cabinet-meta">
                       <span>Доступ: {ACCESS_LABEL[course.access]}</span>
                       {course.started && <span> · Начат</span>}
+                      {course.started && course.progressPercent !== undefined && <span> · Прогресс {course.progressPercent}%</span>}
                     </p>
                   </div>
                   {/* Protected entry is accepted by FLEX-121 (exchange receiver on LMS). */}

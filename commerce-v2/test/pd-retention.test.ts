@@ -97,7 +97,7 @@ describe("explicit category retention in offline SQLite, no runtime/default poli
     expect(db.prepare("SELECT id FROM customers").all()).toEqual([{ id: "verified" }]);
     expect(count("email_suppressions")).toBe(1); expect(count("authenticated_consent_events")).toBe(3);
   });
-  it.each(["recent-intent", "user", "link", "outbox", "hold", "history", "audit", "progress", "learning-start", "owner-evidence"])("preserves an unbound profile with %s authority or fresh evidence", reason => {
+  it.each(["recent-intent", "user", "link", "outbox", "hold", "history", "audit", "progress", "completion", "learning-start", "owner-evidence"])("preserves an unbound profile with %s authority or fresh evidence", reason => {
     const pending = intent(reason === "recent-intent" ? recent : old);
     if (reason === "owner-evidence") {
       activateLegalRelease(db, { storefront: "COURSES", version: "synthetic-legal", manifest: stageBLegalManifest, actor: "owner" }, old);
@@ -116,6 +116,7 @@ describe("explicit category retention in offline SQLite, no runtime/default poli
     }
     if (reason === "audit") db.prepare(`INSERT INTO audit_log(id,actor,action,subject_type,subject_ref,evidence_json) VALUES ('audit','synthetic','TEST','CUSTOMER',?,'{}')`).run(pending);
     if (reason === "progress") db.prepare("INSERT INTO lesson_resume_positions(customer_id,lesson_ref,seconds,client_seq,client_ts) VALUES (?,'lesson',0,0,?)").run(pending, old);
+    if (reason === "completion") db.prepare("INSERT INTO lesson_completions VALUES (?,'lesson',?)").run(pending, old);
     if (reason === "learning-start") {
       // FLEX-128 (G-01): a historical start fact keeps an otherwise unbound profile. The authority triggers
       // refuse an unbound subject, so the isolated fixture recreates them byte-for-byte (same fingerprint).

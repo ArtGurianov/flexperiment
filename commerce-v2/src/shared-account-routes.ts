@@ -44,6 +44,8 @@ export const SHARED_ACCOUNT_ROUTES: Readonly<Record<Surface, ReadonlySet<string>
     "PUT /v1/lessons/:lessonRef/resume",
     "POST /v1/lessons/:lessonRef/resume",
     "POST /v1/lessons/:lessonRef/playback",
+    "GET /v1/lessons/:lessonRef/completion",
+    "POST /v1/lessons/:lessonRef/completion",
     "GET /v1/browser-context/arrive",
     "POST /v1/browser-context/touch",
   ]),

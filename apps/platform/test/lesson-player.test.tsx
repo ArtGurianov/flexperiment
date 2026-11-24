@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import LessonPlayer, { playbackEmbedUrl } from "../components/kinescope/LessonPlayer";
 import { loadIframeApi } from "../components/kinescope/iframeApi";
@@ -60,6 +60,27 @@ describe("LessonPlayer", () => {
       behavior: { localStorage: false },
     });
     expect(player.seekTo).toHaveBeenCalledWith(31);
+  });
+
+  it("offers completion after the grant and only records it on explicit click", async () => {
+    const fetcher = vi.fn(async (input, init) => {
+      if (String(input).endsWith("/playback")) return response({ mode: "open", videoId: "fixture", resumeAt: 0 });
+      const firstCompletedAt = init?.method === "POST" ? "2026-11-24T00:00:00.000Z" : null;
+      return response({ firstCompletedAt, progressPercent: firstCompletedAt ? 50 : 0 });
+    });
+    global.fetch = fetcher;
+    render(<LessonPlayer lessonRef="lesson" title="Lesson" showCompletion />);
+    const complete = await screen.findByRole("button", { name: "Отметить пройденным" });
+    expect(fetcher.mock.calls.slice(0, 2).map(([path]) => path)).toEqual([
+      "/v1/lessons/lesson/playback", "/v1/lessons/lesson/completion",
+    ]);
+    expect(screen.getByText("Прогресс курса 0%")).toBeInTheDocument();
+    await waitFor(() => expect(handlers.ended).toBeTypeOf("function"));
+    act(() => handlers.ended({}));
+    expect(fetcher.mock.calls.filter(([path, init]) => String(path).endsWith("/completion") && init.method === "POST")).toHaveLength(0);
+    fireEvent.click(complete);
+    expect(await screen.findByText("Пройдено")).toBeInTheDocument();
+    expect(screen.getByText("Прогресс курса 50%")).toBeInTheDocument();
   });
 
   it("keeps the latest time event for pagehide beacon persistence", async () => {

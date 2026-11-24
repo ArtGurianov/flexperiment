@@ -52,6 +52,8 @@ const REVIEWED_SCHEMA_SHA256 = new Set([
   "260e9e4e7d342587d89acad72ad5c38d4c83ede762b6afe5e4827483b71daa4d",
   // 0043: irreversible native payment handoff marker.
   "a9b1238f3188fd74e87d86edef9774887a4d23f728e24ab8337eb0060f889150",
+  // 0044: explicit learning completion, erased with the subject and retained with the learning record.
+  "3d8c77a8e52dc6a6ee6b90b9087403f7b719889ca47cfd533b4dad7ef7a6a79d",
 ]);
 export function assertReviewedRestoreSchema(db: Database.Database) {
   const schema = db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").all();
@@ -161,8 +163,8 @@ function applyErasure(db: Database.Database, ledger: VerifiedErasureLedger, keys
           if (audit || adminAudit || ownerLegalEvidenceMentions(db, [customer.id, customer.email_normalized])) throw new ErasureLedgerError("ERASURE_AUDIT_REVIEW_REQUIRED");
           for (const table of ["authenticated_consent_actions", "account_consents", "marketing_consents",
             "notification_campaign_recipients", "course_learning_starts", "free_course_enrollments", "checkout_quotes", "course_access_starts",
-            "lesson_resume_positions", "playback_grant_rate_limits", "playback_access_events", "lab_guest_access"]) {
-            if (table !== "lab_guest_access" || db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table)) {
+            "lesson_resume_positions", "lesson_completions", "playback_grant_rate_limits", "playback_access_events", "lab_guest_access"]) {
+            if (!["lab_guest_access", "lesson_completions"].includes(table) || hasTable(db, table)) {
               db.prepare(`DELETE FROM ${table} WHERE customer_id=?`).run(customer.id);
             }
           }
