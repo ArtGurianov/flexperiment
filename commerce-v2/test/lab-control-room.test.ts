@@ -9,7 +9,8 @@ import { CONTROL_ROOM_ADMIN_ID } from "../src/control-room-totp";
 import { migrateV2 } from "../src/db";
 import { loadCommerceRuntimeConfig } from "../src/payment-mode";
 import { enrolledTotp, testTotpKey } from "./fixtures/control-room-totp";
-import { stageALegalManifestJson } from "./fixtures/legal";
+import { stageBLegalManifestJson } from "./fixtures/legal";
+import { confirmLabBuyer, labAcceptanceIfActive } from "./fixtures/lab-purchase";
 import { openTestStorefront, qualifyTestFiscalPolicies, setTestStorefronts, testCheckoutConfig, withTestStorefrontSwitch } from "./fixtures/sales";
 
 /** ART-341: LAB occurrence CRUD through the Control Room, against one live price. */
@@ -51,10 +52,10 @@ const publicCatalogue = async () => (await server.request("/v1/lab/catalogue")).
 let customers = 0;
 const customer = () => {
   const id = `customer-${++customers}`;
-  db.prepare("INSERT INTO customers(id,email_normalized) VALUES (?,?)").run(id, `${id}@example.com`);
+  db.prepare("INSERT INTO customers(id,email_normalized) VALUES (?,?)").run(id, `${id}@example.com`); confirmLabBuyer(db, id);
   return { customerId: id, customerEmail: `${id}@example.com` };
 };
-const buySeat = () => checkout(db, rail, testCheckoutConfig, { ...customer(), offerRef: REF, idempotencyKey: `seat-${customers}` }, NOW);
+const buySeat = () => checkout(db, rail, testCheckoutConfig, { ...customer(), offerRef: REF, idempotencyKey: `seat-${customers}`, labAcceptance: labAcceptanceIfActive(db) }, NOW);
 
 /** An occurrence with a CLOSED, priced offer, listed and then opened to PUBLIC under a test LAB activation. */
 const openForSale = async () => {
@@ -72,7 +73,7 @@ beforeEach(async () => {
   migrateV2(db);
   rail = new MockPaymentRail();
   db.prepare(`INSERT INTO legal_releases(id,storefront,version,manifest_json,effective_at,active)
-    VALUES ('lab-legal','LAB','lab-stage-a-v1',?,'2026-09-30T00:00:00Z',1)`).run(stageALegalManifestJson);
+    VALUES ('lab-legal','LAB','lab-stage-b-v1',?,'2026-09-30T00:00:00Z',1)`).run(stageBLegalManifestJson);
   const totp = enrolledTotp(db, new Date(NOW));
   server = createCommerceV2App({
     db, sourceCommit: "a".repeat(40), serviceToken: "service-token", paymentRail: rail, now: () => new Date(NOW),
@@ -254,7 +255,7 @@ describe("one live LAB price (offers.price_kopecks)", () => {
       displayedAmountKopecks: 250_000 }, NOW) as Record<string, unknown>;
     expect(reread).toMatchObject({ quoteId: first.quoteId, baseAmountKopecks: 250_000,
       priceNotice: { code: "CATALOG_PRICE_CHANGED_AFTER_QUOTE", quotedAmountKopecks: 250_000, currentAmountKopecks: 300_000 } });
-    expect(await confirmCheckout(db, rail, testCheckoutConfig, { ...buyer, quoteId: String(first.quoteId), idempotencyKey: "price-1-pay" }, NOW))
+    expect(await confirmCheckout(db, rail, testCheckoutConfig, { ...buyer, quoteId: String(first.quoteId), idempotencyKey: "price-1-pay", labAcceptance: labAcceptanceIfActive(db) }, NOW))
       .toMatchObject({ state: "PAID" });
     expect(db.prepare("SELECT unit_amount_kopecks FROM order_lines").get()).toEqual({ unit_amount_kopecks: 250_000 });
 

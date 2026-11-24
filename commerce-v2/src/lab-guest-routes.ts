@@ -1,9 +1,10 @@
+import { accountSessionScope, type AccountSessionScope } from "./shared-account-routes";
 import type Database from "better-sqlite3";
 import { Hono, type Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import QRCode from "qrcode";
 import { consumeLabLimit, labAccess, LabTicketError, labEmail, prepareLabRecovery, readLabTicket, redeemLabRecovery,
-  reissueOwnedLabTicket, startLabGuest, type LabTicketEmail } from "./lab-tickets";
+  reissueOwnedLabTicket, type LabTicketEmail } from "./lab-tickets";
 import { listCustomerRefunds, requestRefund, type RefundReason } from "./refunds";
 import type { ErasureRuntimeFence } from "./erasure-fence";
 
@@ -12,8 +13,7 @@ export const labBearer = (context: Context) => context.req.header("authorization
 export function registerLabGuestRoutes(parent: Hono, deps: {
   db: Database.Database; origin: string; now: () => Date;
   requestSource: (context: Context) => string | undefined;
-  canStartGuest: () => boolean;
-  authenticateCustomer?: (headers: Headers) => Promise<string | null>;
+  authenticateCustomer?: (headers: Headers, scope?: AccountSessionScope) => Promise<string | null>;
   sendLabTicketEmail?: (message: LabTicketEmail) => Promise<void>;
   erasureFence?: ErasureRuntimeFence;
 }) {
@@ -32,20 +32,10 @@ export function registerLabGuestRoutes(parent: Hono, deps: {
       return c.json({ code: error instanceof LabTicketError ? error.message : "LAB_REQUEST_UNAVAILABLE" }, error instanceof LabTicketError ? 409 : 503, noStore);
     }
   });
-  app.post("/v1/lab/guest/start", async c => {
-    const body = await c.req.json<{ email: unknown; accessToken: unknown }>();
-    const email = labEmail(body.email), time = deps.now().toISOString();
-    deps.erasureFence?.assertIdentity({ email }, "AUTH_MAIL");
-    const source = deps.requestSource(c);
-    if (!source) return c.json({ code: "LAB_SOURCE_UNAVAILABLE" }, 503, noStore);
-    if (!deps.canStartGuest()) return c.json({ code: "LAB_SALES_CLOSED" }, 409, noStore);
-    // Charge the trusted source first, so rotating email/token cannot allocate unlimited buckets/sessions.
-    if (!consumeLabLimit(deps.db, "start-source", source, 30, time)
-      || !consumeLabLimit(deps.db, "start-source-email", JSON.stringify([source, email]), 10, time)) {
-      return c.json({ code: "LAB_RATE_LIMITED" }, 429, noStore);
-    }
-    return c.json(startLabGuest(deps.db, body, time), 201, noStore);
-  });
+  // FLEX-60 (owner decision 18.11.2026): new guest purchases are closed on the server. A LAB purchase
+  // starts on a confirmed account (my/checkout, FLEX-122). Existing guest orders keep read-back,
+  // ticket, recovery and refunds below through their own capability.
+  app.post("/v1/lab/guest/start", c => c.json({ code: "LAB_ACCOUNT_CONFIRMATION_REQUIRED" }, 403, noStore));
   app.get("/v1/lab/guest/ticket", async c => {
     accessFor(c);
     const ticket = readLabTicket(deps.db, labBearer(c));
@@ -88,7 +78,7 @@ export function registerLabGuestRoutes(parent: Hono, deps: {
     return c.json(result, 200, noStore);
   });
   app.post("/v1/lab/guest/reissue", async c => {
-    const customerId = await deps.authenticateCustomer?.(c.req.raw.headers);
+    const customerId = await deps.authenticateCustomer?.(c.req.raw.headers, accountSessionScope(c));
     if (!customerId) return c.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
     const body = await c.req.json<{ orderPublicId: string; accessToken: string }>();
     return c.json(reissueOwnedLabTicket(deps.db, customerId, body.orderPublicId, body.accessToken, deps.now().toISOString()), 200, noStore);

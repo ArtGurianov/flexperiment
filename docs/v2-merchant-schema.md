@@ -639,7 +639,7 @@ identity/use. Financial erasure holds and offline retention remain explicit.
 The guest flow, API authority and qualification boundaries are described in
 [the ART-384 design](plans/2026-10-19-lab-guest-checkout-design.md).
 
-## Explicit FREE enrollment and start of learning (FLEX-128; migration 0036, reserve 0037)
+## Explicit FREE enrollment and start of learning (FLEX-128; migration 0036)
 
 Stage A opens a FREE course only after the customer's explicit "Записаться бесплатно"
 action. `POST /v1/me/free-enrollments` (`{ courseSlug, lessonSlug? }`, LMS origin only,
@@ -666,5 +666,112 @@ enrollment after the change is refused with `FREE_COURSE_REQUIRED`.
 
 Retention and erasure restore both admit the reviewed 0001–0036 schema with hashed
 journal, `f0b2205a43d7a733a96cbc3b40f7b57e4850dc0f8082dfc5449f1a95bee21e13`. The
-fingerprint is computed over `sqlite_master` only, so a final renumbering to 0037 does
-not change it; integration on a newer `main` recomputes it.
+fingerprint is computed over `sqlite_master`. Keep the version and digest of any applied migration.
+
+## Stage A, LAB showcase and paid upgrade order
+
+The review branch keeps the Stage A and showcase migration prefix byte-for-byte. The only forward sequence
+under review for the combined source is 0036 free enrollment, 0037 LAB interest (including purpose-specific
+suppression), 0038 MY identity, 0039 native money, and 0040–0042 LAB lifecycle. The upgrade fixture preserves
+signups, suppressions, notice attempts and the existing journal. Earlier paid review branches used 0037 for MY.
+Those branches are for disposable databases only. Preserve the released prefix before admitting a migration
+on any retained environment.
+
+MY sign-in and native sales have independent settings. Platform uses `MY_IDENTITY_MODE=on` and a valid
+`MY_ORIGIN` to render the Navbar. `MY_CHECKOUT_MODE=native` selects the MY purchase link. Static LAB
+uses `MY_IDENTITY_MODE` and `MY_ORIGIN` at build time and shows the MY purchase link only when its
+catalogue reports native and the event is open. Admit those settings together with the matching
+Commerce profile. LAB keeps the link to MY as its account entry point while its cookies are host-only.
+
+## Native payments, refunds and fiscal events (FLEX-119; migration 0039)
+
+The direct native contour (`PAYMENT_MODE=native`) keeps its own records next to the
+classified orders. It adds new tables only; no existing table is altered. The contract,
+its fixtures and the failure-scenario map are in
+[the FLEX-119 contract](plans/2026-11-20-native-payment-refund-contract.md).
+
+- `native_payments`: one per order (`order_id` UNIQUE, key `native-pay:{order}:1`). It holds the
+  frozen amount and snapshot hash, the provider payment id, and the sealed frozen request. The
+  sealed request carries the receipt e-mail and is purged in the same statement that sets the
+  terminal state.
+- `native_payment_observations`: append-only record of every create/submit answer, callback hint
+  and read-back, with the decided state and reason. No e-mail.
+- `native_callback_inbox`: deduplicated provider callbacks. Only a body hash is kept, never the
+  raw body. Proposed retention is 90 days, pending the owner and E.
+- `native_refunds`: one per approved refund request, with the sealed frozen refund request. The
+  envelope is purged at a terminal state.
+- `fiscal_events`: one per required receipt (`event_ref` UNIQUE). It holds the frozen fiscal lines,
+  the payment method and the mode. A sealed receipt contact is purged at a terminal state or at
+  cancellation. A LAB `FINAL_SETTLEMENT` is reserved `AWAITING_SERVICE` at payment time and is
+  issued only against D's `SERVICE_RENDERED` fact (`lab_service_renditions`, D's migration).
+
+Authority:
+- A payment or refund is a fact only from an authenticated provider read-back bound to the frozen
+  order. A callback only schedules that read-back.
+- Access and tickets follow the PAID transition once; revocation follows a bound refund SUCCEEDED
+  once.
+- Fiscal reconciliation never moves money.
+- An order's contour is what it stored: a `native_payments` row or a historical RC.2
+  `checkout_attempts.refref_attempt_id`, never both. Historical orders stay with their original
+  executor.
+
+Triggers refuse a sealed envelope or contact on a terminal row, and refuse leaving a terminal
+state except into `REVIEW_REQUIRED`.
+
+Retention and erasure:
+- Financial and fiscal rows are retained.
+- Identity is reached only through the classified `orders`/`customers`.
+- Erasure purges sealed envelopes and contacts only when every payment, refund and fiscal event of
+  the subject is terminal. Otherwise it refuses with `ERASURE_FINANCIAL_REVIEW_REQUIRED`.
+
+Both schema fingerprints (`pd-retention.ts`, `erasure-restore.ts`) list the resulting schema; an
+unknown schema is still refused.
+
+## LAB lifecycle on a confirmed account (FLEX-57–62, FLEX-85; migrations 0040–0042)
+
+Owner decision 18.11.2026: a new LAB hold, order or payment requires a confirmed account
+(`customers.auth_user_id`, bound by a verified sign-in). `assertLabPurchaseAuthority` refuses with
+`LAB_ACCOUNT_CONFIRMATION_REQUIRED` before a hold (prepare) and again under the order's write lock
+(confirm); `/v1/lab/guest/start` and a guest-bearer preview answer 403 before any context exchange or
+resolution. Existing guest orders keep read-back, replay of their own attempt, ticket, recovery and
+refunds through their capability (migration 0032 rows are unchanged).
+
+`lab_purchase_acceptances` is the minimum acceptance evidence, written in the order-confirmation
+transaction: the active LAB Stage B release id/version/manifest hash, the document kinds, versions and
+hashes, the three explicit choices, the order snapshot hash and the occurrence snapshot hash, time and
+the confirmed customer. It holds no email, IP, free text or marketing choice; the receipt contact is
+C's sealed record. Append-only by trigger.
+
+`lab_occurrence_cancellations` is the two-step cancellation with committed seats (FLEX-59): REQUESTED
+closes the offer, expires unconfirmed holds and refuses new admission (`LAB_OCCURRENCE_CANCELLING`);
+started payments keep their seats and are read back through their own contour (C's
+`routeContour(order)`, injected, never derived here). COMPLETED is reachable only when no order can
+still settle; it cancels the occurrence (tickets become VOID, a use record stays) and freezes the
+refund obligations with each order's contour, a missing contour left for a person. Forward-only.
+
+`lab_service_renditions` is the single authoritative SERVICE_RENDERED fact per paid order line
+(`flexperiment.service-rendered/1`: orderLineId, occurrenceRef, renderedAt, checkedInAt, evidenceRef,
+recordedBy, basis, attestationReason). `renderedAt` is when rendering was recorded and is never earlier
+than the occurrence end (CHECK plus a BEFORE INSERT trigger); a check-in time is kept apart in
+`checked_in_at` as the CHECKED_IN basis only. ATTENDED_ATTESTED is one Control Room action per line after
+the end, with a reason from the closed list QR_SCAN_FAILED | SCANNER_UNAVAILABLE |
+ATTENDANCE_LIST_CONFIRMED (no "other", no free text). ATTENDANCE_LIST_CONFIRMED cites a protected document
+as `attendance-list:<storage id>#sha256:<content hash>` (CHECK); the list itself is never stored here, its
+retention is E's. Cancelled, cancelling, moved, unpaid, refund-open and no-show lines get no fact
+(review). C's FINAL_SETTLEMENT issuance reads `listServiceRenderedFacts`,
+`labOccurrenceCancellationState` and `closingEligibility`; it owns the closing-receipt outbox and key
+`fiscal:FINAL_SETTLEMENT:{orderLineId}`. A REFREF_RC2 prepayment is never closed natively. Append-only.
+
+MY routes of this block (`GET /v1/my/tickets`, `GET /v1/my/tickets/:orderPublicId`,
+`POST /v1/my/tickets/:orderPublicId/qr/reissue`) accept only an MY-audience session (B's resolver,
+injected; absent → 503) of a confirmed account (`user.email_verified` for the customer's email). The
+list carries no QR, token or capability.
+
+`lab_tickets.qr_generation` serves an account-owned ticket: the QR is HMAC(server secret, ticket,
+generation); a view keeps it, an explicit reissue moves the generation and revokes the old QR.
+
+Retention and erasure: all of it is order evidence retained with the order; there is no new erasure
+target. A subject with an order already stops at `ERASURE_FINANCIAL_REVIEW_REQUIRED` with every row
+intact (`lab-lifecycle-restore.test.ts`). The partial-erasure procedure for such a subject (account,
+progress, sessions and marketing removed with suppression, the minimum financial record kept, an
+answer with its basis) is not implemented here. Both schema fingerprints include this migration.

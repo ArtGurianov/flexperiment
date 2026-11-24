@@ -1,3 +1,4 @@
+import { accountSessionScope, type AccountSessionScope } from "./shared-account-routes";
 import type Database from "better-sqlite3";
 import type { Env, Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
@@ -19,13 +20,13 @@ export function registerFreeEnrollmentRoutes<E extends Env>(app: Hono<E>, deps: 
   readonly db: Database.Database;
   readonly coursesOrigin: string;
   readonly now: () => Date;
-  readonly authenticateCustomer?: (headers: Headers) => Promise<string | null>;
+  readonly authenticateCustomer?: (headers: Headers, scope?: AccountSessionScope) => Promise<string | null>;
 }) {
   const refusal = (error: unknown) => error instanceof FreeEnrollmentRefusal
     ? { body: { code: error.code }, status: STATUS[error.code] } : undefined;
 
   app.get("/v1/me/free-enrollments/:courseSlug", async (context) => {
-    const customerId = await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;
+    const customerId = await deps.authenticateCustomer?.(context.req.raw.headers, accountSessionScope(context)) ?? null;
     if (!customerId) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
     try {
       const status = freeEnrollmentStatus(deps.db, customerId, context.req.param("courseSlug"));
@@ -38,7 +39,7 @@ export function registerFreeEnrollmentRoutes<E extends Env>(app: Hono<E>, deps: 
 
   app.post("/v1/me/free-enrollments", bodyLimit({ maxSize: 2048,
     onError: context => context.json({ code: "FREE_ENROLLMENT_INPUT_TOO_LARGE" }, 413, noStore) }), async (context) => {
-    const customerId = await deps.authenticateCustomer?.(context.req.raw.headers) ?? null;
+    const customerId = await deps.authenticateCustomer?.(context.req.raw.headers, accountSessionScope(context)) ?? null;
     if (!customerId) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
     // A cross-site page cannot enroll a signed-in visitor: only the LMS origin's own page can.
     if (context.req.header("origin") !== deps.coursesOrigin) return context.json({ code: "ORIGIN_FORBIDDEN" }, 403, noStore);

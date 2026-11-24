@@ -60,15 +60,6 @@ export function labLegalReview(db: Database.Database) {
     .some(kind => !manifest.documents.some(doc => doc.kind === kind))) fail("LAB_LEGAL_RELEASE_REQUIRED");
   return { releaseId: release.id, releaseVersion: release.version, manifestSha256: legalManifestHash(manifest), documents: manifest.documents };
 }
-/** Called inside confirmCheckout's write transaction, before order/attempt creation. */
-export function acceptLabPurchase(db: Database.Database, orderPublicId: string, customerId: string, input: LabAcceptance | undefined, now: string) {
-  const review = labLegalReview(db);
-  if (input?.personalDataConsent !== true || input.termsAccepted !== true || input.receiptContactAccepted !== true
-    || input.releaseVersion !== review.releaseVersion || input.manifestSha256 !== review.manifestSha256) fail("LAB_CONSENT_REQUIRED");
-  db.prepare("UPDATE lab_guest_access SET acceptance_json=?,updated_at=? WHERE order_public_id=? AND customer_id=?")
-    .run(JSON.stringify({ ...input, recordedAt: now, source: "LAB_ORDER_CONFIRM", evidenceStatus: "ORDER_SCOPED_UNVERIFIED_EMAIL" }), now, orderPublicId, customerId);
-}
-
 /** Payment acceptance, never browser success/navigation, issues one durable ticket per line. */
 export function issueLabTicket(db: Database.Database, lineId: string, now: string) {
   db.prepare("INSERT INTO lab_tickets(id,order_line_id,issued_at) VALUES (?,?,?) ON CONFLICT(order_line_id) DO NOTHING")
@@ -160,4 +151,85 @@ export function reissueOwnedLabTicket(db: Database.Database, customerId: string,
     db.prepare("DELETE FROM lab_ticket_recoveries WHERE order_public_id=?").run(orderPublicId);
     return rotateAccess(db, orderPublicId, token, now);
   }).immediate();
+}
+
+/**
+ * FLEX-60/123: the ticket of an account-owned LAB order (no guest capability). The QR is
+ * HMAC(serverSecret, ticket, generation): a normal view shows the same QR, an explicit reissue moves
+ * the generation and revokes the old one. A used ticket keeps its use record and shows no QR.
+ */
+const ownedQrFor = (secret: Buffer, ticketId: string, generation: number) =>
+  createHmac("sha256", secret).update(`LAB_ENTRY_V2:${ticketId}:${generation}`).digest("base64url");
+function ownedTicketRow(db: Database.Database, customerId: string, orderPublicId: string) {
+  const owned = db.prepare(`SELECT 1 FROM orders WHERE public_id=? AND customer_id=?
+    AND NOT EXISTS (SELECT 1 FROM lab_guest_access access WHERE access.order_public_id=orders.public_id)`).get(orderPublicId, customerId);
+  if (!owned) fail("LAB_TICKET_NOT_FOUND");
+  const row = ticketRow(db, orderPublicId);
+  if (!row) return undefined;
+  const { qr_generation } = db.prepare("SELECT qr_generation FROM lab_tickets WHERE id=?").get(row.id) as { qr_generation: number };
+  return { ...row, qr_generation };
+}
+const assertQrSecret = (secret: Buffer) => { if (!Buffer.isBuffer(secret) || secret.length < 32) fail("LAB_TICKET_SECRET_UNAVAILABLE"); };
+export function readOwnedLabTicket(db: Database.Database, secret: Buffer, customerId: string, orderPublicId: string) {
+  assertQrSecret(secret);
+  return db.transaction(() => {
+    const row = ownedTicketRow(db, customerId, orderPublicId);
+    if (!row) return { orderPublicId, status: "NOT_ISSUED" as const };
+    const status = statusFor(row), qrToken = ownedQrFor(secret, row.id, row.qr_generation);
+    if (status === "VALID") {
+      db.prepare("UPDATE lab_tickets SET qr_sha256=? WHERE id=? AND qr_sha256 IS NULL").run(capabilityHash(qrToken), row.id);
+      const current = db.prepare("SELECT qr_sha256 FROM lab_tickets WHERE id=?").get(row.id) as { qr_sha256: string | null };
+      if (current.qr_sha256 !== capabilityHash(qrToken)) fail("LAB_TICKET_QR_CONFLICT");
+    }
+    return { orderPublicId, ticketId: row.id, status, usedAt: row.used_at, occurrence: JSON.parse(row.occurrence_snapshot_json),
+      ...(status === "VALID" ? { qrToken } : {}) };
+  }).immediate();
+}
+export function reissueOwnedLabQr(db: Database.Database, secret: Buffer, customerId: string, orderPublicId: string, now: string) {
+  assertQrSecret(secret);
+  return db.transaction(() => {
+    const row = ownedTicketRow(db, customerId, orderPublicId) ?? fail("LAB_TICKET_NOT_ISSUED");
+    if (statusFor(row) !== "VALID") fail(row.used_at ? "LAB_QR_ALREADY_USED" : "LAB_TICKET_VOID");
+    db.prepare("UPDATE lab_tickets SET qr_generation=qr_generation+1,qr_sha256=NULL WHERE id=?").run(row.id);
+    db.prepare("INSERT INTO audit_log(id,actor,action,subject_type,subject_ref,evidence_json,created_at) VALUES (?,?, 'LAB_TICKET_QR_REISSUED','LAB_TICKET',?,?,?)")
+      .run(randomUUID(), `customer:${customerId}`, row.id, JSON.stringify({ generation: row.qr_generation + 1 }), now);
+    return readOwnedLabTicket(db, secret, customerId, orderPublicId);
+  }).immediate();
+}
+
+/** Server env only: base64url of ≥32 bytes. Anything else leaves owned-ticket QR closed (fail-closed). */
+export function labTicketQrSecretFromEnv(env: Record<string, string | undefined>): Buffer | undefined {
+  const raw = env.LAB_TICKET_QR_SECRET?.trim();
+  if (!raw || !/^[A-Za-z0-9_-]+$/.test(raw)) return undefined;
+  const secret = Buffer.from(raw, "base64url");
+  return secret.length >= 32 ? secret : undefined;
+}
+
+export type MyLabTicket = { orderPublicId: string; title: string; startsAt: string; endsAt: string; timezone: string;
+  venueName: string | null; status: "VALID" | "USED" | "VOID" | "NOT_ISSUED"; viewPath: string | null };
+
+/**
+ * FLEX-123 "Мои билеты" for a confirmed account: the frozen promise of each LAB order and its ticket
+ * status. No QR, token or capability. A historical guest order bound to the account is listed without a
+ * view path: its ticket stays behind its own capability.
+ */
+export function listOwnedLabTickets(db: Database.Database, customerId: string): MyLabTicket[] {
+  const rows = db.prepare(`SELECT orders.public_id,orders.state,line.occurrence_snapshot_json,occurrence.lifecycle,
+      ticket.id AS ticket_id,ticket.used_at,
+      EXISTS (SELECT 1 FROM lab_guest_access access WHERE access.order_public_id=orders.public_id) AS guest_scoped
+    FROM orders JOIN order_lines line ON line.order_id=orders.id JOIN products product ON product.id=line.product_id
+    JOIN lab_occurrences occurrence ON occurrence.occurrence_ref=product.occurrence_ref
+    LEFT JOIN lab_tickets ticket ON ticket.order_line_id=line.id
+    WHERE orders.customer_id=? AND product.kind='LAB' AND orders.state NOT IN ('EXPIRED','CANCELLED','DRAFT')
+    ORDER BY json_extract(line.occurrence_snapshot_json,'$.startsAt') DESC,orders.public_id`).all(customerId) as Array<{
+      public_id: string; state: string; occurrence_snapshot_json: string; lifecycle: string; ticket_id: string | null; used_at: string | null; guest_scoped: number }>;
+  return rows.map(row => {
+    const promised = JSON.parse(row.occurrence_snapshot_json) as { title: string; startsAt: string; endsAt: string; timezone: string;
+      venue: { status: string; name?: string } | null };
+    const status = !row.ticket_id ? "NOT_ISSUED" as const
+      : statusFor({ state: row.state, lifecycle: row.lifecycle, used_at: row.used_at } as NonNullable<ReturnType<typeof ticketRow>>);
+    return { orderPublicId: row.public_id, title: promised.title, startsAt: promised.startsAt, endsAt: promised.endsAt, timezone: promised.timezone,
+      venueName: promised.venue?.status === "CONFIRMED" ? promised.venue.name ?? null : null, status,
+      viewPath: row.guest_scoped ? null : `/tickets/${encodeURIComponent(row.public_id)}` };
+  });
 }

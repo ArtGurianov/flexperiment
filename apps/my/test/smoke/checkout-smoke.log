@@ -1,0 +1,14 @@
+PASS LMS anonymous → sign-in with next=/checkout/<id>
+PASS LMS submit disabled before acceptance
+PASS LMS return: address bar cleaned of ?order=
+PASS LMS refresh after return keeps the order status
+PASS foreign ?order= → not found
+PASS tampered intent id → 404
+PASS LAB submit disabled until all three acceptances
+PASS LAB ticket issued after authoritative status
+PASS LAB closed sales text
+PASS sessionStorage has no e-mail or amounts
+PASS every upstream call carries x-forwarded-host=localhost:3003
+PASS preview bodies carry only offerRef
+PASS exactly one confirm per purchase
+phase at end: UNAVAILABLE

@@ -1,0 +1,51 @@
+# FLEX-120/121 (B): my.flexperiment.ru. Built and verified by CI; admitted to release by E.
+# No secrets are baked: Commerce credentials never reach this image, only public origins.
+FROM node:22-bookworm-slim AS dependencies
+WORKDIR /app
+RUN corepack enable
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY apps/my/package.json ./apps/my/package.json
+RUN pnpm install --frozen-lockfile --filter @flexperiment/my...
+
+FROM dependencies AS build
+ARG SOURCE_COMMIT
+ARG MY_ORIGIN=https://my.flexperiment.ru
+ARG PLATFORM_ORIGIN=https://flexperiment.ru
+ENV SOURCE_COMMIT=${SOURCE_COMMIT} \
+    MY_ORIGIN=${MY_ORIGIN} \
+    PLATFORM_ORIGIN=${PLATFORM_ORIGIN} \
+    NEXT_TELEMETRY_DISABLED=1
+COPY tsconfig.json ./
+COPY apps/my ./apps/my
+COPY lib/my-checkout-intent.ts ./lib/my-checkout-intent.ts
+COPY lib/shared-account-session.ts ./lib/shared-account-session.ts
+RUN pnpm my:build
+
+FROM node:22-bookworm-slim AS identity
+WORKDIR /identity
+ARG SOURCE_COMMIT
+COPY scripts/write-build-identity.mjs /tmp/write-build-identity.mjs
+RUN SOURCE_COMMIT=${SOURCE_COMMIT} node /tmp/write-build-identity.mjs /identity/identity.json my
+
+FROM node:22-bookworm-slim
+WORKDIR /app
+ARG SOURCE_COMMIT
+ARG MY_ORIGIN=https://my.flexperiment.ru
+ARG PLATFORM_ORIGIN=https://flexperiment.ru
+ENV NODE_ENV=production \
+    NEXT_TELEMETRY_DISABLED=1 \
+    HOSTNAME=0.0.0.0 \
+    PORT=3003 \
+    SOURCE_COMMIT=${SOURCE_COMMIT} \
+    MY_ORIGIN=${MY_ORIGIN} \
+    PLATFORM_ORIGIN=${PLATFORM_ORIGIN} \
+    BUILD_IDENTITY_FILE=/app/.identity/identity.json
+# Next.js standalone output: server.js plus the traced node_modules only.
+COPY --from=build --chown=node:node /app/apps/my/.next/standalone ./
+COPY --from=build --chown=node:node /app/apps/my/.next/static ./apps/my/.next/static
+COPY --from=identity --chmod=0444 /identity/identity.json /app/.identity/identity.json
+RUN chmod 0555 /app/.identity && chmod 0444 /app/.identity/identity.json
+USER node
+EXPOSE 3003
+HEALTHCHECK --interval=30s --timeout=3s --retries=3 CMD ["node", "-e", "fetch('http://127.0.0.1:3003/healthz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+CMD ["sh", "-c", "umask 077 && node apps/my/server.js"]

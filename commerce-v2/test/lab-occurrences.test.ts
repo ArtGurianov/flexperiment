@@ -8,7 +8,8 @@ import { applyV2Migration, migrateV2 } from "../src/db";
 import { assertLabOccurrenceAdmissible, cancelLabOccurrence, createCity, createLabOccurrence, editLabOccurrence, labSeatInventory, renameCity,
   type LabOccurrenceCreateCommand } from "../src/lab-occurrences";
 import { publicLabCatalogue } from "../src/lab-catalogue";
-import { stageALegalManifestJson } from "./fixtures/legal";
+import { stageBLegalManifestJson } from "./fixtures/legal";
+import { confirmLabBuyer, labAcceptanceIfActive } from "./fixtures/lab-purchase";
 import { openTestStorefront, qualifyTestFiscalPolicies, testCheckoutConfig } from "./fixtures/sales";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -34,7 +35,7 @@ beforeEach(() => {
   migrateV2(db);
   rail = new MockPaymentRail();
   db.prepare(`INSERT INTO legal_releases(id,storefront,version,manifest_json,effective_at,active)
-    VALUES ('lab-legal','LAB','lab-stage-a-v1',?,'2026-09-30T00:00:00Z',1)`).run(stageALegalManifestJson);
+    VALUES ('lab-legal','LAB','lab-stage-b-v1',?,'2026-09-30T00:00:00Z',1)`).run(stageBLegalManifestJson);
   createCity(db, { slug: "nsk", title: "Новосибирск", actor: "operator" }, NOW);
   createLabOccurrence(db, occurrence(), NOW);
   db.prepare(`INSERT INTO products(id,product_ref,kind,access_model,occurrence_ref) VALUES ('lab-product',?,'LAB','PAID',?)`).run(REF, REF);
@@ -47,9 +48,9 @@ beforeEach(() => {
 let customers = 0;
 const buy = (scenario?: string, now = NOW) => {
   const id = `customer-${++customers}`;
-  db.prepare("INSERT INTO customers(id,email_normalized) VALUES (?,?)").run(id, `${id}@example.com`);
+  db.prepare("INSERT INTO customers(id,email_normalized) VALUES (?,?)").run(id, `${id}@example.com`); confirmLabBuyer(db, id);
   return checkout(db, rail, testCheckoutConfig, { customerId: id, customerEmail: `${id}@example.com`, offerRef: REF,
-    idempotencyKey: `lab-${id}`, scenario }, now);
+    idempotencyKey: `lab-${id}`, scenario, labAcceptance: labAcceptanceIfActive(db) }, now);
 };
 
 describe("LAB occurrence schema (migration 0029)", () => {
@@ -280,7 +281,7 @@ it.each(["CONFIRMED", "TO_BE_ANNOUNCED"] as const)("returns the frozen %s venue 
   if (status === "TO_BE_ANNOUNCED") edit({ venue: { status, disclosureText: "Площадка в центре", announceBy: "2026-10-20T00:00:00Z" } });
   edit({ visibility: "LISTED" });
   const id = `customer-${++customers}`;
-  db.prepare("INSERT INTO customers(id,email_normalized) VALUES (?,?)").run(id, `${id}@example.com`);
+  db.prepare("INSERT INTO customers(id,email_normalized) VALUES (?,?)").run(id, `${id}@example.com`); confirmLabBuyer(db, id);
   const input = { customerId: id, customerEmail: `${id}@example.com`, offerRef: REF, previewIdempotencyKey: `venue-${id}` };
   const preview = await prepareCheckout(db, rail, testCheckoutConfig, input, NOW);
   expect(preview.state).toBe("PRICE_REVIEW_REQUIRED");
@@ -293,7 +294,7 @@ it.each(["CONFIRMED", "TO_BE_ANNOUNCED"] as const)("returns the frozen %s venue 
   const replay = await prepareCheckout(db, rail, testCheckoutConfig, input, NOW);
   expect(replay).toEqual(preview);
   await confirmCheckout(db, rail, testCheckoutConfig, { customerId: id, customerEmail: input.customerEmail,
-    quoteId: preview.quoteId, idempotencyKey: `confirm-${id}` }, NOW);
+    quoteId: preview.quoteId, idempotencyKey: `confirm-${id}`, labAcceptance: labAcceptanceIfActive(db) }, NOW);
   const line = db.prepare("SELECT occurrence_snapshot_json FROM order_lines").get() as { occurrence_snapshot_json: string };
   expect(JSON.parse(line.occurrence_snapshot_json)).toEqual(preview.occurrence);
 });

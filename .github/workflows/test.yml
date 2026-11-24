@@ -307,3 +307,55 @@ jobs:
         env:
           SOURCE_COMMIT: ${{ env.CI_SOURCE_SHA }}
           PLATFORM_CANARY_TEST_IMAGE: flexperiment-platform-v2:test
+
+  # FLEX-120/121 (B block): my.flexperiment.ru app and its image. Buildability and a booted-image
+  # smoke only; no registry push, no deployment ref. E admits the image into the release process.
+  my:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CI_SOURCE_SHA }}
+      - name: Assert exact CI source checkout
+        run: test "$(git rev-parse HEAD)" = "$CI_SOURCE_SHA"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.29.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @flexperiment/my exec next typegen
+      - run: pnpm my:typecheck
+      - run: pnpm exec eslint apps/my
+      - run: pnpm my:test
+      - uses: docker/setup-buildx-action@v3
+      - name: my image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.my
+          push: false
+          load: true
+          tags: flexperiment-my:test
+          build-args: |
+            SOURCE_COMMIT=${{ env.CI_SOURCE_SHA }}
+          cache-from: type=gha,scope=my
+          cache-to: type=gha,mode=max,scope=my
+      - name: my image — boot, identity, headers and closed proxy
+        run: |
+          docker run -d --name my-smoke -p 127.0.0.1:3103:3003 -e MY_ORIGIN=http://127.0.0.1:3103 flexperiment-my:test
+          for ((attempt = 0; attempt < 30; attempt++)); do
+            curl -fsS http://127.0.0.1:3103/healthz >/dev/null && break
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:3103/identity | python3 -c 'import json,os,sys; d=json.load(sys.stdin); assert d=={"schema":"flexperiment.build-identity/1","service":"my","sourceCommit":os.environ["SOURCE_COMMIT"]}, d'
+          curl -fsS -D - -o /dev/null http://127.0.0.1:3103/sign-in | tr -d '\r' | grep -qi '^referrer-policy: no-referrer$'
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3103/v1/lms/exchange/redeem)" = 404
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3103/v1/my/session)" = 503
+          test "$(docker inspect -f '{{.Config.User}}' flexperiment-my:test)" = node
+          docker rm -f my-smoke
+        env:
+          SOURCE_COMMIT: ${{ env.CI_SOURCE_SHA }}

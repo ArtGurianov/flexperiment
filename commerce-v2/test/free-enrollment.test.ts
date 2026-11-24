@@ -9,6 +9,7 @@ import { publishEditorialDraft, saveEditorialDraft } from "../src/course-editori
 import { migrateV2 } from "../src/db";
 import { enrollInFreeCourse, freeEnrollmentStatus } from "../src/free-enrollment";
 import { listCustomerLibrary } from "../src/library";
+import { loadCommerceOrigins } from "../src/origins";
 import { loadCommerceRuntimeConfig } from "../src/payment-mode";
 import { resolvePlaybackAccess } from "../src/playback-access";
 import { listCustomerStorefrontLibrary } from "../src/storefront-content";
@@ -277,5 +278,34 @@ describe("FLEX-128 access, grant and library", () => {
     const repeat = enrollInFreeCourse(db, { customerId: "student", courseSlug: "free" }, at.toISOString());
     expect(repeat).toMatchObject({ created: false, startedAt: null });
     expect(count("course_learning_starts")).toBe(0);
+  });
+});
+
+describe("FLEX-123 MY course library", () => {
+  it("only serves the current account's enrolled or granted courses and its eligible resume lesson", async () => {
+    publish("free", "FREE");
+    publish("preview-only", "PAID", { previewFirst: true });
+    expect((await enroll(app(), { courseSlug: "free" })).status).toBeLessThan(300);
+    db.prepare(`INSERT INTO lesson_resume_positions(customer_id,lesson_ref,seconds,client_seq,client_ts,updated_at)
+      VALUES (?,?,?,?,?,?)`).run("student", "free-l2", 16, 1, at.toISOString(), at.toISOString());
+    const my = "https://my.flexperiment.test";
+    const origins = { ...loadCommerceOrigins({}), my };
+    const server = createCommerceV2App({ db, config, origins, myIdentity: { mode: "on", origins },
+      sourceCommit: "a".repeat(40), serviceToken: "synthetic", now: () => at,
+      resolveSession: async headers => {
+        const customerId = headers.get("authorization");
+        return customerId ? { kind: "MY", surface: "MY", customerId, sessionId: "synthetic" } : null;
+      } });
+    const myHost = { "x-forwarded-host": new URL(my).host };
+    expect((await server.request("/v1/my/courses", { headers: myHost })).status).toBe(401);
+    expect((await server.request("/v1/my/courses", { headers: { authorization: "student", "x-forwarded-host": new URL(ORIGIN).host } })).status).toBe(404);
+    const read = (customer: string) => server.request("/v1/my/courses", { headers: { ...myHost, authorization: customer } });
+    const response = await read("student");
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(await response.json()).toEqual({ courses: [{ slug: "free", title: "Course free", access: "FREE_ENROLMENT",
+      started: true, resumeLesson: { slug: "two", title: "Two" } }] });
+    expect(await (await read("other")).json()).toEqual({ courses: [] });
+    toPaid("free");
+    expect(await (await read("student")).json()).toMatchObject({ courses: [{ slug: "free", access: "FREE_ENROLMENT" }] });
   });
 });
