@@ -28,7 +28,7 @@ export default function HomeSnapShell({ children, course, bundle }: {
   const router = useRouter();
   const mainSegment = useSelectedLayoutSegment();
   const bundleSegment = useSelectedLayoutSegment("bundle")?.replace(/^\(\.\)/, "");
-  const duplicateBundle = mainSegment === "all-courses" && mainSegment === bundleSegment;
+  const showBundleSlot = pathname === BUNDLE_PATH && mainSegment !== bundleSegment;
   const [routing, startRouting] = useTransition();
   const root = useRef<HTMLElement>(null);
   const pending = useRef<string | null>(null);
@@ -267,7 +267,7 @@ export default function HomeSnapShell({ children, course, bundle }: {
       <main ref={root} className="homeSnap fixed inset-0 z-0 h-dvh snap-y snap-mandatory overflow-hidden overscroll-contain bg-paper">
         {children}
         {pathname === "/" ? null : course}
-        {duplicateBundle ? null : bundle}
+        {showBundleSlot ? bundle : null}
       </main>
     </HomeSectionNavigation.Provider>
   );

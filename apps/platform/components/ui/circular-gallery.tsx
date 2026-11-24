@@ -99,22 +99,22 @@ export function CircularGallery({
     <div ref={host} style={{ overflow: "hidden", touchAction: "pan-y", ...style }} {...props}>
       <div ref={ring} aria-hidden className="absolute top-1/2 left-1/2 isolate">
         <div ref={floor} className="pointer-events-none absolute z-[-2000000] bg-acid" />
-        {items.map((id, index) => (
+        {items.map((coverPath, index) => (
           <div
-            key={id}
+            key={coverPath}
             ref={(element) => { cards.current[index] = element; }}
             data-orbit-card={index}
             className="absolute top-0 left-0 isolate origin-top-left overflow-hidden rounded-md"
             style={{ width: CARD_WIDTH, height: CARD_HEIGHT, visibility: "hidden" }}
           >
             <Image
-              src={`/course-covers/course-main-${id}.webp`}
+              src={coverPath}
               alt="" fill unoptimized loading="eager" draggable={false}
               className="pointer-events-none object-contain"
               style={{ opacity: "var(--course-main-opacity, 0)" }}
             />
             <Image
-              src={`/course-covers/course-shadow-${id}.webp`}
+              src={coverPath.replace("/course-main-", "/course-shadow-")}
               alt="" fill unoptimized loading="eager" draggable={false}
               className="pointer-events-none object-contain"
               style={{ opacity: "calc(1 - var(--course-main-opacity, 0))", mixBlendMode: "plus-lighter" }}

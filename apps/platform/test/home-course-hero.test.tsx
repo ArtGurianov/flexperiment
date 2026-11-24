@@ -12,9 +12,9 @@ const { connection, courseOrbit } = vi.hoisted(() => ({
 vi.mock("next/server", async (original) => ({ ...await original<typeof import("next/server")>(), connection }));
 vi.mock("../components/home/CourseOrbit", () => ({ default: courseOrbit }));
 
-const entry = (slug: string) => ({
+const entry = (slug: string, courseRef = slug) => ({
   course: {
-    slug,
+    courseRef, slug,
     title: `Курс ${slug}`,
     summary: `Описание ${slug}`,
     description: { text: "Rich description" },
@@ -36,9 +36,12 @@ describe("home course hero", () => {
     vi.clearAllMocks();
   });
 
-  it("orders featured artwork explicitly and keeps links for the published artwork", async () => {
-    const entries = ["gliding", "unfeatured", "brukup", "bone-breaking", "groove"].map(entry);
-    const ordered = [["basics", entries[4]], ["bonebreaking", entries[3]], ["brukup", entries[2]], ["gliding", entries[0]]] as const;
+  it("orders by the cover manifest and links by published slug even when a different course uses a legacy slug", async () => {
+    const entries = [
+      entry("gliding"), entry("groove", "unfeatured"), entry("brukup"),
+      entry("ways-to-bone-break", "bonebreaking"), entry("flexing-foundations", "basics"),
+    ];
+    const ordered = [entries[4], entries[3], entries[2], entries[0]];
     const fetcher = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ courses: entries }));
 
     const html = renderToStaticMarkup(await HomeCourseHero());
@@ -47,16 +50,18 @@ describe("home course hero", () => {
     expect(fetcher).toHaveBeenCalledOnce();
     expect(String(fetcher.mock.calls[0]?.[0])).toBe("http://isolated-commerce:3002/v1/courses");
     expect(fetcher.mock.calls[0]?.[1]).toMatchObject({ cache: "no-store" });
-    expect(courseOrbit.mock.calls[0]?.[0].courses).toEqual(ordered.map(([artwork, { course }]) => ({
-      artwork, slug: course.slug, title: course.title, summary: course.summary,
+    expect(courseOrbit.mock.calls[0]?.[0].courses).toEqual(ordered.map(({ course }) => ({
+      coverPath: `/course-covers/course-main-${course.courseRef}.webp`,
+      slug: course.slug, title: course.title, summary: course.summary,
     })));
-    expect(html).toContain('href="/courses/groove"');
+    expect(html).toContain('href="/courses/flexing-foundations"');
+    expect(html).not.toContain('href="/courses/groove"');
     expect(html).toContain('href="/courses"');
   });
 
   it("keeps the homepage visible when Commerce stops listing a course", async () => {
     vi.spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(Response.json({ courses: [entry("groove")] }))
+      .mockResolvedValueOnce(Response.json({ courses: [entry("groove", "basics")] }))
       .mockResolvedValueOnce(Response.json({ courses: [] }));
 
     expect(renderToStaticMarkup(await HomeCourseHero())).toContain('href="/courses/groove"');

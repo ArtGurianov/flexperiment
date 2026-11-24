@@ -1,17 +1,15 @@
 import { publicCourses } from "@/lib/content/public";
 import { coursePath } from "@/lib/seo";
-import { catalogueAlias, isOrbitArtwork } from "@/components/home/orbit-course";
+import { COURSE_IMAGE_MANIFEST } from "@/lib/public-media";
 
 export async function GET(_request: Request, { params }: { params: Promise<{ courseAlias: string }> }) {
   const { courseAlias } = await params;
-  if (!isOrbitArtwork(courseAlias)) return new Response(null, { status: 404 });
+  if (!COURSE_IMAGE_MANIFEST.some(({ courseRef }) => courseRef === courseAlias)) return new Response(null, { status: 404 });
 
   const courses = await publicCourses().catch(() => null);
   if (!courses) return new Response(null, { status: 503, headers: { "Cache-Control": "no-store" } });
 
-  const alternative = catalogueAlias(courseAlias);
-  const published = courses.some(({ course }) => course.slug === courseAlias) ? courseAlias
-    : courses.find(({ course }) => course.slug === alternative)?.course.slug;
+  const published = courses.find(({ course }) => course.courseRef === courseAlias)?.course.slug;
   if (!published) return new Response(null, { status: 404, headers: { "Cache-Control": "no-store" } });
 
   return new Response(null, {

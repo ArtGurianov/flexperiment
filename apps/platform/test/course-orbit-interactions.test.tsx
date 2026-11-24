@@ -59,7 +59,7 @@ vi.mock("motion/react", async (importOriginal) => ({
 }));
 
 const courses: OrbitCourse[] = ["first", "second", "third"].map((slug) => ({
-  slug, title: `${slug} course`, summary: `About the ${slug} course`, artwork: slug,
+  slug, title: `${slug} course`, summary: `About the ${slug} course`, coverPath: `/course-covers/course-main-${slug}.webp`,
 }));
 const gallery = () => screen.getByRole("group", { name: /Курсы:/ });
 

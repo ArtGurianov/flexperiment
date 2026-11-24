@@ -3,7 +3,8 @@ import { connection } from "next/server";
 import { publicCourses } from "@/lib/content/public";
 import HomePolicyLinks from "./HomePolicyLinks";
 import CourseOrbit from "./CourseOrbit";
-import { catalogueAlias, ORBIT_COURSE_ORDER, type OrbitCourse } from "./orbit-course";
+import { COURSE_IMAGE_MANIFEST } from "@/lib/public-media";
+import type { OrbitCourse } from "./orbit-course";
 
 function HomeNavigation() {
   return (
@@ -48,13 +49,13 @@ export default async function HomeCourseHero() {
   let courses: OrbitCourse[];
   let catalogueEmpty = false;
   try {
-    const published = new Map((await publicCourses()).map(({ course }) => [course.slug, course]));
+    const published = new Map((await publicCourses()).map(({ course }) => [course.courseRef, course]));
     catalogueEmpty = published.size === 0;
-    courses = ORBIT_COURSE_ORDER.flatMap((artwork) => {
-      const course = published.get(artwork) ?? published.get(catalogueAlias(artwork) ?? artwork);
+    courses = COURSE_IMAGE_MANIFEST.flatMap(({ courseRef, path }) => {
+      const course = published.get(courseRef);
       if (!course) return [];
       const { slug, title, summary } = course;
-      return [{ artwork, slug, title, summary }];
+      return [{ coverPath: path, slug, title, summary }];
     });
   } catch {
     return <HomeHero catalogueStatus="Каталог временно недоступен." />;

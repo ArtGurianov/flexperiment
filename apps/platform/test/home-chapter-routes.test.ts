@@ -1,6 +1,6 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { expect, it } from "vitest";
-import { ORBIT_COURSE_ORDER } from "../components/home/orbit-course";
+import { COURSE_IMAGE_MANIFEST } from "../lib/public-media";
 
 const experience = new URL("../app/(frontend)/(experience)/", import.meta.url);
 it("keeps direct canonical pages separate from the dynamic home slot", () => {
@@ -14,9 +14,9 @@ it("keeps direct canonical pages separate from the dynamic home slot", () => {
 
 it("provides both WebP layers for every configured course", () => {
   const covers = new URL("../public/course-covers/", import.meta.url);
-  const expectedFiles = ORBIT_COURSE_ORDER.flatMap((artwork) => [
-    `course-main-${artwork}.webp`,
-    `course-shadow-${artwork}.webp`,
+  const expectedFiles = COURSE_IMAGE_MANIFEST.flatMap(({ path }) => [
+    path.split("/").at(-1)!,
+    path.replace("/course-main-", "/course-shadow-").split("/").at(-1)!,
   ]);
   expect(readdirSync(covers).sort()).toEqual(expectedFiles.sort());
   for (const file of expectedFiles) {

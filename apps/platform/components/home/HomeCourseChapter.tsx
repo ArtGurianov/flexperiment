@@ -65,7 +65,6 @@ export async function HomeLessonChapter({ params }: { params: Promise<LessonPara
   return (
     <HomeChapter path={path} title={lesson?.title ?? "Урок"}>
       <h2 className="m-0 font-display text-[clamp(2rem,7vw,5rem)] font-bold leading-none">{lesson?.title ?? "Урок сейчас недоступен"}</h2>
-      {lesson?.description != null && <LexicalReadOnly data={lesson.description} />}
       <HomeSectionLink href={coursePath(slug)} className={chapterAction}>← К курсу</HomeSectionLink>
     </HomeChapter>
   );

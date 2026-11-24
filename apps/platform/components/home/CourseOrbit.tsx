@@ -63,7 +63,7 @@ export default function CourseOrbit({ courses, children }: { courses: OrbitCours
   const [open, setOpen] = useState(false);
   const [grabbing, setGrabbing] = useState(false);
 
-  const items = useMemo(() => courses.map((course) => course.artwork), [courses]);
+  const items = useMemo(() => courses.map((course) => course.coverPath), [courses]);
 
   const stop = useCallback(() => {
     const state = engine.current;
