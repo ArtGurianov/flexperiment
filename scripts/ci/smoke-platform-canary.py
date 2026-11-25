@@ -29,7 +29,34 @@ def main():
 
     try:
         run("docker", "network", "create", "--internal", network)
-        mock = "const http=require('http');http.createServer((q,r)=>{const ready={ok:true,service:'commerce-v2',sourceCommit:process.env.SOURCE_COMMIT,foundationMode:false,core:{database:'ok',paymentMode:'disabled'},capabilities:{refref:'not_required'}};r.setHeader('content-type','application/json');if(q.url==='/readyz')return r.end(JSON.stringify(ready));if(q.url.startsWith('/v1/checkout')){r.statusCode=503;return r.end(JSON.stringify({code:'PAYMENTS_DISABLED'}))}r.setHeader('set-cookie','session=synthetic; Path=/; Secure; HttpOnly; SameSite=Lax');r.setHeader('cache-control','public');r.end(JSON.stringify({host:q.headers.host,proto:q.headers['x-forwarded-proto'],cookie:q.headers.cookie,xff:q.headers['x-forwarded-for']??null,url:q.url}))}).listen(3002,'0.0.0.0')"
+        mock = """
+const http = require('http');
+const ready = {ok:true, service:'commerce-v2', sourceCommit:process.env.SOURCE_COMMIT, foundationMode:false,
+  core:{database:'ok', paymentMode:'disabled'}, capabilities:{refref:'not_required'}};
+const legal = {version:'legal-fixture-v1', effectiveAt:'2026-11-23T21:00:00.000Z', manifest:{stage:'A', documents:[
+  {kind:'privacy', version:'privacy-fixture-v1', sha256:'b'.repeat(64), url:'https://legal.example.test/privacy-v1.md'}
+]}};
+http.createServer((q, r) => {
+  r.setHeader('content-type', 'application/json');
+  if (q.url === '/readyz') return r.end(JSON.stringify(ready));
+  if (q.url === '/v1/legal/current?storefront=COURSES') {
+    if (q.headers.host !== 'canary-platform.flexperiment.ru' || q.headers['x-forwarded-proto'] !== 'https'
+      || q.headers.cookie || q.headers.authorization || q.headers['x-flexperiment-legal-page']) {
+      r.statusCode = 403;
+      return r.end(JSON.stringify({code:'LEGAL_FIXTURE_TRANSPORT_REFUSED'}));
+    }
+    return r.end(JSON.stringify(legal));
+  }
+  if (q.url.startsWith('/v1/checkout')) {
+    r.statusCode = 503;
+    return r.end(JSON.stringify({code:'PAYMENTS_DISABLED'}));
+  }
+  r.setHeader('set-cookie', 'session=synthetic; Path=/; Secure; HttpOnly; SameSite=Lax');
+  r.setHeader('cache-control', 'public');
+  r.end(JSON.stringify({host:q.headers.host, proto:q.headers['x-forwarded-proto'], cookie:q.headers.cookie,
+    xff:q.headers['x-forwarded-for'] ?? null, url:q.url}));
+}).listen(3002, '0.0.0.0');
+"""
         run("docker", "run", "-d", "--name", upstream, "--network", network,
             "--network-alias", "xzuy7pk5y6ywjr9kh6nsk5ap", "-e", f"SOURCE_COMMIT={sha}",
             "--entrypoint", "node", image, "-e", mock)
@@ -86,6 +113,21 @@ def main():
             check(request(path)["status"] == 404)
         check(request("/v1/me", host="flexperiment.ru")["status"] == 403)
         check(request("/v1/me", headers={"Origin": "https://foreign.example"})["status"] == 403)
+        legal = request("/v1/legal/current?storefront=COURSES")
+        page = request("/legal/privacy", headers={"X-Flexperiment-Legal-Page": "spoofed-fixture-header"})
+        check(legal["status"] == page["status"] == 200)
+        edition = json.loads(legal["body"])
+        source = edition["manifest"]["documents"][0]
+        check(all(value in page["body"] for value in (
+            edition["effectiveAt"], source["version"], source["url"], source["sha256"], "24 ноября 2026 г.",
+        )))
+        check("spoofed-fixture-header" not in page["body"])
+        date = request("/legal/privacy/effective-at")
+        check(date["status"] == 200 and json.loads(date["body"]) == {"effectiveAt": edition["effectiveAt"]})
+        date_foreign = request("/legal/privacy/effective-at", host="flexperiment.ru")
+        check(date_foreign["status"] == 200 and json.loads(date_foreign["body"]) == {"effectiveAt": None})
+        check(request("/legal/privacy", host="flexperiment.ru")["status"] == 403)
+        check(request("/legal/privacy", headers={"Origin": "https://foreign.example"})["status"] == 403)
         check(request("/v1/checkout")["status"] == 503)
         check(request("/api/users", method="POST")["status"] == 404)
         check(request("/api/users")["status"] == 404)

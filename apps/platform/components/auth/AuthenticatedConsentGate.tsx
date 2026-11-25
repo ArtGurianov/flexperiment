@@ -2,8 +2,10 @@
 
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 
+import { LegalLinkDate } from "@/components/legal/LegalEffectiveDate";
+
 type Status = { storefront: "COURSES"; verifiedAccount: boolean; requiredChoicesConfirmed: boolean;
-  releaseVersion: string | null; manifestSha256: string | null;
+  releaseVersion: string | null; manifestSha256: string | null; effectiveAt?: string | null;
   actionSequence: number; action?: { key: string; outcome: "COMMITTED" | "ABSENT" };
   documents: Array<{ kind: string; version: string; sha256: string; url: string }> };
 const path = "/v1/me/consents?storefront=COURSES";
@@ -106,12 +108,12 @@ function ConsentForm({ status, onStatus }: { status: Status; onStatus: (status: 
   };
   return <section className="accountSection"><h2>Подтверждения после входа</h2>
     <p>Подтвердите выбор в своём аккаунте. Отметки до проверки email не заменяют это действие.</p>
-    <p><a href={docs.get("privacy")?.url} target="_blank" rel="noreferrer">Политика конфиденциальности</a></p>
+    <p><a href={docs.get("privacy")?.url} target="_blank" rel="noreferrer">Политика конфиденциальности</a><LegalLinkDate effectiveAt={status.effectiveAt} /></p>
     <form key={formEpoch} className="authForm" onSubmit={submit}>
       <fieldset disabled={!ready || phase !== "idle"}>
-        <label className="check"><input required type="checkbox" name="personalDataConsent" />Согласен с <a href={docs.get("personal_data")?.url} target="_blank" rel="noreferrer">обработкой персональных данных</a></label>
-        <label className="check"><input required type="checkbox" name="accountTermsAccepted" />Принимаю <a href={docs.get("account_terms")?.url} target="_blank" rel="noreferrer">условия аккаунта</a></label>
-        <label className="check"><input type="checkbox" name="marketingConsent" />Хочу получать <a href={docs.get("marketing_consent")?.url} target="_blank" rel="noreferrer">рекламные письма Flexperiment</a> (необязательно)</label>
+        <label className="check"><input required type="checkbox" name="personalDataConsent" /><span>Согласен с <a href={docs.get("personal_data")?.url} target="_blank" rel="noreferrer">обработкой персональных данных</a><LegalLinkDate effectiveAt={status.effectiveAt} /></span></label>
+        <label className="check"><input required type="checkbox" name="accountTermsAccepted" /><span>Принимаю <a href={docs.get("account_terms")?.url} target="_blank" rel="noreferrer">условия аккаунта</a><LegalLinkDate effectiveAt={status.effectiveAt} /></span></label>
+        <label className="check"><input type="checkbox" name="marketingConsent" /><span>Хочу получать <a href={docs.get("marketing_consent")?.url} target="_blank" rel="noreferrer">рекламные письма Flexperiment</a><LegalLinkDate effectiveAt={status.effectiveAt} /> (необязательно)</span></label>
         <button type="submit">{phase === "saving" ? "Подтверждаем…" : "Подтвердить выбор"}</button>
       </fieldset>
     </form>

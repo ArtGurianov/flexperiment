@@ -60,7 +60,7 @@ describe("page-view retry hook", () => {
   it("retries after the response for a browser with a context, without touching the page response", async () => {
     const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 204 }));
     const { waited, event: fetchEvent } = event();
-    const response = proxy(new NextRequest("https://flexperiment.ru/courses/intro", { headers: { cookie: COOKIE, host: "flexperiment.ru" } }), fetchEvent);
+    const response = await proxy(new NextRequest("https://flexperiment.ru/courses/intro", { headers: { cookie: COOKIE, host: "flexperiment.ru" } }), fetchEvent);
     expect(response.headers.get("x-middleware-next")).toBe("1");
     expect(response.headers.getSetCookie()).toEqual([]);
     expect(waited).toHaveLength(1);
@@ -69,6 +69,18 @@ describe("page-view retry hook", () => {
     expect(String(url)).toBe(`${COMMERCE}/v1/browser-context/touch`);
     expect(init?.method).toBe("POST");
     expect(new Headers(init?.headers).get("cookie")).toBe(COOKIE);
+  });
+
+  it("does not touch browser context on a legal request marked purpose: prefetch", async () => {
+    const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ code: "LEGAL_RELEASE_NOT_FOUND" }, { status: 404 }));
+    const { waited, event: fetchEvent } = event();
+    const response = await proxy(new NextRequest("https://flexperiment.ru/legal/privacy", {
+      headers: { cookie: COOKIE, host: "flexperiment.ru", purpose: "prefetch" },
+    }), fetchEvent);
+    expect(response.status).toBe(404);
+    expect(waited).toEqual([]);
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(String(fetch.mock.calls[0][0])).toContain("/v1/legal/current");
   });
 
   it("does nothing for a browser without a context", () => {

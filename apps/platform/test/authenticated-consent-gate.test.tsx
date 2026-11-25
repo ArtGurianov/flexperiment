@@ -6,7 +6,7 @@ import AuthenticatedConsentGate from "../components/auth/AuthenticatedConsentGat
 
 const status = (confirmed = false) => ({ storefront: "COURSES", verifiedAccount: true, requiredChoicesConfirmed: confirmed,
   actionSequence: confirmed ? 3 : 0,
-  releaseVersion: "synthetic-release", manifestSha256: "a".repeat(64), documents: ["privacy", "personal_data", "account_terms", "marketing_consent"]
+  releaseVersion: "synthetic-release", effectiveAt: "2026-11-23T20:59:59.999Z", manifestSha256: "a".repeat(64), documents: ["privacy", "personal_data", "account_terms", "marketing_consent"]
     .map(kind => ({ kind, version: "synthetic-v1", sha256: "a".repeat(64), url: `https://test.invalid/${kind}` })) });
 const response = (body: unknown) => Response.json(body);
 const readBack = (input: RequestInfo | URL, committed = false, changes = {}) => {
@@ -83,7 +83,7 @@ describe("authenticated consent UI admission and reconciliation", () => {
     });
   it("reloads rotated legal documents and requires new unchecked choices, never the old payload", async () => {
     let posted = false; let committed = false;
-    const rotated = { releaseVersion: "synthetic-release-2", manifestSha256: "b".repeat(64),
+    const rotated = { releaseVersion: "synthetic-release-2", effectiveAt: "2026-11-23T21:00:00.000Z", manifestSha256: "b".repeat(64),
       documents: status().documents.map(document => ({ ...document, version: "synthetic-v2", sha256: "b".repeat(64), url: `${document.url}/v2` })) };
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       if (init?.method === "POST") {
@@ -93,8 +93,14 @@ describe("authenticated consent UI admission and reconciliation", () => {
       return readBack(input, committed, posted ? rotated : {});
     });
     global.fetch = fetcher;
-    const button = await enter(); choose(); fireEvent.click(screen.getByRole("checkbox", { name: /Хочу/ })); fireEvent.click(button);
+    const button = await enter();
+    expect(screen.getAllByText("23 ноября 2026 г.")).toHaveLength(4);
+    choose(); fireEvent.click(screen.getByRole("checkbox", { name: /Хочу/ })); fireEvent.click(button);
     await waitFor(() => expect(screen.getByRole("link", { name: "условия аккаунта" })).toHaveAttribute("href", "https://test.invalid/account_terms/v2"));
+    const dates = screen.getAllByText("24 ноября 2026 г.");
+    expect(dates).toHaveLength(4);
+    for (const date of dates) expect(date).toHaveAttribute("datetime", rotated.effectiveAt);
+    expect(fetcher.mock.calls.every(([path]) => String(path).startsWith("/v1/me/consents"))).toBe(true);
     for (const checkbox of screen.getAllByRole("checkbox")) expect(checkbox).not.toBeChecked();
     choose(); fireEvent.click(screen.getByRole("button", { name: "Подтвердить выбор" }));
     expect(await screen.findByText("Protected library")).toBeInTheDocument();

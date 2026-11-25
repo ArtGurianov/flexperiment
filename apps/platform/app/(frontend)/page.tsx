@@ -1,4 +1,8 @@
 import Link from "next/link";
+import { Suspense } from "react";
+import { headers } from "next/headers";
+import { LegalLinkDate } from "@/components/legal/LegalEffectiveDate";
+import { privacyLinkEffectiveAt } from "@/lib/legal-link-date-server";
 import type { Metadata } from "next";
 
 // A page-level openGraph replaces the layout's entirely, so the shared fields are repeated with og:url.
@@ -16,6 +20,11 @@ const principles = [
   ["Музыка", "Учимся слышать акценты и принимать решения внутри трека."],
   ["Язык", "Собираем свой словарь, а не копируем готовую связку."],
 ] as const;
+
+async function PrivacyLink() {
+  const effectiveAt = await privacyLinkEffectiveAt(await headers());
+  return <span><Link href="/legal/privacy" prefetch={false}>Конфиденциальность</Link><LegalLinkDate effectiveAt={effectiveAt} /></span>;
+}
 
 export default function HomePage() {
   return (
@@ -42,7 +51,7 @@ export default function HomePage() {
           ))}
         </div>
       </section>
-      <footer><p>Flexperiment · движение как исследование</p><Link href="/legal/privacy">Конфиденциальность</Link></footer>
+      <footer><p>Flexperiment · движение как исследование</p><Suspense fallback={<Link href="/legal/privacy" prefetch={false}>Конфиденциальность</Link>}><PrivacyLink /></Suspense></footer>
     </main>
   );
 }

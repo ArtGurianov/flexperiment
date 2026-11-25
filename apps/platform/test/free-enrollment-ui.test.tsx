@@ -160,7 +160,7 @@ describe("FLEX-128 enrollment UI", () => {
 
   it("switches marketing off with one sequenced action confirmed by read-back", async () => {
     const consent = (marketing: boolean, sequence: number, action?: object) => ({ storefront: "COURSES", verifiedAccount: true,
-      requiredChoicesConfirmed: true, releaseVersion: "r1", manifestSha256: "a".repeat(64), actionSequence: sequence,
+      requiredChoicesConfirmed: true, releaseVersion: "r1", effectiveAt: "2026-11-23T21:00:00.000Z", manifestSha256: "a".repeat(64), actionSequence: sequence,
       choices: { personal_data: true, account_terms: true, marketing_consent: marketing }, documents: [{ kind: "marketing_consent", url: "/legal/m" }],
       ...(action ? { action } : {}) });
     let posted: Record<string, unknown> | null = null;
@@ -170,12 +170,14 @@ describe("FLEX-128 enrollment UI", () => {
       return posted ? json(consent(false, 2, { key, outcome: "COMMITTED" })) : json(consent(true, 1));
     });
     render(<MarketingPreference />);
+    expect(await screen.findByText("24 ноября 2026 г.")).toHaveAttribute("datetime", "2026-11-23T21:00:00.000Z");
     fireEvent.click(await screen.findByRole("button", { name: "Отозвать согласие на рассылку" }));
     expect(await screen.findByText("Согласие на рекламную рассылку отозвано.")).toBeInTheDocument();
     // G-18: only the marketing choice is sent; required choices are never re-recorded from here.
     expect(posted).toEqual({ storefront: "COURSES", releaseVersion: "r1", manifestSha256: "a".repeat(64),
       actionKey: expect.any(String), expectedActionSequence: 1, marketingConsent: false });
     expect(screen.getByRole("button", { name: "Дать согласие на рассылку" })).toBeInTheDocument();
+    expect(vi.mocked(global.fetch).mock.calls.every(([path]) => String(path).startsWith("/v1/me/consents"))).toBe(true);
   });
 
   it("confirms the saved marketing choice without asserting that mail will be delivered", async () => {

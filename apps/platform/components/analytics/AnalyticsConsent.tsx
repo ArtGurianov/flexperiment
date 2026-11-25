@@ -1,6 +1,8 @@
 "use client";
 
 import Link from "next/link";
+import { LegalLinkDate } from "@/components/legal/LegalEffectiveDate";
+import { privacyLinkEffectiveAtPath } from "@/lib/legal-release";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -47,6 +49,21 @@ function clearMetrika(id: number | null, initialized: boolean) {
 
 export function AnalyticsSettingsButton() {
   return <button className="analyticsSettings" type="button" onClick={() => window.dispatchEvent(new Event(SETTINGS_EVENT))}>Настройки cookies</button>;
+}
+
+function PrivacyPolicyLink() {
+  const [effectiveAt, setEffectiveAt] = useState<string>();
+  useEffect(() => {
+    const controller = new AbortController();
+    void fetch(privacyLinkEffectiveAtPath, {
+      cache: "no-store", credentials: "omit", signal: controller.signal,
+    }).then(async response => {
+      const result = response.ok ? await response.json() as { effectiveAt: string | null } : null;
+      if (!controller.signal.aborted) setEffectiveAt(result?.effectiveAt ?? undefined);
+    }).catch(() => { /* The privacy link remains available while Commerce is unavailable. */ });
+    return () => controller.abort();
+  }, []);
+  return <><Link href="/legal/privacy" prefetch={false}>Подробнее в политике конфиденциальности</Link><LegalLinkDate effectiveAt={effectiveAt} /></>;
 }
 
 export default function AnalyticsConsentManager() {
@@ -109,7 +126,7 @@ export default function AnalyticsConsentManager() {
   const visible = prompt || settings;
   return visible ? <section className="consentDialog" role="dialog" aria-modal={settings || undefined} aria-label="Настройки аналитики">
     <strong>{settings ? "Настройки cookies" : "Необязательная аналитика отключена"}</strong>
-    <p>Яндекс Метрика не загружается без вашего разрешения. Выбор можно изменить в любое время. <Link href="/legal/privacy">Подробнее в политике конфиденциальности</Link>.</p>
+    <p>Яндекс Метрика не загружается без вашего разрешения. Выбор можно изменить в любое время. <PrivacyPolicyLink key={settings ? "settings" : "prompt"} />.</p>
     <div><button type="button" aria-pressed={consent === "DENIED"} onClick={() => choose("DENIED")}>Только необходимые</button><button type="button" aria-pressed={consent === "ALLOWED"} onClick={() => choose("ALLOWED")}>Разрешить аналитику</button>{settings && <button type="button" onClick={() => setSettings(false)}>Закрыть</button>}</div>
   </section> : null;
 }

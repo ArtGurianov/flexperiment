@@ -165,3 +165,9 @@ footer { display: flex; justify-content: space-between; padding: 2rem 4vw; font-
   .purchaseHistory li { grid-template-columns: 1fr; }
   .purchaseHistory div:last-child { text-align: left; }
 }
+
+.legalDocument h1 { font-size: clamp(1.75rem, 5vw, 3.75rem); line-height: 1.1; margin-bottom: 2rem; }
+.legalDocumentFacts { margin: 1.75rem 0; }
+.legalDocumentFacts dt { font-weight: 600; }
+.legalDocumentFacts dd { margin: 0 0 1rem; }
+.legalDocumentFacts code { overflow-wrap: anywhere; }

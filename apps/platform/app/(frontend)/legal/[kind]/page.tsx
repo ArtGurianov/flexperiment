@@ -1,18 +1,25 @@
+import { headers } from "next/headers";
 import { notFound } from "next/navigation";
-import LegalDocumentRedirect from "@/components/legal/LegalDocumentRedirect";
+import LegalEffectiveDate from "@/components/legal/LegalEffectiveDate";
+import { legalPageHeader, type LegalPage } from "@/lib/legal-release-server";
 
-const documents = {
-  privacy: { kind: "privacy", title: "Политика конфиденциальности" },
-  "personal-data": { kind: "personal_data", title: "Согласие на обработку персональных данных" },
-  "account-terms": { kind: "account_terms", title: "Условия аккаунта" },
-  marketing: { kind: "marketing_consent", title: "Условия информационной рассылки" },
-} as const;
+export const instant = false;
 
-export function generateStaticParams() { return Object.keys(documents).map((kind) => ({ kind })); }
+export default async function LegalDocumentPage() {
+  // Proxy resolves the document before Next can commit the streamed status.
+  const resolved = (await headers()).get(legalPageHeader);
+  if (!resolved) notFound();
+  const { title, effectiveAt, document } = JSON.parse(decodeURIComponent(resolved)) as LegalPage;
 
-export default async function LegalDocumentPage({ params }: { params: Promise<{ kind: string }> }) {
-  const { kind } = await params;
-  const document = documents[kind as keyof typeof documents];
-  if (!document) notFound();
-  return <LegalDocumentRedirect kind={document.kind} title={document.title} />;
+  return <main className="accountPage">
+    <section className="accountPanel legalDocument">
+      <h1>{title}</h1>
+      <dl className="legalDocumentFacts">
+        <dt>Версия</dt><dd>{document.version}</dd>
+        <dt>Действует с</dt><dd><LegalEffectiveDate effectiveAt={effectiveAt} /></dd>
+        <dt>SHA-256</dt><dd><code>{document.sha256}</code></dd>
+      </dl>
+      <a className="primary" href={document.url}>Открыть исходный документ <span aria-hidden>↗</span></a>
+    </section>
+  </main>;
 }

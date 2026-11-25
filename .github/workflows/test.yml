@@ -123,6 +123,11 @@ jobs:
           SOURCE_COMMIT: ${{ env.CI_SOURCE_SHA }}
           PLATFORM_ORIGIN: https://build.invalid
           DEPLOY_ENV: staging
+      - name: Built Platform legal pages and HTTP status (FLEX-16)
+        run: node apps/platform/scripts/legal-smoke.mjs
+        timeout-minutes: 2
+        env:
+          SOURCE_COMMIT: ${{ env.CI_SOURCE_SHA }}
       - name: Rendered platform SEO audit on a loopback fixture catalogue (FLEX-70)
         run: bash apps/platform/scripts/seo-audit-ci.sh
         timeout-minutes: 3
