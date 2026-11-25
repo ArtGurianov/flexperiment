@@ -1,6 +1,8 @@
 # Аудит архивных задач Flexperiment V2 и Refref v9
 
-Срез 24 ноября 2026, Новосибирск. База и начальный HEAD аудита `72b02da924d342e9e2c24b2e5ce73146bdc06d77`, дерево `cc8328aa875f3ccb2480f161cd92a8e15b0b00fd`. Refref `origin/main` на `f7ad1a2ac4c4252b0eb6c71733c2f8a613477b21`. Тег `flexperiment-v1-final` указывает на `f09f7b6ea5f5f9d7a4108fa1946a6460465a141c`, обслуживавший V1 runtime был на `3ad07cfcb53e861fc481c44d806b91743eb239c6`. Физическая остановка V1 — **historical PASS**. Custody закрытого Stage 2 — **scoped PASS**. A-7 и G-13 — **PARTIAL**. Полнота финансовой сверки — **UNVERIFIED**, отзыв FLEX-81 — **HOLD**, F9 и REFREF-116 — **CLOSED**. Свежий эксплуатационный срез по выбранному владельцем варианту A ожидается. [VPS-28](https://app.plane.so/art-workspace/browse/VPS-28/) · [Протокол остановки V1](2026-10-16-lab-v1-retirement/README.md).
+Срез 24 ноября 2026, ревизия 25 ноября 2026. Даты по Новосибирску.
+
+База и начальный HEAD аудита `72b02da924d342e9e2c24b2e5ce73146bdc06d77`, дерево `cc8328aa875f3ccb2480f161cd92a8e15b0b00fd`. Refref `origin/main` на `f7ad1a2ac4c4252b0eb6c71733c2f8a613477b21`. Тег `flexperiment-v1-final` указывает на `f09f7b6ea5f5f9d7a4108fa1946a6460465a141c`, обслуживавший V1 runtime был на `3ad07cfcb53e861fc481c44d806b91743eb239c6`. Физическая остановка V1 — **historical PASS**. Custody закрытого Stage 2 — **scoped PASS**. A-7 и G-13 — **PARTIAL**. Полнота финансовой сверки — **UNVERIFIED**, отзыв FLEX-81 — **HOLD**, F9 и REFREF-116 — **CLOSED**. Свежий эксплуатационный срез по выбранному владельцем варианту A ожидается. [VPS-28](https://app.plane.so/art-workspace/browse/VPS-28/) · [Протокол остановки V1](2026-10-16-lab-v1-retirement/README.md).
 
 ## Независимые контуры допуска
 
@@ -22,7 +24,7 @@
 | Backup helper SHA-256 | `055093e10db8e29bb90e9c5fd0d71e18960732a295c91c0863a56f747a82e4b1` | `43c0e01590de172ac894bfd440949345074bcb8b03d0de1e4277807cba913f98` |
 | Commerce schema | 0037 | 0036 |
 
-В инвентаре VPS-28 верхнеуровневые `applicationSource` и `controllerSource` относятся к предшественнику. Для последнего документированного Stage 2 читать `stage2ClosedCanary`. Предложение инфраструктурному владельцу — явно обозначить предшественника и указать каноническое поле для установленного вектора, сохранив совместимость читателей инвентаря. Управляемый production Commerce — отдельная среда. [Инвентарь Stage 2](https://github.com/ArtGurianov/adman-vps-infrastructure/blob/829bede/inventory/flexperiment-stage-a-resources.json) · [Recovery proof](https://github.com/ArtGurianov/adman-vps-infrastructure/blob/829bede/inventory/vps-28-stage2-recovery-proof.json).
+В инвентаре VPS-28 верхнеуровневые `applicationSource` и `controllerSource` относятся к предшественнику. Для последнего документированного Stage 2 читать `stage2ClosedCanary`. Предложение инфраструктурному владельцу — явно обозначить предшественника и указать каноническое поле для установленного вектора, сохранив совместимость читателей инвентаря. Управляемый production Commerce — отдельная среда. [Инвентарь Stage 2](https://github.com/ArtGurianov/adman-vps-infrastructure/blob/829bedeebd9afa7ae357a0271705659f2b9d31d8/inventory/flexperiment-stage-a-resources.json) · [Recovery proof](https://github.com/ArtGurianov/adman-vps-infrastructure/blob/829bedeebd9afa7ae357a0271705659f2b9d31d8/inventory/vps-28-stage2-recovery-proof.json).
 
 ## Сверка критериев
 
@@ -70,7 +72,7 @@ FLEX-81 хранит устаревшую оговорку, что собств�
 3. На исходном тестовом контуре зафиксировать удаление одного аккаунта и рекламную отписку другого после снимка. Применить актуальный независимо проверенный erasure ledger и сверить позицию fence. Подтвердить отсутствие возвращённых данных, записи и прогресса удалённого пользователя, отозванных сессий и согласий. Восстановленная отписка подавляет рекламу. При отсутствии ledger проверить отказ до допуска runtime.
 4. Подтвердить штатный backup cadence, freshness и срабатывание alert на устаревшем изолированном fixture в допустимом канале приёмки. Сохранить обезличенный readback.
 
-**A-7 PARTIAL PASS.** Снимок 0036 восстановил TOTP и юридическую редакцию. VPS-28 доказал восстановимость 0037 и fence в инфраструктурной репетиции. Сценарий с опубликованным курсом, штатным расписанием, актуальным erasure ledger и двумя послеснимочными действиями остаётся открытым. Повторять весь VPS-28 для актуализации аудита не требуется. [План A-7](../legal/stage-a/2026-11-20-candidate/CLOSED_ACCEPTANCE_PLAN.md#a-7-свежее-независимое-восстановление-с-подавлением-удалений) · [VPS-28 recovery proof](https://github.com/ArtGurianov/adman-vps-infrastructure/blob/829bede/inventory/vps-28-stage2-recovery-proof.json).
+**A-7 PARTIAL PASS.** Снимок 0036 восстановил TOTP и юридическую редакцию. VPS-28 доказал восстановимость 0037 и fence в инфраструктурной репетиции. Сценарий с опубликованным курсом, штатным расписанием, актуальным erasure ledger и двумя послеснимочными действиями остаётся открытым. Повторять весь VPS-28 для актуализации аудита не требуется. [План A-7](../legal/stage-a/2026-11-20-candidate/CLOSED_ACCEPTANCE_PLAN.md#a-7-свежее-независимое-восстановление-с-подавлением-удалений) · [VPS-28 recovery proof](https://github.com/ArtGurianov/adman-vps-infrastructure/blob/829bedeebd9afa7ae357a0271705659f2b9d31d8/inventory/vps-28-stage2-recovery-proof.json).
 
 ## Ресурсы восстановления
 
@@ -102,7 +104,9 @@ FLEX-81 хранит устаревшую оговорку, что собств�
 
 Для каждого исторического контура владелец фиксирует scope и исходного исполнителя, период выборки, время снимка и остановки, последнюю дату провайдерской сверки и основания полноты. Сверка охватывает все заказы исторического merchant scope и хвост после снимка через выключение старого контура до даты readback. Независимые реестры Refref и провайдера сопоставляются с архивом Commerce по исходным идентификаторам и неизменным привязкам. По каждой операции проверяются финальность, сумма, платёж и возврат, чек, выдача и отзыв доступа, дубль или расхождение. Для неизвестных и ненулевых групп фиксируются исходный исполнитель, владелец проверки и дальнейшая диспозиция. Историческая прямая Точка сверяется по исходному провайдеру и V1-архиву. Для RC.2 охват подтверждают и Refref, и соответствующий банковский readback. [Контракт сверки Commerce](../release/COMMERCE_V2_RESTORE_RECONCILIATION.md).
 
-Включить ранее выданные банковские ссылки, открытые сессии оплаты и события после остановки. CLOSED или остановка приложения могут сосуществовать с поздними платежами по уже выпущенным ссылкам. Для ранее выданных ссылок зафиксировать истечение или финальный исход и проверить поздние платежи и возвраты до согласованной отсечки. Добавить выплаты, резервы, ORD и претензии по применимому контуру. В Git и Plane помещаются период, безопасные агрегаты, число исключений и итог полноты. Первичные квитанции, операционные идентификаторы и построчная сверка хранятся в защищённом месте владельца. Ручная сверка 4/4 достаточна.
+Включить ранее выданные банковские ссылки, открытые сессии оплаты и события после остановки. CLOSED или остановка приложения могут сосуществовать с поздними платежами по уже выпущенным ссылкам. Для ранее выданных ссылок зафиксировать истечение или финальный исход и проверить поздние платежи и возвраты до согласованной отсечки. Добавить выплаты, резервы, ORD и претензии по применимому контуру. В Git и Plane помещаются период, безопасные агрегаты, число исключений и итог полноты. Первичные квитанции, операционные идентификаторы и построчная сверка хранятся в защищённом месте владельца.
+
+Для подтверждения исходов четырёх заказов 0028 достаточно ручной сверки 4/4. Полный readback RC.2 и V1 по всем заказам и поздним событиям в согласованном merchant scope остаётся самостоятельным критерием.
 
 ## Предлагаемый вывод Refref v9 из новых активаций
 
@@ -134,7 +138,7 @@ FLEX-81 хранит устаревшую оговорку, что собств�
 
 ## Воспроизведение
 
-Команды GitHub читают метаданные. Проверку migration history и тесты backup выполнено в отдельном worktree, тестовые SQLite созданы во временных директориях.
+Команды GitHub читают метаданные. Для `pnpm commerce-v2:check-migrations` требуется полная история Git и установленные зависимости. В чистом worktree сначала выполнить `pnpm install --frozen-lockfile`. При аудите скрипт в отдельном worktree запускался с загрузчиком tsx из установленных зависимостей основного checkout, а тестовые SQLite создавались во временных директориях.
 
 ```sh
 git rev-parse HEAD HEAD^{tree} origin/main 'flexperiment-v1-final^{commit}'
@@ -151,11 +155,12 @@ gh run view 44452488663 --job 135319541882 --log-failed |
   rg -c 'FAIL .*commerce/test/agent-referrals-ord-reporting\.test\.ts'
 ```
 
-Для метаданных использованы Coolify `list_resources` / `get_server_resources`, `get_application` / `list_deployments`, `list_env_keys` / `list_shared_env_keys` и `list_scheduled_tasks`. Вывод ключей ограничен именами и счётчиками. Для Plane использованы `retrieve_by_identifier`, `list_archived` и `workitem_relation list` по UUID с каждой стороны. Базовый тест migration history PASS, 37 миграций / 22 исторических дерева. Локальные backup fixtures PASS 7/7. Работа CI на HEAD перечислена в таблице. Провайдерская приёмка, боевой журнал, внешний erasure и юридический допуск остаются в соответствующих независимых гейтах.
+Для метаданных использованы Coolify `list_resources` / `get_server_resources`, `get_application` / `list_deployments`, `list_env_keys` / `list_shared_env_keys` и `list_scheduled_tasks`. Вывод ключей ограничен именами и счётчиками. Для Plane использованы `retrieve_by_identifier`, `list_archived` и `workitem_relation list` по UUID с каждой стороны. Проверка истории миграций PASS, 37 миграций / 22 исторических дерева. Локальные backup fixtures PASS 7/7. Первая ревизия draft PR #315 на `aef241049dc69d551de2a51289c671c7e0e150ad` прошла CI 2/2, `test` и `docker-build`. Провайдерская приёмка, боевой журнал, внешний erasure и юридический допуск остаются отдельными критериями. [CI первой ревизии #315](https://github.com/ArtGurianov/flexperiment/actions/runs/45530816524).
 
-Воспроизведение локального валидатора #282 на точном дереве с проверкой двух репозиториев.
+Для валидатора #282 нужен Python с поддержкой `tarfile.extractall(filter='data')` (проверено на 3.14) и абсолютный путь к локальному checkout Refref в `FLEX_AUDIT_REFREF_REPO`. Временный `.git` указывает на общий Git-каталог Flexperiment. Валидатор читает Git через `show` и `ls-tree` по явным SHA.
 
 ```sh
+export FLEX_AUDIT_REFREF_REPO=/absolute/path/to/refref
 python3 -B - <<'PY'
 from pathlib import Path
 import os
@@ -184,7 +189,7 @@ PY
 
 ## Комментарии в Plane
 
-Итог по G-13 записан в FLEX-104. Отдельные блокеры внесены в FLEX-81, FLEX-16 и REFREF-116. Исторические подтверждения и остаточный критерий F9.1 записаны в FLEX-77. [FLEX-104](https://app.plane.so/art-workspace/browse/FLEX-104/) · [FLEX-81](https://app.plane.so/art-workspace/browse/FLEX-81/) · [FLEX-16](https://app.plane.so/art-workspace/browse/FLEX-16/) · [REFREF-116](https://app.plane.so/art-workspace/browse/REFREF-116/) · [FLEX-77](https://app.plane.so/art-workspace/browse/FLEX-77/).
+Итог по G-13 записан в FLEX-104. Комментарии по ревью в FLEX-81 и FLEX-16 уточняют первоначальные выводы в части группового допуска на отзыв и полноты финансовой сверки. Блокер REFREF-116 записан в карточке. Исторические подтверждения и остаточный критерий F9.1 записаны в FLEX-77. [FLEX-104](https://app.plane.so/art-workspace/browse/FLEX-104/) · [FLEX-81](https://app.plane.so/art-workspace/browse/FLEX-81/) · [FLEX-16](https://app.plane.so/art-workspace/browse/FLEX-16/) · [REFREF-116](https://app.plane.so/art-workspace/browse/REFREF-116/) · [FLEX-77](https://app.plane.so/art-workspace/browse/FLEX-77/).
 
 ## Выгрузка A по решению владельца
 
