@@ -12,6 +12,7 @@ let db: Database.Database;
 const manifest: LegalReleaseManifest = { stage: "A", documents: ["privacy", "personal_data", "account_terms", "marketing_consent"].map(kind => ({
   kind, version: "synthetic-v1", sha256: "a".repeat(64), url: `https://test.invalid/legal/${kind}`,
 })) };
+const effectiveAt = "2026-11-23T21:00:00.000Z";
 const input: AuthenticatedConsentInput = { storefront: "COURSES", releaseVersion: "synthetic-release", manifestSha256: legalManifestHash(manifest),
   actionKey: "synthetic-action-0001", personalDataConsent: true, accountTermsAccepted: true, marketingConsent: false };
 const record = (changes = {}) => recordAuthenticatedConsents(db, "customer", { ...input, ...changes }, "2026-10-11T10:00:00Z");
@@ -19,13 +20,14 @@ beforeEach(() => {
   db = new Database(":memory:"); db.pragma("foreign_keys=ON"); migrateV2(db);
   db.exec(`INSERT INTO "user"(id,name,email,email_verified) VALUES ('user','Synthetic','owner@example.test',1);
     INSERT INTO customers(id,email_normalized,auth_user_id) VALUES ('customer','owner@example.test','user');`);
-  activateLegalRelease(db, { storefront: "COURSES", version: input.releaseVersion, manifest, actor: "isolated-test" });
+  activateLegalRelease(db, { storefront: "COURSES", version: input.releaseVersion, manifest, actor: "isolated-test" }, effectiveAt);
 });
 afterEach(() => db.close());
 describe("new authenticated consent evidence, separate from historical intents", () => {
   it("reads a specific action in a scoped snapshot, not just the current required-choice boolean", () => {
     expect(authenticatedConsentStatus(db, "customer", "COURSES", input.actionKey)).toMatchObject({
-      actionSequence: 0, action: { key: input.actionKey, outcome: "ABSENT" } });
+      actionSequence: 0, effectiveAt, releaseVersion: input.releaseVersion, manifestSha256: input.manifestSha256,
+      documents: manifest.documents, action: { key: input.actionKey, outcome: "ABSENT" } });
     record(); db.exec('UPDATE "user" SET email_verified=0');
     expect(authenticatedConsentStatus(db, "customer", "COURSES", input.actionKey)).toMatchObject({
       requiredChoicesConfirmed: false, actionSequence: 3, action: { key: input.actionKey, outcome: "COMMITTED" } });
@@ -76,9 +78,12 @@ describe("new authenticated consent evidence, separate from historical intents",
   });
   it("rejects stale release/hash and requires new actions after active release replacement", () => {
     record(); expect(() => record({ manifestSha256: "b".repeat(64) })).toThrow("LEGAL_RELEASE_STALE");
-    activateLegalRelease(db, { storefront: "COURSES", version: "synthetic-release-2", manifest, actor: "isolated-test" });
+    activateLegalRelease(db, { storefront: "COURSES", version: "synthetic-release-2", manifest, actor: "isolated-test" }, "2026-11-25T21:00:00.000Z");
     expect(() => record()).toThrow("LEGAL_RELEASE_STALE");
-    expect(authenticatedConsentStatus(db, "customer", "COURSES").requiredChoicesConfirmed).toBe(false);
+    expect(authenticatedConsentStatus(db, "customer", "COURSES")).toMatchObject({
+      releaseVersion: "synthetic-release-2", effectiveAt: "2026-11-25T21:00:00.000Z",
+      manifestSha256: input.manifestSha256, documents: manifest.documents, requiredChoicesConfirmed: false,
+    });
   });
   it("freezes the complete release hash and refuses key reuse after in-place legal drift", () => {
     record({ marketingConsent: true });
@@ -93,7 +98,7 @@ describe("new authenticated consent evidence, separate from historical intents",
   });
   it("keeps storefronts separate and creates no financial or marketing-suppression mutations", () => {
     record({ marketingConsent: true });
-    expect(authenticatedConsentStatus(db, "customer", "LAB")).toMatchObject({ releaseVersion: null, requiredChoicesConfirmed: false });
+    expect(authenticatedConsentStatus(db, "customer", "LAB")).toMatchObject({ releaseVersion: null, effectiveAt: null, requiredChoicesConfirmed: false });
     for (const table of ["orders", "checkout_attempts", "email_suppressions", "marketing_consents"]) {
       expect(db.prepare(`SELECT COUNT(*) n FROM ${table}`).get()).toEqual({ n: 0 });
     }

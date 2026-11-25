@@ -14,16 +14,16 @@ const actionSequence = (db: Database.Database, customerId: string, storefront: S
   (db.prepare(`SELECT COALESCE(MAX(e.sequence),0) AS sequence FROM authenticated_consent_events e
     JOIN authenticated_consent_actions a ON a.id=e.action_id WHERE a.customer_id=? AND a.storefront=?`)
     .get(customerId, storefront) as { sequence: number }).sequence;
-type Release = { id: string; version: string; manifest: LegalReleaseManifest; manifestSha256: string };
+type Release = { id: string; version: string; effectiveAt: string; manifest: LegalReleaseManifest; manifestSha256: string };
 const activeRelease = (db: Database.Database, storefront: Storefront): Release | null => {
-  const row = db.prepare("SELECT id,version,manifest_json FROM legal_releases WHERE storefront=? AND active=1")
-    .get(storefront) as { id: string; version: string; manifest_json: string } | undefined;
+  const row = db.prepare("SELECT id,version,effective_at AS effectiveAt,manifest_json FROM legal_releases WHERE storefront=? AND active=1")
+    .get(storefront) as { id: string; version: string; effectiveAt: string; manifest_json: string } | undefined;
   if (!row) return null;
   const manifest = JSON.parse(row.manifest_json) as LegalReleaseManifest;
   if (["privacy", ...kinds].some(kind => manifest.documents.filter(document => document.kind === kind).length !== 1)) {
     throw new Error("LEGAL_RELEASE_INCOMPLETE");
   }
-  return { id: row.id, version: row.version, manifest, manifestSha256: legalManifestHash(manifest) };
+  return { id: row.id, version: row.version, effectiveAt: row.effectiveAt, manifest, manifestSha256: legalManifestHash(manifest) };
 };
 const verifiedUser = (db: Database.Database, customerId: string) => db.prepare(`SELECT u.id FROM customers c
   JOIN "user" u ON u.id=c.auth_user_id WHERE c.id=? AND u.email_verified=1 AND lower(trim(u.email))=c.email_normalized`)
@@ -80,7 +80,8 @@ export function authenticatedConsentStatus(db: Database.Database, customerId: st
       }
     }
     return { storefront, verifiedAccount: Boolean(user), releaseVersion: release?.version ?? null,
-      manifestSha256: release?.manifestSha256 ?? null, requiredChoicesConfirmed: choices.personal_data && choices.account_terms,
+      manifestSha256: release?.manifestSha256 ?? null, effectiveAt: release?.effectiveAt ?? null,
+      requiredChoicesConfirmed: choices.personal_data && choices.account_terms,
       actionSequence: actionSequence(db, customerId, storefront),
       ...(actionKey === undefined ? {} : { action: { key: actionKey, outcome: db.prepare(`SELECT 1 FROM authenticated_consent_actions
         WHERE customer_id=? AND storefront=? AND action_key=?`).get(customerId, storefront, actionKey) ? "COMMITTED" : "ABSENT" } }),

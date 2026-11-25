@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { Suspense } from "react";
-import { connection } from "next/server";
+import { headers } from "next/headers";
 import { LegalLinkDate } from "@/components/legal/LegalEffectiveDate";
 import { currentCoursesLegalRelease } from "@/lib/legal-release-server";
 import type { Metadata } from "next";
@@ -22,8 +22,8 @@ const principles = [
 ] as const;
 
 async function PrivacyLink() {
-  await connection();
-  const release = await currentCoursesLegalRelease().catch(() => null);
+  const requestHeaders = await headers();
+  const release = await currentCoursesLegalRelease(requestHeaders.get("host"), requestHeaders.get("origin")).catch(() => null);
   return <span><Link href="/legal/privacy" prefetch={false}>Конфиденциальность</Link><LegalLinkDate effectiveAt={release?.effectiveAt} /></span>;
 }
 

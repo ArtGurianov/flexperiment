@@ -1,4 +1,6 @@
 import { cache } from "react";
+import { proxyCommerce } from "./commerce-proxy";
+import { platformOrigin } from "./origins";
 import { currentCoursesLegalPath, legalEffectiveDate, type LegalDocument, type LegalRelease } from "./legal-release";
 
 const legalPages: ReadonlyMap<string, { kind: string; title: string }> = new Map([
@@ -8,29 +10,37 @@ const legalPages: ReadonlyMap<string, { kind: string; title: string }> = new Map
   ["marketing", { kind: "marketing_consent", title: "Согласие на рекламную рассылку Flexperiment" }],
 ]);
 
-export const currentCoursesLegalRelease = cache(async (): Promise<LegalRelease | null> => {
-  const origin = process.env.COMMERCE_INTERNAL_ORIGIN;
-  if (!origin) throw new Error("COMMERCE_LEGAL_NOT_CONFIGURED");
-  const response = await fetch(new URL(currentCoursesLegalPath, origin), {
-    cache: "no-store", redirect: "error", signal: AbortSignal.timeout(3_000),
-  });
+export class CommerceLegalForbidden extends Error {}
+
+export const currentCoursesLegalRelease = cache(async (host: string | null, origin: string | null): Promise<LegalRelease | null> => {
+  // Use the same admission and transport as the public API, with an anonymous GET.
+  const headers = new Headers();
+  if (host !== null) headers.set("host", host);
+  if (origin !== null) headers.set("origin", origin);
+  const request = new Request(new URL(currentCoursesLegalPath, platformOrigin()), { headers });
+  const response = await proxyCommerce(request, ["legal", "current"]);
   if (response.status === 404) {
     const body = await response.json() as { code?: string };
     if (body.code === "LEGAL_RELEASE_NOT_FOUND") return null;
   }
+  if (response.status === 403) throw new CommerceLegalForbidden();
   if (!response.ok) throw new Error("COMMERCE_LEGAL_UNAVAILABLE");
-  return await response.json() as LegalRelease;
+  const release = await response.json() as LegalRelease;
+  if (!release || !legalEffectiveDate(release.effectiveAt) || !Array.isArray(release.manifest?.documents)) {
+    throw new Error("COMMERCE_LEGAL_RELEASE_INVALID");
+  }
+  return release;
 });
 
 export const legalPageHeader = "x-flexperiment-legal-page";
 
-export async function readLegalPage(kind: string) {
+export async function readLegalPage(kind: string, headers: Pick<Headers, "get">) {
   const definition = legalPages.get(kind);
   if (!definition) return null;
-  const release = await currentCoursesLegalRelease();
+  const release = await currentCoursesLegalRelease(headers.get("host"), headers.get("origin"));
   const document = release?.manifest.documents.find(item => item.kind === definition.kind);
   if (!release || !document) return null;
-  if (!legalEffectiveDate(release.effectiveAt) || !document.url.startsWith("https://")) {
+  if (!document.version || !/^[a-f0-9]{64}$/.test(document.sha256) || !document.url.startsWith("https://")) {
     throw new Error("COMMERCE_LEGAL_DOCUMENT_INVALID");
   }
   return { title: definition.title, effectiveAt: release.effectiveAt, document };

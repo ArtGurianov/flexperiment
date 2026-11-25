@@ -61,4 +61,23 @@ describe("AnalyticsConsentManager hits", () => {
     );
     expect(JSON.stringify(commands())).not.toMatch(/rt=|email|token/);
   });
+  it("reads the current privacy date each time the dialog is opened", async () => {
+    const { default: AnalyticsConsentManager, AnalyticsSettingsButton } = await import("../components/analytics/AnalyticsConsent");
+    const effectiveAt = "2026-11-23T21:00:00.000Z";
+    const fetcher = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(Response.json({ effectiveAt }))
+      .mockResolvedValueOnce(new Response(null, { status: 503 }));
+    try {
+      render(<><AnalyticsSettingsButton /><AnalyticsConsentManager /></>);
+      expect(fetcher).not.toHaveBeenCalled();
+      const settings = screen.getByRole("button", { name: "Настройки cookies" });
+      act(() => settings.click());
+      expect(await screen.findByText("24 ноября 2026 г.")).toHaveAttribute("datetime", effectiveAt);
+      act(() => screen.getByRole("button", { name: "Закрыть" }).click());
+      await act(async () => settings.click());
+      expect(screen.getByRole("link", { name: "Подробнее в политике конфиденциальности" })).toBeVisible();
+      expect(screen.queryByText("24 ноября 2026 г.")).toBeNull();
+      expect(fetcher).toHaveBeenCalledTimes(2);
+    } finally { fetcher.mockRestore(); }
+  });
 });

@@ -1,6 +1,6 @@
 import { NextResponse, type NextFetchEvent, type NextRequest } from "next/server";
 import { BROWSER_CONTEXT_COOKIE, touchBrowserContext } from "@/lib/browser-context";
-import { legalPageHeader, readLegalPage } from "@/lib/legal-release-server";
+import { CommerceLegalForbidden, legalPageHeader, readLegalPage } from "@/lib/legal-release-server";
 
 // ART-378: every page view of a browser carrying the LMS context retries a still-unconfirmed arrival
 // claim within its 30 minutes. The page is never delayed; `waitUntil` keeps the call alive after it.
@@ -10,7 +10,7 @@ export async function proxy(request: NextRequest, event: NextFetchEvent) {
   if (root !== "legal" || !kind || rest.length) return NextResponse.next();
 
   try {
-    const legalPage = await readLegalPage(kind);
+    const legalPage = await readLegalPage(kind, request.headers);
     if (!legalPage) {
       return NextResponse.rewrite(new URL("/404", request.url), {
         status: 404, headers: { "cache-control": "no-store" },
@@ -19,9 +19,11 @@ export async function proxy(request: NextRequest, event: NextFetchEvent) {
     const headers = new Headers(request.headers);
     headers.set(legalPageHeader, encodeURIComponent(JSON.stringify(legalPage)));
     return NextResponse.next({ request: { headers } });
-  } catch {
-    return new NextResponse("Действующая редакция документа временно недоступна.", {
-      status: 503, headers: { "cache-control": "no-store", "content-type": "text/plain; charset=utf-8" },
+  } catch (error) {
+    const forbidden = error instanceof CommerceLegalForbidden;
+    return new NextResponse(forbidden ? "Доступ к документу закрыт." : "Действующая редакция документа временно недоступна.", {
+      status: forbidden ? 403 : 503,
+      headers: { "cache-control": "no-store", "content-type": "text/plain; charset=utf-8" },
     });
   }
 }

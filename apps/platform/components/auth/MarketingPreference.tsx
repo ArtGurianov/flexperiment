@@ -3,10 +3,9 @@
 import { useEffect, useRef, useState } from "react";
 
 import { LegalLinkDate } from "@/components/legal/LegalEffectiveDate";
-import { useLegalEffectiveAt } from "@/components/legal/useLegalEffectiveAt";
 
 type Status = { storefront: "COURSES"; verifiedAccount: boolean; requiredChoicesConfirmed: boolean;
-  releaseVersion: string | null; manifestSha256: string | null; actionSequence: number;
+  releaseVersion: string | null; manifestSha256: string | null; effectiveAt?: string | null; actionSequence: number;
   action?: { key: string; outcome: "COMMITTED" | "ABSENT" };
   choices?: { marketing_consent?: boolean };
   documents: Array<{ kind: string; url: string }> };
@@ -36,7 +35,6 @@ export default function MarketingPreference() {
   const busy = useRef(false);
   useEffect(() => { void read().then(setStatus).catch(() => setStatus(null)); }, []);
   const marketingDocument = status?.documents.find(document => document.kind === "marketing_consent");
-  const effectiveAt = useLegalEffectiveAt(Boolean(status?.requiredChoicesConfirmed && marketingDocument), status?.releaseVersion);
   if (!status?.requiredChoicesConfirmed) return null;
   const consentGranted = status.choices!.marketing_consent!;
 
@@ -67,7 +65,7 @@ export default function MarketingPreference() {
   };
   return <section className="accountSection" aria-labelledby="marketing-preference">
     <h2 id="marketing-preference">Рекламная рассылка</h2>
-    <p><a href={marketingDocument?.url} target="_blank" rel="noreferrer">Согласие на рекламную рассылку Flexperiment</a><LegalLinkDate effectiveAt={effectiveAt} /> {consentGranted ? "дано" : "отсутствует"}. Это необязательно и не влияет на доступ к курсам.</p>
+    <p><a href={marketingDocument?.url} target="_blank" rel="noreferrer">Согласие на рекламную рассылку Flexperiment</a><LegalLinkDate effectiveAt={status.effectiveAt} /> {consentGranted ? "дано" : "отсутствует"}. Это необязательно и не влияет на доступ к курсам.</p>
     <button type="button" disabled={phase !== "idle"} onClick={() => { void change(); }}>
       {phase === "saving" ? "Сохраняем…" : consentGranted ? "Отозвать согласие на рассылку" : "Дать согласие на рассылку"}
     </button>
