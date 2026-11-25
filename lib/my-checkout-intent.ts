@@ -55,3 +55,18 @@ export function kindHint(value: unknown): KindHint {
 export function validOrderPublicId(value: unknown): value is string {
   return typeof value === "string" && /^[A-Za-z0-9_-]{8,64}$/.test(value);
 }
+
+
+/** A presentation-only target. It cannot carry an origin, query, fragment or account identity. */
+const courseCheckoutSlug = "[a-z0-9](?:[a-z0-9-]{0,126}[a-z0-9])?";
+const courseCheckoutLessonPath = new RegExp(`^/courses/${courseCheckoutSlug}/lessons/${courseCheckoutSlug}$`);
+export function checkoutLessonPath(value: unknown): string | null {
+  return typeof value === "string" && courseCheckoutLessonPath.test(value) ? value : null;
+}
+
+export function checkoutLessonHref(value: unknown, origin: string | undefined) {
+  const path = checkoutLessonPath(value);
+  const platform = origin && URL.parse(origin);
+  return path && platform && platform.protocol === "https:" && platform.href === platform.origin + "/"
+    ? new URL(path, platform).href : null;
+}

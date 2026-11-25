@@ -26,6 +26,7 @@ export type PlaybackAccessResolution = {
   decision: AccessDecision;
   courseRef?: string;
   paidEntitled: boolean;
+  fullCourseAccess?: boolean;
   binding?: { videoId: string; durationSeconds: number | null };
   resumeAt: number;
 };
@@ -70,6 +71,11 @@ function resolvePlaybackAccessSnapshot(db: Database.Database, input: {
     .get(row.course_ref, input.lessonRef, input.lessonRef));
   const effectiveVisibility = row && row.course_visibility === "LISTED" && row.section_visibility === "LISTED" && row.lesson_visibility === "LISTED"
     ? "LISTED" : "UNLISTED";
+  const retainedFreeEnrollment = Boolean(row?.product_id && db.prepare(`SELECT 1 FROM free_course_enrollments
+      WHERE customer_id=? AND product_id=?`).get(input.customerId, row.product_id));
+  const entitled = Boolean(row && grants.some(grant =>
+    grant.scope === "ALL_COURSES" || (grant.scope === "COURSE" && grant.course_ref === row.course_ref)));
+  const fullCourseAccess = entitled || retainedFreeEnrollment;
   const decision = decideLessonAccess({
     customerId: input.customerId,
     courseRef: row?.course_ref ?? "",
@@ -82,23 +88,22 @@ function resolvePlaybackAccessSnapshot(db: Database.Database, input: {
     } : undefined,
     grants: grants.map((grant) => ({ scope: grant.scope, courseRef: grant.course_ref ?? undefined, revoked: Boolean(grant.revoked_at) })),
     activeDenyNonEntitledOverride: activeOverride,
-    retainedFreeEnrollment: Boolean(row?.product_id && db.prepare(`SELECT 1 FROM free_course_enrollments
-      WHERE customer_id=? AND product_id=?`).get(input.customerId, row.product_id)),
+    retainedFreeEnrollment,
     projectionStale: legacyManifest && row ? !Number.isFinite(Date.parse(row.last_reconciled_at))
       || input.now.getTime() - Date.parse(row.last_reconciled_at) > input.leaseMs : false,
   });
-  const paidEntitled = Boolean(row?.access_model === "PAID" && grants.some((grant) =>
-    grant.scope === "ALL_COURSES" || (grant.scope === "COURSE" && grant.course_ref === row.course_ref)));
+  const paidEntitled = row?.access_model === "PAID" && entitled;
   if (decision !== "ALLOW") return { decision, courseRef: row?.course_ref, paidEntitled, resumeAt: 0 };
   const binding = db.prepare("SELECT active_video_id,duration_seconds FROM lesson_video_bindings WHERE lesson_ref=?")
     .get(input.lessonRef) as { active_video_id: string; duration_seconds: number | null } | undefined;
-  if (!binding) return { decision, courseRef: row?.course_ref, paidEntitled, resumeAt: 0 };
+  if (!binding) return { decision, courseRef: row?.course_ref, paidEntitled, fullCourseAccess, resumeAt: 0 };
   const resume = db.prepare("SELECT seconds FROM lesson_resume_positions WHERE customer_id=? AND lesson_ref=?")
     .get(input.customerId, input.lessonRef) as { seconds: number } | undefined;
   return {
     decision,
     courseRef: row?.course_ref,
     paidEntitled,
+    fullCourseAccess,
     binding: { videoId: binding.active_video_id, durationSeconds: binding.duration_seconds },
     resumeAt: playbackResumeAt(resume?.seconds ?? 0, binding.duration_seconds),
   };

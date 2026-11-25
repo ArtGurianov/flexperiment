@@ -8,6 +8,7 @@ import { checkoutCodeMessage, type CheckoutCodeOutcome } from "./checkout-copy";
 
 type Props = {
   myOrigin?: string | null;
+  lessonReturn?: string;
   courseRef: string;
   offerRef: string | null;
   saleMode: "CLOSED" | "ACCEPTANCE_ONLY" | "PUBLIC";
@@ -53,7 +54,7 @@ const observeCheckout = async (initial: CheckoutResult): Promise<CheckoutResult>
 export default function CourseCheckout(props: Props) {
   if (props.myOrigin === undefined) return <LegacyCourseCheckout {...props} />;
   if (props.saleMode === "CLOSED") return <p className="checkoutCta">Продажи скоро.</p>;
-  const destination = myCheckoutHref(props.myOrigin, props.offerRef, "course");
+  const destination = myCheckoutHref(props.myOrigin, props.offerRef, "course", props.lessonReturn);
   return <div className="checkoutCta">{destination && props.priceKopecks !== null
     ? <a className="primary" href={destination}>Купить за {price(props.priceKopecks)}</a>
     : <p role="status">Покупка временно недоступна.</p>}</div>;

@@ -23,8 +23,10 @@ export type CabinetCourse = {
   readonly slug: string;
   readonly title: string;
   readonly access: CourseAccess;
-  /** "Начат" is a separate fact; full progress arrives with FLEX-129. */
+  /** "Начат" is a separate fact. */
   readonly started: boolean;
+  readonly progressPercent?: number;
+  readonly continuationReason?: "FIRST" | "CURRENT" | "NEXT" | "REWATCH" | "PREVIOUS_UNAVAILABLE";
   readonly resumeLesson: { readonly slug: string; readonly title: string } | null;
 };
 
@@ -96,7 +98,12 @@ export function parseCourses(value: unknown): CabinetCourse[] | null {
     const lesson = record(entry.resumeLesson);
     const lessonSlug = lesson && typeof lesson.slug === "string" && LESSON_SLUG.test(lesson.slug) ? lesson.slug : null;
     const lessonTitle = lesson && text(lesson.title);
+    const progressPercent = typeof entry.progressPercent === "number" && Number.isInteger(entry.progressPercent)
+      && entry.progressPercent >= 0 && entry.progressPercent <= 100 ? entry.progressPercent : undefined;
+    const continuationReason = oneOf(["FIRST", "CURRENT", "NEXT", "REWATCH", "PREVIOUS_UNAVAILABLE"] as const, entry.continuationReason);
     return { slug, title, access, started: entry.started === true,
+      ...(continuationReason ? { continuationReason } : {}),
+      ...(progressPercent !== undefined ? { progressPercent } : {}),
       resumeLesson: lessonSlug && lessonTitle ? { slug: lessonSlug, title: lessonTitle } : null };
   });
 }
@@ -130,8 +137,9 @@ export function parseOrders(value: unknown): CabinetOrder[] | null {
 }
 
 /** Lesson / course entry through the exchange receiver (FLEX-121 accepts the protected entry). */
-export function lmsEntryHref(platformOrigin: string, course: CabinetCourse): string {
+export function lmsEntryHref(platformOrigin: string, course: CabinetCourse, sharedSession = false): string {
   const next = course.resumeLesson ? `/courses/${course.slug}/lessons/${course.resumeLesson.slug}` : `/courses/${course.slug}`;
+  if (sharedSession) return new URL(next, platformOrigin).href;
   const url = new URL("/auth/lms/start", platformOrigin);
   url.searchParams.set("next", next);
   return url.toString();

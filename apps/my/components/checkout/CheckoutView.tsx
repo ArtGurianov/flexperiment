@@ -1,4 +1,5 @@
 /** FLEX-122: presentational checkout. Pure: state in, callbacks out; no fetch, no storage. */
+import Link from "next/link";
 import { useState } from "react";
 import type { BuyerStatus, CheckoutKind } from "./buyer-status";
 import type { CheckoutNotice, CheckoutReview, CheckoutState, CourseAcceptanceInput, LabAcceptanceInput } from "./checkout-controller";
@@ -108,7 +109,7 @@ function Review({ review, busy, notice, onConfirm }: { review: CheckoutReview; b
   );
 }
 
-export function CheckoutView({ state, actions }: { state: CheckoutState; actions: CheckoutActions }) {
+export function CheckoutView({ state, actions, lessonHref }: { state: CheckoutState; actions: CheckoutActions; lessonHref?: string | null }) {
   switch (state.phase) {
     case "LOADING": return <section data-phase="LOADING"><h1>Оформление покупки</h1><p role="status">Проверяем предложение…</p></section>;
     case "SIGN_IN": return <section data-phase="SIGN_IN"><h1>Войдите, чтобы продолжить</h1>
@@ -128,17 +129,17 @@ export function CheckoutView({ state, actions }: { state: CheckoutState; actions
       {state.notice && <p>{NOTICE_TEXT[state.notice]}</p>}
       {state.status.payment === "SUPPORT_REVIEW" && <p>Номер заказа для поддержки: <code>{state.status.supportReference ?? state.status.orderPublicId}</code></p>}
       {state.status.payment === "AWAITING_PAYMENT" && state.status.paymentUrl && <button type="button" onClick={actions.openPayment}>Перейти к оплате →</button>}
-      {state.status.payment === "ACCESS_GRANTED" && <a href="/orders">Мои заказы →</a>}
-      {state.status.payment === "TICKET_ISSUED" && <a href="/orders">Мой билет →</a>}
+      {state.status.payment === "ACCESS_GRANTED" && (lessonHref ? <a href={lessonHref}>Вернуться к уроку →</a> : <Link href="/orders">Мои заказы →</Link>)}
+      {state.status.payment === "TICKET_ISSUED" && <Link href="/orders">Мой билет →</Link>}
       {(state.status.payment === "DECLINED" || state.status.payment === "EXPIRED") &&
         <button type="button" onClick={actions.startOver}>Оформить заново (новый заказ)</button>}
       {!state.polling && !["ACCESS_GRANTED", "TICKET_ISSUED", "DECLINED", "EXPIRED"].includes(state.status.payment) &&
         <button type="button" onClick={actions.refreshStatus}>Проверить статус</button>}
     </section>;
     case "ALREADY_OWNED": return <section data-phase="ALREADY_OWNED"><h1>{state.kind === "LAB" ? "Билет уже куплен" : "Курс уже ваш"}</h1>
-      <a href="/orders">Мои заказы →</a></section>;
+      {state.kind === "COURSE" && lessonHref ? <a href={lessonHref}>Вернуться к уроку →</a> : <Link href="/orders">Мои заказы →</Link>}</section>;
     case "ORDER_NOT_FOUND": return <section data-phase="ORDER_NOT_FOUND"><h1>Заказ не найден</h1>
-      <p>Этот заказ не принадлежит вашему аккаунту или больше не существует.</p><a href="/orders">Мои заказы →</a></section>;
+      <p>Этот заказ не принадлежит вашему аккаунту или больше не существует.</p><Link href="/orders">Мои заказы →</Link></section>;
     case "OFFER_MISMATCH": return <section data-phase="OFFER_MISMATCH"><h1>Предложение изменилось</h1>
       <p>Сервер вернул другое предложение, чем в ссылке. Мы ничего не оформили. Вернитесь на витрину и выберите снова.</p></section>;
     case "UNAVAILABLE": return <section data-phase="UNAVAILABLE" data-code={state.code}><h1>Оформление недоступно</h1>

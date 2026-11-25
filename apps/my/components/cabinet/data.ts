@@ -120,5 +120,6 @@ export function cabinetOrigins(environment: Environment = process.env) {
   return {
     platform: origin(environment.PLATFORM_ORIGIN) ?? "http://localhost:3001",
     lab: origin(environment.LAB_ORIGIN),
+    sharedSession: Boolean(sharedAccountCookie(environment, [environment.PLATFORM_ORIGIN, environment.LAB_ORIGIN])),
   };
 }

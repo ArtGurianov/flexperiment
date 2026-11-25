@@ -46,6 +46,8 @@
     "0042_lab_service_rendered_guards.sql": "faeb3d593d5e10417c2e6d41760d17e903ca7a07f3ae656df1c454e79bde6867",
     "0043_native_payment_dispatch_boundary.sql": "e005943c562466c7161a8ffab6d4bf924a7e30a15eae529f432cb7d24729aa6d",
     "0044_reviewed_erasure_receipts.sql": "57a6c94824b814d7e21f1eabd5dc352dd5e65bc9a5870b595c16602791b0daa5",
-    "0045_native_payment_executor.sql": "11547f21822275eb5c0f958f06288ba6265f41304084d9c83d8f88e3c5a92979"
+    "0045_native_payment_executor.sql": "11547f21822275eb5c0f958f06288ba6265f41304084d9c83d8f88e3c5a92979",
+    "0046_lesson_completions.sql": "acc12483c24f3f553d832ae0d9035b287d89c6d2ba3846c18769228f3638d6a6",
+    "0047_course_playback_state.sql": "412469e6c24c79bd0c88ed1a4ce9cd4200c64591f057cae257a5384d5a306b51"
   }
 }

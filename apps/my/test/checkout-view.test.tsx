@@ -52,6 +52,15 @@ describe("checkout view", () => {
       .toContain(text);
   });
 
+  it("offers the exact lesson after Commerce confirms the purchase", () => {
+    const lessonHref = "https://lms.fixture.test/courses/course/lessons/second";
+    const show = (payment: "ACCESS_GRANTED" | "CONFIRMING") => renderToStaticMarkup(<CheckoutView
+      state={{ phase: "STATUS", kind: "COURSE", status: { orderPublicId: "fixture", payment }, polling: false }}
+      actions={noop} lessonHref={lessonHref} />);
+    expect(show("ACCESS_GRANTED")).toContain(`href="${lessonHref}"`);
+    expect(show("CONFIRMING")).not.toContain(lessonHref);
+  });
+
   it("LAB ticket issued and declined (seat released)", () => {
     expect(html({ phase: "STATUS", kind: "LAB", status: { orderPublicId: "o", payment: "TICKET_ISSUED" }, polling: false })).toContain("Билет выпущен");
     expect(html({ phase: "STATUS", kind: "LAB", status: { orderPublicId: "o", payment: "DECLINED" }, polling: false })).toContain("Место освобождено");

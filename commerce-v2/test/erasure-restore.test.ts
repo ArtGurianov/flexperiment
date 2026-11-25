@@ -70,6 +70,10 @@ describe("real isolated old SQLite backup + independent latest erasure journal",
     // FLEX-128 (G-01): an unrelated subject's explicit enrollment and start fact survive the restore.
     db.exec(`INSERT INTO free_course_enrollments(customer_id,product_id,product_version,enrolled_at) VALUES ('other-customer','product',1,'2026-10-12');
       INSERT INTO course_learning_starts(customer_id,course_ref,product_id,source,started_at) VALUES ('other-customer','synthetic-course','product','FREE_ENROLLMENT','2026-10-12');`);
+    db.prepare("INSERT INTO lesson_completions VALUES (?, 'synthetic-lesson', ?)")
+      .run("deleted-customer", now.toISOString());
+    db.prepare("INSERT INTO lesson_completions VALUES (?, 'synthetic-lesson', ?)")
+      .run("other-customer", now.toISOString());
     const archive = join(root, "before-erasure.sqlite"); await db.backup(archive); // Genuine SQLite online backup with WAL.
     tombstone(); const proof = await verified();
     const restored = new Database(archive); restored.pragma("foreign_keys=ON");
@@ -79,7 +83,7 @@ describe("real isolated old SQLite backup + independent latest erasure journal",
       expect(restored.prepare("SELECT id FROM customers ORDER BY id").all()).toEqual([{ id: "other-customer" }]);
       expect(rowCount(restored, '"user"')).toBe(1);
       for (const table of ['"session"', "verification", "notification_campaign_recipients"]) expect(rowCount(restored, table)).toBe(0);
-      for (const table of ["free_course_enrollments", "course_learning_starts"]) {
+      for (const table of ["free_course_enrollments", "course_learning_starts", "lesson_completions"]) {
         expect(restored.prepare(`SELECT customer_id FROM ${table}`).all()).toEqual([{ customer_id: "other-customer" }]);
       }
       expect(restored.prepare("SELECT customer_id FROM authenticated_consent_actions").all()).toEqual([{ customer_id: "other-customer" }]);

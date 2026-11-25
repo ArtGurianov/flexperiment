@@ -6,6 +6,7 @@
  * for the page's lifetime; after a refresh the same payment key is resent, and Commerce answers it
  * with the order it already started (contract C I4). Nothing here is an authority: Commerce
  * re-checks every value and answers 404 for an order of another account. */
+import { checkoutLessonPath } from "./intent";
 import type { CheckoutKind } from "./buyer-status";
 
 export type ConfirmBody = {
@@ -23,9 +24,10 @@ export type IntentRecord = {
   quoteId?: string;
   paymentKey?: string;
   orderPublicId?: string;
+  lessonReturn?: string;
 };
 
-const FIELDS = new Set(["v", "offerRef", "previewKey", "kind", "quoteId", "paymentKey", "orderPublicId"]);
+const FIELDS = new Set(["v", "offerRef", "previewKey", "kind", "quoteId", "paymentKey", "orderPublicId", "lessonReturn"]);
 
 export type KeyValueStore = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 
@@ -39,6 +41,7 @@ function parse(raw: string | null, offerRef: string): IntentRecord | null {
     const value = JSON.parse(raw) as Partial<IntentRecord>;
     if (value.v !== 1 || value.offerRef !== offerRef || !isString(value.previewKey)) return null;
     for (const key of ["quoteId", "paymentKey", "orderPublicId"] as const) if (value[key] !== undefined && !isString(value[key])) return null;
+    if (value.lessonReturn !== undefined && !checkoutLessonPath(value.lessonReturn)) return null;
     if (value.kind !== undefined && value.kind !== "COURSE" && value.kind !== "LAB") return null;
     if (Object.keys(value).some((key) => !FIELDS.has(key))) return null;
     return value as IntentRecord;
@@ -71,7 +74,7 @@ export class IntentStore {
   /** A new quote (expired or stale) needs new keys; an issued order is never forgotten here. */
   restartQuote(): IntentRecord {
     const current = this.load();
-    return this.save({ v: 1, offerRef: this.offerRef, previewKey: this.newKey(), ...(current.kind ? { kind: current.kind } : {}) });
+    return this.save({ v: 1, offerRef: this.offerRef, previewKey: this.newKey(), ...(current.kind ? { kind: current.kind } : {}), lessonReturn: current.lessonReturn });
   }
 
   clear() {

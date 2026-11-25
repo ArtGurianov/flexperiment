@@ -1,4 +1,5 @@
 import type { NextConfig } from "next";
+import { LEGACY_COURSE_ALIASES } from "./lib/legacy-course-aliases";
 import { publicImageContentSecurityPolicy, publicMediaRemotePattern } from "./lib/public-media";
 
 const config: NextConfig = {
@@ -9,6 +10,12 @@ const config: NextConfig = {
   partialPrefetching: true,
   images: {
     remotePatterns: [publicMediaRemotePattern()],
+  },
+  async rewrites() {
+    return [...LEGACY_COURSE_ALIASES.keys()].map(alias => ({
+      source: `/${alias}`,
+      destination: `/courses/legacy-alias/${alias}`,
+    }));
   },
   async headers() {
     return [{
