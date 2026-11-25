@@ -1,0 +1,357 @@
+import { it } from "vitest";
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { createHash, generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { once } from "node:events";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { serve } from "@hono/node-server";
+import Database from "better-sqlite3";
+import { proxyCommerce } from "../../apps/platform/lib/commerce-proxy";
+import { createCommerceV2App } from "../src/app";
+import { createAuthRuntime, type MagicLinkEmail } from "../src/auth";
+import { openBackupSource } from "../src/backup-cli";
+import { dispatchCampaign, unsubscribeToken } from "../src/campaigns";
+import { classifyV2Database, migrateV2, openV2Database } from "../src/db";
+import { ageCustodyEncryption } from "../src/erasure-custody";
+import { createCurrentErasureRead, createErasureCurrentObjects, erasureReaderBinding } from "../src/erasure-library-read";
+import { ErasureLedgerStore, erasureSubject } from "../src/erasure-ledger";
+import { runErasureOwnerOperation, type ErasureOwnerConfiguration } from "../src/erasure-owner";
+import { backupFoundation } from "../src/foundation-storage";
+import { activateLegalRelease, currentLegalRelease, legalManifestHash, type LegalReleaseManifest } from "../src/legal-control";
+import { readV2Migrations } from "../src/migration-integrity";
+import { loadCommerceOrigins } from "../src/origins";
+import { loadCommerceRuntimeConfig } from "../src/payment-mode";
+import { reconcileIsolatedRestore } from "../src/restore-reconciliation";
+import { installationFixture } from "./fixtures/erasure-installation";
+import { erasureS3Fixture } from "./fixtures/erasure-s3";
+
+const base = "72b02da924d342e9e2c24b2e5ce73146bdc06d77";
+const docRevision = "ea251ec62408822f275c2570ee8dc58c4a4034eb";
+const sha = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");
+const git = (...args: string[]) => execFileSync("git", args);
+const atRevision = (path: string) => git("show", `${docRevision}:${path}`);
+const origins = {
+  PLATFORM_ORIGIN: "https://canary-platform.flexperiment.ru",
+  LAB_ORIGIN: "https://canary-lab.flexperiment.ru",
+  ADMIN_ORIGIN: "https://canary-admin.flexperiment.ru",
+  API_ORIGIN: "https://canary-api.flexperiment.ru",
+};
+const scope = "canary";
+const emailB = "subject-b@example.test";
+const emailC = "subject-c@example.test";
+const callback = new URL("/courses/synthetic-course/lessons/chosen?tab=lesson", origins.PLATFORM_ORIGIN).href;
+const check = (condition: unknown, code: string) => assert(Boolean(condition), code);
+const cookieAttrs = (headers: Headers) => {
+  const cookies = headers.getSetCookie();
+  const session = cookies.find(cookie => cookie.startsWith("__Secure-better-auth.session_token="));
+  check(session && /; Secure/i.test(session) && /; HttpOnly/i.test(session) && /; SameSite=Lax/i.test(session), "SESSION_ATTRIBUTES");
+  check(cookies.every(cookie => !/;\s*Domain=/i.test(cookie)), "SESSION_HOST_ONLY");
+  return cookies.map(cookie => cookie.split(";", 1)[0]).join("; ");
+};
+
+async function run() {
+  check(git("rev-parse", "HEAD").toString().trim() === base, "EXACT_BASE_REQUIRED");
+  check(git("diff", "HEAD", "--", "commerce-v2/src", "commerce-v2/migrations").length === 0, "SOURCE_MUST_MATCH");
+  const candidateDir = "docs/legal/stage-a/2026-11-20-candidate";
+  check(sha(atRevision(`${candidateDir}/SHA256SUMS`)) === "bd46ab170bf521f05821cb6d51e81d189d3608de5e0e5fc3a4bff4c5642f66fb", "OWNER_TEXT_SUMS");
+  const candidate = JSON.parse(atRevision(`${candidateDir}/manifest.json`).toString()) as {
+    version: string; documents: { kind: string; candidate: { path: string; sha256: string } }[];
+  };
+  const manifest: LegalReleaseManifest = {
+    stage: "A",
+    documents: candidate.documents.map(({ kind, candidate: document }) => {
+      check(sha(atRevision(document.path)) === document.sha256, "DOCUMENT_BYTES");
+      return { kind, version: candidate.version, sha256: document.sha256, url: `https://documents.example.test/stage-a/${candidate.version}/${kind}.md` };
+    }),
+  };
+  const manifestSha256 = legalManifestHash(manifest);
+  const root = mkdtempSync(join(tmpdir(), "flex-stage-a-local-"));
+  const privateFile = (name: string, value: string) => {
+    const filename = join(root, "custody", name);
+    writeFileSync(filename, value, { mode: 0o600 });
+    return filename;
+  };
+  for (const dir of ["merchant", "ledger", "fence", "mirror", "custody"]) mkdirSync(join(root, dir), { mode: 0o700 });
+  const databasePath = join(root, "merchant", "commerce.sqlite");
+  const db = openV2Database(databasePath);
+  const key = join(root, "custody", "age-key");
+  const realDate = Date;
+  let server: ReturnType<typeof serve> | undefined;
+  let reader: ReturnType<typeof createErasureCurrentObjects> | undefined;
+  try {
+    migrateV2(db);
+    const migrations = db.prepare("SELECT version,sha256 FROM schema_migrations ORDER BY version").all();
+    check(migrations.length === 37 && readV2Migrations().length === 37 && classifyV2Database(db) === "SUPPORTED", "SCHEMA_0037");
+    execFileSync("age-keygen", ["-o", key], { stdio: "ignore" });
+    const recipient = execFileSync("age-keygen", ["-y", key], { encoding: "utf8" }).trim();
+    const secret = randomBytes(32).toString("hex");
+    const env = { ...origins, NODE_ENV: "production", DEPLOY_ENV: "staging",
+      BETTER_AUTH_SECRET: randomBytes(32).toString("hex"), AUTH_EMAIL_OUTBOX_KEY: randomBytes(32).toString("base64") };
+    const signing = generateKeyPairSync("ed25519");
+    const keys = { signing: { "signing-1": signing.publicKey }, subject: { "subject-1": randomBytes(32) } };
+    const config: ErasureOwnerConfiguration = {
+      version: 1, scope, databasePath, ledgerDirectory: join(root, "ledger"),
+      fenceDirectory: join(root, "fence"), mirrorFile: join(root, "mirror", "bundle.json"),
+      keysFile: privateFile("verification.json", JSON.stringify({ version: 1, scope,
+        signing: { "signing-1": signing.publicKey.export({ type: "spki", format: "pem" }) },
+        subject: { "subject-1": keys.subject["subject-1"].toString("base64") } })),
+      signer: { keyId: "signing-1", privateKeyFile: privateFile("signing.pem", signing.privateKey.export({ type: "pkcs8", format: "pem" }).toString()) },
+      subjectKeyId: "subject-1", recipient, authEnvironmentFile: privateFile("auth.json", JSON.stringify(env)),
+      remote: { endpoint: "https://s3.cloud.ru", region: "ru-central-1", bucket: "erasure-canary", expectedBucketOwner: "fixture-owner",
+        readAccessKeyFile: privateFile("read-id", randomUUID()), readSecretKeyFile: privateFile("read-secret", randomUUID()),
+        writeAccessKeyFile: privateFile("write-id", randomUUID()), writeSecretKeyFile: privateFile("write-secret", randomUUID()) },
+    };
+    const wire = erasureS3Fixture(); // All SDK calls terminate inside this in-memory transport.
+    const readConfig = { version: 1 as const, scope, prefix: "flexperiment/erasure/canary/", endpoint: config.remote.endpoint, region: config.remote.region,
+      bucket: config.remote.bucket, expectedBucketOwner: config.remote.expectedBucketOwner,
+      bundleFile: config.mirrorFile, recipientSha256: ageCustodyEncryption(recipient).recipientSha256,
+      accessKeyId: readFileSync(config.remote.readAccessKeyFile, "utf8"), secretAccessKey: readFileSync(config.remote.readSecretKeyFile, "utf8") };
+    const installation = installationFixture("REQUIRED", config.fenceDirectory, scope, erasureReaderBinding(readConfig)).read();
+    const owner = (operation: unknown) => runErasureOwnerOperation(config, operation, { installation, requestHandler: wire.handler });
+    await owner({ operation: "initialize-fence" });
+    await owner({ operation: "initialize-custody" });
+    reader = createErasureCurrentObjects(readConfig, wire.handler);
+    const readCurrent = createCurrentErasureRead({ scope, keys, remote: reader, recipientSha256: readConfig.recipientSha256,
+      readBundle: () => JSON.parse(readFileSync(config.mirrorFile, "utf8")) });
+    activateLegalRelease(db, { storefront: "COURSES", version: candidate.version, manifest, actor: "local-fixture" },
+      "2026-11-24T04:42:35.000Z");
+
+    const messages: MagicLinkEmail[] = [];
+    const auth = createAuthRuntime({ db, environment: env, sendMagicLinkEmail: async message => { messages.push(message); } });
+    const app = createCommerceV2App({ db, sourceCommit: base, serviceToken: randomUUID(),
+      origins: loadCommerceOrigins(env), config: loadCommerceRuntimeConfig({ DEPLOY_ENV: "staging", PAYMENT_MODE: "disabled" }),
+      authHandler: auth.auth.handler, prepareMagicLinkInitiation: auth.prepareMagicLinkInitiation,
+      authenticateCustomer: auth.authenticateCustomer, campaignUnsubscribeSecret: secret });
+    server = serve({ fetch: app.fetch, hostname: "127.0.0.1", port: 0 });
+    await once(server, "listening");
+    const listening = server.address();
+    if (!listening || typeof listening === "string") throw new Error("LOOPBACK");
+    process.env.COMMERCE_INTERNAL_ORIGIN = `http://127.0.0.1:${listening.port}`;
+    process.env.PLATFORM_V2_CANARY = "false";
+
+    const proxy = (url: string, init: RequestInit = {}) => {
+      const target = new URL(url, origins.PLATFORM_ORIGIN);
+      const headers = new Headers(init.headers);
+      headers.set("origin", origins.PLATFORM_ORIGIN);
+      if (init.body) headers.set("content-type", "application/json");
+      return proxyCommerce(new Request(target, { ...init, headers }), target.pathname.split("/").slice(2));
+    };
+    // Read the running local service identity before validating its behavior.
+    const identity = await (await fetch(`http://127.0.0.1:${listening.port}/identity`)).json();
+    check(identity.sourceCommit === base || identity.source_commit === base, "LOCAL_IDENTITY");
+    const current = await proxy("/v1/legal/current?storefront=COURSES");
+    check(current.status === 200 && legalManifestHash((await current.json()).manifest) === manifestSha256, "ACTIVE_MANIFEST");
+    const docs = new Map(manifest.documents.map(document => [document.kind, document]));
+    const personalData = docs.get("personal_data")!, terms = docs.get("account_terms")!, marketing = docs.get("marketing_consent")!;
+    async function requestLink(email: string) {
+      const i = messages.length;
+      const response = await proxy("/v1/auth/sign-in/magic-link", { method: "POST", body: JSON.stringify({
+        email, storefront: "COURSES", metadata: { storefront: "COURSES" }, callbackURL: callback,
+        personalDataConsent: true, accountTermsAccepted: true, marketingConsent: true,
+        personalDataVersion: personalData.version, personalDataSha256: personalData.sha256,
+        accountTermsVersion: terms.version, accountTermsSha256: terms.sha256,
+        marketingDocumentVersion: marketing.version, marketingDocumentSha256: marketing.sha256,
+      }) });
+      check(response.status === 200, `MAGIC_LINK_REQUEST_HTTP_${response.status}`);
+      check(messages.length === i + 1 && messages[i].email === email, "LOCAL_TRANSPORT");
+      const link = new URL(messages[i].url);
+      check(link.origin === origins.PLATFORM_ORIGIN, "LINK_SAME_ORIGIN");
+      return link.href;
+    }
+    const count = (database: Database.Database, query: string, ...params: unknown[]) =>
+      (database.prepare(query).get(...params) as { n: number }).n;
+    const sessionCount = () => count(db, 'SELECT COUNT(*) n FROM "session"');
+    const verifyRefusal = async (link: string) => {
+      const before = sessionCount();
+      const response = await proxy(link);
+      const location = new URL(response.headers.get("location") ?? "/", origins.PLATFORM_ORIGIN);
+      check(response.status === 302 && location.searchParams.get("error") === "INVALID_TOKEN", "LINK_REFUSED");
+      check(!response.headers.getSetCookie().some(cookie => /session_token=/.test(cookie)) && sessionCount() === before, "REFUSAL_NO_SESSION");
+    };
+    const login = async (email: string) => {
+      const link = await requestLink(email);
+      const response = await proxy(link);
+      check(response.status === 302 && response.headers.get("location") === callback, "RETURN_EXACT_ORIGINAL_ROUTE");
+      const cookie = cookieAttrs(response.headers);
+      const me = await proxy("/v1/me", { headers: { cookie } });
+      check(me.status === 200 && /no-store/.test(me.headers.get("cache-control") ?? ""), "ME_NO_STORE");
+      const id = (await me.json()).customer?.id as string;
+      check(id && count(db, 'SELECT COUNT(*) n FROM customers c JOIN "user" u ON u.id=c.auth_user_id WHERE c.id=? AND u.email_verified=1', id) === 1, "VERIFIED_ACCOUNT");
+      return { link, cookie, id, email };
+    };
+    const b = await login(emailB);
+    await verifyRefusal(b.link);
+    const c = await login(emailC);
+    const issuedAt = Date.now();
+    const expired = await requestLink("expired@example.test");
+    globalThis.Date = class extends realDate {
+      constructor(value?: number | string) { super(value ?? issuedAt + 601_000); }
+      static now() { return issuedAt + 601_000; }
+    } as DateConstructor;
+    try { await verifyRefusal(expired); } finally { globalThis.Date = realDate; }
+    process.stdout.write("MAGIC_LINK=PASS LOCAL_MAILS=3 REPLAY_SESSIONS=0 EXPIRED_AT_601S_SESSIONS=0 CALLBACK_EXACT=2 HOST_ONLY_SECURE_HTTPONLY=2 ME_NO_STORE=2" + "\n");
+
+    for (const person of [b, c]) {
+      const fields = { storefront: "COURSES", releaseVersion: candidate.version, actionKey: randomUUID(), expectedActionSequence: 0,
+        personalDataConsent: true, accountTermsAccepted: true, marketingConsent: true };
+      const post = (hash: string) => proxy("/v1/me/consents", { method: "POST", headers: { cookie: person.cookie },
+        body: JSON.stringify({ ...fields, manifestSha256: hash }) });
+      const stale = await post("0".repeat(64));
+      check(stale.status === 409 && (await stale.json()).code === "LEGAL_RELEASE_STALE", "WRONG_MANIFEST_REFUSED");
+      check(count(db, "SELECT COUNT(*) n FROM authenticated_consent_actions WHERE customer_id=?", person.id) === 0, "WRONG_MANIFEST_NO_WRITES");
+      check((await post(manifestSha256)).status === 200, "CONSENT_CONFIRM");
+      const saved = db.prepare(`SELECT e.kind,e.granted,e.document_sha256 AS sha256
+        FROM authenticated_consent_actions a JOIN authenticated_consent_events e ON e.action_id=a.id
+        WHERE a.customer_id=? AND a.release_version=? AND a.manifest_sha256=?`).all(person.id, candidate.version, manifestSha256) as
+        { kind: string; granted: number; sha256: string }[];
+      check(saved.length === 3 && saved.every(row => row.granted === 1 && docs.get(row.kind)?.sha256 === row.sha256), "EXACT_CONSENT_EVIDENCE");
+    }
+    process.stdout.write(`CONSENT_ACTIONS=2 EVENTS=6 STALE_WRITES=0 CONTRACT_MANIFEST_SHA256=${manifestSha256} DOCUMENT_BYTE_HASHES=4` + "\n");
+    db.prepare(`INSERT INTO notification_campaigns(id,course_ref,payload_json,state,confirmed_by,confirmed_at)
+      VALUES ('local-campaign','synthetic-course','{}','CONFIRMED','local-fixture',?)`).run(new Date().toISOString());
+    for (const [index, person] of [b, c].entries()) {
+      db.prepare(`INSERT INTO notification_campaign_recipients(id,campaign_id,customer_id,state)
+        VALUES (?,'local-campaign',?,'PENDING')`).run(`recipient-${index}`, person.id);
+    }
+    check((await readCurrent()).bundle.entries.length === 0, "PRE_SNAPSHOT_LEDGER_EMPTY");
+    const archive = join(root, "archive");
+    const source = openBackupSource(databasePath);
+    let proof: Awaited<ReturnType<typeof backupFoundation>>;
+    try {
+      source.pragma("query_only=ON"); source.pragma("busy_timeout=5000");
+      proof = await backupFoundation(source, { environment: scope, sourceCommit: base }, archive, recipient);
+    } finally { source.close(); }
+    const backup = join(archive, proof.filename);
+    const ciphertext = readFileSync(backup);
+    check(ciphertext.length === proof.size && sha(ciphertext) === proof.sha256, "ARCHIVE_RECEIPT");
+    process.stdout.write(`SNAPSHOT=PASS SOURCE_SHA=${base} AGE_BYTES=${proof.size} AGE_SHA256=${proof.sha256} MIGRATIONS=37` + "\n");
+
+    const erased = await owner({ operation: "admit", requestId: randomUUID(), headers: { cookie: b.cookie, origin: origins.PLATFORM_ORIGIN } });
+    check(erased.state === "ERASURE_APPLIED" && erased.sequence === 1, "OWNER_ERASURE_ADMITTED");
+    check(count(db, "SELECT COUNT(*) n FROM customers WHERE id=?", b.id) === 0, "OWNER_ERASURE_CUSTOMER");
+
+    const inventory = { version: 1, scope, merchantId: "synthetic-merchant", backupSha256: proof.sha256,
+      sourceEvidenceSha256: sha("synthetic empty order inventory"), completeThrough: new Date().toISOString(), orders: [] };
+    const recover = (restored: Database.Database) => reconcileIsolatedRestore({ db: restored, inventory, keys, readErasure: readCurrent,
+      reader: { read: async () => { throw new Error("UNEXPECTED_PROVIDER_READ"); } } });
+    async function restoreCopy(name: string, inspect: (restored: Database.Database) => Promise<void>) {
+      const filename = join(root, `${name}.sqlite`);
+      execFileSync("age", ["-d", "-i", key, "-o", filename, backup], { stdio: "ignore" });
+      const restored = new Database(filename, { fileMustExist: true });
+      try {
+        restored.pragma("foreign_keys=ON");
+        check(restored.pragma("quick_check", { simple: true }) === "ok", "SNAPSHOT_INTEGRITY");
+        assert.deepEqual(restored.prepare("SELECT version,sha256 FROM schema_migrations ORDER BY version").all(), migrations);
+        check(count(restored, "SELECT COUNT(*) n FROM customers WHERE id IN (?,?)", b.id, c.id) === 2, "SNAPSHOT_BEFORE_OPERATIONS");
+        check(count(restored, "SELECT COUNT(*) n FROM notification_campaign_recipients WHERE state='PENDING'") === 2, "SNAPSHOT_CAMPAIGN_PENDING");
+        await inspect(restored);
+        check(restored.pragma("integrity_check", { simple: true }) === "ok" && restored.pragma("foreign_key_check").length === 0, "RESTORE_INTEGRITY");
+      } finally { restored.close(); rmSync(filename, { force: true }); }
+    }
+    const absentErasure = (restored: Database.Database) => {
+      for (const table of ["customers", "authenticated_consent_actions", "notification_campaign_recipients", "auth_email_outbox"]) {
+        const column = table === "customers" ? "id" : table === "auth_email_outbox" ? "recipient_normalized" : "customer_id";
+        check(count(restored, `SELECT COUNT(*) n FROM ${table} WHERE ${column}=?`, table === "auth_email_outbox" ? b.email : b.id) === 0, "ERASED_SUBJECT_RESURRECTED");
+      }
+      check(count(restored, 'SELECT COUNT(*) n FROM "user" WHERE email=?', b.email) === 0, "ERASED_AUTH_IDENTITY");
+      check(count(restored, 'SELECT COUNT(*) n FROM "session"') === 0, "RESTORE_SESSION_REVOKED");
+      check(count(restored, "SELECT COUNT(*) n FROM customers WHERE id=?", c.id) === 1, "UNSUBSCRIBED_ACCOUNT_PRESERVED");
+      check(legalManifestHash(currentLegalRelease(restored, "COURSES")!.manifest) === manifestSha256, "RESTORE_EXACT_RELEASE");
+    };
+    async function attemptDispatch(database: Database.Database) {
+      let sends = 0;
+      await dispatchCampaign(database, "local-campaign", { secret, publicOrigin: origins.PLATFORM_ORIGIN, send: async () => { sends++; } });
+      return sends;
+    }
+
+    const choicePath = "/v1/me/consents?storefront=COURSES";
+    async function changeChoice(marketingConsent: boolean, path: string) {
+      const consentResponse = await proxy(choicePath, { headers: { cookie: c.cookie } });
+      check(consentResponse.status === 200, "CHOICE_READ");
+      const status = await consentResponse.json();
+      check(status.manifestSha256 === manifestSha256, "CHOICE_MANIFEST");
+      const payload = { storefront: "COURSES", releaseVersion: candidate.version,
+        manifestSha256, actionKey: randomUUID(), expectedActionSequence: status.actionSequence, marketingConsent,
+        ...(path === "/v1/me/consents" ? { personalDataConsent: true, accountTermsAccepted: true } : {}) };
+      const response = await proxy(path, { method: "POST", headers: { cookie: c.cookie }, body: JSON.stringify(payload) });
+      check(response.status === 200, "CHOICE_WRITE");
+      const readback = await proxy(choicePath, { headers: { cookie: c.cookie } });
+      check(readback.status === 200 && (await readback.json()).choices.marketing_consent === marketingConsent, "CHOICE_READBACK");
+    }
+
+    for (const [name, path] of [
+      ["marketing-only", "/v1/me/consents/marketing"], ["combined-consents", "/v1/me/consents"],
+    ]) {
+      await changeChoice(false, path);
+      const latest = await readCurrent();
+      check(latest.bundle.entries.length === 1 && latest.bundle.entries[0].body.kind === "ERASURE", "WITHDRAWAL_NOT_JOURNALED");
+      await restoreCopy(name, async restored => {
+        const result = await recover(restored);
+        check(result.state === "RECONCILED_CLOSED" && result.runtimeAdmission === "PENDING", "CHOICE_RESTORE_CLOSED");
+        absentErasure(restored);
+        check(await attemptDispatch(restored) === 1, "WITHDRAWAL_REGRESSION_REPRODUCED");
+      });
+      process.stdout.write(`WITHDRAWAL_ROUTE=${path} HTTP=200 SOURCE_CHOICE=false LEDGER_MARKETING_SUPPRESSION=0 RESTORED_SENDS=1 RUNTIME=PENDING RESULT=FAIL\n`);
+      await changeChoice(true, "/v1/me/consents/marketing");
+    }
+    const unsub = await proxy(`/v1/email/unsubscribe?token=${encodeURIComponent(unsubscribeToken(c.id, secret))}`, { method: "POST" });
+    check(unsub.status === 200 && (await unsub.json()).unsubscribed === true, "ONE_CLICK");
+    check(count(db, "SELECT COUNT(*) n FROM email_suppressions WHERE email_normalized=? AND reason='ONE_CLICK' AND removed_at IS NULL", c.email) === 1, "LOCAL_SUPPRESSION");
+    const liveSends = await attemptDispatch(db);
+    check(liveSends === 0, "SOURCE_SUPPRESSION");
+    check((await readCurrent()).bundle.entries.map(entry => entry.body.kind).join(",") === "ERASURE", "ONE_CLICK_AUTHORITY_OBSERVATION");
+
+
+    await restoreCopy("missing-authority", async restored => {
+      wire.state.unavailable = true;
+      try { await assert.rejects(recover(restored), /ERASURE_/); }
+      finally { wire.state.unavailable = false; }
+      check(count(restored, "SELECT COUNT(*) n FROM customers WHERE id=?", b.id) === 1, "REFUSED_RESTORE_NO_ERASURE");
+    });
+    await restoreCopy("real-operations", async restored => {
+      const result = await recover(restored);
+      check(result.state === "RECONCILED_CLOSED" && result.runtimeAdmission === "PENDING", "RESTORE_CLOSED");
+      absentErasure(restored);
+      check(count(restored, "SELECT COUNT(*) n FROM email_suppressions WHERE email_normalized=? AND removed_at IS NULL", c.email) === 0, "SUPPRESSION_LOST");
+      check(await attemptDispatch(restored) === 1, "UNSUBSCRIBE_REGRESSION_REPRODUCED");
+    });
+    process.stdout.write("OWNER_ERASURE=PASS OWNER_LEDGER_ERASURE=1 ONE_CLICK_HTTP=200 SOURCE_SENDS=0 MISSING_AUTHORITY_REFUSED=1 RESTORED_ERASED_ACCOUNTS=0 RESTORED_UNSUBSCRIBED_SENDS=1 RESULT=FAIL" + "\n");
+
+    // A test-only positive control for the existing ledger consumer. This explicit
+    // append is not part of the shipped unsubscribe operation or an owner runbook.
+    const user = db.prepare("SELECT auth_user_id AS id FROM customers WHERE id=?").get(c.id) as { id: string };
+    const ledger = new ErasureLedgerStore({ directory: config.ledgerDirectory, scope, keys,
+      signer: { keyId: config.signer.keyId, privateKey: signing.privateKey }, forbiddenRoots: [join(root, "merchant"), config.fenceDirectory, join(root, "mirror")] });
+    try {
+      ledger.append({ requestId: randomUUID(), kind: "MARKETING_SUPPRESSION",
+        subject: erasureSubject(keys, "subject-1", scope, { email: c.email, customerId: c.id, userId: user.id }) });
+    } finally { ledger.close(); }
+    await owner({ operation: "publish-pending" });
+    check((await readCurrent()).bundle.entries.map(entry => entry.body.kind).join(",") === "ERASURE,MARKETING_SUPPRESSION", "POSITIVE_CONTROL_AUTHORITY");
+    await restoreCopy("both-authorities", async restored => {
+      const result = await recover(restored);
+      check(result.state === "RECONCILED_CLOSED" && result.runtimeAdmission === "PENDING", "CONTROL_RESTORE_CLOSED");
+      absentErasure(restored);
+      check(count(restored, "SELECT COUNT(*) n FROM notification_campaign_recipients WHERE state='SKIPPED_SUPPRESSED'") === 1, "POSITIVE_CONTROL_SUPPRESSED");
+      check(await attemptDispatch(restored) === 0, "POSITIVE_CONTROL_NO_SENDS");
+    });
+    process.stdout.write("SIGNED_CONTROL_ENTRIES=2 RESTORED_ERASED_ACCOUNTS=0 RESTORED_UNSUBSCRIBED_ACCOUNTS=1 SUPPRESSED_RECIPIENTS=1 RESTORED_SENDS=0 INTEGRITY=OK FK_ERRORS=0 RUNTIME=PENDING" + "\n");
+  } finally {
+    reader?.close();
+    server?.close();
+    db.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+it("reproduces Stage A withdrawal loss through all LMS routes", async () => {
+try { await run(); } catch (error) {
+  // Log only our fixed assertion labels and a source location, never values, payloads or headers.
+  const label = error instanceof Error && /^[A-Z0-9_]+$/.test(error.message) ? error.message : "FIXTURE_FAILURE";
+  const location = error instanceof Error ? error.stack?.match(/stage-a-withdrawal\.(?:ts|local\.test\.ts):\d+:\d+/)?.[0] : undefined;
+  console.error(label, location ?? "");
+  throw new Error(label);
+}
+});

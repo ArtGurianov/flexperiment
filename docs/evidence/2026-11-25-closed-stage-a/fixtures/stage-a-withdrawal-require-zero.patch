@@ -1,0 +1,55 @@
+--- a/commerce-v2/test/stage-a-withdrawal.local.test.ts
++++ b/commerce-v2/test/stage-a-withdrawal.local.test.ts
+@@ -19 +18,0 @@
+-import { ErasureLedgerStore, erasureSubject } from "../src/erasure-ledger";
+@@ -30 +29 @@
+-const base = "72b02da924d342e9e2c24b2e5ce73146bdc06d77";
++const base = process.env.STAGE_A_SOURCE_SHA ?? "72b02da924d342e9e2c24b2e5ce73146bdc06d77";
+@@ -55 +54 @@
+-  check(git("rev-parse", "HEAD").toString().trim() === base, "EXACT_BASE_REQUIRED");
++  check(/^[a-f0-9]{40}$/.test(base) && git("rev-parse", "HEAD").toString().trim() === base, "EXACT_SOURCE_REQUIRED");
+@@ -268,0 +268 @@
++    const restoredSends: number[] = [];
+@@ -288,2 +287,0 @@
+-      const latest = await readCurrent();
+-      check(latest.bundle.entries.length === 1 && latest.bundle.entries[0].body.kind === "ERASURE", "WITHDRAWAL_NOT_JOURNALED");
+@@ -294 +292 @@
+-        check(await attemptDispatch(restored) === 1, "WITHDRAWAL_REGRESSION_REPRODUCED");
++        restoredSends.push(await attemptDispatch(restored));
+@@ -296 +294 @@
+-      process.stdout.write(`WITHDRAWAL_ROUTE=${path} HTTP=200 SOURCE_CHOICE=false LEDGER_MARKETING_SUPPRESSION=0 RESTORED_SENDS=1 RUNTIME=PENDING RESULT=FAIL\n`);
++      process.stdout.write(`WITHDRAWAL_ROUTE=${path} HTTP=200 SOURCE_CHOICE=false RESTORED_SENDS=${restoredSends.at(-1)} RUNTIME=PENDING\n`);
+@@ -304,2 +301,0 @@
+-    check((await readCurrent()).bundle.entries.map(entry => entry.body.kind).join(",") === "ERASURE", "ONE_CLICK_AUTHORITY_OBSERVATION");
+-
+@@ -317,2 +313 @@
+-      check(count(restored, "SELECT COUNT(*) n FROM email_suppressions WHERE email_normalized=? AND removed_at IS NULL", c.email) === 0, "SUPPRESSION_LOST");
+-      check(await attemptDispatch(restored) === 1, "UNSUBSCRIBE_REGRESSION_REPRODUCED");
++      restoredSends.push(await attemptDispatch(restored));
+@@ -320,21 +315,2 @@
+-    process.stdout.write("OWNER_ERASURE=PASS OWNER_LEDGER_ERASURE=1 ONE_CLICK_HTTP=200 SOURCE_SENDS=0 MISSING_AUTHORITY_REFUSED=1 RESTORED_ERASED_ACCOUNTS=0 RESTORED_UNSUBSCRIBED_SENDS=1 RESULT=FAIL" + "\n");
+-
+-    // A test-only positive control for the existing ledger consumer. This explicit
+-    // append is not part of the shipped unsubscribe operation or an owner runbook.
+-    const user = db.prepare("SELECT auth_user_id AS id FROM customers WHERE id=?").get(c.id) as { id: string };
+-    const ledger = new ErasureLedgerStore({ directory: config.ledgerDirectory, scope, keys,
+-      signer: { keyId: config.signer.keyId, privateKey: signing.privateKey }, forbiddenRoots: [join(root, "merchant"), config.fenceDirectory, join(root, "mirror")] });
+-    try {
+-      ledger.append({ requestId: randomUUID(), kind: "MARKETING_SUPPRESSION",
+-        subject: erasureSubject(keys, "subject-1", scope, { email: c.email, customerId: c.id, userId: user.id }) });
+-    } finally { ledger.close(); }
+-    await owner({ operation: "publish-pending" });
+-    check((await readCurrent()).bundle.entries.map(entry => entry.body.kind).join(",") === "ERASURE,MARKETING_SUPPRESSION", "POSITIVE_CONTROL_AUTHORITY");
+-    await restoreCopy("both-authorities", async restored => {
+-      const result = await recover(restored);
+-      check(result.state === "RECONCILED_CLOSED" && result.runtimeAdmission === "PENDING", "CONTROL_RESTORE_CLOSED");
+-      absentErasure(restored);
+-      check(count(restored, "SELECT COUNT(*) n FROM notification_campaign_recipients WHERE state='SKIPPED_SUPPRESSED'") === 1, "POSITIVE_CONTROL_SUPPRESSED");
+-      check(await attemptDispatch(restored) === 0, "POSITIVE_CONTROL_NO_SENDS");
+-    });
+-    process.stdout.write("SIGNED_CONTROL_ENTRIES=2 RESTORED_ERASED_ACCOUNTS=0 RESTORED_UNSUBSCRIBED_ACCOUNTS=1 SUPPRESSED_RECIPIENTS=1 RESTORED_SENDS=0 INTEGRITY=OK FK_ERRORS=0 RUNTIME=PENDING" + "\n");
++    process.stdout.write(`WITHDRAWAL_ROUTE=/v1/email/unsubscribe HTTP=200 SOURCE_SENDS=0 RESTORED_SENDS=${restoredSends.at(-1)} RUNTIME=PENDING\n`);
++    check(restoredSends.length === 3 && restoredSends.every(sends => sends === 0), "RESTORED_MARKETING_SENDS_DETECTED");
+@@ -349 +325 @@
+-it("reproduces Stage A withdrawal loss through all LMS routes", async () => {
++it("requires zero restored sends after withdrawal through all LMS routes", async () => {
