@@ -68,7 +68,7 @@ export function assertReviewedRestoreSchema(db: Database.Database) {
  * Merchant schema stays unchanged; financial/audit uncertainty keeps restore CLOSED. */
 export function applyIsolatedRestoreErasure(db: Database.Database, ledger: VerifiedErasureLedger, keys: ErasureKeys,
   environment: "canary" | "production", now = new Date()) {
-  return applyErasure(db,ledger,keys,environment,now,true);
+  return applyErasure(db,ledger,keys,environment,now,true, true);
 }
 
 // The application receipt is process-private proof of this exact transaction, not JSON
@@ -85,12 +85,12 @@ export function applyDrainedRuntimeErasure(db: Database.Database, ledger: Verifi
   environment: "canary" | "production", drain:DrainedErasureRuntime, now = new Date(), mode:"LIVE_ADMISSION"|"BOOT_RESTORE"="LIVE_ADMISSION") {
   DrainedErasureRuntime.assert(drain,db,environment);
   if(!["LIVE_ADMISSION","BOOT_RESTORE"].includes(mode))throw new ErasureLedgerError("ERASURE_DRAIN_INVALID");
-  const result=applyErasure(db,ledger,keys,environment,now,mode==="BOOT_RESTORE",()=>DrainedErasureRuntime.assert(drain,db,environment));
+  const result=applyErasure(db,ledger,keys,environment,now,mode==="BOOT_RESTORE", false,()=>DrainedErasureRuntime.assert(drain,db,environment));
   const receipt=Object.freeze({}); applications.set(receipt,{drain,db,ledger});
   return {...result,application:receipt};
 }
 function applyErasure(db: Database.Database, ledger: VerifiedErasureLedger, keys: ErasureKeys,
-  environment: "canary" | "production", now:Date, resetAllCredentials:boolean, assertDrain?:()=>void) {
+  environment: "canary" | "production", now:Date, resetAllCredentials:boolean, isolatedRestore:boolean, assertDrain?:()=>void) {
   VerifiedErasureLedger.prototype.assertFresh.call(ledger,now);
   if (ledger.bundle.scope !== environment) throw new ErasureLedgerError("ERASURE_SCOPE_MISMATCH");
   if (classifyV2Database(db) !== "SUPPORTED" || db.pragma("foreign_keys", { simple: true }) !== 1) {
@@ -113,9 +113,10 @@ function applyErasure(db: Database.Database, ledger: VerifiedErasureLedger, keys
         Array<{ id: string; email_normalized: string; auth_user_id: string | null }>;
       const users = db.prepare('SELECT id,email FROM "user"').all() as Array<{ id: string; email: string }>;
       for (const entry of ledger.bundle.entries) {
+        if (entry.body.kind === "REVIEWED_CANCELLATION") continue;
         if (entry.body.kind === "REVIEWED_ERASURE") {
           if (!hasTable(db, "reviewed_erasure_receipts")) throw new ErasureLedgerError("ERASURE_REVIEWED_SCHEMA_REQUIRED");
-          applyReviewedErasure(db, { ...entry, body: entry.body }, keys, now, resetAllCredentials);
+          applyReviewedErasure(db, { ...entry, body: entry.body }, keys, now, isolatedRestore);
           continue;
         }
         const { subject } = entry.body;

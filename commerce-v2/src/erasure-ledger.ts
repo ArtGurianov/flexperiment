@@ -13,11 +13,15 @@ const reference = z.object({ keyId, keySha256: digest, email: digest, customer: 
 const legacyAppend = z.object({ requestId: z.string().uuid(), kind: z.enum(["ERASURE", "MARKETING_SUPPRESSION"]), subject: reference }).strict();
 const reviewedAppend = z.object({ requestId: z.string().uuid(), kind: z.literal("REVIEWED_ERASURE"), subject: reference,
   reviewed: reviewedLedgerPlanSchema }).strict();
+export const reviewedCancellationReason = z.enum(["EXPIRED", "LEGAL_HOLD", "OWNER_WITHDRAWN"]);
+const canceledAppend = z.object({ requestId: z.string().uuid(), kind: z.literal("REVIEWED_CANCELLATION"), subject: reference,
+  canceled: z.object({ entrySha256: digest, reason: reviewedCancellationReason }).strict() }).strict();
 const entryFields = { scope, sequence: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
   recordedAt: instant, previousHash: digest, signingKeyId: keyId };
 const bodySchema = z.union([
   legacyAppend.extend({ ...entryFields, version: z.literal(1) }),
   reviewedAppend.extend({ ...entryFields, version: z.literal(2) }),
+  canceledAppend.extend({ ...entryFields, version: z.literal(2) }),
 ]);
 const entrySchema = z.object({ body: bodySchema, hash: digest, signature: z.string().regex(/^[A-Za-z0-9_-]{86}$/) }).strict();
 const appendInputSchema = z.union([legacyAppend, reviewedAppend]);
@@ -116,6 +120,7 @@ function freezeVerifiedBundle(bundle: ErasureBundle) {
       Object.freeze(body.reviewed.plan);
       Object.freeze(body.reviewed);
     }
+    if (body.kind === "REVIEWED_CANCELLATION") Object.freeze(body.canceled);
     Object.freeze(body.subject);
     Object.freeze(body);
     Object.freeze(entry);
@@ -225,6 +230,15 @@ export class VerifiedErasureLedger {
 
 /** Nonmutating owner export. Unlike store construction, inspection/read does not
  * create a journal, triggers or genesis. Used by the one-shot CLI, not Commerce. */
+function effectiveLedgerRows(db: Database.Database) {
+  const legacy = "SELECT sequence,request_id,entry_json FROM erasure_entries ORDER BY sequence";
+  const current = `SELECT e.sequence,e.request_id,COALESCE(c.entry_json,e.entry_json) AS entry_json
+    FROM erasure_entries e LEFT JOIN erasure_reviewed_cancellations c ON c.sequence=e.sequence AND c.confirmed=1
+    ORDER BY e.sequence`;
+  return db.prepare(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='erasure_reviewed_cancellations'").get()
+    ? current : legacy).all() as Array<{ sequence: number; request_id: string; entry_json: string }>;
+}
+
 export function readOwnerErasureBundle(input: { directory: string; scope: Scope; keys: ErasureKeys; forbiddenRoots: readonly string[] }) {
   let db: Database.Database | undefined;
   try {
@@ -241,7 +255,7 @@ export function readOwnerErasureBundle(input: { directory: string; scope: Scope;
       if (connection.prepare("SELECT scope FROM erasure_identity").all().length !== 1
         || (connection.prepare("SELECT scope FROM erasure_identity").get() as { scope: string }).scope !== input.scope) refuse("ERASURE_SCOPE_MISMATCH");
       if ((connection.prepare("SELECT COUNT(*) AS n FROM erasure_entries").get() as { n: number }).n > 100_000) refuse("ERASURE_CUSTODY_CAPACITY_REVIEW_REQUIRED");
-      const rows = connection.prepare("SELECT sequence,request_id,entry_json FROM erasure_entries ORDER BY sequence").all() as { sequence: number; request_id: string; entry_json: string }[];
+      const rows = effectiveLedgerRows(connection);
       const entries = rows.map((r, i) => {
         if (r.sequence !== i + 1 || r.entry_json.length > 4096) refuse("ERASURE_CHAIN_INVALID");
         const entry = parse(entrySchema, JSON.parse(r.entry_json));
@@ -295,9 +309,16 @@ export class ErasureLedgerStore {
         refuse("ERASURE_STORAGE_INVALID");
       }
       const tables = this.#db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>;
-      if (tables.some(table => !["erasure_identity", "erasure_entries"].includes(table.name))) refuse("ERASURE_STORAGE_NOT_INDEPENDENT");
+      if (tables.some(table => !["erasure_identity", "erasure_entries", "erasure_reviewed_cancellations"].includes(table.name))) refuse("ERASURE_STORAGE_NOT_INDEPENDENT");
       this.#db.exec(`CREATE TABLE IF NOT EXISTS erasure_identity(scope TEXT PRIMARY KEY);
         CREATE TABLE IF NOT EXISTS erasure_entries(sequence INTEGER PRIMARY KEY,request_id TEXT NOT NULL UNIQUE,entry_json TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS erasure_reviewed_cancellations(sequence INTEGER PRIMARY KEY, request_id TEXT NOT NULL UNIQUE,
+          entry_json TEXT NOT NULL, confirmed INTEGER NOT NULL DEFAULT 0 CHECK(confirmed IN (0,1)));
+        CREATE TRIGGER IF NOT EXISTS erasure_cancellation_update BEFORE UPDATE ON erasure_reviewed_cancellations
+          WHEN OLD.confirmed<>0 OR NEW.confirmed<>1 OR NEW.sequence<>OLD.sequence OR NEW.request_id<>OLD.request_id OR NEW.entry_json<>OLD.entry_json
+          BEGIN SELECT RAISE(ABORT,'ERASURE_HISTORY_IMMUTABLE'); END;
+        CREATE TRIGGER IF NOT EXISTS erasure_cancellation_delete BEFORE DELETE ON erasure_reviewed_cancellations
+          BEGIN SELECT RAISE(ABORT,'ERASURE_HISTORY_IMMUTABLE'); END;
         CREATE TRIGGER IF NOT EXISTS erasure_entry_update BEFORE UPDATE ON erasure_entries BEGIN SELECT RAISE(ABORT,'ERASURE_HISTORY_IMMUTABLE'); END;
         CREATE TRIGGER IF NOT EXISTS erasure_entry_delete BEFORE DELETE ON erasure_entries BEGIN SELECT RAISE(ABORT,'ERASURE_HISTORY_IMMUTABLE'); END;
         CREATE TRIGGER IF NOT EXISTS erasure_identity_update BEFORE UPDATE ON erasure_identity BEGIN SELECT RAISE(ABORT,'ERASURE_HISTORY_IMMUTABLE'); END;
@@ -316,8 +337,7 @@ export class ErasureLedgerStore {
   }
   export(): ErasureBundle {
     try {
-      const rows = this.#db.prepare("SELECT sequence,request_id,entry_json FROM erasure_entries ORDER BY sequence").all() as
-        Array<{ sequence: number; request_id: string; entry_json: string }>;
+      const rows = effectiveLedgerRows(this.#db);
       if (rows.length > 100_000) refuse("ERASURE_LEDGER_CAPACITY_REVIEW_REQUIRED");
       const entries = rows.map(row => {
         if (row.entry_json.length > 4096) refuse("ERASURE_LEDGER_INVALID");
@@ -356,6 +376,54 @@ export class ErasureLedgerStore {
       if (error instanceof ErasureLedgerError) throw error;
       return refuse("ERASURE_APPEND_REFUSED");
     }
+  }
+  reviewedCancellation(requestId: string) {
+    const row = this.#db.prepare("SELECT entry_json FROM erasure_reviewed_cancellations WHERE request_id=?").get(requestId) as
+      { entry_json: string } | undefined;
+    if (!row) return undefined;
+    const entry = parse(entrySchema, JSON.parse(row.entry_json));
+    if (entry.body.kind !== "REVIEWED_CANCELLATION" || entry.body.requestId !== requestId) refuse("ERASURE_CHAIN_INVALID");
+    return entry;
+  }
+
+  stageReviewedCancellation(prefix: VerifiedErasureLedger, input: {
+    requestId: string; entrySha256: string; reason: z.infer<typeof reviewedCancellationReason>;
+  }, now: Date) {
+    VerifiedErasureLedger.prototype.assertFresh.call(prefix, now);
+    return this.#db.transaction(() => {
+      const bundle = this.export();
+      const pending = bundle.entries.at(-1);
+      if (!pending || pending.body.kind !== "REVIEWED_ERASURE" || pending.body.requestId !== input.requestId ||
+        pending.hash !== input.entrySha256 || canonical({ ...bundle, entries: bundle.entries.slice(0, -1) }) !== canonical(prefix.bundle)) {
+        return refuse("ERASURE_CANCELLATION_PREFIX_MISMATCH");
+      }
+      if (input.reason === "EXPIRED" && Date.parse(pending.body.reviewed.plan.executeBy) >= now.getTime()) {
+        refuse("ERASURE_CANCELLATION_REASON_INVALID");
+      }
+      const body = parse(bodySchema, { version: 2, scope: bundle.scope, kind: "REVIEWED_CANCELLATION", requestId: input.requestId,
+        subject: pending.body.subject, sequence: pending.body.sequence, previousHash: pending.body.previousHash,
+        recordedAt: now.toISOString(), signingKeyId: this.#options.signer.keyId,
+        canceled: { entrySha256: input.entrySha256, reason: input.reason } });
+      const entry = { body, hash: hash(body), signature: signature(body, this.#options.signer) };
+      this.#db.prepare("INSERT INTO erasure_reviewed_cancellations(sequence,request_id,entry_json) VALUES (?,?,?)")
+        .run(body.sequence, input.requestId, canonical(entry));
+      return entry;
+    }).immediate();
+  }
+
+  confirmReviewedCancellation(proof: VerifiedErasureLedger, requestId: string, now: Date) {
+    VerifiedErasureLedger.prototype.assertFresh.call(proof, now);
+    this.#db.transaction(() => {
+      const entry = this.reviewedCancellation(requestId);
+      const bundle = this.export();
+      const pending = bundle.entries.at(-1);
+      if (!entry || entry.body.kind !== "REVIEWED_CANCELLATION" || proof.bundle.scope !== bundle.scope ||
+        !pending || pending.body.kind !== "REVIEWED_ERASURE" || pending.hash !== entry.body.canceled.entrySha256 ||
+        canonical({ ...bundle, entries: [...bundle.entries.slice(0, -1), entry] }) !== canonical(proof.bundle)) {
+        return refuse("ERASURE_CANCELLATION_PREFIX_MISMATCH");
+      }
+      this.#db.prepare("UPDATE erasure_reviewed_cancellations SET confirmed=1 WHERE request_id=?").run(requestId);
+    }).immediate();
   }
   /** Explicit disaster recovery of exact existing signatures into an EMPTY journal.
    * Only a fresh remotely verified capability; never resign/reorder old events. */

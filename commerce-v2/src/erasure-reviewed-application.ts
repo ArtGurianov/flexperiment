@@ -3,6 +3,7 @@ import type Database from "better-sqlite3";
 import { erasurePseudonym, type ErasureEntry, type ErasureKeys } from "./erasure-ledger";
 import { erasurePlanRefused, type ReviewedErasurePlan } from "./erasure-plan";
 import { verificationSubjectEmail } from "./my-session-storage";
+import { nativeErasureAdmission } from "./native-payment-ledger";
 
 type Binding = { customerId: string; email: string; userId: string | null };
 type ReviewedEntry = ErasureEntry & { body: Extract<ErasureEntry["body"], { kind: "REVIEWED_ERASURE" }> };
@@ -37,18 +38,28 @@ export function readReviewedInventory(db: Database.Database, binding: Binding) {
       !["FULFILLED", "REFUND_PENDING", "REFUNDED", "EXPIRED", "CANCELLED"].includes(order.orderState))) {
     erasurePlanRefused("ERASURE_FINANCIAL_REVIEW_REQUIRED");
   }
-  const rights = db.prepare(`SELECT source_order_line_id AS lineId,revoked_at AS revokedAt
-    FROM course_entitlements WHERE customer_id=? ORDER BY source_order_line_id`).all(binding.customerId) as
-    Array<{ lineId: string; revokedAt: string | null }>;
+  const rights = db.prepare(`SELECT id,source_order_line_id AS lineId,scope,course_ref AS courseRef,revoked_at AS revokedAt
+    FROM course_entitlements WHERE customer_id=? ORDER BY source_order_line_id,id`).all(binding.customerId) as
+    Array<{ id: string; lineId: string; scope: string; courseRef: string | null; revokedAt: string | null }>;
   const lines = new Set(orders.map(order => order.lineId));
   if (rights.some(right => !lines.has(right.lineId))) erasurePlanRefused("ERASURE_FINANCIAL_REVIEW_REQUIRED");
+  const refunds = db.prepare(`SELECT r.id,r.order_line_id AS lineId,r.state,n.id AS executionId,n.state AS executionState,
+      d.id AS decisionId,d.amount_kopecks AS decisionAmount
+    FROM refund_requests r LEFT JOIN native_refunds n ON n.refund_request_id=r.id
+    LEFT JOIN refund_decisions d ON d.refund_request_id=r.id
+    WHERE r.customer_id=? ORDER BY r.id,d.id`).all(binding.customerId) as Array<{ id: string; lineId: string; state: string }>;
+  if (refunds.some(refund => !lines.has(refund.lineId))) erasurePlanRefused("ERASURE_FINANCIAL_REVIEW_REQUIRED");
+  const fiscal = db.prepare(`SELECT e.id,e.order_line_id AS lineId,e.kind,e.state
+    FROM fiscal_events e JOIN order_lines l ON l.id=e.order_line_id JOIN orders o ON o.id=l.order_id
+    WHERE o.customer_id=? ORDER BY e.id`).all(binding.customerId);
   const activeRights = rights.filter(right => !right.revokedAt).length;
-  const openRefunds = (db.prepare(`SELECT COUNT(*) AS n FROM refund_requests
-    WHERE customer_id=? AND state IN ('REQUESTED','APPROVED','EXECUTING','REVIEW_REQUIRED')`)
-    .get(binding.customerId) as { n: number }).n;
+  const openRefunds = new Set(refunds.filter(row => ["REQUESTED","APPROVED","EXECUTING","REVIEW_REQUIRED"].includes(row.state))
+    .map(row => row.id)).size;
+  const pendingFinancial = !nativeErasureAdmission(db, binding.customerId).admitted ||
+    orders.some(order => order.orderState === "REFUND_PENDING");
   return {
-    orderCount: new Set(orders.map(order => order.id)).size, activeRights, openRefunds,
-    obligationsSha256: hash(["flexperiment-erasure-obligations-v1", orders.map(order => [order.id, order.lineId, order.nativeRef])]),
+    orderCount: new Set(orders.map(order => order.id)).size, activeRights, openRefunds, pendingFinancial,
+    obligationsSha256: hash(["flexperiment-erasure-obligations-v2", orders, rights, refunds, fiscal]),
   };
 }
 
@@ -61,16 +72,19 @@ function verificationIds(db: Database.Database, email: string) {
   }).map(row => row.id);
 }
 
-/** Same technical guard at dry run, on the drained DB, and on recovery. */
-export function checkReviewedTarget(db: Database.Database, binding: Binding, plan: ReviewedErasurePlan, replay = false) {
+export function checkNewReviewedTarget(db: Database.Database, binding: Binding, plan: ReviewedErasurePlan) {
   const inventory = readReviewedInventory(db, binding);
-  const obligationOpen = inventory.activeRights > 0 || inventory.openRefunds > 0;
-  if ((!replay || obligationOpen) && plan.obligationsSha256 !== inventory.obligationsSha256) {
+  if (plan.obligationsSha256 !== inventory.obligationsSha256) {
     erasurePlanRefused("ERASURE_PLAN_OBLIGATIONS_CHANGED");
   }
-  if (obligationOpen && plan.categories.account.action !== "CLOSE_WITH_CONTINUITY") {
-    erasurePlanRefused("ERASURE_ACCESS_CONTINUITY_REQUIRED");
+  if (inventory.activeRights || inventory.openRefunds || inventory.pendingFinancial || plan.categories.account.action !== "CLOSE") {
+    erasurePlanRefused("ERASURE_OPEN_OBLIGATIONS_HOLD");
   }
+  checkReviewedBindings(db, binding);
+  return inventory;
+}
+
+function checkReviewedBindings(db: Database.Database, binding: Binding) {
   if (binding.userId) {
     const crossed = db.prepare(`SELECT 1 FROM authenticated_consent_actions WHERE auth_user_id=@userId AND customer_id<>@customerId
       UNION ALL SELECT 1 FROM account_consents WHERE confirmed_auth_user_id=@userId AND customer_id<>@customerId
@@ -81,7 +95,7 @@ export function checkReviewedTarget(db: Database.Database, binding: Binding, pla
         WHERE s.user_id=@userId AND e.customer_id<>@customerId LIMIT 1`).get(binding);
     if (crossed) erasurePlanRefused("ERASURE_SUBJECT_BINDING_DRIFT");
   }
-  return { inventory, verification: verificationIds(db, binding.email) };
+  return verificationIds(db, binding.email);
 }
 
 export function reviewedReceipt(db: Database.Database, entry: ReviewedEntry) {
@@ -92,7 +106,7 @@ export function reviewedReceipt(db: Database.Database, entry: ReviewedEntry) {
     counts: JSON.parse(receipt.counts_json) as Record<string, number> };
 }
 
-export function applyReviewedErasure(db: Database.Database, entry: ReviewedEntry, keys: ErasureKeys, now: Date, restoring: boolean) {
+export function applyReviewedErasure(db: Database.Database, entry: ReviewedEntry, keys: ErasureKeys, now: Date, isolatedRestore: boolean) {
   const { subject, scope, reviewed } = entry.body;
   const matches = (kind: "customer" | "user" | "email", value: string) =>
     erasurePseudonym(keys, subject.keyId, scope, kind, value) === subject[kind];
@@ -105,6 +119,7 @@ export function applyReviewedErasure(db: Database.Database, entry: ReviewedEntry
     if (user || customers.some(row => matches("email", row.email)) || users.some(row => matches("email", row.email))) {
       erasurePlanRefused("ERASURE_SUBJECT_BINDING_DRIFT");
     }
+    if (!isolatedRestore) erasurePlanRefused("ERASURE_NATIVE_RESTORE_FINANCIAL_HOLD");
     // A snapshot may predate the subject. Preserve the independent tombstone.
     // There is no subject-local execution record to write in that snapshot.
     return;
@@ -115,7 +130,13 @@ export function applyReviewedErasure(db: Database.Database, entry: ReviewedEntry
     erasurePlanRefused("ERASURE_SUBJECT_BINDING_DRIFT");
   }
 
-  const { verification } = checkReviewedTarget(db, binding, reviewed.plan, true);
+  if (!isolatedRestore && receipt?.applicationMode === "RESTORE") erasurePlanRefused("ERASURE_NATIVE_RESTORE_FINANCIAL_HOLD");
+  if (!isolatedRestore && !receipt) {
+    if (readReviewedInventory(db, binding).obligationsSha256 !== reviewed.plan.obligationsSha256) {
+      erasurePlanRefused("ERASURE_NATIVE_RESTORE_FINANCIAL_HOLD");
+    }
+  }
+  const verification = checkReviewedBindings(db, binding);
   const counts: Record<string, number> = {};
   const remove = (table: string, column: string, id: string) => {
     counts[table] = db.prepare(`DELETE FROM ${table} WHERE ${column}=?`).run(id).changes;
@@ -155,6 +176,6 @@ export function applyReviewedErasure(db: Database.Database, entry: ReviewedEntry
 
   if (!receipt) {
     db.prepare("INSERT INTO reviewed_erasure_receipts VALUES (?,?,?,?,?)").run(
-      entry.body.requestId, entry.hash, now.toISOString(), restoring ? "RESTORE" : "LIVE", JSON.stringify(counts));
+      entry.body.requestId, entry.hash, now.toISOString(), isolatedRestore ? "RESTORE" : "LIVE", JSON.stringify(counts));
   }
 }

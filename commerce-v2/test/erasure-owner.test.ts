@@ -1,6 +1,6 @@
 import Database from "better-sqlite3";
 import { generateKeyPairSync, randomBytes, randomUUID, createHash, sign } from "node:crypto";
-import { spawnSync } from "node:child_process";
+import { fork, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,11 +9,12 @@ import { ageCustodyEncryption } from "../src/erasure-custody";
 import { createCurrentErasureRead, createErasureCurrentObjects, erasureReaderBinding } from "../src/erasure-library-read";
 import { applyIsolatedRestoreErasure } from "../src/erasure-restore";
 import { readErasureVerificationKeys } from "../src/erasure-runtime";
-import { erasurePseudonym } from "../src/erasure-ledger";
+import { erasurePseudonym, readOwnerErasureBundle } from "../src/erasure-ledger";
 import { reviewedApprovalBytes, type ReviewedErasurePlan } from "../src/erasure-plan";
 import { backupFoundation } from "../src/foundation-storage";
 import { FakeFiscalAdapter, FakeNativeBank } from "./fixtures/native-fake-provider";
 import { reconcilePendingFiscalEvents } from "../src/fiscal-port";
+import { revokeEntitlementForOrderLine } from "../src/entitlements";
 import { decideRefund, requestRefund } from "../src/refunds";
 import { executeApprovedNativeRefund, reconcilePendingNativeRefunds } from "../src/native-payment-refunds";
 import { nativeOrderStatus, reconcileNativePaymentWithoutNewCharge, reconcilePendingNativePayments, startNativePayment } from "../src/native-payment-ledger";
@@ -22,16 +23,20 @@ import { migrateV2 } from "../src/db";
 import { createAuthRuntime } from "../src/auth";
 import { bindVerifiedAuthUser } from "../src/customers";
 import { installationFixture } from "./fixtures/erasure-installation";
-import { erasureS3Fixture } from "./fixtures/erasure-s3";
+import { erasureS3Fixture, type ErasureWireRequest } from "./fixtures/erasure-s3";
+import type { ReviewedExecutionBoundary } from "../src/erasure-reviewed-owner";
 import { type ErasureInstallationEvidence } from "../src/erasure-installation";
 
 let root: string; let config: ErasureOwnerConfiguration; let wire: ReturnType<typeof erasureS3Fixture>;
 let db: Database.Database; let installation: ErasureInstallationEvidence;
+let installationOptions: ReturnType<typeof installationFixture>["options"];
 let clientNumber = 0;
-const now = () => new Date();
+let reviewedClock: Date | undefined;
+const now = () => reviewedClock ?? new Date();
 const run = (operation: unknown, configuration: unknown = config) => runErasureOwnerOperation(configuration, operation, {installation, requestHandler: wire.handler, now});
 const initialize = async () => {await run({operation: "initialize-fence"}); await run({operation: "initialize-custody"});};
 beforeEach(() => {
+  reviewedClock = undefined;
   root = mkdtempSync(join(tmpdir(), "flex-erasure-owner-"));
   for (const dir of ["merchant", "ledger", "fence", "mirror", "custody"]) mkdirSync(join(root, dir), {mode: 0o700});
   const privateFile = (name: string, value: string) => {const path = join(root, "custody", name); writeFileSync(path, value, {mode: 0o600}); return path;};
@@ -48,7 +53,9 @@ beforeEach(() => {
     authEnvironmentFile: privateFile("auth.json", JSON.stringify({NODE_ENV: "production", DEPLOY_ENV: "staging", BETTER_AUTH_SECRET: "synthetic-secret-long-enough-for-auth-tests", AUTH_EMAIL_OUTBOX_KEY: randomBytes(32).toString("base64"),
       API_ORIGIN: "https://canary-api.flexperiment.ru", PLATFORM_ORIGIN: "https://canary-platform.flexperiment.ru", LAB_ORIGIN: "https://canary-lab.flexperiment.ru", ADMIN_ORIGIN: "https://canary-admin.flexperiment.ru"})),
   };
-  installation = installationFixture("REQUIRED", config.fenceDirectory, "canary", erasureReaderBinding({...config.remote, scope: "canary", prefix: "flexperiment/erasure/canary/", recipientSha256: ageCustodyEncryption(recipient).recipientSha256})).read();
+  const installationSetup = installationFixture("REQUIRED", config.fenceDirectory, "canary", erasureReaderBinding({...config.remote, scope: "canary", prefix: "flexperiment/erasure/canary/", recipientSha256: ageCustodyEncryption(recipient).recipientSha256}));
+  installation = installationSetup.read();
+  installationOptions = installationSetup.options;
   db = new Database(config.databasePath); db.pragma("foreign_keys=ON"); migrateV2(db); wire = erasureS3Fixture();
 });
 afterEach(() => {db.close(); rmSync(root, {recursive: true, force: true});});
@@ -178,17 +185,21 @@ describe("FLEX-131 reviewed closure on synthetic data", () => {
       VALUES ('paid-legal','COURSES','test','{}','2026-01-01T00:00:00Z',1);
       INSERT INTO products(id,product_ref,kind,access_model,course_ref) VALUES
       ('paid','paid-ref','ONLINE_COURSE','PAID','course-paid'),('free','free-ref','ONLINE_COURSE','FREE','course-free');`);
-    const snapshot = JSON.stringify({ paymentPurpose: "Synthetic course" });
-    db.prepare(`INSERT INTO orders(id,public_id,customer_id,state,total_kopecks,checkout_snapshot_json,snapshot_hash,legal_release_id)
-      VALUES ('paid-order','ORDER-TEST',?,'PAYMENT_PENDING',1200,?,?,'paid-legal')`)
-      .run(customerId, snapshot, createHash("sha256").update(snapshot).digest("hex"));
-    db.prepare(`INSERT INTO order_lines(id,order_id,product_id,offer_ref_snapshot,title_snapshot,unit_amount_kopecks,legal_terms_ref,fiscal_item_json)
-      VALUES ('paid-line','paid-order','paid','paid-ref','Synthetic course',1200,'test',?)`).run(JSON.stringify({
-      name: "Synthetic course", quantity: 1, amountKopecks: 1200, vatCode: "NONE", paymentMethod: "FULL_PAYMENT", paymentObject: "SERVICE",
-    }));
-    await startNativePayment(db, ledger, "ORDER-TEST");
-    bank.buyerPays("ORDER-TEST");
-    await reconcilePendingNativePayments(db, ledger);
+    async function purchase(order: string, status: "PAID" | "EXPIRED") {
+      const snapshot = JSON.stringify({ paymentPurpose: "Synthetic course" });
+      db.prepare(`INSERT INTO orders(id,public_id,customer_id,state,total_kopecks,checkout_snapshot_json,snapshot_hash,legal_release_id)
+        VALUES (?,?,?,'PAYMENT_PENDING',1200,?,?,'paid-legal')`)
+        .run(`order-${order}`, order, customerId, snapshot, createHash("sha256").update(snapshot).digest("hex"));
+      db.prepare(`INSERT INTO order_lines(id,order_id,product_id,offer_ref_snapshot,title_snapshot,unit_amount_kopecks,legal_terms_ref,fiscal_item_json)
+        VALUES (?,?,'paid','paid-ref','Synthetic course',1200,'test',?)`).run(`line-${order}`, `order-${order}`, JSON.stringify({
+        name: "Synthetic course", quantity: 1, amountKopecks: 1200, vatCode: "NONE", paymentMethod: "FULL_PAYMENT", paymentObject: "SERVICE",
+      }));
+      await startNativePayment(db, ledger, order);
+      if (status === "PAID") bank.buyerPays(order);
+      else bank.expire(order);
+      await reconcilePendingNativePayments(db, ledger);
+    }
+    await purchase("ORDER-TEST", "PAID");
     const reconcileFiscal = (database: Database.Database) => reconcilePendingFiscalEvents(database, { keyring, adapter: fiscal });
     await reconcileFiscal(db);
     expect(db.prepare("SELECT state FROM fiscal_events").get()).toEqual({ state: "REGISTERED" });
@@ -207,7 +218,7 @@ describe("FLEX-131 reviewed closure on synthetic data", () => {
       rationale: "Synthetic full refund", actor: "fixture" }, stamp);
     await executeApprovedNativeRefund(db, ledger, request.requestPublicId);
     expect(nativeOrderStatus(db, "ORDER-TEST")).toMatchObject({ refund: "REFUND_PROCESSING" });
-    return { customerId, cookie, link, clientIp, bank, ledger, reconcileFiscal, requestPublicId: request.requestPublicId };
+    return { customerId, cookie, link, clientIp, bank, ledger, reconcileFiscal, purchase, requestPublicId: request.requestPublicId };
   }
 
   async function planFor(customerId: string, active = false) {
@@ -237,8 +248,8 @@ describe("FLEX-131 reviewed closure on synthetic data", () => {
     const customer = erasurePseudonym(keys, config.subjectKeyId, config.scope, "customer", customerId);
     const ruleFor = ([category, step]: [string, { action: string; basisRef: string; until: string }]) =>
       ({ category, basisRef: step.basisRef, action: step.action, earliestUntil: step.until, latestUntil: step.until });
-    const policy = { version: 1, scope: "canary", packageE: plan.packageE, validUntil: until,
-      operators: { "operator-fixture": { publicKey: operator.publicKey.export({ type: "spki", format: "pem" }), authorizedUntil: until } },
+    const policy = { version: 1, scope: "canary", packageE: plan.packageE, validUntil: retainedUntil,
+      operators: { "operator-fixture": { publicKey: operator.publicKey.export({ type: "spki", format: "pem" }), authorizedUntil: retainedUntil } },
       cases: { [plan.requestId]: { customer, identityVerificationRef: plan.identityVerificationRef,
         continuityRef: plan.continuityRef, latestExecuteAt: until } },
       rules: Object.entries(plan.categories).map(ruleFor),
@@ -257,18 +268,26 @@ describe("FLEX-131 reviewed closure on synthetic data", () => {
     return { plan, policy, setPolicy, dryRun, approve, ruleFor };
   }
 
-  it("closes the account, preserves the pending full refund and replays an encrypted pre-erasure snapshot", async () => {
+  it("closes after settlement and replays an older encrypted snapshot before settlement and a second order", async () => {
     await initialize();
-    const { customerId, cookie, link, clientIp, bank, ledger, reconcileFiscal, requestPublicId } = await paidProfile();
+    const { customerId, cookie, link, clientIp, bank, ledger, reconcileFiscal, purchase, requestPublicId } = await paidProfile();
     const snapshot = await backupFoundation(db, { environment: "canary", sourceCommit: "e67f982161114560c91de28128baec0a51a2d1b1" }, join(root, "backup"), config.recipient);
     db.exec("INSERT INTO email_suppressions(email_normalized,reason) VALUES ('owner@example.test','TEST_WITHDRAWAL')");
+    bank.settleRefund(`refund:${requestPublicId}`);
+    await reconcilePendingNativeRefunds(db, ledger);
+    await reconcileFiscal(db);
+    expect(nativeOrderStatus(db, "ORDER-TEST")).toMatchObject({ refund: "REFUNDED" });
+    expect(db.prepare("SELECT count(*) AS n FROM fiscal_events WHERE state='REGISTERED'").get()).toEqual({ n: 2 });
+    expect(bank.returns).toBe(1);
+
+    await purchase("ORDER-LATER", "EXPIRED");
     const before = (table: string) => db.prepare(`SELECT * FROM ${table}`).all();
     const finance = ["orders", "order_lines", "native_payments", "native_refunds", "refund_requests", "fiscal_events",
       "course_entitlements", "course_access_starts"].map(table => ({ table, rows: before(table) }));
-    const { plan, dryRun, approve } = await planFor(customerId, true);
+    const { plan, dryRun, approve } = await planFor(customerId);
     wire.requests.length = 0;
     const priorChanges = db.pragma("data_version", { simple: true });
-    expect(await dryRun()).toMatchObject({ state: "DRY_RUN", activeRights: 1, orderCount: 1, openRefunds: 1 });
+    expect(await dryRun()).toMatchObject({ state: "DRY_RUN", activeRights: 0, orderCount: 2, openRefunds: 0 });
     expect(wire.requests).toHaveLength(0);
     expect(db.pragma("data_version", { simple: true })).toBe(priorChanges);
     const op = await approve();
@@ -296,13 +315,6 @@ describe("FLEX-131 reviewed closure on synthetic data", () => {
     expect(wire.requests.every(r => r.method === "GET")).toBe(true);
     expect(() => db.prepare("DELETE FROM reviewed_erasure_receipts").run()).toThrow("ERASURE_RECEIPT_IMMUTABLE");
 
-    bank.settleRefund(`refund:${requestPublicId}`);
-    await reconcilePendingNativeRefunds(db, ledger);
-    await reconcileFiscal(db);
-    expect(nativeOrderStatus(db, "ORDER-TEST")).toMatchObject({ refund: "REFUNDED" });
-    expect(db.prepare("SELECT count(*) AS n FROM fiscal_events WHERE state='REGISTERED'").get()).toEqual({ n: 2 });
-    expect(bank.returns).toBe(1);
-
     const oldPath = join(root, "backup", "restore.sqlite");
     expect(spawnSync("age", ["-d", "-i", join(root, "custody", "backup-identity"), "-o", oldPath, join(root, "backup", snapshot.filename)]).status).toBe(0);
     const restored = new Database(oldPath, { fileMustExist: true });
@@ -319,6 +331,9 @@ describe("FLEX-131 reviewed closure on synthetic data", () => {
       const readCurrent = createCurrentErasureRead({ scope: config.scope, keys, remote, recipientSha256: readerConfig.recipientSha256,
         readBundle: () => JSON.parse(readFileSync(config.mirrorFile, "utf8")), now });
       const proof = await readCurrent();
+      expect(count("orders", restored)).toBe(1);
+      expect(nativeOrderStatus(restored, "ORDER-TEST").refund).toBe("REFUND_PROCESSING");
+      await expect(run({ operation: "reconcile" }, { ...config, databasePath: oldPath })).rejects.toThrow("ERASURE_NATIVE_RESTORE_FINANCIAL_HOLD");
       applyIsolatedRestoreErasure(restored, proof, keys, "canary", now());
       for (const table of ["user", "session", "verification", "course_learning_starts", "free_course_enrollments", "lesson_resume_positions",
         "account_consents", "marketing_consents"]) expect(count(table, restored)).toBe(0);
@@ -329,7 +344,9 @@ describe("FLEX-131 reviewed closure on synthetic data", () => {
       await reconcileFiscal(restored);
       expect(nativeOrderStatus(restored, "ORDER-TEST")).toMatchObject({ refund: "REFUNDED" });
       expect(restored.prepare("SELECT count(*) AS n FROM course_entitlements WHERE revoked_at IS NULL").get()).toEqual({ n: 0 });
-      expect([bank.calls.create.length, bank.calls.submitRefund.length, bank.returns]).toEqual([1, 1, 1]);
+      expect([bank.calls.create.length, bank.calls.submitRefund.length, bank.returns]).toEqual([2, 1, 1]);
+      expect(count("orders", restored)).toBe(1); // Replay does not reconstruct a missing financial tail.
+      await expect(run({ operation: "reconcile" }, { ...config, databasePath: oldPath })).rejects.toThrow("ERASURE_NATIVE_RESTORE_FINANCIAL_HOLD");
     } finally { remote.close(); restored.close(); }
   });
 
@@ -353,46 +370,194 @@ describe("FLEX-131 reviewed closure on synthetic data", () => {
     await expect(run({ ...op, plan: { ...op.plan, identityVerificationRef: "changed" } })).rejects.toThrow("ERASURE_REQUEST_CONFLICT");
   });
 
-  it("recovers a SIGKILL under the reviewed drain with the committed custody head intact", async () => {
+  function readJournal() {
+    const keys = readErasureVerificationKeys(config.keysFile, config.scope);
+    return readOwnerErasureBundle({ directory: config.ledgerDirectory, scope: config.scope, keys,
+      forbiddenRoots: [config.fenceDirectory, join(root, "merchant"), join(root, "mirror")] });
+  }
+
+  it.each(["EXPIRED", "LEGAL_HOLD"] as const)("cancels a never-confirmed plan after rejected PUT and %s", async reason => {
+    await initialize();
+    await login();
+    const customerId = (db.prepare("SELECT id FROM customers").get() as { id: string }).id;
+    const { approve, policy, setPolicy } = await planFor(customerId);
+    const op = await approve();
+    wire.state.failBefore = "head.json";
+    await expect(run(op)).rejects.toThrow("UNCONFIRMED");
+    const original = readJournal().entries[0];
+    expect(original.body.kind).toBe("REVIEWED_ERASURE");
+    const requestId = op.plan.requestId;
+    expect(await run({ operation: "review-attempt", requestId })).toMatchObject({ state: "LOCAL_ATTEMPT", entrySha256: original.hash });
+    const originalPut = wire.requests.findLast(request => request.method === "PUT" && request.path.endsWith("/head.json"))!;
+    if (reason === "EXPIRED") reviewedClock = new Date(Date.parse(op.plan.executeBy) + 1000);
+    else {
+      policy.holds.push({ keyId: config.subjectKeyId, customer: original.body.subject.customer });
+      setPolicy();
+    }
+    wire.state.failBefore = "";
+    await expect(run(op)).rejects.toThrow(reason === "EXPIRED" ? "ERASURE_PLAN_EXPIRED" : "ERASURE_LEGAL_HOLD");
+    const cancel = { operation: "review-cancel-unpublished", requestId, entrySha256: original.hash, reason };
+    wire.state.loseAck = "head.json";
+    await expect(run(cancel)).rejects.toThrow("UNCONFIRMED");
+    expect(readJournal().entries[0].hash).toBe(original.hash);
+    wire.requests.length = 0;
+    expect(await run(cancel)).toMatchObject({ state: "CANCELED_UNPUBLISHED", sequence: 1, runtimeAdmission: "PENDING" });
+    expect(wire.requests.every(request => request.method === "GET")).toBe(true);
+    const canceled = readJournal().entries[0];
+    expect(canceled.body).toMatchObject({ kind: "REVIEWED_CANCELLATION", canceled: { entrySha256: original.hash, reason } });
+    expect((await wire.handler.handle(originalPut)).response.statusCode).toBe(412);
+    expect(await run({ operation: "review-attempt", requestId })).toMatchObject({ state: "LOCAL_CANCELLATION_REF", entrySha256: original.hash });
+    const local = new Database(join(config.ledgerDirectory, "erasure-ledger.sqlite"), { readonly: true });
+    try {
+      const immutable = local.prepare("SELECT entry_json FROM erasure_entries WHERE request_id=?").get(requestId) as { entry_json: string };
+      expect(JSON.parse(immutable.entry_json).hash).toBe(original.hash);
+    } finally { local.close(); }
+    expect(await run({ operation: "review-status", requestId })).toMatchObject({ state: "CANCELED_UNPUBLISHED" });
+    await expect(run(op)).rejects.toThrow("ERASURE_REVIEWED_ATTEMPT_CANCELED");
+    await run({ operation: "reconcile" });
+    expect([count("user"), count("email_suppressions"), count("reviewed_erasure_receipts")]).toEqual([1, 0, 0]);
+    // A new case can proceed after separate approval and the hold is removed.
+    const fresh = await planFor(customerId);
+    expect(await run(await fresh.approve())).toMatchObject({ state: "ERASURE_APPLIED", sequence: 2 });
+  });
+
+  it("cannot cancel an already committed head even after an ambiguous response", async () => {
     await initialize();
     await login();
     const customerId = (db.prepare("SELECT id FROM customers").get() as { id: string }).id;
     const { approve } = await planFor(customerId);
     const op = await approve();
-    // Commit the custody head and lose the response before merchant apply.
     wire.state.loseAck = "head.json";
     await expect(run(op)).rejects.toThrow("UNCONFIRMED");
-    const script = `
-      const Database = require("better-sqlite3");
-      const { ErasureRuntimeFence } = require("./commerce-v2/src/erasure-fence");
-      const { readErasureVerificationKeys } = require("./commerce-v2/src/erasure-runtime");
-      const c = JSON.parse(process.argv[1]);
-      const db = new Database(c.databasePath);
-      const fence = new ErasureRuntimeFence({ directory: c.fenceDirectory, scope: c.scope,
-        keys: readErasureVerificationKeys(c.keysFile, c.scope), forbiddenRoots: [c.ledgerDirectory],
-        readCurrent: async () => { throw new Error("unexpected read"); } });
-      void fence.withReviewedDrain(db, async () => { process.kill(process.pid, "SIGKILL"); });
-    `;
-    const halted = spawnSync(process.execPath, ["--import", "tsx", "-e", script, JSON.stringify({
-      scope: config.scope, databasePath: config.databasePath, fenceDirectory: config.fenceDirectory,
-      keysFile: config.keysFile, ledgerDirectory: config.ledgerDirectory,
-    })], { encoding: "utf8", timeout: 15_000 });
-    expect(halted.signal).toBe("SIGKILL");
-    const control = new Database(join(config.fenceDirectory, "erasure-fence.sqlite"), { readonly: true });
-    try { expect(control.prepare("SELECT state,owner FROM fence_state").get()).toEqual({ state: "CLOSED", owner: null }); }
-    finally { control.close(); }
-    expect(count("user")).toBe(1);
+    const entry = readJournal().entries[0];
     wire.requests.length = 0;
+    await expect(run({ operation: "review-cancel-unpublished", requestId: op.plan.requestId,
+      entrySha256: entry.hash, reason: "OWNER_WITHDRAWN" })).rejects.toThrow("ERASURE_");
+    expect(wire.requests.every(request => request.method === "GET")).toBe(true);
     expect(await run(op)).toMatchObject({ state: "ERASURE_APPLIED", sequence: 1 });
-    expect(wire.requests.every(r => r.method === "GET")).toBe(true);
   });
 
-  it("fails closed for missing E, forged signatures, changed scope, active rights without continuity and legal hold", async () => {
+  it("retains whichever CAS actually won when the original write races the cancellation", async () => {
+    await initialize();
+    await login();
+    const customerId = (db.prepare("SELECT id FROM customers").get() as { id: string }).id;
+    const { approve } = await planFor(customerId);
+    const op = await approve();
+    wire.state.failBefore = "head.json";
+    await expect(run(op)).rejects.toThrow("UNCONFIRMED");
+    const entry = readJournal().entries[0];
+    const originalPut = wire.requests.findLast(request => request.method === "PUT" && request.path.endsWith("/head.json"))!;
+    wire.state.failBefore = "";
+    const handle = wire.handler.handle;
+    let racedStatus: number | undefined;
+    wire.handler.handle = async request => {
+      if (racedStatus === undefined && request.method === "PUT" && request.path.endsWith("/head.json")) {
+        racedStatus = (await handle(originalPut)).response.statusCode;
+      }
+      return handle(request);
+    };
+    const cancel = { operation: "review-cancel-unpublished", requestId: op.plan.requestId,
+      entrySha256: entry.hash, reason: "OWNER_WITHDRAWN" };
+    await expect(run(cancel)).rejects.toThrow("UNCONFIRMED");
+    expect(racedStatus).toBe(200);
+    expect(readJournal().entries[0].hash).toBe(entry.hash);
+    expect(await run(op)).toMatchObject({ state: "ERASURE_APPLIED", sequence: 1 });
+    await expect(run(cancel)).rejects.toThrow("ERASURE_");
+  });
+
+  async function killReviewedExecute(operation: unknown, boundary: ReviewedExecutionBoundary) {
+    const child = fork("commerce-v2/test/fixtures/erasure-review-process.ts", [], {
+      execArgv: ["--import", "tsx"], serialization: "advanced", stdio: ["ignore", "ignore", "ignore", "ipc"],
+    });
+    child.on("message", async (value: { id: number; request: ErasureWireRequest }) => {
+      try {
+        const { response } = await wire.handler.handle(value.request);
+        const chunks: Buffer[] = [];
+        for await (const chunk of response.body) chunks.push(Buffer.from(chunk));
+        if (child.connected) child.send({ id: value.id, statusCode: response.statusCode, headers: response.headers, body: Buffer.concat(chunks) });
+      } catch {
+        if (child.connected) child.send({ id: value.id, failed: true });
+      }
+    });
+    const exit = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+      child.once("error", reject);
+      child.once("exit", (code, signal) => resolve({ code, signal }));
+    });
+    const timeout = setTimeout(() => child.kill("SIGTERM"), 10_000);
+    try {
+      child.send({ config, operation, boundary, installationOptions });
+      return await exit;
+    } finally { clearTimeout(timeout); }
+  }
+
+  it.each(["LOCAL_APPEND", "REMOTE_CONFIRMED", "MERCHANT_COMMITTED"] as const)(
+    "recovers full review-execute after SIGKILL at %s", async boundary => {
+      await initialize();
+      await login();
+      const customerId = (db.prepare("SELECT id FROM customers").get() as { id: string }).id;
+      const { approve } = await planFor(customerId);
+      const op = await approve();
+      expect(await killReviewedExecute(op, boundary)).toEqual({ code: null, signal: "SIGKILL" });
+      const control = new Database(join(config.fenceDirectory, "erasure-fence.sqlite"), { readonly: true });
+      try { expect(control.prepare("SELECT state,owner FROM fence_state").get()).toEqual({ state: "CLOSED", owner: null }); }
+      finally { control.close(); }
+      expect(readJournal().entries).toHaveLength(1);
+      expect(wire.versions.size).toBe(boundary === "LOCAL_APPEND" ? 1 : 2);
+      expect(count("reviewed_erasure_receipts")).toBe(boundary === "MERCHANT_COMMITTED" ? 1 : 0);
+      const recorded = db.prepare("SELECT recorded_at FROM reviewed_erasure_receipts").get();
+      wire.requests.length = 0;
+      expect(await run(op)).toMatchObject({ state: "ERASURE_APPLIED", sequence: 1 });
+      expect(wire.requests.filter(request => request.method === "PUT")).toHaveLength(boundary === "LOCAL_APPEND" ? 2 : 0);
+      expect(count("user")).toBe(0);
+      if (recorded) expect(db.prepare("SELECT recorded_at FROM reviewed_erasure_receipts").get()).toEqual(recorded);
+    },
+  );
+
+  it("refuses active access and an in-flight refund even with a signed continuity reference", async () => {
     await initialize();
     const { customerId } = await paidProfile();
-    const { dryRun } = await planFor(customerId);
-    await expect(dryRun()).rejects.toThrow("ERASURE_ACCESS_CONTINUITY_REQUIRED");
-    const { approve, plan, policy, setPolicy, ruleFor, dryRun: activeDryRun } = await planFor(customerId, true);
+    const active = await planFor(customerId, true);
+    await expect(active.dryRun()).rejects.toThrow("ERASURE_OPEN_OBLIGATIONS_HOLD");
+    const ordinary = await planFor(customerId);
+    await expect(ordinary.dryRun()).rejects.toThrow("ERASURE_OPEN_OBLIGATIONS_HOLD");
+    expect([count("user"), count("reviewed_erasure_receipts")]).toEqual([1, 0]);
+    expect(await run({ operation: "read" })).toMatchObject({ sequence: 0 });
+  });
+
+  it("requires reapproval when a right changes without a change in order identities", async () => {
+    await initialize();
+    const { customerId, bank, ledger, reconcileFiscal, requestPublicId } = await paidProfile();
+    bank.settleRefund(`refund:${requestPublicId}`);
+    await reconcilePendingNativeRefunds(db, ledger);
+    await reconcileFiscal(db);
+    const { approve } = await planFor(customerId);
+    const op = await approve();
+    db.prepare("UPDATE course_entitlements SET revoked_at=NULL,revocation_reason=NULL").run();
+    await expect(run(op)).rejects.toThrow("ERASURE_PLAN_OBLIGATIONS_CHANGED");
+    expect(await run({ operation: "read" })).toMatchObject({ sequence: 0 });
+  });
+
+  it("requires reapproval when a refund is requested after authorization", async () => {
+    await initialize();
+    const { customerId, bank, ledger, reconcileFiscal, purchase, requestPublicId } = await paidProfile();
+    bank.settleRefund(`refund:${requestPublicId}`);
+    await reconcilePendingNativeRefunds(db, ledger);
+    await reconcileFiscal(db);
+    await purchase("RETURN-LATER", "PAID");
+    await reconcileFiscal(db);
+    revokeEntitlementForOrderLine(db, "line-RETURN-LATER", "FIXTURE_CLOSED", now().toISOString());
+    const { approve } = await planFor(customerId);
+    const op = await approve();
+    requestRefund(db, { customerId, orderPublicId: "RETURN-LATER", idempotencyKey: "new-refund", reasonCode: "CUSTOMER_REQUEST" });
+    await expect(run(op)).rejects.toThrow("ERASURE_PLAN_OBLIGATIONS_CHANGED");
+    expect(await run({ operation: "read" })).toMatchObject({ sequence: 0 });
+  });
+
+  it("fails closed for missing E, forged signatures, changed scope and legal hold", async () => {
+    await initialize();
+    await login();
+    const customerId = (db.prepare("SELECT id FROM customers").get() as { id: string }).id;
+    const { approve, plan, policy, setPolicy, ruleFor, dryRun: activeDryRun } = await planFor(customerId);
     const op = await approve();
     wire.requests.length = 0;
     await expect(run({ ...op, approval: { ...op.approval, signature: "a".repeat(86) } })).rejects.toThrow("ERASURE_OPERATOR_APPROVAL_INVALID");

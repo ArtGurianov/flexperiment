@@ -135,7 +135,7 @@ export class ErasureRuntimeFence {
    * apply. Close durably, then hold the SQLite write lock until admission is
    * prepared. A process death rolls back only the claim and readiness update;
    * the durable CLOSED state and all preexisting leases remain. */
-  async withReviewedDrain<T>(merchant: Database.Database, operation: (proof: DrainedErasureRuntime) => Promise<T>): Promise<T> {
+  async withReviewedDrain<T>(merchant: Database.Database, operation: (proof: DrainedErasureRuntime) => Promise<T>, reopen = true): Promise<T> {
     if (this.#db.inTransaction) refuse("ERASURE_OWNER_RECONCILIATION_REQUIRED");
     this.closeAdmission();
     this.#db.exec("BEGIN IMMEDIATE");
@@ -150,8 +150,8 @@ export class ErasureRuntimeFence {
       };
       const result = await operation(issueDrain(this.#scope, merchant, assertOwner));
       assertOwner();
-      if (!this.#bootQualified) refuse("ERASURE_RUNTIME_BOOT_UNQUALIFIED");
-      this.#db.prepare("UPDATE fence_state SET owner=NULL,state='OPEN' WHERE id=1 AND owner=?").run(owner);
+      if (reopen && !this.#bootQualified) refuse("ERASURE_RUNTIME_BOOT_UNQUALIFIED");
+      this.#db.prepare("UPDATE fence_state SET owner=NULL,state=? WHERE id=1 AND owner=?").run(reopen ? "OPEN" : "CLOSED", owner);
       this.#db.exec("COMMIT");
       return result;
     } catch (error) {
@@ -233,7 +233,7 @@ export class ErasureRuntimeFence {
     this.#proof(context.proof);
     if(!Object.values(identity).some(value=>typeof value==="string" && value.length)) refuse("ERASURE_RUNTIME_IDENTITY_REQUIRED");
     for(const entry of context.proof.bundle.entries) {
-      if(purpose!=="MARKETING" && entry.body.kind==="MARKETING_SUPPRESSION") continue;
+      if (entry.body.kind === "REVIEWED_CANCELLATION" || (purpose !== "MARKETING" && entry.body.kind === "MARKETING_SUPPRESSION")) continue;
       const subject=entry.body.subject;
       const match=(category:"email"|"user"|"customer",value:string|undefined)=>value!==undefined && erasurePseudonym(this.#keys,subject.keyId,this.#scope,category,value)===subject[category];
       if(match("email",identity.email)||match("user",identity.userId)||match("customer",identity.customerId)) refuse("ERASURE_SUBJECT_SUPPRESSED");
