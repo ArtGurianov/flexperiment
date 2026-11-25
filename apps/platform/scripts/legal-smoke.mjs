@@ -25,9 +25,14 @@ let edition;
 let malformed = false;
 let legalReads = 0;
 let anonymousReads = 0;
+let contextTouches = 0;
 const sourceBytes = new Map();
 const commerce = createServer((req, res) => {
   if (sourceBytes.has(req.url)) return res.writeHead(200).end(sourceBytes.get(req.url));
+  if (req.url === "/v1/browser-context/touch" && req.method === "POST") {
+    contextTouches++;
+    return res.writeHead(204).end();
+  }
   if (req.url !== legalPath) return res.writeHead(404).end();
   legalReads++;
   if (!req.headers.cookie && !req.headers.authorization && !req.headers["x-flexperiment-legal-page"]) anonymousReads++;
@@ -123,6 +128,13 @@ try {
     assertEdition(await flight.text(), edition.manifest.documents[0]);
   }
 
+  const contextCookie = `__Host-flx-ctx-lms=${"c".repeat(43)}`;
+  await (await request("/legal/privacy", 200, { cookie: contextCookie, purpose: "prefetch" })).text();
+  assert.equal(contextTouches, 0, "speculative legal requests must not touch browser context");
+  await (await request("/legal/privacy", 200, { cookie: contextCookie })).text();
+  for (let attempt = 0; attempt < 50 && contextTouches === 0; attempt++) await setTimeout(20);
+  assert.equal(contextTouches, 1, "a normal legal page view still touches browser context");
+
   assert.deepEqual(await (await request(privacyDatePath, 200)).json(), { effectiveAt: "2026-11-23T20:59:59.999Z" });
   await setTimeout(15_200);
   assert.deepEqual(await (await request(privacyDatePath, 200)).json(), { effectiveAt: edition.effectiveAt });
@@ -135,7 +147,7 @@ try {
   assert.equal(legalReads, anonymousReads);
   await new Promise((resolve, reject) => commerce.close(error => error ? reject(error) : resolve()));
   await (await request("/legal/privacy", 503)).text();
-  console.log("Platform legal smoke PASS · SSR, RSC, original hashes, rotation, shared link-date cache, 404 and 503");
+  console.log("Platform legal smoke PASS · SSR, RSC, original hashes, rotation, shared link-date cache, browser context, 404 and 503");
 } finally {
   app.kill();
   commerce.close();

@@ -5,7 +5,7 @@ import { CommerceLegalForbidden, legalPageHeader, readLegalPage } from "@/lib/le
 // ART-378: every page view of a browser carrying the LMS context retries a still-unconfirmed arrival
 // claim within its 30 minutes. The page is never delayed; `waitUntil` keeps the call alive after it.
 export async function proxy(request: NextRequest, event: NextFetchEvent) {
-  const prefetch = request.headers.has("next-router-prefetch") || request.headers.get("purpose") === "prefetch";
+  const prefetch = request.headers.get("purpose") === "prefetch";
   if (request.method === "GET" && !prefetch && request.cookies.has(BROWSER_CONTEXT_COOKIE)) event.waitUntil(touchBrowserContext(request));
   const [root, kind, ...rest] = request.nextUrl.pathname.split("/").filter(Boolean);
   if (root !== "legal" || !kind || rest.length) return NextResponse.next();
@@ -37,5 +37,6 @@ export const config = {
   },
   // Every document page must pass through this matcher, including RSC requests.
   // Proxy only forwards when it has overwritten the caller's legalPageHeader.
+  // Next strips Flight headers before calling proxy, so Links to these pages must use prefetch={false}.
   { source: "/legal/:kind" }],
 };
