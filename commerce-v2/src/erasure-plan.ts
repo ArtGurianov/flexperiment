@@ -18,9 +18,8 @@ export const reviewedPlanSchema = z.object({
   identityVerificationRef: ref,
   executeBy: instant,
   obligationsSha256: digest,
-  continuityRef: ref.optional(),
   categories: z.object({
-    account: disposition(["CLOSE", "CLOSE_WITH_CONTINUITY"]),
+    account: disposition(["CLOSE"]),
     credentials: disposition(["REVOKE"]),
     consents: disposition(["DELETE"]),
     marketing: disposition(["SUPPRESS_AND_DELETE"]),
@@ -31,7 +30,7 @@ export const reviewedPlanSchema = z.object({
     paidRightsAndPerformance: disposition(["RETAIN"]),
     legalAndAuditEvidence: disposition(["RETAIN"]),
   }).strict(),
-}).strict().refine(plan => (plan.categories.account.action === "CLOSE_WITH_CONTINUITY") === !!plan.continuityRef);
+}).strict();
 
 export type ReviewedErasurePlan = z.infer<typeof reviewedPlanSchema>;
 type Category = keyof ReviewedErasurePlan["categories"];
@@ -51,7 +50,7 @@ const policySchema = z.object({
   validUntil: instant,
   operators: z.record(ref, z.object({ publicKey: z.string().max(256), authorizedUntil: instant }).strict()),
   cases: z.record(z.uuid(), z.object({
-    customer: digest, identityVerificationRef: ref, continuityRef: ref.optional(), latestExecuteAt: instant,
+    customer: digest, identityVerificationRef: ref, latestExecuteAt: instant,
   }).strict()),
   rules: z.array(z.object({ category: ref, action: ref, basisRef: ref, earliestUntil: instant, latestUntil: instant }).strict()).min(1).max(100),
   // Current hold registry, keyed by subject-key generation and customer HMAC.
@@ -98,8 +97,9 @@ export function assertReviewedPolicy(input: {
   }
   const time = now.getTime();
   const approvedCase = policy.cases[plan.requestId];
-  if (!approvedCase || approvedCase.customer !== subject.customer || approvedCase.identityVerificationRef !== plan.identityVerificationRef ||
-    approvedCase.continuityRef !== plan.continuityRef) erasurePlanRefused("ERASURE_CASE_ADMISSION_REQUIRED");
+  if (!approvedCase || approvedCase.customer !== subject.customer || approvedCase.identityVerificationRef !== plan.identityVerificationRef) {
+    erasurePlanRefused("ERASURE_CASE_ADMISSION_REQUIRED");
+  }
   if (!Number.isFinite(time) || Date.parse(plan.executeBy) < time) erasurePlanRefused("ERASURE_PLAN_EXPIRED");
   if (Date.parse(plan.executeBy) > Date.parse(approvedCase.latestExecuteAt)) erasurePlanRefused("ERASURE_PLAN_PERIOD_INVALID");
   for (const [category, step] of Object.entries(plan.categories) as [Category, ReviewedErasurePlan["categories"][Category]][]) {

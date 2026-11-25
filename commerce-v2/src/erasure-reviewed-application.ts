@@ -4,6 +4,7 @@ import { erasurePseudonym, type ErasureEntry, type ErasureKeys } from "./erasure
 import { erasurePlanRefused, type ReviewedErasurePlan } from "./erasure-plan";
 import { verificationSubjectEmail } from "./my-session-storage";
 import { nativeErasureAdmission } from "./native-payment-ledger";
+import type { FiscalEventState } from "./native-payment-contract";
 
 type Binding = { customerId: string; email: string; userId: string | null };
 type ReviewedEntry = ErasureEntry & { body: Extract<ErasureEntry["body"], { kind: "REVIEWED_ERASURE" }> };
@@ -51,11 +52,14 @@ export function readReviewedInventory(db: Database.Database, binding: Binding) {
   if (refunds.some(refund => !lines.has(refund.lineId))) erasurePlanRefused("ERASURE_FINANCIAL_REVIEW_REQUIRED");
   const fiscal = db.prepare(`SELECT e.id,e.order_line_id AS lineId,e.kind,e.state
     FROM fiscal_events e JOIN order_lines l ON l.id=e.order_line_id JOIN orders o ON o.id=l.order_id
-    WHERE o.customer_id=? ORDER BY e.id`).all(binding.customerId);
+    WHERE o.customer_id=? ORDER BY e.id`).all(binding.customerId) as
+    Array<{ id: string; lineId: string; kind: string; state: FiscalEventState }>;
   const activeRights = rights.filter(right => !right.revokedAt).length;
   const openRefunds = new Set(refunds.filter(row => ["REQUESTED","APPROVED","EXECUTING","REVIEW_REQUIRED"].includes(row.state))
     .map(row => row.id)).size;
-  const pendingFinancial = !nativeErasureAdmission(db, binding.customerId).admitted ||
+  // Transport-terminal rejection still requires fiscal review before closing a paid account.
+  const pendingFinancial = fiscal.some(event => event.state === "REJECTED") ||
+    !nativeErasureAdmission(db, binding.customerId).admitted ||
     orders.some(order => order.orderState === "REFUND_PENDING");
   return {
     orderCount: new Set(orders.map(order => order.id)).size, activeRights, openRefunds, pendingFinancial,
@@ -77,7 +81,7 @@ export function checkNewReviewedTarget(db: Database.Database, binding: Binding, 
   if (plan.obligationsSha256 !== inventory.obligationsSha256) {
     erasurePlanRefused("ERASURE_PLAN_OBLIGATIONS_CHANGED");
   }
-  if (inventory.activeRights || inventory.openRefunds || inventory.pendingFinancial || plan.categories.account.action !== "CLOSE") {
+  if (inventory.activeRights || inventory.openRefunds || inventory.pendingFinancial) {
     erasurePlanRefused("ERASURE_OPEN_OBLIGATIONS_HOLD");
   }
   checkReviewedBindings(db, binding);

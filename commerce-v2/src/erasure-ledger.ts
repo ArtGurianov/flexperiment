@@ -228,17 +228,20 @@ export class VerifiedErasureLedger {
   }
 }
 
-/** Nonmutating owner export. Unlike store construction, inspection/read does not
- * create a journal, triggers or genesis. Used by the one-shot CLI, not Commerce. */
+function hasCancellationTable(db: Database.Database) {
+  return !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='erasure_reviewed_cancellations'").get();
+}
+
 function effectiveLedgerRows(db: Database.Database) {
   const legacy = "SELECT sequence,request_id,entry_json FROM erasure_entries ORDER BY sequence";
   const current = `SELECT e.sequence,e.request_id,COALESCE(c.entry_json,e.entry_json) AS entry_json
     FROM erasure_entries e LEFT JOIN erasure_reviewed_cancellations c ON c.sequence=e.sequence AND c.confirmed=1
     ORDER BY e.sequence`;
-  return db.prepare(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='erasure_reviewed_cancellations'").get()
-    ? current : legacy).all() as Array<{ sequence: number; request_id: string; entry_json: string }>;
+  return db.prepare(hasCancellationTable(db) ? current : legacy).all() as Array<{ sequence: number; request_id: string; entry_json: string }>;
 }
 
+/** Nonmutating owner export. Unlike store construction, inspection/read does not
+ * create a journal, triggers or genesis. Used by the one-shot CLI, not Commerce. */
 export function readOwnerErasureBundle(input: { directory: string; scope: Scope; keys: ErasureKeys; forbiddenRoots: readonly string[] }) {
   let db: Database.Database | undefined;
   try {
@@ -312,13 +315,6 @@ export class ErasureLedgerStore {
       if (tables.some(table => !["erasure_identity", "erasure_entries", "erasure_reviewed_cancellations"].includes(table.name))) refuse("ERASURE_STORAGE_NOT_INDEPENDENT");
       this.#db.exec(`CREATE TABLE IF NOT EXISTS erasure_identity(scope TEXT PRIMARY KEY);
         CREATE TABLE IF NOT EXISTS erasure_entries(sequence INTEGER PRIMARY KEY,request_id TEXT NOT NULL UNIQUE,entry_json TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS erasure_reviewed_cancellations(sequence INTEGER PRIMARY KEY, request_id TEXT NOT NULL UNIQUE,
-          entry_json TEXT NOT NULL, confirmed INTEGER NOT NULL DEFAULT 0 CHECK(confirmed IN (0,1)));
-        CREATE TRIGGER IF NOT EXISTS erasure_cancellation_update BEFORE UPDATE ON erasure_reviewed_cancellations
-          WHEN OLD.confirmed<>0 OR NEW.confirmed<>1 OR NEW.sequence<>OLD.sequence OR NEW.request_id<>OLD.request_id OR NEW.entry_json<>OLD.entry_json
-          BEGIN SELECT RAISE(ABORT,'ERASURE_HISTORY_IMMUTABLE'); END;
-        CREATE TRIGGER IF NOT EXISTS erasure_cancellation_delete BEFORE DELETE ON erasure_reviewed_cancellations
-          BEGIN SELECT RAISE(ABORT,'ERASURE_HISTORY_IMMUTABLE'); END;
         CREATE TRIGGER IF NOT EXISTS erasure_entry_update BEFORE UPDATE ON erasure_entries BEGIN SELECT RAISE(ABORT,'ERASURE_HISTORY_IMMUTABLE'); END;
         CREATE TRIGGER IF NOT EXISTS erasure_entry_delete BEFORE DELETE ON erasure_entries BEGIN SELECT RAISE(ABORT,'ERASURE_HISTORY_IMMUTABLE'); END;
         CREATE TRIGGER IF NOT EXISTS erasure_identity_update BEFORE UPDATE ON erasure_identity BEGIN SELECT RAISE(ABORT,'ERASURE_HISTORY_IMMUTABLE'); END;
@@ -378,6 +374,7 @@ export class ErasureLedgerStore {
     }
   }
   reviewedCancellation(requestId: string) {
+    if (!hasCancellationTable(this.#db)) return undefined;
     const row = this.#db.prepare("SELECT entry_json FROM erasure_reviewed_cancellations WHERE request_id=?").get(requestId) as
       { entry_json: string } | undefined;
     if (!row) return undefined;
@@ -405,6 +402,15 @@ export class ErasureLedgerStore {
         recordedAt: now.toISOString(), signingKeyId: this.#options.signer.keyId,
         canceled: { entrySha256: input.entrySha256, reason: input.reason } });
       const entry = { body, hash: hash(body), signature: signature(body, this.#options.signer) };
+      // The owner-journal compatibility boundary is this transaction, even
+      // if the following remote CAS fails. Ordinary store opens leave its schema alone.
+      this.#db.exec(`CREATE TABLE IF NOT EXISTS erasure_reviewed_cancellations(sequence INTEGER PRIMARY KEY, request_id TEXT NOT NULL UNIQUE,
+          entry_json TEXT NOT NULL, confirmed INTEGER NOT NULL DEFAULT 0 CHECK(confirmed IN (0,1)));
+        CREATE TRIGGER IF NOT EXISTS erasure_cancellation_update BEFORE UPDATE ON erasure_reviewed_cancellations
+          WHEN OLD.confirmed<>0 OR NEW.confirmed<>1 OR NEW.sequence<>OLD.sequence OR NEW.request_id<>OLD.request_id OR NEW.entry_json<>OLD.entry_json
+          BEGIN SELECT RAISE(ABORT,'ERASURE_HISTORY_IMMUTABLE'); END;
+        CREATE TRIGGER IF NOT EXISTS erasure_cancellation_delete BEFORE DELETE ON erasure_reviewed_cancellations
+          BEGIN SELECT RAISE(ABORT,'ERASURE_HISTORY_IMMUTABLE'); END;`);
       this.#db.prepare("INSERT INTO erasure_reviewed_cancellations(sequence,request_id,entry_json) VALUES (?,?,?)")
         .run(body.sequence, input.requestId, canonical(entry));
       return entry;

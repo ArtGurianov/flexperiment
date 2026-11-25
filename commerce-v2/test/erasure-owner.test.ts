@@ -9,15 +9,15 @@ import { ageCustodyEncryption } from "../src/erasure-custody";
 import { createCurrentErasureRead, createErasureCurrentObjects, erasureReaderBinding } from "../src/erasure-library-read";
 import { applyIsolatedRestoreErasure } from "../src/erasure-restore";
 import { readErasureVerificationKeys } from "../src/erasure-runtime";
-import { erasurePseudonym, readOwnerErasureBundle } from "../src/erasure-ledger";
-import { reviewedApprovalBytes, type ReviewedErasurePlan } from "../src/erasure-plan";
+import { erasurePseudonym, erasureSubject, readOwnerErasureBundle } from "../src/erasure-ledger";
+import { reviewedApprovalBytes, reviewedErasurePlanHash, type ReviewedErasurePlan } from "../src/erasure-plan";
 import { backupFoundation } from "../src/foundation-storage";
 import { FakeFiscalAdapter, FakeNativeBank } from "./fixtures/native-fake-provider";
-import { reconcilePendingFiscalEvents } from "../src/fiscal-port";
+import { reconcilePendingFiscalEvents, type FrozenFiscalEvent } from "../src/fiscal-port";
 import { revokeEntitlementForOrderLine } from "../src/entitlements";
 import { decideRefund, requestRefund } from "../src/refunds";
 import { executeApprovedNativeRefund, reconcilePendingNativeRefunds } from "../src/native-payment-refunds";
-import { nativeOrderStatus, reconcileNativePaymentWithoutNewCharge, reconcilePendingNativePayments, startNativePayment } from "../src/native-payment-ledger";
+import { nativeErasureAdmission, nativeOrderStatus, reconcileNativePaymentWithoutNewCharge, reconcilePendingNativePayments, startNativePayment } from "../src/native-payment-ledger";
 import { readOwnerConfiguration, runErasureOwnerOperation, type ErasureOwnerConfiguration } from "../src/erasure-owner";
 import { migrateV2 } from "../src/db";
 import { createAuthRuntime } from "../src/auth";
@@ -35,6 +35,12 @@ let reviewedClock: Date | undefined;
 const now = () => reviewedClock ?? new Date();
 const run = (operation: unknown, configuration: unknown = config) => runErasureOwnerOperation(configuration, operation, {installation, requestHandler: wire.handler, now});
 const initialize = async () => {await run({operation: "initialize-fence"}); await run({operation: "initialize-custody"});};
+function hasOwnerCancellationTable() {
+  const journal = new Database(join(config.ledgerDirectory, "erasure-ledger.sqlite"), { readonly: true, fileMustExist: true });
+  try {
+    return Boolean(journal.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='erasure_reviewed_cancellations'").get());
+  } finally { journal.close(); }
+}
 beforeEach(() => {
   reviewedClock = undefined;
   root = mkdtempSync(join(tmpdir(), "flex-erasure-owner-"));
@@ -90,7 +96,8 @@ describe("owner-only one-shot operations with isolated real SDK/SQLite/auth, no 
     }
   });
   it("initializes once explicitly and publishes only the EXISTING encrypted bundle format", async () => {
-    await initialize(); expect(JSON.parse(readFileSync(config.mirrorFile, "utf8"))).toEqual({version: 1, scope: "canary", entries: []});
+    await initialize(); expect(hasOwnerCancellationTable()).toBe(false);
+    expect(JSON.parse(readFileSync(config.mirrorFile, "utf8"))).toEqual({version: 1, scope: "canary", entries: []});
     expect((await run({operation: "inspect"}))).toMatchObject({fencePresent: true, ledgerPresent: true, mirrorPresent: true});
     await expect(run({operation: "initialize-fence"})).rejects.toThrow("ALREADY_INITIALIZED");
     await expect(run({operation: "initialize-custody"})).rejects.toThrow("ALREADY_INITIALIZED");
@@ -119,6 +126,7 @@ describe("owner-only one-shot operations with isolated real SDK/SQLite/auth, no 
     expect(result).toMatchObject({state: "ERASURE_APPLIED", sequence: 1, processorDeletion: "PENDING", archiveDisposition: "PENDING"});
     expect(db.prepare('SELECT id FROM "user"').all()).toEqual([]); expect(db.prepare('SELECT id FROM "session"').all()).toEqual([]);
     expect(JSON.parse(readFileSync(config.mirrorFile, "utf8")).entries).toHaveLength(1);
+    expect(hasOwnerCancellationTable()).toBe(false);
     expect(JSON.stringify(result)).not.toMatch(/owner@example|session_token|TEST_|cookie/i);
     wire.requests.length = 0; expect(await run({operation: "reconcile"})).toMatchObject({state: "ERASURE_APPLIED"});
     expect(wire.requests.every(r => r.method === "GET")).toBe(true);
@@ -173,7 +181,7 @@ describe("owner-only one-shot operations with isolated real SDK/SQLite/auth, no 
 
 describe("FLEX-131 reviewed closure on synthetic data", () => {
   const count = (table: string, handle = db) => (handle.prepare(`SELECT count(*) AS n FROM "${table}"`).get() as { n: number }).n;
-  async function paidProfile() {
+  async function paidProfile(rejectReceipt?: FrozenFiscalEvent["kind"]) {
     const cookie = await login();
     const customerId = (db.prepare("SELECT id FROM customers").get() as { id: string }).id;
     const bank = new FakeNativeBank();
@@ -200,9 +208,15 @@ describe("FLEX-131 reviewed closure on synthetic data", () => {
       await reconcilePendingNativePayments(db, ledger);
     }
     await purchase("ORDER-TEST", "PAID");
+    const submit = fiscal.submit.bind(fiscal);
+    fiscal.submit = event => event.kind === rejectReceipt
+      ? Promise.resolve({ outcome: "REJECTED", code: "SYNTHETIC_FISCAL_REJECTION" })
+      : submit(event);
     const reconcileFiscal = (database: Database.Database) => reconcilePendingFiscalEvents(database, { keyring, adapter: fiscal });
     await reconcileFiscal(db);
-    expect(db.prepare("SELECT state FROM fiscal_events").get()).toEqual({ state: "REGISTERED" });
+    expect(db.prepare("SELECT state FROM fiscal_events").get()).toEqual({
+      state: rejectReceipt === "PAYMENT_RECEIPT" ? "REJECTED" : "REGISTERED",
+    });
 
     db.prepare("INSERT INTO free_course_enrollments VALUES (?, 'free', 1, ?)").run(customerId, stamp);
     db.prepare("INSERT INTO course_learning_starts VALUES (?, 'course-free', 'free', 'FREE_ENROLLMENT', ?)").run(customerId, stamp);
@@ -221,7 +235,7 @@ describe("FLEX-131 reviewed closure on synthetic data", () => {
     return { customerId, cookie, link, clientIp, bank, ledger, reconcileFiscal, purchase, requestPublicId: request.requestPublicId };
   }
 
-  async function planFor(customerId: string, active = false) {
+  async function planFor(customerId: string) {
     const operator = generateKeyPairSync("ed25519");
     const policyFile = join(root, "custody", "reviewed-policy.json");
     config.reviewedPolicyFile = policyFile;
@@ -233,9 +247,8 @@ describe("FLEX-131 reviewed closure on synthetic data", () => {
     const plan: ReviewedErasurePlan = {
       version: 1, scope: "canary", requestId: randomUUID(), packageE: { commit: "1".repeat(40), sha256: "2".repeat(64) },
       identityVerificationRef: "fixture-verified", executeBy: until, obligationsSha256: inventory.obligationsSha256,
-      ...(active ? { continuityRef: "fixture-agreed-continuity" } : {}),
       categories: {
-        account: { action: active ? "CLOSE_WITH_CONTINUITY" : "CLOSE", basisRef, until },
+        account: { action: "CLOSE", basisRef, until },
         credentials: { action: "REVOKE", basisRef, until },
         consents: { action: "DELETE", basisRef, until },
         marketing: { action: "SUPPRESS_AND_DELETE", basisRef, until },
@@ -250,16 +263,15 @@ describe("FLEX-131 reviewed closure on synthetic data", () => {
       ({ category, basisRef: step.basisRef, action: step.action, earliestUntil: step.until, latestUntil: step.until });
     const policy = { version: 1, scope: "canary", packageE: plan.packageE, validUntil: retainedUntil,
       operators: { "operator-fixture": { publicKey: operator.publicKey.export({ type: "spki", format: "pem" }), authorizedUntil: retainedUntil } },
-      cases: { [plan.requestId]: { customer, identityVerificationRef: plan.identityVerificationRef,
-        continuityRef: plan.continuityRef, latestExecuteAt: until } },
+      cases: { [plan.requestId]: { customer, identityVerificationRef: plan.identityVerificationRef, latestExecuteAt: until } },
       rules: Object.entries(plan.categories).map(ruleFor),
       holds: [] as Array<{ keyId: string; customer: string }>,
     };
     const setPolicy = () => writeFileSync(policyFile, JSON.stringify(policy), { mode: 0o600 });
     setPolicy();
     const dryRun = () => run({ operation: "review-dry-run", customerId, plan }) as Promise<{ planSha256: string }>;
-    const approve = async () => {
-      const { planSha256 } = await dryRun();
+    const approve = async (syntheticHash?: string) => {
+      const planSha256 = syntheticHash ?? (await dryRun()).planSha256;
       const unsigned = { operatorId: "operator-fixture", approvedAt: now().toISOString(), planSha256 };
       return { operation: "review-execute", customerId, plan, approval: {
         ...unsigned, signature: sign(null, reviewedApprovalBytes(unsigned), operator.privateKey).toString("base64url"),
@@ -292,6 +304,7 @@ describe("FLEX-131 reviewed closure on synthetic data", () => {
     expect(db.pragma("data_version", { simple: true })).toBe(priorChanges);
     const op = await approve();
     const receipt = await run(op);
+    expect(hasOwnerCancellationTable()).toBe(false);
     expect(receipt).toMatchObject({
       state: "ERASURE_APPLIED", sequence: 1, requestId: plan.requestId,
       receipt: { applicationMode: "LIVE", counts: { user: 1, session: 1, verification: 1,
@@ -386,6 +399,7 @@ describe("FLEX-131 reviewed closure on synthetic data", () => {
     await expect(run(op)).rejects.toThrow("UNCONFIRMED");
     const original = readJournal().entries[0];
     expect(original.body.kind).toBe("REVIEWED_ERASURE");
+    expect(hasOwnerCancellationTable()).toBe(false);
     const requestId = op.plan.requestId;
     expect(await run({ operation: "review-attempt", requestId })).toMatchObject({ state: "LOCAL_ATTEMPT", entrySha256: original.hash });
     const originalPut = wire.requests.findLast(request => request.method === "PUT" && request.path.endsWith("/head.json"))!;
@@ -400,6 +414,7 @@ describe("FLEX-131 reviewed closure on synthetic data", () => {
     wire.state.loseAck = "head.json";
     await expect(run(cancel)).rejects.toThrow("UNCONFIRMED");
     expect(readJournal().entries[0].hash).toBe(original.hash);
+    expect(hasOwnerCancellationTable()).toBe(true);
     wire.requests.length = 0;
     expect(await run(cancel)).toMatchObject({ state: "CANCELED_UNPUBLISHED", sequence: 1, runtimeAdmission: "PENDING" });
     expect(wire.requests.every(request => request.method === "GET")).toBe(true);
@@ -513,15 +528,43 @@ describe("FLEX-131 reviewed closure on synthetic data", () => {
     },
   );
 
-  it("refuses active access and an in-flight refund even with a signed continuity reference", async () => {
+  it("refuses active access and in-flight refund, and rejects the experimental closure action", async () => {
     await initialize();
     const { customerId } = await paidProfile();
-    const active = await planFor(customerId, true);
-    await expect(active.dryRun()).rejects.toThrow("ERASURE_OPEN_OBLIGATIONS_HOLD");
-    const ordinary = await planFor(customerId);
-    await expect(ordinary.dryRun()).rejects.toThrow("ERASURE_OPEN_OBLIGATIONS_HOLD");
+    const { plan, dryRun } = await planFor(customerId);
+    await expect(dryRun()).rejects.toThrow("ERASURE_OPEN_OBLIGATIONS_HOLD");
+    await expect(run({ operation: "review-dry-run", customerId, plan: {
+      ...plan, continuityRef: "fixture-experimental-route",
+      categories: { ...plan.categories, account: { ...plan.categories.account, action: "CLOSE_WITH_CONTINUITY" } },
+    } })).rejects.toThrow("ERASURE_OWNER_CONFIGURATION_INVALID");
     expect([count("user"), count("reviewed_erasure_receipts")]).toEqual([1, 0]);
     expect(await run({ operation: "read" })).toMatchObject({ sequence: 0 });
+  });
+
+  it.each(["PAYMENT_RECEIPT", "REFUND_RECEIPT"] as const)("keeps closure on HOLD for rejected %s", async kind => {
+    await initialize();
+    const { customerId, bank, ledger, reconcileFiscal, requestPublicId } = await paidProfile(kind);
+    bank.settleRefund(`refund:${requestPublicId}`);
+    await reconcilePendingNativeRefunds(db, ledger);
+    await reconcileFiscal(db);
+    expect(db.prepare("SELECT kind FROM fiscal_events WHERE state='REJECTED'").all()).toEqual([{ kind }]);
+    expect(nativeErasureAdmission(db, customerId)).toMatchObject({ admitted: true });
+    expect(await run({ operation: "review-inventory", customerId })).toMatchObject({
+      activeRights: 0, openRefunds: 0, pendingFinancial: true,
+    });
+    const { plan, approve, dryRun } = await planFor(customerId);
+    await expect(dryRun()).rejects.toThrow("ERASURE_OPEN_OBLIGATIONS_HOLD");
+    const keys = readErasureVerificationKeys(config.keysFile, config.scope);
+    const subject = erasureSubject(keys, config.subjectKeyId, config.scope, {
+      customerId, email: "owner@example.test", userId: "user",
+    });
+    const op = await approve(reviewedErasurePlanHash(plan, subject));
+    wire.requests.length = 0;
+    await expect(run(op)).rejects.toThrow("ERASURE_OPEN_OBLIGATIONS_HOLD");
+    expect(wire.requests).toHaveLength(0);
+    expect(hasOwnerCancellationTable()).toBe(false);
+    expect([count("user"), count("reviewed_erasure_receipts")]).toEqual([1, 0]);
+    expect(readJournal().entries).toHaveLength(0);
   });
 
   it("requires reapproval when a right changes without a change in order identities", async () => {
@@ -571,10 +614,10 @@ describe("FLEX-131 reviewed closure on synthetic data", () => {
     setPolicy();
     await expect(activeDryRun()).rejects.toThrow("ERASURE_PLAN_PERIOD_INVALID");
     policy.cases[plan.requestId].latestExecuteAt = plan.executeBy;
-    policy.cases[plan.requestId].continuityRef = "other-case";
+    policy.cases[plan.requestId].identityVerificationRef = "other-case";
     setPolicy();
     await expect(activeDryRun()).rejects.toThrow("ERASURE_CASE_ADMISSION_REQUIRED");
-    policy.cases[plan.requestId].continuityRef = plan.continuityRef;
+    policy.cases[plan.requestId].identityVerificationRef = plan.identityVerificationRef;
     const key = readErasureVerificationKeys(config.keysFile, config.scope).subject[config.subjectKeyId];
     policy.holds.push({ keyId: config.subjectKeyId, customer: erasurePseudonym({ subject: { [config.subjectKeyId]: key },
       signing: {} }, config.subjectKeyId, config.scope, "customer", customerId) });
