@@ -46,6 +46,7 @@ const INTENT_STATE: Record<NativePaymentState, string> = {
 /** A CREATING row younger than this may still be in flight in another request; the sweep leaves it. */
 export const NATIVE_CREATING_UNANSWERED_AFTER_MS = 60_000;
 const MAX_DRIVE_STEPS = 6;
+const PAYMENT_READ_BACK_ALERT_AFTER_MS = 60 * 60_000;
 
 const clock = (ctx: Pick<NativeLedgerContext, "now">) => (ctx.now ? ctx.now() : new Date().toISOString());
 
@@ -305,6 +306,13 @@ export function applyNativePaymentObservation(db: Database.Database, ctx: Native
     const stoppedUnknown = decision.state === "CREATE_UNKNOWN" && ["PAYMENT_INITIATION_STOPPED", "NATIVE_CREATE_DISPATCH_UNCERTAIN"].includes(decision.reason ?? "");
     if (decision.reason === "NATIVE_ORIGINAL_EXECUTOR_UNAVAILABLE" && decision.reason !== payment.last_reason) {
       auditNative(db, "NATIVE_PAYMENT_READ_BACK_UNAVAILABLE", "ORDER", order.public_id, { reason: decision.reason }, now);
+    }
+    if ((decision.state === "PENDING" || decision.state === "CREATE_UNKNOWN")
+      && (decision.reason === "TOCHKA_RESPONSE_INVALID" || decision.reason === "TOCHKA_APPROVAL_NOT_YET_VISIBLE")
+      && Date.parse(now) - Date.parse(payment.created_at) >= PAYMENT_READ_BACK_ALERT_AFTER_MS
+      && !db.prepare(`SELECT 1 FROM audit_log
+        WHERE action='NATIVE_PAYMENT_READ_BACK_STALLED' AND subject_type='ORDER' AND subject_ref=? LIMIT 1`).get(order.public_id)) {
+      auditNative(db, "NATIVE_PAYMENT_READ_BACK_STALLED", "ORDER", order.public_id, { reason: decision.reason }, now);
     }
     if (stoppedUnknown && payment.last_reason !== decision.reason) {
       auditNative(db, "NATIVE_PAYMENT_REVIEW_REQUIRED", "ORDER", order.public_id, { reason: decision.reason }, now);

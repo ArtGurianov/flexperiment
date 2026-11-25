@@ -36,11 +36,17 @@ type NativeRefundRow = {
 };
 const refundRow = (db: Database.Database, id: string) => db.prepare("SELECT * FROM native_refunds WHERE id=?").get(id) as NativeRefundRow | undefined;
 const clock = (ctx: Pick<NativeLedgerContext, "now">) => (ctx.now ? ctx.now() : new Date().toISOString());
-// Only the live connection that committed this row can retry a first, read-only preflight.
+// Only the connection that committed the refund can retry its first preflight.
+// Restore uses a new SQLite handle. Replacing the database under a live handle would break this fence.
 const liveRefunds = new WeakMap<Database.Database, Set<string>>();
 const LIVE_REFUND_WINDOW_MS = 10 * 60_000;
 function canResumePreflight(db: Database.Database, refund: NativeRefundRow, now: string) {
-  return liveRefunds.get(db)?.has(refund.id) === true && Date.parse(now) - Date.parse(refund.created_at) < LIVE_REFUND_WINDOW_MS;
+  const live = liveRefunds.get(db);
+  if (!live?.has(refund.id)) return false;
+  const ageMs = Date.parse(now) - Date.parse(refund.created_at);
+  if (ageMs >= 0 && ageMs < LIVE_REFUND_WINDOW_MS) return true;
+  live.delete(refund.id);
+  return false;
 }
 
 const settlementState = (db: Database.Database, lineId: string) => (db.prepare(`SELECT state FROM fiscal_events
