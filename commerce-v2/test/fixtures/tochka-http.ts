@@ -11,7 +11,7 @@ type Payment = {
 };
 
 export async function startTochkaHttpFixture(port = 0) {
-  const keys = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  let keys = generateKeyPairSync("rsa", { modulusLength: 2048 });
   const foreignKey = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey;
   const payments = new Map<string, Payment>();
   const receipts = new Map<string, object>();
@@ -20,7 +20,7 @@ export async function startTochkaHttpFixture(port = 0) {
     loseCreate: false, loseRefund: false, hideFromList: false, hideRefund: false, rejectInfo: false,
     currency: undefined as string | undefined, amount: undefined as number | undefined, operationId: undefined as string | undefined,
     paymentLinkId: undefined as string | undefined, lostBeforeCreate: false, lostBeforeRefund: false,
-    totalPages: 2, duplicateListing: false, invalidInfo: false, overrideStatus: undefined as string | undefined,
+    totalPages: 2, duplicateListing: false, invalidInfo: false, malformedJson: false, hideApproval: false, rejectKey: false, overrideStatus: undefined as string | undefined,
     beforeInfo: undefined as (() => void) | undefined,
   };
 
@@ -30,7 +30,7 @@ export async function startTochkaHttpFixture(port = 0) {
     ...(faults.currency ? { currency: faults.currency } : {}),
     ...(payment.status !== "CREATED" ? { paymentType: "card" } : {}),
     Order: payment.status === "CREATED" ? [] : [
-      { type: "approval", orderId: payment.operationId, amount: faults.amount ?? payment.amount, time: new Date().toISOString() },
+      ...(faults.hideApproval ? [] : [{ type: "approval", orderId: payment.operationId, amount: faults.amount ?? payment.amount, time: new Date().toISOString() }]),
       ...(payment.refundId && !faults.hideRefund ? [{
         type: "refund", orderId: payment.refundId, amount: payment.refundAmount, time: new Date().toISOString(),
       }] : []),
@@ -51,6 +51,7 @@ export async function startTochkaHttpFixture(port = 0) {
       const url = new URL(request.url ?? "/", "http://127.0.0.1");
       if (request.method === "GET" && url.pathname === "/doc/openapi/static/keys/public") {
         calls.key += 1;
+        if (faults.rejectKey) return respond(response, 503, {});
         return respond(response, request.headers.authorization ? 400 : 200, keys.publicKey.export({ format: "jwk" }));
       }
       if (request.headers.authorization !== "Bearer local-fixture") return respond(response, 403, {});
@@ -86,6 +87,10 @@ export async function startTochkaHttpFixture(port = 0) {
       if (payment && request.method === "GET" && !match[2]) {
         calls.info += 1;
         faults.beforeInfo?.();
+        if (faults.malformedJson) {
+          response.writeHead(200, { "Content-Type": "application/json" }).end("{");
+          return;
+        }
         if (faults.invalidInfo) return respond(response, 200, { Data: {} });
         if (faults.rejectInfo) return respond(response, 503, {});
         return respond(response, 200, { Data: { Operation: [{ ...operation(payment),
@@ -120,6 +125,7 @@ export async function startTochkaHttpFixture(port = 0) {
   if (!address || typeof address === "string") throw new Error("TOCHKA_FIXTURE_ADDRESS_MISSING");
   return {
     origin: `http://127.0.0.1:${address.port}`, calls, faults, payments, lookupWindows,
+    rotateCallbackKey() { keys = generateKeyPairSync("rsa", { modulusLength: 2048 }); },
     close: () => new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())),
     pay(payment: Payment) {
       if (payment.status !== "CREATED") return;

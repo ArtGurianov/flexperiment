@@ -1,6 +1,6 @@
 import { createHash, createPublicKey, verify, type KeyObject } from "node:crypto";
 import type { FiscalReadBack } from "./fiscal-port";
-import { NativeReadBackError } from "./native-payment-provider";
+import { NativeReadBackError, NativeReadBackUnavailable } from "./native-payment-provider";
 import type {
   FrozenNativePaymentRequest, FrozenNativeRefundRequest, NativeCallbackHint, NativeCreateAnswer,
   NativePaymentProvider, NativePaymentReadBack, NativeRefundAnswer, NativeRefundPreflight, NativeRefundReadBack, PaymentReadKey, RefundReadKey,
@@ -9,9 +9,11 @@ import type {
 const acquiring = "/uapi/acquiring/v1.0";
 const payments = `${acquiring}/payments`;
 const publicKeyPath = "/doc/openapi/static/keys/public";
-const invalid = () => new NativeReadBackError("TOCHKA_RESPONSE_INVALID");
+const invalid = () => new NativeReadBackUnavailable("TOCHKA_RESPONSE_INVALID");
 const lookupBudgetError = () => new NativeReadBackError("TOCHKA_PAYMENT_LOOKUP_BUDGET_EXCEEDED");
 const DAY_MS = 86_400_000;
+const PAYMENT_DISCOVERY_MAX_AGE_MS = 3 * DAY_MS;
+const CALLBACK_REFRESH_COOLDOWN_MS = 30_000;
 
 export type TochkaConnection = {
   readonly origin: string;
@@ -63,13 +65,16 @@ function linkId(order: string, snapshot: string) {
 }
 
 function paymentStatus(row: Record<string, unknown>): "PENDING" | "PAID" | "EXPIRED" {
+  if (typeof row.status !== "string") throw invalid();
   switch (row.status) {
     case "CREATED": case "AUTHORIZED": case "WAIT_FULL_PAYMENT": return "PENDING";
     case "EXPIRED": return "EXPIRED";
     case "APPROVED": {
       const history = records(row.Order);
       const approvals = history.filter(entry => entry.type === "approval");
-      if (row.paymentType === "card" && row.preAuthorization !== true && !history.some(entry => entry.type === "refund")
+      const refunds = history.some(entry => entry.type === "refund");
+      if (approvals.length === 0 && !refunds) throw new NativeReadBackUnavailable("TOCHKA_APPROVAL_NOT_YET_VISIBLE");
+      if (row.paymentType === "card" && row.preAuthorization !== true && !refunds
         && approvals.length === 1 && minor(approvals[0].amount) === minor(row.amount) && currency(approvals[0]) === "RUB") return "PAID";
       throw new NativeReadBackError("TOCHKA_PAYMENT_APPROVAL_CONFLICT");
     }
@@ -85,6 +90,7 @@ export class TochkaNativeAcquiring implements NativePaymentProvider {
   readonly replayGuarantees = { payment: false, refund: false };
   private callbackKey?: { key: KeyObject; expires: number };
   private fetchingKey?: Promise<KeyObject>;
+  private lastForcedKeyRefresh = -Infinity;
 
   constructor(private readonly connection: TochkaConnection, private readonly request: typeof fetch = fetch) {
     this.executorKey = `tochka-cheki:${createHash("sha256").update(JSON.stringify([
@@ -170,6 +176,10 @@ export class TochkaNativeAcquiring implements NativePaymentProvider {
 
   async readPaymentByOrder(order: string, key: PaymentReadKey): Promise<NativePaymentReadBack> {
     const paymentLinkId = linkId(order, key.snapshotHash);
+    // After the bank calendar buffer and a visibility grace day, send this to operator review.
+    if (!key.providerPaymentId && Date.parse(key.observedAt) - Date.parse(key.createdAt) >= PAYMENT_DISCOVERY_MAX_AGE_MS) {
+      throw new NativeReadBackError("TOCHKA_PAYMENT_LOOKUP_EXPIRED");
+    }
     const search = key.providerPaymentId ? undefined : AbortSignal.timeout(6_000);
     const budget = search && key.signal ? AbortSignal.any([search, key.signal]) : search ?? key.signal;
     try {
@@ -177,6 +187,8 @@ export class TochkaNativeAcquiring implements NativePaymentProvider {
       if (!id) return { outcome: "NOT_FOUND" };
       const row = await this.info(id, budget);
       // The digest carries both original merchant order and snapshot. Missing/foreign echoes fail closed.
+      if (typeof row.customerCode !== "string" || typeof row.merchantId !== "string" || typeof row.paymentLinkId !== "string") throw invalid();
+      operationId(row.operationId);
       if (!this.boundToMerchant(row) || row.paymentLinkId !== paymentLinkId || row.operationId !== id) {
         throw new NativeReadBackError("TOCHKA_PAYMENT_IDENTITY_CONFLICT");
       }
@@ -192,6 +204,9 @@ export class TochkaNativeAcquiring implements NativePaymentProvider {
 
   private async refundPayment(key: RefundReadKey) {
     const row = await this.info(key.providerPaymentId);
+    if (typeof row.customerCode !== "string" || typeof row.merchantId !== "string" || typeof row.paymentLinkId !== "string"
+      || typeof row.status !== "string") throw invalid();
+    operationId(row.operationId);
     if (!this.boundToMerchant(row) || row.operationId !== key.providerPaymentId || row.paymentType !== "card"
       || row.paymentLinkId !== linkId(key.merchantOrderRef, key.snapshotHash)) {
       throw new NativeReadBackError("TOCHKA_REFUND_IDENTITY_CONFLICT");
@@ -261,8 +276,8 @@ export class TochkaNativeAcquiring implements NativePaymentProvider {
       providerReceiptId: result.receiptId, ...(status === "REGISTERED" ? { fiscalSign: fiscalSign as string, issuedAt: issuedAt as string } : {}) };
   }
 
-  private async getCallbackKey() {
-    if (this.callbackKey && this.callbackKey.expires > Date.now()) return this.callbackKey.key;
+  private async getCallbackKey(force = false) {
+    if (!force && this.callbackKey && this.callbackKey.expires > Date.now()) return this.callbackKey.key;
     this.fetchingKey ??= this.json(publicKeyPath, undefined, false).then(jwk => {
       if (jwk.kty !== "RSA" || typeof jwk.n !== "string" || typeof jwk.e !== "string") throw invalid();
       const key = createPublicKey({ key: { kty: "RSA", n: jwk.n, e: jwk.e }, format: "jwk" });
@@ -274,22 +289,38 @@ export class TochkaNativeAcquiring implements NativePaymentProvider {
 
   async verifyCallback(headers: Readonly<Record<string, string | undefined>>, body: Uint8Array): Promise<NativeCallbackHint | null> {
     if (headers["content-type"]?.split(";")[0].trim().toLowerCase() !== "text/plain" || body.length > 8192) return null;
+    const parts = Buffer.from(body).toString("utf8").split(".");
+    if (parts.length !== 3 || !parts.every(part => /^[\w-]+$/.test(part))) return null;
+    const [header, payload, signature] = parts;
+    const decode = (value: string) => object(JSON.parse(Buffer.from(value, "base64url").toString("utf8")));
+    let claim: Record<string, unknown>;
+    let id: string;
     try {
-      const jwt = Buffer.from(body).toString("utf8");
-      const parts = jwt.split(".");
-      if (parts.length !== 3 || !parts.every(part => /^[\w-]+$/.test(part))) return null;
-      const [header, payload, signature] = parts;
-      const decode = (value: string) => object(JSON.parse(Buffer.from(value, "base64url").toString("utf8")));
       const protectedHeader = decode(header);
       if (protectedHeader.alg !== "RS256" || protectedHeader.crit !== undefined) return null;
-      if (!verify("RSA-SHA256", Buffer.from(`${header}.${payload}`), await this.getCallbackKey(), Buffer.from(signature, "base64url"))) return null;
-      const claim = decode(payload);
+      claim = decode(payload);
       if (claim.webhookType !== "acquiringInternetPayment" || claim.merchantId !== this.connection.merchantId
         || claim.customerCode !== this.connection.customerCode || claim.status !== "APPROVED") return null;
-      const id = operationId(claim.operationId);
-      return { providerEventId: `acquiringInternetPayment:${id}`, subjectKind: "PAYMENT", providerSubjectId: id };
+      id = operationId(claim.operationId);
     } catch {
       return null;
     }
+    // Key retrieval failure propagates to the route as 503. No hint is trusted before signature verification.
+    const signed = Buffer.from(`${header}.${payload}`);
+    const supplied = Buffer.from(signature, "base64url");
+    const hadCachedKey = !!this.callbackKey && this.callbackKey.expires > Date.now();
+    let key = await this.getCallbackKey();
+    if (!verify("RSA-SHA256", signed, key, supplied)) {
+      if (!hadCachedKey) return null;
+      if (this.fetchingKey) key = await this.fetchingKey;
+      else {
+        const now = Date.now();
+        if (now - this.lastForcedKeyRefresh < CALLBACK_REFRESH_COOLDOWN_MS) return null;
+        this.lastForcedKeyRefresh = now;
+        key = await this.getCallbackKey(true);
+      }
+      if (!verify("RSA-SHA256", signed, key, supplied)) return null;
+    }
+    return { providerEventId: `acquiringInternetPayment:${id}`, subjectKind: "PAYMENT", providerSubjectId: id };
   }
 }

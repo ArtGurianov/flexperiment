@@ -17,7 +17,7 @@
  *  - Fiscal events are reconciled separately and never produce or block a financial effect.
  */
 
-import type { NativeReadBackIssue } from "./native-payment-provider";
+import type { NativeReadBackIssue, NativeReadBackUnavailableCode } from "./native-payment-provider";
 
 export const NATIVE_CONTRACT_VERSION = "flexperiment.native-payment-contract/1" as const;
 
@@ -59,7 +59,7 @@ export type PaymentObservation =
   /** A request-bound refusal the provider proves it did not accept (e.g. validation of this exact body). */
   | { readonly source: "CREATE_RESPONSE"; readonly outcome: "REFUSED"; readonly code: string }
   | { readonly source: "CALLBACK"; readonly signatureValid: boolean; readonly providerPaymentId: string; readonly claimedStatus: string }
-  | { readonly source: "READ_BACK"; readonly outcome: "UNAVAILABLE"; readonly code?: "NATIVE_ORIGINAL_EXECUTOR_UNAVAILABLE" }
+  | { readonly source: "READ_BACK"; readonly outcome: "UNAVAILABLE"; readonly code?: NativeReadBackUnavailableCode | "NATIVE_REFUND_PREFLIGHT_UNAVAILABLE" }
   | { readonly source: "READ_BACK"; readonly outcome: "REVIEW_REQUIRED"; readonly code: NativeReadBackIssue }
   | { readonly source: "READ_BACK"; readonly outcome: "DISPATCH_UNCERTAIN" }
   | { readonly source: "READ_BACK"; readonly outcome: "NOT_FOUND" }
@@ -191,9 +191,9 @@ export type RefundObservation =
   /** proven: the provider states this exact request is terminally refused (nothing will be returned). */
   | { readonly source: "SUBMIT_RESPONSE"; readonly outcome: "REFUSED"; readonly code: string; readonly proven: boolean }
   | { readonly source: "CALLBACK"; readonly signatureValid: boolean; readonly providerRefundId: string }
-  | { readonly source: "READ_BACK"; readonly outcome: "UNAVAILABLE"; readonly code?: "NATIVE_ORIGINAL_EXECUTOR_UNAVAILABLE" }
+  | { readonly source: "READ_BACK"; readonly outcome: "UNAVAILABLE"; readonly code?: NativeReadBackUnavailableCode | "NATIVE_REFUND_PREFLIGHT_UNAVAILABLE" }
   | { readonly source: "READ_BACK"; readonly outcome: "REVIEW_REQUIRED"; readonly code: string }
-  | { readonly source: "READ_BACK"; readonly outcome: "DISPATCH_UNCERTAIN"; readonly code: "NATIVE_REFUND_DISPATCH_UNCERTAIN" | "NATIVE_REFUND_PREFLIGHT_UNAVAILABLE" }
+  | { readonly source: "READ_BACK"; readonly outcome: "DISPATCH_UNCERTAIN" }
   | { readonly source: "READ_BACK"; readonly outcome: "NOT_FOUND" }
   | {
     readonly source: "READ_BACK"; readonly outcome: "FOUND"; readonly providerRefundId: string; readonly status: ProviderRefundStatus;
@@ -263,7 +263,7 @@ export function applyRefundObservation(
   if (observation.outcome === "UNAVAILABLE") return keep([], observation.code ?? "READ_BACK_UNAVAILABLE");
   if (observation.outcome === "REVIEW_REQUIRED") return review(observation.code);
   if (observation.outcome === "DISPATCH_UNCERTAIN") return {
-    state: "SUBMIT_UNKNOWN", providerRefundId: record.providerRefundId, effects: [], reason: observation.code,
+    state: "SUBMIT_UNKNOWN", providerRefundId: record.providerRefundId, effects: ["ALERT"], reason: "NATIVE_REFUND_DISPATCH_UNCERTAIN",
   };
   if (observation.outcome === "NOT_FOUND") {
     // The refund money effect is the dangerous one: a lost submit is replayed with the SAME sealed

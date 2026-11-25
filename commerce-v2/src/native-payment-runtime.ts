@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { erasureFailureCode } from "./erasure-diagnostics";
 import { reconcileAutomaticNativeReceipts, reconcilePendingFiscalEvents } from "./fiscal-port";
 import { FakeFiscalAdapter, FakeNativeBank } from "./native-payment-fake";
 import type { ProductKind } from "./native-payment-contract";
@@ -78,8 +79,9 @@ export function startNativeSweeps(db: Database.Database, native: NonNullable<Ret
     running = true;
     try {
       await options.run(() => reconcileNativeSweep(db, native));
-    } catch {
-      console.error("NATIVE_PAYMENT_SWEEP_FAILED");
+    } catch (error) {
+      const reason = erasureFailureCode(error) ?? (error instanceof TypeError ? "TYPE_ERROR" : "UNCLASSIFIED");
+      console.error("NATIVE_PAYMENT_SWEEP_FAILED", reason);
     } finally {
       running = false;
     }

@@ -3,7 +3,7 @@ import {
   admitFinalSettlement, applyFiscalObservation, cancelReservedSettlement, type FiscalAdapterCapabilities, type FiscalEventState,
   type FiscalObservation, type FiscalPaymentMethod, type NativePaymentState, type ProductKind, type ServiceRenderedFact,
 } from "./native-payment-contract";
-import { auditNative, nativeProviderForPayment, type NativeLedgerContext } from "./native-payment-ledger";
+import { auditNative, findNativeProvider, type NativeLedgerContext } from "./native-payment-ledger";
 import { openPayload, type RefundEnvelopeKeyring } from "./refund-envelope";
 
 /**
@@ -53,7 +53,7 @@ type EventRow = {
   id: string; event_ref: string; kind: FrozenFiscalEvent["kind"]; order_line_id: string; payment_method: FiscalPaymentMethod; amount_kopecks: number;
   items_json: string; mode: "PROVIDER" | "MERCHANT"; state: FiscalEventState; provider_receipt_id: string | null; evidence_json: string | null;
   sealed_contact: string | null; contact_key_id: string | null; order_public_id: string; snapshot_hash: string; kind_of_product: ProductKind;
-  occurrence_ref: string | null; ends_at: string | null; order_id: string; executor_key: string | null; last_reason: string | null;
+  created_at: string; occurrence_ref: string | null; ends_at: string | null; order_id: string; executor_key: string | null; last_reason: string | null;
 };
 const eventRow = (db: Database.Database, id: string) => db.prepare(`SELECT event.*,orders.public_id AS order_public_id,orders.snapshot_hash,
     orders.id AS order_id,product.kind AS kind_of_product,product.occurrence_ref,occurrence.ends_at,payment.executor_key
@@ -61,6 +61,16 @@ const eventRow = (db: Database.Database, id: string) => db.prepare(`SELECT event
   JOIN products product ON product.id=line.product_id LEFT JOIN lab_occurrences occurrence ON occurrence.occurrence_ref=product.occurrence_ref
   LEFT JOIN native_payments payment ON payment.order_id=orders.id
   WHERE event.id=?`).get(id) as EventRow | undefined;
+
+// Local operational escalation threshold. FLEX-76 owns the qualified timing.
+const AUTOMATIC_RECEIPT_ALERT_AFTER_MS = 24 * 60 * 60_000;
+function alertOverdueReceipt(db: Database.Database, row: EventRow, now: string) {
+  if (Date.parse(now) - Date.parse(row.created_at) < AUTOMATIC_RECEIPT_ALERT_AFTER_MS) return;
+  if (!db.prepare(`SELECT 1 FROM audit_log WHERE action='NATIVE_PROVIDER_RECEIPT_OVERDUE'
+      AND subject_type='FISCAL_EVENT' AND subject_ref=? LIMIT 1`).get(row.event_ref)) {
+    auditNative(db, "NATIVE_PROVIDER_RECEIPT_OVERDUE", "FISCAL_EVENT", row.event_ref, { kind: row.kind }, now);
+  }
+}
 
 const TERMINAL: readonly FiscalEventState[] = ["REGISTERED", "REJECTED", "NOT_REQUIRED", "CANCELLED"];
 
@@ -104,17 +114,18 @@ export async function reconcileAutomaticNativeReceipts(db: Database.Database, le
   const now = ledger.now?.() ?? new Date().toISOString();
   let failed = 0;
   for (const binding of rows) {
+    const provider = findNativeProvider(ledger, binding.executor_key);
+    const unavailable = !provider?.readAutomaticReceipt;
     try {
-      const provider = nativeProviderForPayment(ledger, binding.executor_key);
-      if (!provider.readAutomaticReceipt || (binding.kind === "REFUND_RECEIPT" && !binding.provider_refund_id)) {
+      if (unavailable || !binding.provider_payment_id || (binding.kind === "REFUND_RECEIPT" && !binding.provider_refund_id)) {
         throw new Error("NATIVE_RECEIPT_READ_BACK_UNAVAILABLE");
       }
-      const result = await provider.readAutomaticReceipt(binding.kind, binding.provider_payment_id, binding.provider_refund_id);
+      const result = await provider.readAutomaticReceipt!(binding.kind, binding.provider_payment_id, binding.provider_refund_id);
       db.transaction(() => {
         const current = eventRow(db, binding.id)!;
         if (current.state !== "PENDING") return;
         if (result.outcome === "NOT_FOUND") {
-          // Processing, or temporarily absent, is still an outstanding receipt.
+          alertOverdueReceipt(db, current, now);
           db.prepare("UPDATE fiscal_events SET updated_at=?,last_reason=? WHERE id=?").run(now, "RECEIPT_NOT_YET_VISIBLE", binding.id);
           return;
         }
@@ -124,12 +135,21 @@ export async function reconcileAutomaticNativeReceipts(db: Database.Database, le
           { ...receipt, source: "READ_BACK" });
         const evidence = decision.state === "REGISTERED" ? { fiscalSign, issuedAt,
           providerPaymentId: binding.provider_payment_id, providerRefundId: binding.provider_refund_id } : undefined;
+        if (decision.state === "PENDING") alertOverdueReceipt(db, current, now);
         setState(db, current, decision.state, decision.providerReceiptId, decision.reason, evidence, now);
       }).immediate();
     } catch {
       failed += 1;
-      db.prepare("UPDATE fiscal_events SET updated_at=?,last_reason=? WHERE id=? AND state='PENDING'")
-        .run(now, "READ_BACK_UNAVAILABLE", binding.id);
+      db.transaction(() => {
+        const current = eventRow(db, binding.id)!;
+        if (current.state !== "PENDING") return;
+        const reason = unavailable ? "NATIVE_ORIGINAL_FISCAL_EXECUTOR_UNAVAILABLE" : "READ_BACK_UNAVAILABLE";
+        if (unavailable && current.last_reason !== reason) {
+          auditNative(db, "NATIVE_FISCAL_READ_BACK_UNAVAILABLE", "FISCAL_EVENT", current.event_ref, { reason }, now);
+        }
+        alertOverdueReceipt(db, current, now);
+        db.prepare("UPDATE fiscal_events SET updated_at=?,last_reason=? WHERE id=?").run(now, reason, binding.id);
+      }).immediate();
     }
   }
   return { selected: rows.length, failed };

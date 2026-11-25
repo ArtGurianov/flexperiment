@@ -381,7 +381,7 @@ describe("native checkout confirm and callback route (FLEX-119)", () => {
     });
 
     it.each([
-      [{ invalidInfo: true }, "REVIEW_REQUIRED", "TOCHKA_RESPONSE_INVALID"],
+      [{ invalidInfo: true }, "PENDING", "TOCHKA_RESPONSE_INVALID"],
       [{ overrideStatus: "UNRECOGNIZED" }, "REVIEW_REQUIRED", "TOCHKA_PAYMENT_STATUS_UNSUPPORTED"],
       [{ rejectInfo: true }, "PENDING", "READ_BACK_UNAVAILABLE"],
     ])("distinguishes malformed, unavailable and unsupported bank responses %o", async (fault, state, reason) => {
@@ -390,6 +390,56 @@ describe("native checkout confirm and callback route (FLEX-119)", () => {
       await reconcilePendingNativePayments(db, runtime.ledger);
       expect(db.prepare("SELECT state,last_reason FROM native_payments").get()).toEqual({ state, last_reason: reason });
       expect(entitlementCount()).toEqual({ n: 0 });
+    });
+
+    it.each([
+      [{ malformedJson: true }, "TOCHKA_RESPONSE_INVALID"],
+      [{ hideApproval: true }, "TOCHKA_APPROVAL_NOT_YET_VISIBLE"],
+    ])("a transient approval response %o can recover after buyer polling", async (fault, reason) => {
+      const { result } = await checkout();
+      fixture.pay([...fixture.payments.values()][0]);
+      Object.assign(fixture.faults, fault);
+      await commerce().request(`/v1/checkout/${result.orderPublicId}`);
+      expect(db.prepare("SELECT state,last_reason FROM native_payments").get()).toEqual({ state: "PENDING", last_reason: reason });
+      expect(entitlementCount()).toEqual({ n: 0 });
+      Object.assign(fixture.faults, { malformedJson: false, hideApproval: false });
+      await reconcilePendingNativePayments(db, runtime.ledger);
+      expect(entitlementCount()).toEqual({ n: 1 });
+      expect(fixture.calls.create).toBe(1);
+    });
+
+    it("escalates and stops scanning a lost payment after the discovery deadline", async () => {
+      fixture.faults.loseCreate = true;
+      fixture.faults.hideFromList = true;
+      const { result } = await checkout();
+      expect(result.state).toBe("CREATE_UNKNOWN");
+      const before = fixture.calls.list;
+      const aged = { ...runtime.ledger, now: () => new Date(Date.now() + 4 * 86_400_000).toISOString() };
+      await reconcilePendingNativePayments(db, aged);
+      await reconcilePendingNativePayments(db, aged);
+      expect(fixture.calls.list).toBe(before);
+      expect(fixture.calls.create).toBe(1);
+      expect(db.prepare("SELECT state,last_reason,request_envelope IS NOT NULL AS retained FROM native_payments").get())
+        .toEqual({ state: "REVIEW_REQUIRED", last_reason: "TOCHKA_PAYMENT_LOOKUP_EXPIRED", retained: 1 });
+      expect(db.prepare("SELECT COUNT(*) n FROM audit_log WHERE action='NATIVE_PAYMENT_REVIEW_REQUIRED'").get()).toEqual({ n: 1 });
+    });
+
+    it("returns 503 on JWK failure and accepts callbacks after a key rotation", async () => {
+      await checkout();
+      const [payment] = fixture.payments.values();
+      const app = commerce();
+      const send = (body: string) => app.request("/v1/native-payments/callback", { method: "POST",
+        headers: { "content-type": "text/plain" }, body });
+      fixture.faults.rejectKey = true;
+      expect((await send(fixture.callback(payment))).status).toBe(503);
+      expect(db.prepare("SELECT COUNT(*) n FROM native_callback_inbox").get()).toEqual({ n: 0 });
+      fixture.faults.rejectKey = false;
+      expect((await send(fixture.callback(payment))).status).toBe(200);
+      fixture.rotateCallbackKey();
+      expect((await send(fixture.callback(payment))).status).toBe(200);
+      const keyReads = fixture.calls.key;
+      expect((await send(fixture.callback(payment, true))).status).toBe(401);
+      expect(fixture.calls.key).toBe(keyReads);
     });
 
     it("a signed callback schedules read-back, a forgery or foreign merchant is rejected, and a retry is deduplicated", async () => {
@@ -446,6 +496,49 @@ describe("native checkout confirm and callback route (FLEX-119)", () => {
       return { payment, refundId: request.requestPublicId };
     }
 
+    it("retries a failed preflight in the live connection without authorizing POST on a restored copy", async () => {
+      const { refundId } = await requestApprovedRefund();
+      fixture.faults.rejectInfo = true;
+      expect((await executeApprovedNativeRefund(db, runtime.ledger, refundId)).state).toBe("SUBMITTING");
+      expect(db.prepare("SELECT state,last_reason,dispatch_started FROM native_refunds").get()).toEqual({
+        state: "SUBMITTING", last_reason: "NATIVE_REFUND_PREFLIGHT_UNAVAILABLE", dispatch_started: 0,
+      });
+      const restored = new Database(db.serialize());
+      const later = () => new Date(Date.now() + 120_000).toISOString();
+      fixture.faults.rejectInfo = false;
+      try {
+        const old = nativePaymentsFromConfig(restored, tochkaConfig, keyring)!;
+        await reconcilePendingNativeRefunds(restored, { ...old.ledger, now: later });
+        await reconcilePendingNativeRefunds(restored, { ...old.ledger, now: later });
+        expect(fixture.calls.refund).toBe(0);
+        expect(restored.prepare("SELECT COUNT(*) n FROM audit_log WHERE action='NATIVE_REFUND_REVIEW_REQUIRED'").get()).toEqual({ n: 1 });
+        await reconcilePendingNativeRefunds(db, { ...runtime.ledger, now: later });
+        expect(db.prepare("SELECT state,dispatch_started FROM native_refunds").get()).toEqual({ state: "PROCESSING", dispatch_started: 1 });
+        expect(fixture.calls.refund).toBe(1);
+      } finally { restored.close(); }
+    });
+
+    it("signals overdue receipts and an unavailable original executor, then records the late receipt", async () => {
+      await checkout();
+      const [payment] = fixture.payments.values();
+      fixture.pay(payment);
+      await reconcilePendingNativePayments(db, runtime.ledger);
+      const later = () => new Date(Date.now() + 25 * 60 * 60_000).toISOString();
+      const missing = { ...runtime.ledger, provider: new FakeNativeBank(), now: later };
+      await reconcileAutomaticNativeReceipts(db, missing);
+      await reconcileAutomaticNativeReceipts(db, missing);
+      expect(fiscal("PAYMENT_RECEIPT")).toMatchObject({ state: "PENDING", last_reason: "NATIVE_ORIGINAL_FISCAL_EXECUTOR_UNAVAILABLE" });
+      expect(db.prepare("SELECT COUNT(*) n FROM audit_log WHERE action='NATIVE_FISCAL_READ_BACK_UNAVAILABLE'").get()).toEqual({ n: 1 });
+      expect(db.prepare("SELECT COUNT(*) n FROM audit_log WHERE action='NATIVE_PROVIDER_RECEIPT_OVERDUE'").get()).toEqual({ n: 1 });
+      const restored = { ...runtime.ledger, now: later };
+      await reconcileAutomaticNativeReceipts(db, restored);
+      expect(fiscal("PAYMENT_RECEIPT")).toMatchObject({ state: "PENDING", last_reason: "RECEIPT_NOT_YET_VISIBLE" });
+      fixture.receipt(payment, fiscal("PAYMENT_RECEIPT").event_ref, false);
+      await reconcileAutomaticNativeReceipts(db, restored);
+      expect(fiscal("PAYMENT_RECEIPT").state).toBe("REGISTERED");
+      expect(db.prepare("SELECT COUNT(*) n FROM audit_log WHERE action='NATIVE_PROVIDER_RECEIPT_OVERDUE'").get()).toEqual({ n: 1 });
+    });
+
     it("restores a pre-marker refund, reads without POST and keeps an unbound existing refund for review", async () => {
       const { payment, refundId } = await requestApprovedRefund();
       let frozen: Buffer | undefined;
@@ -479,7 +572,7 @@ describe("native checkout confirm and callback route (FLEX-119)", () => {
       [{ currency: "USD" }, "REVIEW_REQUIRED", "TOCHKA_REFUND_IDENTITY_CONFLICT"],
       [{ overrideStatus: "REFUNDED" }, "REVIEW_REQUIRED", "TOCHKA_REFUND_ALREADY_EXISTS"],
       [{ overrideStatus: "CREATED" }, "REVIEW_REQUIRED", "TOCHKA_REFUND_STATUS_UNSUPPORTED"],
-      [{ rejectInfo: true }, "SUBMIT_UNKNOWN", "NATIVE_REFUND_PREFLIGHT_UNAVAILABLE"],
+      [{ rejectInfo: true }, "SUBMITTING", "NATIVE_REFUND_PREFLIGHT_UNAVAILABLE"],
     ])("keeps conflicting or unavailable preflight evidence %o", async (fault, state, reason) => {
       const { refundId } = await requestApprovedRefund();
       Object.assign(fixture.faults, fault);

@@ -7,7 +7,7 @@ import {
   routeContour, type FiscalEventState, type FiscalizationMode, type NativePaymentState, type NativeRefundState, type PaymentDecision,
   type PaymentObservation, type ProductKind,
 } from "./native-payment-contract";
-import { NativeReadBackError } from "./native-payment-provider";
+import { NativeReadBackError, NativeReadBackUnavailable } from "./native-payment-provider";
 import type { FrozenNativePaymentRequest, NativePaymentProvider, PaymentReadKey } from "./native-payment-provider";
 import { openPayload, sealPayload, type RefundEnvelopeKeyring } from "./refund-envelope";
 
@@ -229,7 +229,7 @@ Promise<{ observation: PaymentObservation; paymentUrl?: string }> {
   } catch (error) {
     return { observation: error instanceof NativeReadBackError
       ? { source: "READ_BACK", outcome: "REVIEW_REQUIRED", code: error.code }
-      : { source: "READ_BACK", outcome: "UNAVAILABLE" } };
+      : { source: "READ_BACK", outcome: "UNAVAILABLE", ...(error instanceof NativeReadBackUnavailable ? { code: error.code } : {}) } };
   }
 }
 
@@ -259,7 +259,7 @@ export async function driveNativePayment(db: Database.Database, ctx: NativeLedge
     const payment = paymentById(db, paymentId)!;
     const order = orderOfPayment(db, payment);
     const read = await readBack(findNativeProvider(ctx, payment.executor_key), order.public_id,
-      { snapshotHash: payment.snapshot_hash, providerPaymentId: payment.provider_payment_id, createdAt: payment.created_at, signal });
+      { snapshotHash: payment.snapshot_hash, providerPaymentId: payment.provider_payment_id, createdAt: payment.created_at, observedAt: clock(ctx), signal });
     decision = applyNativePaymentObservation(db, ctx, paymentId, read.observation, read.paymentUrl, payment);
   }
   return decision;

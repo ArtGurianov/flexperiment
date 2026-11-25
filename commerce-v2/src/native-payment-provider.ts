@@ -39,17 +39,23 @@ export type NativeCreateAnswer =
   | { readonly outcome: "REFUSED"; readonly code: string };
 
 export type NativeReadBackIssue =
-  | "TOCHKA_RESPONSE_INVALID"
   | "TOCHKA_PAYMENT_IDENTITY_CONFLICT"
   | "TOCHKA_PAYMENT_DUPLICATE"
   | "TOCHKA_PAYMENT_APPROVAL_CONFLICT"
   | "TOCHKA_PAYMENT_STATUS_UNSUPPORTED"
   | "TOCHKA_REFUND_IDENTITY_CONFLICT"
   | "TOCHKA_REFUND_STATUS_UNSUPPORTED"
-  | "TOCHKA_PAYMENT_LOOKUP_BUDGET_EXCEEDED";
+  | "TOCHKA_PAYMENT_LOOKUP_BUDGET_EXCEEDED"
+  | "TOCHKA_PAYMENT_LOOKUP_EXPIRED";
 
 export class NativeReadBackError extends Error {
   constructor(readonly code: NativeReadBackIssue) { super(code); }
+}
+
+export type NativeReadBackUnavailableCode = "NATIVE_ORIGINAL_EXECUTOR_UNAVAILABLE" | "TOCHKA_RESPONSE_INVALID" | "TOCHKA_APPROVAL_NOT_YET_VISIBLE";
+
+export class NativeReadBackUnavailable extends Error {
+  constructor(readonly code: NativeReadBackUnavailableCode) { super(code); }
 }
 
 export type NativePaymentReadBack =
@@ -83,7 +89,7 @@ export type NativeCallbackHint = {
   readonly providerSubjectId: string;
 };
 
-export type PaymentReadKey = { readonly snapshotHash: string; readonly providerPaymentId: string | null; readonly createdAt: string; readonly signal?: AbortSignal };
+export type PaymentReadKey = { readonly snapshotHash: string; readonly providerPaymentId: string | null; readonly createdAt: string; readonly observedAt: string; readonly signal?: AbortSignal };
 export type RefundReadKey = {
   readonly providerPaymentId: string; readonly merchantOrderRef: string; readonly snapshotHash: string;
 };
@@ -105,6 +111,6 @@ export interface NativePaymentProvider {
   submitRefund(request: FrozenNativeRefundRequest): Promise<NativeRefundAnswer>;
   /** Authoritative, by our refund ref. */
   readRefund(refundRef: string, key: RefundReadKey): Promise<NativeRefundReadBack>;
-  /** null: signature invalid or body unusable. Never throws for a forged body. */
+  /** null: signature invalid or body unusable. Unavailable verification keys can throw. */
   verifyCallback(headers: Readonly<Record<string, string | undefined>>, rawBody: Uint8Array): NativeCallbackHint | null | Promise<NativeCallbackHint | null>;
 }
