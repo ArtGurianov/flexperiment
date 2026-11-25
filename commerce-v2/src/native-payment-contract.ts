@@ -17,6 +17,8 @@
  *  - Fiscal events are reconciled separately and never produce or block a financial effect.
  */
 
+import type { NativeReadBackIssue } from "./native-payment-provider";
+
 export const NATIVE_CONTRACT_VERSION = "flexperiment.native-payment-contract/1" as const;
 
 export type ProductKind = "ONLINE_COURSE" | "COURSE_BUNDLE" | "LAB";
@@ -57,7 +59,9 @@ export type PaymentObservation =
   /** A request-bound refusal the provider proves it did not accept (e.g. validation of this exact body). */
   | { readonly source: "CREATE_RESPONSE"; readonly outcome: "REFUSED"; readonly code: string }
   | { readonly source: "CALLBACK"; readonly signatureValid: boolean; readonly providerPaymentId: string; readonly claimedStatus: string }
-  | { readonly source: "READ_BACK"; readonly outcome: "UNAVAILABLE" }
+  | { readonly source: "READ_BACK"; readonly outcome: "UNAVAILABLE"; readonly code?: "NATIVE_ORIGINAL_EXECUTOR_UNAVAILABLE" }
+  | { readonly source: "READ_BACK"; readonly outcome: "REVIEW_REQUIRED"; readonly code: NativeReadBackIssue }
+  | { readonly source: "READ_BACK"; readonly outcome: "DISPATCH_UNCERTAIN" }
   | { readonly source: "READ_BACK"; readonly outcome: "NOT_FOUND" }
   | {
     readonly source: "READ_BACK"; readonly outcome: "FOUND"; readonly providerPaymentId: string; readonly status: ProviderPaymentStatus;
@@ -119,7 +123,13 @@ export function applyPaymentObservation(
   }
 
   // READ_BACK
-  if (observation.outcome === "UNAVAILABLE") return stay(record, [], "READ_BACK_UNAVAILABLE");
+  if (observation.outcome === "UNAVAILABLE") return stay(record, [], observation.code ?? "READ_BACK_UNAVAILABLE");
+  if (observation.outcome === "REVIEW_REQUIRED") {
+    return { ...record, state: "REVIEW_REQUIRED", effects: ["ALERT"], reason: observation.code };
+  }
+  if (observation.outcome === "DISPATCH_UNCERTAIN") {
+    return { ...record, state: "CREATE_UNKNOWN", effects: ["READ_BACK"], reason: "NATIVE_CREATE_DISPATCH_UNCERTAIN" };
+  }
   if (observation.outcome === "NOT_FOUND") {
     // Absence is never concluded. An unanswered create is replayed byte-identically under its key while
     // admission allows new money; otherwise it stays unknown and is read back again later.
@@ -181,7 +191,9 @@ export type RefundObservation =
   /** proven: the provider states this exact request is terminally refused (nothing will be returned). */
   | { readonly source: "SUBMIT_RESPONSE"; readonly outcome: "REFUSED"; readonly code: string; readonly proven: boolean }
   | { readonly source: "CALLBACK"; readonly signatureValid: boolean; readonly providerRefundId: string }
-  | { readonly source: "READ_BACK"; readonly outcome: "UNAVAILABLE" }
+  | { readonly source: "READ_BACK"; readonly outcome: "UNAVAILABLE"; readonly code?: "NATIVE_ORIGINAL_EXECUTOR_UNAVAILABLE" }
+  | { readonly source: "READ_BACK"; readonly outcome: "REVIEW_REQUIRED"; readonly code: string }
+  | { readonly source: "READ_BACK"; readonly outcome: "DISPATCH_UNCERTAIN"; readonly code: "NATIVE_REFUND_DISPATCH_UNCERTAIN" | "NATIVE_REFUND_PREFLIGHT_UNAVAILABLE" }
   | { readonly source: "READ_BACK"; readonly outcome: "NOT_FOUND" }
   | {
     readonly source: "READ_BACK"; readonly outcome: "FOUND"; readonly providerRefundId: string; readonly status: ProviderRefundStatus;
@@ -248,7 +260,11 @@ export function applyRefundObservation(
     if (record.providerRefundId && observation.providerRefundId !== record.providerRefundId) return keep(["ALERT"], "CALLBACK_FOREIGN_REFUND");
     return keep(settled ? [] : ["READ_BACK"]);
   }
-  if (observation.outcome === "UNAVAILABLE") return keep([], "READ_BACK_UNAVAILABLE");
+  if (observation.outcome === "UNAVAILABLE") return keep([], observation.code ?? "READ_BACK_UNAVAILABLE");
+  if (observation.outcome === "REVIEW_REQUIRED") return review(observation.code);
+  if (observation.outcome === "DISPATCH_UNCERTAIN") return {
+    state: "SUBMIT_UNKNOWN", providerRefundId: record.providerRefundId, effects: [], reason: observation.code,
+  };
   if (observation.outcome === "NOT_FOUND") {
     // The refund money effect is the dangerous one: a lost submit is replayed with the SAME sealed
     // envelope and key (the provider deduplicates by key); there is no admission gate on refunds.

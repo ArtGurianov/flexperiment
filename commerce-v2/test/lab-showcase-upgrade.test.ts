@@ -3,7 +3,7 @@ import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
-import { migrateV2 } from "../src/db";
+import { applyV2Migration, migrateV2 } from "../src/db";
 import { assertReviewedRestoreSchema } from "../src/erasure-restore";
 
 it("upgrades the exact showcase migration prefix and preserves interest and notice history", () => {
@@ -44,7 +44,17 @@ it("upgrades the exact showcase migration prefix and preserves interest and noti
       INSERT INTO native_payments (id,order_id,payment_ref,idempotency_key,amount_kopecks,snapshot_hash,state,created_at,updated_at)
       VALUES ('legacy-payment','legacy-order','legacy-payment','legacy-key',100,'${"a".repeat(64)}','CREATING','2026-11-22','2026-11-22');`);
 
+    const handoff = "0043_native_payment_dispatch_boundary.sql";
+    applyV2Migration(db, handoff, readFileSync(join(source, handoff), "utf8"));
+    const through43 = journal();
+    expect(through43).toHaveLength(43);
+
     migrateV2(db);
+    expect(journal().slice(0, through43.length)).toEqual(through43);
+    expect(journal().slice(43)).toMatchObject([
+      { version: "0044_reviewed_erasure_receipts.sql", sha256: "57a6c94824b814d7e21f1eabd5dc352dd5e65bc9a5870b595c16602791b0daa5" },
+      { version: "0045_native_payment_executor.sql", sha256: "11547f21822275eb5c0f958f06288ba6265f41304084d9c83d8f88e3c5a92979" },
+    ]);
     expect(db.prepare("SELECT state, dispatch_started FROM native_payments WHERE id='legacy-payment'").get())
       .toEqual({ state: "CREATING", dispatch_started: 1 });
     expect(() => db.prepare("UPDATE native_payments SET dispatch_started=0 WHERE id='legacy-payment'").run())

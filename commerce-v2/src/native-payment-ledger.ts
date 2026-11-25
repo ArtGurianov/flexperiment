@@ -7,7 +7,8 @@ import {
   routeContour, type FiscalEventState, type FiscalizationMode, type NativePaymentState, type NativeRefundState, type PaymentDecision,
   type PaymentObservation, type ProductKind,
 } from "./native-payment-contract";
-import type { FrozenNativePaymentRequest, NativePaymentProvider } from "./native-payment-provider";
+import { NativeReadBackError } from "./native-payment-provider";
+import type { FrozenNativePaymentRequest, NativePaymentProvider, PaymentReadKey } from "./native-payment-provider";
 import { openPayload, sealPayload, type RefundEnvelopeKeyring } from "./refund-envelope";
 
 /**
@@ -18,12 +19,24 @@ import { openPayload, sealPayload, type RefundEnvelopeKeyring } from "./refund-e
  */
 export type NativeLedgerContext = {
   readonly provider: NativePaymentProvider;
+  readonly historicalProviders?: readonly NativePaymentProvider[];
   readonly keyring: RefundEnvelopeKeyring;
   readonly fiscalizationMode: FiscalizationMode;
   /** Sales admission (storefront switch + FLEX-90) for the order's storefront, read at each new-money send. */
   readonly mayInitiate: (kind: ProductKind, orderPublicId: string) => boolean;
   readonly now?: () => string;
 };
+
+export const executorKey = (provider: NativePaymentProvider) => provider.executorKey ?? provider.name;
+
+export const findNativeProvider = (ctx: NativeLedgerContext, key: string) =>
+  [ctx.provider, ...(ctx.historicalProviders ?? [])].find(candidate => executorKey(candidate) === key);
+
+export function nativeProviderForPayment(ctx: NativeLedgerContext, key: string) {
+  const provider = findNativeProvider(ctx, key);
+  if (!provider) throw new Error("NATIVE_ORIGINAL_EXECUTOR_UNAVAILABLE");
+  return provider;
+}
 
 const INTENT_STATE: Record<NativePaymentState, string> = {
   CREATING: "PAYMENT_CREATING", CREATE_UNKNOWN: "UNCERTAIN", PENDING: "PENDING", PAID: "PAID", DECLINED: "DECLINED", EXPIRED: "EXPIRED",
@@ -58,6 +71,7 @@ export type NativePaymentRow = {
   id: string; order_id: string; payment_ref: string; idempotency_key: string; amount_kopecks: number; snapshot_hash: string;
   state: NativePaymentState; provider_payment_id: string | null; payment_url: string | null; request_envelope: string | null;
   envelope_key_id: string | null; created_at: string; updated_at: string;
+  executor_key: string; fiscalization_mode: FiscalizationMode | null;
   dispatch_started: 0 | 1; last_reason: string | null;
 };
 const paymentById = (db: Database.Database, id: string) => db.prepare("SELECT * FROM native_payments WHERE id=?").get(id) as NativePaymentRow | undefined;
@@ -103,28 +117,29 @@ function stageNativePayment(db: Database.Database, ctx: NativeLedgerContext, ord
     const item = fiscalItemOf(order);
     // Refused before any money: a combination the contract cannot fiscalize never becomes a payment (I8).
     paymentReceiptMethod(order.kind, item.paymentMethod);
-    const purpose = (JSON.parse(order.checkout_snapshot_json) as { paymentPurpose?: string }).paymentPurpose;
+    const snapshot = JSON.parse(order.checkout_snapshot_json) as { paymentPurpose?: string; paymentObligations?: { fiscal?: { taxSystem?: string } }[] };
+    const purpose = snapshot.paymentPurpose;
     if (!purpose) throw new Error("NATIVE_PAYMENT_PURPOSE_REQUIRED");
     const keys = paymentKeys(order.public_id);
     const id = randomUUID();
     const request: FrozenNativePaymentRequest = {
       idempotencyKey: keys.idempotencyKey, paymentRef: keys.paymentRef, merchantOrderRef: order.public_id, amountKopecks: order.total_kopecks,
-      currency: "RUB", snapshotHash: order.snapshot_hash, purpose, receiptEmail: order.email_normalized, fiscalItems: [item],
+      currency: "RUB", snapshotHash: order.snapshot_hash, purpose, taxSystem: snapshot.paymentObligations?.[0]?.fiscal?.taxSystem, receiptEmail: order.email_normalized, fiscalItems: [item],
       ...(successUrl ? { successUrl } : {}),
     };
     const sealed = sealPayload(ctx.keyring, "native-payment-envelope", id, request);
     db.prepare(`INSERT INTO native_payments(id,order_id,payment_ref,idempotency_key,amount_kopecks,snapshot_hash,state,request_envelope,
-      envelope_key_id,created_at,updated_at,dispatch_started) VALUES (?,?,?,?,?,?,'CREATING',?,?,?,?,0)`)
-      .run(id, order.order_id, keys.paymentRef, keys.idempotencyKey, order.total_kopecks, order.snapshot_hash, sealed.sealed, sealed.keyId, now, now);
+      envelope_key_id,created_at,updated_at,dispatch_started,executor_key,fiscalization_mode) VALUES (?,?,?,?,?,?,'CREATING',?,?,?,?,0,?,?)`)
+      .run(id, order.order_id, keys.paymentRef, keys.idempotencyKey, order.total_kopecks, order.snapshot_hash, sealed.sealed, sealed.keyId, now, now, executorKey(ctx.provider), ctx.fiscalizationMode);
     return { payment: paymentById(db, id)!, created: true };
   }).immediate();
 }
 
-async function dispatchNativePayment(db: Database.Database, ctx: NativeLedgerContext, orderPublicId: string) {
+async function dispatchNativePayment(db: Database.Database, ctx: NativeLedgerContext, orderPublicId: string, stagedId?: string) {
   const order = orderContext(db, orderPublicId);
   const payment = order && paymentOfOrder(db, order.order_id);
   if (!order || !payment) throw new Error("NATIVE_PAYMENT_NOT_FOUND");
-  if (payment.state === "CREATING") await sendCreate(db, ctx, payment.id);
+  if (payment.state === "CREATING" && payment.id === stagedId) await sendCreate(db, ctx, payment.id);
   const current = paymentById(db, payment.id)!;
   return { orderPublicId, state: current.state, paymentUrl: current.payment_url };
 }
@@ -132,7 +147,7 @@ async function dispatchNativePayment(db: Database.Database, ctx: NativeLedgerCon
 export async function startNativePayment(db: Database.Database, ctx: NativeLedgerContext, orderPublicId: string) {
   const begun = stageNativePayment(db, ctx, orderPublicId);
   return begun.created
-    ? dispatchNativePayment(db, ctx, orderPublicId)
+    ? dispatchNativePayment(db, ctx, orderPublicId, begun.payment.id)
     : { orderPublicId, state: begun.payment.state, paymentUrl: begun.payment.payment_url };
 }
 
@@ -162,7 +177,7 @@ async function sendCreate(db: Database.Database, ctx: NativeLedgerContext, payme
     if (row.state !== "CREATING" && row.state !== "CREATE_UNKNOWN") return undefined;
     if ((row.dispatch_started === 1) !== replay || (replay && !ctx.provider.replayGuarantees.payment)) return undefined;
     const order = orderOfPayment(db, row);
-    if (!ctx.mayInitiate(order.kind, order.public_id)) {
+    if (row.executor_key !== executorKey(ctx.provider) || !ctx.mayInitiate(order.kind, order.public_id)) {
       expireUnsent(db, order, row, clock(ctx));
       return undefined;
     }
@@ -179,7 +194,7 @@ async function sendCreate(db: Database.Database, ctx: NativeLedgerContext, payme
     const row = paymentById(db, paymentId)!;
     if (row.state !== "CREATING" && row.state !== "CREATE_UNKNOWN") return undefined;
     const order = orderOfPayment(db, row);
-    if (!ctx.mayInitiate(order.kind, order.public_id)) return undefined;
+    if (row.executor_key !== executorKey(ctx.provider) || !ctx.mayInitiate(order.kind, order.public_id)) return undefined;
     try {
       return { response: ctx.provider.createPayment(request) };
     } catch (error) {
@@ -201,16 +216,20 @@ async function sendCreate(db: Database.Database, ctx: NativeLedgerContext, payme
   await driveNativePayment(db, ctx, paymentId, applyNativePaymentObservation(db, ctx, paymentId, observation, paymentUrl), budget);
 }
 
-async function readBack(ctx: NativeLedgerContext, merchantOrderRef: string): Promise<{ observation: PaymentObservation; paymentUrl?: string }> {
+async function readBack(provider: NativePaymentProvider | undefined, merchantOrderRef: string, key: PaymentReadKey):
+Promise<{ observation: PaymentObservation; paymentUrl?: string }> {
+  if (!provider) return { observation: { source: "READ_BACK", outcome: "UNAVAILABLE", code: "NATIVE_ORIGINAL_EXECUTOR_UNAVAILABLE" } };
   try {
-    const found = await ctx.provider.readPaymentByOrder(merchantOrderRef);
+    const found = await provider.readPaymentByOrder(merchantOrderRef, key);
     if (found.outcome === "NOT_FOUND") return { observation: { source: "READ_BACK", outcome: "NOT_FOUND" } };
     return { observation: {
       source: "READ_BACK", outcome: "FOUND", providerPaymentId: found.providerPaymentId, status: found.status, merchantOrderRef: found.merchantOrderRef,
       amountKopecks: found.amountKopecks, currency: found.currency, snapshotHash: found.snapshotHash,
     }, paymentUrl: found.status === "PENDING" ? found.paymentUrl : undefined };
-  } catch {
-    return { observation: { source: "READ_BACK", outcome: "UNAVAILABLE" } };
+  } catch (error) {
+    return { observation: error instanceof NativeReadBackError
+      ? { source: "READ_BACK", outcome: "REVIEW_REQUIRED", code: error.code }
+      : { source: "READ_BACK", outcome: "UNAVAILABLE" } };
   }
 }
 
@@ -224,7 +243,7 @@ function safePaymentUrl(value?: string) {
 
 /** Performs the external effects of a decision (read-back, replay) until none remain. */
 export async function driveNativePayment(db: Database.Database, ctx: NativeLedgerContext, paymentId: string, first: PaymentDecision,
-  budget: ReplayBudget = replayBudget()) {
+  budget: ReplayBudget = replayBudget(), signal?: AbortSignal) {
   let decision = first;
   for (let step = 0; step < MAX_DRIVE_STEPS; step += 1) {
     if (decision.effects.includes("REPLAY_CREATE_SAME_KEY")) {
@@ -237,26 +256,37 @@ export async function driveNativePayment(db: Database.Database, ctx: NativeLedge
       return { ...decision, effects: [] };
     }
     if (!decision.effects.includes("READ_BACK")) return decision;
-    const order = orderOfPayment(db, paymentById(db, paymentId)!);
-    const read = await readBack(ctx, order.public_id);
-    decision = applyNativePaymentObservation(db, ctx, paymentId, read.observation, read.paymentUrl);
+    const payment = paymentById(db, paymentId)!;
+    const order = orderOfPayment(db, payment);
+    const read = await readBack(findNativeProvider(ctx, payment.executor_key), order.public_id,
+      { snapshotHash: payment.snapshot_hash, providerPaymentId: payment.provider_payment_id, createdAt: payment.created_at, signal });
+    decision = applyNativePaymentObservation(db, ctx, paymentId, read.observation, read.paymentUrl, payment);
   }
   return decision;
 }
 
 /** One observation, applied with its in-database effects in a single transaction (contract I5). */
-export function applyNativePaymentObservation(db: Database.Database, ctx: NativeLedgerContext, paymentId: string, observation: PaymentObservation, paymentUrl?: string) {
+export function applyNativePaymentObservation(db: Database.Database, ctx: NativeLedgerContext, paymentId: string,
+  observation: PaymentObservation, paymentUrl?: string, beforeRead?: Pick<NativePaymentRow, "state" | "provider_payment_id">) {
   const now = clock(ctx);
   return db.transaction(() => {
     const payment = paymentById(db, paymentId);
     if (!payment) throw new Error("NATIVE_PAYMENT_NOT_FOUND");
     const order = orderOfPayment(db, payment);
-    if (payment.dispatch_started === 0 && observation.source === "READ_BACK" && observation.outcome === "NOT_FOUND") {
+    const recovering = observation.source === "READ_BACK" && observation.outcome === "DISPATCH_UNCERTAIN";
+    if ((recovering && (payment.dispatch_started !== 0 || payment.state !== "CREATING"))
+      || (payment.dispatch_started === 0 && observation.source === "READ_BACK" && !recovering && payment.state !== "CREATE_UNKNOWN")
+      || (beforeRead && (payment.state !== beforeRead.state || payment.provider_payment_id !== beforeRead.provider_payment_id))) {
       return { state: payment.state, providerPaymentId: payment.provider_payment_id, effects: [] } satisfies PaymentDecision;
     }
-    const decision = applyPaymentObservation({ state: payment.state, providerPaymentId: payment.provider_payment_id },
+    const fiscalizationMode = payment.fiscalization_mode ?? "MERCHANT";
+    let decision = applyPaymentObservation({ state: payment.state, providerPaymentId: payment.provider_payment_id },
       { merchantOrderRef: order.public_id, amountKopecks: payment.amount_kopecks, currency: "RUB", snapshotHash: payment.snapshot_hash },
-      observation, { mayInitiate: ctx.mayInitiate(order.kind, order.public_id), kind: order.kind, fiscalizationMode: ctx.fiscalizationMode });
+      observation, { mayInitiate: payment.dispatch_started === 1 && payment.executor_key === executorKey(ctx.provider) && ctx.mayInitiate(order.kind, order.public_id),
+        kind: order.kind, fiscalizationMode });
+    if (payment.dispatch_started === 0 && decision.state === "CREATE_UNKNOWN" && decision.reason === "PAYMENT_INITIATION_STOPPED") {
+      decision = { ...decision, reason: "NATIVE_CREATE_DISPATCH_UNCERTAIN" };
+    }
     const terminal = decision.state === "PAID" || decision.state === "DECLINED" || decision.state === "EXPIRED";
     const envelope = terminal && payment.request_envelope && payment.envelope_key_id
       ? openPayload<FrozenNativePaymentRequest>(ctx.keyring, "native-payment-envelope", payment.envelope_key_id, payment.id, payment.request_envelope)
@@ -265,11 +295,17 @@ export function applyNativePaymentObservation(db: Database.Database, ctx: Native
       && observation.providerPaymentId === decision.providerPaymentId ? safePaymentUrl(paymentUrl) : null;
     // The terminal state and the purge of the sealed request are one statement (0036 trigger).
     db.prepare(`UPDATE native_payments SET state=?,provider_payment_id=COALESCE(provider_payment_id,?),last_reason=?,updated_at=?,
+      dispatch_started=CASE WHEN ? THEN 1 ELSE dispatch_started END,
       payment_url=COALESCE(payment_url,?),
       request_envelope=CASE WHEN ? THEN NULL ELSE request_envelope END,
       envelope_purged_at=CASE WHEN ? AND request_envelope IS NOT NULL THEN ? ELSE envelope_purged_at END WHERE id=?`)
-      .run(decision.state, decision.providerPaymentId, decision.reason ?? null, now, boundUrl, terminal ? 1 : 0, terminal ? 1 : 0, now, payment.id);
-    const stoppedUnknown = decision.state === "CREATE_UNKNOWN" && decision.reason === "PAYMENT_INITIATION_STOPPED";
+      .run(decision.state, decision.providerPaymentId, decision.reason ?? null, now,
+        observation.source === "READ_BACK" && observation.outcome === "FOUND" && decision.state !== "REVIEW_REQUIRED" ? 1 : 0,
+        boundUrl, terminal ? 1 : 0, terminal ? 1 : 0, now, payment.id);
+    const stoppedUnknown = decision.state === "CREATE_UNKNOWN" && ["PAYMENT_INITIATION_STOPPED", "NATIVE_CREATE_DISPATCH_UNCERTAIN"].includes(decision.reason ?? "");
+    if (decision.reason === "NATIVE_ORIGINAL_EXECUTOR_UNAVAILABLE" && decision.reason !== payment.last_reason) {
+      auditNative(db, "NATIVE_PAYMENT_READ_BACK_UNAVAILABLE", "ORDER", order.public_id, { reason: decision.reason }, now);
+    }
     if (stoppedUnknown && payment.last_reason !== decision.reason) {
       auditNative(db, "NATIVE_PAYMENT_REVIEW_REQUIRED", "ORDER", order.public_id, { reason: decision.reason }, now);
     }
@@ -282,10 +318,11 @@ export function applyNativePaymentObservation(db: Database.Database, ctx: Native
         if (order.kind === "LAB") issueLabTicket(db, order.line_id, now);
         if (order.kind === "ONLINE_COURSE") grantEntitlement(db, { customerId: order.customer_id, scope: "COURSE", courseRef: order.course_ref!, sourceOrderLineId: order.line_id }, now);
         if (order.kind === "COURSE_BUNDLE") grantEntitlement(db, { customerId: order.customer_id, scope: "ALL_COURSES", sourceOrderLineId: order.line_id }, now);
-        if (ctx.fiscalizationMode === "PROVIDER") {
-          // The provider fiscalized the payment itself; its record here is evidence, not a submission.
+        if (fiscalizationMode === "PROVIDER") {
+          const automatic = nativeProviderForPayment(ctx, payment.executor_key).readAutomaticReceipt;
+          // An automatic receipt still needs its own fiscal read-back.
           insertFiscalEvent(db, ctx.keyring, { kind: "PAYMENT_RECEIPT", orderLineId: order.line_id, paymentMethod: paymentReceiptMethod(order.kind, item!.paymentMethod),
-            amountKopecks: payment.amount_kopecks, items: [item], mode: "PROVIDER", state: "NOT_REQUIRED", receiptEmail: null,
+            amountKopecks: payment.amount_kopecks, items: [item], mode: "PROVIDER", state: automatic ? "PENDING" : "NOT_REQUIRED", receiptEmail: null,
             evidence: { providerPaymentId: decision.providerPaymentId }, now });
         }
       } else if (effect === "ISSUE_PAYMENT_RECEIPT") {
@@ -294,7 +331,7 @@ export function applyNativePaymentObservation(db: Database.Database, ctx: Native
       } else if (effect === "RESERVE_FINAL_SETTLEMENT") {
         // §6.1: the contact for the closing receipt is copied, sealed, before the payment's envelope goes.
         insertFiscalEvent(db, ctx.keyring, { kind: "FINAL_SETTLEMENT", orderLineId: order.line_id, paymentMethod: "FULL_PAYMENT",
-          amountKopecks: payment.amount_kopecks, items: [{ ...item, paymentMethod: "FULL_PAYMENT" }], mode: ctx.fiscalizationMode, state: "AWAITING_SERVICE",
+          amountKopecks: payment.amount_kopecks, items: [{ ...item, paymentMethod: "FULL_PAYMENT" }], mode: fiscalizationMode, state: "AWAITING_SERVICE",
           receiptEmail: envelope?.receiptEmail ?? order.email_normalized, now });
       } else if (effect === "ALERT") {
         auditNative(db, "NATIVE_PAYMENT_REVIEW_REQUIRED", "ORDER", order.public_id, { reason: decision.reason, observation }, now);
@@ -317,14 +354,23 @@ export function applyNativePaymentObservation(db: Database.Database, ctx: Native
   }).immediate();
 }
 
-/** Cancellation can reconcile the original payment and fulfill a debit already accepted by the bank. */
+/** A zero marker in a persisted row is insufficient to send to an executor without replay protection. */
+function paymentReadOnlyRecovery(db: Database.Database, ctx: NativeLedgerContext, payment: NativePaymentRow) {
+  if (payment.dispatch_started === 0 && payment.state === "CREATING") {
+    return applyNativePaymentObservation(db, ctx, payment.id, { source: "READ_BACK", outcome: "DISPATCH_UNCERTAIN" });
+  }
+  return { state: payment.state, providerPaymentId: payment.provider_payment_id, effects: ["READ_BACK"] } satisfies PaymentDecision;
+}
+
+/** Cancellation and recovery can read back money without authorizing any create. */
 export async function reconcileNativePaymentWithoutNewCharge(db: Database.Database, ctx: NativeLedgerContext, orderPublicId: string) {
   const order = orderContext(db, orderPublicId);
   const payment = order && paymentOfOrder(db, order.order_id);
   if (!payment) throw new Error("NATIVE_PAYMENT_NOT_FOUND");
-  if (db.transaction(() => expireUnsent(db, order, paymentById(db, payment.id)!, clock(ctx))).immediate()) return;
-  await driveNativePayment(db, { ...ctx, mayInitiate: () => false }, payment.id,
-    { state: payment.state, providerPaymentId: payment.provider_payment_id, effects: ["READ_BACK"] });
+  if (payment.state === "PAID") return; // Subsequent refund facts are reconciled separately.
+  if (findNativeProvider(ctx, payment.executor_key)?.replayGuarantees.payment
+    && db.transaction(() => expireUnsent(db, order, paymentById(db, payment.id)!, clock(ctx))).immediate()) return;
+  await driveNativePayment(db, { ...ctx, mayInitiate: () => false }, payment.id, paymentReadOnlyRecovery(db, ctx, payment));
 }
 
 /** The sweep: every unsettled payment is read back, whether or not a callback arrived. */
@@ -338,8 +384,11 @@ export async function reconcilePendingNativePayments(db: Database.Database, ctx:
   for (const { id } of rows) {
     try {
       const payment = paymentById(db, id)!;
-      if (payment.dispatch_started === 0 && payment.state === "CREATING") await sendCreate(db, ctx, id);
-      else await driveNativePayment(db, ctx, id, { state: payment.state, providerPaymentId: null, effects: ["READ_BACK"] });
+      if (payment.dispatch_started === 0 && payment.state === "CREATING" && findNativeProvider(ctx, payment.executor_key)?.replayGuarantees.payment) {
+        await sendCreate(db, ctx, id);
+      } else {
+        await driveNativePayment(db, ctx, id, paymentReadOnlyRecovery(db, ctx, payment));
+      }
       reconciled += 1;
     } catch {
       failed += 1;
@@ -358,7 +407,33 @@ export function contourOfOrder(db: Database.Database, orderPublicId: string) {
   return routeContour({ nativePaymentRef: row.payment_ref, refrefAttemptId: row.refref_attempt_id });
 }
 
-/** The §8 order status DTO (shared-DTO request pending with the coordinator). */
+const BUYER_READ_COOLDOWN_MS = 3_000;
+const MAX_BUYER_READ_SLOTS = 256;
+const buyerReads = new WeakMap<Database.Database, Map<string, number>>();
+
+/** A buyer can expedite one bounded GET of a known operation. Discovery belongs to the sweep. */
+export async function refreshNativeOrderStatus(db: Database.Database, ctx: NativeLedgerContext, orderPublicId: string) {
+  const order = orderContext(db, orderPublicId);
+  const payment = order && paymentOfOrder(db, order.order_id);
+  if (payment?.dispatch_started && payment.provider_payment_id && payment.state === "PENDING") {
+    const now = Date.now();
+    const recent = buyerReads.get(db) ?? new Map<string, number>();
+    buyerReads.set(db, recent);
+    for (const [id, until] of recent) if (until <= now) recent.delete(id);
+    if (!recent.has(payment.id) && recent.size < MAX_BUYER_READ_SLOTS) {
+      recent.set(payment.id, now + BUYER_READ_COOLDOWN_MS);
+      try {
+        await driveNativePayment(db, { ...ctx, mayInitiate: () => false }, payment.id,
+          { state: payment.state, providerPaymentId: payment.provider_payment_id, effects: ["READ_BACK"] },
+          replayBudget(), AbortSignal.timeout(2_000));
+      } catch {
+        // Keep the last durable state. The sweep can repeat the read after a transient failure.
+      }
+    }
+  }
+  return nativeOrderStatus(db, orderPublicId);
+}
+
 export function nativeOrderStatus(db: Database.Database, orderPublicId: string) {
   const order = orderContext(db, orderPublicId);
   if (!order) throw new Error("ORDER_NOT_FOUND");
@@ -394,9 +469,17 @@ export function nativeConfirm(db: Database.Database, ctx: NativeLedgerContext) {
     if (!payment) throw new Error("NATIVE_PAYMENT_NOT_FOUND");
     return { orderPublicId, state: payment.state as string, paymentUrl: payment.state === "PENDING" ? payment.payment_url : null };
   };
+  let stagedId: string | undefined;
   return {
-    stage: (orderPublicId: string, successUrl?: string) => { stageNativePayment(db, ctx, orderPublicId, successUrl); },
-    dispatch: (orderPublicId: string) => dispatchNativePayment(db, ctx, orderPublicId),
+    stage: (orderPublicId: string, successUrl?: string) => {
+      const staged = stageNativePayment(db, ctx, orderPublicId, successUrl);
+      stagedId = staged.created ? staged.payment.id : undefined;
+    },
+    dispatch: (orderPublicId: string) => {
+      const id = stagedId;
+      stagedId = undefined;
+      return dispatchNativePayment(db, ctx, orderPublicId, id);
+    },
     status,
   };
 }

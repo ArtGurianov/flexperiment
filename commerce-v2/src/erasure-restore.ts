@@ -55,6 +55,8 @@ const REVIEWED_SCHEMA_SHA256 = new Set([
   "a9b1238f3188fd74e87d86edef9774887a4d23f728e24ab8337eb0060f889150",
   // 0044: FLEX-131 local execution receipts, linked to independent signed entries.
   "49c1014232cb13df508508c6fb02c6b0a94149d1ff4e13310e8b9ba34f9aa658",
+  // 0045: executor identity, fiscal mode and refund dispatch on existing financial rows.
+  "f6e1eb904d862767c86ab6bf3faf838daa391456f4a3e1b9416dfd157b88f562",
 ]);
 export function assertReviewedRestoreSchema(db: Database.Database) {
   const schema = db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").all();

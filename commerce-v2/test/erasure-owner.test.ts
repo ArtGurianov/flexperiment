@@ -13,11 +13,15 @@ import { erasurePseudonym, readOwnerErasureBundle } from "../src/erasure-ledger"
 import { reviewedApprovalBytes, type ReviewedErasurePlan } from "../src/erasure-plan";
 import { backupFoundation } from "../src/foundation-storage";
 import { FakeFiscalAdapter, FakeNativeBank } from "./fixtures/native-fake-provider";
-import { reconcilePendingFiscalEvents } from "../src/fiscal-port";
+import { startTochkaHttpFixture } from "./fixtures/tochka-http";
+import { receiveNativeCallback } from "../src/native-payment-callbacks";
+import { nativePaymentsFromConfig } from "../src/native-payment-runtime";
+import { loadCommerceRuntimeConfig } from "../src/payment-mode";
+import { reconcileAutomaticNativeReceipts, reconcilePendingFiscalEvents } from "../src/fiscal-port";
 import { revokeEntitlementForOrderLine } from "../src/entitlements";
 import { decideRefund, requestRefund } from "../src/refunds";
 import { executeApprovedNativeRefund, reconcilePendingNativeRefunds } from "../src/native-payment-refunds";
-import { nativeOrderStatus, reconcileNativePaymentWithoutNewCharge, reconcilePendingNativePayments, startNativePayment } from "../src/native-payment-ledger";
+import { nativeErasureAdmission, nativeOrderStatus, reconcileNativePaymentWithoutNewCharge, reconcilePendingNativePayments, startNativePayment } from "../src/native-payment-ledger";
 import { readOwnerConfiguration, runErasureOwnerOperation, type ErasureOwnerConfiguration } from "../src/erasure-owner";
 import { migrateV2 } from "../src/db";
 import { createAuthRuntime } from "../src/auth";
@@ -173,20 +177,32 @@ describe("owner-only one-shot operations with isolated real SDK/SQLite/auth, no 
 
 describe("FLEX-131 reviewed closure on synthetic data", () => {
   const count = (table: string, handle = db) => (handle.prepare(`SELECT count(*) AS n FROM "${table}"`).get() as { n: number }).n;
-  async function paidProfile() {
+  let fixture: Awaited<ReturnType<typeof startTochkaHttpFixture>> | undefined;
+  afterEach(async () => { await fixture?.close(); fixture = undefined; });
+
+  async function paidProfile(profile: "fake" | "tochka" | "historical" = "fake") {
     const cookie = await login();
     const customerId = (db.prepare("SELECT id FROM customers").get() as { id: string }).id;
     const bank = new FakeNativeBank();
     const keyring = { currentKeyId: "fake", keys: { fake: randomBytes(32) } };
-    const ledger = { provider: bank, keyring, fiscalizationMode: "MERCHANT" as const, mayInitiate: () => true };
     const fiscal = new FakeFiscalAdapter();
+    const original = { provider: bank, keyring, fiscalizationMode: "MERCHANT" as const, mayInitiate: () => true };
+    const direct = profile === "tochka" ? fixture : undefined;
+    const runtime = fixture && nativePaymentsFromConfig(db, loadCommerceRuntimeConfig({
+      DEPLOY_ENV: "test", PAYMENT_MODE: "native", KINESCOPE_DELIVERY_MODE: "protected",
+      NATIVE_PROVIDER: "tochka", NATIVE_TOCHKA_FIXTURE_ORIGIN: fixture.origin,
+    }), keyring, profile === "historical" ? { historicalFake: { provider: bank, fiscalAdapter: fiscal } } : undefined);
+    const purchaseLedger = direct ? { ...runtime!.ledger, mayInitiate: () => true } : original;
+    const ledger = profile === "historical" ? runtime!.ledger : purchaseLedger;
     const stamp = now().toISOString();
     db.exec(`INSERT INTO legal_releases(id,storefront,version,manifest_json,effective_at,active)
       VALUES ('paid-legal','COURSES','test','{}','2026-01-01T00:00:00Z',1);
       INSERT INTO products(id,product_ref,kind,access_model,course_ref) VALUES
       ('paid','paid-ref','ONLINE_COURSE','PAID','course-paid'),('free','free-ref','ONLINE_COURSE','FREE','course-free');`);
     async function purchase(order: string, status: "PAID" | "EXPIRED") {
-      const snapshot = JSON.stringify({ paymentPurpose: "Synthetic course" });
+      const snapshot = JSON.stringify({ paymentPurpose: "Synthetic course", ...(direct && {
+        paymentObligations: [{ fiscal: { taxSystem: "USN_INCOME" } }],
+      }) });
       db.prepare(`INSERT INTO orders(id,public_id,customer_id,state,total_kopecks,checkout_snapshot_json,snapshot_hash,legal_release_id)
         VALUES (?,?,?,'PAYMENT_PENDING',1200,?,?,'paid-legal')`)
         .run(`order-${order}`, order, customerId, snapshot, createHash("sha256").update(snapshot).digest("hex"));
@@ -194,14 +210,39 @@ describe("FLEX-131 reviewed closure on synthetic data", () => {
         VALUES (?,?,'paid','paid-ref','Synthetic course',1200,'test',?)`).run(`line-${order}`, `order-${order}`, JSON.stringify({
         name: "Synthetic course", quantity: 1, amountKopecks: 1200, vatCode: "NONE", paymentMethod: "FULL_PAYMENT", paymentObject: "SERVICE",
       }));
-      await startNativePayment(db, ledger, order);
-      if (status === "PAID") bank.buyerPays(order);
+      if (direct) direct.faults.loseCreate = status === "PAID";
+      await startNativePayment(db, purchaseLedger, order);
+      const payment = direct && [...direct.payments.values()].at(-1);
+      if (direct && payment) {
+        if (status === "PAID") direct.pay(payment);
+        else direct.expire(payment);
+      } else if (status === "PAID") bank.buyerPays(order);
       else bank.expire(order);
-      await reconcilePendingNativePayments(db, ledger);
+      await reconcilePendingNativePayments(db, purchaseLedger);
+      return payment;
     }
-    await purchase("ORDER-TEST", "PAID");
-    const reconcileFiscal = (database: Database.Database) => reconcilePendingFiscalEvents(database, { keyring, adapter: fiscal });
-    await reconcileFiscal(db);
+    const paid = await purchase("ORDER-TEST", "PAID");
+    const publishFixtureReceipt = (kind: "PAYMENT_RECEIPT" | "REFUND_RECEIPT") => {
+      if (!direct || !paid) return;
+      const row = db.prepare("SELECT event_ref FROM fiscal_events WHERE kind=?").get(kind) as { event_ref: string };
+      direct.receipt(paid, row.event_ref, kind === "REFUND_RECEIPT");
+    };
+    const reconcileFiscal = async (database: Database.Database) => {
+      if (direct) await reconcileAutomaticNativeReceipts(database, ledger);
+      else if (profile === "historical") await reconcilePendingFiscalEvents(database, { keyring, adapterForExecutor: runtime!.merchantFiscalAdapterFor });
+      else await reconcilePendingFiscalEvents(database, { keyring, adapter: fiscal });
+    };
+    const settleRefund = (requestPublicId: string) => {
+      if (direct && paid) direct.completeRefund(paid);
+      else bank.settleRefund(`refund:${requestPublicId}`);
+    };
+    const financialCounts = () => direct ? [direct.calls.create, direct.calls.refund, direct.calls.returned]
+      : [bank.calls.create.length, bank.calls.submitRefund.length, bank.returns];
+    const replayPaymentCallback = (database: Database.Database) => direct && paid
+      ? receiveNativeCallback(database, ledger, { "content-type": "text/plain" }, Buffer.from(direct.callback(paid))) : undefined;
+    publishFixtureReceipt("PAYMENT_RECEIPT");
+    if (profile === "historical") await reconcilePendingFiscalEvents(db, { keyring, adapter: fiscal });
+    else await reconcileFiscal(db);
     expect(db.prepare("SELECT state FROM fiscal_events").get()).toEqual({ state: "REGISTERED" });
 
     db.prepare("INSERT INTO free_course_enrollments VALUES (?, 'free', 1, ?)").run(customerId, stamp);
@@ -216,9 +257,11 @@ describe("FLEX-131 reviewed closure on synthetic data", () => {
     const request = requestRefund(db, { customerId, orderPublicId: "ORDER-TEST", idempotencyKey: "profile-refund", reasonCode: "CUSTOMER_REQUEST" }, stamp);
     decideRefund(db, request.requestPublicId, { outcome: "APPROVE", amountKopecks: 1200, policyBasis: "synthetic",
       rationale: "Synthetic full refund", actor: "fixture" }, stamp);
+    if (direct) direct.faults.loseRefund = true;
     await executeApprovedNativeRefund(db, ledger, request.requestPublicId);
     expect(nativeOrderStatus(db, "ORDER-TEST")).toMatchObject({ refund: "REFUND_PROCESSING" });
-    return { customerId, cookie, link, clientIp, bank, ledger, reconcileFiscal, purchase, requestPublicId: request.requestPublicId };
+    return { customerId, cookie, link, clientIp, bank, ledger, reconcileFiscal, purchase, settleRefund, financialCounts,
+      publishFixtureReceipt, replayPaymentCallback, requestPublicId: request.requestPublicId };
   }
 
   async function planFor(customerId: string, active = false) {
@@ -268,26 +311,34 @@ describe("FLEX-131 reviewed closure on synthetic data", () => {
     return { plan, policy, setPolicy, dryRun, approve, ruleFor };
   }
 
-  it("closes after settlement and replays an older encrypted snapshot before settlement and a second order", async () => {
+  it.each(["fake", "tochka", "historical"] as const)("closes after settlement and replays an older encrypted snapshot (%s)", async profile => {
     await initialize();
-    const { customerId, cookie, link, clientIp, bank, ledger, reconcileFiscal, purchase, requestPublicId } = await paidProfile();
+    if (profile !== "fake") fixture = await startTochkaHttpFixture();
+    const { customerId, cookie, link, clientIp, ledger, reconcileFiscal, purchase, requestPublicId,
+      settleRefund, financialCounts, publishFixtureReceipt, replayPaymentCallback } = await paidProfile(profile);
     const snapshot = await backupFoundation(db, { environment: "canary", sourceCommit: "e67f982161114560c91de28128baec0a51a2d1b1" }, join(root, "backup"), config.recipient);
     db.exec("INSERT INTO email_suppressions(email_normalized,reason) VALUES ('owner@example.test','TEST_WITHDRAWAL')");
-    bank.settleRefund(`refund:${requestPublicId}`);
+    settleRefund(requestPublicId);
     await reconcilePendingNativeRefunds(db, ledger);
-    await reconcileFiscal(db);
     expect(nativeOrderStatus(db, "ORDER-TEST")).toMatchObject({ refund: "REFUNDED" });
+    expect(nativeErasureAdmission(db, customerId).admitted).toBe(false);
+    await expect((await planFor(customerId)).dryRun()).rejects.toThrow("ERASURE_OPEN_OBLIGATIONS_HOLD");
+    expect(count("user")).toBe(1);
+    publishFixtureReceipt("REFUND_RECEIPT");
+    await reconcileFiscal(db);
+    expect(nativeErasureAdmission(db, customerId).admitted).toBe(true);
     expect(db.prepare("SELECT count(*) AS n FROM fiscal_events WHERE state='REGISTERED'").get()).toEqual({ n: 2 });
-    expect(bank.returns).toBe(1);
+    expect(financialCounts()).toEqual([1, 1, 1]);
 
-    await purchase("ORDER-LATER", "EXPIRED");
+    if (profile !== "historical") await purchase("ORDER-LATER", "EXPIRED");
+    const orderCount = profile === "historical" ? 1 : 2;
     const before = (table: string) => db.prepare(`SELECT * FROM ${table}`).all();
     const finance = ["orders", "order_lines", "native_payments", "native_refunds", "refund_requests", "fiscal_events",
       "course_entitlements", "course_access_starts"].map(table => ({ table, rows: before(table) }));
     const { plan, dryRun, approve } = await planFor(customerId);
     wire.requests.length = 0;
     const priorChanges = db.pragma("data_version", { simple: true });
-    expect(await dryRun()).toMatchObject({ state: "DRY_RUN", activeRights: 0, orderCount: 2, openRefunds: 0 });
+    expect(await dryRun()).toMatchObject({ state: "DRY_RUN", activeRights: 0, orderCount, openRefunds: 0 });
     expect(wire.requests).toHaveLength(0);
     expect(db.pragma("data_version", { simple: true })).toBe(priorChanges);
     const op = await approve();
@@ -341,10 +392,33 @@ describe("FLEX-131 reviewed closure on synthetic data", () => {
       expect(restored.prepare("SELECT application_mode FROM reviewed_erasure_receipts").get()).toEqual({ application_mode: "RESTORE" });
       await reconcileNativePaymentWithoutNewCharge(restored, ledger, "ORDER-TEST");
       await reconcilePendingNativeRefunds(restored, ledger);
+      if (profile === "tochka" && fixture) {
+        fixture.faults.hideReceipts = true;
+        await reconcileFiscal(restored);
+        expect(restored.prepare("SELECT state,last_reason FROM fiscal_events WHERE kind='REFUND_RECEIPT'").get())
+          .toEqual({ state: "PENDING", last_reason: "RECEIPT_NOT_YET_VISIBLE" });
+        expect(nativeErasureAdmission(restored, customerId).admitted).toBe(false);
+        const infoReads = fixture.calls.info;
+        expect(await replayPaymentCallback(restored)).toEqual({ accepted: true, duplicate: false });
+        expect(await replayPaymentCallback(restored)).toEqual({ accepted: true, duplicate: true });
+        expect(fixture.calls.info).toBe(infoReads);
+        fixture.faults.hideReceipts = false;
+      }
       await reconcileFiscal(restored);
+      const evidence = () => restored.prepare("SELECT state,provider_receipt_id,evidence_json FROM fiscal_events ORDER BY kind").all();
+      expect(restored.prepare("SELECT count(*) AS n FROM fiscal_events WHERE state='REGISTERED'").get()).toEqual({ n: 2 });
+      const settled = evidence();
+      applyIsolatedRestoreErasure(restored, proof, keys, "canary", now());
+      await reconcileFiscal(restored);
+      expect(evidence()).toEqual(settled);
+      expect(count("reviewed_erasure_receipts", restored)).toBe(1);
+      expect(count("user", restored)).toBe(0);
+      expect(count("free_course_enrollments", restored)).toBe(0);
+      expect(count("lesson_resume_positions", restored)).toBe(0);
       expect(nativeOrderStatus(restored, "ORDER-TEST")).toMatchObject({ refund: "REFUNDED" });
       expect(restored.prepare("SELECT count(*) AS n FROM course_entitlements WHERE revoked_at IS NULL").get()).toEqual({ n: 0 });
-      expect([bank.calls.create.length, bank.calls.submitRefund.length, bank.returns]).toEqual([2, 1, 1]);
+      expect(financialCounts()).toEqual([orderCount, 1, 1]);
+      if (profile === "historical") expect(fixture?.calls).toMatchObject({ create: 0, info: 0, refund: 0, receipt: 0 });
       expect(count("orders", restored)).toBe(1); // Replay does not reconstruct a missing financial tail.
       await expect(run({ operation: "reconcile" }, { ...config, databasePath: oldPath })).rejects.toThrow("ERASURE_NATIVE_RESTORE_FINANCIAL_HOLD");
     } finally { remote.close(); restored.close(); }

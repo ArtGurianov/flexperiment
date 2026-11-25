@@ -25,11 +25,9 @@ export type CommerceRuntimeConfig = {
     /** Refref vNext surface (`/v1-vnext`, docs/openapi-vnext.yaml) for arrival claims and context close; served from the staged cutover. */
     readonly vnextApiBaseUrl?: string;
   };
-  /**
-   * The direct native contour (FLEX-119). Only the test fake exists until a provider and an admitted
-   * environment are confirmed, and the fake never starts outside local/test.
-   */
-  readonly native?: { readonly provider: "fake"; readonly fiscalizationMode: "PROVIDER" | "MERCHANT" };
+  readonly native?:
+    | { readonly provider: "fake"; readonly fiscalizationMode: "PROVIDER" | "MERCHANT" }
+    | { readonly provider: "tochka"; readonly fiscalizationMode: "PROVIDER"; readonly fixtureOrigin: string };
   readonly nativeCoursesLegal?: { readonly version: string; readonly sha256: string };
   readonly historicalRefref?: Pick<NonNullable<CommerceRuntimeConfig["refref"]>, "apiBaseUrl" | "apiKey" | "merchantId">;
   /**
@@ -55,6 +53,32 @@ function loadRefrefExecutor(env: Environment) {
     throw new CommerceConfigurationError("REFREF_MERCHANT_ID_INVALID");
   }
   return { apiBaseUrl, apiKey: required(env, "REFREF_API_KEY"), merchantId };
+}
+
+export function tochkaFixtureOrigin(value: string | undefined) {
+  // The unresolved contract and fiscal read-back keep this profile loopback-only.
+  if (!value || !/^http:\/\/127\.0\.0\.1:[1-9]\d{0,4}$/.test(value)) {
+    throw new CommerceConfigurationError("NATIVE_TOCHKA_FIXTURE_ORIGIN_REQUIRED");
+  }
+  try { return new URL(value).origin; } catch { throw new CommerceConfigurationError("NATIVE_TOCHKA_FIXTURE_ORIGIN_REQUIRED"); }
+}
+
+function loadNativeProfile(env: Environment, provider: string | undefined, environment: CommerceRuntimeConfig["deployEnvironment"]):
+  NonNullable<CommerceRuntimeConfig["native"]> {
+  if (provider === "tochka") {
+    if (environment !== "local" && environment !== "test") throw new CommerceConfigurationError("NATIVE_TOCHKA_PROFILE_UNQUALIFIED");
+    if (env.NATIVE_FISCALIZATION_MODE && env.NATIVE_FISCALIZATION_MODE !== "PROVIDER") throw new CommerceConfigurationError("NATIVE_TOCHKA_REQUIRES_PROVIDER_RECEIPTS");
+    return { provider, fiscalizationMode: "PROVIDER", fixtureOrigin: tochkaFixtureOrigin(env.NATIVE_TOCHKA_FIXTURE_ORIGIN) };
+  }
+  if (provider !== "fake") throw new CommerceConfigurationError("NATIVE_PROVIDER_INVALID");
+  if (environment !== "local" && environment !== "test") throw new CommerceConfigurationError("NATIVE_FAKE_PROVIDER_FORBIDDEN");
+  const fiscalizationMode = env.NATIVE_FISCALIZATION_MODE?.trim() || "MERCHANT";
+  if (fiscalizationMode !== "PROVIDER" && fiscalizationMode !== "MERCHANT") throw new CommerceConfigurationError("NATIVE_FISCALIZATION_MODE_INVALID");
+  return { provider, fiscalizationMode };
+}
+
+export function nativePurchaseAllowed(config: Pick<CommerceRuntimeConfig, "paymentMode" | "native">, kind: string) {
+  return config.paymentMode !== "native" || config.native?.provider !== "tochka" || kind === "ONLINE_COURSE";
 }
 
 export function loadCommerceRuntimeConfig(env: Environment = process.env): CommerceRuntimeConfig {
@@ -87,10 +111,7 @@ export function loadCommerceRuntimeConfig(env: Environment = process.env): Comme
     // The Refref executor is optional and can only service existing RC.2 records.
     if (kinescopeDeliveryMode !== "protected") throw new CommerceConfigurationError("NATIVE_REQUIRES_PROTECTED_KINESCOPE");
     const provider = env.NATIVE_PROVIDER?.trim();
-    if (provider !== "fake") throw new CommerceConfigurationError("NATIVE_PROVIDER_INVALID");
-    if (deployEnvironment !== "local" && deployEnvironment !== "test") throw new CommerceConfigurationError("NATIVE_FAKE_PROVIDER_FORBIDDEN");
-    const fiscalizationMode = env.NATIVE_FISCALIZATION_MODE?.trim() || "MERCHANT";
-    if (fiscalizationMode !== "PROVIDER" && fiscalizationMode !== "MERCHANT") throw new CommerceConfigurationError("NATIVE_FISCALIZATION_MODE_INVALID");
+    const native = loadNativeProfile(env, provider, deployEnvironment);
     const historicalRefref = [env.REFREF_API_BASE_URL, env.REFREF_API_KEY, env.REFREF_MERCHANT_ID].some(value => value !== undefined)
       ? loadRefrefExecutor(env) : undefined;
     const version = env.NATIVE_COURSES_LEGAL_VERSION?.trim();
@@ -98,7 +119,7 @@ export function loadCommerceRuntimeConfig(env: Environment = process.env): Comme
     if ((version || sha256) && (!version || !sha256 || !/^[a-f0-9]{64}$/.test(sha256))) {
       throw new CommerceConfigurationError("NATIVE_COURSES_LEGAL_CONFIG_INVALID");
     }
-    return { deployEnvironment, paymentMode, kinescopeDeliveryMode, merchantPromotionPrefix, native: { provider, fiscalizationMode },
+    return { deployEnvironment, paymentMode, kinescopeDeliveryMode, merchantPromotionPrefix, native,
       ...(historicalRefref ? { historicalRefref } : {}), ...(version && sha256 ? { nativeCoursesLegal: { version, sha256 } } : {}) };
   }
   if (paymentMode !== "refref") return { deployEnvironment, paymentMode, kinescopeDeliveryMode, merchantPromotionPrefix };
