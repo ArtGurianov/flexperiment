@@ -53,12 +53,13 @@ type EventRow = {
   id: string; event_ref: string; kind: FrozenFiscalEvent["kind"]; order_line_id: string; payment_method: FiscalPaymentMethod; amount_kopecks: number;
   items_json: string; mode: "PROVIDER" | "MERCHANT"; state: FiscalEventState; provider_receipt_id: string | null; evidence_json: string | null;
   sealed_contact: string | null; contact_key_id: string | null; order_public_id: string; snapshot_hash: string; kind_of_product: ProductKind;
-  occurrence_ref: string | null; ends_at: string | null; order_id: string;
+  occurrence_ref: string | null; ends_at: string | null; order_id: string; executor_key: string | null; last_reason: string | null;
 };
 const eventRow = (db: Database.Database, id: string) => db.prepare(`SELECT event.*,orders.public_id AS order_public_id,orders.snapshot_hash,
-    orders.id AS order_id,product.kind AS kind_of_product,product.occurrence_ref,occurrence.ends_at
+    orders.id AS order_id,product.kind AS kind_of_product,product.occurrence_ref,occurrence.ends_at,payment.executor_key
   FROM fiscal_events event JOIN order_lines line ON line.id=event.order_line_id JOIN orders ON orders.id=line.order_id
   JOIN products product ON product.id=line.product_id LEFT JOIN lab_occurrences occurrence ON occurrence.occurrence_ref=product.occurrence_ref
+  LEFT JOIN native_payments payment ON payment.order_id=orders.id
   WHERE event.id=?`).get(id) as EventRow | undefined;
 
 const TERMINAL: readonly FiscalEventState[] = ["REGISTERED", "REJECTED", "NOT_REQUIRED", "CANCELLED"];
@@ -194,8 +195,8 @@ function admitReserved(db: Database.Database, row: EventRow, adapter: FiscalAdap
  * back first, and only a NOT_FOUND replays the same frozen event under its eventRef.
  */
 export async function reconcilePendingFiscalEvents(db: Database.Database, deps: {
-  readonly adapter: FiscalAdapter; readonly keyring: RefundEnvelopeKeyring; readonly renditions?: ServiceRenditionReader; readonly now?: () => string;
-}) {
+  readonly keyring: RefundEnvelopeKeyring; readonly renditions?: ServiceRenditionReader; readonly now?: () => string;
+} & ({ readonly adapter: FiscalAdapter } | { readonly adapterForExecutor: (key: string) => FiscalAdapter | undefined })) {
   const now = deps.now ? deps.now() : new Date().toISOString();
   const rows = db.prepare(`SELECT id FROM fiscal_events WHERE (mode='MERCHANT' OR kind='FINAL_SETTLEMENT')
     AND state IN ('AWAITING_SERVICE','SUBMITTING','SUBMIT_UNKNOWN','PENDING') ORDER BY updated_at LIMIT 100`).all() as { id: string }[];
@@ -205,14 +206,26 @@ export async function reconcilePendingFiscalEvents(db: Database.Database, deps: 
     const row = eventRow(db, id)!;
     if (!["AWAITING_SERVICE", "SUBMITTING", "SUBMIT_UNKNOWN", "PENDING"].includes(row.state)) continue;
     try {
-      if (row.state === "AWAITING_SERVICE" && !admitReserved(db, row, deps.adapter, deps.renditions, now)) continue;
-      let decision = applyObservation(db, id, await observe(deps.adapter, row.event_ref), now);
+      const adapter = "adapter" in deps ? deps.adapter : row.executor_key ? deps.adapterForExecutor(row.executor_key) : undefined;
+      if (!adapter) {
+        const reason = "NATIVE_ORIGINAL_FISCAL_EXECUTOR_UNAVAILABLE";
+        db.transaction(() => {
+          const current = eventRow(db, id)!;
+          if (!["AWAITING_SERVICE", "SUBMITTING", "SUBMIT_UNKNOWN", "PENDING"].includes(current.state)) return;
+          db.prepare("UPDATE fiscal_events SET last_reason=?,updated_at=? WHERE id=?").run(reason, now, id);
+          if (current.last_reason !== reason) auditNative(db, "NATIVE_FISCAL_READ_BACK_UNAVAILABLE", "FISCAL_EVENT", current.event_ref, { reason }, now);
+        }).immediate();
+        failed += 1;
+        continue;
+      }
+      if (row.state === "AWAITING_SERVICE" && !admitReserved(db, row, adapter, deps.renditions, now)) continue;
+      let decision = applyObservation(db, id, await observe(adapter, row.event_ref), now);
       for (let step = 0; step < 4; step += 1) {
         if (decision.effects.includes("REPLAY_FISCAL_SAME_KEY")) {
           const event = frozenEvent(db, deps.keyring, eventRow(db, id)!);
           let answer: FiscalObservation;
           try {
-            const result = await deps.adapter.submit(event);
+            const result = await adapter.submit(event);
             answer = result.outcome === "ACCEPTED" ? { source: "SUBMIT_RESPONSE", outcome: "ACCEPTED", providerReceiptId: result.providerReceiptId }
               : { source: "SUBMIT_RESPONSE", outcome: "REJECTED", code: result.code };
           } catch {
@@ -221,7 +234,7 @@ export async function reconcilePendingFiscalEvents(db: Database.Database, deps: 
           submitted += 1;
           decision = applyObservation(db, id, answer, now);
         } else if (decision.effects.includes("FISCAL_READ_BACK")) {
-          decision = applyObservation(db, id, await observe(deps.adapter, row.event_ref), now);
+          decision = applyObservation(db, id, await observe(adapter, row.event_ref), now);
         } else break;
       }
     } catch {

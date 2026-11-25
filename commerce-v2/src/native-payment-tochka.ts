@@ -1,14 +1,17 @@
 import { createHash, createPublicKey, verify, type KeyObject } from "node:crypto";
 import type { FiscalReadBack } from "./fiscal-port";
+import { NativeReadBackError } from "./native-payment-provider";
 import type {
   FrozenNativePaymentRequest, FrozenNativeRefundRequest, NativeCallbackHint, NativeCreateAnswer,
-  NativePaymentProvider, NativePaymentReadBack, NativeRefundAnswer, NativeRefundReadBack, PaymentReadKey, RefundReadKey,
+  NativePaymentProvider, NativePaymentReadBack, NativeRefundAnswer, NativeRefundPreflight, NativeRefundReadBack, PaymentReadKey, RefundReadKey,
 } from "./native-payment-provider";
 
 const acquiring = "/uapi/acquiring/v1.0";
 const payments = `${acquiring}/payments`;
 const publicKeyPath = "/doc/openapi/static/keys/public";
-const invalid = () => new Error("TOCHKA_RESPONSE_INVALID");
+const invalid = () => new NativeReadBackError("TOCHKA_RESPONSE_INVALID");
+const lookupBudgetError = () => new NativeReadBackError("TOCHKA_PAYMENT_LOOKUP_BUDGET_EXCEEDED");
+const DAY_MS = 86_400_000;
 
 export type TochkaConnection = {
   readonly origin: string;
@@ -68,11 +71,10 @@ function paymentStatus(row: Record<string, unknown>): "PENDING" | "PAID" | "EXPI
       const approvals = history.filter(entry => entry.type === "approval");
       if (row.paymentType === "card" && row.preAuthorization !== true && !history.some(entry => entry.type === "refund")
         && approvals.length === 1 && minor(approvals[0].amount) === minor(row.amount) && currency(approvals[0]) === "RUB") return "PAID";
-      break;
+      throw new NativeReadBackError("TOCHKA_PAYMENT_APPROVAL_CONFLICT");
     }
+    default: throw new NativeReadBackError("TOCHKA_PAYMENT_STATUS_UNSUPPORTED");
   }
-  // A refund already in flight or completed needs separate operator reconciliation.
-  throw invalid();
 }
 
 const refundOrders = (row: Record<string, unknown>) => records(row.Order).filter(entry => entry.type === "refund");
@@ -90,23 +92,28 @@ export class TochkaNativeAcquiring implements NativePaymentProvider {
     ])).digest("hex")}`;
   }
 
-  private async json(path: string, data?: object, authenticate = true) {
+  private async json(path: string, data?: object, authenticate = true, budget?: AbortSignal) {
     const headers = { Accept: "application/json", ...(authenticate ? { Authorization: `Bearer ${this.connection.bearer}` } : {}),
       ...(data ? { "Content-Type": "application/json" } : {}) };
+    const timeout = AbortSignal.timeout(5_000);
     const response = await this.request(new URL(path, this.connection.origin), {
-      headers, redirect: "error", signal: AbortSignal.timeout(5_000),
+      headers, redirect: "error", signal: budget ? AbortSignal.any([timeout, budget]) : timeout,
       ...(data ? { method: "POST", body: JSON.stringify({ Data: data }) } : {}),
     });
     if (!response.ok) throw new Error("TOCHKA_HTTP_UNAVAILABLE");
-    return object(await response.json());
+    const payload: unknown = await response.json().catch(error => {
+      if (error instanceof SyntaxError) throw invalid();
+      throw error;
+    });
+    return object(payload);
   }
 
   private boundToMerchant(row: Record<string, unknown>) {
     return row.customerCode === this.connection.customerCode && row.merchantId === this.connection.merchantId;
   }
 
-  private async info(id: string) {
-    const data = object((await this.json(`${payments}/${operationId(id)}`)).Data);
+  private async info(id: string, budget?: AbortSignal) {
+    const data = object((await this.json(`${payments}/${operationId(id)}`, undefined, true, budget)).Data);
     const entries = records(data.Operation);
     if (entries.length !== 1) throw invalid();
     return entries[0];
@@ -136,22 +143,25 @@ export class TochkaNativeAcquiring implements NativePaymentProvider {
     return { outcome: "ACCEPTED", providerPaymentId: operationId(result.operationId) };
   }
 
-  private async findOperation(paymentLinkId: string, dispatchedAt: string) {
-    const dispatch = Date.parse(dispatchedAt);
+  private async findOperation(paymentLinkId: string, stagedAt: string, budget: AbortSignal) {
+    const dispatch = Date.parse(stagedAt);
     if (!Number.isFinite(dispatch)) throw invalid();
-    // Use a coarse date buffer for the bank's date boundary. Continuation is bounded.
-    const fromDate = new Date(dispatch - 86_400_000).toISOString().slice(0, 10);
+    // The only possible first send was in the staging request. Buffer bank calendar date boundaries.
+    const fromDate = new Date(dispatch - DAY_MS).toISOString().slice(0, 10);
+    const toDate = new Date(dispatch + 2 * DAY_MS).toISOString().slice(0, 10);
     let candidate: string | undefined;
     let totalPages = 1;
     for (let page = 1; page <= totalPages; page += 1) {
-      const query = new URLSearchParams({ customerCode: this.connection.customerCode, fromDate, page: String(page), perPage: "100" });
-      const result = await this.json(`${payments}?${query}`);
+      const query = new URLSearchParams({ customerCode: this.connection.customerCode, fromDate, toDate, page: String(page), perPage: "100" });
+      const result = await this.json(`${payments}?${query}`, undefined, true, budget);
       const count = object(result.Meta).totalPages;
-      if (typeof count !== "number" || !Number.isInteger(count) || count < 0 || count > 10 || (page > 1 && count !== totalPages)) throw invalid();
+      if (typeof count !== "number" || !Number.isInteger(count) || count < 0 || (page > 1 && count !== totalPages)) throw invalid();
+      if (count > 10) throw lookupBudgetError();
       totalPages = count;
       for (const row of records(object(result.Data).Operation)) {
-        if (row.paymentLinkId !== paymentLinkId || !this.boundToMerchant(row)) continue;
-        if (candidate) throw invalid();
+        if (row.paymentLinkId !== paymentLinkId) continue;
+        if (!this.boundToMerchant(row)) throw new NativeReadBackError("TOCHKA_PAYMENT_IDENTITY_CONFLICT");
+        if (candidate) throw new NativeReadBackError("TOCHKA_PAYMENT_DUPLICATE");
         candidate = operationId(row.operationId);
       }
     }
@@ -160,29 +170,52 @@ export class TochkaNativeAcquiring implements NativePaymentProvider {
 
   async readPaymentByOrder(order: string, key: PaymentReadKey): Promise<NativePaymentReadBack> {
     const paymentLinkId = linkId(order, key.snapshotHash);
-    const id = key.providerPaymentId ?? await this.findOperation(paymentLinkId, key.createdAt);
-    if (!id) return { outcome: "NOT_FOUND" };
-    const row = await this.info(id);
-    // The digest carries both original merchant order and snapshot. Missing/foreign echoes fail closed.
-    if (!this.boundToMerchant(row) || row.paymentLinkId !== paymentLinkId || row.operationId !== id) throw invalid();
-    const status = paymentStatus(row);
-    return { outcome: "FOUND", providerPaymentId: id, status, merchantOrderRef: order, snapshotHash: key.snapshotHash,
-      amountKopecks: minor(row.amount), currency: currency(row),
-      ...(status === "PENDING" && typeof row.paymentLink === "string" ? { paymentUrl: row.paymentLink } : {}) };
+    const search = key.providerPaymentId ? undefined : AbortSignal.timeout(6_000);
+    const budget = search && key.signal ? AbortSignal.any([search, key.signal]) : search ?? key.signal;
+    try {
+      const id = key.providerPaymentId ?? await this.findOperation(paymentLinkId, key.createdAt, budget!);
+      if (!id) return { outcome: "NOT_FOUND" };
+      const row = await this.info(id, budget);
+      // The digest carries both original merchant order and snapshot. Missing/foreign echoes fail closed.
+      if (!this.boundToMerchant(row) || row.paymentLinkId !== paymentLinkId || row.operationId !== id) {
+        throw new NativeReadBackError("TOCHKA_PAYMENT_IDENTITY_CONFLICT");
+      }
+      const status = paymentStatus(row);
+      return { outcome: "FOUND", providerPaymentId: id, status, merchantOrderRef: order, snapshotHash: key.snapshotHash,
+        amountKopecks: minor(row.amount), currency: currency(row),
+        ...(status === "PENDING" && typeof row.paymentLink === "string" ? { paymentUrl: row.paymentLink } : {}) };
+    } catch (error) {
+      if (search?.aborted) throw lookupBudgetError();
+      throw error;
+    }
   }
 
   private async refundPayment(key: RefundReadKey) {
     const row = await this.info(key.providerPaymentId);
     if (!this.boundToMerchant(row) || row.operationId !== key.providerPaymentId || row.paymentType !== "card"
-      || row.paymentLinkId !== linkId(key.merchantOrderRef, key.snapshotHash)) throw invalid();
+      || row.paymentLinkId !== linkId(key.merchantOrderRef, key.snapshotHash)) {
+      throw new NativeReadBackError("TOCHKA_REFUND_IDENTITY_CONFLICT");
+    }
     return row;
   }
 
-  async prepareRefund(request: FrozenNativeRefundRequest): Promise<boolean> {
-    if (!request.paymentKey || request.paymentKey.providerPaymentId !== request.providerPaymentId) return false;
-    const row = await this.refundPayment(request.paymentKey);
-    return row.status === "APPROVED" && row.preAuthorization !== true && refundOrders(row).length === 0
-      && minor(row.amount) === request.amountKopecks && currency(row) === request.currency;
+  async prepareRefund(request: FrozenNativeRefundRequest): Promise<NativeRefundPreflight> {
+    if (!request.paymentKey || request.paymentKey.providerPaymentId !== request.providerPaymentId) {
+      return { outcome: "CONFLICT", code: "TOCHKA_REFUND_IDENTITY_CONFLICT" };
+    }
+    try {
+      const row = await this.refundPayment(request.paymentKey);
+      if (minor(row.amount) !== request.amountKopecks || currency(row) !== request.currency || row.preAuthorization === true) {
+        return { outcome: "CONFLICT", code: "TOCHKA_REFUND_IDENTITY_CONFLICT" };
+      }
+      if (["REFUNDED", "ON-REFUND", "REFUNDED_PARTIALLY"].includes(String(row.status)) || refundOrders(row).length) {
+        return { outcome: "ALREADY_REFUNDED", code: "TOCHKA_REFUND_ALREADY_EXISTS" };
+      }
+      if (row.status !== "APPROVED") return { outcome: "CONFLICT", code: "TOCHKA_REFUND_STATUS_UNSUPPORTED" };
+      return { outcome: "READY" };
+    } catch (error) {
+      return error instanceof NativeReadBackError ? { outcome: "CONFLICT", code: error.code } : { outcome: "UNAVAILABLE" };
+    }
   }
 
   async submitRefund(request: FrozenNativeRefundRequest): Promise<NativeRefundAnswer> {
@@ -200,10 +233,13 @@ export class TochkaNativeAcquiring implements NativePaymentProvider {
       // Temporary absence after an ACK or 5xx is not proof that the refund failed.
       throw new Error("TOCHKA_REFUND_NOT_YET_VISIBLE");
     }
-    if (entries.length !== 1) throw invalid();
+    if (entries.length !== 1) throw new NativeReadBackError("TOCHKA_REFUND_IDENTITY_CONFLICT");
     const [refund] = entries;
     const amountKopecks = minor(refund.amount);
-    if (amountKopecks !== minor(row.amount) || !["REFUNDED", "ON-REFUND", "APPROVED"].includes(String(row.status))) throw invalid();
+    if (amountKopecks !== minor(row.amount)) throw new NativeReadBackError("TOCHKA_REFUND_IDENTITY_CONFLICT");
+    if (!["REFUNDED", "ON-REFUND", "APPROVED"].includes(String(row.status))) {
+      throw new NativeReadBackError("TOCHKA_REFUND_STATUS_UNSUPPORTED");
+    }
     return { outcome: "FOUND", providerRefundId: operationId(refund.orderId), status: row.status === "REFUNDED" ? "SUCCEEDED" : "PROCESSING",
       providerPaymentId: key.providerPaymentId, refundRef, amountKopecks, currency: currency(row) === "RUB" ? currency(refund) : currency(row) };
   }

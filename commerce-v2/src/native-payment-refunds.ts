@@ -5,8 +5,9 @@ import {
   admitRefund, applyRefundObservation, beginRefund, cancelReservedSettlement, refundKeys, type FiscalEventState, type FiscalizationMode, type NativePaymentState,
   type NativeRefundState, type ProductKind, type RefundDecision, type RefundObservation,
 } from "./native-payment-contract";
-import { auditNative, insertFiscalEvent, nativeProviderForPayment, type NativeLedgerContext } from "./native-payment-ledger";
-import type { FrozenNativeRefundRequest, NativePaymentProvider, RefundReadKey } from "./native-payment-provider";
+import { auditNative, findNativeProvider, insertFiscalEvent, nativeProviderForPayment, type NativeLedgerContext } from "./native-payment-ledger";
+import { NativeReadBackError } from "./native-payment-provider";
+import type { FrozenNativeRefundRequest, NativePaymentProvider, NativeRefundPreflight, RefundReadKey } from "./native-payment-provider";
 import { openPayload, sealPayload } from "./refund-envelope";
 
 /**
@@ -31,7 +32,7 @@ const refundContext = (db: Database.Database, requestPublicId: string) => db.pre
 
 type NativeRefundRow = {
   id: string; refund_request_id: string; native_payment_id: string; refund_ref: string; idempotency_key: string; amount_kopecks: number;
-  dispatch_started: 0 | 1; state: NativeRefundState; provider_refund_id: string | null; request_envelope: string | null; envelope_key_id: string | null; created_at: string;
+  dispatch_started: 0 | 1; state: NativeRefundState; last_reason: string | null; provider_refund_id: string | null; request_envelope: string | null; envelope_key_id: string | null; created_at: string;
 };
 const refundRow = (db: Database.Database, id: string) => db.prepare("SELECT * FROM native_refunds WHERE id=?").get(id) as NativeRefundRow | undefined;
 const clock = (ctx: Pick<NativeLedgerContext, "now">) => (ctx.now ? ctx.now() : new Date().toISOString());
@@ -83,8 +84,32 @@ function refundExecutor(db: Database.Database, ctx: NativeLedgerContext, id: str
     FROM native_refunds r JOIN native_payments p ON p.id=r.native_payment_id JOIN orders o ON o.id=p.order_id WHERE r.id=?`).get(id) as {
     executor_key: string; provider_payment_id: string; public_id: string; snapshot_hash: string;
   };
-  return { provider: nativeProviderForPayment(ctx, payment.executor_key),
+  return { provider: findNativeProvider(ctx, payment.executor_key),
     key: { providerPaymentId: payment.provider_payment_id, merchantOrderRef: payment.public_id, snapshotHash: payment.snapshot_hash } };
+}
+
+async function checkRefundPreflight(provider: NativePaymentProvider, request: FrozenNativeRefundRequest): Promise<NativeRefundPreflight> {
+  try {
+    return await provider.prepareRefund?.(request) ?? { outcome: "READY" };
+  } catch (error) {
+    return error instanceof NativeReadBackError ? { outcome: "CONFLICT", code: error.code } : { outcome: "UNAVAILABLE" };
+  }
+}
+
+function applyRefundPreflight(db: Database.Database, ctx: NativeLedgerContext, refund: NativeRefundRow,
+  decision: NativeRefundPreflight, freshlyStaged: boolean) {
+  if (decision.outcome === "READY" && freshlyStaged) return true;
+  const observation: RefundObservation =
+    decision.outcome === "READY" || decision.outcome === "UNAVAILABLE"
+      ? { source: "READ_BACK", outcome: "DISPATCH_UNCERTAIN",
+        code: decision.outcome === "READY" ? "NATIVE_REFUND_DISPATCH_UNCERTAIN" : "NATIVE_REFUND_PREFLIGHT_UNAVAILABLE" }
+      : decision.outcome === "DEFINITIVE_REFUSAL" && freshlyStaged
+        ? { source: "SUBMIT_RESPONSE", outcome: "REFUSED", proven: true, code: decision.code }
+        : { source: "READ_BACK", outcome: "REVIEW_REQUIRED", code: decision.code };
+  db.transaction(() => {
+    if (refundRow(db, refund.id)!.dispatch_started === 0) applyNativeRefundObservation(db, ctx, refund.id, observation, refund);
+  }).immediate();
+  return false;
 }
 
 async function sendRefund(db: Database.Database, ctx: NativeLedgerContext, refundId: string, budget: ReplayBudget = { replays: 1 }, replay = false) {
@@ -95,21 +120,8 @@ async function sendRefund(db: Database.Database, ctx: NativeLedgerContext, refun
   const request = openPayload<FrozenNativeRefundRequest>(ctx.keyring, "native-refund-envelope", row.envelope_key_id, row.id, row.request_envelope);
   const { provider } = refundExecutor(db, ctx, refundId);
 
-  if (!replay && provider.prepareRefund) {
-    // An unavailable preflight leaves the first dispatch eligible for a later sweep.
-    let allowed;
-    try { allowed = await provider.prepareRefund(request); } catch { return; }
-    if (!allowed) {
-      db.transaction(() => {
-        const current = refundRow(db, refundId)!;
-        if (current.state === "SUBMITTING" && current.dispatch_started === 0) {
-          applyNativeRefundObservation(db, ctx, refundId,
-            { source: "SUBMIT_RESPONSE", outcome: "REFUSED", proven: true, code: "NATIVE_REFUND_PREFLIGHT_REFUSED" });
-        }
-      }).immediate();
-      return;
-    }
-  }
+  if (!provider) return;
+  if (!replay && provider.prepareRefund && !applyRefundPreflight(db, ctx, row, await checkRefundPreflight(provider, request), true)) return;
   if (!replay && db.prepare(`UPDATE native_refunds SET dispatch_started=1,updated_at=?
       WHERE id=? AND dispatch_started=0 AND state='SUBMITTING'`).run(clock(ctx), refundId).changes !== 1) return;
 
@@ -125,15 +137,17 @@ async function sendRefund(db: Database.Database, ctx: NativeLedgerContext, refun
   await driveNativeRefund(db, ctx, refundId, applyNativeRefundObservation(db, ctx, refundId, observation), budget);
 }
 
-async function readBackRefund(provider: NativePaymentProvider, refundRef: string, key: RefundReadKey): Promise<RefundObservation> {
+async function readBackRefund(provider: NativePaymentProvider | undefined, refundRef: string, key: RefundReadKey): Promise<RefundObservation> {
+  if (!provider) return { source: "READ_BACK", outcome: "UNAVAILABLE", code: "NATIVE_ORIGINAL_EXECUTOR_UNAVAILABLE" };
   try {
     const found = await provider.readRefund(refundRef, key);
     return found.outcome === "NOT_FOUND" ? { source: "READ_BACK", outcome: "NOT_FOUND" } : {
       source: "READ_BACK", outcome: "FOUND", providerRefundId: found.providerRefundId, status: found.status,
       providerPaymentId: found.providerPaymentId, amountKopecks: found.amountKopecks, currency: found.currency, refundRef: found.refundRef,
     };
-  } catch {
-    return { source: "READ_BACK", outcome: "UNAVAILABLE" };
+  } catch (error) {
+    return error instanceof NativeReadBackError ? { source: "READ_BACK", outcome: "REVIEW_REQUIRED", code: error.code }
+      : { source: "READ_BACK", outcome: "UNAVAILABLE" };
   }
 }
 
@@ -145,7 +159,7 @@ export async function driveNativeRefund(db: Database.Database, ctx: NativeLedger
     // No admission gate on refunds (contract I7): the same sealed request under the same key.
     // At most one replay per drive (shared with nested sends); further retries belong to the sweep.
     if (decision.effects.includes("REPLAY_REFUND_SAME_KEY")) {
-      if (!executor.provider.replayGuarantees.refund || budget.replays <= 0) return decision;
+      if (!executor.provider?.replayGuarantees.refund || budget.replays <= 0) return decision;
       budget.replays -= 1;
       await sendRefund(db, ctx, refundId, budget, true);
       return { ...decision, effects: [] };
@@ -164,7 +178,7 @@ export function applyNativeRefundObservation(db: Database.Database, ctx: NativeL
   return db.transaction(() => {
     const refund = refundRow(db, refundId);
     if (!refund) throw new Error("NATIVE_REFUND_NOT_FOUND");
-    if ((refund.dispatch_started === 0 && observation.source === "READ_BACK")
+    if ((refund.dispatch_started === 0 && observation.source === "READ_BACK" && observation.outcome === "FOUND")
       || (beforeRead && (refund.state !== beforeRead.state || refund.provider_refund_id !== beforeRead.provider_refund_id))) {
       return { state: refund.state, providerRefundId: refund.provider_refund_id, effects: [] } satisfies RefundDecision;
     }
@@ -181,7 +195,11 @@ export function applyNativeRefundObservation(db: Database.Database, ctx: NativeL
       request_envelope=CASE WHEN ? THEN NULL ELSE request_envelope END,
       envelope_purged_at=CASE WHEN ? AND request_envelope IS NOT NULL THEN ? ELSE envelope_purged_at END WHERE id=?`)
       .run(decision.state, decision.providerRefundId, decision.reason ?? null, now, purge ? 1 : 0, purge ? 1 : 0, now, refund.id);
-    db.prepare(`INSERT INTO native_payment_observations(id,native_refund_id,source,observation_json,decided_state,reason,observed_at)
+    if (decision.reason === "NATIVE_ORIGINAL_EXECUTOR_UNAVAILABLE" && decision.reason !== refund.last_reason) {
+      auditNative(db, "NATIVE_REFUND_READ_BACK_UNAVAILABLE", "REFUND_REQUEST", context.request_public_id, { reason: decision.reason }, now);
+    }
+    if (observation.source !== "READ_BACK" || observation.outcome === "FOUND"
+      || decision.state !== refund.state || decision.reason !== refund.last_reason) db.prepare(`INSERT INTO native_payment_observations(id,native_refund_id,source,observation_json,decided_state,reason,observed_at)
       VALUES (?,?,?,?,?,?,?)`).run(randomUUID(), refund.id, observation.source, JSON.stringify(observation), decision.state, decision.reason ?? null, now);
     for (const effect of decision.effects) {
       if (effect === "REVOKE_ACCESS") {
@@ -237,8 +255,17 @@ export async function reconcilePendingNativeRefunds(db: Database.Database, ctx: 
   for (const { id } of rows) {
     try {
       const refund = refundRow(db, id)!;
-      if (refund.dispatch_started === 0) await sendRefund(db, ctx, id);
-      else await driveNativeRefund(db, ctx, id, { state: refund.state, providerRefundId: refund.provider_refund_id, effects: ["READ_BACK"] });
+      const { provider } = refundExecutor(db, ctx, id);
+      if (refund.dispatch_started === 0 && provider?.replayGuarantees.refund && refund.state === "SUBMITTING") {
+        await sendRefund(db, ctx, id);
+      } else if (refund.dispatch_started === 0 && provider) {
+        // A restored row cannot prove the refund is ours, even if the parent records one.
+        if (!refund.request_envelope || !refund.envelope_key_id) throw new Error("NATIVE_REFUND_ENVELOPE_MISSING");
+        const request = openPayload<FrozenNativeRefundRequest>(ctx.keyring, "native-refund-envelope", refund.envelope_key_id, id, refund.request_envelope);
+        applyRefundPreflight(db, ctx, refund, await checkRefundPreflight(provider, request), false);
+      } else {
+        await driveNativeRefund(db, ctx, id, { state: refund.state, providerRefundId: refund.provider_refund_id, effects: ["READ_BACK"] });
+      }
       reconciled += 1;
     } catch {
       failed += 1;

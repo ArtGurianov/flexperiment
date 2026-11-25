@@ -20,6 +20,8 @@ export async function startTochkaHttpFixture(port = 0) {
     loseCreate: false, loseRefund: false, hideFromList: false, hideRefund: false, rejectInfo: false,
     currency: undefined as string | undefined, amount: undefined as number | undefined, operationId: undefined as string | undefined,
     paymentLinkId: undefined as string | undefined, lostBeforeCreate: false, lostBeforeRefund: false,
+    totalPages: 2, duplicateListing: false, invalidInfo: false, overrideStatus: undefined as string | undefined,
+    beforeInfo: undefined as (() => void) | undefined,
   };
 
   const operation = (payment: Payment) => ({
@@ -35,6 +37,7 @@ export async function startTochkaHttpFixture(port = 0) {
     ],
   });
 
+  const lookupWindows: Array<[string, string]> = [];
   const respond = (response: ServerResponse, status: number, body: object) => {
     response.writeHead(status, { "Content-Type": "application/json" }).end(JSON.stringify(body));
   };
@@ -69,19 +72,24 @@ export async function startTochkaHttpFixture(port = 0) {
       }
       if (request.method === "GET" && url.pathname === `${base}/payments`) {
         calls.list += 1;
-        if (url.searchParams.get("customerCode") !== customerCode || !url.searchParams.has("fromDate")) return respond(response, 400, {});
+        const from = url.searchParams.get("fromDate"), to = url.searchParams.get("toDate");
+        if (url.searchParams.get("customerCode") !== customerCode || !from || !to) return respond(response, 400, {});
+        lookupWindows.push([from, to]);
         const page = Number(url.searchParams.get("page"));
+        const listed = page === 2 && !faults.hideFromList ? [...payments.values()].map(operation) : [];
         return respond(response, 200, {
-          Data: { Operation: page === 2 && !faults.hideFromList ? [...payments.values()].map(operation) : [] }, Meta: { totalPages: 2 },
+          Data: { Operation: faults.duplicateListing ? [...listed, ...listed] : listed }, Meta: { totalPages: faults.totalPages },
         });
       }
       const match = /^\/uapi\/acquiring\/v1\.0\/payments\/([a-f\d-]+)(\/refund)?$/.exec(url.pathname);
       const payment = match && payments.get(match[1]);
       if (payment && request.method === "GET" && !match[2]) {
         calls.info += 1;
+        faults.beforeInfo?.();
+        if (faults.invalidInfo) return respond(response, 200, { Data: {} });
         if (faults.rejectInfo) return respond(response, 503, {});
         return respond(response, 200, { Data: { Operation: [{ ...operation(payment),
-          operationId: faults.operationId ?? payment.operationId, paymentLinkId: faults.paymentLinkId ?? payment.paymentLinkId,
+          status: faults.overrideStatus ?? payment.status, operationId: faults.operationId ?? payment.operationId, paymentLinkId: faults.paymentLinkId ?? payment.paymentLinkId,
         }] } });
       }
       if (payment && request.method === "POST" && match[2]) {
@@ -111,7 +119,7 @@ export async function startTochkaHttpFixture(port = 0) {
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("TOCHKA_FIXTURE_ADDRESS_MISSING");
   return {
-    origin: `http://127.0.0.1:${address.port}`, calls, faults, payments,
+    origin: `http://127.0.0.1:${address.port}`, calls, faults, payments, lookupWindows,
     close: () => new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())),
     pay(payment: Payment) {
       if (payment.status !== "CREATED") return;

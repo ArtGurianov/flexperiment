@@ -1102,8 +1102,7 @@ export async function confirmCheckout(
   });
   if (!create.immediate()) return native ? native.status(publicId) : reconcileCheckout(db, rail, publicId, now, config);
 
-  // A native order and its frozen payment are committed together. The sweep can recover it
-  // even if this process stops between commit and dispatch.
+  // The order and frozen payment commit together. For a non-replayable provider only this staged request can send; the sweep reads back.
   if (native) return native.dispatch(publicId);
   // The RC.2 attempt only leaves Commerce if the same storefront generation is still open.
   try {

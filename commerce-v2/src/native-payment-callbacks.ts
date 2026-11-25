@@ -28,7 +28,8 @@ async function recordCallback(db: Database.Database, ctx: NativeLedgerContext, e
   if (!inserted) return { accepted: true as const, duplicate: true };
   try {
     if (hint.subjectKind === "PAYMENT") {
-      const payment = db.prepare("SELECT id FROM native_payments WHERE provider_payment_id=? AND executor_key=?").get(hint.providerSubjectId, executor) as { id: string } | undefined;
+      // A settled approval cannot be advanced by another payment signal. Refunds have independent reconciliation.
+      const payment = db.prepare("SELECT id FROM native_payments WHERE provider_payment_id=? AND executor_key=? AND state<>'PAID'").get(hint.providerSubjectId, executor) as { id: string } | undefined;
       if (payment) {
         const decision = applyNativePaymentObservation(db, ctx, payment.id,
           { source: "CALLBACK", signatureValid: true, providerPaymentId: hint.providerSubjectId, claimedStatus: "UNTRUSTED" });
