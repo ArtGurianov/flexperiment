@@ -71,6 +71,18 @@ describe("page-view retry hook", () => {
     expect(new Headers(init?.headers).get("cookie")).toBe(COOKIE);
   });
 
+  it.each(["next-router-prefetch", "purpose"])("does not touch browser context on a legal %s request", async name => {
+    const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ code: "LEGAL_RELEASE_NOT_FOUND" }, { status: 404 }));
+    const { waited, event: fetchEvent } = event();
+    const response = await proxy(new NextRequest("https://flexperiment.ru/legal/privacy", {
+      headers: { cookie: COOKIE, host: "flexperiment.ru", [name]: "prefetch" },
+    }), fetchEvent);
+    expect(response.status).toBe(404);
+    expect(waited).toEqual([]);
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(String(fetch.mock.calls[0][0])).toContain("/v1/legal/current");
+  });
+
   it("does nothing for a browser without a context", () => {
     const { waited, event: fetchEvent } = event();
     proxy(new NextRequest("https://flexperiment.ru/courses/intro"), fetchEvent);

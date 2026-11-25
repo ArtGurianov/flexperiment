@@ -78,6 +78,9 @@ describe("AnalyticsConsentManager hits", () => {
       expect(screen.getByRole("link", { name: "Подробнее в политике конфиденциальности" })).toBeVisible();
       expect(screen.queryByText("24 ноября 2026 г.")).toBeNull();
       expect(fetcher).toHaveBeenCalledTimes(2);
+      expect(fetcher).toHaveBeenCalledWith("/legal/privacy/effective-at", expect.objectContaining({
+        cache: "no-store", credentials: "omit",
+      }));
     } finally { fetcher.mockRestore(); }
   });
 });

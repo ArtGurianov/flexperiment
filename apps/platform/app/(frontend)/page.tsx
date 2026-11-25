@@ -2,7 +2,7 @@ import Link from "next/link";
 import { Suspense } from "react";
 import { headers } from "next/headers";
 import { LegalLinkDate } from "@/components/legal/LegalEffectiveDate";
-import { currentCoursesLegalRelease } from "@/lib/legal-release-server";
+import { privacyLinkEffectiveAt } from "@/lib/legal-link-date-server";
 import type { Metadata } from "next";
 
 // A page-level openGraph replaces the layout's entirely, so the shared fields are repeated with og:url.
@@ -22,9 +22,8 @@ const principles = [
 ] as const;
 
 async function PrivacyLink() {
-  const requestHeaders = await headers();
-  const release = await currentCoursesLegalRelease(requestHeaders.get("host"), requestHeaders.get("origin")).catch(() => null);
-  return <span><Link href="/legal/privacy" prefetch={false}>Конфиденциальность</Link><LegalLinkDate effectiveAt={release?.effectiveAt} /></span>;
+  const effectiveAt = await privacyLinkEffectiveAt(await headers());
+  return <span><Link href="/legal/privacy" prefetch={false}>Конфиденциальность</Link><LegalLinkDate effectiveAt={effectiveAt} /></span>;
 }
 
 export default function HomePage() {

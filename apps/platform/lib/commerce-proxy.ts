@@ -1,4 +1,4 @@
-import { canaryOrigins, validatePlatformCanary } from "./canary-config";
+import { allowsCanaryCommerceRequest, canaryOrigins, validatePlatformCanary } from "./canary-config";
 import { canaryCommerceRequest } from "./canary-http";
 
 const allowedRoots = new Set(["auth", "me", "lessons", "checkout", "email", "legal", "refunds"]);
@@ -18,8 +18,7 @@ export async function proxyCommerce(request: Request, path: string[], roots: Rea
   if (path[0] === "refunds" && (path.length !== 1 || !["GET", "POST"].includes(request.method))) return refuse("NOT_FOUND", 404);
   const source = new URL(request.url);
   const host = canary ? new URL(canaryOrigins.PLATFORM_ORIGIN).host : source.host;
-  if (canary && (request.headers.get("host") !== host
-    || (request.headers.has("origin") && request.headers.get("origin") !== canaryOrigins.PLATFORM_ORIGIN))) return refuse("FORBIDDEN", 403);
+  if (canary && !allowsCanaryCommerceRequest(request.headers.get("host"), request.headers.get("origin"))) return refuse("FORBIDDEN", 403);
   const target = new URL(`/v1/${path.map(encodeURIComponent).join("/")}${source.search}`, origin);
   const headers = new Headers(request.headers);
   for (const key of ["host", "content-length", "connection", "forwarded", "x-forwarded-for", "x-real-ip", "x-forwarded-port"]) headers.delete(key);

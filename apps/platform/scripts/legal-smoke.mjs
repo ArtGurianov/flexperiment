@@ -12,6 +12,7 @@ const platform = fileURLToPath(new URL("../", import.meta.url));
 const port = Number(process.env.PLATFORM_LEGAL_SMOKE_PORT ?? "3913");
 const origin = `http://127.0.0.1:${port}`;
 const legalPath = "/v1/legal/current?storefront=COURSES";
+const privacyDatePath = "/legal/privacy/effective-at";
 const titles = {
   privacy: ["privacy", "Политика конфиденциальности"],
   "personal-data": ["personal_data", "Согласие на обработку персональных данных"],
@@ -109,11 +110,23 @@ try {
       assert.equal(source.status, 200);
       assert.equal(hash(Buffer.from(await source.arrayBuffer())), document.sha256);
     }
-    assert((await (await request("/", 200)).text()).includes(`<time dateTime="${utc}">${date}</time>`));
+    if (version === "edition-1") {
+      const beforeDate = legalReads;
+      assert((await (await request("/", 200)).text()).includes(`<time dateTime="${utc}">${date}</time>`));
+      const dateResponse = await request(privacyDatePath, 200);
+      assert.equal(dateResponse.headers.get("cache-control"), "no-store");
+      assert.deepEqual(await dateResponse.json(), { effectiveAt: utc });
+      assert.equal(legalReads, beforeDate + 1, "homepage and analytics share one cached Commerce lookup");
+    }
     const flight = await navigate(200);
     assert.match(flight.headers.get("content-type") ?? "", /text\/x-component/);
     assertEdition(await flight.text(), edition.manifest.documents[0]);
   }
+
+  assert.deepEqual(await (await request(privacyDatePath, 200)).json(), { effectiveAt: "2026-11-23T20:59:59.999Z" });
+  await setTimeout(15_200);
+  assert.deepEqual(await (await request(privacyDatePath, 200)).json(), { effectiveAt: edition.effectiveAt });
+  assert((await (await request("/", 200)).text()).includes('<time dateTime="2026-11-23T21:00:00.000Z">24 ноября 2026 г.</time>'));
 
   edition = undefined;
   await (await navigate(404)).text();
@@ -122,7 +135,7 @@ try {
   assert.equal(legalReads, anonymousReads);
   await new Promise((resolve, reject) => commerce.close(error => error ? reject(error) : resolve()));
   await (await request("/legal/privacy", 503)).text();
-  console.log("Platform legal smoke PASS · SSR, RSC, original hashes, rotation, 404 and 503");
+  console.log("Platform legal smoke PASS · SSR, RSC, original hashes, rotation, shared link-date cache, 404 and 503");
 } finally {
   app.kill();
   commerce.close();

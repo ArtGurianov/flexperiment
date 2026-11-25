@@ -122,6 +122,10 @@ http.createServer((q, r) => {
             edition["effectiveAt"], source["version"], source["url"], source["sha256"], "24 ноября 2026 г.",
         )))
         check("spoofed-fixture-header" not in page["body"])
+        date = request("/legal/privacy/effective-at")
+        check(date["status"] == 200 and json.loads(date["body"]) == {"effectiveAt": edition["effectiveAt"]})
+        date_foreign = request("/legal/privacy/effective-at", host="flexperiment.ru")
+        check(date_foreign["status"] == 200 and json.loads(date_foreign["body"]) == {"effectiveAt": None})
         check(request("/legal/privacy", host="flexperiment.ru")["status"] == 403)
         check(request("/legal/privacy", headers={"Origin": "https://foreign.example"})["status"] == 403)
         check(request("/v1/checkout")["status"] == 503)

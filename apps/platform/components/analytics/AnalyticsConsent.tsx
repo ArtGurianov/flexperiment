@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { LegalLinkDate } from "@/components/legal/LegalEffectiveDate";
-import { currentCoursesLegalPath, type LegalRelease } from "@/lib/legal-release";
+import { privacyLinkEffectiveAtPath } from "@/lib/legal-release";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -55,11 +55,11 @@ function PrivacyPolicyLink() {
   const [effectiveAt, setEffectiveAt] = useState<string>();
   useEffect(() => {
     const controller = new AbortController();
-    void fetch(currentCoursesLegalPath, {
+    void fetch(privacyLinkEffectiveAtPath, {
       cache: "no-store", credentials: "omit", signal: controller.signal,
     }).then(async response => {
-      const release = response.ok ? await response.json() as LegalRelease : null;
-      if (!controller.signal.aborted) setEffectiveAt(release?.effectiveAt);
+      const result = response.ok ? await response.json() as { effectiveAt: string | null } : null;
+      if (!controller.signal.aborted) setEffectiveAt(result?.effectiveAt ?? undefined);
     }).catch(() => { /* The privacy link remains available while Commerce is unavailable. */ });
     return () => controller.abort();
   }, []);

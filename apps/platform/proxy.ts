@@ -5,7 +5,8 @@ import { CommerceLegalForbidden, legalPageHeader, readLegalPage } from "@/lib/le
 // ART-378: every page view of a browser carrying the LMS context retries a still-unconfirmed arrival
 // claim within its 30 minutes. The page is never delayed; `waitUntil` keeps the call alive after it.
 export async function proxy(request: NextRequest, event: NextFetchEvent) {
-  if (request.method === "GET" && request.cookies.has(BROWSER_CONTEXT_COOKIE)) event.waitUntil(touchBrowserContext(request));
+  const prefetch = request.headers.has("next-router-prefetch") || request.headers.get("purpose") === "prefetch";
+  if (request.method === "GET" && !prefetch && request.cookies.has(BROWSER_CONTEXT_COOKIE)) event.waitUntil(touchBrowserContext(request));
   const [root, kind, ...rest] = request.nextUrl.pathname.split("/").filter(Boolean);
   if (root !== "legal" || !kind || rest.length) return NextResponse.next();
 
@@ -33,5 +34,8 @@ export const config = {
     source: "/((?!_next/|v1/|arrive|identity|readyz|robots\\.txt|sitemap\\.xml|search-index\\.json|indexnow-key\\.txt|account-courses\\.json|favicon\\.ico).*)",
     has: [{ type: "cookie", key: "__Host-flx-ctx-lms" }],
     missing: [{ type: "header", key: "next-router-prefetch" }, { type: "header", key: "purpose", value: "prefetch" }],
-  }, { source: "/legal/:kind" }],
+  },
+  // Every document page must pass through this matcher, including RSC requests.
+  // Proxy only forwards when it has overwritten the caller's legalPageHeader.
+  { source: "/legal/:kind" }],
 };

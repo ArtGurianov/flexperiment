@@ -7,6 +7,8 @@ export type LegalRelease = {
 
 export const currentCoursesLegalPath = "/v1/legal/current?storefront=COURSES";
 
+export const privacyLinkEffectiveAtPath = "/legal/privacy/effective-at";
+
 const moscowDate = new Intl.DateTimeFormat("ru-RU", {
   timeZone: "Europe/Moscow",
   day: "numeric",

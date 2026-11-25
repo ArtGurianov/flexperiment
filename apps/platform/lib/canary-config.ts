@@ -8,6 +8,11 @@ export const canaryOrigins = {
   API_ORIGIN: "https://canary-api.flexperiment.ru",
 } as const;
 
+export function allowsCanaryCommerceRequest(host: string | null, origin: string | null) {
+  return host === new URL(canaryOrigins.PLATFORM_ORIGIN).host
+    && (origin === null || origin === canaryOrigins.PLATFORM_ORIGIN);
+}
+
 /** Admit only the reviewed Payload-free closed canary configuration. */
 export function validatePlatformCanary(env: Environment = process.env) {
   if (env.PLATFORM_V2_CANARY === undefined || env.PLATFORM_V2_CANARY === "false") return false;
