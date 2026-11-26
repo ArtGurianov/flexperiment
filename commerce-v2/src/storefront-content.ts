@@ -1,4 +1,7 @@
 import type Database from "better-sqlite3";
+import { storefrontOutline as outline } from "./storefront-outline";
+import { continuation, customerPlaybackHistory } from "./course-playback-state";
+import { completionPercent, customerLearningStarts, customerLessonCompletions } from "./lesson-progress";
 import { listCustomerLibrary, type CustomerLibrary } from "./library";
 
 type CourseRow = {
@@ -7,10 +10,6 @@ type CourseRow = {
   access_model: "FREE" | "PAID"; offer_ref: string | null;
   sale_mode: "CLOSED" | "ACCEPTANCE_ONLY" | "PUBLIC" | null; price_kopecks: number | null;
 };
-type SectionRow = { section_ref: string; title: string; position: number };
-type LessonRow = { lesson_ref: string; section_ref: string; title: string; slug: string; position: number;
-  free_preview: number; description_json: string | null; seo_json: string | null };
-
 const courseFrom = `FROM catalog_course_projection course
   JOIN products product ON product.course_ref=course.course_ref AND product.kind='ONLINE_COURSE'
   LEFT JOIN offers offer ON offer.product_id=product.id
@@ -44,32 +43,6 @@ function courseByRef(db: Database.Database, courseRef: string, publicOnly: boole
   return db.prepare(`SELECT ${courseColumns} ${courseFrom}${publicOnly ? publicVisibility : ""} AND course.course_ref=?`)
     .get(courseRef) as CourseRow | undefined;
 }
-function outline(db: Database.Database, courseRef: string, allowedLessonRefs?: ReadonlySet<string>) {
-  const publicOnly = !allowedLessonRefs;
-  const sections = db.prepare(`SELECT section_ref,title,position FROM catalog_section_projection
-    WHERE course_ref=? ${publicOnly ? "AND visibility='LISTED'" : ""}
-      AND title IS NOT NULL ORDER BY position,section_ref`)
-    .all(courseRef) as SectionRow[];
-  const sectionOrder = new Map(sections.map((section, index) => [section.section_ref, index]));
-  const lessons = (db.prepare(`SELECT lesson_ref,section_ref,title,slug,position,free_preview,description_json,seo_json
-    FROM catalog_lesson_projection WHERE course_ref=? ${publicOnly ? "AND visibility='LISTED'" : ""}
-      AND ever_published=1
-      AND withdrawn_at IS NULL AND title IS NOT NULL AND slug IS NOT NULL
-    ORDER BY position,lesson_ref`).all(courseRef) as LessonRow[])
-    .filter(lesson => sectionOrder.has(lesson.section_ref)
-      && (!allowedLessonRefs || allowedLessonRefs.has(lesson.lesson_ref)))
-    .sort((left, right) => (sectionOrder.get(left.section_ref)! - sectionOrder.get(right.section_ref)!)
-      || left.position - right.position || left.lesson_ref.localeCompare(right.lesson_ref));
-  const visibleSectionRefs = allowedLessonRefs && new Set(lessons.map(lesson => lesson.section_ref));
-  return {
-    sections: sections.filter(section => !visibleSectionRefs || visibleSectionRefs.has(section.section_ref))
-      .map(section => ({ sectionRef: section.section_ref, title: section.title, position: section.position })),
-    lessons: lessons.map(lesson => ({ lessonRef: lesson.lesson_ref, sectionRef: lesson.section_ref,
-      title: lesson.title, slug: lesson.slug, position: lesson.position, freePreview: Boolean(lesson.free_preview) })),
-    lessonRows: lessons,
-  };
-}
-
 /** All responses are explicit allowlists, never raw SQLite rows or draft JSON. */
 export function listStorefrontCourses(db: Database.Database) {
   const read = db.transaction(() => (db.prepare(`SELECT ${courseColumns} ${courseFrom}${publicVisibility} ORDER BY course.applied_at DESC,course.course_ref`)
@@ -139,20 +112,24 @@ export function getCustomerStorefrontCourse(db: Database.Database, customerId: s
 export function listCustomerStorefrontLibrary(db: Database.Database, customerId: string, now: Date, leaseMs: number) {
   const read = db.transaction(() => {
     const authorized: CustomerLibrary = listCustomerLibrary(db, customerId, now, leaseMs);
+    const startedCourses = customerLearningStarts(db, customerId);
+    const completions = customerLessonCompletions(db, customerId);
+    const playback = customerPlaybackHistory(db, customerId);
     return { courses: authorized.courses.flatMap(item => {
       const row = courseByRef(db, item.courseRef, false);
       if (!row) return [];
       const graph = outline(db, item.courseRef, new Set(item.lessons.map(lesson => lesson.lessonRef)));
-      const lessons = new Map(graph.lessons.map(lesson => [lesson.lessonRef, lesson]));
-      const sections = new Map(graph.sections.map(section => [section.sectionRef, section]));
+      const sections = new Map(graph.sections.map(section => [section.sectionRef, section.title]));
+      const access = new Map(item.lessons.map(lesson => [lesson.lessonRef, lesson.access]));
+      const lessons = graph.lessons.map(lesson => ({
+        lessonRef: lesson.lessonRef, title: lesson.title, sectionTitle: sections.get(lesson.sectionRef)!,
+        slug: lesson.slug, url: `/courses/${row.slug}/lessons/${lesson.slug}`, access: access.get(lesson.lessonRef)!,
+      }));
+      const started = item.access !== "PREVIEW" && startedCourses.has(item.courseRef);
       return [{ courseRef: item.courseRef, title: row.title, url: `/courses/${row.slug}`, access: item.access,
-        enrollment: item.enrollment,
-        lessons: item.lessons.flatMap(allowed => {
-          const lesson = lessons.get(allowed.lessonRef);
-          const section = lesson && sections.get(lesson.sectionRef);
-          return lesson && section ? [{ lessonRef: lesson.lessonRef, title: lesson.title,
-            sectionTitle: section.title, url: `/courses/${row.slug}/lessons/${lesson.slug}`, access: allowed.access }] : [];
-        }) }];
+        enrollment: item.enrollment, started, progressPercent: started ? completionPercent(lessons, completions) : null,
+        continuation: item.access !== "PREVIEW" ? continuation(lessons, playback.get(item.courseRef)) : null,
+        lessons }];
     }) };
   });
   return read.deferred();
@@ -167,19 +144,14 @@ export function listMyStorefrontLibrary(db: Database.Database, customerId: strin
       FROM course_entitlements entitlement JOIN order_lines line ON line.id=entitlement.source_order_line_id
       JOIN orders ON orders.id=line.order_id WHERE entitlement.customer_id=? AND entitlement.revoked_at IS NULL`)
       .all(customerId) as Array<{ scope: "COURSE" | "ALL_COURSES"; course_ref: string | null; manual: number }>;
-    const viewHistory = db.prepare(`SELECT lesson_ref FROM lesson_resume_positions WHERE customer_id=? AND seconds>0
-       ORDER BY julianday(updated_at) DESC,lesson_ref`).pluck().all(customerId) as string[];
-    const rank = new Map(viewHistory.map((ref, index) => [ref, index]));
-
     return { courses: courses.filter(course => course.access !== "PREVIEW" && course.lessons.length > 0).map(course => {
       const direct = grants.some(grant => !grant.manual && grant.scope === "COURSE" && grant.course_ref === course.courseRef);
       const bundle = grants.some(grant => !grant.manual && grant.scope === "ALL_COURSES");
       const access = direct ? "PURCHASE" : bundle ? "BUNDLE" : course.enrollment ? "FREE_ENROLMENT" : "GRANTED";
-      const watched = course.lessons.filter(lesson => rank.has(lesson.lessonRef))
-        .sort((a,b) => rank.get(a.lessonRef)! - rank.get(b.lessonRef)!)[0];
+      const target = course.continuation?.lesson;
       return { slug: course.url.split("/").at(-1)!, title: course.title, access,
-        started: Boolean(watched || course.enrollment?.startedAt),
-        resumeLesson: watched ? { slug: watched.url.split("/").at(-1)!, title: watched.title } : null };
+        started: course.started, progressPercent: course.progressPercent, continuationReason: course.continuation?.reason,
+        resumeLesson: target ? { slug: target.slug, title: target.title } : null };
     }) };
   }).deferred();
 }

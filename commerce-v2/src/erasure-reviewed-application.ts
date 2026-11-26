@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import { erasurePseudonym, type ErasureEntry, type ErasureKeys } from "./erasure-ledger";
 import { erasurePlanRefused, type ReviewedErasurePlan } from "./erasure-plan";
-import { verificationSubjectEmail } from "./my-session-storage";
+import { hasTable, verificationSubjectEmail } from "./my-session-storage";
 import { nativeErasureAdmission } from "./native-payment-ledger";
 import type { FiscalEventState } from "./native-payment-contract";
 
@@ -169,6 +169,9 @@ export function applyReviewedErasure(db: Database.Database, entry: ReviewedEntry
   }
   if (reviewed.plan.categories.progress.action === "DELETE") {
     for (const table of ["lesson_resume_positions", "playback_grant_rate_limits", "playback_access_events"]) remove(table, "customer_id", binding.customerId);
+    for (const table of ["lesson_completions", "course_playback_state"]) {
+      if (hasTable(db, table)) remove(table, "customer_id", binding.customerId);
+    }
   }
   counts.customerProfileCleared = db.prepare(`UPDATE customers SET display_name=NULL,auth_user_id=NULL
     WHERE id=? AND (display_name IS NOT NULL OR auth_user_id IS NOT NULL)`).run(binding.customerId).changes;

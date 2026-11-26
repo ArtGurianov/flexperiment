@@ -54,6 +54,8 @@ it("upgrades the exact showcase migration prefix and preserves interest and noti
     expect(journal().slice(43)).toMatchObject([
       { version: "0044_reviewed_erasure_receipts.sql", sha256: "57a6c94824b814d7e21f1eabd5dc352dd5e65bc9a5870b595c16602791b0daa5" },
       { version: "0045_native_payment_executor.sql", sha256: "11547f21822275eb5c0f958f06288ba6265f41304084d9c83d8f88e3c5a92979" },
+      { version: "0046_lesson_completions.sql", sha256: "acc12483c24f3f553d832ae0d9035b287d89c6d2ba3846c18769228f3638d6a6" },
+      { version: "0047_course_playback_state.sql", sha256: "412469e6c24c79bd0c88ed1a4ce9cd4200c64591f057cae257a5384d5a306b51" },
     ]);
     expect(db.prepare("SELECT state, dispatch_started FROM native_payments WHERE id='legacy-payment'").get())
       .toEqual({ state: "CREATING", dispatch_started: 1 });
@@ -61,6 +63,9 @@ it("upgrades the exact showcase migration prefix and preserves interest and noti
       .toThrow("NATIVE_PAYMENT_DISPATCH_ALREADY_STARTED");
     expect(interestRows()).toEqual(before);
     expect(journal().slice(0, prefix.length)).toEqual(prefix);
+    const through47 = journal();
+    migrateV2(db);
+    expect(journal()).toEqual(through47);
     expect(assertReviewedRestoreSchema(db)).toBeUndefined();
     expect(db.pragma("foreign_key_check")).toEqual([]);
   } finally {

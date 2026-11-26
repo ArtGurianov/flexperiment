@@ -14,8 +14,8 @@ type View =
  * the magic-link login; a signed-in click enrolls at once. Nothing enrolls without this action.
  * `lessonSlug` keeps a chosen lesson; from the course card the server opens the first lesson.
  */
-export default function FreeEnrollmentAction({ courseSlug, lessonSlug, accessModel, compact = false, onEnrolled }: {
-  courseSlug: string; lessonSlug?: string; accessModel: "FREE" | "PAID"; compact?: boolean;
+export default function FreeEnrollmentAction({ courseSlug, lessonSlug, accessModel, compact = false, myLogin, onEnrolled }: {
+  courseSlug: string; lessonSlug?: string; accessModel: "FREE" | "PAID"; compact?: boolean; myLogin?: string;
   /** Stay on the current page (lesson gate) instead of navigating to the returned lesson. */
   onEnrolled?: () => void;
 }) {
@@ -36,6 +36,7 @@ export default function FreeEnrollmentAction({ courseSlug, lessonSlug, accessMod
   }, [courseSlug, statusAttempt]);
 
   const toAccount = () => {
+    if (myLogin) { navigation.assign(myLogin); return; }
     rememberEnrollmentIntent(intent);
     navigation.assign(enrollmentAccountPath(intent));
   };
@@ -62,6 +63,7 @@ export default function FreeEnrollmentAction({ courseSlug, lessonSlug, accessMod
   </div>;
   if (view.kind === "guest") {
     if (accessModel !== "FREE") return null;
+    if (myLogin) return <a className="primary" href={myLogin}>Войти через MY →</a>;
     return <div className="enrollmentAction">
       <button className="primary" type="button" onClick={toAccount}>Записаться бесплатно →</button>
       <p>Войдите по ссылке из письма — запись завершится автоматически и откроется {lessonSlug ? "этот урок" : "первый урок"}.</p>
@@ -70,7 +72,7 @@ export default function FreeEnrollmentAction({ courseSlug, lessonSlug, accessMod
   const { status } = view;
   if (status.enrollment) {
     return <div className="enrollmentAction enrolled" aria-label="Запись на курс">
-      <p><strong>Вы записаны</strong> · прогресс 0%{status.accessModel === "PAID" ? " · доступ сохранён после перехода курса на платный" : ""}</p>
+      <p><strong>Вы записаны</strong>{status.accessModel === "PAID" ? " · доступ сохранён после перехода курса на платный" : ""}</p>
       {!compact && <button type="button" disabled={busy} onClick={() => { void enroll(); }}>{busy ? "Открываем…" : "Продолжить обучение →"}</button>}
       {compact && onEnrolled && <button type="button" onClick={onEnrolled}>Проверить доступ</button>}
       {message && <p role="status">{message}</p>}

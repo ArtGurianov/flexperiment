@@ -1,6 +1,7 @@
 /* FLEX-123 cabinet views. Pure, synchronous components over closed DTOs: no fetching here.
  * Access (what the customer may open) and payment/refund state (what happened to an order)
  * are rendered in separate sections and never derived from each other. */
+import Link from "next/link";
 import type { ReactNode } from "react";
 import {
   ACCESS_LABEL, ORDER_STATE_LABEL, PRODUCT_LABEL, TICKET_STATUS_LABEL,
@@ -11,11 +12,11 @@ import {
 export function StatusNotice({ result, what }: { result: Exclude<LoadResult<unknown>, { status: "ok" }>; what: string }) {
   switch (result.status) {
     case "consent-required":
-      return <p className="cabinet-notice" role="status">Чтобы открыть {what}, подтвердите согласия аккаунта на странице <a href="/profile">профиля</a>.</p>;
+      return <p className="cabinet-notice" role="status">Чтобы открыть {what}, подтвердите согласия аккаунта на странице <Link href="/profile">профиля</Link>.</p>;
     case "not-yet-available":
       return <p className="cabinet-notice" role="status">Раздел «{what}» скоро появится в кабинете.</p>;
     case "signed-out":
-      return <p className="cabinet-notice" role="status"><a href="/sign-in">Войдите</a>, чтобы увидеть {what}.</p>;
+      return <p className="cabinet-notice" role="status"><Link href="/sign-in">Войдите</Link>, чтобы увидеть {what}.</p>;
     default:
       return <p className="cabinet-notice" role="status">Не удалось загрузить {what}. Обновите страницу чуть позже.</p>;
   }
@@ -25,8 +26,8 @@ function Section({ title, id, children }: { title: string; id: string; children:
   return <section className="cabinet-section" aria-labelledby={id}><h2 id={id}>{title}</h2>{children}</section>;
 }
 
-export function CoursesView({ result, platformOrigin, heading = "Мои курсы" }: {
-  result: LoadResult<CabinetCourse[]>; platformOrigin: string; heading?: string;
+export function CoursesView({ result, platformOrigin, heading = "Мои курсы", sharedSession = false }: {
+  result: LoadResult<CabinetCourse[]>; platformOrigin: string; heading?: string; sharedSession?: boolean;
 }) {
   return (
     <Section title={heading} id="courses-heading">
@@ -41,11 +42,13 @@ export function CoursesView({ result, platformOrigin, heading = "Мои курс
                     <p className="cabinet-meta">
                       <span>Доступ: {ACCESS_LABEL[course.access]}</span>
                       {course.started && <span> · Начат</span>}
+                      {course.started && course.progressPercent !== undefined && <span> · Прогресс {course.progressPercent}%</span>}
                     </p>
                   </div>
-                  {/* Protected entry is accepted by FLEX-121 (exchange receiver on LMS). */}
-                  <a className="cabinet-action" href={lmsEntryHref(platformOrigin, course)}>
-                    {course.resumeLesson ? `Продолжить: ${course.resumeLesson.title}` : course.started ? "Продолжить" : "Начать"}
+                  {course.continuationReason === "PREVIOUS_UNAVAILABLE" && <p>Предыдущий урок недоступен. Откроется первый доступный.</p>}
+                  <a className="cabinet-action" href={lmsEntryHref(platformOrigin, course, sharedSession)}>
+                    {course.continuationReason === "REWATCH" ? "Пересмотреть последний урок" : course.started
+                      ? course.resumeLesson ? `Продолжить: ${course.resumeLesson.title}` : "Продолжить" : "Начать"}
                   </a>
                 </li>
               ))}
@@ -120,7 +123,7 @@ export function ProfileView({ result }: { result: LoadResult<CabinetProfile> }) 
           <dt>Почта</dt><dd>{result.data.email}</dd>
           <dt>Имя</dt><dd>{result.data.displayName ?? "Не указано"}</dd>
           <dt>Аккаунт создан</dt><dd>{formatDate(result.data.createdAt)}</dd>
-          <dt>Согласия аккаунта</dt><dd>{result.data.consentRequired ? <a href="/consents?next=%2Fprofile">Подтвердить актуальные документы</a> : "Действуют"}</dd>
+          <dt>Согласия аккаунта</dt><dd>{result.data.consentRequired ? <Link href="/consents?next=%2Fprofile">Подтвердить актуальные документы</Link> : "Действуют"}</dd>
           <dt>Рассылка</dt><dd>{result.data.marketing ? "Подписка оформлена" : "Без рассылки"}</dd>
         </dl>
       )}

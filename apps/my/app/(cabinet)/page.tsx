@@ -12,7 +12,7 @@ export default async function CabinetPage() {
   return (
     <>
       <h1>{name ? `Личный кабинет · ${name}` : "Личный кабинет"}</h1>
-      <CoursesView result={courses} platformOrigin={origins.platform} />
+      <CoursesView sharedSession={origins.sharedSession} result={courses} platformOrigin={origins.platform} />
       <TicketsView result={tickets} />
       <OrdersView result={orders} heading="Последние заказы" />
     </>

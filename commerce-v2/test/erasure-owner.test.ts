@@ -262,6 +262,8 @@ describe("FLEX-131 reviewed closure on synthetic data", () => {
     db.prepare("INSERT INTO free_course_enrollments VALUES (?, 'free', 1, ?)").run(customerId, stamp);
     db.prepare("INSERT INTO course_learning_starts VALUES (?, 'course-free', 'free', 'FREE_ENROLLMENT', ?)").run(customerId, stamp);
     db.prepare("INSERT INTO lesson_resume_positions VALUES (?, 'lesson', 31, 1, ?, ?)").run(customerId, stamp, stamp);
+    db.prepare("INSERT INTO lesson_completions VALUES (?, 'lesson', ?)").run(customerId, stamp);
+    db.prepare(`INSERT INTO course_playback_state VALUES (?, 'course-paid', 'lesson', 'fixture', 'lesson', 'fixture', 'PLAYING')`).run(customerId);
     db.prepare("INSERT INTO course_access_starts VALUES (?, 'course-paid', 'lesson', ?)").run(customerId, stamp);
     db.prepare(`INSERT INTO marketing_consents(id,customer_id,granted,document_version,document_sha256,recorded_at,source)
       VALUES ('old-marketing',?,1,'test',?,?,'MAGIC_LINK_INITIATION')`).run(customerId, "a".repeat(64), stamp);
@@ -359,7 +361,7 @@ describe("FLEX-131 reviewed closure on synthetic data", () => {
     expect(receipt).toMatchObject({
       state: "ERASURE_APPLIED", sequence: 1, requestId: plan.requestId,
       receipt: { applicationMode: "LIVE", counts: { user: 1, session: 1, verification: 1,
-        free_course_enrollments: 1, course_learning_starts: 1, lesson_resume_positions: 1, account_consents: 1, marketing_consents: 1 } },
+        free_course_enrollments: 1, course_learning_starts: 1, lesson_resume_positions: 1, lesson_completions: 1, course_playback_state: 1, account_consents: 1, marketing_consents: 1 } },
     });
     expect(JSON.stringify(receipt)).not.toMatch(/owner@example|session_token|synthetic-link|TEST_READ|cookie/i);
     expect(db.prepare("SELECT auth_user_id, display_name FROM customers WHERE id=?").get(customerId)).toEqual({ auth_user_id: null, display_name: null });
@@ -372,6 +374,7 @@ describe("FLEX-131 reviewed closure on synthetic data", () => {
     expect([302, 400, 401]).toContain(oldLinkResponse.status);
     expect(oldLinkResponse.headers.getSetCookie().length).toBe(0);
     expect(count("user")).toBe(0);
+    expect(count("lesson_completions") + count("course_playback_state")).toBe(0);
     for (const { table, rows } of finance) expect(before(table)).toEqual(rows);
     expect((await run({ operation: "review-status", requestId: plan.requestId }))).toEqual(receipt);
     wire.requests.length = 0;
@@ -398,9 +401,14 @@ describe("FLEX-131 reviewed closure on synthetic data", () => {
       expect(count("orders", restored)).toBe(1);
       expect(nativeOrderStatus(restored, "ORDER-TEST").refund).toBe("REFUND_PROCESSING");
       await expect(run({ operation: "reconcile" }, { ...config, databasePath: oldPath })).rejects.toThrow("ERASURE_NATIVE_RESTORE_FINANCIAL_HOLD");
+      expect(count("lesson_completions", restored)).toBe(1);
+      expect(count("course_playback_state", restored)).toBe(1);
       applyIsolatedRestoreErasure(restored, proof, keys, "canary", now());
+      const priorReceipt = restored.prepare("SELECT * FROM reviewed_erasure_receipts").get();
+      applyIsolatedRestoreErasure(restored, proof, keys, "canary", now());
+      expect(restored.prepare("SELECT * FROM reviewed_erasure_receipts").get()).toEqual(priorReceipt);
       for (const table of ["user", "session", "verification", "course_learning_starts", "free_course_enrollments", "lesson_resume_positions",
-        "account_consents", "marketing_consents"]) expect(count(table, restored)).toBe(0);
+        "account_consents", "marketing_consents", "lesson_completions", "course_playback_state"]) expect(count(table, restored)).toBe(0);
       expect(restored.prepare("SELECT removed_at FROM email_suppressions").get()).toEqual({ removed_at: null });
       expect(restored.prepare("SELECT application_mode FROM reviewed_erasure_receipts").get()).toEqual({ application_mode: "RESTORE" });
       await reconcileNativePaymentWithoutNewCharge(restored, ledger, "ORDER-TEST");
@@ -611,6 +619,8 @@ describe("FLEX-131 reviewed closure on synthetic data", () => {
       ...plan, continuityRef: "fixture-experimental-route",
       categories: { ...plan.categories, account: { ...plan.categories.account, action: "CLOSE_WITH_CONTINUITY" } },
     } })).rejects.toThrow("ERASURE_OWNER_CONFIGURATION_INVALID");
+    expect(count("lesson_completions")).toBe(1);
+    expect(count("course_playback_state")).toBe(1);
     expect([count("user"), count("reviewed_erasure_receipts")]).toEqual([1, 0]);
     expect(await run({ operation: "read" })).toMatchObject({ sequence: 0 });
   });

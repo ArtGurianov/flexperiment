@@ -668,6 +668,33 @@ Retention and erasure restore both admit the reviewed 0001–0036 schema with ha
 journal, `f0b2205a43d7a733a96cbc3b40f7b57e4850dc0f8082dfc5449f1a95bee21e13`. The
 fingerprint is computed over `sqlite_master`. Keep the version and digest of any applied migration.
 
+## Lesson completion and course continuation (FLEX-129/130)
+
+`lesson_completions` records the immutable first explicit completion for a customer
+and a lesson. Commerce verifies the account, current required consent, course start,
+and full access to the selected lesson in the write transaction. The lesson, LMS
+account library, and MY calculate progress over the same authorized editorial outline.
+A new lesson can lower the percentage. A withdrawn lesson leaves the counts while
+its completion survives. Existing resume positions still restore the timestamp
+within their lesson. They do not seed course continuation, the course start flag,
+or completion. Without accepted playback history the course target is the first
+accessible lesson. Historical implicit enrollments with no separate start fact
+show as unstarted until the first accepted playback event.
+
+`course_playback_state` stores the latest issued player cursor and the last accepted
+Playing/Ended state per customer and course. Issuing a cursor does not change the
+continuation target. Events require the current cursor, current consent, and full
+lesson access. Ended requires Playing for the same cursor. Commerce chooses the first
+available, current, next available, or last lesson for replay. A withdrawn previous
+lesson yields the first accessible lesson with an explanation. Position saving and
+the refund evidence in `course_access_starts` continue to serve their own contracts.
+
+Both tables hold subject-linked learning data. Full erasure removes them. Reviewed
+partial erasure removes them under the progress DELETE disposition, including ledger
+replay after isolated restore. Offline retention keeps existing facts. The local
+integration candidate adds 0046 and 0047 after FLEX-131's 0044 and FLEX-119's 0045.
+The coordinator confirms these slots before integration.
+
 ## Stage A, LAB showcase and paid upgrade order
 
 The review branch keeps the Stage A and showcase migration prefix byte-for-byte. The only forward sequence

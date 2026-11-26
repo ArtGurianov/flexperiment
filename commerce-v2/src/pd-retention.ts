@@ -78,6 +78,10 @@ const supportedSchemaSha256 = new Set([
   "49c1014232cb13df508508c6fb02c6b0a94149d1ff4e13310e8b9ba34f9aa658",
   // 0045: executor identity, fiscal mode and refund dispatch on existing financial rows.
   "f6e1eb904d862767c86ab6bf3faf838daa391456f4a3e1b9416dfd157b88f562",
+  // 0046: lesson completions after native payment executor.
+  "a0e1bbba4de455fab95614d5c08cbb06fb3216806df72d1a415123ee5fbadbeb",
+  // 0047: course playback state after lesson completions.
+  "ef24c8da9ca557bc22b2fe5cb4c49dce350c0f87deb9f73385f8b353b247dd70",
 ]);
 const parse = <T>(schema: z.ZodType<T>, value: unknown): T => {
   const result = schema.safeParse(value); return result.success ? result.data : refuse("RETENTION_POLICY_OR_HOLD_INVALID");
@@ -232,6 +236,8 @@ export function cleanupOfflinePersonalData(db: Database.Database, input: {
         "authenticated_consent_actions", "notification_campaign_recipients", "lesson_resume_positions",
         "course_access_starts", "course_learning_starts", "playback_grant_rate_limits", "playback_access_events"]
         .some(table => !!db.prepare(`SELECT 1 FROM ${table} WHERE customer_id=? LIMIT 1`).get(customer.id))) continue;
+      if (["lesson_completions", "course_playback_state"].some(table => hasTable(db, table)
+        && db.prepare(`SELECT 1 FROM ${table} WHERE customer_id=?`).get(customer.id))) continue;
       if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='lab_guest_access'").get()
         && db.prepare("SELECT 1 FROM lab_guest_access WHERE customer_id=?").get(customer.id)) continue;
       if (db.prepare("SELECT 1 FROM audit_log WHERE actor=? OR subject_ref=? OR instr(evidence_json,?)>0 OR instr(evidence_json,?)>0 LIMIT 1")

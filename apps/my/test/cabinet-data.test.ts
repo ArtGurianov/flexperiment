@@ -3,7 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import {
-  CABINET_ROUTES, cabinetSource, commerceCabinetSource, fixtureCabinetSource, fixtureName, sessionCookieHeader,
+  CABINET_ROUTES, cabinetOrigins, cabinetSource, commerceCabinetSource, fixtureCabinetSource, fixtureName, sessionCookieHeader,
 } from "../components/cabinet/data";
 import { lmsEntryHref, parseCourses, parseOrders, parseProfile, parseTickets } from "../components/cabinet/model";
 
@@ -80,6 +80,20 @@ describe("FLEX-123 cabinet data layer", () => {
     const [ticket] = parseTickets({ tickets: [{ orderPublicId: "ord_lab_fixture_0001", title: "LAB", startsAt: "2026-12-06T09:00:00Z",
       timezone: "Asia/Novosibirsk", status: "VALID", viewPath: "/tickets/ord_lab_fixture_0001" }] })!;
     expect(ticket.viewPath).toBe("/tickets/ord_lab_fixture_0001");
+  });
+
+  it("uses direct LMS entry only when the shared account cookie covers the configured origins", () => {
+    const [course] = parseCourses({ courses: [{ slug: "flex-basics", title: "Основы", access: "PURCHASE", started: true,
+      resumeLesson: { slug: "isolation-intro", title: "Изоляции" } }] })!;
+    const configured = { ...ENV, MY_SESSION_COOKIE_DOMAIN: "flexperiment.test", PLATFORM_ORIGIN: "https://flexperiment.test",
+      LAB_ORIGIN: "https://lab.flexperiment.test" };
+    const legacy = cabinetOrigins({ ...configured, MY_IDENTITY_MODE: "off" });
+    const shared = cabinetOrigins({ ...configured, MY_IDENTITY_MODE: "on" });
+    expect(lmsEntryHref(legacy.platform, course, legacy.sharedSession)).toContain("/auth/lms/start?");
+    expect(lmsEntryHref(shared.platform, course, shared.sharedSession))
+      .toBe("https://flexperiment.test/courses/flex-basics/lessons/isolation-intro");
+    expect(() => cabinetOrigins({ ...configured, MY_IDENTITY_MODE: "on", PLATFORM_ORIGIN: "https://other.test" }))
+      .toThrow("MY_SESSION_COOKIE_DOMAIN_ORIGIN_MISMATCH");
   });
 
   it("serves both fixture profiles through the same parsers and never in production", async () => {

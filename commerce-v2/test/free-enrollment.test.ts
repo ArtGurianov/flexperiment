@@ -7,12 +7,14 @@ import { createCommerceV2App } from "../src/app";
 import { configureProduct, withdrawProduct } from "../src/catalog-control";
 import { publishEditorialDraft, saveEditorialDraft } from "../src/course-editorial";
 import { migrateV2 } from "../src/db";
+import { grantManualEntitlement, revokeManualEntitlement } from "../src/entitlements";
+import { completionPercent, customerLessonCompletions } from "../src/lesson-progress";
 import { enrollInFreeCourse, freeEnrollmentStatus } from "../src/free-enrollment";
 import { listCustomerLibrary } from "../src/library";
 import { loadCommerceOrigins } from "../src/origins";
 import { loadCommerceRuntimeConfig } from "../src/payment-mode";
 import { resolvePlaybackAccess } from "../src/playback-access";
-import { listCustomerStorefrontLibrary } from "../src/storefront-content";
+import { listCustomerStorefrontLibrary, listMyStorefrontLibrary } from "../src/storefront-content";
 import { confirmSyntheticAccount } from "./fixtures/confirmed-account";
 
 const ORIGIN = "http://localhost:3001"; // loadCommerceOrigins({ NODE_ENV: "test" }).platform
@@ -63,12 +65,12 @@ const toPaid = (courseRef: string) => configureProduct(db, config, { kind: "ONLI
 const decision = (courseRef: string, customerId = "student", lesson = "l1") =>
   resolvePlaybackAccess(db, { customerId, lessonRef: `${courseRef}-${lesson}`, now: at, leaseMs: day }).decision;
 const count = (table: string) => (db.prepare(`SELECT COUNT(*) n FROM ${table}`).get() as { n: number }).n;
-const app = (protectedDelivery = false) => createCommerceV2App({ db, sourceCommit: "a".repeat(40), serviceToken: "synthetic-service",
+const app = (protectedDelivery = false, observedAt = at) => createCommerceV2App({ db, sourceCommit: "a".repeat(40), serviceToken: "synthetic-service",
   config: protectedDelivery
     ? loadCommerceRuntimeConfig({ DEPLOY_ENV: "production", PAYMENT_MODE: "disabled", KINESCOPE_DELIVERY_MODE: "protected", MERCHANT_PROMOTION_PREFIX: "FX-" })
     : loadCommerceRuntimeConfig({ DEPLOY_ENV: "staging", PAYMENT_MODE: "disabled", KINESCOPE_DELIVERY_MODE: "open" }),
   ...(protectedDelivery ? { kinescopeDrmAuth: drm } : {}),
-  authenticateCustomer: async headers => headers.get("authorization")?.replace(/^Session /, "") || null, now: () => at });
+  authenticateCustomer: async headers => headers.get("authorization")?.replace(/^Session /, "") || null, now: () => observedAt });
 const enroll = (server: ReturnType<typeof app>, body: unknown, customer: string | null = "student", origin: string | null = ORIGIN) =>
   server.request("/v1/me/free-enrollments", { method: "POST", body: JSON.stringify(body), headers: {
     "content-type": "application/json", ...(customer ? { authorization: `Session ${customer}` } : {}), ...(origin ? { origin } : {}) } });
@@ -303,9 +305,183 @@ describe("FLEX-123 MY course library", () => {
     const response = await read("student");
     expect(response.headers.get("cache-control")).toBe("private, no-store");
     expect(await response.json()).toEqual({ courses: [{ slug: "free", title: "Course free", access: "FREE_ENROLMENT",
-      started: true, resumeLesson: { slug: "two", title: "Two" } }] });
+      started: true, progressPercent: 0, continuationReason: "FIRST", resumeLesson: { slug: "one", title: "One" } }] });
     expect(await (await read("other")).json()).toEqual({ courses: [] });
     toPaid("free");
     expect(await (await read("student")).json()).toMatchObject({ courses: [{ slug: "free", access: "FREE_ENROLMENT" }] });
+  });
+});
+
+describe("FLEX-129 explicit lesson completion", () => {
+  const progress = (server: ReturnType<typeof app>, ref: string, method: "GET" | "POST" = "GET",
+    customer = "student", origin = ORIGIN) => server.request(`/v1/lessons/${ref}/completion`, {
+    method, headers: { ...(customer ? { authorization: `Session ${customer}` } : {}), origin },
+  });
+
+  it("records a first completion once and reads it from a separate client without deriving it from resume", async () => {
+    publish("free", "FREE");
+    const device = app();
+    expect((await progress(device, "free-l1", "POST", "")).status).toBe(401);
+    expect((await progress(device, "free-l1", "POST")).status).toBe(403);
+    await enroll(device, { courseSlug: "free" });
+    db.prepare("INSERT INTO lesson_resume_positions(customer_id,lesson_ref,seconds,client_seq,client_ts) VALUES (?,?,?,?,?)")
+      .run("student", "free-l1", 88, 1, at.toISOString());
+    const zero = await progress(device, "free-l1");
+    expect(zero.headers.get("cache-control")).toBe("private, no-store");
+    expect(await zero.json()).toEqual({ firstCompletedAt: null, progressPercent: 0 });
+    expect((await progress(device, "free-l1", "POST", "student", "https://other.example.test")).status).toBe(403);
+    const responses = await Promise.all([progress(device, "free-l1", "POST"), progress(device, "free-l1", "POST")]);
+    for (const response of responses) expect(await response.json()).toEqual({ firstCompletedAt: at.toISOString(), progressPercent: 50 });
+    const nextDevice = app(false, new Date(at.getTime() + day));
+    expect(await (await progress(nextDevice, "free-l1")).json()).toEqual({ firstCompletedAt: at.toISOString(), progressPercent: 50 });
+    expect(await (await progress(nextDevice, "free-l1", "POST")).json()).toEqual({ firstCompletedAt: at.toISOString(), progressPercent: 50 });
+    expect((await progress(nextDevice, "free-l1", "GET", "other")).status).toBe(403);
+    expect(count("lesson_completions")).toBe(1);
+    expect(count("course_learning_starts")).toBe(1);
+    expect(count("course_access_starts")).toBe(0);
+    expect(db.prepare("SELECT seconds FROM lesson_resume_positions").pluck().get()).toBe(88);
+    expect(() => db.exec("UPDATE lesson_completions SET first_completed_at='later'")).toThrow("LESSON_COMPLETION_IMMUTABLE");
+  });
+
+  it("uses the latest syllabus and preserves facts for lessons withdrawn from it", async () => {
+    publish("free", "FREE");
+    const server = app();
+    await enroll(server, { courseSlug: "free" });
+    await progress(server, "free-l1", "POST");
+    await progress(server, "free-l2", "POST");
+    expect(await (await progress(server, "free-l2")).json()).toMatchObject({ progressPercent: 100 });
+    const revision = [
+      { lessonRef: "free-l1", title: "One", slug: "one", position: 0 },
+      { lessonRef: "free-l2", title: "Two", slug: "two", position: 1 },
+      { lessonRef: "free-l3", title: "Three", slug: "three", position: 2 },
+    ];
+    saveEditorialDraft(db, { expectedRevision: 1, actor: "control-room", document: {
+      courseRef: "free", title: "Course free", slug: "free", summary: "", visibility: "LISTED",
+      sections: [{ sectionRef: "free-s1", title: "First", position: 0, visibility: "LISTED" },
+        { sectionRef: "free-s2", title: "Second", position: 1, visibility: "LISTED" }],
+      lessons: revision.map((item, index) => ({ ...item, sectionRef: index === 0 ? "free-s1" : "free-s2",
+        visibility: "LISTED", freePreview: false })),
+    } }, at.toISOString());
+    publishEditorialDraft(db, { courseRef: "free", expectedRevision: 2, expectedPublishedVersion: 1,
+      idempotencyKey: "progress-publish-2", actor: "control-room" }, at.toISOString());
+    expect(await (await progress(server, "free-l2")).json()).toMatchObject({ progressPercent: 66 });
+    db.prepare("UPDATE catalog_lesson_projection SET withdrawn_at=?, withdrawn_reason='Fixture withdrawal' WHERE lesson_ref='free-l1'").run(at.toISOString());
+    expect((await progress(server, "free-l1", "POST")).status).toBe(403);
+    expect(await (await progress(server, "free-l2")).json()).toMatchObject({ progressPercent: 50 });
+    expect(customerLessonCompletions(db, "student").get("free-l1")).toBe(at.toISOString());
+    db.prepare("UPDATE catalog_lesson_projection SET withdrawn_at=?, withdrawn_reason='Fixture withdrawal' WHERE course_ref='free'").run(at.toISOString());
+    expect((await progress(server, "free-l2")).status).toBe(403);
+    expect(completionPercent([], customerLessonCompletions(db, "student"))).toBe(0);
+  });
+
+  it("requires a paid right and a previously recorded start, then stops on revocation", async () => {
+    publish("paid", "PAID", { previewFirst: true });
+    const server = app();
+    const playback = (lesson: string) => server.request(`/v1/lessons/paid-${lesson}/playback`, {
+      method: "POST", headers: { authorization: "Session student" },
+    });
+    expect((await playback("l1")).status).toBe(200);
+    expect((await progress(server, "paid-l1", "POST")).status).toBe(403);
+    const grant = grantManualEntitlement(db, { customerId: "student", scope: "COURSE", courseRef: "paid",
+      reason: "Synthetic", evidenceRef: "FLEX-129-fixture", legalTermsRef: "fixture-terms", idempotencyKey: "flex-129-fixture", actor: "control-room" }, at.toISOString());
+    expect((await progress(server, "paid-l2", "POST")).status).toBe(403);
+    expect((await playback("l2")).status).toBe(200);
+    expect(await (await progress(server, "paid-l2")).json()).toMatchObject({ progressPercent: 0 });
+    const starts = db.prepare("SELECT * FROM course_access_starts").all();
+    expect(await (await progress(server, "paid-l2", "POST")).json()).toMatchObject({ progressPercent: 50 });
+    expect(db.prepare("SELECT * FROM course_access_starts").all()).toEqual(starts);
+    revokeManualEntitlement(db, grant.entitlementId, { reason: "Synthetic", evidenceRef: "FLEX-129-fixture",
+      actor: "control-room" }, at.toISOString());
+    expect((await progress(server, "paid-l2")).status).toBe(403);
+    expect(count("lesson_completions")).toBe(1);
+  });
+});
+
+describe("FLEX-130 course continuation", () => {
+  const headers = { authorization: "Session student", origin: ORIGIN };
+  const status = (courseRef: string) => listCustomerStorefrontLibrary(db, "student", at, day).courses.find(course => course.courseRef === courseRef);
+  const cabinet = (slug: string) => listMyStorefrontLibrary(db, "student", at, day).courses.find(course => course.slug === slug);
+  const playback = async (server: ReturnType<typeof app>, lessonRef: string) => {
+    const response = await server.request(`/v1/lessons/${lessonRef}/playback?learning=1`, { method: "POST", headers });
+    expect(response.status).toBe(200);
+    const grant = await response.json() as { learningCursor?: string };
+    return grant.learningCursor;
+  };
+  const report = async (server: ReturnType<typeof app>, lessonRef: string, cursor: string, phase: "PLAYING" | "ENDED") => {
+    const response = await server.request(`/v1/lessons/${lessonRef}/learning-playback`, {
+      method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ cursor, phase }),
+    });
+    expect(response.status).toBe(200);
+    return (await response.json() as { accepted: boolean }).accepted;
+  };
+  const target = (reason: string, slug: string) => {
+    expect(status("free")?.continuation).toMatchObject({ reason, lesson: { slug } });
+    expect(cabinet("free")).toMatchObject({ continuationReason: reason, resumeLesson: { slug } });
+  };
+
+  it.each([false, true])("logs one refusal when issuing a learning cursor fails (protected=%s)", async protectedDelivery => {
+    publish("free", "FREE");
+    enrollInFreeCourse(db, { customerId: "student", courseSlug: "free" }, at.toISOString());
+    db.exec(`CREATE TRIGGER fixture_refuse_learning_cursor BEFORE INSERT ON course_playback_state
+      BEGIN SELECT RAISE(ABORT, 'FIXTURE_CURSOR_WRITE_REFUSED'); END;`);
+    const response = await app(protectedDelivery)
+      .request("/v1/lessons/free-l1/playback?learning=1", { method: "POST", headers });
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ code: "KINESCOPE_GRANT_UNAVAILABLE" });
+    expect(db.prepare("SELECT event_type, reason FROM playback_access_events").all()).toEqual([
+      { event_type: "GRANT_DENIED", reason: "KINESCOPE_GRANT_UNAVAILABLE" },
+    ]);
+    expect(count("course_playback_state")).toBe(0);
+  });
+
+  it("shares the last accepted lesson, guards stale events, and separates end, resume, and completion", async () => {
+    publish("free", "FREE");
+    enrollInFreeCourse(db, { customerId: "student", courseSlug: "free" }, at.toISOString());
+    const server = app();
+    target("FIRST", "one");
+    const one = (await playback(server, "free-l1"))!;
+    expect(one).toBeTruthy();
+    expect(await report(server, "free-l1", one, "ENDED")).toBe(false);
+    expect(await report(server, "free-l1", one, "PLAYING")).toBe(true);
+    target("CURRENT", "one");
+    expect(await report(server, "free-l1", one, "ENDED")).toBe(true);
+    target("NEXT", "two");
+    const two = (await playback(server, "free-l2"))!;
+    expect(await report(server, "free-l1", one, "PLAYING")).toBe(false);
+    target("NEXT", "two");
+    expect(await report(server, "free-l2", two, "PLAYING")).toBe(true);
+    target("CURRENT", "two");
+    expect(await report(server, "free-l2", two, "ENDED")).toBe(true);
+    target("REWATCH", "two");
+    expect(count("lesson_completions") + count("lesson_resume_positions")).toBe(0);
+    const mark = await server.request("/v1/lessons/free-l1/completion", { method: "POST", headers });
+    expect(await mark.json()).toMatchObject({ progressPercent: 50 });
+    expect(status("free")?.progressPercent).toBe(50);
+    expect(cabinet("free")?.progressPercent).toBe(50);
+    db.prepare("UPDATE catalog_lesson_projection SET withdrawn_at=?,withdrawn_reason='fixture' WHERE lesson_ref='free-l2'").run(at.toISOString());
+    target("PREVIOUS_UNAVAILABLE", "one");
+    expect(await report(server, "free-l2", two, "PLAYING")).toBe(false);
+    const read = await server.request("/v1/lessons/free-l1/completion", { headers });
+    expect(await read.json()).toMatchObject({ progressPercent: 100 });
+    expect(status("free")?.progressPercent).toBe(100);
+    expect(cabinet("free")?.progressPercent).toBe(100);
+  });
+
+  it("distinguishes a paid start from an entitlement and excludes preview-only playback", async () => {
+    publish("paid", "PAID", { previewFirst: true });
+    const server = app();
+    expect(await playback(server, "paid-l1")).toBeUndefined();
+    expect(status("paid")).toMatchObject({ access: "PREVIEW", started: false, continuation: null });
+    const grant = grantManualEntitlement(db, { customerId: "student", scope: "COURSE", courseRef: "paid",
+      reason: "Synthetic", evidenceRef: "FLEX-130-fixture", legalTermsRef: "fixture-terms",
+      idempotencyKey: "flex-130-fixture", actor: "control-room" }, at.toISOString());
+    expect(status("paid")).toMatchObject({ access: "ENTITLED", enrollment: null, started: false });
+    expect(await playback(server, "paid-l2")).toBeTruthy();
+    expect(status("paid")).toMatchObject({ access: "ENTITLED", enrollment: null, started: true });
+    expect(cabinet("paid")).toMatchObject({ access: "GRANTED", started: true, progressPercent: 0 });
+    revokeManualEntitlement(db, grant.entitlementId, { reason: "Synthetic", evidenceRef: "FLEX-130-fixture",
+      actor: "control-room" }, at.toISOString());
+    expect(status("paid")).toMatchObject({ access: "PREVIEW", started: false, continuation: null });
+    expect(cabinet("paid")).toBeUndefined();
   });
 });
