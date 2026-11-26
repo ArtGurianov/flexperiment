@@ -409,10 +409,15 @@ describe("native checkout confirm and callback route (FLEX-119)", () => {
     });
 
     it.each([
-      [{ malformedJson: true }, "TOCHKA_RESPONSE_INVALID"],
-      [{ hideApproval: true }, "TOCHKA_APPROVAL_NOT_YET_VISIBLE"],
-    ])("audits a stalled approval %o once and still grants on late read-back", async (fault, reason) => {
+      ["PENDING", { malformedJson: true }, "TOCHKA_RESPONSE_INVALID"],
+      ["PENDING", { hideApproval: true }, "TOCHKA_APPROVAL_NOT_YET_VISIBLE"],
+      ["PENDING", { rejectPaymentRead: 503 }, "READ_BACK_UNAVAILABLE"],
+      ["CREATE_UNKNOWN", { rejectPaymentRead: 401 }, "READ_BACK_UNAVAILABLE"],
+    ] as const)("audits stalled %s read-back %o once and still grants on recovery", async (state, fault, reason) => {
+      fixture.faults.loseCreate = state === "CREATE_UNKNOWN";
+      fixture.faults.hideFromList = state === "CREATE_UNKNOWN";
       const { result } = await checkout();
+      expect(result.state).toBe(state);
       fixture.pay([...fixture.payments.values()][0]);
       Object.assign(fixture.faults, fault);
       const { created_at } = db.prepare("SELECT created_at FROM native_payments").get() as { created_at: string };
@@ -427,16 +432,16 @@ describe("native checkout confirm and callback route (FLEX-119)", () => {
       now += 60_000;
       await reconcilePendingNativePayments(db, ledger);
       expect(alerts()).toEqual([{ subject_ref: result.orderPublicId, evidence_json: JSON.stringify({ reason }) }]);
-      expect(db.prepare("SELECT state,last_reason FROM native_payments").get()).toEqual({ state: "PENDING", last_reason: reason });
+      expect(db.prepare("SELECT state,last_reason FROM native_payments").get()).toEqual({ state, last_reason: reason });
       expect(entitlementCount()).toEqual({ n: 0 });
 
-      Object.assign(fixture.faults, { malformedJson: false, hideApproval: false });
+      Object.assign(fixture.faults, { malformedJson: false, hideApproval: false, hideFromList: false, rejectPaymentRead: undefined });
       await reconcilePendingNativePayments(db, ledger);
       await reconcilePendingNativePayments(db, ledger);
       expect(db.prepare("SELECT state FROM native_payments").get()).toEqual({ state: "PAID" });
       expect(entitlementCount()).toEqual({ n: 1 });
       expect(alerts()).toHaveLength(1);
-      expect(fixture.calls.create).toBe(1);
+      expect(fixture.calls).toMatchObject({ create: 1, debit: 1 });
     });
 
     it("escalates and stops scanning a lost payment after the discovery deadline", async () => {
@@ -563,6 +568,39 @@ describe("native checkout confirm and callback route (FLEX-119)", () => {
       expect(db.prepare("SELECT state,last_reason,dispatch_started,request_envelope IS NOT NULL AS retained FROM native_refunds").get())
         .toEqual({ state: "SUBMIT_UNKNOWN", last_reason: "NATIVE_REFUND_DISPATCH_UNCERTAIN", dispatch_started: 0, retained: 1 });
       expect(db.prepare("SELECT COUNT(*) n FROM audit_log WHERE action='NATIVE_REFUND_REVIEW_REQUIRED'").get()).toEqual({ n: 1 });
+    });
+
+    it.each(["PROCESSING", "SUBMIT_UNKNOWN"] as const)("audits stalled %s refund read-back once and settles on recovery", async state => {
+      const { payment, refundId } = await requestApprovedRefund();
+      fixture.faults.loseRefund = state === "SUBMIT_UNKNOWN";
+      fixture.faults.hideRefund = state === "SUBMIT_UNKNOWN";
+      expect((await executeApprovedNativeRefund(db, runtime.ledger, refundId)).state).toBe(state);
+      fixture.faults.rejectPaymentRead = 403;
+      const { created_at } = db.prepare("SELECT created_at FROM native_refunds").get() as { created_at: string };
+      let now = Date.parse(created_at) + 59 * 60_000;
+      const ledger = { ...runtime.ledger, now: () => new Date(now).toISOString() };
+      const alerts = () => db.prepare(`SELECT subject_ref, evidence_json FROM audit_log
+        WHERE action='NATIVE_REFUND_READ_BACK_STALLED'`).all();
+      await reconcilePendingNativeRefunds(db, ledger);
+      expect(alerts()).toEqual([]);
+      now += 60_000;
+      await reconcilePendingNativeRefunds(db, ledger);
+      now += 60_000;
+      await reconcilePendingNativeRefunds(db, ledger);
+      expect(alerts()).toEqual([{ subject_ref: refundId, evidence_json: JSON.stringify({ reason: "READ_BACK_UNAVAILABLE" }) }]);
+      expect(db.prepare("SELECT state,last_reason,request_envelope IS NOT NULL AS retained FROM native_refunds").get())
+        .toEqual({ state, last_reason: "READ_BACK_UNAVAILABLE", retained: 1 });
+      expect(entitlementCount()).toEqual({ n: 1 });
+
+      fixture.faults.rejectPaymentRead = undefined;
+      fixture.faults.hideRefund = false;
+      fixture.completeRefund(payment);
+      await reconcilePendingNativeRefunds(db, ledger);
+      await reconcilePendingNativeRefunds(db, ledger);
+      expect(db.prepare("SELECT state FROM native_refunds").get()).toEqual({ state: "SUCCEEDED" });
+      expect(entitlementCount()).toEqual({ n: 0 });
+      expect(alerts()).toHaveLength(1);
+      expect(fixture.calls).toMatchObject({ refund: 1, returned: 1 });
     });
 
     it("signals overdue receipts and an unavailable original executor, then records the late receipt", async () => {

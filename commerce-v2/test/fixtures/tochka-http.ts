@@ -18,6 +18,7 @@ export async function startTochkaHttpFixture(port = 0) {
   const calls = { create: 0, refund: 0, info: 0, list: 0, receipt: 0, key: 0, debit: 0, returned: 0 };
   const faults = {
     loseCreate: false, loseRefund: false, hideFromList: false, hideRefund: false, rejectInfo: false,
+    rejectPaymentRead: undefined as 401 | 403 | 503 | undefined,
     currency: undefined as string | undefined, amount: undefined as number | undefined, operationId: undefined as string | undefined,
     paymentLinkId: undefined as string | undefined, lostBeforeCreate: false, lostBeforeRefund: false,
     totalPages: 2, duplicateListing: false, invalidInfo: false, malformedJson: false, hideApproval: false, rejectKey: false, overrideStatus: undefined as string | undefined,
@@ -73,6 +74,7 @@ export async function startTochkaHttpFixture(port = 0) {
       }
       if (request.method === "GET" && url.pathname === `${base}/payments`) {
         calls.list += 1;
+        if (faults.rejectPaymentRead) return respond(response, faults.rejectPaymentRead, {});
         const from = url.searchParams.get("fromDate"), to = url.searchParams.get("toDate");
         if (url.searchParams.get("customerCode") !== customerCode || !from || !to) return respond(response, 400, {});
         lookupWindows.push([from, to]);
@@ -87,6 +89,7 @@ export async function startTochkaHttpFixture(port = 0) {
       if (payment && request.method === "GET" && !match[2]) {
         calls.info += 1;
         faults.beforeInfo?.();
+        if (faults.rejectPaymentRead) return respond(response, faults.rejectPaymentRead, {});
         if (faults.malformedJson) {
           response.writeHead(200, { "Content-Type": "application/json" }).end("{");
           return;

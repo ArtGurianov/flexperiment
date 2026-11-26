@@ -46,13 +46,25 @@ const INTENT_STATE: Record<NativePaymentState, string> = {
 /** A CREATING row younger than this may still be in flight in another request; the sweep leaves it. */
 export const NATIVE_CREATING_UNANSWERED_AFTER_MS = 60_000;
 const MAX_DRIVE_STEPS = 6;
-const PAYMENT_READ_BACK_ALERT_AFTER_MS = 60 * 60_000;
+const READ_BACK_ALERT_AFTER_MS = 60 * 60_000;
 
 const clock = (ctx: Pick<NativeLedgerContext, "now">) => (ctx.now ? ctx.now() : new Date().toISOString());
 
 export function auditNative(db: Database.Database, action: string, subjectType: string, subjectRef: string, evidence: unknown, now: string) {
   db.prepare(`INSERT INTO audit_log(id,actor,action,subject_type,subject_ref,evidence_json,created_at) VALUES (?, 'NATIVE_PAYMENTS',?,?,?,?,?)`)
     .run(randomUUID(), action, subjectType, subjectRef, JSON.stringify(evidence), now);
+}
+
+/** Call in the immediate transaction that applies the read-back observation. */
+export function auditStalledNativeReadBack(db: Database.Database,
+  action: "NATIVE_PAYMENT_READ_BACK_STALLED" | "NATIVE_REFUND_READ_BACK_STALLED",
+  subjectType: "ORDER" | "REFUND_REQUEST", subjectRef: string, reason: string, createdAt: string, now: string) {
+  const ageMs = Date.parse(now) - Date.parse(createdAt);
+  if (!Number.isFinite(ageMs) || ageMs < READ_BACK_ALERT_AFTER_MS) return;
+  if (!db.prepare("SELECT 1 FROM audit_log WHERE action=? AND subject_type=? AND subject_ref=? LIMIT 1")
+    .get(action, subjectType, subjectRef)) {
+    auditNative(db, action, subjectType, subjectRef, { reason }, now);
+  }
 }
 
 type OrderContext = {
@@ -308,11 +320,9 @@ export function applyNativePaymentObservation(db: Database.Database, ctx: Native
       auditNative(db, "NATIVE_PAYMENT_READ_BACK_UNAVAILABLE", "ORDER", order.public_id, { reason: decision.reason }, now);
     }
     if ((decision.state === "PENDING" || decision.state === "CREATE_UNKNOWN")
-      && (decision.reason === "TOCHKA_RESPONSE_INVALID" || decision.reason === "TOCHKA_APPROVAL_NOT_YET_VISIBLE")
-      && Date.parse(now) - Date.parse(payment.created_at) >= PAYMENT_READ_BACK_ALERT_AFTER_MS
-      && !db.prepare(`SELECT 1 FROM audit_log
-        WHERE action='NATIVE_PAYMENT_READ_BACK_STALLED' AND subject_type='ORDER' AND subject_ref=? LIMIT 1`).get(order.public_id)) {
-      auditNative(db, "NATIVE_PAYMENT_READ_BACK_STALLED", "ORDER", order.public_id, { reason: decision.reason }, now);
+      && observation.source === "READ_BACK" && observation.outcome === "UNAVAILABLE") {
+      auditStalledNativeReadBack(db, "NATIVE_PAYMENT_READ_BACK_STALLED", "ORDER", order.public_id,
+        observation.code ?? "READ_BACK_UNAVAILABLE", payment.created_at, now);
     }
     if (stoppedUnknown && payment.last_reason !== decision.reason) {
       auditNative(db, "NATIVE_PAYMENT_REVIEW_REQUIRED", "ORDER", order.public_id, { reason: decision.reason }, now);

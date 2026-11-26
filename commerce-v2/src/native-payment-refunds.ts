@@ -5,7 +5,7 @@ import {
   admitRefund, applyRefundObservation, beginRefund, cancelReservedSettlement, refundKeys, type FiscalEventState, type FiscalizationMode, type NativePaymentState,
   type NativeRefundState, type ProductKind, type RefundDecision, type RefundObservation,
 } from "./native-payment-contract";
-import { auditNative, findNativeProvider, insertFiscalEvent, nativeProviderForPayment, type NativeLedgerContext } from "./native-payment-ledger";
+import { auditNative, auditStalledNativeReadBack, findNativeProvider, insertFiscalEvent, nativeProviderForPayment, type NativeLedgerContext } from "./native-payment-ledger";
 import { NativeReadBackError, NativeReadBackUnavailable } from "./native-payment-provider";
 import type { FrozenNativeRefundRequest, NativePaymentProvider, NativeRefundPreflight, RefundReadKey } from "./native-payment-provider";
 import { openPayload, sealPayload } from "./refund-envelope";
@@ -223,6 +223,11 @@ export function applyNativeRefundObservation(db: Database.Database, ctx: NativeL
       .run(decision.state, decision.providerRefundId, decision.reason ?? null, now, purge ? 1 : 0, purge ? 1 : 0, now, refund.id);
     if (decision.reason === "NATIVE_ORIGINAL_EXECUTOR_UNAVAILABLE" && decision.reason !== refund.last_reason) {
       auditNative(db, "NATIVE_REFUND_READ_BACK_UNAVAILABLE", "REFUND_REQUEST", context.request_public_id, { reason: decision.reason }, now);
+    }
+    if ((decision.state === "PROCESSING" || decision.state === "SUBMIT_UNKNOWN")
+      && observation.source === "READ_BACK" && observation.outcome === "UNAVAILABLE") {
+      auditStalledNativeReadBack(db, "NATIVE_REFUND_READ_BACK_STALLED", "REFUND_REQUEST", context.request_public_id,
+        observation.code ?? "READ_BACK_UNAVAILABLE", refund.created_at, now);
     }
     if (observation.source !== "READ_BACK" || observation.outcome === "FOUND"
       || decision.state !== refund.state || decision.reason !== refund.last_reason) db.prepare(`INSERT INTO native_payment_observations(id,native_refund_id,source,observation_json,decided_state,reason,observed_at)
