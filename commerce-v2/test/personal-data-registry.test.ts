@@ -150,6 +150,7 @@ describe("Commerce V2 personal data registry", () => {
 
   it.each([
     "audit_log.evidence_json",
+    "course_entitlements.revocation_reason",
     "lab_service_renditions.evidence_ref",
     "offers.acceptance_allowlist_json",
     "verification.value",

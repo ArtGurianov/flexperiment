@@ -2,7 +2,7 @@
 
 Сгенерировано из [registry.yaml](registry.yaml). Порядок и границы применения см. в [ADR](../../architecture/personal-data-lifecycle.md).
 
-Версия формата 1. SHA-256 исходного YAML `563323bad037524f173783d06355a1cd590fcba630b227268878dcca5536f092`.
+Версия формата 1. SHA-256 исходного YAML `056b5391f19938a9c5dd79f36cfd9d3e2aec6438a50f5bfae43dba57731ce34f`.
 
 ## Цели и основания
 
@@ -73,7 +73,8 @@
 | course_editorial_drafts | `course_ref`, `revision`, `document_json`, `actor`, `created_at`, `updated_at` | mixed | actor, документ и возможные упоминания | publishing | review | review | — | — | audit |
 | course_editorial_publish_commands | `course_ref`, `idempotency_key`, `request_hash`, `result_json`, `created_at` | mixed | сведения о действии публикации в результате и связи с версией | publishing, evidence | review | review | — | — | audit |
 | course_editorial_versions | `course_ref`, `version`, `draft_revision`, `document_json`, `content_hash`, `actor`, `published_at` | mixed | actor и версионированное содержимое | publishing, evidence | review | review | — | — | audit |
-| course_entitlements | `id`, `customer_id`, `scope`, `course_ref`, `source_order_line_id`, `granted_at`, `revoked_at`, `revocation_reason` | personal | customer_id и source_order_line_id | paid_access, evidence, refunds | projection | retain_minimum | — | — | closure |
+| course_entitlements | `id`, `customer_id`, `scope`, `course_ref`, `source_order_line_id`, `granted_at`, `revoked_at` | personal | customer_id и source_order_line_id | paid_access, evidence, refunds | projection | retain_minimum | — | — | closure |
+| course_entitlements | `revocation_reason` | mixed | customer_id и source_order_line_id; текст оператора может относиться к другим лицам | evidence, refunds | review | review | — | conditional · Ручной отзыв сохраняет свободный текст оператора. Control Room показывает его оператору. При возврате сохраняется код REFUNDED. (entitlement_revocation, refund_code) | audit |
 | course_learning_starts | `customer_id`, `course_ref`, `product_id`, `source`, `started_at` | personal | customer_id | free_enrollment | value | destroy_when_due | — | — | methods |
 | course_playback_state | `customer_id`, `course_ref`, `issued_lesson_ref`, `issued_cursor`, `played_lesson_ref`, `played_cursor`, `phase` | personal | customer_id | learning_progress | projection | destroy_when_due | — | — | methods |
 | customers | `id` | personal | Покупатель: customers.id | identity, paid_access, lab_service, refunds, fiscal, tax_records | projection | retain_minimum | UNBOUND_INTENTS | conditional · Reviewed сохраняет ключ строки для существующих финансовых связей. Полный erasure при допуске удаляет customers. (erase_reviewed, erase_full) | closure |
@@ -181,6 +182,7 @@
 | course_editorial_drafts.document_json | Редакторское содержание курса, уроков, ссылок и SEO | audit |
 | course_editorial_publish_commands.result_json | Результат публикации и версии, возможная привязка к актору | audit |
 | course_editorial_versions.document_json | Зафиксированное опубликованное содержание, редактирование требует ревизии | audit |
+| course_entitlements.revocation_reason | Причина ручного отзыва (до 1000 символов) или код возврата. Перед выдачей проверить принадлежность и отделить сведения о других лицах. | audit |
 | fiscal_events.evidence_json | Доказательство расчёта, оказания или исхода адаптера; защитить целостность подлинника | financial |
 | fiscal_events.items_json | Позиции, суммы и фискальные признаки расчёта | financial |
 | fiscal_events.sealed_contact | Временный запечатанный контакт выдачи чека | financial |
@@ -261,8 +263,8 @@
 | account_terms | contract | [Кандидат условий Stage A](../stage-a/2026-11-20-candidate/account_terms.md); применимую редакцию устанавливать по делу |
 | ad_law | law | [38-ФЗ, ст. 18](https://www.consultant.ru/document/cons_doc_LAW_58968/) |
 | checkout_code | source | [checkout.ts](../../../commerce-v2/src/checkout.ts), допуск предложения, checkout и снимки |
-| commerce_server | source | [server.ts](../../../commerce-v2/src/server.ts), фоновые циклы в Commerce V2 |
 | consent_fk | source | [0025_authenticated_consent_events.sql](../../../commerce-v2/migrations/0025_authenticated_consent_events.sql), внешний ключ action_id |
+| entitlement_revocation | source | [Ручной отзыв](../../../commerce-v2/src/entitlements.ts) и [выдача в Control Room](../../../commerce-v2/src/control-room.ts) |
 | erase_fence | source | [erasure-fence.ts](../../../commerce-v2/src/erasure-fence.ts), assertIdentity |
 | erase_full | source | [erasure-restore.ts](../../../commerce-v2/src/erasure-restore.ts), ветка ERASURE |
 | erase_ledger | source | [erasure-ledger.ts](../../../commerce-v2/src/erasure-ledger.ts), erasure_entries и псевдонимы |

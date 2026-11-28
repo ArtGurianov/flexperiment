@@ -464,13 +464,25 @@ sqlite:
       closure: "review"
       review: "audit"
   course_entitlements:
-    - columns: ["id", "customer_id", "scope", "course_ref", "source_order_line_id", "granted_at", "revoked_at", "revocation_reason"]
+    - columns: ["id", "customer_id", "scope", "course_ref", "source_order_line_id", "granted_at", "revoked_at"]
       classification: "personal"
       subject: "customer_id и source_order_line_id"
       purposes: ["paid_access", "evidence", "refunds"]
       access: "projection"
       closure: "retain_minimum"
       review: "closure"
+    - columns: ["revocation_reason"]
+      classification: "mixed"
+      subject: "customer_id и source_order_line_id; текст оператора может относиться к другим лицам"
+      purposes: ["evidence", "refunds"]
+      access: "review"
+      closure: "review"
+      payloadColumns: ["revocation_reason"]
+      observed:
+        status: "conditional"
+        behavior: "Ручной отзыв сохраняет свободный текст оператора. Control Room показывает его оператору. При возврате сохраняется код REFUNDED."
+        sources: ["entitlement_revocation", "refund_code"]
+      review: "audit"
   course_learning_starts:
     - columns: ["customer_id", "course_ref", "product_id", "source", "started_at"]
       classification: "personal"
@@ -1195,6 +1207,9 @@ payloads:
   course_editorial_versions.document_json:
     content: "Зафиксированное опубликованное содержание, редактирование требует ревизии"
     review: "audit"
+  course_entitlements.revocation_reason:
+    content: "Причина ручного отзыва (до 1000 символов) или код возврата. Перед выдачей проверить принадлежность и отделить сведения о других лицах."
+    review: "audit"
   fiscal_events.evidence_json:
     content: "Доказательство расчёта, оказания или исхода адаптера; защитить целостность подлинника"
     review: "financial"
@@ -1554,12 +1569,12 @@ sources:
   checkout_code:
     kind: "source"
     ref: "[checkout.ts](../../../commerce-v2/src/checkout.ts), допуск предложения, checkout и снимки"
-  commerce_server:
-    kind: "source"
-    ref: "[server.ts](../../../commerce-v2/src/server.ts), фоновые циклы в Commerce V2"
   consent_fk:
     kind: "source"
     ref: "[0025_authenticated_consent_events.sql](../../../commerce-v2/migrations/0025_authenticated_consent_events.sql), внешний ключ action_id"
+  entitlement_revocation:
+    kind: "source"
+    ref: "[Ручной отзыв](../../../commerce-v2/src/entitlements.ts) и [выдача в Control Room](../../../commerce-v2/src/control-room.ts)"
   erase_fence:
     kind: "source"
     ref: "[erasure-fence.ts](../../../commerce-v2/src/erasure-fence.ts), assertIdentity"

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import type Database from "better-sqlite3";
 import { parseDocument } from "yaml";
 import { z } from "zod";
@@ -71,8 +71,8 @@ const registrySchema = z.object({
   gaps: z.record(identifier, z.object({ issue: z.string().regex(/^(FLEX|VPS)-[1-9][0-9]*$/), evidence: description }).strict()),
 }).strict();
 
-export const registryPath = resolve(__dirname, "../../docs/legal/personal-data/registry.yaml");
-export const generatedPath = resolve(__dirname, "../../docs/legal/personal-data/REGISTRY.md");
+export const registryPath = fileURLToPath(new URL("../../docs/legal/personal-data/registry.yaml", import.meta.url));
+export const generatedPath = fileURLToPath(new URL("../../docs/legal/personal-data/REGISTRY.md", import.meta.url));
 type Registry = z.infer<typeof registrySchema>;
 type ColumnGroup = z.infer<typeof columnGroup>;
 
