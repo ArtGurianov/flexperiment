@@ -675,12 +675,12 @@ export function createCommerceV2App(deps: Dependencies) {
       const at = now().toISOString();
       // Only commercial terms are read from the body: product and offer identity follow the occurrence.
       const result = deps.db.transaction(() => {
-        const result = configureLabOffer(deps.db, deps.config, { occurrenceRef: context.req.param("occurrenceRef"),
+        const { acceptanceExpiresAt, ...result } = configureLabOffer(deps.db, deps.config, { occurrenceRef: context.req.param("occurrenceRef"),
           priceKopecks: input.priceKopecks, saleMode: input.saleMode, acceptanceAllowlist: input.acceptanceAllowlist,
           acceptanceExpiresAt: input.acceptanceExpiresAt,
           paymentPurpose: input.paymentPurpose, expectedProductVersion: input.expectedProductVersion, actor }, at, assertAcceptanceEmail);
         auditControlRoom(deps.db, { adminId: actor, action: "LAB_OFFER_CONFIGURED", entityType: "product", entityId: result.productRef,
-          details: { version: result.version, priceKopecks: input.priceKopecks, saleMode: input.saleMode } }, at);
+          details: { version: result.version, priceKopecks: input.priceKopecks, saleMode: input.saleMode, acceptanceExpiresAt } }, at);
         return result;
       }).immediate();
       return context.json(result, 200, noStore);
@@ -725,9 +725,11 @@ export function createCommerceV2App(deps: Dependencies) {
     try {
       const input = await context.req.json<ProductConfigurationCommand>();
       const actor = context.get("controlRoomAdminId")!;
-      const result = configureProduct(deps.db, deps.config, { ...input, actor }, now().toISOString(), assertAcceptanceEmail);
+      const at = now().toISOString();
+      const { acceptanceExpiresAt, ...result } = configureProduct(deps.db, deps.config, { ...input, actor }, at, assertAcceptanceEmail);
       auditControlRoom(deps.db, { adminId: actor, action: "PRODUCT_CONFIGURED", entityType: "product",
-        entityId: input.productRef, details: { version: result.version, accessModel: input.accessModel, saleMode: input.saleMode } }, now().toISOString());
+        entityId: input.productRef, details: { version: result.version, accessModel: input.accessModel, saleMode: input.saleMode,
+          acceptanceExpiresAt } }, at);
       await deps.invalidatePlatformCache?.("swr", input.courseRef);
       return context.json(result, 200, noStore);
     } catch (error) {

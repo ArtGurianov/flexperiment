@@ -22,6 +22,8 @@ import { confirmSyntheticAccount } from "./fixtures/confirmed-account";
 import { recordAuthenticatedConsents } from "../src/authenticated-consents";
 import { currentLegalRelease, legalManifestHash } from "../src/legal-control";
 import { checkInLabTicket, readLabTicket } from "../src/lab-tickets";
+import { readV2Migrations } from "../src/migration-integrity";
+import { writeMigrationBundle } from "./fixtures/migrations";
 
 const now = new Date("2026-10-20T10:00:00.000Z");
 const paymentAt = "2026-10-19T12:00:00.000Z", refundAt = "2026-10-19T13:00:00.000Z";
@@ -197,6 +199,37 @@ describe("isolated SQLite backup + fresh Refref money tail", () => {
     const read = vi.fn(async () => { throw new Error("REFUSED_MONEY_READBACK"); });
     await expect(reconcile(read)).rejects.toThrow("REFUSED_MONEY_READBACK");
     expect(db.prepare("SELECT acceptance_allowlist_json FROM offers").pluck().get()).toBe("[]");
+  });
+
+  it.each([47, 48])("expires frozen testing quotes during isolated restore on schema %i", async revision => {
+    const migrations = mkdtempSync(join(root, "migrations-"));
+    writeMigrationBundle(migrations, Object.fromEntries(readV2Migrations().slice(0, revision).map(({ version, sql }) => [version, sql])));
+    db = new Database(join(root, "historical.sqlite"));
+    db.pragma("foreign_keys=ON");
+    migrateV2(db, migrations);
+    db.exec(`INSERT INTO customers(id,email_normalized) VALUES ('customer','student@example.test');
+      INSERT INTO legal_releases(id,storefront,version,manifest_json,effective_at,active)
+        VALUES ('legal','COURSES','stage-a-v1','{}','2026-09-30T00:00:00Z',0);
+      INSERT INTO products(id,product_ref,kind,access_model,course_ref)
+        VALUES ('product','course:one','ONLINE_COURSE','PAID','course-one');
+      INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode,acceptance_allowlist_json)
+        VALUES ('offer','course:one','product',10000,'ACCEPTANCE_ONLY','["student@example.test"]');`);
+    const insertQuote = db.prepare(`INSERT INTO checkout_quotes(id,customer_id,offer_id,legal_release_id,storefront,
+      order_public_id,line_ref,preview_idempotency_key,sale_mode_at_quote,catalog_amount_kopecks,state,
+      request_fingerprint,resolution_request_json,line_snapshot_json) VALUES
+      (@id,'customer','offer','legal','COURSES',@id,@id,@id,@saleMode,10000,'DRAFT',@fingerprint,'{}','{}')`);
+    insertQuote.run({ id: "test", saleMode: "ACCEPTANCE_ONLY", fingerprint: "a".repeat(64) });
+    insertQuote.run({ id: "public", saleMode: "PUBLIC", fingerprint: "b".repeat(64) });
+    await reconcileIsolatedRestore({ db, keys, readErasure, now: () => now,
+      inventory: { version: 1, scope: "canary", merchantId: "fixture", backupSha256: "b".repeat(64),
+        sourceEvidenceSha256: "e".repeat(64), completeThrough: now.toISOString(), orders: [] },
+      reader: { read: vi.fn() } });
+    expect(db.prepare("SELECT sale_mode,acceptance_allowlist_json FROM offers").get())
+      .toEqual({ sale_mode: "CLOSED", acceptance_allowlist_json: "[]" });
+    expect(db.prepare("SELECT id,state,failure_code FROM checkout_quotes ORDER BY id").all()).toEqual([
+      { id: "public", state: "DRAFT", failure_code: null },
+      { id: "test", state: "EXPIRED", failure_code: "CHECKOUT_QUOTE_EXPIRED" },
+    ]);
   });
 
   it("uses the full-erasure ledger when the address exists only in a restored list and invalidates stale writes", async () => {

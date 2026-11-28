@@ -36,11 +36,13 @@ export function configureCourseCommercial(db: Database.Database, config: Commerc
       WHERE p.kind='ONLINE_COURSE' AND p.course_ref=?`).all(input.courseRef) as Array<{ product_ref: string; offer_ref: string | null }>;
     if (rows.length > 1) throw new Error("COURSE_PRODUCT_AMBIGUOUS");
     const refs = rows[0];
-    const result: CourseCommercialResult = { ...configureProduct(db, config, {
+    const { productRef, offerRef, version } = configureProduct(db, config, {
       kind: "ONLINE_COURSE", courseRef: input.courseRef, productRef: refs?.product_ref ?? `course:${input.courseRef}`,
       offerRef: refs?.offer_ref ?? `course:${input.courseRef}`, accessModel: input.accessModel,
       priceKopecks: input.priceKopecks, saleMode: "CLOSED", actor: input.actor, expectedVersion: input.expectedVersion,
-    }, now), accessModel: input.accessModel, priceKopecks: input.priceKopecks, saleMode: "CLOSED" };
+    }, now);
+    const result: CourseCommercialResult = { productRef, offerRef, version,
+      accessModel: input.accessModel, priceKopecks: input.priceKopecks, saleMode: "CLOSED" };
     db.prepare(`INSERT INTO course_commercial_commands(actor,course_ref,command_key,request_sha256,result_json,created_at)
       VALUES (?,?,?,?,?,?)`).run(input.actor, input.courseRef, input.commandKey, digest, JSON.stringify(result), now);
     return result;

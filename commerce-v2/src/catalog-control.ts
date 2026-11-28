@@ -132,11 +132,12 @@ export function configureProduct(db: Database.Database, config: CommerceRuntimeC
     }
     db.prepare(`INSERT INTO audit_log(id,actor,action,subject_type,subject_ref,evidence_json,created_at)
       VALUES (?,?,?,?,?,?,?)`).run(randomUUID(), command.actor, "PRODUCT_CONFIGURED", "PRODUCT", command.productRef,
-        JSON.stringify({ accessModel: command.accessModel, priceKopecks: command.priceKopecks, saleMode: command.saleMode, paymentPurpose }), now);
+        JSON.stringify({ accessModel: command.accessModel, priceKopecks: command.priceKopecks, saleMode: command.saleMode,
+          paymentPurpose, acceptanceExpiresAt }), now);
   });
   apply.immediate();
   const version = (db.prepare("SELECT version FROM products WHERE product_ref=?").get(command.productRef) as { version: number }).version;
-  return { productRef: command.productRef, offerRef: command.offerRef, version };
+  return { productRef: command.productRef, offerRef: command.offerRef, version, acceptanceExpiresAt };
 }
 
 export type LabOfferCommand = {

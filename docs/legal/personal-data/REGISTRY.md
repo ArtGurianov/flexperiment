@@ -2,7 +2,7 @@
 
 Сгенерировано из [registry.yaml](registry.yaml). Порядок и границы применения см. в [ADR](../../architecture/personal-data-lifecycle.md).
 
-Версия формата 1. SHA-256 исходного YAML `ca319ae7117003f8ce66ed3e05b7fc399661035ddc8796eded041569276f8a31`.
+Версия формата 1. SHA-256 исходного YAML `4bf5deda55278b222c4755a49b99d90ba7f7116262e6823ef5df42d2a99e0970`.
 
 ## Цели и основания
 
@@ -163,7 +163,7 @@
 | Поле | Охват | Разрыв |
 | --- | --- | --- |
 | access_overrides.resolution_evidence_json | Доказательство разрешения override и ссылки состояния, возможны внешние или операторские сведения | audit |
-| audit_log.evidence_json | Состав зависит от действия; искать относящееся к субъекту и разделять чужие сведения. Событие ACCEPTANCE_OFFER_EXPIRED содержит ссылку на оффер, количество адресов и срок, без email. | audit |
+| audit_log.evidence_json | Состав зависит от действия; искать относящееся к субъекту и разделять чужие сведения. PRODUCT_CONFIGURED фиксирует дедлайн тестового окна. ACCEPTANCE_OFFER_EXPIRED содержит ссылку на оффер, количество адресов и срок. Адреса допуска в эти события не входят. | audit |
 | auth_email_outbox.encrypted_payload | Рабочий зашифрованный конверт доставки со ссылкой входа; только описание в стандартной выдаче | processors |
 | auth_email_outbox.last_error | Причина сбоя доставки; проверить фактическое содержимое и редактирование входных сообщений | processors |
 | browser_context_arrivals.arrival_proof | Внешнее доказательство перехода и непрямые связи с браузером; не отдавать подписанное значение | processors |
@@ -178,7 +178,7 @@
 | checkout_quotes.merchant_promotion_snapshot_json | Условия локального промо на момент предложения | financial |
 | checkout_quotes.rail_quote_json | Ответ ветки котировки; квалифицировать поля интеграции | financial |
 | checkout_quotes.resolution_request_json | Параметры резолюции предложения, источник и привязки checkout | financial |
-| control_room_audit_log.details_json | Детали по действию, проверять смешанные записи и сведения об операторе | audit |
+| control_room_audit_log.details_json | Детали по действию, проверять смешанные записи и сведения об операторе. PRODUCT_CONFIGURED и LAB_OFFER_CONFIGURED фиксируют дедлайн тестового окна без адресов допуска. | audit |
 | course_commercial_commands.result_json | Результаты изменения карточек и коммерческих параметров | audit |
 | course_editorial_drafts.document_json | Редакторское содержание курса, уроков, ссылок и SEO | audit |
 | course_editorial_publish_commands.result_json | Результат публикации и версии, возможная привязка к актору | audit |

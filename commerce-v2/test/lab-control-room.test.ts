@@ -286,6 +286,25 @@ describe("LAB command error classification", () => {
     expect((await current()).offer?.acceptanceExpiresAt).toBe("2026-10-14T12:00:00.000Z");
   });
 
+  it("audits each saved testing deadline without the allowlist", async () => {
+    await send("POST", "/v1/admin/v2/lab/occurrences", occurrence);
+    const terms = { saleMode: "ACCEPTANCE_ONLY", acceptanceAllowlist: ["tester@example.test"] };
+    for (const acceptanceExpiresAt of ["2026-10-01T12:00:00Z", "2026-10-02T12:00:00Z"]) {
+      expect((await setOffer({ ...terms, acceptanceExpiresAt })).status).toBe(200);
+    }
+    expect((await setOffer({ saleMode: "CLOSED" })).status).toBe(200);
+    const audit = (table: "audit_log" | "control_room_audit_log", column: string, action: string) =>
+      (db.prepare(`SELECT ${column} AS payload FROM ${table} WHERE action=? ORDER BY rowid`).all(action) as Array<{ payload: string }>)
+        .map(({ payload }) => JSON.parse(payload) as Record<string, unknown>);
+    for (const rows of [audit("audit_log", "evidence_json", "PRODUCT_CONFIGURED"),
+      audit("control_room_audit_log", "details_json", "LAB_OFFER_CONFIGURED")]) {
+      expect(rows.map(row => row.acceptanceExpiresAt)).toEqual([
+        "2026-10-01T12:00:00.000Z", "2026-10-02T12:00:00.000Z", null,
+      ]);
+      expect(JSON.stringify(rows)).not.toContain("tester@example.test");
+    }
+  });
+
   it.each([
     { paymentPurpose: "" }, { paymentPurpose: 42 }, { acceptanceAllowlist: "buyer@example.com" },
     { acceptanceAllowlist: [42] }, { acceptanceAllowlist: null }, { saleMode: "INVALID" },

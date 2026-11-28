@@ -28,6 +28,12 @@ export function readAcceptanceEmails(json: string): string[] {
   return decoded as string[];
 }
 
+// Before 0030, quotes did not keep the sale mode at issuance.
+export function hasFrozenQuoteSaleMode(db: Database.Database) {
+  return (db.pragma("table_info(checkout_quotes)") as Array<{ name: string }>)
+    .some(column => column.name === "sale_mode_at_quote");
+}
+
 export function expireAcceptanceQuotes(db: Database.Database, offerId: string | null, now: string, customerIds?: readonly string[]) {
   if (customerIds?.length === 0) return;
   db.prepare(`UPDATE checkout_quotes SET state='EXPIRED',failure_code='CHECKOUT_QUOTE_EXPIRED',updated_at=@now
@@ -49,15 +55,14 @@ export function removeErasedAcceptanceEmail(db: Database.Database, matches: (ema
   const save = db.prepare("UPDATE offers SET acceptance_allowlist_json=?,updated_at=? WHERE id=?");
   const bump = db.prepare("UPDATE products SET version=version+1,updated_at=? WHERE id=?");
   let count = 0;
+  const canExpireQuotes = hasFrozenQuoteSaleMode(db);
   let customerIds: string[] | undefined;
   for (const list of readAcceptanceLists(db)) {
     const remaining = list.emails.filter(email => !matches(email));
     if (remaining.length === list.emails.length) continue;
     save.run(JSON.stringify(remaining), now, list.id);
     bump.run(now, list.productId);
-    // Historical schema revisions before 0030 have no frozen sale mode.
-    if ((db.prepare("PRAGMA table_info(checkout_quotes)").all() as Array<{ name: string }>)
-      .some(column => column.name === "sale_mode_at_quote")) {
+    if (canExpireQuotes) {
       customerIds ??= (db.prepare("SELECT id,email_normalized FROM customers").all() as Array<{ id: string; email_normalized: string }>)
         .filter(customer => matches(customer.email_normalized)).map(customer => customer.id);
       expireAcceptanceQuotes(db, list.id, now, customerIds);
