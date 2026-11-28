@@ -1,0 +1,1210 @@
+# FLEX-133. Описывает схему в исходниках и проектные правила. Статусы исполнения проверяются отдельно.
+version: 1
+
+purposes:
+  analytics:
+    use: "Согласованная аналитика и ограниченная эксплуатационная телеметрия"
+    basis: "152-ФЗ ст. 6 и 9; применимая политика, настройки и основания подлежат проверке"
+    retention: "До прекращения согласованной цели или срока на конкретном носителе"
+    expiry: "Прекратить передачу, удалить либо квалифицировать остаток"
+    review: "processors"
+  auth_security:
+    use: "Аутентификация, восстановление доступа, предотвращение злоупотреблений"
+    basis: "152-ФЗ ст. 19; основание и необходимость конкретных данных по ст. 6"
+    retention: "До окончания действия полномочия или утверждённого срока безопасности"
+    expiry: "Отозвать полномочия и удалить просроченный минимум квалифицированным способом"
+    review: "retention"
+  backup:
+    use: "Резервирование и восстановление утверждённых систем"
+    basis: "152-ФЗ ст. 19; блокирование при невозможности уничтожения в срок по применимой ст. 21"
+    retention: "По утверждённому правилу копий. Исключение ч. 6 ст. 21 применяется по обстоятельствам дела"
+    expiry: "Доказать блок и удаление каждой охваченной копии, проверить replay перед допуском"
+    review: "methods"
+  checkout:
+    use: "Подготовка оферты и checkout, сверка принятой сделки"
+    basis: "152-ФЗ п. 5 ч. 1 ст. 6 при заключении или исполнении договора"
+    retention: "До истечения предложения, заключения договора и необходимых сверок"
+    expiry: "Отдельно квалифицировать доказательство сделки; очистить неоформленные и избыточные данные"
+    review: "retention"
+  consent_proof:
+    use: "Подтверждение акцептов, согласий и их изменений"
+    basis: "152-ФЗ ст. 9; условия аккаунта и применимые договоры"
+    retention: "Пока нужна соответствующая цель или отдельно обоснованное доказательство"
+    expiry: "Пересмотреть и удалить избыточные записи, сохранив обязательный остаток"
+    review: "retention"
+  delivery:
+    use: "Техническая доставка письма или уведомления по собственной цели"
+    basis: "Основание исходного уведомления, применимое поручение по ст. 6 152-ФЗ"
+    retention: "До результата доставки и срока подтверждённой политики outbox"
+    expiry: "Очистить рабочие копии и запросить доказательство по обработчику"
+    review: "processors"
+  evidence:
+    use: "Доказательство договорных, юридических или контрольных действий"
+    basis: "Конкретная применимая норма, договор или квалифицированное требование; исходный JSON не получает общего срока"
+    retention: "До прекращения установленной цели или законного удержания с датой пересмотра"
+    expiry: "Проверить минимальный остаток и его влияние на целостность доказательства"
+    review: "audit"
+  export:
+    use: "Самостоятельная и операторская выдача сведений субъекту"
+    basis: "152-ФЗ ст. 14 и 20; безопасный механизм выдачи проектируется"
+    retention: "Время подготовки, выдачи и отдельно квалифицированный короткий срок временного результата при его наличии"
+    expiry: "Удалить результат и минимизировать след выдачи; отдельно учесть дело субъекта"
+    review: "export_delivery"
+  fiscal:
+    use: "Фискализация и сохранность подтверждений расчёта"
+    basis: "54-ФЗ ст. 1.2, 4.7, 5 и НК РФ ст. 23 в применимом объёме"
+    retention: "По виду документа и роли. Для фискального накопителя 5 лет с окончания использования"
+    expiry: "Удалить дубли и рабочий контакт при наступлении их триггера; сохранить обязательный подлинник на его срок"
+    review: "financial"
+  identity:
+    use: "Аккаунт и проверяемая привязка входа MY/LMS/LAB"
+    basis: "152-ФЗ ст. 6, условия аккаунта и применимое отдельное согласие"
+    retention: "Пока нужна действующая цель аккаунта или подтверждённое обязательство"
+    expiry: "Пересмотреть привязку, отозвать доступ и уничтожить необязательный остаток"
+    review: "closure"
+  lab_interest:
+    use: "Подтверждённая предзапись и уведомление о начале продаж LAB"
+    basis: "Конкретная цель и согласие по FLEX-8; 152-ФЗ ст. 6 и 9"
+    retention: "По событию достижения цели, отзыву или подтверждённой политике FLEX-8"
+    expiry: "Остановить уведомления и очистить заявку и связанные сведения по применимому триггеру"
+    review: "lab_restore"
+  lab_service:
+    use: "Бронирование, билет, посещение и оказание LAB"
+    basis: "152-ФЗ п. 5 ч. 1 ст. 6 при применимом договоре"
+    retention: "До исполнения, отмены или окончания отдельной доказательной цели"
+    expiry: "Отозвать полномочия билета и пересмотреть доказательный остаток"
+    review: "closure"
+  learning:
+    use: "FREE-запись, прогресс, продолжение просмотра и завершение уроков"
+    basis: "Применимые условия LMS и отдельно квалифицированное основание ст. 6 152-ФЗ"
+    retention: "До прекращения соответствующей цели обучения"
+    expiry: "Уничтожить данные, для которых больше нет основания"
+    review: "methods"
+  marketing:
+    use: "Добровольная рекламная рассылка"
+    basis: "152-ФЗ ст. 15 и 38-ФЗ ст. 18"
+    retention: "До отказа, прекращения согласия либо достижения цели"
+    expiry: "Немедленно прекратить продвижение после требования и пересмотреть данные"
+    review: "retention"
+  ops_security:
+    use: "Операторский доступ и безопасность административных действий"
+    basis: "152-ФЗ ст. 19; необходимость и правовое основание по ст. 6 документируются по категории"
+    retention: "До истечения полномочий или утверждённого срока события безопасности"
+    expiry: "Отозвать доступ, минимизировать, уничтожить после окончания цели"
+    review: "audit"
+  paid_access:
+    use: "Исполнение оплаченного доступа и относящиеся к нему факты оказания"
+    basis: "152-ФЗ п. 5 ч. 1 ст. 6 при действующем договорном обязательстве"
+    retention: "До прекращения конкретного права или окончания отдельной доказательной цели"
+    expiry: "Закрыть право по договорному основанию и пересмотреть остаток"
+    review: "closure"
+  payments:
+    use: "Исполнение и сверка оплаты, налоговый минимум"
+    basis: "152-ФЗ пп. 2 и 5 ч. 1 ст. 6 при применимости; НК РФ подп. 8 п. 1 ст. 23"
+    retention: "До терминального исхода для рабочих данных; для налогового документа применяется его законный период"
+    expiry: "Очистить рабочий payload, сохранить обязательный минимум на срок документа"
+    review: "financial"
+  publishing:
+    use: "Публикация каталога, редакций и контента"
+    basis: "Договоры и подтверждённые основания для авторства и публикации; персональное содержимое требует отдельной проверки"
+    retention: "Пока нужна публикация или связанное доказательство"
+    expiry: "Снять или исправить публикацию и пересмотреть связанные копии"
+    review: "audit"
+  recovery:
+    use: "Неповторяемость удаления и безопасность восстановления"
+    basis: "152-ФЗ ст. 19 и 21; отдельная квалификация удержания по ст. 5 и 6"
+    retention: "До окончания доказанной необходимости защиты восстановления; срок идентификатора отдельно по D-S5"
+    expiry: "Не допускать возврата данных и пересмотреть журнал, fence и каждую копию"
+    review: "identity_return"
+  refunds:
+    use: "Принятие требования, рассмотрение, возврат и подтверждённый результат"
+    basis: "152-ФЗ пп. 2 и 5 ч. 1 ст. 6 при применимости; закон и оферта по конкретному расчёту"
+    retention: "До завершения требования и отдельно установленной учётной или доказательной цели"
+    expiry: "Удалить рабочий конверт при допустимом подтверждённом исходе; пересмотреть текст и остаток"
+    review: "financial"
+  rights:
+    use: "Приём и исполнение обращений субъекта"
+    basis: "152-ФЗ ст. 14, 20 и 21; приказ Роскомнадзора № 179 для подтверждения уничтожения"
+    retention: "Срок обращения из матрицы FLEX-131; акт и выгрузка по № 179 хранятся 3 года с уничтожения"
+    expiry: "Закрыть дело после доказанного исполнения; пересмотреть и уничтожить остаток по своему сроку"
+    review: "rights_evidence"
+  suppression:
+    use: "Предотвращение повторной отправки по отозванному согласию"
+    basis: "152-ФЗ п. 2 ч. 1 ст. 6 в объёме применимой обязанности; ст. 15"
+    retention: "Пока минимальная отметка необходима; срок и пересмотр квалифицируются отдельно"
+    expiry: "Проверить безопасное прекращение хранения отметки и отсутствие возобновления отправки"
+    review: "identity_return"
+
+sqlite:
+  access_overrides:
+    - columns: ["operation_id", "course_ref", "scope_level", "scope_ref", "expected_kind", "expected_value", "effect", "committed_version", "state", "attention_reason", "orphaned_at", "created_at", "deadline_at", "platform_epoch", "resolved_at", "resolving_manifest_version", "resolving_manifest_hash", "resolution_evidence_json"]
+      classification: "mixed"
+      subject: "scope_ref и содержимое доказательства требуют отдельной проверки"
+      purposes: ["evidence", "publishing"]
+      access: "review"
+      closure: "review"
+      review: "audit"
+  account:
+    - columns: ["id", "account_id", "provider_id", "user_id", "access_token_expires_at", "refresh_token_expires_at", "scope", "created_at", "updated_at"]
+      classification: "personal"
+      subject: "user_id → user"
+      purposes: ["identity", "auth_security"]
+      access: "projection"
+      closure: "destroy_when_due"
+      review: "retention"
+    - columns: ["access_token", "refresh_token", "id_token", "password"]
+      classification: "secret"
+      subject: "user_id → user"
+      purposes: ["auth_security"]
+      access: "description"
+      closure: "destroy_when_due"
+      review: "retention"
+  account_consents:
+    - columns: ["id", "customer_id", "kind", "document_version", "recorded_at", "source", "document_sha256", "evidence_status", "confirmed_auth_user_id", "confirmed_at"]
+      classification: "personal"
+      subject: "customer_id и confirmed_auth_user_id"
+      purposes: ["consent_proof"]
+      access: "projection"
+      closure: "retain_minimum"
+      review: "retention"
+  audit_log:
+    - columns: ["id", "actor", "action", "subject_type", "subject_ref", "evidence_json", "created_at"]
+      classification: "mixed"
+      subject: "subject_ref, actor и потенциальные упоминания в evidence_json"
+      purposes: ["evidence", "ops_security"]
+      access: "review"
+      closure: "review"
+      review: "audit"
+  auth_email_outbox:
+    - columns: ["id", "recipient_normalized", "kind", "state", "attempt_count", "last_error", "created_at", "updated_at"]
+      classification: "personal"
+      subject: "recipient_normalized и связанное дело доставки"
+      purposes: ["auth_security", "delivery"]
+      access: "description"
+      closure: "destroy_when_due"
+      review: "processors"
+    - columns: ["encrypted_payload", "payload_sha256"]
+      classification: "secret"
+      subject: "recipient_normalized и связанное дело доставки"
+      purposes: ["auth_security", "delivery"]
+      access: "description"
+      closure: "destroy_when_due"
+      review: "processors"
+  authenticated_consent_actions:
+    - columns: ["id", "customer_id", "auth_user_id", "storefront", "legal_release_id", "release_version", "manifest_sha256", "action_key", "request_sha256", "recorded_at"]
+      classification: "personal"
+      subject: "customer_id и auth_user_id"
+      purposes: ["consent_proof"]
+      access: "projection"
+      closure: "retain_minimum"
+      review: "retention"
+  authenticated_consent_events:
+    - columns: ["sequence", "action_id", "kind", "granted", "document_version", "document_sha256"]
+      classification: "personal"
+      subject: "action_id → authenticated_consent_actions"
+      purposes: ["consent_proof"]
+      access: "projection"
+      closure: "retain_minimum"
+      review: "retention"
+  browser_context_arrivals:
+    - columns: ["id", "browser_context_id", "state", "failure_code", "captured_at", "claim_deadline_at", "attempts", "last_attempt_at", "claim_id", "eligible_until", "settled_at"]
+      classification: "mixed"
+      subject: "browser_context_id → browser_contexts; внешняя привязка в доказательстве"
+      purposes: ["checkout", "auth_security"]
+      access: "review"
+      closure: "review"
+      review: "processors"
+    - columns: ["arrival_proof", "proof_sha256"]
+      classification: "secret"
+      subject: "browser_context_id → browser_contexts; внешняя привязка в доказательстве"
+      purposes: ["checkout", "auth_security"]
+      access: "description"
+      closure: "destroy_when_due"
+      review: "processors"
+  browser_contexts:
+    - columns: ["id", "storefront", "storefront_origin", "status", "bound_customer_id", "successor_id", "created_at", "expires_at", "retired_at", "retire_reason", "close_state", "close_attempts", "close_settled_at"]
+      classification: "personal"
+      subject: "bound_customer_id или подтверждённый контекст браузера"
+      purposes: ["checkout", "auth_security"]
+      access: "projection"
+      closure: "destroy_when_due"
+      review: "retention"
+  catalog_course_projection:
+    - columns: ["course_ref", "version", "content_hash", "visibility", "last_reconciled_at", "applied_at", "state_hash", "authoring_source", "title", "slug", "summary", "description_json", "seo_json", "editorial_requested_visibility", "editorial_restriction"]
+      classification: "mixed"
+      subject: "проверить пользовательские сведения в опубликованном содержимом; course_ref не ключ человека"
+      purposes: ["publishing"]
+      access: "review"
+      closure: "review"
+      review: "audit"
+  catalog_lesson_projection:
+    - columns: ["lesson_ref", "course_ref", "section_ref", "ever_published", "visibility", "free_preview", "withdrawn_at", "withdrawn_reason", "position", "title", "slug", "description_json", "seo_json"]
+      classification: "mixed"
+      subject: "проверить пользовательские сведения в содержимом урока и причине снятия"
+      purposes: ["publishing"]
+      access: "review"
+      closure: "review"
+      review: "audit"
+  catalog_section_projection:
+    - columns: ["section_ref", "course_ref", "visibility", "position", "title"]
+      classification: "mixed"
+      subject: "проверить опубликованное название на сведения о человеке"
+      purposes: ["publishing"]
+      access: "review"
+      closure: "review"
+      review: "audit"
+  checkout_attempts:
+    - columns: ["id", "order_id", "idempotency_key", "request_payload_json", "state", "refref_attempt_id", "refref_resolution_id", "refref_snapshot_hash", "refref_payment_session_id", "observed_payment_projection_json", "fulfillment_acknowledged_at", "last_reconciled_at", "outcome_unknown_at", "created_at", "updated_at"]
+      classification: "mixed"
+      subject: "order_id → orders; внешний платёжный идентификатор"
+      purposes: ["checkout", "payments"]
+      access: "review"
+      closure: "retain_minimum"
+      review: "financial"
+    - columns: ["checkout_url"]
+      classification: "secret"
+      subject: "order_id → orders; внешний платёжный идентификатор"
+      purposes: ["checkout", "payments"]
+      access: "description"
+      closure: "destroy_when_due"
+      review: "financial"
+  checkout_quotes:
+    - columns: ["id", "customer_id", "offer_id", "legal_release_id", "storefront", "order_public_id", "line_ref", "preview_idempotency_key", "request_fingerprint", "resolution_request_json", "sale_mode_at_quote", "catalog_amount_kopecks", "merchant_discount_kopecks", "merchant_promotion_id", "merchant_promotion_snapshot_json", "line_snapshot_json", "state", "resolution_sends", "resolution_requested_at", "refref_resolution_id", "failure_code", "base_amount_kopecks", "discount_kopecks", "final_amount_kopecks", "rail_quote_json", "refref_checkout_code_outcome", "expires_at", "consumed_at", "created_at", "updated_at", "seat_hold_ref", "seat_hold_expires_at", "storefront_open_since"]
+      classification: "mixed"
+      subject: "customer_id и ссылка на заказ"
+      purposes: ["checkout", "payments"]
+      access: "review"
+      closure: "retain_minimum"
+      review: "financial"
+    - columns: ["checkout_code_input", "customer_action_url"]
+      classification: "secret"
+      subject: "customer_id и ссылка на заказ"
+      purposes: ["checkout"]
+      access: "description"
+      closure: "destroy_when_due"
+      review: "financial"
+  cities:
+    - columns: ["id", "slug", "title", "created_at"]
+      classification: "non_personal"
+      reason: "Справочник города; поля не идентифицируют человека"
+  control_room_admin_sessions:
+    - columns: ["id", "admin_id", "expires_at", "revoked_at", "created_at"]
+      classification: "personal"
+      subject: "admin_id"
+      purposes: ["ops_security"]
+      access: "projection"
+      closure: "destroy_when_due"
+      review: "audit"
+  control_room_audit_log:
+    - columns: ["id", "admin_id", "action", "entity_type", "entity_id", "details_json", "created_at"]
+      classification: "mixed"
+      subject: "admin_id, entity_id и потенциальные упоминания в details_json"
+      purposes: ["ops_security", "evidence"]
+      access: "review"
+      closure: "review"
+      review: "audit"
+  control_room_login_rate_limits:
+    - columns: ["rate_key", "window_start", "attempt_count"]
+      classification: "personal"
+      subject: "rate_key проверяемого административного запроса"
+      purposes: ["ops_security"]
+      access: "description"
+      closure: "destroy_when_due"
+      review: "audit"
+  control_room_totp:
+    - columns: ["admin_id", "last_accepted_step", "enrolled_at", "confirmed_at"]
+      classification: "personal"
+      subject: "admin_id"
+      purposes: ["ops_security"]
+      access: "description"
+      closure: "destroy_when_due"
+      review: "audit"
+    - columns: ["seed_ciphertext"]
+      classification: "secret"
+      subject: "admin_id"
+      purposes: ["ops_security"]
+      access: "description"
+      closure: "destroy_when_due"
+      review: "audit"
+  course_access_starts:
+    - columns: ["customer_id", "course_ref", "first_lesson_ref", "first_accessed_at"]
+      classification: "personal"
+      subject: "customer_id; факт начала доступа участвует в оценке возврата"
+      purposes: ["paid_access", "refunds"]
+      access: "projection"
+      closure: "retain_minimum"
+      review: "closure"
+  course_commercial_commands:
+    - columns: ["actor", "course_ref", "command_key", "request_sha256", "result_json", "created_at"]
+      classification: "mixed"
+      subject: "actor и сведения в результате команды"
+      purposes: ["publishing", "evidence"]
+      access: "review"
+      closure: "review"
+      review: "audit"
+  course_editorial_drafts:
+    - columns: ["course_ref", "revision", "document_json", "actor", "created_at", "updated_at"]
+      classification: "mixed"
+      subject: "actor, документ и возможные упоминания"
+      purposes: ["publishing"]
+      access: "review"
+      closure: "review"
+      review: "audit"
+  course_editorial_publish_commands:
+    - columns: ["course_ref", "idempotency_key", "request_hash", "result_json", "created_at"]
+      classification: "mixed"
+      subject: "сведения о действии публикации в результате и связи с версией"
+      purposes: ["publishing", "evidence"]
+      access: "review"
+      closure: "review"
+      review: "audit"
+  course_editorial_versions:
+    - columns: ["course_ref", "version", "draft_revision", "document_json", "content_hash", "actor", "published_at"]
+      classification: "mixed"
+      subject: "actor и версионированное содержимое"
+      purposes: ["publishing", "evidence"]
+      access: "review"
+      closure: "review"
+      review: "audit"
+  course_entitlements:
+    - columns: ["id", "customer_id", "scope", "course_ref", "source_order_line_id", "granted_at", "revoked_at", "revocation_reason"]
+      classification: "personal"
+      subject: "customer_id и source_order_line_id"
+      purposes: ["paid_access", "evidence", "refunds"]
+      access: "projection"
+      closure: "retain_minimum"
+      review: "closure"
+  course_learning_starts:
+    - columns: ["customer_id", "course_ref", "product_id", "source", "started_at"]
+      classification: "personal"
+      subject: "customer_id"
+      purposes: ["learning"]
+      access: "value"
+      closure: "destroy_when_due"
+      review: "methods"
+  course_playback_state:
+    - columns: ["customer_id", "course_ref", "issued_lesson_ref", "issued_cursor", "played_lesson_ref", "played_cursor", "phase"]
+      classification: "personal"
+      subject: "customer_id"
+      purposes: ["learning"]
+      access: "projection"
+      closure: "destroy_when_due"
+      review: "methods"
+  customers:
+    - columns: ["id", "email_normalized", "display_name", "auth_user_id", "created_at", "updated_at"]
+      classification: "personal"
+      subject: "id и auth_user_id; контакт также относится к исполнению заказа"
+      purposes: ["identity", "paid_access", "lab_service", "refunds", "fiscal"]
+      access: "projection"
+      closure: "retain_minimum"
+      review: "closure"
+  deployment_durability:
+    - columns: ["id", "environment", "source_commit", "created_at"]
+      classification: "non_personal"
+      reason: "Факт долговечности деплоя; источник, среда и техническое время"
+  email_suppressions:
+    - columns: ["email_normalized", "reason", "created_at", "removed_at"]
+      classification: "personal"
+      subject: "email_normalized"
+      purposes: ["suppression", "recovery"]
+      access: "projection"
+      closure: "retain_minimum"
+      review: "identity_return"
+  fiscal_events:
+    - columns: ["id", "event_ref", "kind", "order_line_id", "refund_request_id", "payment_method", "amount_kopecks", "items_json", "mode", "state", "provider_receipt_id", "last_reason", "evidence_json", "contact_purged_at", "created_at", "updated_at"]
+      classification: "mixed"
+      subject: "order_line_id → order_lines и refund_request_id"
+      purposes: ["fiscal", "payments", "refunds"]
+      access: "review"
+      closure: "retain_minimum"
+      review: "financial"
+    - columns: ["sealed_contact", "contact_key_id"]
+      classification: "secret"
+      subject: "order_line_id → order_lines и refund_request_id"
+      purposes: ["fiscal"]
+      access: "description"
+      closure: "destroy_when_due"
+      review: "financial"
+  fiscal_policy_versions:
+    - columns: ["id", "offer_ref", "product_kind", "version", "item_name", "tax_system", "vat_code", "payment_method", "payment_object", "status", "legal_basis_json", "qualified_by", "qualified_at", "retired_at", "created_by", "created_at"]
+      classification: "mixed"
+      subject: "created_by, qualified_by и материалы основания"
+      purposes: ["fiscal", "evidence"]
+      access: "review"
+      closure: "review"
+      review: "audit"
+  free_course_enrollments:
+    - columns: ["customer_id", "product_id", "product_version", "enrolled_at"]
+      classification: "personal"
+      subject: "customer_id"
+      purposes: ["learning"]
+      access: "value"
+      closure: "destroy_when_due"
+      review: "methods"
+  kinescope_webhook_events:
+    - columns: ["content_key", "video_id", "observed_status", "payload_sha256", "received_at"]
+      classification: "non_personal"
+      reason: "Хеш и состояние события обработки видео; content_key и video_id относятся к контенту в этом журнале"
+  lab_guest_access:
+    - columns: ["order_public_id", "customer_id", "initial_email_attempted_at", "acceptance_json", "created_at", "updated_at"]
+      classification: "personal"
+      subject: "customer_id или проверенная связка с order_public_id гостя"
+      purposes: ["lab_service", "auth_security"]
+      access: "projection"
+      closure: "retain_minimum"
+      review: "closure"
+    - columns: ["token_sha256"]
+      classification: "secret"
+      subject: "customer_id или проверенная связка с order_public_id гостя"
+      purposes: ["auth_security", "lab_service"]
+      access: "description"
+      closure: "destroy_when_due"
+      review: "closure"
+  lab_guest_rate_limits:
+    - columns: ["bucket", "window_start", "attempts"]
+      classification: "personal"
+      subject: "bucket запроса гостевого контура"
+      purposes: ["auth_security", "lab_service"]
+      access: "description"
+      closure: "destroy_when_due"
+      review: "retention"
+  lab_interest_notices:
+    - columns: ["signup_id", "notice_key", "state", "attempted_at", "sent_at"]
+      classification: "personal"
+      subject: "signup_id → lab_interest_signups"
+      purposes: ["lab_interest", "delivery"]
+      access: "projection"
+      closure: "destroy_when_due"
+      review: "lab_restore"
+  lab_interest_signups:
+    - columns: ["id", "email_normalized", "city_id", "state", "purpose", "consent_text_version", "consent_text_sha256", "confirm_expires_at", "created_at", "confirmed_at"]
+      classification: "personal"
+      subject: "подтверждённый email и адресная привязка предзаписи"
+      purposes: ["lab_interest"]
+      access: "projection"
+      closure: "destroy_when_due"
+      review: "lab_restore"
+    - columns: ["confirm_token_sha256"]
+      classification: "secret"
+      subject: "подтверждённый email и адресная привязка предзаписи"
+      purposes: ["lab_interest", "auth_security"]
+      access: "description"
+      closure: "destroy_when_due"
+      review: "lab_restore"
+  lab_interest_suppressions:
+    - columns: ["email_normalized", "created_at"]
+      classification: "personal"
+      subject: "email_normalized; отдельная цель LAB"
+      purposes: ["suppression"]
+      access: "projection"
+      closure: "retain_minimum"
+      review: "lab_restore"
+  lab_occurrence_cancellations:
+    - columns: ["occurrence_ref", "state", "actor", "reason", "requested_at", "completed_at", "obligations_json"]
+      classification: "mixed"
+      subject: "actor и обязанности по связанным заказам в obligations_json"
+      purposes: ["lab_service", "refunds", "evidence"]
+      access: "review"
+      closure: "retain_minimum"
+      review: "audit"
+  lab_occurrence_revisions:
+    - columns: ["id", "occurrence_ref", "version", "material_revision", "change_kind", "customer_facing", "changed_fields_json", "before_json", "after_json", "actor", "reason", "created_at"]
+      classification: "mixed"
+      subject: "actor и возможные сведения в версионируемом содержимом"
+      purposes: ["publishing", "lab_service", "evidence"]
+      access: "review"
+      closure: "review"
+      review: "audit"
+  lab_occurrences:
+    - columns: ["id", "occurrence_ref", "city_id", "title", "starts_at", "ends_at", "timezone", "capacity", "created_at", "updated_at", "version", "material_revision", "lifecycle", "cancelled_at", "cancellation_reason", "visibility", "admin_reserved_seats", "venue_status", "venue_name", "venue_address", "venue_public", "venue_disclosure_text", "venue_announce_by"]
+      classification: "mixed"
+      subject: "место и содержимое мероприятия могут содержать контактные сведения"
+      purposes: ["publishing", "lab_service"]
+      access: "review"
+      closure: "review"
+      review: "audit"
+  lab_purchase_acceptances:
+    - columns: ["order_id", "customer_id", "quote_id", "legal_release_id", "release_version", "manifest_sha256", "consents_json", "order_snapshot_hash", "occurrence_snapshot_sha256", "accepted_at", "source", "evidence_status"]
+      classification: "mixed"
+      subject: "customer_id и order_id"
+      purposes: ["consent_proof", "lab_service", "evidence"]
+      access: "review"
+      closure: "retain_minimum"
+      review: "financial"
+  lab_service_renditions:
+    - columns: ["order_line_id", "occurrence_ref", "basis", "checked_in_at", "attestation_reason", "rendered_at", "evidence_ref", "recorded_by", "recorded_at"]
+      classification: "mixed"
+      subject: "order_line_id → order; отдельно recorded_by и аттестация"
+      purposes: ["lab_service", "evidence"]
+      access: "projection"
+      closure: "retain_minimum"
+      review: "financial"
+  lab_ticket_recoveries:
+    - columns: ["order_public_id", "expires_at", "consumed_at"]
+      classification: "personal"
+      subject: "order_public_id → заказ"
+      purposes: ["auth_security", "lab_service"]
+      access: "description"
+      closure: "destroy_when_due"
+      review: "closure"
+    - columns: ["token_sha256", "replacement_sha256"]
+      classification: "secret"
+      subject: "order_public_id → заказ"
+      purposes: ["auth_security", "lab_service"]
+      access: "description"
+      closure: "destroy_when_due"
+      review: "closure"
+  lab_tickets:
+    - columns: ["id", "order_line_id", "issued_at", "used_at", "used_by", "qr_generation"]
+      classification: "mixed"
+      subject: "order_line_id и проверка роли покупателя или участника; used_by отдельно"
+      purposes: ["lab_service", "evidence"]
+      access: "projection"
+      closure: "retain_minimum"
+      review: "closure"
+    - columns: ["qr_sha256"]
+      classification: "secret"
+      subject: "order_line_id и проверка роли покупателя или участника; used_by отдельно"
+      purposes: ["auth_security", "lab_service"]
+      access: "description"
+      closure: "destroy_when_due"
+      review: "closure"
+  launch_seed:
+    - columns: ["singleton", "catalogue_sha256", "applied_at"]
+      classification: "non_personal"
+      reason: "Доказательство применения каталога; singleton, хеш и время"
+  legal_releases:
+    - columns: ["id", "storefront", "version", "manifest_json", "effective_at", "active", "created_at"]
+      classification: "mixed"
+      subject: "версия манифеста и ссылки на документы; возможно содержание об операторе"
+      purposes: ["publishing", "evidence"]
+      access: "review"
+      closure: "review"
+      review: "audit"
+  lesson_completions:
+    - columns: ["customer_id", "lesson_ref", "first_completed_at"]
+      classification: "personal"
+      subject: "customer_id"
+      purposes: ["learning"]
+      access: "value"
+      closure: "destroy_when_due"
+      review: "methods"
+  lesson_resume_positions:
+    - columns: ["customer_id", "lesson_ref", "seconds", "client_seq", "client_ts", "updated_at"]
+      classification: "personal"
+      subject: "customer_id"
+      purposes: ["learning"]
+      access: "value"
+      closure: "destroy_when_due"
+      review: "methods"
+  lesson_video_bindings:
+    - columns: ["lesson_ref", "active_video_id", "duration_seconds", "bound_at", "updated_at"]
+      classification: "non_personal"
+      reason: "Техническая привязка опубликованного урока к видео; само содержимое отдельно"
+  lms_sessions:
+    - columns: ["id", "parent_session_id", "customer_id", "exchange_id", "created_at", "expires_at"]
+      classification: "personal"
+      subject: "customer_id и parent_session_id, exchange_id"
+      purposes: ["identity", "auth_security"]
+      access: "projection"
+      closure: "destroy_when_due"
+      review: "retention"
+    - columns: ["token_sha256"]
+      classification: "secret"
+      subject: "customer_id и parent_session_id, exchange_id"
+      purposes: ["identity", "auth_security"]
+      access: "description"
+      closure: "destroy_when_due"
+      review: "retention"
+  marketing_consents:
+    - columns: ["id", "customer_id", "granted", "document_version", "recorded_at", "source", "document_sha256", "evidence_status", "confirmed_auth_user_id", "confirmed_at"]
+      classification: "personal"
+      subject: "customer_id и confirmed_auth_user_id"
+      purposes: ["marketing", "consent_proof"]
+      access: "projection"
+      closure: "retain_minimum"
+      review: "retention"
+  merchant_promotion:
+    - columns: ["id", "code_normalized", "discount_kind", "discount_value", "eligible_offer_ref", "starts_at", "ends_at", "active", "actor", "created_at", "updated_at", "version"]
+      classification: "mixed"
+      subject: "actor и служебные данные промо"
+      purposes: ["publishing", "checkout", "evidence"]
+      access: "review"
+      closure: "review"
+      review: "audit"
+  my_otp_outbox:
+    - columns: ["id", "recipient_normalized", "state", "attempt_count", "last_error", "created_at", "updated_at"]
+      classification: "personal"
+      subject: "recipient_normalized и состояние доставки"
+      purposes: ["auth_security", "delivery"]
+      access: "description"
+      closure: "destroy_when_due"
+      review: "processors"
+  native_callback_inbox:
+    - columns: ["id", "provider", "provider_event_id", "body_sha256", "signature_valid", "subject_kind", "subject_ref", "received_at", "processed_at"]
+      classification: "mixed"
+      subject: "subject_kind и subject_ref через платёжную привязку; provider_event_id"
+      purposes: ["payments", "refunds", "evidence"]
+      access: "review"
+      closure: "retain_minimum"
+      review: "financial"
+  native_payment_observations:
+    - columns: ["id", "native_payment_id", "native_refund_id", "source", "observation_json", "decided_state", "reason", "observed_at"]
+      classification: "mixed"
+      subject: "native_payment_id или native_refund_id"
+      purposes: ["payments", "refunds", "evidence"]
+      access: "review"
+      closure: "retain_minimum"
+      review: "financial"
+  native_payments:
+    - columns: ["id", "order_id", "payment_ref", "idempotency_key", "amount_kopecks", "currency", "snapshot_hash", "state", "provider_payment_id", "last_reason", "envelope_purged_at", "created_at", "updated_at", "dispatch_started", "executor_key", "fiscalization_mode"]
+      classification: "mixed"
+      subject: "order_id → orders; исходный executor платежа"
+      purposes: ["payments", "fiscal"]
+      access: "review"
+      closure: "retain_minimum"
+      review: "financial"
+    - columns: ["request_envelope", "envelope_key_id", "payment_url"]
+      classification: "secret"
+      subject: "order_id → orders; исходный executor платежа"
+      purposes: ["payments", "fiscal"]
+      access: "description"
+      closure: "destroy_when_due"
+      review: "financial"
+  native_refunds:
+    - columns: ["id", "refund_request_id", "native_payment_id", "refund_ref", "idempotency_key", "amount_kopecks", "state", "provider_refund_id", "last_reason", "envelope_purged_at", "created_at", "updated_at", "dispatch_started"]
+      classification: "mixed"
+      subject: "refund_request_id → refund_requests; исходный native_payment_id"
+      purposes: ["refunds", "fiscal"]
+      access: "review"
+      closure: "retain_minimum"
+      review: "financial"
+    - columns: ["request_envelope", "envelope_key_id"]
+      classification: "secret"
+      subject: "refund_request_id → refund_requests; исходный native_payment_id"
+      purposes: ["refunds", "fiscal"]
+      access: "description"
+      closure: "destroy_when_due"
+      review: "financial"
+  notification_campaign_recipients:
+    - columns: ["id", "campaign_id", "customer_id", "state", "last_error", "sent_at", "provider_idempotency_key", "attempt_count"]
+      classification: "personal"
+      subject: "customer_id; исходы доставки"
+      purposes: ["marketing", "delivery"]
+      access: "projection"
+      closure: "destroy_when_due"
+      review: "retention"
+  notification_campaigns:
+    - columns: ["id", "course_ref", "payload_json", "state", "confirmed_by", "confirmed_at", "created_at", "kind", "idempotency_key", "request_hash", "queued_at", "completed_at", "dispatch_lease_expires_at"]
+      classification: "mixed"
+      subject: "confirmed_by и потенциальные сведения в содержимом сообщения"
+      purposes: ["marketing", "delivery", "evidence"]
+      access: "review"
+      closure: "review"
+      review: "audit"
+  offers:
+    - columns: ["id", "offer_ref", "product_id", "price_kopecks", "currency", "sale_mode", "acceptance_allowlist_json", "created_at", "updated_at", "payment_purpose"]
+      classification: "non_personal"
+      reason: "Структурированные коммерческие параметры предложения и ссылки на правовые версии"
+  order_lines:
+    - columns: ["id", "order_id", "product_id", "offer_ref_snapshot", "title_snapshot", "quantity", "unit_amount_kopecks", "legal_terms_ref", "created_at", "catalog_amount_kopecks", "merchant_discount_kopecks", "merchant_amount_kopecks", "merchant_promotion_snapshot_json", "fiscal_item_json", "legal_release_ref", "legal_release_hash", "occurrence_snapshot_json", "fiscal_policy_id", "immediate_access_json"]
+      classification: "mixed"
+      subject: "order_id → orders; отдельно содержимое снимков и фискальных позиций"
+      purposes: ["checkout", "payments", "fiscal", "paid_access", "lab_service"]
+      access: "review"
+      closure: "retain_minimum"
+      review: "financial"
+  orders:
+    - columns: ["id", "public_id", "customer_id", "state", "currency", "total_kopecks", "checkout_snapshot_json", "snapshot_hash", "legal_release_id", "created_at", "updated_at"]
+      classification: "mixed"
+      subject: "customer_id; связка с исходным расчётом и снимком"
+      purposes: ["checkout", "payments", "fiscal", "evidence"]
+      access: "review"
+      closure: "retain_minimum"
+      review: "financial"
+  owner_legal_decisions:
+    - columns: ["id", "version", "fiscal_policy_id", "product_ref", "offer_ref", "legal_release_id", "legal_release_version", "legal_manifest_json", "offer_terms_ref", "offer_terms_sha256", "refund_terms_ref", "refund_terms_sha256", "norms_json", "facts", "reasoning", "risk_assessment", "approval_ref", "evidence_sha256", "decided_by", "decided_at", "recorded_by", "recorded_at"]
+      classification: "mixed"
+      subject: "decided_by, recorded_by и возможные упоминания в материалах и тексте"
+      purposes: ["evidence", "fiscal"]
+      access: "review"
+      closure: "review"
+      review: "audit"
+  playback_access_events:
+    - columns: ["id", "customer_id", "lesson_ref", "video_id", "event_type", "reason", "occurred_at"]
+      classification: "personal"
+      subject: "customer_id, видео и событие доступа"
+      purposes: ["learning", "auth_security"]
+      access: "projection"
+      closure: "destroy_when_due"
+      review: "retention"
+  playback_grant_rate_limits:
+    - columns: ["customer_id", "window_start", "request_count"]
+      classification: "personal"
+      subject: "customer_id"
+      purposes: ["auth_security"]
+      access: "description"
+      closure: "destroy_when_due"
+      review: "retention"
+  products:
+    - columns: ["id", "product_ref", "kind", "access_model", "course_ref", "withdrawn_at", "withdrawn_reason", "withdrawn_terms_ref", "created_at", "updated_at", "version", "occurrence_ref"]
+      classification: "mixed"
+      subject: "проверить сведения о человеке в содержимом и причине снятия"
+      purposes: ["publishing", "checkout"]
+      access: "review"
+      closure: "review"
+      review: "audit"
+  refund_decisions:
+    - columns: ["id", "refund_request_id", "outcome", "amount_kopecks", "policy_basis", "rationale", "decided_by", "decided_at"]
+      classification: "mixed"
+      subject: "refund_request_id и отдельно decided_by; сократить rationale по правовой нужде"
+      purposes: ["refunds", "evidence"]
+      access: "review"
+      closure: "retain_minimum"
+      review: "financial"
+  refund_executions:
+    - columns: ["id", "refund_request_id", "idempotency_key", "state", "provider_execution_id", "support_reference", "observed_projection_json", "last_error_code", "created_at", "updated_at", "refref_payment_id", "amount_kopecks", "canonical_refund_id", "envelope_purged_at"]
+      classification: "mixed"
+      subject: "refund_request_id; исходный платёж, исполнитель и канонический результат"
+      purposes: ["refunds", "fiscal", "evidence"]
+      access: "review"
+      closure: "retain_minimum"
+      review: "financial"
+    - columns: ["request_envelope", "envelope_key_id"]
+      classification: "secret"
+      subject: "refund_request_id; исходный платёж, исполнитель и канонический результат"
+      purposes: ["refunds", "fiscal"]
+      access: "description"
+      closure: "destroy_when_due"
+      review: "financial"
+  refund_requests:
+    - columns: ["id", "public_id", "idempotency_key", "customer_id", "order_line_id", "reason_code", "customer_note", "policy_facts_json", "state", "requested_at", "updated_at"]
+      classification: "mixed"
+      subject: "customer_id; отдельно заметка заявителя и привязка к переписке"
+      purposes: ["refunds", "evidence"]
+      access: "review"
+      closure: "retain_minimum"
+      review: "financial"
+  reviewed_erasure_receipts:
+    - columns: ["request_id", "entry_sha256", "recorded_at", "application_mode", "counts_json"]
+      classification: "personal"
+      subject: "request_id → закрытое дело; counts_json связан с этим запросом"
+      purposes: ["rights", "recovery"]
+      access: "projection"
+      closure: "retain_minimum"
+      review: "rights_evidence"
+  sales_activation:
+    - columns: ["id", "product_kind", "evidence_issue", "evidence_sha256", "activated_by", "activated_at", "revoked_at", "revocation_reason"]
+      classification: "mixed"
+      subject: "activated_by, след контроля и причина отзыва"
+      purposes: ["publishing", "evidence"]
+      access: "review"
+      closure: "review"
+      review: "audit"
+  schema_identity:
+    - columns: ["singleton", "lineage", "baseline_version", "created_at"]
+      classification: "non_personal"
+      reason: "Служебная идентичность схемы, версия и время создания"
+  schema_migrations:
+    - columns: ["version", "applied_at", "sha256"]
+      classification: "non_personal"
+      reason: "Служебный журнал раннера: имя версии, время применения, хеш SQL"
+  session:
+    - columns: ["id", "expires_at", "created_at", "updated_at", "ip_address", "user_agent", "user_id", "audience"]
+      classification: "personal"
+      subject: "user_id → user; IP и агент пользователя оцениваются отдельно"
+      purposes: ["identity", "auth_security"]
+      access: "projection"
+      closure: "destroy_when_due"
+      review: "retention"
+    - columns: ["token"]
+      classification: "secret"
+      subject: "user_id → user; IP и агент пользователя оцениваются отдельно"
+      purposes: ["identity", "auth_security"]
+      access: "description"
+      closure: "destroy_when_due"
+      review: "retention"
+  session_exchanges:
+    - columns: ["id", "audience", "status", "my_session_id", "customer_id", "code_expires_at", "failure_code", "created_at", "expires_at", "issued_at", "closed_at"]
+      classification: "personal"
+      subject: "customer_id и my_session_id; незавершённый обмен не подтверждает личность сам по себе"
+      purposes: ["identity", "auth_security"]
+      access: "projection"
+      closure: "destroy_when_due"
+      review: "retention"
+    - columns: ["state_sha256", "code_sha256", "return_path"]
+      classification: "secret"
+      subject: "customer_id и my_session_id; незавершённый обмен не подтверждает личность сам по себе"
+      purposes: ["identity", "auth_security"]
+      access: "description"
+      closure: "destroy_when_due"
+      review: "retention"
+  storefront_switch_observations:
+    - columns: ["generation", "document_sha256", "scope", "courses_state", "courses_open_since", "lab_state", "lab_open_since", "changed_by", "reason", "evidence_issue", "changed_at", "first_observed_at"]
+      classification: "mixed"
+      subject: "changed_by и возможные сведения в причине или ссылке доказательства"
+      purposes: ["publishing", "evidence"]
+      access: "review"
+      closure: "review"
+      review: "audit"
+  user:
+    - columns: ["id", "name", "email", "email_verified", "image", "created_at", "updated_at"]
+      classification: "personal"
+      subject: "id и проверенная привязка к Commerce"
+      purposes: ["identity"]
+      access: "projection"
+      closure: "destroy_when_due"
+      review: "closure"
+  verification:
+    - columns: ["id", "identifier", "value", "expires_at", "created_at", "updated_at"]
+      classification: "secret"
+      subject: "проверка принадлежности по распознанному формату magic link или OTP"
+      purposes: ["auth_security"]
+      access: "description"
+      closure: "destroy_when_due"
+      review: "retention"
+  video_upload_sessions:
+    - columns: ["id", "lesson_ref", "video_id", "status", "error_code", "created_at", "updated_at"]
+      classification: "mixed"
+      subject: "связь с уроком и временным действием загрузчика; endpoint может быть полномочием"
+      purposes: ["publishing", "ops_security"]
+      access: "review"
+      closure: "destroy_when_due"
+      review: "audit"
+    - columns: ["uploader_endpoint"]
+      classification: "secret"
+      subject: "связь с уроком и временным действием загрузчика; endpoint может быть полномочием"
+      purposes: ["publishing", "ops_security"]
+      access: "description"
+      closure: "destroy_when_due"
+      review: "audit"
+
+payloads:
+  access_overrides.resolution_evidence_json:
+    content: "Доказательство разрешения override и ссылки состояния, возможны внешние или операторские сведения"
+    review: "audit"
+  audit_log.evidence_json:
+    content: "Состав зависит от действия; искать относящееся к субъекту и разделять чужие сведения"
+    review: "audit"
+  auth_email_outbox.encrypted_payload:
+    content: "Рабочий зашифрованный конверт доставки со ссылкой входа; только описание в стандартной выдаче"
+    review: "processors"
+  auth_email_outbox.last_error:
+    content: "Причина сбоя доставки; проверить фактическое содержимое и редактирование входных сообщений"
+    review: "processors"
+  browser_context_arrivals.arrival_proof:
+    content: "Внешнее доказательство перехода и непрямые связи с браузером; не отдавать подписанное значение"
+    review: "processors"
+  catalog_course_projection.description_json:
+    content: "Публичный контент редактора; проверить встроенный текст и ссылки"
+    review: "audit"
+  catalog_course_projection.seo_json:
+    content: "Публичная метаинформация курса; проверить встроенные имена и ссылки"
+    review: "audit"
+  catalog_lesson_projection.description_json:
+    content: "Публичное описание урока; проверить текст и ссылки"
+    review: "audit"
+  catalog_lesson_projection.seo_json:
+    content: "Публичная метаинформация урока; проверить встроенные имена и ссылки"
+    review: "audit"
+  checkout_attempts.observed_payment_projection_json:
+    content: "Наблюдение расчёта RC.2; оставить только относящиеся к субъекту поля"
+    review: "financial"
+  checkout_attempts.request_payload_json:
+    content: "RC.2 payload от намерения до расчёта; возможны контакт и прежний внешний процессор"
+    review: "financial"
+  checkout_quotes.checkout_code_input:
+    content: "Присланный код оплаты или промо, режим выдачи зависит от фактического назначения"
+    review: "financial"
+  checkout_quotes.line_snapshot_json:
+    content: "Идентичность и цена строки, договорная версия, продуктовые данные"
+    review: "financial"
+  checkout_quotes.merchant_promotion_snapshot_json:
+    content: "Условия локального промо на момент предложения"
+    review: "financial"
+  checkout_quotes.rail_quote_json:
+    content: "Ответ ветки котировки; квалифицировать поля интеграции"
+    review: "financial"
+  checkout_quotes.resolution_request_json:
+    content: "Параметры резолюции предложения, источник и привязки checkout"
+    review: "financial"
+  control_room_audit_log.details_json:
+    content: "Детали по действию, проверять смешанные записи и сведения об операторе"
+    review: "audit"
+  course_commercial_commands.result_json:
+    content: "Результаты изменения карточек и коммерческих параметров"
+    review: "audit"
+  course_editorial_drafts.document_json:
+    content: "Редакторское содержание курса, уроков, ссылок и SEO"
+    review: "audit"
+  course_editorial_publish_commands.result_json:
+    content: "Результат публикации и версии, возможная привязка к актору"
+    review: "audit"
+  course_editorial_versions.document_json:
+    content: "Зафиксированное опубликованное содержание, редактирование требует ревизии"
+    review: "audit"
+  fiscal_events.evidence_json:
+    content: "Доказательство расчёта, оказания или исхода адаптера; защитить целостность подлинника"
+    review: "financial"
+  fiscal_events.items_json:
+    content: "Позиции, суммы и фискальные признаки расчёта"
+    review: "financial"
+  fiscal_events.sealed_contact:
+    content: "Временный запечатанный контакт выдачи чека"
+    review: "financial"
+  fiscal_policy_versions.legal_basis_json:
+    content: "Факты и ссылки на решение о квалификации"
+    review: "audit"
+  lab_guest_access.acceptance_json:
+    content: "Согласия и акцепт гостевого сценария"
+    review: "financial"
+  lab_occurrence_cancellations.obligations_json:
+    content: "Ссылки и состояния обязательств по заказам; общий список требует проекции"
+    review: "audit"
+  lab_occurrence_revisions.after_json:
+    content: "Снимок после изменения мероприятия, возможен контакт"
+    review: "audit"
+  lab_occurrence_revisions.before_json:
+    content: "Снимок до изменения мероприятия, возможен контакт"
+    review: "audit"
+  lab_occurrence_revisions.changed_fields_json:
+    content: "Перечень полей изменения, содержимое проверять вместе со снимками"
+    review: "audit"
+  lab_purchase_acceptances.consents_json:
+    content: "Факты выбора и доказательства акцепта LAB"
+    review: "financial"
+  lab_service_renditions.attestation_reason:
+    content: "Текст обоснования подтверждения оказания; возможно присутствие иных лиц"
+    review: "audit"
+  legal_releases.manifest_json:
+    content: "Версии, ссылки и хеши документов, включая публикуемые сведения об операторе"
+    review: "audit"
+  my_otp_outbox.last_error:
+    content: "Причина обработки доставки, состав полезной нагрузки проверить у обработчика"
+    review: "processors"
+  native_payment_observations.observation_json:
+    content: "Проверяемые признаки результата, ссылки платежа и наблюдения провайдера"
+    review: "financial"
+  native_payments.request_envelope:
+    content: "Замороженный запрос для исполнения или сверки, возможно наличие контакта чека"
+    review: "financial"
+  native_refunds.request_envelope:
+    content: "Замороженный запрос с условиями и контактом фискализации"
+    review: "financial"
+  notification_campaign_recipients.last_error:
+    content: "Причина сбоя по адресату; проверить фактическую минимизацию"
+    review: "processors"
+  notification_campaigns.payload_json:
+    content: "Материалы и настройки рассылки, возможны ссылки и авторский текст"
+    review: "processors"
+  order_lines.fiscal_item_json:
+    content: "Подлинные реквизиты фискальной позиции"
+    review: "financial"
+  order_lines.immediate_access_json:
+    content: "Факт выбора и версия условий немедленного доступа"
+    review: "financial"
+  order_lines.merchant_promotion_snapshot_json:
+    content: "Факт скидки и параметры промо для этой строки"
+    review: "financial"
+  order_lines.occurrence_snapshot_json:
+    content: "Параметры LAB на момент покупки"
+    review: "financial"
+  orders.checkout_snapshot_json:
+    content: "Неизменяемый состав заказа и привязка к контракту"
+    review: "financial"
+  owner_legal_decisions.facts:
+    content: "Свободный текст доказательств, возможны данные человека"
+    review: "audit"
+  owner_legal_decisions.legal_manifest_json:
+    content: "Ссылки на редакции и хеши применимых документов"
+    review: "audit"
+  owner_legal_decisions.norms_json:
+    content: "Список правовых оснований, ссылки и примечания"
+    review: "audit"
+  owner_legal_decisions.reasoning:
+    content: "Свободное обоснование с возможными упоминаниями"
+    review: "audit"
+  owner_legal_decisions.risk_assessment:
+    content: "Текст оценки, возможны данные человека"
+    review: "audit"
+  refund_decisions.rationale:
+    content: "Решение по претензии, возможны сведения иных лиц"
+    review: "financial"
+  refund_executions.observed_projection_json:
+    content: "Ответ исходной RC.2 ветки об исполнении и read-back"
+    review: "financial"
+  refund_executions.request_envelope:
+    content: "Замороженный запрос RC.2 с адресом и фискальными сведениями"
+    review: "financial"
+  refund_requests.customer_note:
+    content: "Пользовательский свободный текст; проверить и редактировать чужие данные перед выдачей"
+    review: "audit"
+  refund_requests.policy_facts_json:
+    content: "Факты заказа, начала доступа и почтового приёма; отдельная ссылка на исходное дело"
+    review: "financial"
+  reviewed_erasure_receipts.counts_json:
+    content: "Счётчики квалифицированной операции, связанные с номером закрытого дела"
+    review: "rights_evidence"
+  verification.value:
+    content: "Распознаваемые Better Auth формы magic link и OTP; исходные полномочия не выдаются"
+    review: "retention"
+
+stores:
+  browser_storage:
+    scope: "source"
+    location: "Cookies и состояние браузера в MY, LMS и LAB"
+    subject: "Браузер, сессия или гостевой контекст"
+    purposes: ["identity", "auth_security", "analytics"]
+    lifecycle: "Разделить полномочия и настройки, отозвать старые полномочия, подтвердить сроки по типам"
+    review: "retention"
+  captcha:
+    scope: "source"
+    location: "SmartCaptcha; запрос проверки"
+    subject: "Контекст проверяемого запроса, технические признаки"
+    purposes: ["auth_security"]
+    lifecycle: "Подтвердить фактические поля, роли, срок и возможность операции у поставщика"
+    review: "processors"
+  cloud_backups:
+    scope: "source"
+    location: "Штатные зашифрованные SQLite-архивы и версии Cloud.ru"
+    subject: "Исходные записи в восстанавливаемой копии"
+    purposes: ["backup", "recovery"]
+    lifecycle: "Проверить версию, блок, реальный срок, уничтожение и применение ledger на restore"
+    review: "methods"
+  custody_local:
+    scope: "source"
+    location: "Локальные снимки и закрытая custody конфигураций"
+    subject: "Исходные записи или доступ, когда копия или ключ допускает восстановление"
+    purposes: ["backup", "recovery", "ops_security"]
+    lifecycle: "Точный состав и полномочия по custody; отдельно квалифицировать уничтожение"
+    review: "methods"
+  export_artifact:
+    scope: "planned"
+    location: "Приватный временный результат при асинхронной выдаче"
+    subject: "Проверенная привязка получателя к конкретному запросу"
+    purposes: ["export"]
+    lifecycle: "Короткий срок, ограниченный доступ и доказательство очистки; включение в копии требует отдельного решения"
+    review: "export_delivery"
+  export_request:
+    scope: "planned"
+    location: "Заявка на выдачу и минимальный факт доставки"
+    subject: "Проверенный субъект или представитель и scope доступа"
+    purposes: ["rights", "export"]
+    lifecycle: "Самостоятельная квалификация состава и срока, учесть отмену и восстановление"
+    review: "export_delivery"
+  fiscal_provider:
+    scope: "source"
+    location: "ОФД, ККТ и фискальный накопитель; адаптер чеков"
+    subject: "Фискальный документ и связь с конкретным расчётом"
+    purposes: ["fiscal"]
+    lifecycle: "Учитывать режим фискализации и получателей; применимость срока определяется видом и ролью"
+    review: "financial"
+  independent_ledger:
+    scope: "source"
+    location: "Независимый erasure ledger, fence, зеркала и подтверждения"
+    subject: "HMAC-псевдонимы и идентификаторы дела; при сопоставимости учитывать как ПД"
+    purposes: ["rights", "recovery", "suppression"]
+    lifecycle: "Подтверждённый replay до допуска, срок идентификатора и последствия D-S5 проверяются отдельно"
+    review: "identity_return"
+  infra_logs:
+    scope: "source"
+    location: "Приложение, контейнеры, прокси, ОС и мониторинг"
+    subject: "Технические признаки сессии или запроса, IP и корреляционные значения при наличии"
+    purposes: ["ops_security", "auth_security", "analytics"]
+    lifecycle: "Проверить фактическое журналирование и выгрузку, исключить сырые секреты и произвольные ПД"
+    review: "processors"
+  legacy_archive:
+    scope: "source"
+    location: "Выведенные из эксплуатации V1 архивы и дела исходного провайдера"
+    subject: "Отдельная историческая привязка заказа или дела"
+    purposes: ["payments", "refunds", "evidence"]
+    lifecycle: "Обслуживание исторических дел по правомерному маршруту; самостоятельная карта архива и политик"
+    review: "financial"
+  mail_provider:
+    scope: "source"
+    location: "NotiSend; доставка авторизационных писем и применимых уведомлений"
+    subject: "Проверенный получатель и вид сообщения"
+    purposes: ["auth_security", "delivery", "marketing"]
+    lifecycle: "Сверить состав, срок у рассыльщика, отписку и подтверждение поручения по каждому каналу"
+    review: "processors"
+  payment_provider:
+    scope: "source"
+    location: "Исходные платёжные ветки native и Refref RC.2"
+    subject: "Ссылка исходного расчёта или возврата, заказ"
+    purposes: ["checkout", "payments", "refunds", "fiscal"]
+    lifecycle: "Сохранять подтверждённые артефакты по роли и типу, подтверждать действие отдельно по провайдеру"
+    review: "financial"
+  request_evidence:
+    scope: "source"
+    location: "Закрытый реестр обращений, ответы, акт и журнальная выгрузка ИСПДн"
+    subject: "Проверенный субъект или представитель и соответствующее дело"
+    purposes: ["rights", "evidence"]
+    lifecycle: "Применимость № 179 и три года от уничтожения для подтверждений; защитить доступ и отдельно проверить срок дела"
+    review: "rights_evidence"
+  sqlite_residue:
+    scope: "source"
+    location: "SQLite WAL, свободные страницы, временные файлы и локальные копии"
+    subject: "Связь с исходной записью при возможности восстановления"
+    purposes: ["backup", "recovery", "rights"]
+    lifecycle: "Квалифицировать фактический метод и доказательство охвата в FLEX-16"
+    review: "methods"
+  support_mail:
+    scope: "source"
+    location: "REG.RU; ящики обращений и возвратов"
+    subject: "Дело, привязка к заявителю, переписка и необходимые вложения"
+    purposes: ["rights", "refunds"]
+    lifecycle: "Отдельный срок дела и почтовых копий; закрытый доступ и проверка перед раскрытием"
+    review: "processors"
+  uploaded_content:
+    scope: "planned"
+    location: "Правило для будущих пользовательских файлов, заметок и трейсов"
+    subject: "Явная принадлежность и источник, включая вложенные сведения о других лицах"
+    purposes: ["rights"]
+    lifecycle: "Перед работой назвать конкретную цель, место, версию, копии и обработчики; общего разрешения на сбор нет"
+    review: "export_delivery"
+  video_provider:
+    scope: "source"
+    location: "Kinescope; видео, playback grant и события доступа"
+    subject: "Проверенный grant по subject/customer ID, при наличии связи"
+    purposes: ["learning", "auth_security", "delivery"]
+    lifecycle: "Отдельно инвентаризировать переданные идентификаторы и события у получателя"
+    review: "processors"
+  web_analytics:
+    scope: "source"
+    location: "Яндекс Метрика; разрешённые страницы и события"
+    subject: "Браузер и аналитические идентификаторы, если сопоставимы"
+    purposes: ["analytics"]
+    lifecycle: "Подтвердить настройки, назначение, данные, сроки и фактическое прекращение передачи"
+    review: "processors"
+
+gaps:
+  audit:
+    issue: "FLEX-131"
+    evidence: "Проверить закрытые аудит- и нормативные доказательства, смешанные JSON, связку субъекта, допустимое хранение и частичное исполнение; runtime может отказывать на упоминании."
+  closure:
+    issue: "FLEX-131"
+    evidence: "Reviewed v1 допускает только CLOSE и блокирует любое действующее право, открытый возврат или незавершённый расчёт. Уточнить реальную необходимость аккаунта, выход из бессрочного договора и отдельный приём требований."
+  export_delivery:
+    issue: "FLEX-133"
+    evidence: "Проверить полноту отчёта по ст. 14, подтверждение личности, изоляцию, объём и влияние на Commerce; выбрать синхронную или фоновую выдачу."
+  financial:
+    issue: "FLEX-131"
+    evidence: "Подтвердить налоговый режим ИП, юридическое основание и срок каждого документа, минимизацию и сквозное исполнение по исходной ветке."
+  identity_return:
+    issue: "FLEX-131"
+    evidence: "D-S5: текущее ограничение входа/регистрации, связь с восстановлением, самостоятельное основание и срок HMAC/отметок, исключения и безопасное обслуживание действующих прав."
+  lab_restore:
+    issue: "FLEX-8"
+    evidence: "Проверить поздние отписки, запрет отправки после restore, сроки политики, цель и подтверждения обработки."
+  methods:
+    issue: "FLEX-16"
+    evidence: "Квалифицировать действующий метод по ст. 19, SQLite/WAL, временным данным, копиям и обработчикам; A-7.5 отдельно."
+  processors:
+    issue: "FLEX-133"
+    evidence: "Дополнить инвентарь по фактической среде, ролям, договорам, переданным полям, доступу и подтверждениям у конкретных получателей."
+  retention:
+    issue: "FLEX-131"
+    evidence: "Подтвердить сроки D-S4/D-L5/D-05 и доступный способ исполнения в рабочей среде для каждой обрабатываемой категории."
+  rights_evidence:
+    issue: "FLEX-131"
+    evidence: "Штатная операция не формирует полный комплект по № 179; ответ и доказательства хранятся в закрытом деле. Пауза после подтверждённого ledger остаётся открытой."
