@@ -708,6 +708,7 @@ function refuseIntent(db: Database.Database, intentId: string, code: string, now
 type IntentContext = {
   config: CheckoutPolicyConfig;
   customerEmail: string;
+  acceptanceNow: () => string;
   handoffToken?: string;
   review?: ReturnType<typeof paidTestReview>;
   /** The catalogue price the buyer's page showed; advisory, never part of the intent or its fingerprint. */
@@ -731,7 +732,8 @@ async function advanceIntent(db: Database.Database, rail: PaymentRail, intent: I
     expireIntent(db, intent.id, now);
     throw expiredIntentError(intent);
   }
-  assertIssuedIntentAdmissible(db, config, intent, context.customerEmail, now, "ISSUED_QUOTE");
+  assertIssuedIntentAdmissible(db, config, intent, context.customerEmail,
+    intent.sale_mode_at_quote === "ACCEPTANCE_ONLY" ? context.acceptanceNow() : now, "ISSUED_QUOTE");
   if (intent.state === "REVIEW") {
     if (config.closedPaidTest) readyImmediateCourseAccess(db, offerById(db, intent.offer_id)?.course_ref ?? "");
     assertClosedPaidTestPrice(config, JSON.parse(intent.rail_quote_json!) as RailQuote, intent.merchant_discount_kopecks);
@@ -755,6 +757,10 @@ async function advanceIntent(db: Database.Database, rail: PaymentRail, intent: I
   const line = frozen.request.lines[0];
   const settle = db.transaction(() => {
     const current = intentBy(db, "id", intent.id)!;
+    if (current.sale_mode_at_quote === "ACCEPTANCE_ONLY" && !current.consumed_at
+      && ["RESOLVING", "REVIEW", "CUSTOMER_ACTION_REQUIRED"].includes(current.state)) {
+      assertIssuedIntentAdmissible(db, config, current, context.customerEmail, context.acceptanceNow(), "ISSUED_QUOTE");
+    }
     // Another request for the same intent got there first: its outcome stands.
     if (current.state !== "RESOLVING") return current;
     if (resolved.state === "CUSTOMER_ACTION_REQUIRED") {
@@ -817,6 +823,7 @@ export async function prepareCheckout(
     handoffToken?: string; checkoutCode?: string; orderPublicId?: string; storefront?: Storefront; displayedAmountKopecks?: number; nativeMy?: boolean; nativeMyAccountStorefront?: Storefront;
   } & ResolutionContext,
   now = new Date().toISOString(),
+  acceptanceNow = () => now,
 ) {
   if (!input.previewIdempotencyKey.trim()) throw new Error("IDEMPOTENCY_KEY_REQUIRED");
   if (config.closedPaidTest && input.checkoutCode?.trim()) throw new Error("CLOSED_PAID_TEST_PRICE_REFUSED");
@@ -826,7 +833,7 @@ export async function prepareCheckout(
   assertClosedPaidTestAccountConsents(db, config, input.customerId);
   if (input.displayedAmountKopecks !== undefined
     && (!Number.isSafeInteger(input.displayedAmountKopecks) || input.displayedAmountKopecks < 0)) throw new Error("DISPLAYED_AMOUNT_INVALID");
-  const context: IntentContext = { config, customerEmail: input.customerEmail, handoffToken: input.handoffToken, review,
+  const context: IntentContext = { config, customerEmail: input.customerEmail, acceptanceNow, handoffToken: input.handoffToken, review,
     displayedAmountKopecks: input.displayedAmountKopecks };
   const checkoutCodeInput = input.checkoutCode?.trim() || null;
   const deliveryDegraded = input.deliveryDegraded ?? { degraded: false };
@@ -890,7 +897,8 @@ export async function prepareCheckout(
         WHERE ${PAYMENT_ADMISSION_SCOPE} AND consumed_at IS NULL
           AND state IN ('DRAFT','RESOLVING','CUSTOMER_ACTION_REQUIRED','REVIEW')`).run({ ...scope, now });
     }
-    const offer = assertOfferCanBePurchased(db, config, offerByRef(db, input.offerRef), input.customerId, input.customerEmail, now);
+    const offer = assertOfferCanBePurchased(db, config, candidate, input.customerId, input.customerEmail,
+      candidate?.sale_mode === "ACCEPTANCE_ONLY" ? acceptanceNow() : now);
     assertNoOtherPaidTestOrder(db, config, offer.offer_ref);
     if (config.closedPaidTest) readyImmediateCourseAccess(db, offer.course_ref!);
     const storefront = storefrontForOffer(offer);
@@ -971,6 +979,7 @@ export async function confirmCheckout(
     nativeMy?: boolean; nativeMyAccountStorefront?: Storefront;
   },
   now = new Date().toISOString(),
+  acceptanceNow = () => now,
 ) {
   if (!input.idempotencyKey.trim()) throw new Error("IDEMPOTENCY_KEY_REQUIRED");
   const native = input.native;
@@ -1064,7 +1073,8 @@ export async function confirmCheckout(
     if (current.state === "EXPIRED") throw expiredIntentError(current);
     if (current.state !== "REVIEW") throw new Error("CHECKOUT_QUOTE_UNAVAILABLE");
     if (current.expires_at! <= now) throw new CheckoutConflictError("CHECKOUT_QUOTE_EXPIRED");
-    assertIssuedIntentAdmissible(db, config, current, input.customerEmail, now, "CONFIRM");
+    assertIssuedIntentAdmissible(db, config, current, input.customerEmail,
+      current.sale_mode_at_quote === "ACCEPTANCE_ONLY" ? acceptanceNow() : now, "CONFIRM");
     if (offer.kind === "LAB") assertLabPurchaseAuthority(db, input.customerId, publicId); // FLEX-60, under the order's lock.
     if (offer.kind === "ONLINE_COURSE" && offer.course_ref && customerCanAccessCourse(db, input.customerId, offer.course_ref)) throw new CheckoutConflictError("ALREADY_OWNED");
     if (offer.kind === "COURSE_BUNDLE" && customerCanAccessCourse(db, input.customerId, "__any_future_course__")) throw new CheckoutConflictError("ALREADY_OWNED");

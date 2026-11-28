@@ -48,8 +48,10 @@ describe("catalog control room commands", () => {
     configureProduct(db, config, paid);
     setTestStorefronts(db, { COURSES: "CLOSED" });
     configureProduct(db, config, { ...paid, saleMode: "CLOSED", expectedVersion: 1 });
+    db.prepare("UPDATE offers SET acceptance_allowlist_json=?").run('["legacy@example.test"]');
     withdrawProduct(db, { productRef: "course:paid", reason: "Rights expired", termsRef: "offer-v1#withdrawal", actor: "owner", expectedVersion: 2 });
     expect(db.prepare("SELECT withdrawn_at IS NOT NULL AS withdrawn FROM products").get()).toEqual({ withdrawn: 1 });
+    expect(db.prepare("SELECT acceptance_allowlist_json FROM offers").pluck().get()).toBe("[]");
     expect(db.prepare("SELECT COUNT(*) AS count FROM audit_log").get()).toEqual({ count: 3 });
   });
 

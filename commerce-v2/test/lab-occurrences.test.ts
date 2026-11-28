@@ -201,9 +201,11 @@ describe("occurrence cancellation", () => {
   });
 
   it("cancels an unsold occurrence, closes its offer and keeps it closed", () => {
+    db.prepare("UPDATE offers SET acceptance_allowlist_json=?").run('["legacy@example.test"]');
     cancel();
     expect(row()).toMatchObject({ lifecycle: "CANCELLED", cancellation_reason: "Болезнь преподавателя", version: 2 });
-    expect(db.prepare("SELECT sale_mode FROM offers").get()).toEqual({ sale_mode: "CLOSED" });
+    expect(db.prepare("SELECT sale_mode,acceptance_allowlist_json FROM offers").get())
+      .toEqual({ sale_mode: "CLOSED", acceptance_allowlist_json: "[]" });
     expect(() => edit({ title: "Вернули" })).toThrow("LAB_OCCURRENCE_CANCELLED");
     expect(() => cancel()).toThrow("LAB_OCCURRENCE_CANCELLED");
     for (const command of [() => edit({ title: "Вернули" }), () => cancel()]) {

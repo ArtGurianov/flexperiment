@@ -1102,7 +1102,7 @@ export function createCommerceV2App(deps: Dependencies) {
         nativeMy: fromNativeMy,
         nativeMyAccountStorefront: deps.myOtp?.accountLegalStorefront,
         ...resolutionContext,
-      }, now().toISOString());
+      }, now().toISOString(), () => now().toISOString());
       const kind = fromNativeMy ? deps.db.prepare(`SELECT product.kind FROM offers offer JOIN products product ON product.id=offer.product_id
         WHERE offer.offer_ref=?`).pluck().get(body.offerRef) : undefined;
       const labLegal = guest || kind === "LAB" ? labLegalReview(deps.db) : undefined;
@@ -1173,7 +1173,7 @@ export function createCommerceV2App(deps: Dependencies) {
         nativeMy: Boolean(deps.nativePayments && fromMy),
         nativeMyAccountStorefront: deps.myOtp?.accountLegalStorefront,
         ...(deps.nativePayments ? { native: nativeConfirm(deps.db, deps.nativePayments) } : {}),
-      }, now().toISOString());
+      }, now().toISOString(), () => now().toISOString());
       if (guest && result.state === "PAID" && deps.sendLabTicketEmail) {
         const claimed = deps.db.prepare("UPDATE lab_guest_access SET initial_email_attempted_at=? WHERE order_public_id=? AND initial_email_attempted_at IS NULL")
           .run(now().toISOString(), guest.order_public_id);

@@ -271,6 +271,15 @@ describe("issued quote guarantee", () => {
     }
   });
 
+  it("checks the test deadline again when a request crosses it before the final write", async () => {
+    db.prepare(`UPDATE offers SET sale_mode='ACCEPTANCE_ONLY',acceptance_allowlist_json=?,acceptance_expires_at=?`)
+      .run(JSON.stringify([customer.customerEmail]), at(2));
+    const quote = await quoted(await preview("before-cutoff"));
+    await expect(confirmCheckout(db, rail, testCheckoutConfig, { ...customer, quoteId: quote.quoteId,
+      idempotencyKey: "late-write" }, at(1), () => at(2))).rejects.toThrow("ACCEPTANCE_ONLY");
+    expect(count("orders")).toBe(0);
+  });
+
   it("closes and clears expired test lists once, without a checkout request", () => {
     db.prepare(`UPDATE offers SET sale_mode='ACCEPTANCE_ONLY',acceptance_allowlist_json=?,acceptance_expires_at=?`)
       .run(JSON.stringify([customer.customerEmail]), at(2));
