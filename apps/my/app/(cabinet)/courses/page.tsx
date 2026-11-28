@@ -6,5 +6,6 @@ import { CoursesView } from "@/components/cabinet/views";
 export default async function CoursesPage() {
   const cabinet = await requestCabinet();
   const courses = requireSignedIn(await cabinet.courses(), "/courses");
-  return <><h1>Мои курсы</h1><CoursesView result={courses} platformOrigin={cabinetOrigins().platform} heading="Доступные курсы" /></>;
+  const origins = cabinetOrigins();
+  return <><h1>Мои курсы</h1><CoursesView sharedSession={origins.sharedSession} result={courses} platformOrigin={origins.platform} heading="Доступные курсы" /></>;
 }

@@ -20,6 +20,7 @@ type AccountCourse = {
   access: "ENTITLED" | "FREE" | "PREVIEW";
   /** FLEX-128: present only for the account's explicit FREE enrollment. */
   enrollment?: EnrollmentFacts | null;
+  progressPercent?: number | null;
   lessons: Array<{
     lessonRef: string;
     title: string;
@@ -44,7 +45,8 @@ type LegalDocument = { kind: string; version: string; sha256: string; url: strin
 type LegalRelease = { version: string; manifest: { stage: "A" | "B"; documents: LegalDocument[] } };
 
 const accessLabel = (access: AccountCourse["access"]) => access === "ENTITLED" ? "Ваш доступ" : access === "FREE" ? "Вы записаны" : "Превью";
-const courseLabel = (course: AccountCourse) => course.access === "FREE" && course.enrollment ? "Вы записаны · прогресс 0%" : accessLabel(course.access);
+const courseLabel = (course: AccountCourse) => typeof course.progressPercent === "number"
+  ? `${accessLabel(course.access)} · прогресс ${course.progressPercent}%` : accessLabel(course.access);
 const money = (kopecks: number) => new Intl.NumberFormat("ru-RU", { style: "currency", currency: "RUB", maximumFractionDigits: 0 }).format(kopecks / 100);
 const date = (value: string) => new Intl.DateTimeFormat("ru-RU", { dateStyle: "medium" }).format(new Date(value));
 

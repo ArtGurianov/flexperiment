@@ -61,7 +61,7 @@ export default function FreeEnrollmentContinuation({ intent }: { intent: Enrollm
   }
   return <section className="accountSection" aria-labelledby="free-enrollment-title">
     <h2 id="free-enrollment-title">{status.enrollment ? `Вы записаны на «${title}»` : `Записаться бесплатно на «${title}»`}</h2>
-    <p>{status.enrollment ? "Прогресс 0%. Продолжите с выбранного урока." : "Бесплатно, без оплаты и заказа. Прогресс начнётся с 0%."}</p>
+    <p>{status.enrollment ? "Продолжите с выбранного урока." : "Бесплатно, без оплаты и заказа. Прогресс начнётся с 0%."}</p>
     <button className="primary" type="button" onClick={() => { void run(); }}>
       {status.enrollment ? "Открыть урок →" : "Записаться бесплатно →"}
     </button>

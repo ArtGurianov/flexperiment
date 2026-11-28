@@ -57,6 +57,10 @@ const REVIEWED_SCHEMA_SHA256 = new Set([
   "49c1014232cb13df508508c6fb02c6b0a94149d1ff4e13310e8b9ba34f9aa658",
   // 0045: executor identity, fiscal mode and refund dispatch on existing financial rows.
   "f6e1eb904d862767c86ab6bf3faf838daa391456f4a3e1b9416dfd157b88f562",
+  // 0046: lesson completions after native payment executor.
+  "a0e1bbba4de455fab95614d5c08cbb06fb3216806df72d1a415123ee5fbadbeb",
+  // 0047: course playback state after lesson completions.
+  "ef24c8da9ca557bc22b2fe5cb4c49dce350c0f87deb9f73385f8b353b247dd70",
 ]);
 export function assertReviewedRestoreSchema(db: Database.Database) {
   const schema = db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").all();
@@ -172,8 +176,8 @@ function applyErasure(db: Database.Database, ledger: VerifiedErasureLedger, keys
           if (audit || adminAudit || ownerLegalEvidenceMentions(db, [customer.id, customer.email_normalized])) throw new ErasureLedgerError("ERASURE_AUDIT_REVIEW_REQUIRED");
           for (const table of ["authenticated_consent_actions", "account_consents", "marketing_consents",
             "notification_campaign_recipients", "course_learning_starts", "free_course_enrollments", "checkout_quotes", "course_access_starts",
-            "lesson_resume_positions", "playback_grant_rate_limits", "playback_access_events", "lab_guest_access"]) {
-            if (table !== "lab_guest_access" || db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table)) {
+            "lesson_resume_positions", "lesson_completions", "course_playback_state", "playback_grant_rate_limits", "playback_access_events", "lab_guest_access"]) {
+            if (!["lab_guest_access", "lesson_completions", "course_playback_state"].includes(table) || hasTable(db, table)) {
               db.prepare(`DELETE FROM ${table} WHERE customer_id=?`).run(customer.id);
             }
           }

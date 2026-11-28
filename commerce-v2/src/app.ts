@@ -60,6 +60,8 @@ import { authenticatedConsentStatus, hasRequiredAccountConsents, recordAuthentic
 import { ErasureLedgerError } from "./erasure-ledger";
 import { assertClosedPaidTestAccountConsents } from "./closed-paid-test";
 import type { ErasureRuntimeFence } from "./erasure-fence";
+import { issueLearningCursor, recordLearningPlayback } from "./course-playback-state";
+import { lessonProgress } from "./lesson-progress";
 import { registerFreeEnrollmentRoutes } from "./free-enrollment-routes";
 
 type Dependencies = {
@@ -1579,40 +1581,69 @@ export function createCommerceV2App(deps: Dependencies) {
       });
       return context.json({ decision: "DENY", code: "VIDEO_NOT_READY" }, 409, noStore);
     }
-    const recordPaidAccessStart = () => {
-      if (resolution.courseRef && resolution.paidEntitled) {
-        recordCourseAccessStart(deps.db, { customerId, courseRef: resolution.courseRef, lessonRef }, observedAt);
-      }
-    };
-    if (deps.config.kinescopeDeliveryMode === "open") {
-      recordPaidAccessStart();
-      recordPlaybackAccessEvent(deps.db, {
-        customerId, lessonRef, videoId: resolution.binding.videoId, eventType: "GRANT_ALLOWED", reason: "OPEN", occurredAt: observedAt,
-      });
-      return context.json({ mode: "open", videoId: resolution.binding.videoId, resumeAt: resolution.resumeAt }, 200, noStore);
-    }
-    if (!deps.kinescopeDrmAuth) {
-      recordPlaybackAccessEvent(deps.db, {
-        customerId, lessonRef, videoId: resolution.binding.videoId, eventType: "GRANT_DENIED",
-        reason: "KINESCOPE_GRANT_UNAVAILABLE", occurredAt: observedAt,
-      });
-      return context.json({ code: "KINESCOPE_GRANT_UNAVAILABLE" }, 503, noStore);
-    }
+    const binding = resolution.binding;
+    const open = deps.config.kinescopeDeliveryMode === "open";
     try {
-      const protectedGrant = issuePlaybackToken(deps.kinescopeDrmAuth.keyring, {
-        videoId: resolution.binding.videoId, customerId,
-      }, now());
-      recordPaidAccessStart();
-      recordPlaybackAccessEvent(deps.db, {
-        customerId, lessonRef, videoId: resolution.binding.videoId, eventType: "GRANT_ALLOWED", reason: "PROTECTED", occurredAt: observedAt,
-      });
-      return context.json({ mode: "protected", videoId: resolution.binding.videoId, ...protectedGrant, resumeAt: resolution.resumeAt }, 200, noStore);
+      if (!open && !deps.kinescopeDrmAuth) throw new Error("KINESCOPE_GRANT_UNAVAILABLE");
+      const grant = open ? { mode: "open" as const } : { mode: "protected" as const,
+        ...issuePlaybackToken(deps.kinescopeDrmAuth!.keyring, { videoId: binding.videoId, customerId }, now()) };
+      const learning = deps.db.transaction(() => {
+        const courseRef = resolution.courseRef;
+        const learningCursor = courseRef && resolution.fullCourseAccess && context.req.query("learning") === "1"
+          && context.req.header("origin") === storefrontOrigin(origins, "COURSES")
+          ? issueLearningCursor(deps.db, customerId, courseRef, lessonRef) : undefined;
+        if (courseRef && resolution.paidEntitled) {
+          recordCourseAccessStart(deps.db, { customerId, courseRef, lessonRef }, observedAt);
+        }
+        recordPlaybackAccessEvent(deps.db, {
+          customerId, lessonRef, videoId: binding.videoId, eventType: "GRANT_ALLOWED",
+          reason: open ? "OPEN" : "PROTECTED", occurredAt: observedAt,
+        });
+        return learningCursor ? { learningCursor } : {};
+      }).immediate();
+      return context.json({ ...grant, videoId: binding.videoId, resumeAt: resolution.resumeAt, ...learning }, 200, noStore);
     } catch {
       recordPlaybackAccessEvent(deps.db, {
-        customerId, lessonRef, videoId: resolution.binding.videoId, eventType: "GRANT_DENIED",
+        customerId, lessonRef, videoId: binding.videoId, eventType: "GRANT_DENIED",
         reason: "KINESCOPE_GRANT_UNAVAILABLE", occurredAt: observedAt,
       });
       return context.json({ code: "KINESCOPE_GRANT_UNAVAILABLE" }, 503, noStore);
+    }
+  });
+
+  app.post("/v1/lessons/:lessonRef/learning-playback", bodyLimit({ maxSize: 1024 }), async (context) => {
+    const customerId = await deps.authenticateCustomer?.(context.req.raw.headers, accountSessionScope(context)) ?? null;
+    if (!customerId) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, noStore);
+    if (context.req.header("origin") !== storefrontOrigin(origins, "COURSES")) {
+      return context.json({ code: "ORIGIN_FORBIDDEN" }, 403, noStore);
+    }
+    const event = await context.req.json<{ cursor?: unknown; phase?: unknown }>().catch(() => null);
+    if (typeof event?.cursor !== "string" || !/^[a-f0-9-]{36}$/.test(event.cursor)
+      || (event.phase !== "PLAYING" && event.phase !== "ENDED")) return context.json({ code: "INVALID_LEARNING_EVENT" }, 422, noStore);
+    try {
+      const accepted = recordLearningPlayback(deps.db, { customerId, lessonRef: context.req.param("lessonRef"), now: now(),
+        leaseMs: Number(process.env.CATALOG_LEASE_MS ?? 24 * 60 * 60 * 1000), cursor: event.cursor, phase: event.phase });
+      return context.json({ accepted }, 200, noStore);
+    } catch {
+      return context.json({ code: "LEARNING_EVENT_UNAVAILABLE" }, 503, noStore);
+    }
+  });
+
+  app.on(["GET", "POST"], "/v1/lessons/:lessonRef/completion", async (context) => {
+    const customerId = await deps.authenticateCustomer?.(context.req.raw.headers, accountSessionScope(context)) ?? null;
+    const privateNoStore = { "Cache-Control": "private, no-store" };
+    if (!customerId) return context.json({ code: "SIGN_IN_REQUIRED" }, 401, privateNoStore);
+    const complete = context.req.method === "POST";
+    if (complete && context.req.header("origin") !== storefrontOrigin(origins, "COURSES")) {
+      return context.json({ code: "ORIGIN_FORBIDDEN" }, 403, privateNoStore);
+    }
+    try {
+      const state = lessonProgress(deps.db, { customerId, lessonRef: context.req.param("lessonRef"), now: now(), complete,
+        leaseMs: Number(process.env.CATALOG_LEASE_MS ?? 24 * 60 * 60 * 1000) });
+      return state ? context.json(state, 200, privateNoStore)
+        : context.json({ code: "LESSON_COMPLETION_UNAVAILABLE" }, 403, privateNoStore);
+    } catch {
+      return context.json({ code: "LESSON_PROGRESS_UNAVAILABLE" }, 503, privateNoStore);
     }
   });
 

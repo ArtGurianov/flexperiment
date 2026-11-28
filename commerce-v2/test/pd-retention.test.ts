@@ -118,7 +118,7 @@ describe("explicit category retention in offline SQLite, no runtime/default poli
     expect(cleanupOfflinePersonalData(db, settings, new Date("2027-03-31T12:05:00.000Z")))
       .toMatchObject({ unboundIntents: 0, authOutbox: 1, expiredCredentials: 1 });
   });
-  it.each(["recent-intent", "user", "link", "outbox", "recent-outbox-update", "hold", "history", "audit", "progress", "learning-start", "owner-evidence"])("preserves an unbound profile with %s authority or fresh evidence", reason => {
+  it.each(["recent-intent", "user", "link", "outbox", "recent-outbox-update", "hold", "history", "audit", "progress", "completion", "playback", "unplayed-cursor", "learning-start", "owner-evidence"])("preserves an unbound profile with %s authority or fresh evidence", reason => {
     const pending = intent(reason === "recent-intent" ? recent : old);
     if (reason === "owner-evidence") {
       activateLegalRelease(db, { storefront: "COURSES", version: "synthetic-legal", manifest: stageBLegalManifest, actor: "owner" }, old);
@@ -138,6 +138,14 @@ describe("explicit category retention in offline SQLite, no runtime/default poli
     }
     if (reason === "audit") db.prepare(`INSERT INTO audit_log(id,actor,action,subject_type,subject_ref,evidence_json) VALUES ('audit','synthetic','TEST','CUSTOMER',?,'{}')`).run(pending);
     if (reason === "progress") db.prepare("INSERT INTO lesson_resume_positions(customer_id,lesson_ref,seconds,client_seq,client_ts) VALUES (?,'lesson',0,0,?)").run(pending, old);
+    if (reason === "completion") db.prepare("INSERT INTO lesson_completions VALUES (?,'lesson',?)").run(pending, old);
+    if (reason === "playback" || reason === "unplayed-cursor") {
+      const played = reason === "playback";
+      db.prepare(`INSERT INTO course_playback_state
+        (customer_id,course_ref,issued_lesson_ref,issued_cursor,played_lesson_ref,played_cursor,phase)
+        VALUES (?,'course','lesson','cursor',?,?,?)`)
+        .run(pending, played ? "lesson" : null, played ? "cursor" : null, played ? "PLAYING" : null);
+    }
     if (reason === "learning-start") {
       // FLEX-128 (G-01): a historical start fact keeps an otherwise unbound profile. The authority triggers
       // refuse an unbound subject, so the isolated fixture recreates them byte-for-byte (same fingerprint).
