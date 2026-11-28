@@ -1,14 +1,9 @@
 {
   "schema": "flexperiment.legal-candidate-review/1",
-  "version": "2026-11-20.stage-a.candidate.2",
-  "baseCommit": "be55bb755100535fd2af5f2a407b1be0199e2c40",
-  "ownerApproval": "NOT_REQUESTED_YET",
-  "openMarkers": [
-    "G-06",
-    "G-07",
-    "G-08",
-    "D-05"
-  ],
+  "version": "2026-11-24.stage-a.candidate.3",
+  "baseCommit": "587d7ab6b1d542dc08fc5816bf04e11e8a2b26ad",
+  "ownerApproval": "PENDING_EXACT_BYTES",
+  "openMarkers": [],
   "activation": "PROHIBITED_UNTIL_ADMISSION",
   "documents": [
     {
@@ -18,7 +13,7 @@
         "path": "docs/legal/stage-a/2026-10-11-candidate/privacy.md"
       },
       "candidate": {
-        "sha256": "d52463c52e8c1d18a73805ea0ea98d47b44e6e505780a439abeb98abccf45677",
+        "sha256": "f9b6ac0d055ceba51dda34f7ef590c10aa9ae6bb89caedc6bd9dbc02bcd9702d",
         "path": "docs/legal/stage-a/2026-11-20-candidate/privacy.md"
       }
     },
@@ -29,7 +24,7 @@
         "path": "docs/legal/stage-a/2026-10-11-candidate/personal_data.md"
       },
       "candidate": {
-        "sha256": "c3d1f879d0c0bb2243d035db6ac2b2571cca068876e0ab82abf14fe700cb5433",
+        "sha256": "36855106a76a790d725913274ffb4128d0273250d81c44aede276841308ab1fc",
         "path": "docs/legal/stage-a/2026-11-20-candidate/personal_data.md"
       }
     },
@@ -40,7 +35,7 @@
         "path": "docs/legal/stage-a/2026-10-11-candidate/account_terms.md"
       },
       "candidate": {
-        "sha256": "1128c18396ef84376089da4ae827f939cd68851767b6c22f5ac49972e8001b9b",
+        "sha256": "222d12aecb8a3709f68c4745a1bc5b5bbfbd3c20b0e19c8ab66116d65493f0dc",
         "path": "docs/legal/stage-a/2026-11-20-candidate/account_terms.md"
       }
     },
@@ -51,9 +46,14 @@
         "path": "docs/legal/stage-a/2026-10-11-candidate/marketing_consent.md"
       },
       "candidate": {
-        "sha256": "48178eb56cb5ccfc59c872482bef8c0543a3ae63f7540c27421c4e2aa344fbf6",
+        "sha256": "fcadc71f3377cf16ebd18a81b0b3e1a1d081d3d00652bbde7db95977e498a058",
         "path": "docs/legal/stage-a/2026-11-20-candidate/marketing_consent.md"
       }
     }
+  ],
+  "pendingAdmission": [
+    "D-01",
+    "A-2/G-06",
+    "G-09"
   ]
 }

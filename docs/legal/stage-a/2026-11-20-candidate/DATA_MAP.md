@@ -31,7 +31,7 @@
 | Поток | Что уходит | Из кода | Получатель |
 | --- | --- | --- | --- |
 | Ссылка входа | email, письмо со ссылкой | `auth-email-delivery.ts` (NOTISEND) | ООО «НотиСенд» |
-| Проверка запроса ссылки | токен SmartCaptcha, IP (если надёжно определён) | `smartcaptcha.ts`, `app.ts:726-729`; виджет `AccountClient.tsx` | Yandex SmartCaptcha (юрлицо — G-07) |
+| Проверка запроса ссылки | токен SmartCaptcha, IP (если надёжно определён) | `smartcaptcha.ts`, `app.ts:726-729`; виджет `AccountClient.tsx` | ООО «Яндекс.Облако» (Yandex SmartCaptcha) |
 | Встраивание плеера | `videoId`, `drmauthtoken` (iss, sub=customer id, vid, exp, jti, kid; без email) | `LessonPlayer.tsx:20-27`, `iframeApi.ts` (`player.kinescope.io`) | ООО «Кинескоп» (браузер → Kinescope напрямую) |
 | DRM license callback | токен обратно в Commerce `/v1/kinescope/drm/authorize` | `playback-auth.ts` | Kinescope → Commerce |
 | Резервная копия | зашифрованный файл БД | `deploy/host/*backup*` | Cloud.ru |
