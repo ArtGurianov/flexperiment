@@ -43,9 +43,15 @@ straight against the database as well as against a defect in the domain.
 | A settled attempt is never rewritten | `OUTBOX_ATTEMPT_SETTLED_IMMUTABLE` | `outbox-attempt-constraints.test.ts` |
 | An attempt is never deleted, but a purged message takes its own | `OUTBOX_ATTEMPT_DELETE_FORBIDDEN` | `outbox-attempt-constraints.test.ts` |
 | Dispatch stops when an operator pauses it | `EMAIL_DISPATCH_PAUSED` | `outbox-attempt-claim-seam.test.ts` |
-| Every Commerce V2 column has one explicit lifecycle classification | [FLEX-133 ADR](architecture/personal-data-lifecycle.md) and the test job | `commerce-v2/test/personal-data-registry.test.ts` adds an unlisted column and drops a listed column in isolated migrated SQLite to prove both failures |
 | Exactly one legal release is active | `one_active_legal_release` UNIQUE | `legal-release.test.ts` |
 | A payment's idempotency key is unique | `checkout_idempotency` UNIQUE | `api.test.ts`, `domain.test.ts` |
+
+## Data governance invariants in CI
+
+| Invariant | Enforcement | Proof |
+|---|---|---|
+| Every application column in the primary migrated Commerce V2 SQLite database has one lifecycle classification | [FLEX-133 ADR](architecture/personal-data-lifecycle.md) and the test job | `personal-data-registry.test.ts` adds an unlisted column and table and drops a listed column in isolated migrated SQLite |
+| Every `*_json` and explicitly marked composite column has a payload description | Registry validation in the test job | `personal-data-registry.test.ts` removes descriptions and adds an unlisted JSON column to a non-personal group |
 
 ## Runtime invariants
 
