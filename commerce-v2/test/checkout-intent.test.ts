@@ -18,6 +18,8 @@ import { saveMerchantPromotion } from "../src/promotions";
 import { stageALegalManifestJson, stageBLegalManifestJson } from "./fixtures/legal";
 import { confirmAllLabBuyers, labAcceptanceIfActive } from "./fixtures/lab-purchase";
 import { openTestStorefront, qualifyTestFiscalPolicies, setTestStorefronts, testCheckoutConfig } from "./fixtures/sales";
+import { closeExpiredAcceptanceOffers } from "../src/acceptance-offer";
+import { configureProduct } from "../src/catalog-control";
 
 // ART-373: the durable purchase intent and payment-safe replay (design 2026-10-18 §2).
 
@@ -252,6 +254,83 @@ describe("two tabs", () => {
 });
 
 describe("issued quote guarantee", () => {
+  it.each(["deadline", "revoked address"])("refuses a still-live restricted quote after %s", async trigger => {
+    db.prepare(`UPDATE offers SET sale_mode='ACCEPTANCE_ONLY',acceptance_allowlist_json=?,acceptance_expires_at=?`)
+      .run(JSON.stringify([customer.customerEmail, "other@example.test"]), at(2));
+    const quote = await quoted(await preview("restricted"));
+    if (trigger === "revoked address") {
+      db.prepare("UPDATE offers SET acceptance_allowlist_json=?").run(JSON.stringify(["other@example.test"]));
+    }
+    const now = trigger === "deadline" ? at(2) : at(1);
+    const code = trigger === "deadline" ? "CHECKOUT_QUOTE_EXPIRED" : "ACCEPTANCE_ONLY";
+    await expect(preview("restricted", {}, now)).rejects.toThrow(code);
+    await expect(confirm(quote.quoteId, "restrict-confirm", now)).rejects.toThrow(code);
+    expect(count("orders")).toBe(0);
+    expect(count("checkout_attempts")).toBe(0);
+    if (trigger === "deadline") {
+      db.prepare("UPDATE offers SET acceptance_expires_at=?").run(at(5));
+      await expect(confirm(quote.quoteId, "restrict-confirm", now)).rejects.toThrow(code);
+    }
+  });
+
+  it("checks the test deadline again when a request crosses it before the final write", async () => {
+    db.prepare(`UPDATE offers SET sale_mode='ACCEPTANCE_ONLY',acceptance_allowlist_json=?,acceptance_expires_at=?`)
+      .run(JSON.stringify([customer.customerEmail]), at(2));
+    const quote = await quoted(await preview("before-cutoff"));
+    await expect(confirmCheckout(db, rail, testCheckoutConfig, { ...customer, quoteId: quote.quoteId,
+      idempotencyKey: "late-write" }, at(1), () => at(2))).rejects.toThrow("ACCEPTANCE_ONLY");
+    expect(count("orders")).toBe(0);
+  });
+
+  it.each(["withdraw address", "reopen test"] as const)("permanently expires an old quote after %s", async path => {
+    db.prepare(`UPDATE offers SET sale_mode='ACCEPTANCE_ONLY',acceptance_allowlist_json=?,acceptance_expires_at=?`)
+      .run(JSON.stringify([customer.customerEmail, "other@example.test"]), at(12));
+    const quote = await quoted(await preview("old-test-quote"));
+    const commercial = { productRef: "course:one", offerRef: "course:one", kind: "ONLINE_COURSE", courseRef: "course-one",
+      accessModel: "PAID", actor: "fixture-admin", priceKopecks: 10000 } as const;
+    const oldVersion = Number(db.prepare("SELECT version FROM products").pluck().get());
+    const changed = configureProduct(db, testCheckoutConfig, { ...commercial, expectedVersion: oldVersion,
+      saleMode: path === "withdraw address" ? "ACCEPTANCE_ONLY" : "CLOSED",
+      acceptanceAllowlist: ["other@example.test"], acceptanceExpiresAt: at(12) }, at(1));
+    configureProduct(db, testCheckoutConfig, { ...commercial, expectedVersion: changed.version, saleMode: "ACCEPTANCE_ONLY",
+      acceptanceAllowlist: [customer.customerEmail, "other@example.test"], acceptanceExpiresAt: at(12) }, at(2));
+    await expect(confirm(quote.quoteId, "old-order", at(3))).rejects.toThrow("CHECKOUT_QUOTE_EXPIRED");
+    expect(count("orders")).toBe(0);
+    expect((await quoted(await preview("new-test-quote", {}, at(3)))).quoteId).not.toBe(quote.quoteId);
+  });
+
+  it("caps both the LAB hold and the visible quote at the test deadline", async () => {
+    addLab();
+    db.prepare(`UPDATE offers SET sale_mode='ACCEPTANCE_ONLY',acceptance_allowlist_json=?,acceptance_expires_at=? WHERE id='lab-offer'`)
+      .run(JSON.stringify([customer.customerEmail]), at(2));
+    const q = await quoted(await preview("lab-test-cutoff", { offerRef: "lab:november" }));
+    expect(q.expiresAt).toBe(at(2));
+    expect(db.prepare("SELECT seat_hold_expires_at FROM checkout_quotes WHERE id=?").pluck().get(q.quoteId)).toBe(at(2));
+  });
+
+  it("closes and clears expired test lists once, without a checkout request", () => {
+    db.prepare(`UPDATE offers SET sale_mode='ACCEPTANCE_ONLY',acceptance_allowlist_json=?,acceptance_expires_at=?`)
+      .run(JSON.stringify([customer.customerEmail]), at(2));
+    const version = () => db.prepare("SELECT version FROM products WHERE id='product'").pluck().get() as number;
+    const original = version();
+    expect(closeExpiredAcceptanceOffers(db, at(1))).toBe(0);
+    expect(closeExpiredAcceptanceOffers(db, "2026-09-30T10:02:00Z")).toBe(1);
+    expect(closeExpiredAcceptanceOffers(db, at(3))).toBe(0);
+    expect(version()).toBe(original + 1);
+    expect(db.prepare("SELECT sale_mode,acceptance_allowlist_json,acceptance_expires_at FROM offers").get()).toEqual({
+      sale_mode: "CLOSED", acceptance_allowlist_json: "[]", acceptance_expires_at: null,
+    });
+    const evidence = db.prepare("SELECT evidence_json FROM audit_log WHERE action='ACCEPTANCE_OFFER_EXPIRED'").pluck().all();
+    expect(evidence).toEqual([JSON.stringify({ offerRef: "course:one", clearedEmailCount: 1, expiredAt: at(2) })]);
+  });
+
+  it("compares expiry instants regardless of fractional-second formatting", () => {
+    db.prepare("UPDATE offers SET sale_mode='ACCEPTANCE_ONLY', acceptance_expires_at='2026-09-30T10:02:00.999Z'").run();
+    expect(closeExpiredAcceptanceOffers(db, "2026-09-30T10:02:00Z")).toBe(0);
+    db.prepare("UPDATE offers SET acceptance_expires_at='2026-09-30T10:02:00Z'").run();
+    expect(closeExpiredAcceptanceOffers(db, at(2))).toBe(1);
+  });
+
   it("keeps its price and frozen line across a price change and an ordinary offer close", async () => {
     const quote = await quoted(await preview("guarantee"));
     db.prepare("UPDATE offers SET price_kopecks=20000, sale_mode='CLOSED'").run();
@@ -877,9 +956,10 @@ describe("ART-200 merchant-local LAB holds", () => {
         applyV2Migration(legacy, version, readFileSync(join(directory, version), "utf8"));
       }
       for (const table of ['"user"', "customers", "legal_releases", "cities", "lab_occurrences", "products", "offers"]) {
+        const columns = (legacy.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(row => row.name);
         for (const row of db.prepare(`SELECT * FROM ${table}`).all() as Record<string, unknown>[]) {
-          const columns = Object.keys(row);
-          legacy.prepare(`INSERT INTO ${table} (${columns.join(",")}) VALUES (${columns.map(() => "?").join(",")})`).run(...Object.values(row));
+          legacy.prepare(`INSERT INTO ${table} (${columns.join(",")}) VALUES (${columns.map(() => "?").join(",")})`)
+            .run(...columns.map(column => row[column]));
         }
       }
       for (const id of ["unconfirmed", "started"]) {

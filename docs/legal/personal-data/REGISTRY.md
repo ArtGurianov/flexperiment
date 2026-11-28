@@ -2,7 +2,7 @@
 
 Сгенерировано из [registry.yaml](registry.yaml). Порядок и границы применения см. в [ADR](../../architecture/personal-data-lifecycle.md).
 
-Версия формата 1. SHA-256 исходного YAML `056b5391f19938a9c5dd79f36cfd9d3e2aec6438a50f5bfae43dba57731ce34f`.
+Версия формата 1. SHA-256 исходного YAML `4bf5deda55278b222c4755a49b99d90ba7f7116262e6823ef5df42d2a99e0970`.
 
 ## Цели и основания
 
@@ -13,7 +13,7 @@
 | auth_security | Ограничение попыток входа, антиабуз и безопасность сессий | 152-ФЗ ст. 19; необходимость и самостоятельное основание по ст. 6 уточняются по данным | До окончания защитной цели или подтверждённого срока для конкретного события | Очистить след и счётчики по установленному сроку | pd_law, retention_code | retention |
 | backup | Резервирование и восстановление утверждённых систем | 152-ФЗ ст. 19; блокирование при невозможности уничтожения в срок по применимой ст. 21 | По утверждённому правилу копий. Исключение ч. 6 ст. 21 применяется по обстоятельствам дела | Доказать блок и удаление каждой охваченной копии, проверить replay перед допуском | pd_law, retention_code, retention_test | methods |
 | checkout | Подготовка оферты и checkout, сверка принятой сделки | 152-ФЗ п. 5 ч. 1 ст. 6 при заключении или исполнении договора | До истечения предложения, заключения договора и необходимых сверок | Отдельно квалифицировать доказательство сделки; очистить неоформленные и избыточные данные | pd_law, paid_terms, checkout_code | retention |
-| closed_checkout_admission | Сопоставление email с допуском к конкретному закрытому предложению | Основание для закрытого профиля и срок хранения каждой записи требуют отдельной квалификации | До окончания необходимости индивидуального допуска; фактическое действие при удалении открыто | Отозвать допуск либо удалить сопоставимый адрес после проверки основания и охвата | checkout_code, paid_terms, pd_law | allowlist_erasure |
+| closed_checkout_admission | Допуск назначенных тестировщиков к квалификационному тесту ACCEPTANCE_ONLY | Действующее основание по каждому тестировщику фиксируется в закрытом деле теста | До прекращения допуска или окончания явно заданного окна теста (не более 14 дней от настройки); физическая очистка копий квалифицируется отдельно | Закрыть тест и очистить список либо точечно снять допуск субъекта. Проверить копии отдельно. | checkout_code, paid_terms, pd_law, qerase | allowlist_erasure |
 | consent_proof | Факты предоставления, изменения или отзыва согласия | 152-ФЗ ст. 9; возможное доказательное хранение оценивается отдельно | Пока нужна соответствующая цель или отдельно обоснованное доказательство | Удалить целевые записи после прекращения оснований; пересмотреть отдельно нужные доказательства | pd_law, erase_reviewed, erase_full | consent_removal |
 | contract_acceptance | Подтверждение акцепта правил аккаунта, оферты и условий доступа | 152-ФЗ ст. 6; конкретная версия правил аккаунта или договора | До окончания договора или самостоятельной доказательной цели | Пересмотреть применимые договорные доказательства и уничтожить избыточные дубли | pd_law, account_terms, paid_terms | consent_removal |
 | delivery | Техническая доставка письма или уведомления по собственной цели | Основание исходного уведомления, применимое поручение по ст. 6 152-ФЗ | До результата доставки и срока подтверждённой политики outbox | Очистить рабочие копии и запросить доказательство по обработчику | pd_law, stage_a_inventory, paid_inventory | processors |
@@ -128,7 +128,8 @@
 | notification_campaign_recipients | `id`, `campaign_id`, `customer_id`, `state`, `last_error`, `sent_at`, `provider_idempotency_key`, `attempt_count` | personal | customer_id; исходы доставки | marketing, delivery | projection | destroy_when_due | — | — | retention |
 | notification_campaigns | `id`, `course_ref`, `payload_json`, `state`, `confirmed_by`, `confirmed_at`, `created_at`, `kind`, `idempotency_key`, `request_hash`, `queued_at`, `completed_at`, `dispatch_lease_expires_at` | mixed | confirmed_by и потенциальные сведения в содержимом сообщения | marketing, delivery, evidence | review | review | — | — | audit |
 | offers | `id`, `offer_ref`, `product_id`, `price_kopecks`, `currency`, `sale_mode`, `created_at`, `updated_at`, `payment_purpose` | non_personal | Структурированные коммерческие параметры предложения и ссылки на правовые версии | — | — | — | — | — | — |
-| offers | `acceptance_allowlist_json` | mixed | Субъекты в списке допущенных адресов; проверяется конкретный нормализованный email | closed_checkout_admission | review | review | — | gap · Новый checkout сверяет нормализованный email со списком. Проверенные операции erasure не проверяют и не очищают эту колонку. (checkout_code, erase_full, erase_reviewed) | allowlist_erasure |
+| offers | `acceptance_expires_at` | non_personal | Срок окончания окна всего предложения; не содержит идентификатора или персонального срока тестировщика | — | — | — | — | — | — |
+| offers | `acceptance_allowlist_json` | mixed | Субъекты в списке допущенных адресов; проверяется конкретный нормализованный email | closed_checkout_admission | review | destroy_when_due | — | conditional · Checkout проверяет текущий допуск и срок для нового и неподтверждённого тестового quote. Штатное закрытие очищает список, erasure удаляет сопоставимый адрес через ledger. Копии и эксплуатационный срок очистки квалифицируются отдельно. (checkout_code, erase_full, erase_reviewed) | allowlist_erasure |
 | order_lines | `id`, `order_id`, `product_id`, `offer_ref_snapshot`, `title_snapshot`, `quantity`, `unit_amount_kopecks`, `legal_terms_ref`, `created_at`, `catalog_amount_kopecks`, `merchant_discount_kopecks`, `merchant_amount_kopecks`, `merchant_promotion_snapshot_json`, `fiscal_item_json`, `legal_release_ref`, `legal_release_hash`, `occurrence_snapshot_json`, `fiscal_policy_id`, `immediate_access_json` | mixed | order_id → orders; отдельно содержимое снимков и фискальных позиций | checkout, payments, fiscal, paid_access, lab_service, tax_records | review | retain_minimum | — | — | financial |
 | orders | `id`, `public_id`, `customer_id`, `state`, `currency`, `total_kopecks`, `checkout_snapshot_json`, `snapshot_hash`, `legal_release_id`, `created_at`, `updated_at` | mixed | customer_id; связка с исходным расчётом и снимком | checkout, payments, fiscal, evidence, tax_records | review | retain_minimum | — | — | financial |
 | owner_legal_decisions | `id`, `version`, `fiscal_policy_id`, `product_ref`, `offer_ref`, `legal_release_id`, `legal_release_version`, `legal_manifest_json`, `offer_terms_ref`, `offer_terms_sha256`, `refund_terms_ref`, `refund_terms_sha256`, `norms_json`, `facts`, `reasoning`, `risk_assessment`, `approval_ref`, `evidence_sha256`, `decided_by`, `decided_at`, `recorded_by`, `recorded_at` | mixed | decided_by, recorded_by и возможные упоминания в материалах и тексте | evidence, fiscal | review | review | — | — | audit |
@@ -162,7 +163,7 @@
 | Поле | Охват | Разрыв |
 | --- | --- | --- |
 | access_overrides.resolution_evidence_json | Доказательство разрешения override и ссылки состояния, возможны внешние или операторские сведения | audit |
-| audit_log.evidence_json | Состав зависит от действия; искать относящееся к субъекту и разделять чужие сведения | audit |
+| audit_log.evidence_json | Состав зависит от действия; искать относящееся к субъекту и разделять чужие сведения. PRODUCT_CONFIGURED фиксирует дедлайн тестового окна. ACCEPTANCE_OFFER_EXPIRED содержит ссылку на оффер, количество адресов и срок. Адреса допуска в эти события не входят. | audit |
 | auth_email_outbox.encrypted_payload | Рабочий зашифрованный конверт доставки со ссылкой входа; только описание в стандартной выдаче | processors |
 | auth_email_outbox.last_error | Причина сбоя доставки; проверить фактическое содержимое и редактирование входных сообщений | processors |
 | browser_context_arrivals.arrival_proof | Внешнее доказательство перехода и непрямые связи с браузером; не отдавать подписанное значение | processors |
@@ -173,11 +174,11 @@
 | checkout_attempts.observed_payment_projection_json | Наблюдение расчёта RC.2; оставить только относящиеся к субъекту поля | financial |
 | checkout_attempts.request_payload_json | RC.2 payload от намерения до расчёта; возможны контакт и прежний внешний процессор | financial |
 | checkout_quotes.checkout_code_input | Присланный код оплаты или промо, режим выдачи зависит от фактического назначения | financial |
-| checkout_quotes.line_snapshot_json | Идентичность и цена строки, договорная версия, продуктовые данные | financial |
+| checkout_quotes.line_snapshot_json | Идентичность и цена строки, договорная версия, продуктовые данные и граница тестового окна для выданного quote | financial |
 | checkout_quotes.merchant_promotion_snapshot_json | Условия локального промо на момент предложения | financial |
 | checkout_quotes.rail_quote_json | Ответ ветки котировки; квалифицировать поля интеграции | financial |
 | checkout_quotes.resolution_request_json | Параметры резолюции предложения, источник и привязки checkout | financial |
-| control_room_audit_log.details_json | Детали по действию, проверять смешанные записи и сведения об операторе | audit |
+| control_room_audit_log.details_json | Детали по действию, проверять смешанные записи и сведения об операторе. PRODUCT_CONFIGURED и LAB_OFFER_CONFIGURED фиксируют дедлайн тестового окна без адресов допуска. | audit |
 | course_commercial_commands.result_json | Результаты изменения карточек и коммерческих параметров | audit |
 | course_editorial_drafts.document_json | Редакторское содержание курса, уроков, ссылок и SEO | audit |
 | course_editorial_publish_commands.result_json | Результат публикации и версии, возможная привязка к актору | audit |
@@ -292,7 +293,7 @@
 
 | ID | Plane | Что подтвердить |
 | --- | --- | --- |
-| allowlist_erasure | [FLEX-131](https://app.plane.so/art-workspace/browse/FLEX-131) | Проверить необходимость, срок и способ убрать email из списка допущенных предложений. На проверенной ревизии операции полного и reviewed erasure эту колонку не проверяют и не очищают. |
+| allowlist_erasure | [FLEX-131](https://app.plane.so/art-workspace/browse/FLEX-131) | Проверить допуск короткого тестового окна, устранение остатка на рабочих носителях и в копиях, запрет наследования старого допуска перед D-S5 и отдельные сроки сопоставимых SHA-256 в custody и аудите. |
 | audit | [FLEX-131](https://app.plane.so/art-workspace/browse/FLEX-131) | Проверить закрытые аудит- и нормативные доказательства, смешанные JSON, связку субъекта, допустимое хранение и частичное исполнение; runtime может отказывать на упоминании. |
 | closure | [FLEX-131](https://app.plane.so/art-workspace/browse/FLEX-131) | Reviewed v1 допускает только CLOSE и блокирует любое действующее право, открытый возврат или незавершённый расчёт. Уточнить реальную необходимость аккаунта, выход из бессрочного договора и отдельный приём требований. |
 | consent_removal | [FLEX-131](https://app.plane.so/art-workspace/browse/FLEX-131) | Оба пути erasure при допуске удаляют записи выбора и связанные события. Отдельно определить, нужна ли и где хранится минимальная запись договорного доказательства или доказательства согласия. |

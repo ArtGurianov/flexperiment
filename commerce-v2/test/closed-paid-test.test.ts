@@ -57,6 +57,7 @@ beforeEach(() => {
     .run(env.CLOSED_PAID_TEST_LEGAL_VERSION, stageBLegalManifestJson);
   configureProduct(db, config, { productRef: "course:test-course", offerRef: "course:test-course", courseRef: "test-course",
     kind: "ONLINE_COURSE", accessModel: "PAID", saleMode: "ACCEPTANCE_ONLY", priceKopecks: 100, acceptanceAllowlist: [email],
+    acceptanceExpiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
     paymentPurpose: "Synthetic test purchase", actor: "fixture", expectedVersion: 0 });
   applyCourseManifest(db, withManifestHash({ courseRef: "test-course", version: 1, visibility: "LISTED",
     sections: [{ sectionRef: "section", visibility: "LISTED" }],

@@ -216,9 +216,11 @@ describe("FLEX-59: occurrence cancellation with committed seats", () => {
     const qr = readOwnedLabTicket(db, secret, checkedIn.customerId, usedOrder.public_id);
     checkInLabTicket(db, { qrToken: "qrToken" in qr ? qr.qrToken! : "", occurrenceRef: REF, actor: "door" }, at(1));
 
+    db.prepare("UPDATE offers SET acceptance_allowlist_json=?").run('["legacy@example.test"]');
     expect(beginLabOccurrenceCancellation(db, { occurrenceRef: REF, actor: "owner", reason: "Площадка недоступна" }, at(2))).toMatchObject({ state: "REQUESTED" });
     expect(beginLabOccurrenceCancellation(db, { occurrenceRef: REF, actor: "owner", reason: "again" }, at(3))).toMatchObject({ replayed: true });
-    expect(db.prepare("SELECT sale_mode FROM offers").get()).toEqual({ sale_mode: "CLOSED" });
+    expect(db.prepare("SELECT sale_mode,acceptance_allowlist_json FROM offers").get())
+      .toEqual({ sale_mode: "CLOSED", acceptance_allowlist_json: "[]" });
     expect(db.prepare("SELECT state,failure_code FROM checkout_quotes WHERE customer_id=?").get(held.customerId))
       .toEqual({ state: "EXPIRED", failure_code: "LAB_OCCURRENCE_CANCELLING" });
     db.prepare("UPDATE offers SET sale_mode='PUBLIC'").run(); // Even a reopened offer row cannot sell a cancelling occurrence.

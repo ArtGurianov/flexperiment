@@ -6,6 +6,7 @@ import { assertErasureSubjectKey, erasurePseudonym, ErasureLedgerError, Verified
 import { DrainedErasureRuntime } from "./erasure-fence";
 import { applyReviewedErasure } from "./erasure-reviewed-application";
 import { hasTable, verificationSubjectEmail } from "./my-session-storage";
+import { removeErasedAcceptanceEmail } from "./acceptance-offer";
 
 // Exact reviewed 0001–0025, 0001–0026 and 0001–0027 schemas. Migration 0026 adds only
 // Control Room authored course content/history, with no customer FK or subject
@@ -61,6 +62,8 @@ const REVIEWED_SCHEMA_SHA256 = new Set([
   "a0e1bbba4de455fab95614d5c08cbb06fb3216806df72d1a415123ee5fbadbeb",
   // 0047: course playback state after lesson completions.
   "ef24c8da9ca557bc22b2fe5cb4c49dce350c0f87deb9f73385f8b353b247dd70",
+  // 0048: the qualification window on offers and erasure of participant addresses.
+  "a1db72cedccc8a500962b7912080233b505486ce24936cafbd64679b99a04064",
 ]);
 export function assertReviewedRestoreSchema(db: Database.Database) {
   const schema = db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").all();
@@ -120,15 +123,15 @@ function applyErasure(db: Database.Database, ledger: VerifiedErasureLedger, keys
       const users = db.prepare('SELECT id,email FROM "user"').all() as Array<{ id: string; email: string }>;
       for (const entry of ledger.bundle.entries) {
         if (entry.body.kind === "REVIEWED_CANCELLATION") continue;
+        const { subject } = entry.body;
+        assertErasureSubjectKey(keys, subject);
+        const matches = (kind: "email" | "customer" | "user", value: string) =>
+          erasurePseudonym(keys, subject.keyId, ledger.bundle.scope, kind, value) === subject[kind];
         if (entry.body.kind === "REVIEWED_ERASURE") {
           if (!hasTable(db, "reviewed_erasure_receipts")) throw new ErasureLedgerError("ERASURE_REVIEWED_SCHEMA_REQUIRED");
           applyReviewedErasure(db, { ...entry, body: entry.body }, keys, now, isolatedRestore);
           continue;
         }
-        const { subject } = entry.body;
-        assertErasureSubjectKey(keys, subject);
-        const matches = (kind: "email" | "customer" | "user", value: string) =>
-          erasurePseudonym(keys, subject.keyId, ledger.bundle.scope, kind, value) === subject[kind];
         // Suppression is reconstructed from the independent ledger even when the
         // original customer has gone or a genuinely new same-email account exists.
         const emails = new Set([
@@ -151,6 +154,7 @@ function applyErasure(db: Database.Database, ledger: VerifiedErasureLedger, keys
           suppressedEmails++;
         }
         if (entry.body.kind !== "ERASURE") continue;
+        removeErasedAcceptanceEmail(db, email => matches("email", email), now.toISOString());
         const targetCustomers = customers.filter(customer => !deletedCustomers.has(customer.id) && matches("customer", customer.id));
         const targetUsers = users.filter(user => matches("user", user.id));
         if (targetUsers.some(user => !matches("email", user.email)) || targetCustomers.some(customer =>

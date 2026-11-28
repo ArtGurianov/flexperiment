@@ -350,7 +350,8 @@ export function cancelLabOccurrence(db: Database.Database, command: {
     if (inventory.customerCommitted > inventory.held) throw new Error("LAB_OCCURRENCE_HAS_COMMITTED_SEATS");
     const product = db.prepare("SELECT id FROM products WHERE occurrence_ref=?").get(command.occurrenceRef) as { id: string } | undefined;
     if (product) {
-      db.prepare("UPDATE offers SET sale_mode='CLOSED',updated_at=? WHERE product_id=? AND sale_mode<>'CLOSED'").run(now, product.id);
+      db.prepare(`UPDATE offers SET sale_mode='CLOSED',acceptance_allowlist_json='[]',acceptance_expires_at=NULL,updated_at=?
+        WHERE product_id=?`).run(now, product.id);
       db.prepare("UPDATE products SET version=version+1,updated_at=? WHERE id=?").run(now, product.id);
     }
     const updated = db.prepare(`UPDATE lab_occurrences SET lifecycle='CANCELLED',cancelled_at=?,cancellation_reason=?,

@@ -20,7 +20,8 @@ import { playbackAccessSummary } from "./playback-telemetry";
 export function controlRoomCatalogue(db: Database.Database, now = new Date().toISOString()): CatalogueResponse {
   const rows = db.prepare(`SELECT product.product_ref,product.course_ref,product.access_model,product.withdrawn_at,product.version AS product_version,
       product.withdrawn_reason,product.withdrawn_terms_ref,offer.offer_ref,offer.price_kopecks,offer.sale_mode,
-      offer.acceptance_allowlist_json,offer.payment_purpose,projection.version AS projection_version,projection.visibility,projection.last_reconciled_at,
+      offer.acceptance_allowlist_json,offer.acceptance_expires_at,offer.payment_purpose,
+      projection.version AS projection_version,projection.visibility,projection.last_reconciled_at,
       projection.authoring_source
     FROM products product
     LEFT JOIN offers offer ON offer.product_id=product.id
@@ -30,7 +31,8 @@ export function controlRoomCatalogue(db: Database.Database, now = new Date().toI
       withdrawn_reason: string | null; withdrawn_terms_ref: string | null; offer_ref: string | null;
       price_kopecks: number | null; sale_mode: "CLOSED" | "ACCEPTANCE_ONLY" | "PUBLIC" | null;
       payment_purpose: string | null;
-      acceptance_allowlist_json: string | null; projection_version: number | null; visibility: "LISTED" | "UNLISTED" | null;
+      acceptance_allowlist_json: string | null; acceptance_expires_at: string | null;
+      projection_version: number | null; visibility: "LISTED" | "UNLISTED" | null;
       last_reconciled_at: string | null; authoring_source: "LEGACY_MANIFEST" | "COMMERCE_EDITORIAL" | null;
     }>;
   return { generatedAt: now, courses: rows.map((row) => ({
@@ -47,6 +49,7 @@ export function controlRoomCatalogue(db: Database.Database, now = new Date().toI
       saleMode: row.sale_mode,
       paymentPurpose: row.payment_purpose,
       acceptanceAllowlist: JSON.parse(row.acceptance_allowlist_json ?? "[]") as string[],
+      ...(row.acceptance_expires_at ? { acceptanceExpiresAt: row.acceptance_expires_at } : {}),
     } : null,
     projection: row.projection_version !== null && row.visibility && row.last_reconciled_at ? {
       version: row.projection_version,
@@ -122,13 +125,13 @@ export function controlRoomCities(db: Database.Database, now = new Date().toISOS
 export function controlRoomLabOccurrences(db: Database.Database, now = new Date().toISOString()): LabOccurrencesResponse {
   const rows = db.prepare(`SELECT occurrence.*,city.slug AS city_slug,city.title AS city_title,product.product_ref,
       product.version AS product_version,product.withdrawn_at,offer.offer_ref,offer.sale_mode,offer.price_kopecks,
-      offer.payment_purpose,offer.acceptance_allowlist_json
+      offer.payment_purpose,offer.acceptance_allowlist_json,offer.acceptance_expires_at
     FROM lab_occurrences occurrence JOIN cities city ON city.id=occurrence.city_id
     LEFT JOIN products product ON product.occurrence_ref=occurrence.occurrence_ref LEFT JOIN offers offer ON offer.product_id=product.id
     ORDER BY occurrence.starts_at,occurrence.occurrence_ref`)
     .all() as Array<LabOccurrenceRow & { city_slug: string; city_title: string; product_ref: string | null; product_version: number | null;
       withdrawn_at: string | null; offer_ref: string | null; sale_mode: SaleMode | null; price_kopecks: number | null;
-      payment_purpose: string | null; acceptance_allowlist_json: string | null }>;
+      payment_purpose: string | null; acceptance_allowlist_json: string | null; acceptance_expires_at: string | null }>;
   return { generatedAt: now, occurrences: rows.map((row) => {
     const inventory = labSeatInventory(db, row, now);
     return {
@@ -144,6 +147,7 @@ export function controlRoomLabOccurrences(db: Database.Database, now = new Date(
         productRef: row.product_ref, productVersion: row.product_version, offerRef: row.offer_ref, priceKopecks: row.price_kopecks,
         saleMode: row.sale_mode, paymentPurpose: row.payment_purpose, withdrawn: row.withdrawn_at !== null,
         acceptanceAllowlist: JSON.parse(row.acceptance_allowlist_json ?? "[]") as string[],
+        ...(row.acceptance_expires_at ? { acceptanceExpiresAt: row.acceptance_expires_at } : {}),
       } : null,
     };
   }) };

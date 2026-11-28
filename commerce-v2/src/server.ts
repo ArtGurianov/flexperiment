@@ -4,6 +4,7 @@ import { serve } from "@hono/node-server";
 import { labTicketQrSecretFromEnv } from "./lab-tickets";
 import { createCommerceV2App } from "./app";
 import { migrateV2, openV2Database } from "./db";
+import { closeExpiredAcceptanceOffers } from "./acceptance-offer";
 import { loadCommerceRuntimeConfig } from "./payment-mode";
 import { createAuthRuntime } from "./auth";
 import { assertSharedAccountDeployment, loadMyIdentityConfig } from "./my-session";
@@ -228,6 +229,20 @@ if (native) startNativeSweeps(db, native, {
   intervalMs: Number(process.env.CHECKOUT_POLL_INTERVAL_MS ?? 30_000),
   run: (task) => (erasureFence ? erasureFence.run("WORKER", task) : task()),
 });
+
+let acceptanceSweepRunning = false;
+async function sweepExpiredAcceptanceOffers() {
+  if (acceptanceSweepRunning) return;
+  acceptanceSweepRunning = true;
+  try {
+    const sweep = async () => closeExpiredAcceptanceOffers(db, new Date().toISOString());
+    if (erasureFence) await erasureFence.run("WORKER", sweep); else await sweep();
+  } catch { diagnostic("ACCEPTANCE_OFFERS_SWEEP_FAILED"); }
+  finally { acceptanceSweepRunning = false; }
+}
+const acceptanceSweepTimer = setInterval(() => { void sweepExpiredAcceptanceOffers(); }, 30_000);
+acceptanceSweepTimer.unref();
+void sweepExpiredAcceptanceOffers();
 
 if (browserContexts) {
   let contextSweepRunning = false;

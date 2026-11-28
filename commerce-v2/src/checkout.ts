@@ -19,6 +19,7 @@ import { assertLabOccurrenceAdmissible, occurrenceInstant, type BuyerVenueDisclo
 import { assertOfferSaleModeAllowed, nativePurchaseAllowed, type CommerceRuntimeConfig } from "./payment-mode";
 import { assertStorefrontOpen, SalesStoppedError, type SalesStopStage, type StorefrontSwitchConfig } from "./storefront-switch";
 import { assertClosedPaidTestAccountConsents, assertClosedPaidTestFiscal, assertClosedPaidTestOffer, assertClosedPaidTestPrice, buyerEmailSha256 } from "./closed-paid-test";
+import { acceptanceDeadline } from "./acceptance-offer";
 
 // These shared guards also serve Control Room callers, which retain their ordinary domain errors.
 // Classify only their declared business refusals at the checkout boundary; unknown DB faults escape.
@@ -312,7 +313,7 @@ type OfferRow = {
   offer_id: string; offer_ref: string; product_id: string; product_ref: string;
   kind: "ONLINE_COURSE" | "COURSE_BUNDLE" | "LAB"; access_model: "FREE" | "PAID";
   course_ref: string | null; price_kopecks: number; sale_mode: "CLOSED" | "ACCEPTANCE_ONLY" | "PUBLIC";
-  acceptance_allowlist_json: string; withdrawn_at: string | null;
+  acceptance_allowlist_json: string; acceptance_expires_at: string | null; withdrawn_at: string | null;
   payment_purpose: string | null;
   occurrence_ref: string | null; occurrence_title: string | null; occurrence_starts_at: string | null;
   occurrence_ends_at: string | null; occurrence_timezone: string | null; occurrence_city_id: string | null;
@@ -320,7 +321,8 @@ type OfferRow = {
 
 const offerWhere = (db: Database.Database, column: "offer.offer_ref" | "offer.id", value: string) => db.prepare(`SELECT offer.id AS offer_id,offer.offer_ref,
   product.id AS product_id,product.product_ref,product.kind,product.access_model,product.course_ref,product.withdrawn_at,product.occurrence_ref,
-  offer.price_kopecks,offer.sale_mode,offer.payment_purpose,offer.acceptance_allowlist_json,occurrence.title AS occurrence_title,
+  offer.price_kopecks,offer.sale_mode,offer.payment_purpose,offer.acceptance_allowlist_json,offer.acceptance_expires_at,
+  occurrence.title AS occurrence_title,
   occurrence.starts_at AS occurrence_starts_at,occurrence.ends_at AS occurrence_ends_at,
   occurrence.timezone AS occurrence_timezone,occurrence.city_id AS occurrence_city_id
   FROM offers offer JOIN products product ON product.id=offer.product_id
@@ -352,6 +354,7 @@ type FrozenLineSnapshot = {
   readonly unitRef?: string;
   readonly serviceStartsAt?: string;
   readonly serviceEndsAt?: string;
+  readonly acceptanceExpiresAt?: string;
   /** Merchant-local reservation; never part of the Refref shared snapshot or attempt. */
   readonly seatHold?: { readonly ref: string; readonly expiresAt: string };
   readonly occurrence?: {
@@ -400,6 +403,17 @@ const freezeLine = (db: Database.Database, offer: OfferRow, venue?: BuyerVenueDi
 };
 
 /** Live sellability of the offer itself, re-read on every checkout step; a stored quote never stands in for it. */
+function assertAcceptanceBuyer(offer: OfferRow, customerEmail: string, now: string) {
+  if (offer.sale_mode !== "ACCEPTANCE_ONLY" || !acceptanceDeadline(offer.acceptance_expires_at, now)) {
+    throw new CheckoutConflictError("ACCEPTANCE_ONLY");
+  }
+  const allowlist: unknown = JSON.parse(offer.acceptance_allowlist_json);
+  if (!Array.isArray(allowlist) || !allowlist.every(email => typeof email === "string")
+    || !allowlist.some(email => email.trim().toLowerCase() === customerEmail.trim().toLowerCase())) {
+    throw new CheckoutConflictError("ACCEPTANCE_ONLY");
+  }
+}
+
 function assertOfferOpenToCustomer(db: Database.Database, config: CheckoutPolicyConfig, offer: OfferRow | undefined, customerEmail: string, now: string) {
   if (!offer || offer.withdrawn_at) throw new CheckoutConflictError("OFFER_NOT_AVAILABLE");
   if (!nativePurchaseAllowed(config, offer.kind)) throw new CheckoutConflictError("NATIVE_TOCHKA_PRODUCT_UNAVAILABLE");
@@ -411,10 +425,7 @@ function assertOfferOpenToCustomer(db: Database.Database, config: CheckoutPolicy
   assertClosedPaidTestOffer(config, { kind: offer.kind, accessModel: offer.access_model, saleMode: offer.sale_mode,
     offerRef: offer.offer_ref, courseRef: offer.course_ref, priceKopecks: offer.price_kopecks,
     acceptanceAllowlist: JSON.parse(offer.acceptance_allowlist_json) }, customerEmail);
-  if (offer.sale_mode === "ACCEPTANCE_ONLY") {
-    const allowlist = JSON.parse(offer.acceptance_allowlist_json) as string[];
-    if (!allowlist.map((email) => email.trim().toLowerCase()).includes(customerEmail.trim().toLowerCase())) throw new CheckoutConflictError("ACCEPTANCE_ONLY");
-  }
+  if (offer.sale_mode === "ACCEPTANCE_ONLY") assertAcceptanceBuyer(offer, customerEmail, now);
   // A PUBLIC offer does not make its occurrence sellable: a direct offerRef bypasses the catalogue filter.
   const venue = offer.kind === "LAB" ? assertLabOccurrenceAdmissible(db, offer.occurrence_ref, now).venue : undefined;
   return { ...offer, venue, storefrontOpenSince: opening.openSince };
@@ -634,7 +645,8 @@ function assertFrozenFiscalPolicyQualified(db: Database.Database, offer: OfferRo
  * intent and are never rebuilt from the catalogue, and an ordinary offer close does not end it. Only
  * its deadlines, a legal release change, withdrawal, a storefront close (the owner's switch closed
  * since the quote, ART-319, or payments off) and — LAB, ART-203 — occurrence cancellation end it; a
- * frozen fiscal policy that is no longer qualified refuses payment.
+ * frozen fiscal policy that is no longer qualified refuses payment. A restricted
+ * test quote also needs a currently valid test window and participant admission.
  */
 function assertIssuedIntentAdmissible(db: Database.Database, config: CheckoutPolicyConfig, intent: IntentRow, customerEmail: string,
   now: string, stage: SalesStopStage) {
@@ -649,6 +661,10 @@ function assertIssuedIntentAdmissible(db: Database.Database, config: CheckoutPol
     acceptanceAllowlist: JSON.parse(offer.acceptance_allowlist_json) }, customerEmail);
   if (legalRelease(db, intent.storefront)?.id !== intent.legal_release_id || !intent.line_snapshot_json) throw new CheckoutConflictError("CHECKOUT_QUOTE_STALE");
   const frozenLine = JSON.parse(intent.line_snapshot_json) as FrozenLineSnapshot;
+  if (intent.sale_mode_at_quote === "ACCEPTANCE_ONLY") {
+    if (!acceptanceDeadline(frozenLine.acceptanceExpiresAt, now)) throw new CheckoutConflictError("ACCEPTANCE_ONLY");
+    assertAcceptanceBuyer(offer, customerEmail, now);
+  }
   if (offer.kind === "LAB") {
     const { venue } = assertLabOccurrenceAdmissible(db, offer.occurrence_ref, now, intent.id);
     if (!intent.seat_hold_ref || !intent.seat_hold_expires_at || intent.seat_hold_expires_at <= now
@@ -672,6 +688,7 @@ function intentDeadline(intent: IntentRow) {
   const deadlines = [new Date(new Date(intent.created_at).getTime() + QUOTE_TTL_MS).toISOString()];
   const frozenLine = intent.line_snapshot_json ? JSON.parse(intent.line_snapshot_json) as FrozenLineSnapshot : undefined;
   if (frozenLine?.serviceStartsAt) deadlines.push(new Date(frozenLine.serviceStartsAt).toISOString());
+  if (frozenLine?.acceptanceExpiresAt) deadlines.push(frozenLine.acceptanceExpiresAt);
   if (intent.expires_at) deadlines.push(intent.expires_at);
   if (intent.seat_hold_expires_at) deadlines.push(intent.seat_hold_expires_at);
   return deadlines.sort()[0];
@@ -692,6 +709,7 @@ function refuseIntent(db: Database.Database, intentId: string, code: string, now
 type IntentContext = {
   config: CheckoutPolicyConfig;
   customerEmail: string;
+  acceptanceNow: () => string;
   handoffToken?: string;
   review?: ReturnType<typeof paidTestReview>;
   /** The catalogue price the buyer's page showed; advisory, never part of the intent or its fingerprint. */
@@ -715,7 +733,8 @@ async function advanceIntent(db: Database.Database, rail: PaymentRail, intent: I
     expireIntent(db, intent.id, now);
     throw expiredIntentError(intent);
   }
-  assertIssuedIntentAdmissible(db, config, intent, context.customerEmail, now, "ISSUED_QUOTE");
+  assertIssuedIntentAdmissible(db, config, intent, context.customerEmail,
+    intent.sale_mode_at_quote === "ACCEPTANCE_ONLY" ? context.acceptanceNow() : now, "ISSUED_QUOTE");
   if (intent.state === "REVIEW") {
     if (config.closedPaidTest) readyImmediateCourseAccess(db, offerById(db, intent.offer_id)?.course_ref ?? "");
     assertClosedPaidTestPrice(config, JSON.parse(intent.rail_quote_json!) as RailQuote, intent.merchant_discount_kopecks);
@@ -739,6 +758,10 @@ async function advanceIntent(db: Database.Database, rail: PaymentRail, intent: I
   const line = frozen.request.lines[0];
   const settle = db.transaction(() => {
     const current = intentBy(db, "id", intent.id)!;
+    if (current.sale_mode_at_quote === "ACCEPTANCE_ONLY" && !current.consumed_at
+      && ["RESOLVING", "REVIEW", "CUSTOMER_ACTION_REQUIRED"].includes(current.state)) {
+      assertIssuedIntentAdmissible(db, config, current, context.customerEmail, context.acceptanceNow(), "ISSUED_QUOTE");
+    }
     // Another request for the same intent got there first: its outcome stands.
     if (current.state !== "RESOLVING") return current;
     if (resolved.state === "CUSTOMER_ACTION_REQUIRED") {
@@ -801,6 +824,7 @@ export async function prepareCheckout(
     handoffToken?: string; checkoutCode?: string; orderPublicId?: string; storefront?: Storefront; displayedAmountKopecks?: number; nativeMy?: boolean; nativeMyAccountStorefront?: Storefront;
   } & ResolutionContext,
   now = new Date().toISOString(),
+  acceptanceNow = () => now,
 ) {
   if (!input.previewIdempotencyKey.trim()) throw new Error("IDEMPOTENCY_KEY_REQUIRED");
   if (config.closedPaidTest && input.checkoutCode?.trim()) throw new Error("CLOSED_PAID_TEST_PRICE_REFUSED");
@@ -810,7 +834,7 @@ export async function prepareCheckout(
   assertClosedPaidTestAccountConsents(db, config, input.customerId);
   if (input.displayedAmountKopecks !== undefined
     && (!Number.isSafeInteger(input.displayedAmountKopecks) || input.displayedAmountKopecks < 0)) throw new Error("DISPLAYED_AMOUNT_INVALID");
-  const context: IntentContext = { config, customerEmail: input.customerEmail, handoffToken: input.handoffToken, review,
+  const context: IntentContext = { config, customerEmail: input.customerEmail, acceptanceNow, handoffToken: input.handoffToken, review,
     displayedAmountKopecks: input.displayedAmountKopecks };
   const checkoutCodeInput = input.checkoutCode?.trim() || null;
   const deliveryDegraded = input.deliveryDegraded ?? { degraded: false };
@@ -874,7 +898,8 @@ export async function prepareCheckout(
         WHERE ${PAYMENT_ADMISSION_SCOPE} AND consumed_at IS NULL
           AND state IN ('DRAFT','RESOLVING','CUSTOMER_ACTION_REQUIRED','REVIEW')`).run({ ...scope, now });
     }
-    const offer = assertOfferCanBePurchased(db, config, offerByRef(db, input.offerRef), input.customerId, input.customerEmail, now);
+    const offer = assertOfferCanBePurchased(db, config, candidate, input.customerId, input.customerEmail,
+      candidate?.sale_mode === "ACCEPTANCE_ONLY" ? acceptanceNow() : now);
     assertNoOtherPaidTestOrder(db, config, offer.offer_ref);
     if (config.closedPaidTest) readyImmediateCourseAccess(db, offer.course_ref!);
     const storefront = storefrontForOffer(offer);
@@ -884,9 +909,11 @@ export async function prepareCheckout(
     assertNoOpenPayment(db, paymentAdmissionScope(db, input.customerId, offer.offer_id, orderPublicId));
     const seatHold = offer.kind === "LAB" ? { ref: randomUUID(), expiresAt: new Date(Math.min(
       Date.parse(now) + QUOTE_TTL_MS, Date.parse(offer.occurrence_starts_at!),
+      offer.sale_mode === "ACCEPTANCE_ONLY" ? Date.parse(offer.acceptance_expires_at!) : Infinity,
       inheritedHoldExpiry ? Date.parse(inheritedHoldExpiry) : Infinity,
     )).toISOString() } : undefined;
-    const lineSnapshot = { ...freezeLine(db, offer, offer.venue), ...(seatHold ? { seatHold } : {}) };
+    const lineSnapshot = { ...freezeLine(db, offer, offer.venue), ...(seatHold ? { seatHold } : {}),
+      ...(offer.sale_mode === "ACCEPTANCE_ONLY" ? { acceptanceExpiresAt: offer.acceptance_expires_at! } : {}) };
     assertClosedPaidTestFiscal(config, lineSnapshot.fiscal);
     const codeResolution = resolveCheckoutCode(db, input.checkoutCode, offer.offer_ref, offer.price_kopecks, config.merchantPromotionPrefix, now);
     const merchantDiscountKopecks = codeResolution.promotion?.merchantDiscountKopecks ?? 0;
@@ -954,6 +981,7 @@ export async function confirmCheckout(
     nativeMy?: boolean; nativeMyAccountStorefront?: Storefront;
   },
   now = new Date().toISOString(),
+  acceptanceNow = () => now,
 ) {
   if (!input.idempotencyKey.trim()) throw new Error("IDEMPOTENCY_KEY_REQUIRED");
   const native = input.native;
@@ -1047,7 +1075,8 @@ export async function confirmCheckout(
     if (current.state === "EXPIRED") throw expiredIntentError(current);
     if (current.state !== "REVIEW") throw new Error("CHECKOUT_QUOTE_UNAVAILABLE");
     if (current.expires_at! <= now) throw new CheckoutConflictError("CHECKOUT_QUOTE_EXPIRED");
-    assertIssuedIntentAdmissible(db, config, current, input.customerEmail, now, "CONFIRM");
+    assertIssuedIntentAdmissible(db, config, current, input.customerEmail,
+      current.sale_mode_at_quote === "ACCEPTANCE_ONLY" ? acceptanceNow() : now, "CONFIRM");
     if (offer.kind === "LAB") assertLabPurchaseAuthority(db, input.customerId, publicId); // FLEX-60, under the order's lock.
     if (offer.kind === "ONLINE_COURSE" && offer.course_ref && customerCanAccessCourse(db, input.customerId, offer.course_ref)) throw new CheckoutConflictError("ALREADY_OWNED");
     if (offer.kind === "COURSE_BUNDLE" && customerCanAccessCourse(db, input.customerId, "__any_future_course__")) throw new CheckoutConflictError("ALREADY_OWNED");

@@ -29,6 +29,7 @@ export const reviewedPlanSchema = z.object({
     financeAndFiscal: disposition(["RETAIN"]),
     paidRightsAndPerformance: disposition(["RETAIN"]),
     legalAndAuditEvidence: disposition(["RETAIN"]),
+    acceptanceAdmission: disposition(["DELETE"]).optional(),
   }).strict(),
 }).strict();
 
@@ -48,6 +49,7 @@ export type ReviewedApproval = z.infer<typeof reviewedApprovalSchema>;
 const policySchema = z.object({
   version: z.literal(1), scope, packageE: reviewedPlanSchema.shape.packageE,
   validUntil: instant,
+  acceptanceAdmissionReadersSha256: digest.optional(),
   operators: z.record(ref, z.object({ publicKey: z.string().max(256), authorizedUntil: instant }).strict()),
   cases: z.record(z.uuid(), z.object({
     customer: digest, identityVerificationRef: ref, latestExecuteAt: instant,
@@ -91,6 +93,9 @@ export function assertReviewedPolicy(input: {
     return erasurePlanRefused("ERASURE_AWAITING_E_POLICY");
   }
   const policy = parsed.data;
+  if (plan.categories.acceptanceAdmission && !policy.acceptanceAdmissionReadersSha256) {
+    return erasurePlanRefused("ERASURE_ACCEPTANCE_READERS_UNQUALIFIED");
+  }
   for (const hold of policy.holds) {
     const bound = erasureSubject(keys, hold.keyId, plan.scope, binding);
     if (hold.customer === bound.customer) erasurePlanRefused("ERASURE_LEGAL_HOLD");
@@ -103,6 +108,7 @@ export function assertReviewedPolicy(input: {
   if (!Number.isFinite(time) || Date.parse(plan.executeBy) < time) erasurePlanRefused("ERASURE_PLAN_EXPIRED");
   if (Date.parse(plan.executeBy) > Date.parse(approvedCase.latestExecuteAt)) erasurePlanRefused("ERASURE_PLAN_PERIOD_INVALID");
   for (const [category, step] of Object.entries(plan.categories) as [Category, ReviewedErasurePlan["categories"][Category]][]) {
+    if (!step) return erasurePlanRefused("ERASURE_PLAN_CATEGORY_NOT_AUTHORIZED");
     const candidates = policy.rules.filter(rule => rule.category === category && rule.action === step.action && rule.basisRef === step.basisRef);
     if (candidates.length !== 1) {
       erasurePlanRefused("ERASURE_PLAN_CATEGORY_NOT_AUTHORIZED");

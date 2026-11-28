@@ -38,11 +38,11 @@ purposes:
     review: "retention"
     sources: ["pd_law", "paid_terms", "checkout_code"]
   closed_checkout_admission:
-    use: "Сопоставление email с допуском к конкретному закрытому предложению"
-    basis: "Основание для закрытого профиля и срок хранения каждой записи требуют отдельной квалификации"
-    retention: "До окончания необходимости индивидуального допуска; фактическое действие при удалении открыто"
-    expiry: "Отозвать допуск либо удалить сопоставимый адрес после проверки основания и охвата"
-    sources: ["checkout_code", "paid_terms", "pd_law"]
+    use: "Допуск назначенных тестировщиков к квалификационному тесту ACCEPTANCE_ONLY"
+    basis: "Действующее основание по каждому тестировщику фиксируется в закрытом деле теста"
+    retention: "До прекращения допуска или окончания явно заданного окна теста (не более 14 дней от настройки); физическая очистка копий квалифицируется отдельно"
+    expiry: "Закрыть тест и очистить список либо точечно снять допуск субъекта. Проверить копии отдельно."
+    sources: ["checkout_code", "paid_terms", "pd_law", "qerase"]
     review: "allowlist_erasure"
   consent_proof:
     use: "Факты предоставления, изменения или отзыва согласия"
@@ -914,15 +914,18 @@ sqlite:
     - columns: ["id", "offer_ref", "product_id", "price_kopecks", "currency", "sale_mode", "created_at", "updated_at", "payment_purpose"]
       classification: "non_personal"
       reason: "Структурированные коммерческие параметры предложения и ссылки на правовые версии"
+    - columns: ["acceptance_expires_at"]
+      classification: "non_personal"
+      reason: "Срок окончания окна всего предложения; не содержит идентификатора или персонального срока тестировщика"
     - columns: ["acceptance_allowlist_json"]
       classification: "mixed"
       subject: "Субъекты в списке допущенных адресов; проверяется конкретный нормализованный email"
       purposes: ["closed_checkout_admission"]
       access: "review"
-      closure: "review"
+      closure: "destroy_when_due"
       observed:
-        status: "gap"
-        behavior: "Новый checkout сверяет нормализованный email со списком. Проверенные операции erasure не проверяют и не очищают эту колонку."
+        status: "conditional"
+        behavior: "Checkout проверяет текущий допуск и срок для нового и неподтверждённого тестового quote. Штатное закрытие очищает список, erasure удаляет сопоставимый адрес через ledger. Копии и эксплуатационный срок очистки квалифицируются отдельно."
         sources: ["checkout_code", "erase_full", "erase_reviewed"]
       review: "allowlist_erasure"
   order_lines:
@@ -1148,7 +1151,7 @@ payloads:
     content: "Доказательство разрешения override и ссылки состояния, возможны внешние или операторские сведения"
     review: "audit"
   audit_log.evidence_json:
-    content: "Состав зависит от действия; искать относящееся к субъекту и разделять чужие сведения"
+    content: "Состав зависит от действия; искать относящееся к субъекту и разделять чужие сведения. PRODUCT_CONFIGURED фиксирует дедлайн тестового окна. ACCEPTANCE_OFFER_EXPIRED содержит ссылку на оффер, количество адресов и срок. Адреса допуска в эти события не входят."
     review: "audit"
   auth_email_outbox.encrypted_payload:
     content: "Рабочий зашифрованный конверт доставки со ссылкой входа; только описание в стандартной выдаче"
@@ -1181,7 +1184,7 @@ payloads:
     content: "Присланный код оплаты или промо, режим выдачи зависит от фактического назначения"
     review: "financial"
   checkout_quotes.line_snapshot_json:
-    content: "Идентичность и цена строки, договорная версия, продуктовые данные"
+    content: "Идентичность и цена строки, договорная версия, продуктовые данные и граница тестового окна для выданного quote"
     review: "financial"
   checkout_quotes.merchant_promotion_snapshot_json:
     content: "Условия локального промо на момент предложения"
@@ -1193,7 +1196,7 @@ payloads:
     content: "Параметры резолюции предложения, источник и привязки checkout"
     review: "financial"
   control_room_audit_log.details_json:
-    content: "Детали по действию, проверять смешанные записи и сведения об операторе"
+    content: "Детали по действию, проверять смешанные записи и сведения об операторе. PRODUCT_CONFIGURED и LAB_OFFER_CONFIGURED фиксируют дедлайн тестового окна без адресов допуска."
     review: "audit"
   course_commercial_commands.result_json:
     content: "Результаты изменения карточек и коммерческих параметров"
@@ -1645,7 +1648,7 @@ sources:
 gaps:
   allowlist_erasure:
     issue: "FLEX-131"
-    evidence: "Проверить необходимость, срок и способ убрать email из списка допущенных предложений. На проверенной ревизии операции полного и reviewed erasure эту колонку не проверяют и не очищают."
+    evidence: "Проверить допуск короткого тестового окна, устранение остатка на рабочих носителях и в копиях, запрет наследования старого допуска перед D-S5 и отдельные сроки сопоставимых SHA-256 в custody и аудите."
   audit:
     issue: "FLEX-131"
     evidence: "Проверить закрытые аудит- и нормативные доказательства, смешанные JSON, связку субъекта, допустимое хранение и частичное исполнение; runtime может отказывать на упоминании."
