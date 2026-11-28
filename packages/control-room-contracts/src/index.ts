@@ -15,6 +15,7 @@ export type ControlRoomCatalogueCourse = {
     priceKopecks: number;
     saleMode: SaleMode;
     acceptanceAllowlist: string[];
+    acceptanceExpiresAt?: string | null;
     paymentPurpose: string | null;
   };
   projection: null | {
@@ -35,6 +36,7 @@ export type ProductConfigurationCommand = {
   priceKopecks: number;
   saleMode: SaleMode;
   acceptanceAllowlist?: string[];
+  acceptanceExpiresAt?: string | null;
   paymentPurpose?: string | null;
   expectedVersion: number;
 };
@@ -163,6 +165,7 @@ export type ControlRoomLabOccurrence = {
     saleMode: SaleMode;
     paymentPurpose: string | null;
     acceptanceAllowlist: string[];
+    acceptanceExpiresAt?: string | null;
     withdrawn: boolean;
   };
 };
@@ -207,6 +210,7 @@ export type LabOfferCommand = {
   priceKopecks: number;
   saleMode: SaleMode;
   acceptanceAllowlist?: string[];
+  acceptanceExpiresAt?: string | null;
   paymentPurpose?: string | null;
   expectedProductVersion: number;
 };

@@ -674,6 +674,7 @@ export function createCommerceV2App(deps: Dependencies) {
       const result = deps.db.transaction(() => {
         const result = configureLabOffer(deps.db, deps.config, { occurrenceRef: context.req.param("occurrenceRef"),
           priceKopecks: input.priceKopecks, saleMode: input.saleMode, acceptanceAllowlist: input.acceptanceAllowlist,
+          acceptanceExpiresAt: input.acceptanceExpiresAt,
           paymentPurpose: input.paymentPurpose, expectedProductVersion: input.expectedProductVersion, actor }, at);
         auditControlRoom(deps.db, { adminId: actor, action: "LAB_OFFER_CONFIGURED", entityType: "product", entityId: result.productRef,
           details: { version: result.version, priceKopecks: input.priceKopecks, saleMode: input.saleMode } }, at);

@@ -111,7 +111,8 @@ export function beginLabOccurrenceCancellation(db: Database.Database, command: {
     if (existing) return { occurrenceRef: command.occurrenceRef, state: existing.state, requestedAt: existing.requested_at, replayed: true };
     const product = db.prepare("SELECT id FROM products WHERE occurrence_ref=?").get(command.occurrenceRef) as { id: string } | undefined;
     if (product) {
-      db.prepare("UPDATE offers SET sale_mode='CLOSED',updated_at=? WHERE product_id=? AND sale_mode<>'CLOSED'").run(now, product.id);
+      db.prepare(`UPDATE offers SET sale_mode='CLOSED',acceptance_allowlist_json='[]',acceptance_expires_at=NULL,updated_at=?
+        WHERE product_id=?`).run(now, product.id);
       db.prepare("UPDATE products SET version=version+1,updated_at=? WHERE id=?").run(now, product.id);
       // An unconfirmed hold has no payment behind it; a consumed intent keeps its order's seat.
       db.prepare(`UPDATE checkout_quotes SET state='EXPIRED',failure_code='LAB_OCCURRENCE_CANCELLING',updated_at=?

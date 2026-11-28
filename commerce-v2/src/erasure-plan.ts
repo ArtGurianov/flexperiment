@@ -29,6 +29,7 @@ export const reviewedPlanSchema = z.object({
     financeAndFiscal: disposition(["RETAIN"]),
     paidRightsAndPerformance: disposition(["RETAIN"]),
     legalAndAuditEvidence: disposition(["RETAIN"]),
+    acceptanceAdmission: disposition(["DELETE"]).optional(),
   }).strict(),
 }).strict();
 
@@ -103,6 +104,7 @@ export function assertReviewedPolicy(input: {
   if (!Number.isFinite(time) || Date.parse(plan.executeBy) < time) erasurePlanRefused("ERASURE_PLAN_EXPIRED");
   if (Date.parse(plan.executeBy) > Date.parse(approvedCase.latestExecuteAt)) erasurePlanRefused("ERASURE_PLAN_PERIOD_INVALID");
   for (const [category, step] of Object.entries(plan.categories) as [Category, ReviewedErasurePlan["categories"][Category]][]) {
+    if (!step) return erasurePlanRefused("ERASURE_PLAN_CATEGORY_NOT_AUTHORIZED");
     const candidates = policy.rules.filter(rule => rule.category === category && rule.action === step.action && rule.basisRef === step.basisRef);
     if (candidates.length !== 1) {
       erasurePlanRefused("ERASURE_PLAN_CATEGORY_NOT_AUTHORIZED");

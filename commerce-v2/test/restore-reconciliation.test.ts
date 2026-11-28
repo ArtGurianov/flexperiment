@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { migrateV2 } from "../src/db";
+import { applyIsolatedRestoreErasure } from "../src/erasure-restore";
+import { configureProduct } from "../src/catalog-control";
 import { checkout, MockPaymentRail, prepareCheckout } from "../src/checkout";
 import { stageALegalManifestJson, stageBLegalManifestJson } from "./fixtures/legal";
 import { seedHistoricalGuestLabPurchase } from "./fixtures/lab-purchase";
@@ -189,6 +191,32 @@ describe("isolated SQLite backup + fresh Refref money tail", () => {
     expect(customerCanAccessCourse(db, "customer", "course-one")).toBe(false);
     await reconcile(); expect(db.prepare("SELECT state FROM refund_requests").get()).toEqual({ state: "REFUNDED" });
   });
+  it("clears historical lists on a closed offer even if money reconciliation refuses", async () => {
+    await restore();
+    db.prepare("UPDATE offers SET sale_mode='CLOSED',acceptance_allowlist_json=?").run('["legacy@example.test"]');
+    const read = vi.fn(async () => { throw new Error("REFUSED_MONEY_READBACK"); });
+    await expect(reconcile(read)).rejects.toThrow("REFUSED_MONEY_READBACK");
+    expect(db.prepare("SELECT acceptance_allowlist_json FROM offers").pluck().get()).toBe("[]");
+  });
+
+  it("uses the full-erasure ledger when the address exists only in a restored list and invalidates stale writes", async () => {
+    source.prepare(`UPDATE offers SET sale_mode='ACCEPTANCE_ONLY',acceptance_allowlist_json=?,acceptance_expires_at=?`)
+      .run('["Other@example.test"," erase-me@example.test "]', "2026-10-21T10:00:00.000Z");
+    const version = () => source.prepare("SELECT version FROM products").pluck().get() as number;
+    const before = version();
+    ledger.append({ requestId: randomUUID(), kind: "ERASURE", subject: erasureSubject(keys, "subject", "canary",
+      { email: "erase-me@example.test", customerId: "absent-customer", userId: "absent-user" }) }, now);
+    const proof = await readErasure();
+    applyIsolatedRestoreErasure(source, proof, keys, "canary", now);
+    applyIsolatedRestoreErasure(source, proof, keys, "canary", now);
+    expect(source.prepare("SELECT acceptance_allowlist_json FROM offers").pluck().get()).toBe('["Other@example.test"]');
+    expect(version()).toBe(before + 1);
+    expect(() => configureProduct(source, testCheckoutConfig, { productRef: "course:one", offerRef: "course:one", kind: "ONLINE_COURSE",
+      accessModel: "PAID", courseRef: "course-one", priceKopecks: 10_000, saleMode: "ACCEPTANCE_ONLY",
+      acceptanceAllowlist: ["Other@example.test", "erase-me@example.test"], acceptanceExpiresAt: "2026-10-21T10:00:00.000Z",
+      actor: "fixture-operator", expectedVersion: before }, now.toISOString())).toThrow("CATALOG_VERSION_CONFLICT");
+  });
+
   it("replays post-backup marketing suppression before any Refref read and never synthesizes consent", async () => {
     await restore();
     ledger.append({ requestId: randomUUID(), kind: "MARKETING_SUPPRESSION", subject: erasureSubject(keys, "subject", "canary",

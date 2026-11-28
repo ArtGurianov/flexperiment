@@ -4,6 +4,7 @@ import { assertOfferSaleModeAllowed, type CommerceRuntimeConfig, type SaleMode, 
 import { validPaymentPurpose } from "./payment-purpose";
 import { assertClosedPaidTestOffer } from "./closed-paid-test";
 import { assertStorefrontOpen } from "./storefront-switch";
+import { acceptanceDeadline } from "./acceptance-offer";
 
 export type ProductCommand = {
   productRef: string;
@@ -15,6 +16,7 @@ export type ProductCommand = {
   priceKopecks: number;
   saleMode: SaleMode;
   acceptanceAllowlist?: string[];
+  acceptanceExpiresAt?: string | null;
   paymentPurpose?: string | null;
   actor: string;
   expectedVersion: number;
@@ -53,8 +55,11 @@ export function configureProduct(db: Database.Database, config: CommerceRuntimeC
     if (occurrence.lifecycle === "CANCELLED") throw new Error("LAB_OCCURRENCE_CANCELLED");
   }
   assertLiveOfferSaleMode(db, config, command);
+  const acceptanceAllowlist = command.saleMode === "ACCEPTANCE_ONLY"
+    ? (command.acceptanceAllowlist ?? []).map(email => email.trim().toLowerCase()).filter(Boolean) : [];
+  const acceptanceExpiresAt = command.saleMode === "ACCEPTANCE_ONLY" ? acceptanceDeadline(command.acceptanceExpiresAt, now) : null;
   if (command.saleMode !== "CLOSED" && command.accessModel === "PAID") {
-    assertClosedPaidTestOffer(config, { ...command, acceptanceAllowlist: command.acceptanceAllowlist ?? [] });
+    assertClosedPaidTestOffer(config, { ...command, acceptanceAllowlist });
   }
   const apply = db.transaction(() => {
     const existing = db.prepare(`SELECT product.id,product.withdrawn_at,product.version,product.kind,product.course_ref,
@@ -65,6 +70,7 @@ export function configureProduct(db: Database.Database, config: CommerceRuntimeC
       } | undefined;
     if (existing?.withdrawn_at) throw new Error("WITHDRAWN_PRODUCT_IMMUTABLE");
     if ((!existing && command.expectedVersion !== 0) || (existing && existing.version !== command.expectedVersion)) throw new Error("CATALOG_VERSION_CONFLICT");
+    if (command.saleMode === "ACCEPTANCE_ONLY" && !acceptanceExpiresAt) throw new Error("ACCEPTANCE_DEADLINE_REQUIRED");
     // Orders, entitlements and payment snapshots point at what a product is; only its terms may change.
     if (existing && (existing.kind !== command.kind || existing.course_ref !== (command.courseRef ?? null)
       || existing.occurrence_ref !== (command.occurrenceRef ?? null)
@@ -97,13 +103,14 @@ export function configureProduct(db: Database.Database, config: CommerceRuntimeC
     }
     const offer = priorOffer;
     if (offer) {
-      db.prepare(`UPDATE offers SET price_kopecks=?,sale_mode=?,acceptance_allowlist_json=?,updated_at=?,payment_purpose=? WHERE id=?`)
-        .run(command.priceKopecks, command.saleMode,
-          JSON.stringify((command.acceptanceAllowlist ?? []).map((email) => email.trim().toLowerCase())), now, paymentPurpose, offer.id);
+      db.prepare(`UPDATE offers SET price_kopecks=?,sale_mode=?,acceptance_allowlist_json=?,acceptance_expires_at=?,
+        updated_at=?,payment_purpose=? WHERE id=?`)
+        .run(command.priceKopecks, command.saleMode, JSON.stringify(acceptanceAllowlist), acceptanceExpiresAt, now, paymentPurpose, offer.id);
     } else {
-      db.prepare(`INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode,acceptance_allowlist_json,created_at,updated_at,payment_purpose)
-        VALUES (?,?,?,?,?,?,?,?,?)`).run(randomUUID(), command.offerRef, productId, command.priceKopecks, command.saleMode,
-          JSON.stringify((command.acceptanceAllowlist ?? []).map((email) => email.trim().toLowerCase())), now, now, paymentPurpose);
+      db.prepare(`INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode,acceptance_allowlist_json,
+        acceptance_expires_at,created_at,updated_at,payment_purpose) VALUES (?,?,?,?,?,?,?,?,?,?)`)
+        .run(randomUUID(), command.offerRef, productId, command.priceKopecks, command.saleMode,
+          JSON.stringify(acceptanceAllowlist), acceptanceExpiresAt, now, now, paymentPurpose);
     }
     db.prepare(`INSERT INTO audit_log(id,actor,action,subject_type,subject_ref,evidence_json,created_at)
       VALUES (?,?,?,?,?,?,?)`).run(randomUUID(), command.actor, "PRODUCT_CONFIGURED", "PRODUCT", command.productRef,
@@ -119,6 +126,7 @@ export type LabOfferCommand = {
   priceKopecks: number;
   saleMode: SaleMode;
   acceptanceAllowlist?: string[];
+  acceptanceExpiresAt?: string | null;
   paymentPurpose?: string | null;
   actor: string;
   expectedProductVersion: number;
@@ -139,7 +147,8 @@ export function configureLabOffer(db: Database.Database, config: CommerceRuntime
   return configureProduct(db, config, {
     productRef: existing?.product_ref ?? ref, offerRef: existing?.offer_ref ?? ref, kind: "LAB", accessModel: "PAID",
     occurrenceRef: command.occurrenceRef, priceKopecks: command.priceKopecks, saleMode: command.saleMode,
-    acceptanceAllowlist: command.acceptanceAllowlist, paymentPurpose: command.paymentPurpose, actor: command.actor,
+    acceptanceAllowlist: command.acceptanceAllowlist, acceptanceExpiresAt: command.acceptanceExpiresAt,
+    paymentPurpose: command.paymentPurpose, actor: command.actor,
     expectedVersion: command.expectedProductVersion,
   }, now);
 }
@@ -180,7 +189,8 @@ export function withdrawProduct(
       if (current && !current.withdrawn_at && current.version !== command.expectedVersion) throw new Error("CATALOG_VERSION_CONFLICT");
       throw new Error("PRODUCT_NOT_WITHDRAWABLE");
     }
-    db.prepare("UPDATE offers SET sale_mode='CLOSED',updated_at=? WHERE product_id=(SELECT id FROM products WHERE product_ref=?)")
+    db.prepare(`UPDATE offers SET sale_mode='CLOSED',acceptance_allowlist_json='[]',acceptance_expires_at=NULL,updated_at=?
+      WHERE product_id=(SELECT id FROM products WHERE product_ref=?)`)
       .run(now, command.productRef);
     db.prepare(`INSERT INTO audit_log(id,actor,action,subject_type,subject_ref,evidence_json,created_at)
       VALUES (?,?,?,?,?,?,?)`).run(randomUUID(), command.actor, "PRODUCT_WITHDRAWN", "PRODUCT", command.productRef,

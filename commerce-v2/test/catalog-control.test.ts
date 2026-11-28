@@ -90,7 +90,8 @@ describe("catalog control room commands", () => {
       .toEqual({ kind: "ONLINE_COURSE", course_ref: "one", occurrence_ref: null, version: 1, offer_ref: "course:one" });
 
     const edited = configureProduct(db, config, { ...course, accessModel: "FREE", priceKopecks: 0,
-      saleMode: "ACCEPTANCE_ONLY", acceptanceAllowlist: ["Tester@Example.com"], expectedVersion: 1 });
+      saleMode: "ACCEPTANCE_ONLY", acceptanceAllowlist: ["Tester@Example.com"], expectedVersion: 1,
+      acceptanceExpiresAt: new Date(Date.now() + 60 * 60_000).toISOString() });
     expect(edited.version).toBe(2);
     expect(db.prepare("SELECT price_kopecks,sale_mode,acceptance_allowlist_json FROM offers").get())
       .toEqual({ price_kopecks: 0, sale_mode: "ACCEPTANCE_ONLY", acceptance_allowlist_json: '["tester@example.com"]' });
@@ -99,6 +100,14 @@ describe("catalog control room commands", () => {
     // The schema refuses an identity change even from a write that bypasses the command.
     expect(() => db.prepare("UPDATE products SET course_ref='two'").run()).toThrow("PRODUCT_IDENTITY_IMMUTABLE");
     expect(() => db.prepare("UPDATE offers SET offer_ref='course:two'").run()).toThrow("PRODUCT_IDENTITY_IMMUTABLE");
+    setTestStorefronts(db, { COURSES: "OPEN" });
+    for (const saleMode of ["CLOSED", "PUBLIC"] as const) {
+      const version = Number(db.prepare("SELECT version FROM products").pluck().get());
+      configureProduct(db, testCheckoutConfig, { ...course, accessModel: "FREE", priceKopecks: 0, saleMode,
+        acceptanceAllowlist: ["tester@example.com"], acceptanceExpiresAt: new Date(Date.now() + 60_000).toISOString(), expectedVersion: version });
+      expect(db.prepare("SELECT acceptance_allowlist_json,acceptance_expires_at FROM offers").get())
+        .toEqual({ acceptance_allowlist_json: "[]", acceptance_expires_at: null });
+    }
   });
 
   it("binds each LAB product and offer to exactly one existing occurrence", () => {

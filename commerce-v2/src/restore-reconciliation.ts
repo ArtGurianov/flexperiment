@@ -73,7 +73,15 @@ const legacyLabSalesColumn = (db: Database.Database) => (db.pragma("table_info(l
   .some(column => column.name === "sales_status");
 function freezeSales(db: Database.Database, now: string) {
   db.transaction(() => {
-    db.prepare("UPDATE offers SET sale_mode='CLOSED',updated_at=? WHERE sale_mode<>'CLOSED'").run(now);
+    const hasDeadline = (db.prepare("PRAGMA table_info(offers)").all() as Array<{ name: string }>)
+      .some(column => column.name === "acceptance_expires_at");
+    const deadlineChange = hasDeadline ? " OR acceptance_expires_at IS NOT NULL" : "";
+    const clearDeadline = hasDeadline ? "acceptance_expires_at=NULL," : "";
+    const changed = `sale_mode<>'CLOSED' OR acceptance_allowlist_json<>'[]'${deadlineChange}`;
+    db.prepare(`UPDATE products SET version=version+1,updated_at=?
+      WHERE id IN (SELECT product_id FROM offers WHERE ${changed})`).run(now);
+    db.prepare(`UPDATE offers SET sale_mode='CLOSED',acceptance_allowlist_json='[]',${clearDeadline}updated_at=?
+      WHERE ${changed}`).run(now);
     // 0029 removed this second gate. Older reviewed restores still have it.
     if (legacyLabSalesColumn(db)) db.prepare("UPDATE lab_occurrences SET sales_status='CLOSED',updated_at=? WHERE sales_status<>'CLOSED'").run(now);
     if (legacySalesActivation(db)) db.prepare("UPDATE sales_activation SET revoked_at=?,revocation_reason='ISOLATED_RESTORE' WHERE revoked_at IS NULL").run(now);

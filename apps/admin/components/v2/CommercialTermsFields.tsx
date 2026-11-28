@@ -9,22 +9,26 @@ export type CommercialTermsDraft = {
   saleMode: SaleMode;
   paymentPurpose: string;
   allowlist: string;
+  acceptanceExpiresAt: string;
 };
 
 export const commercialTermsDraft = (offer: {
   priceKopecks: number; saleMode: SaleMode; paymentPurpose: string | null; acceptanceAllowlist: string[];
+  acceptanceExpiresAt?: string | null;
 } | null | undefined): CommercialTermsDraft => ({
   price: String(offer?.priceKopecks ?? 0),
   saleMode: offer?.saleMode ?? "CLOSED",
   paymentPurpose: offer?.paymentPurpose ?? "",
   allowlist: offer?.acceptanceAllowlist.join("\n") ?? "",
+  acceptanceExpiresAt: offer?.acceptanceExpiresAt ?? "",
 });
 
 export const commercialTermsCommand = (draft: CommercialTermsDraft) => ({
   priceKopecks: Number(draft.price),
   saleMode: draft.saleMode,
   paymentPurpose: draft.paymentPurpose || null,
-  acceptanceAllowlist: draft.allowlist.split(/[\n,]/).map((value) => value.trim()).filter(Boolean),
+  acceptanceAllowlist: draft.saleMode === "ACCEPTANCE_ONLY" ? draft.allowlist.split(/[\n,]/).map(value => value.trim()).filter(Boolean) : [],
+  ...(draft.saleMode === "ACCEPTANCE_ONLY" ? { acceptanceExpiresAt: draft.acceptanceExpiresAt.trim() } : {}),
 });
 
 /** Price is `offers.price_kopecks`, the one current price: a change applies to new quotes only. */
@@ -43,7 +47,11 @@ export function CommercialTermsFields({ value, onChange, paid }: {
     <label>Назначение платежа<textarea value={value.paymentPurpose} maxLength={512}
       required={paid && value.saleMode !== "CLOSED"} onChange={(event) => set("paymentPurpose", event.target.value)} />
       <small>Назначение заказа, не название позиции чека. Без сокращения; лимит Точки 140 UTF-16 units.</small></label>
-    {value.saleMode === "ACCEPTANCE_ONLY" ? <label>Allowlist<textarea value={value.allowlist}
-      onChange={(event) => set("allowlist", event.target.value)} placeholder="buyer@example.ru" /></label> : null}
+    {value.saleMode === "ACCEPTANCE_ONLY" ? <>
+      <label>Email тестировщиков<textarea value={value.allowlist}
+        onChange={(event) => set("allowlist", event.target.value)} placeholder="tester@example.ru" /></label>
+      <label>Окончание теста (UTC)<input required value={value.acceptanceExpiresAt}
+        onChange={(event) => set("acceptanceExpiresAt", event.target.value)} placeholder="2026-12-01T12:00:00Z" /></label>
+    </> : null}
   </>;
 }
