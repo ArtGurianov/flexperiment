@@ -49,6 +49,13 @@ it("upgrades the exact showcase migration prefix and preserves interest and noti
     const through43 = journal();
     expect(through43).toHaveLength(43);
 
+    db.exec(`INSERT INTO products(id,product_ref,kind,access_model,course_ref) VALUES
+      ('legacy-test','course:legacy-test','ONLINE_COURSE','PAID','legacy-test'),
+      ('legacy-open','course:legacy-open','ONLINE_COURSE','PAID','legacy-open');
+      INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode,acceptance_allowlist_json) VALUES
+      ('legacy-test','course:legacy-test','legacy-test',100,'ACCEPTANCE_ONLY','["tester@example.test"]'),
+      ('legacy-open','course:legacy-open','legacy-open',100,'PUBLIC','["tester@example.test"]');`);
+
     migrateV2(db);
     expect(journal().slice(0, through43.length)).toEqual(through43);
     expect(journal().slice(43)).toMatchObject([
@@ -56,6 +63,12 @@ it("upgrades the exact showcase migration prefix and preserves interest and noti
       { version: "0045_native_payment_executor.sql", sha256: "11547f21822275eb5c0f958f06288ba6265f41304084d9c83d8f88e3c5a92979" },
       { version: "0046_lesson_completions.sql", sha256: "acc12483c24f3f553d832ae0d9035b287d89c6d2ba3846c18769228f3638d6a6" },
       { version: "0047_course_playback_state.sql", sha256: "412469e6c24c79bd0c88ed1a4ce9cd4200c64591f057cae257a5384d5a306b51" },
+      { version: "0048_acceptance_test_deadline.sql", sha256: "db85f1f5528e9404de30535e3e579d2e933f66359c364115898303d8a3e1bc73" },
+    ]);
+    expect(db.prepare(`SELECT o.sale_mode,o.acceptance_allowlist_json,o.acceptance_expires_at,p.version
+      FROM offers o JOIN products p ON p.id=o.product_id ORDER BY sale_mode`).all()).toEqual([
+      { sale_mode: "CLOSED", acceptance_allowlist_json: "[]", acceptance_expires_at: null, version: 2 },
+      { sale_mode: "PUBLIC", acceptance_allowlist_json: "[]", acceptance_expires_at: null, version: 2 },
     ]);
     expect(db.prepare("SELECT state, dispatch_started FROM native_payments WHERE id='legacy-payment'").get())
       .toEqual({ state: "CREATING", dispatch_started: 1 });
@@ -63,9 +76,9 @@ it("upgrades the exact showcase migration prefix and preserves interest and noti
       .toThrow("NATIVE_PAYMENT_DISPATCH_ALREADY_STARTED");
     expect(interestRows()).toEqual(before);
     expect(journal().slice(0, prefix.length)).toEqual(prefix);
-    const through47 = journal();
+    const through48 = journal();
     migrateV2(db);
-    expect(journal()).toEqual(through47);
+    expect(journal()).toEqual(through48);
     expect(assertReviewedRestoreSchema(db)).toBeUndefined();
     expect(db.pragma("foreign_key_check")).toEqual([]);
   } finally {

@@ -280,7 +280,7 @@ describe("FLEX-131 reviewed closure on synthetic data", () => {
       publishFixtureReceipt, replayPaymentCallback, requestPublicId: request.requestPublicId };
   }
 
-  async function planFor(customerId: string) {
+  async function planFor(customerId: string, removeAcceptance = false) {
     const operator = generateKeyPairSync("ed25519");
     const policyFile = join(root, "custody", "reviewed-policy.json");
     config.reviewedPolicyFile = policyFile;
@@ -300,6 +300,7 @@ describe("FLEX-131 reviewed closure on synthetic data", () => {
         freeLearning: { action: "DELETE", basisRef, until },
         progress: { action: "DELETE", basisRef, until },
         customerContact: retention, financeAndFiscal: retention, paidRightsAndPerformance: retention, legalAndAuditEvidence: retention,
+        ...(removeAcceptance ? { acceptanceAdmission: { action: "DELETE", basisRef, until } as const } : {}),
       },
     };
     const keys = readErasureVerificationKeys(config.keysFile, config.scope);
@@ -307,6 +308,7 @@ describe("FLEX-131 reviewed closure on synthetic data", () => {
     const ruleFor = ([category, step]: [string, { action: string; basisRef: string; until: string }]) =>
       ({ category, basisRef: step.basisRef, action: step.action, earliestUntil: step.until, latestUntil: step.until });
     const policy = { version: 1, scope: "canary", packageE: plan.packageE, validUntil: retainedUntil,
+      acceptanceAdmissionReadersSha256: removeAcceptance ? "c".repeat(64) : undefined,
       operators: { "operator-fixture": { publicKey: operator.publicKey.export({ type: "spki", format: "pem" }), authorizedUntil: retainedUntil } },
       cases: { [plan.requestId]: { customer, identityVerificationRef: plan.identityVerificationRef, latestExecuteAt: until } },
       rules: Object.entries(plan.categories).map(ruleFor),
@@ -330,6 +332,8 @@ describe("FLEX-131 reviewed closure on synthetic data", () => {
     if (profile !== "fake") fixture = await startTochkaHttpFixture();
     const { customerId, cookie, link, clientIp, ledger, reconcileFiscal, purchase, requestPublicId,
       settleRefund, financialCounts, publishFixtureReceipt, replayPaymentCallback } = await paidProfile(undefined, profile);
+    db.prepare(`INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode,acceptance_allowlist_json)
+      VALUES ('paid-acceptance','course:paid','paid',1200,'CLOSED',?)`).run('["owner@example.test","other@example.test"]');
     const snapshot = await backupFoundation(db, { environment: "canary", sourceCommit: "e67f982161114560c91de28128baec0a51a2d1b1" }, join(root, "backup"), config.recipient);
     db.exec("INSERT INTO email_suppressions(email_normalized,reason) VALUES ('owner@example.test','TEST_WITHDRAWAL')");
     settleRefund(requestPublicId);
@@ -349,7 +353,13 @@ describe("FLEX-131 reviewed closure on synthetic data", () => {
     const before = (table: string) => db.prepare(`SELECT * FROM ${table}`).all();
     const finance = ["orders", "order_lines", "native_payments", "native_refunds", "refund_requests", "fiscal_events",
       "course_entitlements", "course_access_starts"].map(table => ({ table, rows: before(table) }));
-    const { plan, dryRun, approve } = await planFor(customerId);
+    await expect((await planFor(customerId)).dryRun()).rejects.toThrow("ERASURE_ACCEPTANCE_DISPOSITION_REQUIRED");
+    const { plan, dryRun, approve, policy, setPolicy } = await planFor(customerId, true);
+    policy.acceptanceAdmissionReadersSha256 = undefined;
+    setPolicy();
+    await expect(dryRun()).rejects.toThrow("ERASURE_ACCEPTANCE_READERS_UNQUALIFIED");
+    policy.acceptanceAdmissionReadersSha256 = "c".repeat(64);
+    setPolicy();
     wire.requests.length = 0;
     const priorChanges = db.pragma("data_version", { simple: true });
     expect(await dryRun()).toMatchObject({ state: "DRY_RUN", activeRights: 0, orderCount, openRefunds: 0 });
@@ -361,8 +371,10 @@ describe("FLEX-131 reviewed closure on synthetic data", () => {
     expect(receipt).toMatchObject({
       state: "ERASURE_APPLIED", sequence: 1, requestId: plan.requestId,
       receipt: { applicationMode: "LIVE", counts: { user: 1, session: 1, verification: 1,
-        free_course_enrollments: 1, course_learning_starts: 1, lesson_resume_positions: 1, lesson_completions: 1, course_playback_state: 1, account_consents: 1, marketing_consents: 1 } },
+        free_course_enrollments: 1, course_learning_starts: 1, lesson_resume_positions: 1, lesson_completions: 1, course_playback_state: 1, account_consents: 1, marketing_consents: 1,
+        acceptance_allowlist_offers: 1 } },
     });
+    expect(db.prepare("SELECT acceptance_allowlist_json FROM offers").pluck().get()).toBe('["other@example.test"]');
     expect(JSON.stringify(receipt)).not.toMatch(/owner@example|session_token|synthetic-link|TEST_READ|cookie/i);
     expect(db.prepare("SELECT auth_user_id, display_name FROM customers WHERE id=?").get(customerId)).toEqual({ auth_user_id: null, display_name: null });
     expect(db.prepare("SELECT reason,removed_at FROM email_suppressions").get()).toEqual({ reason: "TEST_WITHDRAWAL", removed_at: null });
@@ -404,6 +416,7 @@ describe("FLEX-131 reviewed closure on synthetic data", () => {
       expect(count("lesson_completions", restored)).toBe(1);
       expect(count("course_playback_state", restored)).toBe(1);
       applyIsolatedRestoreErasure(restored, proof, keys, "canary", now());
+      expect(restored.prepare("SELECT acceptance_allowlist_json FROM offers").pluck().get()).toBe('["other@example.test"]');
       const priorReceipt = restored.prepare("SELECT * FROM reviewed_erasure_receipts").get();
       applyIsolatedRestoreErasure(restored, proof, keys, "canary", now());
       expect(restored.prepare("SELECT * FROM reviewed_erasure_receipts").get()).toEqual(priorReceipt);
@@ -443,6 +456,24 @@ describe("FLEX-131 reviewed closure on synthetic data", () => {
       expect(count("orders", restored)).toBe(1); // Replay does not reconstruct a missing financial tail.
       await expect(run({ operation: "reconcile" }, { ...config, databasePath: oldPath })).rejects.toThrow("ERASURE_NATIVE_RESTORE_FINANCIAL_HOLD");
     } finally { remote.close(); restored.close(); }
+  });
+
+  it("replays a legacy signed plan if the erased address later appears in the catalogue", async () => {
+    await initialize();
+    await login();
+    const customerId = db.prepare("SELECT id FROM customers").pluck().get() as string;
+    const { approve } = await planFor(customerId);
+    const op = await approve();
+    const receipt = await run(op);
+    db.exec(`INSERT INTO products(id,product_ref,kind,access_model,course_ref,withdrawn_at,withdrawn_reason,withdrawn_terms_ref)
+        VALUES ('legacy-offer-product','course:legacy-offer','ONLINE_COURSE','PAID','legacy-offer','2026-11-01','synthetic','synthetic');
+      INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode,acceptance_allowlist_json)
+        VALUES ('legacy-offer','course:legacy-offer','legacy-offer-product',100,'CLOSED','["owner@example.test","other@example.test"]');`);
+    expect(await run(op)).toEqual(receipt);
+    expect(db.prepare("SELECT acceptance_allowlist_json FROM offers").pluck().get()).toBe('["other@example.test"]');
+    expect(db.prepare("SELECT version FROM products").pluck().get()).toBe(2);
+    expect(await run(op)).toEqual(receipt);
+    expect(db.prepare("SELECT version FROM products").pluck().get()).toBe(2);
   });
 
   it.each(["lost-ack", "write-rejected"])("recovers the same plan after %s from custody", async failure => {

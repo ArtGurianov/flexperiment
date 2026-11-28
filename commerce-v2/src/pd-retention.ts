@@ -82,6 +82,8 @@ const supportedSchemaSha256 = new Set([
   "a0e1bbba4de455fab95614d5c08cbb06fb3216806df72d1a415123ee5fbadbeb",
   // 0047: course playback state after lesson completions.
   "ef24c8da9ca557bc22b2fe5cb4c49dce350c0f87deb9f73385f8b353b247dd70",
+  // 0048: offers carry the qualification window. The existing offline scopes are unchanged.
+  "a1db72cedccc8a500962b7912080233b505486ce24936cafbd64679b99a04064",
 ]);
 const parse = <T>(schema: z.ZodType<T>, value: unknown): T => {
   const result = schema.safeParse(value); return result.success ? result.data : refuse("RETENTION_POLICY_OR_HOLD_INVALID");

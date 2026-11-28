@@ -59,7 +59,8 @@ describe("live sale-mode gate", () => {
   });
 
   it("sells an ACCEPTANCE_ONLY offer only to its allowlist, and an emergency stop covers it too", async () => {
-    db.prepare(`UPDATE offers SET sale_mode='ACCEPTANCE_ONLY',acceptance_allowlist_json='["student@example.com"]'`).run();
+    db.prepare(`UPDATE offers SET sale_mode='ACCEPTANCE_ONLY',acceptance_allowlist_json='["student@example.com"]',
+      acceptance_expires_at='2026-09-30T11:00:00.000Z'`).run();
     stopSales();
     await expect(preview("acceptance-stopped")).rejects.toThrow("SALES_STOPPED");
     setTestStorefronts(db, { COURSES: "OPEN" });

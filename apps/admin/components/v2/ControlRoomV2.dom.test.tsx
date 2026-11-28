@@ -253,6 +253,19 @@ describe("Control Room v2", () => {
     await waitFor(() => expect(writes).toHaveLength(2));
     expect(writes[1]).toEqual({ url: "/v1/admin/v2/lab/occurrences/lab%3Anovember/offer", method: "PUT",
       body: { priceKopecks: 300_000, saleMode: "CLOSED", paymentPurpose: "Участие в LAB", acceptanceAllowlist: [], expectedProductVersion: 6 } });
+    await user.selectOptions(screen.getByLabelText("Режим продажи"), "ACCEPTANCE_ONLY");
+    await user.type(screen.getByLabelText("Email тестировщиков"), "tester@example.test");
+    await user.type(screen.getByLabelText("Окончание теста (UTC)"), "2026-11-01T08:30:00Z");
+    await user.click(screen.getByRole("button", { name: "Сохранить оффер v7" }));
+    await waitFor(() => expect(writes).toHaveLength(3));
+    expect(writes[2].body).toMatchObject({ saleMode: "ACCEPTANCE_ONLY", acceptanceAllowlist: ["tester@example.test"],
+      acceptanceExpiresAt: "2026-11-01T08:30:00Z" });
+    await user.selectOptions(screen.getByLabelText("Режим продажи"), "CLOSED");
+    expect(screen.queryByLabelText("Окончание теста (UTC)")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Сохранить оффер v7" }));
+    await waitFor(() => expect(writes).toHaveLength(4));
+    expect(writes[3].body).toMatchObject({ saleMode: "CLOSED", acceptanceAllowlist: [] });
+    expect(writes[3].body).not.toHaveProperty("acceptanceExpiresAt");
     for (const write of writes) {
       for (const field of ["actor", "productRef", "offerRef", "occurrenceRef", "kind"]) expect(write.body).not.toHaveProperty(field);
     }
