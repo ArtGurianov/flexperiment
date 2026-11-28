@@ -46,6 +46,13 @@ straight against the database as well as against a defect in the domain.
 | Exactly one legal release is active | `one_active_legal_release` UNIQUE | `legal-release.test.ts` |
 | A payment's idempotency key is unique | `checkout_idempotency` UNIQUE | `api.test.ts`, `domain.test.ts` |
 
+## Data governance invariants in CI
+
+| Invariant | Enforcement | Proof |
+|---|---|---|
+| Every application column in the primary migrated Commerce V2 SQLite database has one lifecycle classification | [FLEX-133 ADR](architecture/personal-data-lifecycle.md) and the test job | `personal-data-registry.test.ts` adds an unlisted column and table and drops a listed column in isolated migrated SQLite |
+| Every `*_json` and explicitly marked composite column has a payload description | Registry validation in the test job | `personal-data-registry.test.ts` removes descriptions and adds an unlisted JSON column to a non-personal group |
+
 ## Runtime invariants
 
 | Invariant | Owner | Guarded by |

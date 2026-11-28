@@ -57,6 +57,15 @@ explicit CLOSED gates and their independently accepted prerequisites.
 Imported comments retain original author identities, including email addresses;
 review that provenance before any separately authorized public sharing.
 
+## Personal data lifecycle
+
+Update the [personal data registry](docs/legal/personal-data/registry.yaml) in the
+same PR that changes data, its purpose, use, storage, transfer, recipients or
+retention. This applies to SQLite columns and to JSON, files, logs, mail, copies
+and processors. Follow the [lifecycle ADR](docs/architecture/personal-data-lifecycle.md)
+and regenerate the readable registry. Review uses that schema inspection cannot
+observe, including a new purpose for an existing field.
+
 ## Production release safety
 
 Before modifying a release workflow, read
