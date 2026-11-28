@@ -6,7 +6,7 @@ import { z } from "zod";
 import type { S3ClientConfig } from "@aws-sdk/client-s3";
 import { ErasureCustodian, ageCustodyEncryption } from "./erasure-custody";
 import { createErasureS3Custody } from "./erasure-custody-s3";
-import { ErasureLedgerError, ErasureLedgerStore, VerifiedErasureLedger, readOwnerErasureBundle } from "./erasure-ledger";
+import { ErasureLedgerError, ErasureLedgerStore, VerifiedErasureLedger, readOwnerErasureBundle, type ErasureBundle } from "./erasure-ledger";
 import { ErasureRuntimeFence, DrainedErasureRuntime } from "./erasure-fence";
 import { ErasureInstallationEvidence, readErasureInstallation } from "./erasure-installation";
 import { admitVerifiedErasure, readErasureVerificationKeys } from "./erasure-runtime";
@@ -15,6 +15,8 @@ import { applyDrainedRuntimeErasure } from "./erasure-restore";
 import { VerifiedErasureRequest } from "./erasure-request";
 import { createAuthRuntime } from "./auth";
 import { classifyV2Database } from "./db";
+import { cancelUnpublishedReviewedErasure, executeReviewedErasure, readReviewedAttempt, readReviewedErasure, readReviewedStatus, reviewedCancelOperation,
+  reviewedExecuteOperation, reviewedReadOperations, type ReviewedExecutionBoundary } from "./erasure-reviewed-owner";
 
 const file = z.string().max(1024).refine(isAbsolute);
 const allowedOrigins = ["https://canary-platform.flexperiment.ru", "https://canary-lab.flexperiment.ru", "https://canary-admin.flexperiment.ru", "https://canary-api.flexperiment.ru"];
@@ -28,12 +30,13 @@ const configurationSchema = z.object({ version: z.literal(1), scope: z.literal("
     expectedBucketOwner: z.string().regex(/^[^\r\n]{1,128}$/),
     readAccessKeyFile: file, readSecretKeyFile: file, writeAccessKeyFile: file, writeSecretKeyFile: file }).strict(),
   authEnvironmentFile: file.optional(),
+  reviewedPolicyFile: file.optional(),
 }).strict();
 export type ErasureOwnerConfiguration = z.infer<typeof configurationSchema>;
 const plainOperation = z.object({ operation: z.enum(["inspect", "initialize-fence", "initialize-custody", "resume-initialization", "recover-ledger", "read", "publish-pending", "reconcile"]) }).strict();
 const admitOperation = z.object({ operation: z.literal("admit"), requestId: z.string().uuid(),
   headers: z.object({ origin: z.enum(allowedOrigins as [string, ...string[]]), cookie: z.string().min(1).max(16_384) }).strict() }).strict();
-const operationSchema = z.union([plainOperation, admitOperation]);
+const operationSchema = z.union([plainOperation, admitOperation, reviewedReadOperations, reviewedExecuteOperation, reviewedCancelOperation]);
 function refuse(code = "ERASURE_OWNER_CONFIGURATION_INVALID"): never { throw new ErasureLedgerError(code); }
 
 export function readOwnerPrivateFile(path: string, maxBytes = 64 * 1024) {
@@ -71,7 +74,7 @@ export function publishErasureReadMirror(path: string, proof: VerifiedErasureLed
 /** Small explicit owner operations. No daemon, HTTP endpoint, key generation,
  * migration, arbitrary SQL, lease clearing or automatic crash repair. */
 export async function runErasureOwnerOperation(value: unknown, operation: unknown, options?: {
-  installation?: ErasureInstallationEvidence; requestHandler?: S3ClientConfig["requestHandler"]; now?: () => Date;
+  installation?: ErasureInstallationEvidence; requestHandler?: S3ClientConfig["requestHandler"]; now?: () => Date; reviewedBoundary?: (boundary: ReviewedExecutionBoundary) => void;
 }) {
   const parsed = configurationSchema.safeParse(value); const action = operationSchema.safeParse(operation);
   if (!parsed.success || !action.success) refuse();
@@ -89,24 +92,39 @@ export async function runErasureOwnerOperation(value: unknown, operation: unknow
   ErasureInstallationEvidence.assertRuntime(installation, environment);
   const keys = readErasureVerificationKeys(c.keysFile, c.scope);
   if (keys.subject[c.subjectKeyId]?.length !== 32) refuse("ERASURE_SUBJECT_KEY_MISSING");
+  const readPolicy = () => {
+    try {
+      if (!c.reviewedPolicyFile) return refuse("ERASURE_AWAITING_E_POLICY");
+      return JSON.parse(readOwnerPrivateFile(c.reviewedPolicyFile));
+    } catch { return refuse("ERASURE_AWAITING_E_POLICY"); }
+  };
+  const reviewContext = { scope: c.scope, keys, subjectKeyId: c.subjectKeyId, now, readPolicy };
+  if (op.operation === "review-inventory" || op.operation === "review-dry-run") {
+    const db = new Database(c.databasePath, { fileMustExist: true, readonly: true });
+    try { return readReviewedErasure({ db, ...reviewContext }, op); } finally { db.close(); }
+  }
   const forbiddenRoots = [dirname(c.databasePath), c.fenceDirectory, dirname(c.mirrorFile)];
+  const readJournal = () => readOwnerErasureBundle({ directory: c.ledgerDirectory, scope: c.scope, keys, forbiddenRoots });
+  if (op.operation === "review-attempt") return readReviewedAttempt(readJournal(), op.requestId);
   const recipientSha256 = ageCustodyEncryption(c.recipient).recipientSha256;
   const readerConfiguration: ErasureReadConfiguration = { version: 1, scope: c.scope, endpoint: c.remote.endpoint, region: c.remote.region,
     bucket: c.remote.bucket, expectedBucketOwner: c.remote.expectedBucketOwner, prefix: `flexperiment/erasure/${c.scope}/`, bundleFile: c.mirrorFile, recipientSha256,
     accessKeyId: readOwnerPrivateFile(c.remote.readAccessKeyFile).trim(), secretAccessKey: readOwnerPrivateFile(c.remote.readSecretKeyFile).trim() };
   ErasureInstallationEvidence.assertReaderBinding(installation, erasureReaderBinding(readerConfiguration));
   const remote = createErasureCurrentObjects(readerConfiguration, options?.requestHandler);
-  const readCurrent = createCurrentErasureRead({ scope: c.scope, keys, remote, recipientSha256, now,
+  const createReader = (candidate?: ErasureBundle) => createCurrentErasureRead({ scope: c.scope, keys, remote, recipientSha256, now,
     readBundle: () => op.operation === "recover-ledger" ? JSON.parse(readOwnerPrivateFile(c.mirrorFile, 4 * 1024 * 1024))
-      : readOwnerErasureBundle({ directory: c.ledgerDirectory, scope: c.scope, keys, forbiddenRoots }) });
+      : candidate ?? readJournal() });
+  const readCurrent = createReader();
   let db: Database.Database | undefined; let fence: ErasureRuntimeFence | undefined; let ledger: ErasureLedgerStore | undefined;
   let writer: ReturnType<typeof createErasureS3Custody> | undefined;
   try {
     if (op.operation === "read") { const proof = await readCurrent();
       return { operation: op.operation, scope: c.scope, state: "REMOTE_VERIFIED", sequence: proof.bundle.entries.length }; }
     // Actual existing merchant DB, never an automatic empty/migrated substitute.
-    db = new Database(c.databasePath, { fileMustExist: true, readonly: ["initialize-fence", "initialize-custody", "resume-initialization", "recover-ledger", "publish-pending"].includes(op.operation) });
+    db = new Database(c.databasePath, { fileMustExist: true, readonly: ["initialize-fence", "initialize-custody", "resume-initialization", "recover-ledger", "publish-pending", "review-status"].includes(op.operation) });
     db.pragma("foreign_keys=ON"); if (classifyV2Database(db) !== "SUPPORTED") refuse("ERASURE_RESTORE_SCHEMA_REFUSED");
+    if (op.operation === "review-status") return readReviewedStatus(db, await readCurrent(), op.requestId);
     if (op.operation === "initialize-fence" && existsSync(join(c.fenceDirectory, "erasure-fence.sqlite"))) refuse("ERASURE_OWNER_ALREADY_INITIALIZED");
     fence = new ErasureRuntimeFence({ directory: c.fenceDirectory, forbiddenRoots: [dirname(c.databasePath), c.ledgerDirectory, dirname(c.mirrorFile)],
       scope: c.scope, keys, readCurrent, now, initialize: op.operation === "initialize-fence" });
@@ -150,6 +168,11 @@ export async function runErasureOwnerOperation(value: unknown, operation: unknow
       });
       return { operation: op.operation, scope: c.scope, state: "CLOSED", remote: "CONFIRMED", runtimeAdmission: "PENDING" };
     }
+    if (op.operation === "review-execute" || op.operation === "review-cancel-unpublished") {
+      const context = { db, ...reviewContext, fence: gate, custodian: owner, journal: ledger, boundary: options?.reviewedBoundary,
+        readCurrent: (candidate?: ErasureBundle) => candidate ? createReader(candidate)() : readCurrent(), publishReadMirror: publish };
+      return op.operation === "review-execute" ? await executeReviewedErasure(context, op) : await cancelUnpublishedReviewedErasure(context, op);
+    }
     if (op.operation !== "admit") refuse();
     // LIVE owner attach applies current ledger without BOOT_RESTORE's blanket
     // session invalidation. Then derive the genuine request from Better Auth.
@@ -171,7 +194,7 @@ export async function runErasureOwnerOperation(value: unknown, operation: unknow
       allowedOrigins, getSession: h => auth.auth.api.getSession({ headers: h }), now }));
     return await admitVerifiedErasure({ db: merchant, request, fence: gate, custodian: owner, keys, now, publishReadMirror: publish });
   } catch (error) {
-    fence?.closeAdmission();
+    if (op.operation !== "review-execute") fence?.closeAdmission();
     if (error instanceof ErasureLedgerError) throw error;
     return refuse("ERASURE_OWNER_OPERATION_REFUSED");
   } finally { ledger?.close(); writer?.close(); fence?.close(); db?.close(); remote.close(); }

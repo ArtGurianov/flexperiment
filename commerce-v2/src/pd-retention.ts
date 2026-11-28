@@ -3,6 +3,7 @@ import type Database from "better-sqlite3";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { classifyV2Database } from "./db";
+import { hasTable, verificationSubjectEmail } from "./my-session-storage";
 
 const categories = ["EXPIRED_CREDENTIALS", "AUTH_OUTBOX", "PLAYBACK_TELEMETRY", "UNBOUND_INTENTS", "BACKUP_ARCHIVES"] as const;
 const categorySchema = z.enum(categories);
@@ -64,11 +65,23 @@ const supportedSchemaSha256 = new Set([
   // 0035: owner storefront-switch observations (no subject data), the quote's opening generation in
   // checkout_quotes, and sales_activation frozen as history; no new identity store. Hashed journal.
   "6ef1be23e4d713fa77e81a1cb0391fcb1292d18634b3d2270751bec6ab58a728",
-  // FLEX-128 (local 0036, coordinator reserve 0037): course_learning_starts, a subject-linked nonfinancial
+  // FLEX-128 (0036): course_learning_starts, a subject-linked nonfinancial
   // start fact written only with an explicit FREE enrollment. Erased with the subject; kept by retention.
   "f0b2205a43d7a733a96cbc3b40f7b57e4850dc0f8082dfc5449f1a95bee21e13",
   // 0037: LAB interest, notice history and purpose-specific suppression. Hashed journal.
   "e76bc6d055caaeb356ab43fe96ab9766484fbd1fef165431a685236da5bb228a",
+  // 0038–0042: MY, native payments and LAB lifecycle on top of the showcase schema.
+  "260e9e4e7d342587d89acad72ad5c38d4c83ede762b6afe5e4827483b71daa4d",
+  // 0043: irreversible native payment handoff marker.
+  "a9b1238f3188fd74e87d86edef9774887a4d23f728e24ab8337eb0060f889150",
+  // 0044: append-only reviewed erasure receipts; this cleanup leaves them intact.
+  "49c1014232cb13df508508c6fb02c6b0a94149d1ff4e13310e8b9ba34f9aa658",
+  // 0045: executor identity, fiscal mode and refund dispatch on existing financial rows.
+  "f6e1eb904d862767c86ab6bf3faf838daa391456f4a3e1b9416dfd157b88f562",
+  // 0046: lesson completions after native payment executor.
+  "a0e1bbba4de455fab95614d5c08cbb06fb3216806df72d1a415123ee5fbadbeb",
+  // 0047: course playback state after lesson completions.
+  "ef24c8da9ca557bc22b2fe5cb4c49dce350c0f87deb9f73385f8b353b247dd70",
 ]);
 const parse = <T>(schema: z.ZodType<T>, value: unknown): T => {
   const result = schema.safeParse(value); return result.success ? result.data : refuse("RETENTION_POLICY_OR_HOLD_INVALID");
@@ -148,9 +161,7 @@ export function cleanupOfflinePersonalData(db: Database.Database, input: {
     }
     for (const row of rows("verification")) {
       if (!older(row.expires_at, policy.expiredCredentialsGraceSeconds)) continue;
-      let value: unknown; try { value = JSON.parse(String(row.value)); } catch { refuse("RETENTION_VERIFICATION_CLASSIFICATION_REQUIRED"); }
-      if (!value || typeof value !== "object" || typeof (value as { email?: unknown }).email !== "string") refuse("RETENTION_VERIFICATION_CLASSIFICATION_REQUIRED");
-      const email = (value as { email: string }).email.trim().toLocaleLowerCase("en-US");
+      const email = verificationSubjectEmail(row) ?? refuse("RETENTION_VERIFICATION_CLASSIFICATION_REQUIRED");
       const refs = emailRefs(email);
       if (!held("EXPIRED_CREDENTIALS", refs)) result.expiredCredentials += db.prepare("DELETE FROM verification WHERE id=?").run(row.id).changes;
     }
@@ -168,6 +179,31 @@ export function cleanupOfflinePersonalData(db: Database.Database, input: {
       if (!older(row.created_at, policy.unboundIntentsMaxAgeSeconds)
         || !older(row.updated_at, policy.unboundIntentsMaxAgeSeconds)) {
         recentMailRecipients.add(email);
+      }
+    }
+    // FLEX-120/121: OTP delivery facts follow the auth outbox policy; exchange and derived LMS
+    // credentials expire with the other credentials. Older reviewed schemas lack these tables.
+    if (hasTable(db, "my_otp_outbox")) for (const row of rows("my_otp_outbox")) {
+      const refs = emailRefs(String(row.recipient_normalized));
+      if (older(row.updated_at, policy.authOutboxMaxAgeSeconds) && older(row.created_at, 600) && !held("AUTH_OUTBOX", refs)) {
+        result.authOutbox += db.prepare("DELETE FROM my_otp_outbox WHERE id=?").run(row.id).changes;
+      }
+    }
+    if (hasTable(db, "session_exchanges")) {
+      const customerRefs = (id: unknown) => {
+        const customer = customers.find(candidate => candidate.id === id);
+        return customer ? subjectRefs(customer) : id ? [{ kind: "CUSTOMER" as const, value: String(id) }] : [];
+      };
+      for (const row of rows("lms_sessions")) {
+        if (older(row.expires_at, policy.expiredCredentialsGraceSeconds) && !held("EXPIRED_CREDENTIALS", customerRefs(row.customer_id))) {
+          result.expiredCredentials += db.prepare("DELETE FROM lms_sessions WHERE id=?").run(row.id).changes;
+        }
+      }
+      for (const row of rows("session_exchanges")) {
+        if (older(row.expires_at, policy.expiredCredentialsGraceSeconds) && !held("EXPIRED_CREDENTIALS", customerRefs(row.customer_id))
+          && !db.prepare("SELECT 1 FROM lms_sessions WHERE exchange_id=?").get(row.id)) {
+          result.expiredCredentials += db.prepare("DELETE FROM session_exchanges WHERE id=?").run(row.id).changes;
+        }
       }
     }
     for (const row of rows("playback_access_events")) {
@@ -190,10 +226,8 @@ export function cleanupOfflinePersonalData(db: Database.Database, input: {
       if (recentMailRecipients.has(customer.email_normalized)) continue;
       let pendingLink = false;
       for (const verification of rows("verification")) {
-        let body: unknown; try { body = JSON.parse(String(verification.value)); } catch { refuse("RETENTION_VERIFICATION_CLASSIFICATION_REQUIRED"); }
-        if (!body || typeof body !== "object" || typeof (body as { email?: unknown }).email !== "string") refuse("RETENTION_VERIFICATION_CLASSIFICATION_REQUIRED");
-        if ((body as { email: string }).email.trim().toLocaleLowerCase("en-US") === customer.email_normalized
-          && timestamp(verification.expires_at) >= time) pendingLink = true;
+        const email = verificationSubjectEmail(verification) ?? refuse("RETENTION_VERIFICATION_CLASSIFICATION_REQUIRED");
+        if (email === customer.email_normalized && timestamp(verification.expires_at) >= time) pendingLink = true;
       }
       if (pendingLink) continue;
       // Preserve every grant/order/quote/recipient/access/progress fact, even if
@@ -202,6 +236,8 @@ export function cleanupOfflinePersonalData(db: Database.Database, input: {
         "authenticated_consent_actions", "notification_campaign_recipients", "lesson_resume_positions",
         "course_access_starts", "course_learning_starts", "playback_grant_rate_limits", "playback_access_events"]
         .some(table => !!db.prepare(`SELECT 1 FROM ${table} WHERE customer_id=? LIMIT 1`).get(customer.id))) continue;
+      if (["lesson_completions", "course_playback_state"].some(table => hasTable(db, table)
+        && db.prepare(`SELECT 1 FROM ${table} WHERE customer_id=?`).get(customer.id))) continue;
       if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='lab_guest_access'").get()
         && db.prepare("SELECT 1 FROM lab_guest_access WHERE customer_id=?").get(customer.id)) continue;
       if (db.prepare("SELECT 1 FROM audit_log WHERE actor=? OR subject_ref=? OR instr(evidence_json,?)>0 OR instr(evidence_json,?)>0 LIMIT 1")

@@ -2,6 +2,8 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { myCheckoutHref } from "../../../lib/my-storefront";
+import Navbar from "./navbar/Navbar";
 import LabGuestCheckout from "./LabGuestCheckout";
 import { labRequest, newLabCapability } from "./LabGuestCheckout";
 import { RefundContact } from "../../../packages/customer-support/RefundContact";
@@ -27,7 +29,7 @@ async function read(path: string, signal: AbortSignal) {
 }
 
 /** LAB V2 guest checkout; all authority stays in Commerce V2. */
-export default function LabV2Client() {
+export default function LabV2Client({ myOrigin, sharedSession = false }: { myOrigin?: string | null; sharedSession?: boolean } = {}) {
   const router = useRouter();
   const [catalogue, setCatalogue] = useState<LabCatalogue | null>(null);
   const [showcase, setShowcase] = useState<LabShowcase | null>(null);
@@ -46,7 +48,7 @@ export default function LabV2Client() {
       .then((data) => {
         if (!controller.signal.aborted) setCatalogue(labCatalogueSchema.parse(data));
       }).catch(reportReadError);
-    void read("/v1/me", controller.signal)
+    if (!sharedSession) void read("/v1/me", controller.signal)
       .then(async (session) => {
         const me = labMeSchema.parse(session);
         const history = me.customer ? labHistorySchema.parse(await read("/v1/me/orders", controller.signal)).orders : [];
@@ -55,7 +57,7 @@ export default function LabV2Client() {
         setOrders(history.filter((order) => order.productKind === "LAB"));
       }).catch(reportReadError);
     return () => controller.abort();
-  }, []);
+  }, [sharedSession]);
   const logout = async () => {
     setBusy(true);
     try {
@@ -68,19 +70,23 @@ export default function LabV2Client() {
     finally { setBusy(false); }
   };
   return <main>
-    <header><a href="#catalogue" className="wordmark">FLEXPERIMENT<span> / LAB</span></a><span className="stamp">PRIVATE CANARY · V2</span></header>
+    <header><a href="#catalogue" className="wordmark">FLEXPERIMENT<span> / LAB</span></a><span className="stamp">PRIVATE CANARY · V2</span>{myOrigin && <Navbar myOrigin={myOrigin} sharedSession={sharedSession} />}</header>
     <section className="intro"><p className="eyebrow">Практика в движении</p><h1>Встречаемся.<br /><span>Двигаемся.</span></h1><p className="notice">Афиша мастер-классов по городам.</p></section>
     {error ? <p role="alert">Не удалось проверить данные V2. Повторите загрузку. Устаревший API не используется.</p> : null}
     <section id="catalogue" aria-labelledby="catalogue-title"><div className="sectionHeading"><span>01 /</span><h2 id="catalogue-title">Расписание LAB</h2></div>
       {showcase?.sales.state === "CLOSED" ? <p className="salesStatus" role="status"><strong>Продажи закрыты.</strong> {closedReason[showcase.sales.reason ?? "STOREFRONT_CLOSED"]} Оставьте предзапись — сообщим, когда откроем.</p> : null}
       {!showcase ? <p role="status">Проверяем каталог…</p> : showcase.occurrences.length === 0 ? <p className="empty">Опубликованных встреч пока нет.</p> : <div className="events">{showcase.occurrences.map((event) => {
         const purchasable = catalogue?.occurrences.find((offer) => offer.occurrenceRef === event.occurrenceRef);
+        const useMy = myOrigin !== undefined || catalogue?.paymentMode === "native";
+        const checkout = catalogue?.paymentMode === "native" ? myCheckoutHref(myOrigin, purchasable?.offerRef ?? null, "lab") : null;
         return <article key={event.occurrenceRef} id={event.occurrenceRef}>
         <p>{showcase.cities.find((city) => city.cityId === event.cityId)?.title ?? "Город не указан"}</p><h3>{event.title}</h3>
         <time dateTime={event.startsAt}>{new Intl.DateTimeFormat("ru-RU", { dateStyle: "long", timeStyle: "short", timeZone: event.timezone }).format(new Date(event.startsAt))}</time>
         <p>{event.venue.status === "CONFIRMED" ? [event.venue.name, event.venue.address].filter(Boolean).join(", ") || "Адрес сообщим участникам" : event.venue.disclosureText}</p>
         <p>{money(event.amountKopecks)}</p>{event.sales === "OPEN" && purchasable && !purchasable.soldOut && catalogue?.paymentMode !== "disabled"
-          ? <LabGuestCheckout offerRef={purchasable.offerRef} displayedAmountKopecks={purchasable.amountKopecks} />
+          ? useMy
+            ? checkout ? <a className="primary" href={checkout}>Купить билет</a> : <button disabled>Покупка временно недоступна</button>
+            : <LabGuestCheckout offerRef={purchasable.offerRef} displayedAmountKopecks={purchasable.amountKopecks} />
           : <button disabled>{purchasable?.soldOut ? "Мест нет" : "Продажи закрыты"}</button>}
       </article>; })}</div>}
       {catalogue?.occurrences.length ? <script type="application/ld+json"

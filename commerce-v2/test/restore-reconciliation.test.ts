@@ -5,8 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { migrateV2 } from "../src/db";
-import { checkout, confirmCheckout, MockPaymentRail, prepareCheckout } from "../src/checkout";
+import { checkout, MockPaymentRail, prepareCheckout } from "../src/checkout";
 import { stageALegalManifestJson, stageBLegalManifestJson } from "./fixtures/legal";
+import { seedHistoricalGuestLabPurchase } from "./fixtures/lab-purchase";
 import { openTestStorefront, qualifyTestFiscalPolicies, testCheckoutConfig } from "./fixtures/sales";
 import { grantManualEntitlement, customerCanAccessCourse } from "../src/entitlements";
 import { decideRefund, executeApprovedRefund, requestRefund } from "../src/refunds";
@@ -18,7 +19,7 @@ import type { SharedCheckoutSnapshot } from "../src/checkout-snapshot";
 import { confirmSyntheticAccount } from "./fixtures/confirmed-account";
 import { recordAuthenticatedConsents } from "../src/authenticated-consents";
 import { currentLegalRelease, legalManifestHash } from "../src/legal-control";
-import { checkInLabTicket, labLegalReview, readLabTicket, startLabGuest } from "../src/lab-tickets";
+import { checkInLabTicket, readLabTicket } from "../src/lab-tickets";
 
 const now = new Date("2026-10-20T10:00:00.000Z");
 const paymentAt = "2026-10-19T12:00:00.000Z", refundAt = "2026-10-19T13:00:00.000Z";
@@ -216,14 +217,9 @@ describe("isolated SQLite backup + fresh Refref money tail", () => {
       INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode) VALUES ('lab-offer','lab:one','lab-product',10000,'PUBLIC');`);
     qualifyTestFiscalPolicies(source); openTestStorefront(source, "LAB");
     const token = randomBytes(32).toString("base64url");
-    const guest = startLabGuest(source, { email: "student@example.test", accessToken: token }, "2026-10-19T10:00:00.000Z");
-    const quote = await prepareCheckout(source, rail, testCheckoutConfig, { customerId: "customer", customerEmail: "student@example.test",
-      offerRef: "lab:one", previewIdempotencyKey: "lab-preview", orderPublicId: guest.orderPublicId }, "2026-10-19T10:00:00.000Z");
-    if (quote.state !== "PRICE_REVIEW_REQUIRED") throw new Error("quote required");
-    const review = labLegalReview(source);
-    await confirmCheckout(source, rail, testCheckoutConfig, { customerId: "customer", customerEmail: "student@example.test",
-      quoteId: quote.quoteId, idempotencyKey: "lab-checkout", labAcceptance: { personalDataConsent: true, termsAccepted: true,
-        receiptContactAccepted: true, releaseVersion: review.releaseVersion, manifestSha256: review.manifestSha256 } }, "2026-10-19T10:00:00.000Z");
+    // A historical guest purchase (FLEX-60 closed new ones): order-scoped capability on an unbound customer.
+    await seedHistoricalGuestLabPurchase(source, rail, testCheckoutConfig, { email: "student@example.test", accessToken: token,
+      offerRef: "lab:one", now: "2026-10-19T10:00:00.000Z" });
     const ticket = readLabTicket(source, token);
     if (!("qrToken" in ticket) || !ticket.qrToken) throw new Error("ticket QR required");
     checkInLabTicket(source, { qrToken: ticket.qrToken, occurrenceRef: "lab:one", actor: "owner" }, "2026-10-19T11:00:00.000Z");

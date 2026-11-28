@@ -1,0 +1,60 @@
+{
+  "schema": "flexperiment.flex-123.navbar-session/1",
+  "note": "Synthetic fixtures only. No real e-mail, session or customer. LMS shape follows #286 profile.json limited /v1/lms/session view. LAB runs guest-only (coordinator decision, no CORS).",
+  "config": {
+    "LMS": {
+      "variant": "LMS",
+      "myOrigin": "https://my.flexperiment.test",
+      "sessionUrl": "/v1/lms/session",
+      "signOutUrl": "/v1/lms/sign-out"
+    },
+    "LAB": {
+      "variant": "LAB",
+      "myOrigin": "https://my.flexperiment.test",
+      "sessionUrl": null,
+      "signOutUrl": null
+    },
+    "LAB_ATTACHED_LATER": {
+      "variant": "LAB",
+      "myOrigin": "https://my.flexperiment.test",
+      "sessionUrl": "/v1/me",
+      "signOutUrl": "/v1/lab/sign-out",
+      "note": "hypothetical same-origin LAB attachment, exercised only to prove the config shape"
+    }
+  },
+  "answers": {
+    "lmsNamed": {
+      "signedIn": true,
+      "displayName": "Курсант",
+      "emailMasked": "b***@e***.test",
+      "entitlements": [
+        {
+          "scope": "COURSE",
+          "courseRef": "flex-basics"
+        }
+      ]
+    },
+    "labUnnamed": {
+      "signedIn": true,
+      "displayName": null,
+      "emailMasked": "l***@e***.test"
+    },
+    "signedOut": {
+      "signedIn": false
+    },
+    "leakyLegacy": {
+      "customer": {
+        "id": "cus_fixture",
+        "email_normalized": "buyer@example.test"
+      },
+      "entitlements": []
+    },
+    "unmaskedEmail": {
+      "signedIn": true,
+      "displayName": null,
+      "emailMasked": "buyer@example.test",
+      "customerId": "cus_fixture",
+      "email": "buyer@example.test"
+    }
+  }
+}

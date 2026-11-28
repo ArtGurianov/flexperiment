@@ -157,14 +157,34 @@ export class ErasureCustodian {
     if (canonical(current.head) !== canonical(head)) refuse("ERASURE_REMOTE_READBACK_FAILED");
   }
   /** Explicit repair of a pending local append; GET-first, same complete ledger, no new request. */
-  async publishPending(now = new Date()) {
-    const bundle = this.#bundle(); const current = await this.#readHead();
+  async publishPending(now = new Date(), approvedReviewedEntry?: string) {
+    await this.#publish(this.#bundle(), now, approvedReviewedEntry);
+  }
+  /** Competing successor, at the same sequence as a never-confirmed reviewed entry.
+   * If the original CAS won, its different hash makes this operation fail closed. */
+  async publishReviewedCancellation(bundle: ErasureBundle, now: Date, verifyPrefix: () => Promise<void>) {
+    if (bundle.entries.at(-1)?.body.kind !== "REVIEWED_CANCELLATION") refuse("ERASURE_CANCELLATION_PREFIX_MISMATCH");
+    await this.#publish(bundle, now, undefined, verifyPrefix);
+  }
+  async #publish(bundle: ErasureBundle, now: Date, approvedReviewedEntry?: string, verifyPrefix?: () => Promise<void>) {
+    const current = await this.#readHead();
     const n = current.head.body.sequence;
     const genesis = this.#localHead({ version: 1, scope: this.#scope, entries: [] }, now);
     if (n > bundle.entries.length || current.head.body.headHash !== (n ? bundle.entries[n - 1]?.hash : genesis)) {
       refuse("ERASURE_LOCAL_LEDGER_STALE_OR_FORKED");
     }
+    const currentPacket = await this.#remote.read(current.head.body.objectRef);
+    if (!currentPacket) refuse("ERASURE_REMOTE_READBACK_FAILED");
+    verifyCustodyPacket(currentPacket.bytes, current.head, { ...bundle, entries: bundle.entries.slice(0, n) }, this.#keys);
     if (n === bundle.entries.length) return; // Lost ACK: do not overwrite or re-encrypt.
+    if (bundle.entries.slice(n).some(entry =>
+      entry.body.kind === "REVIEWED_ERASURE" && entry.hash !== approvedReviewedEntry)) {
+      refuse("ERASURE_REVIEWED_RESUME_REQUIRED");
+    }
+    if (verifyPrefix) {
+      if (n !== bundle.entries.length - 1) refuse("ERASURE_CANCELLATION_PREFIX_MISMATCH");
+      await verifyPrefix();
+    }
     const head = await this.#packet(bundle, now);
     await this.#remote.compareExchange("head.json", Buffer.from(canonical(head)), current.etag);
     const readBack = await this.#readHead();

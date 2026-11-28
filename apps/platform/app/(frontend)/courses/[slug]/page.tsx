@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import Image from "next/image";
 import { notFound } from "next/navigation";
+import { storefrontCheckoutMyOrigin } from "../../../../../../lib/my-storefront";
 import { connection } from "next/server";
 import { Suspense } from "react";
 import { headers } from "next/headers";
@@ -52,7 +53,7 @@ async function CourseContent({ params }: Props) {
         </div>
         {cover && <Image className="courseHeroCover" src={cover.path} alt={cover.alt} width={cover.width} height={cover.height} unoptimized />}
       </header>
-      {commercial.accessModel === "PAID" && <CourseCheckout courseRef={result.course.courseRef} offerRef={commercial.offerRef} saleMode={commercial.saleMode} priceKopecks={commercial.priceKopecks} />}
+      {commercial.accessModel === "PAID" && <CourseCheckout myOrigin={storefrontCheckoutMyOrigin(process.env)} courseRef={result.course.courseRef} offerRef={commercial.offerRef} saleMode={commercial.saleMode} priceKopecks={commercial.priceKopecks} />}
       {courseDescription != null && <section className="richCopy courseDescription" aria-label="О курсе"><LexicalReadOnly data={courseDescription} /></section>}
       <section className="syllabus" aria-labelledby="syllabus-title">
         <p className="sectionNumber">Программа</p><h2 id="syllabus-title">Что внутри</h2>

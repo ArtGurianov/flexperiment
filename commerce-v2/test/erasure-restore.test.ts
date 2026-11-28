@@ -70,6 +70,10 @@ describe("real isolated old SQLite backup + independent latest erasure journal",
     // FLEX-128 (G-01): an unrelated subject's explicit enrollment and start fact survive the restore.
     db.exec(`INSERT INTO free_course_enrollments(customer_id,product_id,product_version,enrolled_at) VALUES ('other-customer','product',1,'2026-10-12');
       INSERT INTO course_learning_starts(customer_id,course_ref,product_id,source,started_at) VALUES ('other-customer','synthetic-course','product','FREE_ENROLLMENT','2026-10-12');`);
+    db.prepare("INSERT INTO lesson_completions VALUES (?, 'synthetic-lesson', ?)")
+      .run("deleted-customer", now.toISOString());
+    db.prepare("INSERT INTO lesson_completions VALUES (?, 'synthetic-lesson', ?)")
+      .run("other-customer", now.toISOString());
     const archive = join(root, "before-erasure.sqlite"); await db.backup(archive); // Genuine SQLite online backup with WAL.
     tombstone(); const proof = await verified();
     const restored = new Database(archive); restored.pragma("foreign_keys=ON");
@@ -79,7 +83,7 @@ describe("real isolated old SQLite backup + independent latest erasure journal",
       expect(restored.prepare("SELECT id FROM customers ORDER BY id").all()).toEqual([{ id: "other-customer" }]);
       expect(rowCount(restored, '"user"')).toBe(1);
       for (const table of ['"session"', "verification", "notification_campaign_recipients"]) expect(rowCount(restored, table)).toBe(0);
-      for (const table of ["free_course_enrollments", "course_learning_starts"]) {
+      for (const table of ["free_course_enrollments", "course_learning_starts", "lesson_completions"]) {
         expect(restored.prepare(`SELECT customer_id FROM ${table}`).all()).toEqual([{ customer_id: "other-customer" }]);
       }
       expect(restored.prepare("SELECT customer_id FROM authenticated_consent_actions").all()).toEqual([{ customer_id: "other-customer" }]);
@@ -174,5 +178,29 @@ describe("real isolated old SQLite backup + independent latest erasure journal",
     await expect(VerifiedErasureLedger.read({ scope: "canary", bundle: ledger.export(), keys,
       readCurrentCheckpoint: async () => { throw new Error("unavailable"); } })).rejects.toThrow("ERASURE_CHECKPOINT_UNAVAILABLE");
     expect(db.serialize()).toEqual(before);
+  });
+
+  // FLEX-120/121 (B): MY OTP rows, delivery facts, exchanges and derived LMS sessions after restore.
+  it("re-applies erasure to MY OTP deliveries and drops every exchange and LMS session on restore", async () => {
+    const otpHash = "A".repeat(43);
+    for (const id of ["deleted-customer", "other-customer"]) {
+      db.prepare("INSERT INTO verification(id,identifier,value,expires_at) VALUES (?,?,?,?)")
+        .run(`otp-${id}`, `sign-in-otp-${id}@example.test`, `${otpHash}:0`, "2027-01-01");
+      db.prepare("INSERT INTO my_otp_outbox(id,recipient_normalized,state) VALUES (?,?,'SENT')").run(`otp-outbox-${id}`, `${id}@example.test`);
+      db.prepare(`UPDATE "session" SET audience='MY' WHERE id=?`).run(`session-${id}`);
+      db.prepare(`INSERT INTO session_exchanges(id,audience,return_path,state_sha256,status,my_session_id,customer_id,code_sha256,
+        code_expires_at,created_at,expires_at,issued_at,closed_at) VALUES (?,'LMS','/courses/x',?,'REDEEMED',?,?,?,?,?,?,?,?)`)
+        .run(`tx-${id}`.padEnd(22, "x").slice(0, 22), "b".repeat(64), `session-${id}`, id, createHash("sha256").update(id).digest("hex"),
+          "2027-01-01", "2026-10-11", "2027-01-01", "2026-10-11", "2026-10-11");
+      db.prepare("INSERT INTO lms_sessions(id,token_sha256,parent_session_id,customer_id,exchange_id,created_at,expires_at) VALUES (?,?,?,?,?,?,?)")
+        .run(`lms-${id}`, createHash("sha256").update(`lms-${id}`).digest("hex"), `session-${id}`, id, `tx-${id}`.padEnd(22, "x").slice(0, 22), "2026-10-11", "2027-01-01");
+    }
+    db.prepare(`INSERT INTO session_exchanges(id,audience,return_path,state_sha256,status,created_at,expires_at)
+      VALUES ('started-exchange-00000','LMS','/courses/x',?,'STARTED','2026-10-11','2027-01-01')`).run("c".repeat(64));
+    tombstone();
+    applyIsolatedRestoreErasure(db, await verified(), keys, "canary", now);
+    expect(db.prepare("SELECT recipient_normalized FROM my_otp_outbox").all()).toEqual([{ recipient_normalized: "other-customer@example.test" }]);
+    for (const table of ['"session"', "verification", "session_exchanges", "lms_sessions"]) expect([table, rowCount(db, table)]).toEqual([table, 0]);
+    expect(db.pragma("foreign_key_check")).toEqual([]);
   });
 });

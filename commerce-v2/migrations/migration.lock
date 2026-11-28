@@ -38,6 +38,16 @@
     "0034_browser_contexts.sql": "b7bd54cad4fc6882f0e91ec2237a2d3429678679d8f7489a723ce15fde270d80",
     "0035_storefront_switch.sql": "7b6ff1ab0127eb50e6c4db5bf2ee6fe87a611279785ec829fc65616e4668af58",
     "0036_free_enrollment_learning_starts.sql": "97909ae9bd9f01152c8b6159c56f8a384680e1ddaab92377efae560caa1b019f",
-    "0037_lab_interest.sql": "0caaf48d0e111610f0109e145ec469db82be76e78acc78d341199b396a1e025b"
+    "0037_lab_interest.sql": "0caaf48d0e111610f0109e145ec469db82be76e78acc78d341199b396a1e025b",
+    "0038_my_identity_sessions.sql": "83fe904ecb08e9669ef616ac93e2448d7c206e0b0e52f56dfbd2b098652d14d9",
+    "0039_native_payments_fiscal_events.sql": "7772a72323c9d43bfa2254441c3676ea496f6d7c80cd23c8e927127109165708",
+    "0040_lab_lifecycle.sql": "5bb2a2bdab8d2193f280955c60558ce061a8d8af925e4f98869771405fccfe90",
+    "0041_lab_service_rendered_semantics.sql": "f0d12c7f097acf9eb029b75d3cb4ba76698163b1cbaa1cce50c4e922124682ab",
+    "0042_lab_service_rendered_guards.sql": "faeb3d593d5e10417c2e6d41760d17e903ca7a07f3ae656df1c454e79bde6867",
+    "0043_native_payment_dispatch_boundary.sql": "e005943c562466c7161a8ffab6d4bf924a7e30a15eae529f432cb7d24729aa6d",
+    "0044_reviewed_erasure_receipts.sql": "57a6c94824b814d7e21f1eabd5dc352dd5e65bc9a5870b595c16602791b0daa5",
+    "0045_native_payment_executor.sql": "11547f21822275eb5c0f958f06288ba6265f41304084d9c83d8f88e3c5a92979",
+    "0046_lesson_completions.sql": "acc12483c24f3f553d832ae0d9035b287d89c6d2ba3846c18769228f3638d6a6",
+    "0047_course_playback_state.sql": "412469e6c24c79bd0c88ed1a4ce9cd4200c64591f057cae257a5384d5a306b51"
   }
 }

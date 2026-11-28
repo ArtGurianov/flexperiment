@@ -4,6 +4,7 @@ import type Database from "better-sqlite3";
 import type { ControlRoomRefundCase, RefundCasesResponse, RefundDecisionCommand, RefundEmailRegistrationCommand, RefundPolicyFacts } from "@flexperiment/control-room-contracts";
 import type { AcceptedRefund, PaymentRail, RefundSubmission } from "./checkout";
 import { revokeEntitlementForOrderLine } from "./entitlements";
+import { routeContour } from "./native-payment-contract";
 import { openRefundEnvelope, sealRefundEnvelope, type RefundEnvelope, type RefundEnvelopeKeyring } from "./refund-envelope";
 
 export type RefundReason = "CUSTOMER_REQUEST" | "PRODUCT_WITHDRAWN" | "OCCURRENCE_CHANGED" | "OTHER";
@@ -389,4 +390,23 @@ export function listCustomerRefunds(db: Database.Database, customerId: string) {
     LEFT JOIN refund_decisions decision ON decision.refund_request_id=request.id
     LEFT JOIN refund_executions execution ON execution.refund_request_id=request.id
     WHERE request.customer_id=? ORDER BY request.requested_at DESC`).all(customerId);
+}
+
+/**
+ * FLEX-119 · contour dispatch for an approved refund (contract §5, §9). The order's stored contour
+ * decides, never configuration: a NATIVE order goes to the native provider, a historical RC.2 order to
+ * its original executor (`executeApprovedRefund` above), and one with both is refused.
+ */
+export async function executeApprovedRefundOnContour<T>(
+  db: Database.Database,
+  requestPublicId: string,
+  executors: { readonly native: () => Promise<T>; readonly original: () => Promise<T> },
+) {
+  const row = db.prepare(`SELECT payment.payment_ref,attempt.refref_attempt_id FROM refund_requests request
+    JOIN order_lines line ON line.id=request.order_line_id JOIN orders ON orders.id=line.order_id
+    LEFT JOIN native_payments payment ON payment.order_id=orders.id LEFT JOIN checkout_attempts attempt ON attempt.order_id=orders.id
+    WHERE request.public_id=?`).get(requestPublicId) as { payment_ref: string | null; refref_attempt_id: string | null } | undefined;
+  if (!row) throw new Error("REFUND_REQUEST_NOT_FOUND");
+  return routeContour({ nativePaymentRef: row.payment_ref, refrefAttemptId: row.refref_attempt_id }) === "NATIVE"
+    ? executors.native() : executors.original();
 }

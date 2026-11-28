@@ -1,9 +1,13 @@
+import { platformOrigin } from "../origins";
 import { publicCourse, publicLesson, type CourseDetail, type LessonDetail } from "./public";
 
 export type AccountLibraryCourse = {
   courseRef: string; title: string; url: string; access: "ENTITLED" | "FREE" | "PREVIEW";
   /** FLEX-128: the explicit FREE enrollment; startedAt is null for a historical implicit one. */
   enrollment: { enrolledAt: string; startedAt: string | null; progressPercent: 0 } | null;
+  started?: boolean;
+  continuation?: { lesson: { lessonRef: string; url: string; title: string };
+    reason: "FIRST" | "CURRENT" | "NEXT" | "REWATCH" | "PREVIOUS_UNAVAILABLE" } | null;
   lessons: Array<{ lessonRef: string; title: string; sectionTitle: string; url: string;
     access: "ENTITLED" | "FREE" | "PREVIEW" }>;
 };
@@ -13,7 +17,7 @@ async function privateContent<T>(cookieHeader: string, path: string): Promise<T 
   if (!origin) throw new Error("COMMERCE_CONTENT_NOT_CONFIGURED");
   if (!cookieHeader) return null;
   const response = await fetch(new URL(path, origin), {
-    headers: { cookie: cookieHeader }, cache: "no-store", redirect: "error", signal: AbortSignal.timeout(3_000),
+    headers: { cookie: cookieHeader, "x-forwarded-host": new URL(platformOrigin()).host }, cache: "no-store", redirect: "error", signal: AbortSignal.timeout(3_000),
   });
   if ([401, 403, 404].includes(response.status)) return null;
   if (!response.ok) throw new Error("COMMERCE_CONTENT_UNAVAILABLE");

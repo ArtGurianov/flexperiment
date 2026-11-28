@@ -2,12 +2,23 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { decodeIntentId } from "../../../lib/my-checkout-intent";
 import CourseCheckout from "../components/checkout/CourseCheckout";
 
 vi.mock("next/navigation", () => ({ usePathname: () => "/courses/test-course" }));
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe("closed paid purchase review", () => {
+  it("links the selected offer to MY without starting a legacy checkout", () => {
+    const fetcher = vi.fn();
+    vi.stubGlobal("fetch", fetcher);
+    render(<CourseCheckout myOrigin="https://my.example.test" courseRef="test-course" offerRef="course:test-course"
+      saleMode="PUBLIC" priceKopecks={10000} />);
+    const url = new URL(screen.getByRole("link", { name: /Купить за/ }).getAttribute("href")!);
+    expect(url.origin).toBe("https://my.example.test");
+    expect(decodeIntentId(url.pathname.split("/")[2])).toBe("course:test-course");
+    expect(fetcher).not.toHaveBeenCalled();
+  });
   it.each(["handoff", "preview", "confirm"])("offers the separate account form when %s refuses missing consent", async phase => {
     let confirms = 0;
     vi.stubGlobal("fetch", vi.fn(async (input: string) => {

@@ -1,10 +1,14 @@
 import { createLabInterestMailDelivery } from "./lab-interest-mail";
 import { loadLabInterestManifest } from "./lab-interest-legal";
 import { serve } from "@hono/node-server";
+import { labTicketQrSecretFromEnv } from "./lab-tickets";
 import { createCommerceV2App } from "./app";
 import { migrateV2, openV2Database } from "./db";
 import { loadCommerceRuntimeConfig } from "./payment-mode";
 import { createAuthRuntime } from "./auth";
+import { assertSharedAccountDeployment, loadMyIdentityConfig } from "./my-session";
+import { createMyOtp, myAccountLegalStorefront } from "./my-session-otp";
+import { createSessionExchange } from "./session-exchange";
 import { verifySmartCaptcha } from "./smartcaptcha";
 import { playbackKeyringFromEnvironment } from "./playback-auth";
 import { HttpKinescopeClient } from "./kinescope";
@@ -20,7 +24,7 @@ import { labGuestTrustedProxyIps } from "./lab-guest-client-ip";
 import { controlRoomTrustedProxyIps } from "./control-room-client-ip";
 import { controlRoomTotpKey } from "./control-room-totp";
 import { dispatchPendingCampaigns, type CampaignEmail } from "./campaigns";
-import { createLabTicketEmailDelivery, createMagicLinkEmailDelivery } from "./auth-email-delivery";
+import { createLabTicketEmailDelivery, createMagicLinkEmailDelivery, createMyOtpEmailDelivery } from "./auth-email-delivery";
 import { dirname } from "node:path";
 import { prepareErasureRuntime } from "./erasure-runtime";
 import { ErasureInstallationEvidence, readErasureInstallation } from "./erasure-installation";
@@ -28,6 +32,8 @@ import { AfterResponseTasks } from "./after-response";
 import { BrowserContexts, loadBrowserContextConfig } from "./browser-context";
 import { RefrefArrivalExchange } from "./refref-arrival-exchange";
 import { createIndexNowNotifier } from "./indexnow";
+import { contourOfOrder } from "./native-payment-ledger";
+import { nativePaymentsFromConfig, startNativeSweeps } from "./native-payment-runtime";
 
 async function startServer() {
 const installation=readErasureInstallation(process.env);
@@ -35,8 +41,9 @@ ErasureInstallationEvidence.assertRuntime(installation,process.env);
 // The owner's storefront switch is attached here only, from the fixed read-only host mount (ART-319).
 const config = { ...loadCommerceRuntimeConfig(), storefrontSwitch: hostStorefrontSwitchSource() };
 // Preserve the configured foundation dependency when switching to normal mode.
-// Production and a live Refref rail may never report readiness without probing it.
-const probeRefref = process.env.REFREF_READINESS_URL || config.deployEnvironment === "production" || config.paymentMode === "refref"
+// Native sales do not depend on the historical provider's availability.
+const probeRefref = config.paymentMode !== "native"
+  && (process.env.REFREF_READINESS_URL || config.deployEnvironment === "production" || config.paymentMode === "refref")
   ? createRefrefReadinessProbe(process.env) : undefined;
 const origins = loadCommerceOrigins();
 const db = openV2Database();
@@ -69,9 +76,16 @@ if (config.deployEnvironment === "production" && (!controlRoomSessionSecret || !
   throw new Error("CONTROL_ROOM_AUTH_CONFIGURATION_REQUIRED");
 }
 
+// FLEX-120/121 (B block): MY identity. MY_IDENTITY_MODE defaults to `off` (Stage A unchanged).
+const myIdentity = loadMyIdentityConfig(process.env, origins);
+assertSharedAccountDeployment(myIdentity, config.deployEnvironment,
+  process.env.COMMERCE_V2_ENVIRONMENT === "canary" || process.env.ERASURE_SCOPE === "canary");
+const myOtpDelivery = createMyOtpEmailDelivery();
 const auth = createAuthRuntime({
   db,
   sendMagicLinkEmail: magicLinkDelivery.send,
+  sendMyOtpEmail: myOtpDelivery.send,
+  myIdentity,
   erasureFence,
 });
 const smartCaptchaSecret = process.env.SMARTCAPTCHA_SERVER_KEY;
@@ -94,7 +108,11 @@ const kinescopeDrmAuth = kinescopeDrmKeyring && kinescopeDrmUsername && kinescop
 // The refund envelope keyring (ART-174): Refref's rail does not start without one, and an invalid one never starts.
 const refundEnvelopeKeys = refundEnvelopeKeyringFromEnvironment(process.env);
 if (config.paymentMode === "refref" && !refundEnvelopeKeys) throw new Error("REFUND_ENVELOPE_KEYS_REQUIRED");
-const paymentRail = config.paymentMode === "mock" ? new MockPaymentRail()
+// FLEX-119 · the direct native contour (PAYMENT_MODE=native): quote rail, ledger context and sweeps.
+// payment-mode.ts already refused the fake provider outside local/test.
+const native = nativePaymentsFromConfig(db, config, refundEnvelopeKeys);
+const historicalPaymentRail = config.historicalRefref ? new RefrefPaymentRail(config.historicalRefref) : undefined;
+const paymentRail = native ? native.quoteRail : config.paymentMode === "mock" ? new MockPaymentRail()
   : config.paymentMode === "refref" && config.refref ? new RefrefPaymentRail({
     apiBaseUrl: config.refref.apiBaseUrl,
     apiKey: config.refref.apiKey,
@@ -143,6 +161,22 @@ const app = createCommerceV2App({
   authHandler: auth.auth.handler,
   prepareMagicLinkInitiation: auth.prepareMagicLinkInitiation,
   authenticateCustomer: auth.authenticateCustomer,
+  myIdentity,
+  myOtp: createMyOtp({ db, api: auth.auth.api, erasureFence,
+    accountLegalStorefront: myAccountLegalStorefront(process.env.MY_ACCOUNT_LEGAL_STOREFRONT),
+    verifyCaptcha: smartCaptchaSecret ? (token, ip) => verifySmartCaptcha(token, ip, smartCaptchaSecret) : undefined }),
+  resolveSession: auth.resolveSession,
+  signOutMySession: (headers) => auth.auth.api.signOut({ headers, asResponse: true }),
+  sessionExchange: myIdentity.sharedCookie ? undefined : createSessionExchange({ db }),
+
+  // FLEX-60/123: owned LAB ticket QR; absent or short LAB_TICKET_QR_SECRET keeps the route closed.
+  labTicketQrSecret: labTicketQrSecretFromEnv(process.env),
+  myOrigin: origins.my,
+  resolveSessionAudience: async (headers, scope) => {
+    const session = await auth.resolveSession(headers, scope);
+    if (!session || (session.kind === "MY" && session.surface !== "MY")) return null;
+    return { customerId: session.customerId, audience: session.kind };
+  },
   verifyCaptcha: smartCaptchaSecret ? (token, ip) => verifySmartCaptcha(token, ip, smartCaptchaSecret) : undefined,
   kinescopeClient,
   kinescopeLessonsFolderId: process.env.KINESCOPE_LESSONS_FOLDER_ID,
@@ -157,6 +191,7 @@ const app = createCommerceV2App({
     kinescopeApiConfigured: Boolean(kinescopeClient),
   },
   paymentRail,
+  historicalPaymentRail,
   refundEnvelopeKeys,
   campaignUnsubscribeSecret,
   marketingBroadcastsEnabled,
@@ -185,6 +220,13 @@ const app = createCommerceV2App({
   } : undefined,
   erasureFence,
   browserContexts,
+  nativePayments: native?.ledger,
+  labRouteContour: ({ orderPublicId }) => contourOfOrder(db, orderPublicId),
+  labRailContour: config.paymentMode === "refref" ? "REFREF_RC2" : undefined,
+});
+if (native) startNativeSweeps(db, native, {
+  intervalMs: Number(process.env.CHECKOUT_POLL_INTERVAL_MS ?? 30_000),
+  run: (task) => (erasureFence ? erasureFence.run("WORKER", task) : task()),
 });
 
 if (browserContexts) {
@@ -222,15 +264,17 @@ if (marketingBroadcastsEnabled && campaignUnsubscribeSecret && sendCampaignEmail
   void campaignDispatch();
 }
 
-if (paymentRail) {
+const reconciliationRail = native ? historicalPaymentRail : paymentRail;
+if (reconciliationRail) {
   let checkoutPollRunning = false;
   const checkoutPoll = async () => {
     if (checkoutPollRunning) return;
     checkoutPollRunning = true;
     try {
       const reconcile=async()=>{
-        await reconcilePendingCheckouts(db, paymentRail, undefined, config);
-        if (refundEnvelopeKeys) await reconcilePendingRefunds(db, paymentRail, refundEnvelopeKeys);
+        // Native checkout attempts and refunds use their own tables and sweeps.
+        await reconcilePendingCheckouts(db, reconciliationRail, undefined, native ? undefined : config);
+        if (refundEnvelopeKeys) await reconcilePendingRefunds(db, reconciliationRail, refundEnvelopeKeys);
       };
       if(erasureFence) await erasureFence.run("WORKER",reconcile);else await reconcile();
     }

@@ -1,0 +1,178 @@
+{
+  "schema": "flexperiment.my-identity.surfaces/1",
+  "origins": {
+    "MY": "https://my.flexperiment.ru",
+    "LMS": "https://flexperiment.ru",
+    "LAB": "https://lab.flexperiment.ru"
+  },
+  "note": "LAB origin is illustrative (LAB_ORIGIN is unchanged by this contract).",
+  "proxyMustDelete": [
+    "host",
+    "content-length",
+    "connection",
+    "forwarded",
+    "x-forwarded-for",
+    "x-forwarded-host",
+    "x-forwarded-proto",
+    "x-forwarded-port",
+    "x-real-ip"
+  ],
+  "proxyMustSet": {
+    "x-forwarded-host": "<own public host>",
+    "x-forwarded-proto": "https"
+  },
+  "proxyMustRefuse": [
+    {
+      "case": "Set-Cookie with Domain attribute from Commerce",
+      "code": "COMMERCE_COOKIE_REFUSED",
+      "status": 502
+    },
+    {
+      "case": "Location outside the proxy's own origin",
+      "code": "COMMERCE_REDIRECT_REFUSED",
+      "status": 502
+    }
+  ],
+  "proxyMustStrip": [
+    "access-control-*"
+  ],
+  "admittedSessionKinds": {
+    "off": {
+      "MY": [],
+      "LMS": [
+        "LEGACY"
+      ],
+      "LAB": [
+        "LEGACY"
+      ]
+    },
+    "on": {
+      "MY": [
+        "MY"
+      ],
+      "LMS": [
+        "LMS"
+      ],
+      "LAB": [
+        "LEGACY"
+      ]
+    }
+  },
+  "cookies": {
+    "MY": {
+      "name": "__Secure-better-auth.session_token",
+      "host": "my.flexperiment.ru",
+      "attributes": {
+        "Path": "/",
+        "HttpOnly": true,
+        "Secure": true,
+        "SameSite": "Lax",
+        "Domain": null
+      }
+    },
+    "LMS": {
+      "name": "__Host-flx-lms",
+      "host": "flexperiment.ru",
+      "attributes": {
+        "Path": "/",
+        "HttpOnly": true,
+        "Secure": true,
+        "SameSite": "Lax",
+        "Domain": null,
+        "MaxAge": "remaining lifetime, <= 43200"
+      }
+    },
+    "LMS_EXCHANGE_STATE": {
+      "name": "__Host-flx-lms-x-<tx>",
+      "host": "flexperiment.ru",
+      "attributes": {
+        "Path": "/",
+        "HttpOnly": true,
+        "Secure": true,
+        "SameSite": "Lax",
+        "Domain": null,
+        "MaxAge": 600
+      },
+      "maxConcurrent": 3,
+      "eviction": "oldest presented exchange by created_at (unknown ids first) expired with Max-Age=0 by the start response"
+    }
+  },
+  "lifetimes": {
+    "mySessionSeconds": 604800,
+    "mySessionUpdateAgeSeconds": 86400,
+    "lmsSessionMaxSeconds": 43200,
+    "lmsSessionCap": "min(parent.expires_at, now + lmsSessionMaxSeconds)",
+    "exchangeSeconds": 600,
+    "exchangeCodeSeconds": 60,
+    "exchangeRecentFailureSeconds": 30,
+    "maxConcurrentExchangeStates": 3
+  },
+  "forgedHeaderCases": [
+    {
+      "via": "LMS proxy",
+      "clientSends": {
+        "x-forwarded-host": "my.flexperiment.ru"
+      },
+      "commerceSees": "flexperiment.ru",
+      "surface": "LMS"
+    },
+    {
+      "via": "MY proxy",
+      "clientSends": {
+        "forwarded": "host=flexperiment.ru"
+      },
+      "commerceSees": "my.flexperiment.ru",
+      "surface": "MY"
+    },
+    {
+      "via": "direct (internal network only)",
+      "clientSends": {
+        "x-forwarded-host": "evil.example"
+      },
+      "commerceSees": "evil.example",
+      "surface": null,
+      "expect": "every session-bearing route answers as signed out"
+    }
+  ],
+  "sameSite": {
+    "rule": "modeOn requires same scheme and identical last two DNS labels of MY_ORIGIN and PLATFORM_ORIGIN hosts, or both localhost",
+    "refusal": "MY_ORIGIN_NOT_SAME_SITE",
+    "pairs": [
+      {
+        "my": "https://my.flexperiment.ru",
+        "platform": "https://flexperiment.ru",
+        "accept": true
+      },
+      {
+        "my": "https://canary-my.flexperiment.ru",
+        "platform": "https://canary-platform.flexperiment.ru",
+        "accept": true
+      },
+      {
+        "my": "http://localhost:3003",
+        "platform": "http://localhost:3001",
+        "accept": true
+      },
+      {
+        "my": "https://my.flexperiment.com",
+        "platform": "https://flexperiment.ru",
+        "accept": false
+      },
+      {
+        "my": "http://my.flexperiment.ru",
+        "platform": "https://flexperiment.ru",
+        "accept": false
+      },
+      {
+        "my": "https://my.example.ru",
+        "platform": "https://flexperiment.ru",
+        "accept": false
+      },
+      {
+        "my": "https://localhost:3003",
+        "platform": "https://flexperiment.ru",
+        "accept": false
+      }
+    ]
+  }
+}

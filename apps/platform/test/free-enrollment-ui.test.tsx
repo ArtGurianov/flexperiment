@@ -51,10 +51,10 @@ describe("FLEX-128 enrollment UI", () => {
     expect(assign).not.toHaveBeenCalled();
   });
 
-  it("shows the enrolled state with 0% and offers nothing to a guest on a paid course", async () => {
+  it("shows retained enrollment and offers nothing to a guest on a paid course", async () => {
     global.fetch = vi.fn(async () => json(status({ accessModel: "PAID", enrollable: false, enrollment: enrolled })));
     render(<FreeEnrollmentAction courseSlug="free" accessModel="PAID" />);
-    expect(await screen.findByText(/прогресс 0%/)).toBeInTheDocument();
+    expect(await screen.findByText("Вы записаны")).toBeInTheDocument();
     expect(screen.getByText(/доступ сохранён/)).toBeInTheDocument();
     cleanup();
     global.fetch = vi.fn(async () => json({ code: "SIGN_IN_REQUIRED" }, 401));

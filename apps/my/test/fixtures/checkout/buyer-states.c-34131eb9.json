@@ -1,0 +1,96 @@
+{
+  "schema": "flexperiment.native-buyer-states/1",
+  "contract": "flexperiment.native-payment-contract/1",
+  "note": "Projection for checkout (FLEX-122) and LAB (D). The UI shows only these values; it never infers payment from a redirect.",
+  "payment": [
+    {
+      "state": "CREATING",
+      "kind": "ONLINE_COURSE",
+      "expect": "CONFIRMING"
+    },
+    {
+      "state": "CREATE_UNKNOWN",
+      "kind": "LAB",
+      "expect": "CONFIRMING"
+    },
+    {
+      "state": "PENDING",
+      "kind": "ONLINE_COURSE",
+      "expect": "AWAITING_PAYMENT"
+    },
+    {
+      "state": "PAID",
+      "kind": "ONLINE_COURSE",
+      "expect": "ACCESS_GRANTED"
+    },
+    {
+      "state": "PAID",
+      "kind": "LAB",
+      "expect": "TICKET_ISSUED"
+    },
+    {
+      "state": "DECLINED",
+      "kind": "LAB",
+      "expect": "DECLINED"
+    },
+    {
+      "state": "EXPIRED",
+      "kind": "ONLINE_COURSE",
+      "expect": "EXPIRED"
+    },
+    {
+      "state": "REVIEW_REQUIRED",
+      "kind": "LAB",
+      "expect": "SUPPORT_REVIEW"
+    }
+  ],
+  "refund": [
+    {
+      "state": "SUBMITTING",
+      "expect": "REFUND_PROCESSING"
+    },
+    {
+      "state": "SUBMIT_UNKNOWN",
+      "expect": "REFUND_PROCESSING"
+    },
+    {
+      "state": "PROCESSING",
+      "expect": "REFUND_PROCESSING"
+    },
+    {
+      "state": "SUCCEEDED",
+      "expect": "REFUNDED"
+    },
+    {
+      "state": "FAILED",
+      "expect": "SUPPORT_REVIEW"
+    },
+    {
+      "state": "REVIEW_REQUIRED",
+      "expect": "SUPPORT_REVIEW"
+    }
+  ],
+  "routing": [
+    {
+      "order": {
+        "nativePaymentRef": "pay:ord-course-0001",
+        "refrefAttemptId": null
+      },
+      "expect": "NATIVE"
+    },
+    {
+      "order": {
+        "nativePaymentRef": null,
+        "refrefAttemptId": "rc2-attempt-historical"
+      },
+      "expect": "REFREF_RC2"
+    },
+    {
+      "order": {
+        "nativePaymentRef": "pay:x",
+        "refrefAttemptId": "y"
+      },
+      "error": "PAYMENT_CONTOUR_AMBIGUOUS"
+    }
+  ]
+}

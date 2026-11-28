@@ -2,7 +2,8 @@ import Database from "better-sqlite3";
 import { beforeEach, describe, expect, it } from "vitest";
 import { checkout, confirmCheckout, MockPaymentRail, prepareCheckout, reconcileCheckout, reconcilePendingCheckouts } from "../src/checkout";
 import { migrateV2 } from "../src/db";
-import { stageALegalManifestJson } from "./fixtures/legal";
+import { stageALegalManifestJson, stageBLegalManifestJson } from "./fixtures/legal";
+import { confirmLabBuyer, labAcceptanceIfActive } from "./fixtures/lab-purchase";
 import { openTestStorefront, qualifyTestFiscalPolicies, setTestStorefronts, testCheckoutConfig } from "./fixtures/sales";
 
 let db: Database.Database;
@@ -171,7 +172,7 @@ describe("scripted mock checkout orchestration", () => {
 
   it("freezes LAB occurrence times into the priced line and order evidence", async () => {
     db.prepare(`INSERT INTO legal_releases(id,storefront,version,manifest_json,effective_at,active)
-      VALUES ('lab-legal','LAB','lab-stage-a-v1',?,'2026-09-30T00:00:00Z',1)`).run(stageALegalManifestJson);
+      VALUES ('lab-legal','LAB','lab-stage-a-v1',?,'2026-09-30T00:00:00Z',1)`).run(stageBLegalManifestJson);
     db.prepare("INSERT INTO cities(id,slug,title) VALUES ('city','nsk','Новосибирск')").run();
     db.prepare(`INSERT INTO lab_occurrences(id,occurrence_ref,city_id,title,starts_at,ends_at,timezone,capacity,venue_status,venue_name,venue_address)
       VALUES ('occurrence','lab:november','city','LAB в ноябре','2026-11-01T09:00:00Z','2026-11-01T17:00:00Z','Asia/Novosibirsk',20,'CONFIRMED','Студия','ул. Фикстурная, 1')`).run();
@@ -181,12 +182,14 @@ describe("scripted mock checkout orchestration", () => {
       VALUES ('lab-offer','lab:november','lab-product',250000,'PUBLIC')`).run();
     qualifyTestFiscalPolicies(db);
     openTestStorefront(db, "LAB");
+    confirmLabBuyer(db, "customer");
 
     await checkout(db, rail, testCheckoutConfig, {
       customerId: "customer",
       customerEmail: "student@example.com",
       offerRef: "lab:november",
       idempotencyKey: "lab-checkout",
+      labAcceptance: labAcceptanceIfActive(db),
     }, "2026-09-30T10:00:00Z");
 
     const snapshot = JSON.parse((db.prepare("SELECT checkout_snapshot_json FROM orders WHERE public_id<>'missing'").get() as { checkout_snapshot_json: string }).checkout_snapshot_json);

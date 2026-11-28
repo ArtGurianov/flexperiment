@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import AccountClient from "@/components/auth/AccountClient";
 import { Suspense } from "react";
 import { enrollmentAccountPath, parseEnrollmentIntent } from "@/components/courses/freeEnrollment";
@@ -11,6 +12,13 @@ type AccountSearch = { next?: string; enroll?: string; lesson?: string };
 async function AccountContent({ searchParams }: { searchParams: Promise<AccountSearch> }) {
   const query = await searchParams;
   const requested = query.next;
+  if (process.env.MY_IDENTITY_MODE === "on" && process.env.MY_SESSION_COOKIE_DOMAIN?.trim()) {
+    if (typeof requested === "string" && requested.startsWith("/courses/")) {
+      redirect(`/auth/lms/start?next=${encodeURIComponent(requested)}`);
+    }
+    const my = URL.parse(process.env.MY_ORIGIN ?? "");
+    if (my?.protocol === "https:" && my.href === my.origin + "/") redirect(new URL("/courses", my).href);
+  }
   // FLEX-128: the chosen course and lesson survive the magic-link login inside the callback URL itself.
   const enrollIntent = parseEnrollmentIntent(query.enroll, query.lesson);
   const nextPath = enrollIntent ? enrollmentAccountPath(enrollIntent)
