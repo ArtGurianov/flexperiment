@@ -147,11 +147,11 @@ describe("real isolated old SQLite backup + independent latest erasure journal",
       expect(calls).toBe(0);
     } finally { restored.close(); }
   });
-  it.each(["financial", "audit", "owner-evidence", "binding", "fk", "unclassified", "column", "trigger", "keys", "scope", "expired"])("keeps the entire restore CLOSED/unchanged on %s uncertainty", async reason => {
+  it.each(["financial", "financial-and-audit", "audit", "owner-evidence", "binding", "fk", "unclassified", "column", "trigger", "keys", "scope", "expired"])("keeps the entire restore CLOSED/unchanged on %s uncertainty", async reason => {
     tombstone(); const proof = await verified();
-    if (reason === "financial") db.prepare(`INSERT INTO orders(id,public_id,customer_id,state,total_kopecks,checkout_snapshot_json,snapshot_hash,legal_release_id)
+    if (reason === "financial" || reason === "financial-and-audit") db.prepare(`INSERT INTO orders(id,public_id,customer_id,state,total_kopecks,checkout_snapshot_json,snapshot_hash,legal_release_id)
       VALUES ('order','public','deleted-customer','FULFILLED',100,'{}',?,(SELECT id FROM legal_releases WHERE active=1 LIMIT 1))`).run("a".repeat(64));
-    if (reason === "audit") db.exec(`INSERT INTO audit_log(id,actor,action,subject_type,subject_ref,evidence_json)
+    if (reason === "audit" || reason === "financial-and-audit") db.exec(`INSERT INTO audit_log(id,actor,action,subject_type,subject_ref,evidence_json)
       VALUES ('audit','operator','SYNTHETIC','CUSTOMER','deleted-customer','{}')`);
     if (reason === "owner-evidence") {
       db.exec("INSERT INTO offers(id,offer_ref,product_id,price_kopecks,sale_mode) VALUES ('evidence-offer','course:one','product',100,'CLOSED')");
@@ -168,8 +168,15 @@ describe("real isolated old SQLite backup + independent latest erasure journal",
     if (reason === "trigger") db.exec(`CREATE TRIGGER shadow_copy BEFORE DELETE ON customers BEGIN
       INSERT INTO audit_log(id,actor,action,subject_type,subject_ref,evidence_json) VALUES ('copy','shadow','COPY','CUSTOMER',OLD.id,'{}'); END`);
     const before = db.serialize();
+    const expectedErrors: Partial<Record<string, string>> = {
+      financial: "ERASURE_FINANCIAL_REVIEW_REQUIRED",
+      "financial-and-audit": "ERASURE_FINANCIAL_REVIEW_REQUIRED",
+      audit: "ERASURE_AUDIT_REVIEW_REQUIRED",
+      "owner-evidence": "ERASURE_AUDIT_REVIEW_REQUIRED",
+      binding: "ERASURE_SUBJECT_BINDING_DRIFT",
+    };
     expect(() => applyIsolatedRestoreErasure(db, proof, reason === "keys" ? { ...keys, subject: { "subject-1": randomBytes(32) } } : keys,
-      reason === "scope" ? "production" : "canary", reason === "expired" ? new Date(now.getTime() + 60_001) : now)).toThrow(/ERASURE_/);
+      reason === "scope" ? "production" : "canary", reason === "expired" ? new Date(now.getTime() + 60_001) : now)).toThrow(expectedErrors[reason] ?? /ERASURE_/);
     expect(db.serialize()).toEqual(before);
     expect(rowCount(db, '"session"')).toBe(2); expect(rowCount(db, "customers")).toBe(2);
   });
