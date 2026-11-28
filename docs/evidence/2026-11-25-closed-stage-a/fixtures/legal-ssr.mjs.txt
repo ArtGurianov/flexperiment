@@ -1,0 +1,115 @@
+import assert from "node:assert/strict";
+import { spawn, execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { createServer } from "node:http";
+import { createServer as createHttpsServer, get } from "node:https";
+import { once } from "node:events";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { setTimeout } from "node:timers/promises";
+
+const expectedPlatform = "3d0fd18de87de14322af5da85158afb2ea02887f";
+assert.equal(execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(), expectedPlatform);
+const revision = "ea251ec62408822f275c2570ee8dc58c4a4034eb";
+const atRevision = path => execFileSync("git", ["show", `${revision}:${path}`]);
+const candidate = JSON.parse(atRevision("docs/legal/stage-a/2026-11-20-candidate/manifest.json"));
+const sha256 = bytes => createHash("sha256").update(bytes).digest("hex");
+const files = new Map(candidate.documents.map(({ kind, candidate: document }) => {
+  const bytes = atRevision(document.path);
+  assert.equal(sha256(bytes), document.sha256);
+  return [`/source/${kind}`, bytes];
+}));
+
+const temp = mkdtempSync(join(tmpdir(), "flex-legal-ssr-"));
+const cert = join(temp, "cert.pem"), key = join(temp, "key.pem");
+const identityFile = join(temp, "identity.json");
+execFileSync(process.execPath, ["scripts/write-build-identity.mjs", identityFile, "platform"], {
+  env: { PATH: process.env.PATH, SOURCE_COMMIT: expectedPlatform }, stdio: "ignore",
+});
+execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-noenc", "-days", "1",
+  "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1", "-keyout", key, "-out", cert], { stdio: "ignore" });
+const source = createHttpsServer({ cert: readFileSync(cert), key: readFileSync(key) }, (req, res) => {
+  const body = files.get(req.url);
+  res.writeHead(body ? 200 : 404, { "content-type": "text/markdown; charset=utf-8" }).end(body);
+});
+await once(source.listen(0, "127.0.0.1"), "listening");
+const manifest = { stage: "A", documents: candidate.documents.map(({ kind, candidate: doc }) => ({
+  kind, version: candidate.version, sha256: doc.sha256, url: `https://127.0.0.1:${source.address().port}/source/${kind}`,
+})) };
+let release = null;
+let anonymousReads = 0;
+const commerce = createServer((req, res) => {
+  if (req.url !== "/v1/legal/current?storefront=COURSES") return res.writeHead(404).end();
+  if (!req.headers.cookie && !req.headers.authorization) anonymousReads++;
+  res.writeHead(release ? 200 : 404, { "content-type": "application/json", "cache-control": "no-store" })
+    .end(JSON.stringify(release ?? { code: "LEGAL_RELEASE_NOT_FOUND" }));
+});
+await once(commerce.listen(0, "127.0.0.1"), "listening");
+const port = "33861";
+const origin = `http://127.0.0.1:${port}`;
+const next = spawn(process.execPath, ["node_modules/next/dist/bin/next", "start", "--hostname", "127.0.0.1", "--port", port], {
+  cwd: "apps/platform", stdio: "ignore",
+  env: { PATH: process.env.PATH, BUILD_IDENTITY_FILE: identityFile, COMMERCE_INTERNAL_ORIGIN: `http://127.0.0.1:${commerce.address().port}`, PLATFORM_ORIGIN: origin },
+});
+try {
+  const options = { redirect: "manual", headers: { "user-agent": "Mozilla/5.0 Chrome/131.0.0.0 Safari/537.36" } };
+  let started = false;
+  for (let i = 0; i < 80; i++) {
+    try { await (await fetch(origin + "/robots.txt")).text(); started = true; break; } catch { await setTimeout(150); }
+  }
+  assert(started, "Platform did not start");
+  const identity = await fetch(origin + "/identity", options);
+  assert.equal(identity.status, 200);
+  assert.deepEqual(await identity.json(), {
+    schema: "flexperiment.build-identity/1", service: "platform", sourceCommit: expectedPlatform,
+  });
+  console.log(`PLATFORM_IDENTITY=${expectedPlatform}`);
+  const request = path => fetch(origin + path, options);
+  let res = await request("/v1/legal/current?storefront=COURSES");
+  assert.equal(res.status, 404, "anonymous public API missing release");
+  assert.deepEqual(await res.json(), { code: "LEGAL_RELEASE_NOT_FOUND" });
+  res = await request("/legal/privacy");
+  console.log(`MISSING_PAGE_HTTP=${res.status}`);
+  await res.body.cancel();
+  assert.equal(res.status, 404, "anonymous document page missing release");
+  res = await request("/legal/constructor");
+  assert.equal(res.status, 404, "unknown kind");
+  await res.body.cancel();
+  for (const [utc, date] of [["2026-11-23T20:59:59.999Z", "23 ноября 2026"], ["2026-11-23T21:00:00.000Z", "24 ноября 2026"]]) {
+    release = { version: candidate.version, effectiveAt: utc, manifest };
+    const paths = { privacy: "privacy", "personal-data": "personal_data", "account-terms": "account_terms", marketing: "marketing_consent" };
+    for (const [slug, kind] of Object.entries(paths)) {
+      res = await request(`/legal/${slug}`);
+      assert.equal(res.status, 200);
+      assert.equal(res.headers.has("location"), false);
+      const html = await res.text();
+      const document = manifest.documents.find(document => document.kind === kind);
+      assert(html.includes(`<time dateTime="${utc}">${date} г.</time>`), "date/UTC missing from SSR");
+      assert(html.includes(`<code>${document.sha256}</code>`), "hash missing from SSR");
+      assert(html.includes(`<dd>${candidate.version}</dd>`), "version missing from SSR");
+      assert(html.includes(`href="${document.url}"`), "source link missing from SSR");
+      assert(html.includes("<h1>") && html.includes("Открыть исходный документ"));
+      const payload = await new Promise((resolve, reject) => get(document.url, { ca: readFileSync(cert) }, response => {
+        assert.equal(response.statusCode, 200);
+        const chunks = [];
+        response.on("data", chunk => chunks.push(chunk));
+        response.on("end", () => resolve(Buffer.concat(chunks)));
+        response.on("error", reject);
+      }).on("error", reject));
+      assert.equal(sha256(payload), document.sha256);
+      assert(payload.equals(files.get(`/source/${kind}`)));
+    }
+    res = await request("/");
+    const homeHtml = await res.text();
+    assert(homeHtml.includes(`<time dateTime="${utc}">${date} г.</time>`), "footer date missing");
+    console.log(`UTC=${utc} MOSCOW=${date} SSR_HTTP=200 DOCUMENTS=4 EXACT_BYTES=4`);
+  }
+  assert.equal(anonymousReads, 12);
+  console.log(`ANONYMOUS_CURRENT_READS=${anonymousReads} API_MISSING=404 LEGAL_RELEASE_NOT_FOUND`);
+} finally {
+  next.kill();
+  source.close();
+  commerce.close();
+  rmSync(temp, { recursive: true, force: true });
+}
