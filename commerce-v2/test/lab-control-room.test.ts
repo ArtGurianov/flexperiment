@@ -270,6 +270,22 @@ describe("one live LAB price (offers.price_kopecks)", () => {
 });
 
 describe("LAB command error classification", () => {
+  it.each([undefined, "invalid", "2020-01-01T00:00:00Z"])("refuses missing, malformed or expired acceptance deadlines: %s", async acceptanceExpiresAt => {
+    await send("POST", "/v1/admin/v2/lab/occurrences", occurrence);
+    const result = await setOffer({ saleMode: "ACCEPTANCE_ONLY", acceptanceExpiresAt, acceptanceAllowlist: ["tester@example.test"] });
+    expect(result).toEqual({ status: 422, body: { error: { code: "ACCEPTANCE_DEADLINE_REQUIRED" } } });
+    expect((await current()).offer).toBeNull();
+  });
+
+  it("accepts the exact 14-day boundary and rejects an extra millisecond", async () => {
+    await send("POST", "/v1/admin/v2/lab/occurrences", occurrence);
+    const terms = { saleMode: "ACCEPTANCE_ONLY", acceptanceAllowlist: ["tester@example.test"] };
+    expect(await setOffer({ ...terms, acceptanceExpiresAt: "2026-10-14T12:00:00.001Z" }))
+      .toEqual({ status: 422, body: { error: { code: "ACCEPTANCE_DEADLINE_TOO_FAR" } } });
+    expect((await setOffer({ ...terms, acceptanceExpiresAt: "2026-10-14T12:00:00.000Z" })).status).toBe(200);
+    expect((await current()).offer?.acceptanceExpiresAt).toBe("2026-10-14T12:00:00.000Z");
+  });
+
   it.each([
     { paymentPurpose: "" }, { paymentPurpose: 42 }, { acceptanceAllowlist: "buyer@example.com" },
     { acceptanceAllowlist: [42] }, { acceptanceAllowlist: null }, { saleMode: "INVALID" },

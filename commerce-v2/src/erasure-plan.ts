@@ -49,6 +49,7 @@ export type ReviewedApproval = z.infer<typeof reviewedApprovalSchema>;
 const policySchema = z.object({
   version: z.literal(1), scope, packageE: reviewedPlanSchema.shape.packageE,
   validUntil: instant,
+  acceptanceAdmissionReadersSha256: digest.optional(),
   operators: z.record(ref, z.object({ publicKey: z.string().max(256), authorizedUntil: instant }).strict()),
   cases: z.record(z.uuid(), z.object({
     customer: digest, identityVerificationRef: ref, latestExecuteAt: instant,
@@ -92,6 +93,9 @@ export function assertReviewedPolicy(input: {
     return erasurePlanRefused("ERASURE_AWAITING_E_POLICY");
   }
   const policy = parsed.data;
+  if (plan.categories.acceptanceAdmission && !policy.acceptanceAdmissionReadersSha256) {
+    return erasurePlanRefused("ERASURE_ACCEPTANCE_READERS_UNQUALIFIED");
+  }
   for (const hold of policy.holds) {
     const bound = erasureSubject(keys, hold.keyId, plan.scope, binding);
     if (hold.customer === bound.customer) erasurePlanRefused("ERASURE_LEGAL_HOLD");

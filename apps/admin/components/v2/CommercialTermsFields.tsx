@@ -52,6 +52,7 @@ export function CommercialTermsFields({ value, onChange, paid }: {
         onChange={(event) => set("allowlist", event.target.value)} placeholder="tester@example.ru" /></label>
       <label>Окончание теста (UTC)<input required value={value.acceptanceExpiresAt}
         onChange={(event) => set("acceptanceExpiresAt", event.target.value)} placeholder="2026-12-01T12:00:00Z" /></label>
+      <small>Окно теста — до 14 дней.</small>
     </> : null}
   </>;
 }

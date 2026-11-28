@@ -125,7 +125,6 @@ export function applyReviewedErasure(db: Database.Database, entry: ReviewedEntry
   const receipt = reviewedReceipt(db, entry);
   const matchesEmail = (email: string) => matches("email", email);
   const removeAcceptance = reviewed.plan.categories.acceptanceAdmission?.action === "DELETE";
-  if (!removeAcceptance) assertNoErasedAcceptanceEmail(db, matchesEmail);
   if (!binding) {
     if (user || customers.some(row => matches("email", row.email)) || users.some(row => matches("email", row.email))) {
       erasurePlanRefused("ERASURE_SUBJECT_BINDING_DRIFT");
@@ -133,7 +132,7 @@ export function applyReviewedErasure(db: Database.Database, entry: ReviewedEntry
     if (!isolatedRestore) erasurePlanRefused("ERASURE_NATIVE_RESTORE_FINANCIAL_HOLD");
     // A snapshot may predate the subject. Preserve the independent tombstone.
     // There is no subject-local execution record to write in that snapshot.
-    if (removeAcceptance) removeErasedAcceptanceEmail(db, matchesEmail, now.toISOString());
+    removeErasedAcceptanceEmail(db, matchesEmail, now.toISOString());
     return;
   }
   if (!matches("email", binding.email) || (binding.userId !== null && (!user || binding.userId !== user.id)) ||
@@ -150,7 +149,10 @@ export function applyReviewedErasure(db: Database.Database, entry: ReviewedEntry
   }
   const verification = checkReviewedBindings(db, binding);
   const counts: Record<string, number> = {};
-  if (removeAcceptance) counts.acceptance_allowlist_offers = removeErasedAcceptanceEmail(db, matchesEmail, now.toISOString());
+  // Catalog admission hygiene follows the verified tombstone on every replay.
+  // A legacy signature and its receipt never acquire a new approved category.
+  const expiredOffers = removeErasedAcceptanceEmail(db, matchesEmail, now.toISOString());
+  if (removeAcceptance) counts.acceptance_allowlist_offers = expiredOffers;
   const remove = (table: string, column: string, id: string) => {
     counts[table] = db.prepare(`DELETE FROM ${table} WHERE ${column}=?`).run(id).changes;
   };

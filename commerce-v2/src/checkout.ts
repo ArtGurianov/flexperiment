@@ -688,6 +688,7 @@ function intentDeadline(intent: IntentRow) {
   const deadlines = [new Date(new Date(intent.created_at).getTime() + QUOTE_TTL_MS).toISOString()];
   const frozenLine = intent.line_snapshot_json ? JSON.parse(intent.line_snapshot_json) as FrozenLineSnapshot : undefined;
   if (frozenLine?.serviceStartsAt) deadlines.push(new Date(frozenLine.serviceStartsAt).toISOString());
+  if (frozenLine?.acceptanceExpiresAt) deadlines.push(frozenLine.acceptanceExpiresAt);
   if (intent.expires_at) deadlines.push(intent.expires_at);
   if (intent.seat_hold_expires_at) deadlines.push(intent.seat_hold_expires_at);
   return deadlines.sort()[0];
@@ -908,6 +909,7 @@ export async function prepareCheckout(
     assertNoOpenPayment(db, paymentAdmissionScope(db, input.customerId, offer.offer_id, orderPublicId));
     const seatHold = offer.kind === "LAB" ? { ref: randomUUID(), expiresAt: new Date(Math.min(
       Date.parse(now) + QUOTE_TTL_MS, Date.parse(offer.occurrence_starts_at!),
+      offer.sale_mode === "ACCEPTANCE_ONLY" ? Date.parse(offer.acceptance_expires_at!) : Infinity,
       inheritedHoldExpiry ? Date.parse(inheritedHoldExpiry) : Infinity,
     )).toISOString() } : undefined;
     const lineSnapshot = { ...freezeLine(db, offer, offer.venue), ...(seatHold ? { seatHold } : {}),

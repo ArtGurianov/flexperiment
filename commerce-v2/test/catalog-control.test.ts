@@ -32,6 +32,19 @@ describe("catalog control room commands", () => {
     })).toThrow("PAYMENTS_DISABLED");
   });
 
+  it("rolls back an acceptance offer when the identity fence refuses its normalized address", () => {
+    const check = (email: string) => {
+      expect(email).toBe("tester@example.test");
+      throw new Error("ERASURE_SUBJECT_SUPPRESSED");
+    };
+    expect(() => configureProduct(db, testCheckoutConfig, { productRef: "course:one", offerRef: "course:one",
+      kind: "ONLINE_COURSE", courseRef: "one", accessModel: "PAID", priceKopecks: 100, saleMode: "ACCEPTANCE_ONLY",
+      acceptanceExpiresAt: "2026-11-29T00:00:00Z", acceptanceAllowlist: [" Tester@Example.Test "], actor: "fixture-admin",
+      expectedVersion: 0, paymentPurpose: "Synthetic checkout" }, "2026-11-28T00:00:00Z", check)).toThrow("ERASURE_SUBJECT_SUPPRESSED");
+    expect(db.prepare("SELECT count(*) FROM products").pluck().get()).toBe(0);
+    expect(db.prepare("SELECT count(*) FROM audit_log").pluck().get()).toBe(0);
+  });
+
   it("configures a PUBLIC offer only while its storefront is open and writes an audited withdrawal", () => {
     const config = testCheckoutConfig;
     const paid = { paymentPurpose: "Synthetic merchant course purpose", productRef: "course:paid", offerRef: "course:paid",
@@ -92,7 +105,7 @@ describe("catalog control room commands", () => {
       .toEqual({ kind: "ONLINE_COURSE", course_ref: "one", occurrence_ref: null, version: 1, offer_ref: "course:one" });
 
     const edited = configureProduct(db, config, { ...course, accessModel: "FREE", priceKopecks: 0,
-      saleMode: "ACCEPTANCE_ONLY", acceptanceAllowlist: ["Tester@Example.com"], expectedVersion: 1,
+      saleMode: "ACCEPTANCE_ONLY", acceptanceAllowlist: ["Tester@Example.com", " tester@example.com "], expectedVersion: 1,
       acceptanceExpiresAt: new Date(Date.now() + 60 * 60_000).toISOString() });
     expect(edited.version).toBe(2);
     expect(db.prepare("SELECT price_kopecks,sale_mode,acceptance_allowlist_json FROM offers").get())

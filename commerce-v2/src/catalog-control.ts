@@ -4,7 +4,7 @@ import { assertOfferSaleModeAllowed, type CommerceRuntimeConfig, type SaleMode, 
 import { validPaymentPurpose } from "./payment-purpose";
 import { assertClosedPaidTestOffer } from "./closed-paid-test";
 import { assertStorefrontOpen } from "./storefront-switch";
-import { acceptanceDeadline } from "./acceptance-offer";
+import { acceptanceDeadline, ACCEPTANCE_WINDOW_MAX_MS, expireAcceptanceQuotes, readAcceptanceEmails } from "./acceptance-offer";
 
 export type ProductCommand = {
   productRef: string;
@@ -36,7 +36,8 @@ export function assertLiveOfferSaleMode(
   if (offer.saleMode === "PUBLIC") assertStorefrontOpen(db, config, offer.kind === "LAB" ? "LAB" : "COURSES", "CONTROL_ROOM");
 }
 
-export function configureProduct(db: Database.Database, config: CommerceRuntimeConfig, command: ProductCommand, now = new Date().toISOString()) {
+export function configureProduct(db: Database.Database, config: CommerceRuntimeConfig, command: ProductCommand,
+  now = new Date().toISOString(), assertAcceptanceEmail?: (email: string) => void) {
   if (!command.productRef || !command.offerRef || !command.actor || !Number.isInteger(command.expectedVersion) || command.expectedVersion < 0) throw new Error("PRODUCT_COMMAND_INVALID");
   if (!Number.isSafeInteger(command.priceKopecks) || command.priceKopecks < 0) throw new Error("PRICE_INVALID");
   if (!["CLOSED", "ACCEPTANCE_ONLY", "PUBLIC"].includes(command.saleMode)) throw new Error("SALE_MODE_INVALID");
@@ -56,7 +57,7 @@ export function configureProduct(db: Database.Database, config: CommerceRuntimeC
   }
   assertLiveOfferSaleMode(db, config, command);
   const acceptanceAllowlist = command.saleMode === "ACCEPTANCE_ONLY"
-    ? (command.acceptanceAllowlist ?? []).map(email => email.trim().toLowerCase()).filter(Boolean) : [];
+    ? [...new Set((command.acceptanceAllowlist ?? []).map(email => email.trim().toLowerCase()).filter(Boolean))] : [];
   const acceptanceExpiresAt = command.saleMode === "ACCEPTANCE_ONLY" ? acceptanceDeadline(command.acceptanceExpiresAt, now) : null;
   if (command.saleMode !== "CLOSED" && command.accessModel === "PAID") {
     assertClosedPaidTestOffer(config, { ...command, acceptanceAllowlist });
@@ -71,6 +72,9 @@ export function configureProduct(db: Database.Database, config: CommerceRuntimeC
     if (existing?.withdrawn_at) throw new Error("WITHDRAWN_PRODUCT_IMMUTABLE");
     if ((!existing && command.expectedVersion !== 0) || (existing && existing.version !== command.expectedVersion)) throw new Error("CATALOG_VERSION_CONFLICT");
     if (command.saleMode === "ACCEPTANCE_ONLY" && !acceptanceExpiresAt) throw new Error("ACCEPTANCE_DEADLINE_REQUIRED");
+    if (acceptanceExpiresAt && Date.parse(acceptanceExpiresAt) - Date.parse(now) > ACCEPTANCE_WINDOW_MAX_MS) {
+      throw new Error("ACCEPTANCE_DEADLINE_TOO_FAR");
+    }
     // Orders, entitlements and payment snapshots point at what a product is; only its terms may change.
     if (existing && (existing.kind !== command.kind || existing.course_ref !== (command.courseRef ?? null)
       || existing.occurrence_ref !== (command.occurrenceRef ?? null)
@@ -85,8 +89,8 @@ export function configureProduct(db: Database.Database, config: CommerceRuntimeC
         WHERE l.course_ref=? AND e.event_type='GRANT_ALLOWED' AND NOT EXISTS (
           SELECT 1 FROM free_course_enrollments f WHERE f.customer_id=e.customer_id AND f.product_id=?) LIMIT 1`)
         .get(existing.course_ref, productId)) throw new Error("FREE_ACCESS_HISTORY_REQUIRES_RECONCILIATION");
-    const priorOffer = db.prepare("SELECT id,payment_purpose FROM offers WHERE product_id=?").get(productId) as
-      { id: string; payment_purpose: string | null } | undefined;
+    const priorOffer = db.prepare("SELECT id,payment_purpose,acceptance_allowlist_json,acceptance_expires_at FROM offers WHERE product_id=?")
+      .get(productId) as { id: string; payment_purpose: string | null; acceptance_allowlist_json: string; acceptance_expires_at: string | null } | undefined;
     const paymentPurpose = command.paymentPurpose === undefined ? priorOffer?.payment_purpose ?? null : command.paymentPurpose;
     if ((paymentPurpose !== null && !validPaymentPurpose(paymentPurpose))
       || (command.accessModel === "PAID" && command.saleMode !== "CLOSED" && !validPaymentPurpose(paymentPurpose))) {
@@ -102,7 +106,21 @@ export function configureProduct(db: Database.Database, config: CommerceRuntimeC
           command.courseRef ?? null, command.occurrenceRef ?? null, now, now);
     }
     const offer = priorOffer;
+    if (assertAcceptanceEmail) acceptanceAllowlist.forEach(assertAcceptanceEmail);
     if (offer) {
+      if (command.saleMode !== "ACCEPTANCE_ONLY" || (offer.acceptance_expires_at && acceptanceExpiresAt
+        && Date.parse(acceptanceExpiresAt) < Date.parse(offer.acceptance_expires_at))) {
+        expireAcceptanceQuotes(db, offer.id, now);
+      } else {
+        const retained = new Set(acceptanceAllowlist);
+        const removed = readAcceptanceEmails(offer.acceptance_allowlist_json).map(email => email.trim().toLowerCase())
+          .filter(email => !retained.has(email));
+        if (removed.length) {
+          const ids = db.prepare("SELECT id FROM customers WHERE email_normalized IN (SELECT value FROM json_each(?))")
+            .pluck().all(JSON.stringify(removed)) as string[];
+          expireAcceptanceQuotes(db, offer.id, now, ids);
+        }
+      }
       db.prepare(`UPDATE offers SET price_kopecks=?,sale_mode=?,acceptance_allowlist_json=?,acceptance_expires_at=?,
         updated_at=?,payment_purpose=? WHERE id=?`)
         .run(command.priceKopecks, command.saleMode, JSON.stringify(acceptanceAllowlist), acceptanceExpiresAt, now, paymentPurpose, offer.id);
@@ -137,7 +155,8 @@ export type LabOfferCommand = {
  * one product and one offer per occurrence, so `offers.price_kopecks` is the only price a LAB page,
  * quote or order reads. Everything else — version check, sale-mode gate, audit — is configureProduct.
  */
-export function configureLabOffer(db: Database.Database, config: CommerceRuntimeConfig, command: LabOfferCommand, now = new Date().toISOString()) {
+export function configureLabOffer(db: Database.Database, config: CommerceRuntimeConfig, command: LabOfferCommand,
+  now = new Date().toISOString(), assertAcceptanceEmail?: (email: string) => void) {
   if (typeof command.occurrenceRef !== "string" || !command.occurrenceRef) throw new Error("PRODUCT_COMMAND_INVALID");
   const existing = db.prepare(`SELECT product.product_ref,offer.offer_ref FROM products product
     LEFT JOIN offers offer ON offer.product_id=product.id WHERE product.occurrence_ref=?`).get(command.occurrenceRef) as
@@ -150,7 +169,7 @@ export function configureLabOffer(db: Database.Database, config: CommerceRuntime
     acceptanceAllowlist: command.acceptanceAllowlist, acceptanceExpiresAt: command.acceptanceExpiresAt,
     paymentPurpose: command.paymentPurpose, actor: command.actor,
     expectedVersion: command.expectedProductVersion,
-  }, now);
+  }, now, assertAcceptanceEmail);
 }
 
 /** Payload edits only this commerce-owned field, never price/sales/identity through this command. */
@@ -192,6 +211,9 @@ export function withdrawProduct(
     db.prepare(`UPDATE offers SET sale_mode='CLOSED',acceptance_allowlist_json='[]',acceptance_expires_at=NULL,updated_at=?
       WHERE product_id=(SELECT id FROM products WHERE product_ref=?)`)
       .run(now, command.productRef);
+    const offerId = db.prepare("SELECT o.id FROM offers o JOIN products p ON p.id=o.product_id WHERE p.product_ref=?")
+      .pluck().get(command.productRef) as string | undefined;
+    if (offerId) expireAcceptanceQuotes(db, offerId, now);
     db.prepare(`INSERT INTO audit_log(id,actor,action,subject_type,subject_ref,evidence_json,created_at)
       VALUES (?,?,?,?,?,?,?)`).run(randomUUID(), command.actor, "PRODUCT_WITHDRAWN", "PRODUCT", command.productRef,
         JSON.stringify({ reason: command.reason.trim(), termsRef: command.termsRef.trim() }), now);

@@ -191,6 +191,7 @@ const LAB_COMMAND_VALIDATION = new Set([
   "LAB_CHANGE_REASON_REQUIRED", "LAB_VISIBILITY_INVALID", "PRODUCT_COMMAND_INVALID", "PRICE_INVALID",
   "COURSE_REF_REQUIRED", "COURSE_REF_FORBIDDEN", "ALL_COURSES_BUNDLE_REF_INVALID", "OCCURRENCE_REF_REQUIRED",
   "OCCURRENCE_REF_FORBIDDEN", "PAYMENT_PURPOSE_REQUIRED", "SALE_MODE_INVALID", "ACCEPTANCE_ALLOWLIST_INVALID",
+  "ACCEPTANCE_DEADLINE_REQUIRED", "ACCEPTANCE_DEADLINE_TOO_FAR",
 ]);
 const LAB_COMMAND_NOT_FOUND = new Set(["CITY_NOT_FOUND", "LAB_OCCURRENCE_NOT_FOUND"]);
 const LAB_COMMAND_CONFLICT = new Set([
@@ -201,6 +202,7 @@ const LAB_COMMAND_CONFLICT = new Set([
   "CATALOG_VERSION_CONFLICT", "PRODUCT_IDENTITY_IMMUTABLE", "LAB_OCCURRENCE_OFFER_EXISTS",
   "FREE_ACCESS_HISTORY_REQUIRES_RECONCILIATION", "CLOSED_PAID_TEST_SCOPE_REFUSED", "PAYMENTS_DISABLED",
   "MOCK_FORBIDDEN_IN_PRODUCTION", "SALES_STOPPED", "COURSE_BUNDLE_NOT_QUALIFIED", "ACCEPTANCE_OFFER_REQUIRES_REFREF",
+  "ERASURE_SUBJECT_SUPPRESSED",
 ]);
 const labCommandError = (context: Context, error: unknown, fallback: string) => {
   const code = error instanceof CommerceConfigurationError ? error.code : error instanceof Error ? error.message : "";
@@ -221,6 +223,7 @@ const labCommandBody = async <T,>(context: Context) => {
 };
 
 export function createCommerceV2App(deps: Dependencies) {
+  const assertAcceptanceEmail = (email: string) => deps.erasureFence?.assertIdentity({ email }, "ACCOUNT");
   const app = new Hono<AppBindings>();
   // FLEX-70 block: guarded so a faulty notifier can never change a command's response.
   const notifyPublicCourseChange = (courseRef: string | null | undefined) => {
@@ -675,7 +678,7 @@ export function createCommerceV2App(deps: Dependencies) {
         const result = configureLabOffer(deps.db, deps.config, { occurrenceRef: context.req.param("occurrenceRef"),
           priceKopecks: input.priceKopecks, saleMode: input.saleMode, acceptanceAllowlist: input.acceptanceAllowlist,
           acceptanceExpiresAt: input.acceptanceExpiresAt,
-          paymentPurpose: input.paymentPurpose, expectedProductVersion: input.expectedProductVersion, actor }, at);
+          paymentPurpose: input.paymentPurpose, expectedProductVersion: input.expectedProductVersion, actor }, at, assertAcceptanceEmail);
         auditControlRoom(deps.db, { adminId: actor, action: "LAB_OFFER_CONFIGURED", entityType: "product", entityId: result.productRef,
           details: { version: result.version, priceKopecks: input.priceKopecks, saleMode: input.saleMode } }, at);
         return result;
@@ -722,7 +725,7 @@ export function createCommerceV2App(deps: Dependencies) {
     try {
       const input = await context.req.json<ProductConfigurationCommand>();
       const actor = context.get("controlRoomAdminId")!;
-      const result = configureProduct(deps.db, deps.config, { ...input, actor }, now().toISOString());
+      const result = configureProduct(deps.db, deps.config, { ...input, actor }, now().toISOString(), assertAcceptanceEmail);
       auditControlRoom(deps.db, { adminId: actor, action: "PRODUCT_CONFIGURED", entityType: "product",
         entityId: input.productRef, details: { version: result.version, accessModel: input.accessModel, saleMode: input.saleMode } }, now().toISOString());
       await deps.invalidatePlatformCache?.("swr", input.courseRef);

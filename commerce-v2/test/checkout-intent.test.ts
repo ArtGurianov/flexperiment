@@ -19,6 +19,7 @@ import { stageALegalManifestJson, stageBLegalManifestJson } from "./fixtures/leg
 import { confirmAllLabBuyers, labAcceptanceIfActive } from "./fixtures/lab-purchase";
 import { openTestStorefront, qualifyTestFiscalPolicies, setTestStorefronts, testCheckoutConfig } from "./fixtures/sales";
 import { closeExpiredAcceptanceOffers } from "../src/acceptance-offer";
+import { configureProduct } from "../src/catalog-control";
 
 // ART-373: the durable purchase intent and payment-safe replay (design 2026-10-18 §2).
 
@@ -261,13 +262,14 @@ describe("issued quote guarantee", () => {
       db.prepare("UPDATE offers SET acceptance_allowlist_json=?").run(JSON.stringify(["other@example.test"]));
     }
     const now = trigger === "deadline" ? at(2) : at(1);
-    await expect(preview("restricted", {}, now)).rejects.toThrow("ACCEPTANCE_ONLY");
-    await expect(confirm(quote.quoteId, "restrict-confirm", now)).rejects.toThrow("ACCEPTANCE_ONLY");
+    const code = trigger === "deadline" ? "CHECKOUT_QUOTE_EXPIRED" : "ACCEPTANCE_ONLY";
+    await expect(preview("restricted", {}, now)).rejects.toThrow(code);
+    await expect(confirm(quote.quoteId, "restrict-confirm", now)).rejects.toThrow(code);
     expect(count("orders")).toBe(0);
     expect(count("checkout_attempts")).toBe(0);
     if (trigger === "deadline") {
       db.prepare("UPDATE offers SET acceptance_expires_at=?").run(at(5));
-      await expect(confirm(quote.quoteId, "restrict-confirm", now)).rejects.toThrow("ACCEPTANCE_ONLY");
+      await expect(confirm(quote.quoteId, "restrict-confirm", now)).rejects.toThrow(code);
     }
   });
 
@@ -280,18 +282,53 @@ describe("issued quote guarantee", () => {
     expect(count("orders")).toBe(0);
   });
 
+  it.each(["withdraw address", "reopen test"] as const)("permanently expires an old quote after %s", async path => {
+    db.prepare(`UPDATE offers SET sale_mode='ACCEPTANCE_ONLY',acceptance_allowlist_json=?,acceptance_expires_at=?`)
+      .run(JSON.stringify([customer.customerEmail, "other@example.test"]), at(12));
+    const quote = await quoted(await preview("old-test-quote"));
+    const commercial = { productRef: "course:one", offerRef: "course:one", kind: "ONLINE_COURSE", courseRef: "course-one",
+      accessModel: "PAID", actor: "fixture-admin", priceKopecks: 10000 } as const;
+    const oldVersion = Number(db.prepare("SELECT version FROM products").pluck().get());
+    const changed = configureProduct(db, testCheckoutConfig, { ...commercial, expectedVersion: oldVersion,
+      saleMode: path === "withdraw address" ? "ACCEPTANCE_ONLY" : "CLOSED",
+      acceptanceAllowlist: ["other@example.test"], acceptanceExpiresAt: at(12) }, at(1));
+    configureProduct(db, testCheckoutConfig, { ...commercial, expectedVersion: changed.version, saleMode: "ACCEPTANCE_ONLY",
+      acceptanceAllowlist: [customer.customerEmail, "other@example.test"], acceptanceExpiresAt: at(12) }, at(2));
+    await expect(confirm(quote.quoteId, "old-order", at(3))).rejects.toThrow("CHECKOUT_QUOTE_EXPIRED");
+    expect(count("orders")).toBe(0);
+    expect((await quoted(await preview("new-test-quote", {}, at(3)))).quoteId).not.toBe(quote.quoteId);
+  });
+
+  it("caps both the LAB hold and the visible quote at the test deadline", async () => {
+    addLab();
+    db.prepare(`UPDATE offers SET sale_mode='ACCEPTANCE_ONLY',acceptance_allowlist_json=?,acceptance_expires_at=? WHERE id='lab-offer'`)
+      .run(JSON.stringify([customer.customerEmail]), at(2));
+    const q = await quoted(await preview("lab-test-cutoff", { offerRef: "lab:november" }));
+    expect(q.expiresAt).toBe(at(2));
+    expect(db.prepare("SELECT seat_hold_expires_at FROM checkout_quotes WHERE id=?").pluck().get(q.quoteId)).toBe(at(2));
+  });
+
   it("closes and clears expired test lists once, without a checkout request", () => {
     db.prepare(`UPDATE offers SET sale_mode='ACCEPTANCE_ONLY',acceptance_allowlist_json=?,acceptance_expires_at=?`)
       .run(JSON.stringify([customer.customerEmail]), at(2));
     const version = () => db.prepare("SELECT version FROM products WHERE id='product'").pluck().get() as number;
     const original = version();
     expect(closeExpiredAcceptanceOffers(db, at(1))).toBe(0);
-    expect(closeExpiredAcceptanceOffers(db, at(2))).toBe(1);
+    expect(closeExpiredAcceptanceOffers(db, "2026-09-30T10:02:00Z")).toBe(1);
     expect(closeExpiredAcceptanceOffers(db, at(3))).toBe(0);
     expect(version()).toBe(original + 1);
     expect(db.prepare("SELECT sale_mode,acceptance_allowlist_json,acceptance_expires_at FROM offers").get()).toEqual({
       sale_mode: "CLOSED", acceptance_allowlist_json: "[]", acceptance_expires_at: null,
     });
+    const evidence = db.prepare("SELECT evidence_json FROM audit_log WHERE action='ACCEPTANCE_OFFER_EXPIRED'").pluck().all();
+    expect(evidence).toEqual([JSON.stringify({ offerRef: "course:one", clearedEmailCount: 1, expiredAt: at(2) })]);
+  });
+
+  it("compares expiry instants regardless of fractional-second formatting", () => {
+    db.prepare("UPDATE offers SET sale_mode='ACCEPTANCE_ONLY', acceptance_expires_at='2026-09-30T10:02:00.999Z'").run();
+    expect(closeExpiredAcceptanceOffers(db, "2026-09-30T10:02:00Z")).toBe(0);
+    db.prepare("UPDATE offers SET acceptance_expires_at='2026-09-30T10:02:00Z'").run();
+    expect(closeExpiredAcceptanceOffers(db, at(2))).toBe(1);
   });
 
   it("keeps its price and frozen line across a price change and an ordinary offer close", async () => {

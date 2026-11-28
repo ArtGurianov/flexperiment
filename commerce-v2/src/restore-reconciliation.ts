@@ -5,6 +5,7 @@ import { classifyV2Database } from "./db";
 import { checkoutSnapshotHash, type SharedCheckoutSnapshot } from "./checkout-snapshot";
 import { applyIsolatedRestoreErasure, assertReviewedRestoreSchema } from "./erasure-restore";
 import { VerifiedErasureLedger, type ErasureKeys } from "./erasure-ledger";
+import { expireAcceptanceQuotes } from "./acceptance-offer";
 import { grantEntitlement, revokeEntitlementForOrderLine } from "./entitlements";
 import { issueLabTicket } from "./lab-tickets";
 import { legalManifestHash } from "./legal-control";
@@ -82,6 +83,7 @@ function freezeSales(db: Database.Database, now: string) {
       WHERE id IN (SELECT product_id FROM offers WHERE ${changed})`).run(now);
     db.prepare(`UPDATE offers SET sale_mode='CLOSED',acceptance_allowlist_json='[]',${clearDeadline}updated_at=?
       WHERE ${changed}`).run(now);
+    if (hasDeadline) expireAcceptanceQuotes(db, null, now);
     // 0029 removed this second gate. Older reviewed restores still have it.
     if (legacyLabSalesColumn(db)) db.prepare("UPDATE lab_occurrences SET sales_status='CLOSED',updated_at=? WHERE sales_status<>'CLOSED'").run(now);
     if (legacySalesActivation(db)) db.prepare("UPDATE sales_activation SET revoked_at=?,revocation_reason='ISOLATED_RESTORE' WHERE revoked_at IS NULL").run(now);
